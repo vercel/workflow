@@ -1,0 +1,50 @@
+---
+title: healthCheck
+description: Verify a deployment's workflow infrastructure by sending a message through the queue pipeline.
+type: reference
+summary: Use healthCheck to verify the workflow endpoint of a deployment processes queue messages end-to-end.
+prerequisites:
+  - /docs/api-reference/workflow-runtime/get-world
+---
+
+Performs an end-to-end health check of a deployment's workflow infrastructure by sending a message through the queue pipeline and verifying it is processed by the workflow endpoint. Because it goes through the queue rather than direct HTTP, it works even when the deployment is behind Deployment Protection on Vercel.
+
+```typescript lineNumbers
+import { getWorld, healthCheck } from "workflow/runtime";
+
+const world = await getWorld();
+const result = await healthCheck(world, "workflow"); // [!code highlight]
+
+if (!result.healthy) {
+  console.error("Workflow infrastructure unhealthy:", result.error);
+}
+```
+
+## API Signature
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world` | `World` | The World instance to send the health check through |
+| `endpoint` | `"workflow" \| "step"` | Which endpoint to check |
+| `options` | `HealthCheckOptions & { namespace?: string }` | Optional configuration |
+
+Where `HealthCheckOptions` is:
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `timeout` | `number` | Milliseconds to wait for the health check response. Default: `30000`. |
+| `deploymentId` | `string` | Deployment to target. Falls back to `process.env.VERCEL_DEPLOYMENT_ID`. |
+
+### Returns
+
+Returns a `Promise<HealthCheckResult>`:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `healthy` | `boolean` | Whether the endpoint processed the health check message |
+| `error` | `string \| undefined` | Error message when the check failed |
+| `latencyMs` | `number \| undefined` | Round-trip latency when the check succeeded |
+| `specVersion` | `number \| undefined` | Workflow spec version of the responding deployment |
+| `workflowCoreVersion` | `string \| undefined` | `@workflow/core` version of the responding deployment |

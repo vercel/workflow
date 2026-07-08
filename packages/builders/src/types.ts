@@ -28,10 +28,17 @@ interface BaseWorkflowConfig {
   dirs: string[];
   workingDir: string;
   /**
-   * Project root used for package and workspace module-specifier resolution
-   * during SWC transforms. Defaults to `workingDir`.
+   * Project root used for tracing, discovery, and tsconfig lookup during SWC
+   * transforms. Defaults to `workingDir`.
    */
   projectRoot?: string;
+
+  /**
+   * Project root used for package and workspace module-specifier resolution
+   * during SWC transforms. Defaults to `projectRoot` when set, otherwise
+   * `workingDir`.
+   */
+  moduleSpecifierRoot?: string;
 
   // Optionally generate a client library for workflow execution. The preferred
   // method of using workflow is to use a loader within a framework (like
@@ -52,6 +59,9 @@ interface BaseWorkflowConfig {
   // Optional framework output directory, used by builders that mirror framework
   // artifact locations.
   distDir?: string;
+
+  // Optional route prefix for apps deployed below the origin root.
+  basePath?: string;
 
   // Suppress informational logs emitted by createWorkflowsBundle()
   // (e.g. intermediate/final workflow bundle timing logs).

@@ -1,6 +1,5 @@
 {
   "pages": [
-    "introduction",
     "---",
     "getting-started",
     "foundations",
@@ -11,6 +10,7 @@
     "deploying",
     "errors",
     "migration-guides",
+    "configuration",
     "api-reference"
   ]
 }

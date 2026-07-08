@@ -1,5 +1,55 @@
 # @workflow/web
 
+## 5.0.0-beta.27
+
+### Patch Changes
+
+- [#2680](https://github.com/vercel/workflow/pull/2680) [`89f4726`](https://github.com/vercel/workflow/commit/89f4726b7308b02e8898c1e564b2c94272df6f4f) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Decompress gzip- and zstd-prefixed serialized data returned from Vercel Workflow storage, and route OSS web hydration through the async WASM-capable path for compressed payloads.
+
+## 5.0.0-beta.26
+
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- [`8393716`](https://github.com/vercel/workflow/commit/8393716687c77ec46c724cd48335aa7ea9176c8b) - Fix the run trace detail panel flickering its Input/Output sections when navigating between spans. Span detail is now driven by a single selection-derived state machine (`useSelectedSpanDetail`) whose loading state stays in phase with the selected span, replacing the fetch flag that lagged selection by a few renders.
+
+- [#2632](https://github.com/vercel/workflow/pull/2632) [`7c1e2a2`](https://github.com/vercel/workflow/commit/7c1e2a2c7e837ef76bafc771811c8f320d8c4053) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix run and event observability pages hanging (~16s) and showing no data in the bundled server build, caused by HTTP/2 requests failing to reach `node:http2`.
+
+## 5.0.0-beta.24
+
+## 5.0.0-beta.23
+
+## 5.0.0-beta.22
+
+### Patch Changes
+
+- [#2582](https://github.com/vercel/workflow/pull/2582) [`6855282`](https://github.com/vercel/workflow/commit/685528259ddf93c17f544c2bed841088d0973dcb) Thanks [@mitul-s](https://github.com/mitul-s)! - Add helper text that indicates keyboard shortcuts
+
+## 5.0.0-beta.21
+
+## 5.0.0-beta.20
+
+## 5.0.0-beta.19
+
+## 5.0.0-beta.18
+
+## 5.0.0-beta.17
+
+## 5.0.0-beta.16
+
+## 5.0.0-beta.15
+
+## 5.0.0-beta.14
+
+## 5.0.0-beta.13
+
+### Patch Changes
+
+- [#2301](https://github.com/vercel/workflow/pull/2301) [`bb6ff9a`](https://github.com/vercel/workflow/commit/bb6ff9ac99b17f1720d929d1fd2c03d5b6029ea7) Thanks [@pranaygp](https://github.com/pranaygp)! - Update vulnerable package dependencies to patched releases.
+
+## 5.0.0-beta.12
+
 ## 5.0.0-beta.11
 
 ### Patch Changes

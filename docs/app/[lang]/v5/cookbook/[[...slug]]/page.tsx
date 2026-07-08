@@ -1,5 +1,6 @@
 import { MobileDocsBar } from '@vercel/geistdocs/mobile-docs-bar';
 import { createDocsPage } from '@vercel/geistdocs/pages/docs';
+import { Card, type CardProps } from 'fumadocs-ui/components/card';
 import type { ComponentProps, ComponentType } from 'react';
 import { getMDXComponents } from '@/components/geistdocs/mdx-components';
 import { config } from '@/lib/geistdocs/config';
@@ -8,24 +9,42 @@ import { v5CookbookSource } from '@/lib/geistdocs/source';
 
 const VERSION_PREFIX = '/v5';
 
+// Content links are authored against the raw `/docs/...` URL space; rewrite
+// them into the v5 view so navigation doesn't escape to the v4 route. Card
+// renders its own Link (not the `a` component), so it needs the same rewrite
+// applied separately.
+function v5Href<T>(href: T): T {
+  if (typeof href !== 'string') {
+    return href;
+  }
+
+  let rewritten = rewriteCookbookUrlForVersion(href, VERSION_PREFIX);
+  if (rewritten.startsWith('/docs')) {
+    rewritten = `${VERSION_PREFIX}${rewritten}`;
+  }
+
+  return rewritten as T;
+}
+
+function V5CookbookCard(props: CardProps) {
+  return <Card {...props} href={v5Href(props.href)} />;
+}
+
 const docsPage = createDocsPage({
-  config,
+  config: {
+    ...config,
+    github: config.github && {
+      ...config.github,
+      editPath: 'docs/content/docs/v5/{path}',
+    },
+  },
   source: v5CookbookSource,
-  mdx: ({ link }) => getMDXComponents({ a: link }),
+  mdx: ({ link }) => getMDXComponents({ a: link, Card: V5CookbookCard }),
   resolveLink: ({ link }) => {
     const Link = link as ComponentType<ComponentProps<'a'>>;
-    const V5CookbookLink = (props: ComponentProps<'a'>) => {
-      let href = props.href;
-
-      if (typeof href === 'string') {
-        href = rewriteCookbookUrlForVersion(href, VERSION_PREFIX);
-        if (href.startsWith('/docs')) {
-          href = `${VERSION_PREFIX}${href}`;
-        }
-      }
-
-      return <Link {...props} href={href} />;
-    };
+    const V5CookbookLink = (props: ComponentProps<'a'>) => (
+      <Link {...props} href={v5Href(props.href)} />
+    );
 
     return V5CookbookLink;
   },

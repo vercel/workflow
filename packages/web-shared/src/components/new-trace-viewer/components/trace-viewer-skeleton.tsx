@@ -1,6 +1,9 @@
 import { Skeleton } from '../../ui/skeleton';
+import { DEFAULT_START_PX, paneColTemplate } from './pane-constants';
 
-const COL_TEMPLATE = '340px 1px minmax(50px, 1fr)';
+// Mirrors SplitPane's initial column template so the skeleton lines up with
+// the real viewer's first paint.
+const COL_TEMPLATE = paneColTemplate(DEFAULT_START_PX);
 
 const ROWS: { id: string; name: number; off: number; bar: number }[] = [
   { id: 'r0', name: 62, off: 0, bar: 72 },

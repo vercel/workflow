@@ -2,8 +2,10 @@ import {
   createVersionedSources,
   type GeistdocsSourceBundle,
 } from '@vercel/geistdocs/source';
+import type { Node, Root } from 'fumadocs-core/page-tree';
 import { v4docs, v5docs } from '@/.source/server';
 import { config } from './config';
+import { resolveSectionChildren } from './section-children';
 
 type Source = GeistdocsSourceBundle['source'];
 type Page = NonNullable<ReturnType<Source['getPage']>>;
@@ -51,6 +53,63 @@ const isCookbookPage = (page: Pick<Page, 'url'>) =>
 
 const withUrl = (page: Page, url: string): Page => ({ ...page, url });
 
+// Matches the `<AutoCards />` placeholder (self-closing or paired) so the
+// markdown export can substitute the rendered card list. The component itself
+// only renders in the React tree, so without this the agent-facing markdown
+// (llms.txt, .md routes, copy-page) would lose every child link.
+const AUTO_CARDS_RE = /<AutoCards\b[^>]*?(?:\/>|>[\s\S]*?<\/AutoCards>)/g;
+
+const asText = (value: unknown): string =>
+  typeof value === 'string' ? value : '';
+
+const isCookbookFolder = (node: Node): boolean =>
+  node.type === 'folder' &&
+  (node.index?.url?.startsWith(COOKBOOK_DOCS_PREFIX) ?? false);
+
+/**
+ * Page tree for a version's markdown export: the version's own source tree
+ * (raw `/docs/...` URL space, matching the pre-transform markdown) with
+ * cookbook nodes stripped. Resolved lazily so the transform closures can
+ * reference `versionedSources` after it is initialized.
+ */
+const getMarkdownTree = (versionId: 'v4' | 'v5'): Root => {
+  const lang = config.defaultLanguage ?? 'en';
+  const fullTree = versionedSources.byId[versionId].source.pageTree[lang];
+
+  return {
+    ...fullTree,
+    children: fullTree.children.filter((node) => !isCookbookFolder(node)),
+  };
+};
+
+/**
+ * Render the `<Cards>`/`<Card>` JSX a section landing page would have
+ * contained by hand, derived from the page tree. Matching the existing
+ * serialized format keeps the markdown export consistent across converted and
+ * unconverted pages. Runs before the version URL rewrite so the inserted
+ * `href`s get mapped into the version's public URL space with everything else.
+ */
+const expandAutoCards = (
+  markdown: string,
+  versionId: 'v4' | 'v5',
+  sectionUrl: string
+): string =>
+  // `.replace` is a no-op when there's no placeholder, and the replacer only
+  // walks the tree on an actual match.
+  markdown.replace(AUTO_CARDS_RE, () => {
+    const cards = resolveSectionChildren(getMarkdownTree(versionId), sectionUrl)
+      .map((child) => {
+        const title = asText(child.title);
+        const description = asText(child.description);
+        const open = `<Card href="${child.url}" title="${title}">`;
+
+        return description ? `${open}${description}</Card>` : `${open}</Card>`;
+      })
+      .join('\n');
+
+    return `<Cards>\n${cards}\n</Cards>`;
+  });
+
 const versionedSources = createVersionedSources({
   config,
   current: 'v4',
@@ -61,7 +120,11 @@ const versionedSources = createVersionedSources({
       docs: v4docs,
       baseUrl: '/docs',
       markdown: {
-        transform: (markdown) => rewriteDocsUrlsForVersion(markdown, ''),
+        transform: (markdown, { page }) =>
+          rewriteDocsUrlsForVersion(
+            expandAutoCards(markdown, 'v4', page.url),
+            ''
+          ),
       },
     },
     {
@@ -71,7 +134,11 @@ const versionedSources = createVersionedSources({
       baseUrl: '/docs',
       routePrefix: '/v5',
       markdown: {
-        transform: (markdown) => rewriteDocsUrlsForVersion(markdown, '/v5'),
+        transform: (markdown, { page }) =>
+          rewriteDocsUrlsForVersion(
+            expandAutoCards(markdown, 'v5', page.url),
+            '/v5'
+          ),
       },
     },
   ],

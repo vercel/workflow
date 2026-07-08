@@ -513,8 +513,10 @@ jobs:
       world-id: ${{ matrix.world.id }}
       world-name: ${{ matrix.world.name }}
       world-package: ${{ matrix.world.package }}
+      package-version: ${{ matrix.world.version }}
       service-type: ${{ matrix.world.service-type }}
       env-vars: ${{ matrix.world.env-vars }}
+      services: ${{ matrix.world.services }}
       # Run full suite only when manually triggered with full_suite=true
       full-suite: ${{ (github.event_name == 'workflow_dispatch' && inputs.full_suite) || contains(github.event.pull_request.labels.*.name, 'stress-test') }}
     secrets: inherit

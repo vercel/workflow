@@ -82,6 +82,14 @@ function groupByCorrelationId(
   return groups;
 }
 
+function getEventTimestamp(event: Event | undefined): Date | undefined {
+  const value = event?.occurredAt ?? event?.createdAt;
+  if (!value) return undefined;
+
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
 // ---------------------------------------------------------------------------
 // materializeSteps
 // ---------------------------------------------------------------------------
@@ -104,31 +112,31 @@ export function materializeSteps(events: Event[]): MaterializedStep[] {
     let attempt = 0;
     let startedAt: Date | undefined;
     let completedAt: Date | undefined;
-    let updatedAt = created.createdAt;
+    let updatedAt = getEventTimestamp(created) ?? created.createdAt;
 
     for (const e of stepEvents) {
       switch (e.eventType) {
         case 'step_started':
           status = 'running';
           attempt += 1;
-          if (!startedAt) startedAt = e.createdAt;
+          if (!startedAt) startedAt = getEventTimestamp(e) ?? e.createdAt;
           completedAt = undefined;
-          updatedAt = e.createdAt;
+          updatedAt = getEventTimestamp(e) ?? e.createdAt;
           break;
         case 'step_completed':
           status = 'completed';
-          completedAt = e.createdAt;
-          updatedAt = e.createdAt;
+          completedAt = getEventTimestamp(e) ?? e.createdAt;
+          updatedAt = getEventTimestamp(e) ?? e.createdAt;
           break;
         case 'step_failed':
           status = 'failed';
-          completedAt = e.createdAt;
-          updatedAt = e.createdAt;
+          completedAt = getEventTimestamp(e) ?? e.createdAt;
+          updatedAt = getEventTimestamp(e) ?? e.createdAt;
           break;
         case 'step_retrying':
           status = 'pending';
           completedAt = undefined;
-          updatedAt = e.createdAt;
+          updatedAt = getEventTimestamp(e) ?? e.createdAt;
           break;
       }
     }
@@ -142,7 +150,7 @@ export function materializeSteps(events: Event[]): MaterializedStep[] {
           : correlationId,
       status,
       attempt,
-      createdAt: created.createdAt,
+      createdAt: getEventTimestamp(created) ?? created.createdAt,
       startedAt,
       completedAt,
       updatedAt,
@@ -181,10 +189,10 @@ export function materializeHooks(events: Event[]): MaterializedHook[] {
         created.eventType === 'hook_created'
           ? created.eventData?.token
           : undefined,
-      createdAt: created.createdAt,
+      createdAt: getEventTimestamp(created) ?? created.createdAt,
       receivedCount: receivedEvents.length,
-      lastReceivedAt: lastReceived?.createdAt,
-      disposedAt: disposed?.createdAt,
+      lastReceivedAt: getEventTimestamp(lastReceived),
+      disposedAt: getEventTimestamp(disposed),
       events: hookEvents,
     });
   }
@@ -213,12 +221,12 @@ export function materializeWaits(events: Event[]): MaterializedWait[] {
       waitId: correlationId,
       runId: created.runId,
       status: completed ? 'completed' : 'waiting',
-      createdAt: created.createdAt,
+      createdAt: getEventTimestamp(created) ?? created.createdAt,
       resumeAt:
         created.eventType === 'wait_created'
           ? created.eventData?.resumeAt
           : undefined,
-      completedAt: completed?.createdAt,
+      completedAt: getEventTimestamp(completed),
       events: waitEvents,
     });
   }

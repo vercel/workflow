@@ -1,0 +1,38 @@
+---
+title: Native Nitro v3 bundling for workflows
+description: Workflow routes are now bundled by Nitro v3, so steps run in your app's runtime and can call any server-side Nitro API.
+type: overview
+---
+
+# Native Nitro v3 bundling for workflows
+
+<span className="text-sm text-fd-muted-foreground">May 22, 2026</span>
+
+Workflow routes are now handled as Nitro v3 handlers and bundled by Nitro, rather than built separately for the Vercel Build Output API. Your workflows are part of the same bundle as the rest of your app.
+
+## What's new
+
+- **Call any server-side Nitro API from a step.** Workflow steps now run inside the same bundled runtime as the rest of your Nitro app, so you can call `useStorage()`, `useDatabase()`, `useRuntimeConfig()`, virtual imports, and any other server-side Nitro API directly from a `"use step"` function.
+- **Workflows are part of your Nitro bundle.** Workflow routes are bundled by Nitro alongside your application code, instead of being built into a separate output. There's nothing extra to configure.
+- **Minimal runtime output.** During bundling, Nitro automatically traces native dependencies and tree-shakes unused code to produce a minimal runtime output.
+- **Nitro v2 is unchanged.** This applies to Nitro v3. Apps on Nitro v2 keep their existing behavior.
+
+## Using Nitro APIs from a step
+
+Because steps run inside your Nitro runtime, server-side utilities work directly inside a `"use step"` function:
+
+```typescript
+export async function cacheResult(key: string, value: string) {
+  "use step";
+
+  const storage = useStorage("cache");
+  await storage.setItem(key, value);
+
+  return { cached: true };
+}
+```
+
+## Learn more
+
+- [Nitro](/docs/getting-started/nitro) — Set up Workflow SDK in a Nitro v3 app
+- [Deploying](/docs/deploying) — How workflow bundles are deployed

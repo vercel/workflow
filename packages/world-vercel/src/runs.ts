@@ -14,6 +14,7 @@ import {
   type WorkflowRunWithoutData,
 } from '@workflow/world';
 import { z } from 'zod';
+import { normalizeWorkflowRunData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
@@ -68,21 +69,29 @@ function filterRunData(
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData;
 
-// Implementation
+// Implementation. This is a read/display entry point (getRun/listRuns),
+// so it decompresses gzip/zstd payload wrappers via
+// `normalizeWorkflowRunData`. The runtime write path (events.create)
+// re-hydrates run errors through `hydrateRunError`, which decompresses
+// on its own, so it deliberately does not route through here.
 function filterRunData(
   run: any,
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData {
   if (resolveData === 'none') {
     const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = run;
-    const deserialized = deserializeError<WorkflowRun>(rest);
+    const deserialized = normalizeWorkflowRunData(
+      deserializeError<WorkflowRun>(rest) as unknown as Record<string, unknown>
+    );
     return {
       ...deserialized,
       input: undefined,
       output: undefined,
     } as WorkflowRunWithoutData;
   }
-  return deserializeError<WorkflowRun>(run);
+  return normalizeWorkflowRunData(
+    deserializeError<WorkflowRun>(run) as unknown as Record<string, unknown>
+  ) as unknown as WorkflowRun;
 }
 
 // Functions

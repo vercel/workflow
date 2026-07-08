@@ -1,7 +1,7 @@
 {
   "name": "@workflow/web-shared",
   "description": "Shared components for Workflow Observability UI",
-  "version": "5.0.0-beta.11",
+  "version": "5.0.0-beta.27",
   "private": false,
   "files": [
     "dist",
@@ -38,7 +38,7 @@
     "directory": "packages/web-shared"
   },
   "scripts": {
-    "build": "tsc && cp -r src/components/trace-viewer/*.css dist/components/trace-viewer/ && cp src/styles.css dist/styles.css",
+    "build": "tsc && cp -r src/components/trace-viewer/*.css dist/components/trace-viewer/ && cp src/components/new-trace-viewer/components/*.module.css dist/components/new-trace-viewer/components/ && cp src/styles.css dist/styles.css",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -r dist ||:",
     "test": "vitest run",
@@ -47,8 +47,10 @@
     "format": "biome format --write"
   },
   "dependencies": {
+    "@radix-ui/react-slot": "1.1.1",
     "@radix-ui/react-tooltip": "1.2.8",
     "@tailwindcss/postcss": "4",
+    "@tootallnate/zstd-wasm": "0.0.2",
     "@workflow/core": "workspace:*",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
@@ -58,7 +60,7 @@
     "lucide-react": "0.575.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "react-inspector": "9.0.0",
+    "react-use-measure": "2.1.1",
     "react-virtuoso": "4.18.1",
     "shiki": "4.0.0",
     "sonner": "2.0.7",

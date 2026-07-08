@@ -7,7 +7,13 @@ import { rewriteCookbookUrl } from '@/lib/geistdocs/cookbook-source';
 import { cookbookSource } from '@/lib/geistdocs/source';
 
 const docsPage = createDocsPage({
-  config,
+  config: {
+    ...config,
+    github: config.github && {
+      ...config.github,
+      editPath: 'docs/content/docs/v4/{path}',
+    },
+  },
   source: cookbookSource,
   mdx: ({ link }) => getMDXComponents({ a: link }),
   resolveLink: ({ link }) => {
