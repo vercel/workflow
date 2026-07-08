@@ -31,13 +31,8 @@ import { version } from './version.js';
  * Inline workflow-server URL override. Must remain an empty string on
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
- *
- * BRANCH-ONLY (revert to '' before merge, lint enforces): pointed at an
- * all-regions backend preview so this PR's e2e validates region routing
- * and execution across every provisioned region.
  */
-export const WORKFLOW_SERVER_URL_OVERRIDE =
-  'https://workflow-server-git-feat-multi-region-serving-all-regions.vercel.sh';
+export const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
