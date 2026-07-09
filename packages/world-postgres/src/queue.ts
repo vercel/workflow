@@ -129,9 +129,10 @@ function parseTransportValue(body: Uint8Array): unknown {
 /**
  * The Postgres queue stores workflow and step jobs in Graphile Worker. The
  * runner starts as soon as its database is ready. Each delivery uses a
- * registered in-process handler when one exists, or the explicit
- * WORKFLOW_LOCAL_BASE_URL fallback. When no executor is available, the job is
- * durably replaced with a short-delay job before the current job is acked.
+ * registered in-process handler when one exists, then falls back to a healthy
+ * local HTTP endpoint for compatibility. When no executor is available, the
+ * job is durably replaced with a short-delay job before the current job is
+ * acked.
  */
 export type PostgresQueue = Queue & {
   start(): Promise<void>;
@@ -654,7 +655,6 @@ export function createQueue(
   };
 
   return {
-    queueDeliveryMode: 'in-process',
     createQueueHandler,
     getDeploymentId: async () => 'postgres',
     queue,

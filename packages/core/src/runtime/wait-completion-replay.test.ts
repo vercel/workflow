@@ -329,7 +329,6 @@ async function runStaleWaitReplayScenario(options: {
   const queue = vi.fn().mockResolvedValue({ messageId: 'msg_step' });
   const fakeWorld = {
     specVersion: SPEC_VERSION_CURRENT,
-    queueDeliveryMode: 'http',
     createQueueHandler: vi.fn((_prefix, handler) => {
       capturedHandler = handler;
       return vi.fn();

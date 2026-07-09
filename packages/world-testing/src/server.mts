@@ -9,13 +9,13 @@ import {
 import { getWorldImport } from '@workflow/utils';
 import {
   getQueuePrefixKind,
+  HealthCheckPayloadSchema,
   WorkflowInvokePayloadSchema,
 } from '@workflow/world';
 import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { getWorld, setWorld } from 'workflow/runtime';
 import * as z from 'zod';
-import { POST as flowPOST } from '../.well-known/workflow/v1/flow.mjs';
 import manifest from '../.well-known/workflow/v1/manifest.json' with {
   type: 'json',
 };
@@ -47,37 +47,26 @@ async function initializeTestWorld() {
     normalizeTargetWorldSpecifier(targetWorld)
   )) as WorldFactoryModule;
   const world = await createWorldFromModule(mod);
-  switch (world.queueDeliveryMode) {
-    case 'http':
-      break;
-    case 'in-process': {
-      const createQueueHandler = world.createQueueHandler.bind(world);
-      world.createQueueHandler = (prefix, handler) =>
-        createQueueHandler(prefix, async (message, metadata) => {
-          if (getQueuePrefixKind(prefix) === 'workflow') {
-            const payload = WorkflowInvokePayloadSchema.safeParse(message);
-            if (payload.success) {
-              flowInvocationCounts.set(
-                payload.data.runId,
-                (flowInvocationCounts.get(payload.data.runId) ?? 0) + 1
-              );
-            }
-          }
-          return handler(message, metadata);
-        });
-      break;
-    }
-    default:
-      assertNever(world.queueDeliveryMode);
-  }
+  const createQueueHandler = world.createQueueHandler.bind(world);
+  world.createQueueHandler = (prefix, handler) =>
+    createQueueHandler(prefix, async (message, metadata) => {
+      if (
+        getQueuePrefixKind(prefix) === 'workflow' &&
+        !HealthCheckPayloadSchema.safeParse(message).success
+      ) {
+        const { runId } = WorkflowInvokePayloadSchema.parse(message);
+        flowInvocationCounts.set(
+          runId,
+          (flowInvocationCounts.get(runId) ?? 0) + 1
+        );
+      }
+      return handler(message, metadata);
+    });
   setWorld(world);
 }
 
-function assertNever(value: never): never {
-  throw new Error(`Unknown queue delivery mode: ${String(value)}`);
-}
-
 await initializeTestWorld();
+const { POST: flowPOST } = await import('../.well-known/workflow/v1/flow.mjs');
 
 type Files = keyof typeof manifest.workflows;
 type Workflows<F extends Files> = keyof (typeof manifest.workflows)[F];
@@ -105,34 +94,7 @@ const Invoke = z
   });
 
 const app = new Hono()
-  .post('/.well-known/workflow/v1/flow', async (ctx) => {
-    // Clone the request to read the body for tracking without consuming it.
-    // We must increment the invocation counter *before* awaiting flowPOST,
-    // otherwise the workflow may complete (and the test may observe the
-    // completed status) before the counter is bumped, producing a flaky
-    // `expected 0 to be 1` failure when the test immediately queries
-    // /_flow-invocations after seeing the run as completed.
-    const cloned = ctx.req.raw.clone();
-    try {
-      const body = (await cloned.json()) as Record<string, unknown>;
-      const runId =
-        typeof body?.runId === 'string'
-          ? body.runId
-          : typeof (body.payload as Record<string, unknown> | undefined)
-                ?.runId === 'string'
-            ? ((body.payload as Record<string, unknown>).runId as string)
-            : undefined;
-      if (runId) {
-        flowInvocationCounts.set(
-          runId,
-          (flowInvocationCounts.get(runId) ?? 0) + 1
-        );
-      }
-    } catch {
-      // Health check or non-JSON messages — ignore
-    }
-    return flowPOST(ctx.req.raw);
-  })
+  .post('/.well-known/workflow/v1/flow', (ctx) => flowPOST(ctx.req.raw))
   .get('/_flow-invocations/:runId', (ctx) => {
     const count = flowInvocationCounts.get(ctx.req.param('runId')) ?? 0;
     return ctx.json({ count });

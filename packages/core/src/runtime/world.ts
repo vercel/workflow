@@ -8,16 +8,12 @@ const WorldCachePromise = Symbol.for('@workflow/world//cachePromise');
 const StubbedWorldCachePromise = Symbol.for(
   '@workflow/world//stubbedCachePromise'
 );
-const WorldAvailableListeners = Symbol.for(
-  '@workflow/world//availableListeners'
-);
 
 const globalSymbols: typeof globalThis & {
   [WorldCache]?: World;
   [StubbedWorldCache]?: World;
   [WorldCachePromise]?: Promise<World>;
   [StubbedWorldCachePromise]?: Promise<World>;
-  [WorldAvailableListeners]?: Set<(world: World) => void>;
 } = globalThis;
 
 export type WorldFactoryModule = {
@@ -90,66 +86,6 @@ export const createWorld = async (): Promise<World> => {
 
 export type WorldHandlers = Pick<World, 'createQueueHandler' | 'specVersion'>;
 
-function getCachedWorld(): World | undefined {
-  return globalSymbols[WorldCache] ?? globalSymbols[StubbedWorldCache];
-}
-
-function usesInProcessQueue(world: World): boolean {
-  switch (world.queueDeliveryMode) {
-    case 'http':
-      return false;
-    case 'in-process':
-      return true;
-    default:
-      return assertNever(world.queueDeliveryMode);
-  }
-}
-
-/**
- * Returns the current world when its queue executes messages by invoking
- * queue handlers registered in-process.
- * Such worlds need route entrypoints to register their handlers proactively
- * instead of waiting for a first HTTP request. Never creates a world.
- */
-export function getInProcessQueueWorld(): World | undefined {
-  const world = getCachedWorld();
-  return world && usesInProcessQueue(world) ? world : undefined;
-}
-
-function notifyWorldAvailable(world: World | undefined) {
-  const listeners = globalSymbols[WorldAvailableListeners];
-  if (!world || !listeners) return;
-  for (const listener of [...listeners]) {
-    listener(world);
-  }
-}
-
-/**
- * Invokes `listener` once as soon as a world with in-process queue handlers
- * is available: immediately when one is already cached, otherwise when one
- * is later created or injected (possibly from another bundle — the listener
- * set lives on globalThis, like the world caches). Never creates a world.
- */
-export function onceInProcessQueueWorld(listener: (world: World) => void) {
-  const world = getCachedWorld();
-  if (world) {
-    if (usesInProcessQueue(world)) listener(world);
-    return;
-  }
-  globalSymbols[WorldAvailableListeners] ??= new Set();
-  const listeners = globalSymbols[WorldAvailableListeners];
-  const onAvailable = (candidate: World) => {
-    if (!usesInProcessQueue(candidate)) return;
-    listeners.delete(onAvailable);
-    listener(candidate);
-  };
-  listeners.add(onAvailable);
-}
-
-function assertNever(value: never): never {
-  throw new Error(`Unknown queue delivery mode: ${String(value)}`);
-}
-
 /**
  * Some functions from the world are needed at build time, but we do NOT want
  * to cache the world in those instances for general use, since we don't have
@@ -175,7 +111,6 @@ export const getWorldHandlers = async (): Promise<WorldHandlers> => {
   const _world = await globalSymbols[StubbedWorldCachePromise];
   assertWorldSupportsRuntimeProtocol(_world);
   globalSymbols[StubbedWorldCache] = _world;
-  notifyWorldAvailable(_world);
   return {
     createQueueHandler: _world.createQueueHandler,
     specVersion: _world.specVersion,
@@ -197,7 +132,6 @@ export const getWorld = async (): Promise<World> => {
   }
   globalSymbols[WorldCache] = await globalSymbols[WorldCachePromise];
   assertWorldSupportsRuntimeProtocol(globalSymbols[WorldCache]);
-  notifyWorldAvailable(globalSymbols[WorldCache]);
   return globalSymbols[WorldCache];
 };
 
@@ -210,7 +144,6 @@ export const setWorld = (world: World | undefined): void => {
   globalSymbols[StubbedWorldCache] = world;
   globalSymbols[WorldCachePromise] = undefined;
   globalSymbols[StubbedWorldCachePromise] = undefined;
-  notifyWorldAvailable(world);
 };
 
 // Register getWorld on globalThis so getWorldLazy can call it directly when

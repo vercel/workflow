@@ -63,13 +63,7 @@ import {
   withHealthCheck,
 } from './helpers.js';
 import { safeWaitUntil } from './wait-until.js';
-import {
-  getInProcessQueueWorld,
-  getWorld,
-  getWorldHandlers,
-  onceInProcessQueueWorld,
-  type WorldHandlers,
-} from './world.js';
+import { getWorld, getWorldHandlers, type WorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
 
@@ -1176,23 +1170,10 @@ const stepHandler = createStepHandler();
  * appropriate step function. We may eventually want to create different bundles
  * for each step, this is temporary.
  */
-let stepHandlerPromise:
-  | Promise<(req: Request) => Promise<Response>>
-  | undefined;
-
-function registerStepHandler(world: WorldHandlers) {
-  stepHandlerPromise ??= Promise.resolve(stepHandler(world));
-}
-
-function getStepHandler() {
-  stepHandlerPromise ??= (async () =>
-    stepHandler(getInProcessQueueWorld() ?? (await getWorldHandlers())))();
-  return stepHandlerPromise;
-}
-
-onceInProcessQueueWorld(registerStepHandler);
+const stepHandlerPromise = getWorldHandlers().then(stepHandler);
+void stepHandlerPromise.catch(() => undefined);
 
 export const stepEntrypoint: (req: Request) => Promise<Response> =
   /* @__PURE__ */ withHealthCheck(async (req) => {
-    return (await getStepHandler())(req);
+    return (await stepHandlerPromise)(req);
   });

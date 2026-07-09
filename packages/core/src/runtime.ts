@@ -55,10 +55,8 @@ import { executeStep } from './runtime/step-executor.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import {
-  getInProcessQueueWorld,
   getWorld,
   getWorldHandlers,
-  onceInProcessQueueWorld,
   type WorldHandlers,
 } from './runtime/world.js';
 import { dehydrateRunError } from './serialization.js';
@@ -2071,7 +2069,9 @@ export function workflowEntrypoint(
       }
     );
 
-  let handlerPromise: Promise<(req: Request) => Promise<Response>> | undefined;
+  const handlerPromise = getWorldHandlers().then(handler);
+  void handlerPromise.catch(() => undefined);
+  let handlerRequested = false;
   let invocationCount = 0;
   const entrypointCreatedAt = Date.now();
   const routeModuleBodyInitMs =
@@ -2079,28 +2079,10 @@ export function workflowEntrypoint(
       ? entrypointCreatedAt - options.routeModuleBodyStartedAt
       : undefined;
 
-  const registerHandler = (world: WorldHandlers) => {
-    handlerPromise ??= Promise.resolve(handler(world));
-  };
-
-  const getHandler = () => {
-    handlerPromise ??= (async () => {
-      const world =
-        getInProcessQueueWorld() ??
-        (await trace('workflow.route.get_world_handlers', getWorldHandlers));
-      return handler(world);
-    })();
-    return handlerPromise;
-  };
-
-  // Worlds whose queue consumes in-process handlers need this entrypoint's
-  // handler registered before any HTTP request arrives. Fires immediately
-  // when such a world is already cached, or as soon as one is created.
-  onceInProcessQueueWorld(registerHandler);
-
   return withHealthCheck(async (req) => {
     invocationCount += 1;
-    const handlerCached = handlerPromise !== undefined;
+    const handlerCached = handlerRequested;
+    handlerRequested = true;
     const spanKind = await getSpanKind('SERVER');
 
     return trace(
@@ -2123,8 +2105,10 @@ export function workflowEntrypoint(
       },
       async (span) => {
         const routeHandler = handlerCached
-          ? await getHandler()
-          : await trace('workflow.route.init', getHandler);
+          ? await handlerPromise
+          : await trace('workflow.route.init', () =>
+              trace('workflow.route.get_world_handlers', () => handlerPromise)
+            );
 
         const response = await routeHandler(req);
         if (response instanceof Response) {

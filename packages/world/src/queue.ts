@@ -189,12 +189,6 @@ export interface Queue {
   getDeploymentId(): Promise<string>;
 
   /**
-   * How this queue delivers messages to handlers registered with
-   * `createQueueHandler`.
-   */
-  readonly queueDeliveryMode: 'http' | 'in-process';
-
-  /**
    * Enqueues a message to the specified queue.
    *
    * @param queueName - The name of the queue to which the message will be sent.
