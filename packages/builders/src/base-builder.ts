@@ -37,6 +37,7 @@ import {
   resolveModuleSpecifier,
   stripPackageVersion,
 } from './module-specifier.js';
+import { WORKFLOW_NODE_COMPAT_BANNER } from './node-compat-banner.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
@@ -382,16 +383,8 @@ export abstract class BaseBuilder {
    * The shims point at the bundle location, which is the function root at
    * runtime.
    */
-  private getEsmRequireBanner(format: string): string {
-    if (format !== 'esm') return '';
-    return (
-      'import { createRequire as __createRequire } from "node:module";\n' +
-      'import { fileURLToPath as __fileURLToPath } from "node:url";\n' +
-      'import { dirname as __pathDirname } from "node:path";\n' +
-      'var require = __createRequire(import.meta.url);\n' +
-      'var __filename = __fileURLToPath(import.meta.url);\n' +
-      'var __dirname = __pathDirname(__filename);\n'
-    );
+  private getEsmRequireBanner(format: 'cjs' | 'esm'): string {
+    return format === 'esm' ? `${WORKFLOW_NODE_COMPAT_BANNER}\n` : '';
   }
 
   /**
@@ -1188,7 +1181,7 @@ export const __steps_registered = true;
     const esbuildCtx = await esbuild.context({
       // Skip the metafile in watch mode: it would be regenerated on every
       // dev rebuild but is only read by production builds that trace
-      // runtime assets (VercelBuildOutputAPIBuilder.copyTracedRuntimeAssets).
+      // runtime assets.
       metafile: !this.config.watch,
       banner: {
         js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${importMetaBanner}${esmRequireBanner}`,

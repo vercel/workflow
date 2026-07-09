@@ -1,5 +1,6 @@
 // Test path alias resolution - imports a helper from outside the workbench directory
 /** biome-ignore-all lint/complexity/noStaticOnlyClass: <explanation> */
+import { readFileSync } from 'node:fs';
 import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
@@ -3676,4 +3677,27 @@ export async function parallelStepsThenWebhookWorkflow(iterations: number) {
     }
   }
   return tokens;
+}
+
+//////////////////////////////////////////////////////////
+
+function readRuntimeAssets() {
+  'use step';
+  const engine = readFileSync(
+    new URL(
+      './fixtures/runtime-assets/libquery_engine.dylib.node',
+      import.meta.url
+    ),
+    'utf8'
+  );
+  const schema = readFileSync(
+    new URL('./fixtures/runtime-assets/schema.prisma', import.meta.url),
+    'utf8'
+  );
+  return `${engine}|${schema}`;
+}
+
+export async function runtimeAssetsWorkflow() {
+  'use workflow';
+  return readRuntimeAssets();
 }

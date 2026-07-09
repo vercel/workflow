@@ -1,11 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdtempSync,
-  realpathSync,
-  rmSync,
-  symlinkSync,
-} from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -133,54 +127,14 @@ exports.getSchema = function getSchema() {
   );
 }
 
-/**
- * sharp-shaped fixture: a package whose native addon links shared
- * libraries shipped in a sibling package declared as an optional
- * dependency (like @img/sharp-linux-arm64 → @img/sharp-libvips-linux-arm64).
- */
-async function writeFakeNativeAddon(packageRoot: string): Promise<void> {
-  await write(
-    join(packageRoot, '@fake/native/package.json'),
-    JSON.stringify({
-      name: '@fake/native',
-      version: '1.0.0',
-      main: 'index.js',
-      optionalDependencies: { '@fake/native-libs': '1.0.0' },
-    })
-  );
-  await write(
-    join(packageRoot, '@fake/native/index.js'),
-    `const { readFileSync } = require('fs');
-const path = require('path');
-
-exports.getBinding = function getBinding() {
-  return readFileSync(path.join(__dirname, 'lib/binding.node'), 'utf8');
-};
-`
-  );
-  await write(
-    join(packageRoot, '@fake/native/lib/binding.node'),
-    'fake native binding\n'
-  );
-  await write(
-    join(packageRoot, '@fake/native-libs/package.json'),
-    JSON.stringify({ name: '@fake/native-libs', version: '1.0.0' })
-  );
-  await write(
-    join(packageRoot, '@fake/native-libs/lib/libfake.so.1'),
-    'fake shared library\n'
-  );
-}
-
 async function writeStepUsingFakePrisma(workingDir: string): Promise<void> {
   await write(
     join(workingDir, 'src/workflows/db.ts'),
-    `import { getQueryEngine } from 'fake-prisma-client';
-import { getBinding } from '@fake/native';
+    `import { getQueryEngine, getSchema } from 'fake-prisma-client';
 
 export async function readEngine(): Promise<string> {
   'use step';
-  return getQueryEngine() + getBinding();
+  return getQueryEngine() + getSchema();
 }
 
 export async function engineWorkflow(): Promise<string> {
@@ -203,12 +157,11 @@ describe('VercelBuildOutputAPIBuilder traced runtime assets', () => {
   });
 
   it(
-    'copies runtime assets loaded by bundled dependencies into flow.func (#1956)',
+    'executes a bundled step that reads Prisma-shaped runtime assets (#1956)',
     { timeout: BUILD_TIMEOUT },
     async () => {
       await writeWorkflowRuntimeStub(workingDir);
       await writeFakePrismaClient(join(workingDir, 'node_modules'));
-      await writeFakeNativeAddon(join(workingDir, 'node_modules'));
       await writeStepUsingFakePrisma(workingDir);
 
       await createBuilder(workingDir).build();
@@ -223,40 +176,17 @@ describe('VercelBuildOutputAPIBuilder traced runtime assets', () => {
       expect(
         await readFile(join(clientOutputDir, 'schema.prisma'), 'utf8')
       ).toBe(schemaContents);
+      expect(
+        JSON.parse(
+          await readFile(join(clientOutputDir, 'package.json'), 'utf8')
+        ).name
+      ).toBe('.fake-prisma/client');
       // The referencing module reads join(__dirname, engineFile), and its
       // __dirname is the function root once bundled — so the engine is
       // also copied there (pdfkit/tiktoken-style lookups).
       expect(
         await readFile(join(getFlowFuncDir(workingDir), engineFile), 'utf8')
       ).toBe(engineContents);
-      // Native addon packages ship wholesale: the owning package (incl.
-      // package.json for exports-mapped requires, like sharp's
-      // `@img/sharp-<platform>/sharp.node` → index.cjs) and its declared
-      // dependency packages (sharp's libvips shared libraries).
-      expect(
-        JSON.parse(
-          await readFile(
-            join(
-              getFlowFuncDir(workingDir),
-              'node_modules/@fake/native/package.json'
-            ),
-            'utf8'
-          )
-        ).name
-      ).toBe('@fake/native');
-      expect(
-        await readFile(
-          join(
-            getFlowFuncDir(workingDir),
-            'node_modules/@fake/native-libs/lib/libfake.so.1'
-          ),
-          'utf8'
-        )
-      ).toBe('fake shared library\n');
-
-      // The bundle must execute under plain Node (not vitest's module
-      // runner): inlined CJS referencing __dirname at module scope (like
-      // @prisma/client's runtime) relies on the ESM banner shims.
       const bundleUrl = pathToFileURL(
         join(getFlowFuncDir(workingDir), 'index.mjs')
       ).href;
@@ -265,16 +195,20 @@ describe('VercelBuildOutputAPIBuilder traced runtime assets', () => {
         [
           '--input-type=module',
           '-e',
-          `const bundle = await import(${JSON.stringify(bundleUrl)}); console.log(typeof bundle.POST);`,
+          `await import(${JSON.stringify(bundleUrl)});
+const steps = globalThis[Symbol.for('@workflow/core//registeredSteps')];
+const step = [...steps].find(([id]) => id.endsWith('//readEngine'))?.[1];
+if (!step) throw new Error('readEngine step was not registered');
+process.stdout.write(JSON.stringify(await step()));`,
         ],
         { encoding: 'utf8' }
       );
-      expect(output.trim()).toBe('function');
+      expect(JSON.parse(output)).toBe(engineContents + schemaContents);
     }
   );
 
   it(
-    'copies pnpm store assets at flattened and real paths, keeps app assets, never copies secrets',
+    'copies pnpm store assets at flattened and real paths and keeps app assets',
     { timeout: BUILD_TIMEOUT },
     async () => {
       await writeWorkflowRuntimeStub(workingDir);
@@ -287,7 +221,6 @@ describe('VercelBuildOutputAPIBuilder traced runtime assets', () => {
       );
       await writeFakePrismaClient(storePackageRoot);
       const appNodeModules = join(workingDir, 'node_modules');
-      await writeFakeNativeAddon(appNodeModules);
       // Absolute target: Windows junctions resolve relative targets against
       // process.cwd(), not the link directory.
       symlinkSync(
@@ -305,12 +238,6 @@ import { join } from 'path';
 
 export async function readTemplate(): Promise<string> {
   'use step';
-  try {
-    readFileSync(join(process.cwd(), '.env'), 'utf8');
-    // An app file whose cwd-relative path collides with a generated
-    // function file — it must never clobber the bundle.
-    readFileSync(join(process.cwd(), 'index.mjs'), 'utf8');
-  } catch {}
   return readFileSync(join(process.cwd(), 'data/template.txt'), 'utf8');
 }
 
@@ -321,11 +248,6 @@ export async function reportWorkflow(): Promise<string> {
 `
       );
       await write(join(workingDir, 'data/template.txt'), 'template asset\n');
-      await write(join(workingDir, '.env'), 'SECRET=do-not-copy\n');
-      await write(
-        join(workingDir, 'index.mjs'),
-        'app sentinel — not the bundle\n'
-      );
 
       await createBuilder(workingDir).build();
 
@@ -350,15 +272,185 @@ export async function reportWorkflow(): Promise<string> {
           'utf8'
         )
       ).toBe(engineContents);
-      // App files read at runtime keep their cwd-relative path; credential
-      // files stay out of the deployed function.
       expect(
         await readFile(join(flowFuncDir, 'data/template.txt'), 'utf8')
       ).toBe('template asset\n');
-      expect(existsSync(join(flowFuncDir, '.env'))).toBe(false);
-      // The app's root index.mjs must not clobber the generated bundle.
-      expect(await readFile(join(flowFuncDir, 'index.mjs'), 'utf8')).not.toBe(
-        'app sentinel — not the bundle\n'
+    }
+  );
+
+  it(
+    'executes a dynamically loaded native package',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeWorkflowRuntimeStub(workingDir);
+      await write(
+        join(workingDir, 'node_modules/native-loader/package.json'),
+        JSON.stringify({ name: 'native-loader', main: 'index.js' })
+      );
+      await write(
+        join(workingDir, 'node_modules/native-loader/index.js'),
+        `const { createRequire } = require('node:module');
+module.exports = createRequire(__filename)('@fake/native-' + process.platform);
+`
+      );
+      const nativePackage = join(
+        workingDir,
+        'node_modules/@fake',
+        `native-${process.platform}`
+      );
+      await write(
+        join(nativePackage, 'package.json'),
+        JSON.stringify({
+          name: `@fake/native-${process.platform}`,
+          exports: './index.js',
+        })
+      );
+      await write(
+        join(nativePackage, 'index.js'),
+        `const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
+exports.readBinding = () => readFileSync(join(__dirname, 'binding.node'), 'utf8');
+`
+      );
+      await write(join(nativePackage, 'binding.node'), 'native binding\n');
+      await write(
+        join(workingDir, 'src/workflows/native.ts'),
+        `import { readBinding } from 'native-loader';
+
+export async function readNativeBinding(): Promise<string> {
+  'use step';
+  return readBinding();
+}
+
+export async function nativeWorkflow(): Promise<string> {
+  'use workflow';
+  return readNativeBinding();
+}
+`
+      );
+
+      await createBuilder(workingDir).build();
+
+      const bundleUrl = pathToFileURL(
+        join(getFlowFuncDir(workingDir), 'index.mjs')
+      ).href;
+      const output = execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `await import(${JSON.stringify(bundleUrl)});
+const steps = globalThis[Symbol.for('@workflow/core//registeredSteps')];
+const step = [...steps].find(([id]) => id.endsWith('//readNativeBinding'))?.[1];
+if (!step) throw new Error('readNativeBinding step was not registered');
+process.stdout.write(JSON.stringify(await step()));`,
+        ],
+        { encoding: 'utf8' }
+      );
+      expect(JSON.parse(output)).toBe('native binding\n');
+    }
+  );
+
+  it(
+    'fails when workflow code reads a secret-like runtime asset',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeWorkflowRuntimeStub(workingDir);
+      await write(
+        join(workingDir, 'src/workflows/secret.ts'),
+        `import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+export async function readSecret(): Promise<string> {
+  'use step';
+  return readFileSync(join(process.cwd(), '.env'), 'utf8');
+}
+
+export async function secretWorkflow(): Promise<string> {
+  'use workflow';
+  return readSecret();
+}
+`
+      );
+      await write(join(workingDir, '.env'), 'SECRET=do-not-deploy\n');
+
+      await expect(createBuilder(workingDir).build()).rejects.toThrow(
+        'Refusing to deploy secret-like runtime asset'
+      );
+    }
+  );
+
+  it(
+    'fails when a runtime asset conflicts with generated function output',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeWorkflowRuntimeStub(workingDir);
+      await write(
+        join(workingDir, 'src/workflows/conflict.ts'),
+        `import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+export async function readGeneratedOutput(): Promise<string> {
+  'use step';
+  return readFileSync(join(process.cwd(), 'package.json'), 'utf8');
+}
+
+export async function conflictWorkflow(): Promise<string> {
+  'use workflow';
+  return readGeneratedOutput();
+}
+`
+      );
+      await write(join(workingDir, 'package.json'), '{"private":true}\n');
+
+      await expect(createBuilder(workingDir).build()).rejects.toThrow(
+        'Runtime asset conflicts with generated function output'
+      );
+    }
+  );
+
+  it(
+    'fails when different runtime assets map to the same function path',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeWorkflowRuntimeStub(workingDir);
+      for (const packageName of ['client-a', 'client-b']) {
+        const packageDir = join(workingDir, 'node_modules', packageName);
+        await write(
+          join(packageDir, 'package.json'),
+          JSON.stringify({ name: packageName, main: 'index.js' })
+        );
+        await write(
+          join(packageDir, 'index.js'),
+          `const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
+exports.read = () => readFileSync(join(__dirname, 'node_modules/shared/data.txt'), 'utf8');
+`
+        );
+        await write(
+          join(packageDir, 'node_modules/shared/data.txt'),
+          packageName
+        );
+      }
+      await write(
+        join(workingDir, 'src/workflows/collision.ts'),
+        `import { read as readA } from 'client-a';
+import { read as readB } from 'client-b';
+
+export async function readBoth(): Promise<string> {
+  'use step';
+  return readA() + readB();
+}
+
+export async function collisionWorkflow(): Promise<string> {
+  'use workflow';
+  return readBoth();
+}
+`
+      );
+
+      await expect(createBuilder(workingDir).build()).rejects.toThrow(
+        'Conflicting runtime assets'
       );
     }
   );
