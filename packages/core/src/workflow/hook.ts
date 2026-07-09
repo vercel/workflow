@@ -1,6 +1,12 @@
 import { HookConflictError, ReplayDivergenceError } from '@workflow/errors';
-import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
+import { WORKFLOW_DESERIALIZE } from '@workflow/serde';
+import {
+  type PromiseWithResolvers,
+  parseDurationToDate,
+  withResolvers,
+} from '@workflow/utils';
 import type { HookConflictEvent } from '@workflow/world';
+import { getSerializationClass, RUN_CLASS_ID } from '../class-serialization.js';
 import type { Hook, HookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
@@ -11,8 +17,6 @@ import {
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from '../private.js';
-import { WORKFLOW_DESERIALIZE } from '@workflow/serde';
-import { getSerializationClass, RUN_CLASS_ID } from '../class-serialization.js';
 import type { Run } from '../runtime/run.js';
 import { hydrateStepReturnValue } from '../serialization.js';
 
@@ -69,9 +73,22 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       );
     }
 
+    if (
+      options.isWebhook === true &&
+      options.experimental_retention !== undefined
+    ) {
+      throw new Error(
+        'Webhook hooks do not support `experimental_retention`. Use a non-webhook `createHook()` with `resumeHook()` for retained token claims.'
+      );
+    }
+
     // Generate hook ID and token
     const correlationId = `hook_${ctx.generateUlid()}`;
     const token = options.token ?? ctx.generateNanoid();
+    const tokenReusableAfter =
+      options.experimental_retention === undefined
+        ? undefined
+        : parseDurationToDate(options.experimental_retention);
 
     // Add hook creation to invocations queue (using Map for O(1) operations)
     const isWebhook = options.isWebhook ?? false;
@@ -80,6 +97,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       type: 'hook',
       correlationId,
       token,
+      tokenReusableAfter,
       metadata: options.metadata,
       isWebhook,
     });
@@ -162,6 +180,10 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         const queueItem = ctx.invocationsQueue.get(correlationId);
         if (queueItem && queueItem.type === 'hook') {
           queueItem.hasCreatedEvent = true;
+          // The event log is authoritative on replay. In particular, an old
+          // event with no retention field must not gain retention merely
+          // because newly deployed workflow code added the option.
+          queueItem.tokenReusableAfter = event.eventData.tokenReusableAfter;
         }
         hasCreated = true;
 

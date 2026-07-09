@@ -17,6 +17,8 @@ export interface HookInvocationQueueItem {
   type: 'hook';
   correlationId: string;
   token: string;
+  /** Earliest time a terminal run's token claim may be reused. */
+  tokenReusableAfter?: Date;
   metadata?: Serializable;
   hasCreatedEvent?: boolean;
   /** Whether the workflow is awaiting `hook.getConflict()` for this hook */

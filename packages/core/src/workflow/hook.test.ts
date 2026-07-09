@@ -1173,6 +1173,73 @@ describe('createCreateHook', () => {
     }
   });
 
+  it('evaluates hook token retention with the same duration parser as sleep', () => {
+    const ctx = setupWorkflowContext([]);
+    const createHook = createCreateHook(ctx);
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      createHook({ experimental_retention: 1_000 });
+
+      const queueItem = ctx.invocationsQueue.values().next().value;
+      expect(queueItem?.type).toBe('hook');
+      if (queueItem?.type === 'hook') {
+        expect(queueItem.tokenReusableAfter).toEqual(new Date(1_001_000));
+      }
+    } finally {
+      dateNow.mockRestore();
+    }
+  });
+
+  it.each([
+    {
+      name: 'uses the persisted deadline',
+      eventData: {
+        token: 'test-token',
+        tokenReusableAfter: new Date('2026-07-15T00:00:00.000Z'),
+      },
+      expected: new Date('2026-07-15T00:00:00.000Z'),
+    },
+    {
+      name: 'keeps an old event without retention unretained',
+      eventData: { token: 'test-token' },
+      expected: undefined,
+    },
+  ])('$name on replay', async ({ eventData, expected }) => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'hook_created',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData,
+        createdAt: new Date(),
+      },
+    ]);
+    const createHook = createCreateHook(ctx);
+    const hook = createHook({
+      token: 'test-token',
+      experimental_retention: '30d',
+    });
+
+    await expect(hook.getConflict()).resolves.toBeNull();
+
+    const queueItem = ctx.invocationsQueue.values().next().value;
+    expect(queueItem?.type).toBe('hook');
+    if (queueItem?.type === 'hook') {
+      expect(queueItem.tokenReusableAfter).toEqual(expected);
+    }
+  });
+
+  it('rejects token retention for a webhook hook', () => {
+    const ctx = setupWorkflowContext([]);
+    const createHook = createCreateHook(ctx);
+
+    expect(() =>
+      createHook({ isWebhook: true, experimental_retention: '30d' })
+    ).toThrow('Webhook hooks do not support `experimental_retention`.');
+    expect(ctx.invocationsQueue.size).toBe(0);
+  });
+
   it('should throw when an empty string token is provided', () => {
     const ctx = setupWorkflowContext([]);
     const createHook = createCreateHook(ctx);

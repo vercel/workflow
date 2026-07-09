@@ -1,6 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import { CreateEventSchema, EventSchema } from './events';
 
+describe('hook_created token retention', () => {
+  it('coerces tokenReusableAfter to a Date', () => {
+    const parsed = CreateEventSchema.parse({
+      eventType: 'hook_created',
+      correlationId: 'hook_1',
+      specVersion: 5,
+      eventData: {
+        token: 'order:123',
+        tokenReusableAfter: '2026-08-01T00:00:00.000Z',
+      },
+    });
+
+    expect(parsed.eventType).toBe('hook_created');
+    if (parsed.eventType === 'hook_created') {
+      expect(parsed.eventData.tokenReusableAfter).toEqual(
+        new Date('2026-08-01T00:00:00.000Z')
+      );
+    }
+  });
+});
+
 describe('run_cancelled cancelReason', () => {
   it('accepts a run_cancelled create request with no eventData', () => {
     const parsed = CreateEventSchema.parse({

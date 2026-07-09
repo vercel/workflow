@@ -177,6 +177,7 @@ interface SplitEventData {
     resumeAt?: Date;
     retryAfter?: Date;
     hookToken?: string;
+    hookTokenReusableAfter?: Date;
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
     errorCode?: string;
@@ -220,6 +221,7 @@ type MetaSourceField =
   | 'resumeAt'
   | 'retryAfter'
   | 'token'
+  | 'tokenReusableAfter'
   | 'isWebhook'
   | 'isSystem'
   | 'errorCode'
@@ -314,6 +316,9 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   // `hookToken` in the frame meta, so do the rename here.
   if (typeof eventData.token === 'string') {
     meta.hookToken = eventData.token;
+  }
+  if (eventData.tokenReusableAfter instanceof Date) {
+    meta.hookTokenReusableAfter = eventData.tokenReusableAfter;
   }
   if (typeof eventData.isWebhook === 'boolean') {
     meta.hookIsWebhook = eventData.isWebhook;

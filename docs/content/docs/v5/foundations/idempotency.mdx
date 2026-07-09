@@ -149,7 +149,9 @@ export async function POST(request: Request) {
 This avoids creating a new run only after the first run has registered its hook. Because `start()` returns before the run body executes and calls `createHook()`, two concurrent requests can both observe "no hook yet" and each call `start()`. The race is resolved inside the workflow body, where the losing run observes `getConflict()` resolving with the active owner and returns without doing duplicate-sensitive work — and the route detects it by comparing the resumed hook's `runId` against the run it just started, without waiting for either run to finish. A native API for atomically starting a run and registering a hook is in the works. Until then, model recovery inside the workflow by checking `hook.getConflict()`.
 </Callout>
 
-This is active-run coordination. When the workflow completes and disposes the hook, the token can be used again. If a duplicate request after completion must return the original result instead of starting fresh work, persist that completed result under the same domain key.
+By default, this is active-run coordination: when the workflow reaches a terminal state, the token can be used again. To reject late duplicates for a bounded window, set `experimental_retention` and leave the ownership Hook undisposed. The live Hook still disappears when the run ends; only its token claim remains. See [`createHook()` token retention](/docs/api-reference/workflow/create-hook#retaining-a-token-claim-after-completion) for the API, accepted deadline formats, and World support limitations.
+
+Retained claims reject duplicates but do not store or return the original workflow result by themselves. A duplicate receives the conflicting `Run` and can inspect its status or return value while that run remains available. If the result must outlive workflow-run retention, persist it under the same domain key in application storage.
 
 ### Conflict-handling strategies
 

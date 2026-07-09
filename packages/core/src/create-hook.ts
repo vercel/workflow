@@ -1,3 +1,4 @@
+import type { StringValue } from 'ms';
 import { throwNotInWorkflowContext } from './context-errors.js';
 import type { Run } from './runtime/run.js';
 import type { Serializable } from './schemas.js';
@@ -32,8 +33,8 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
 
   /**
    * Returns a promise that resolves with the conflicting {@link Run} if
-   * another active hook already owns this hook's token, or `null` once
-   * the hook has been registered and is ready to receive payloads.
+   * another hook or retained claim already owns this hook's token, or `null`
+   * once the hook has been registered and is ready to receive payloads.
    *
    * Calling `createHook()` alone does not register the hook — registration
    * only happens when the workflow suspends. Awaiting `getConflict()`
@@ -42,13 +43,14 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
    * waiting for payload data.
    *
    * When a conflict is detected, the resolved `Run` is the run that
-   * currently owns the token. The workflow can decide how to handle the
-   * duplicate in code: return or log `conflict.runId`, inspect
+   * owns the token. The owner may still be running or may have reached a
+   * terminal state while retaining its claim. The workflow can decide how to
+   * handle the duplicate in code: return or log `conflict.runId`, inspect
    * `await conflict.status`, await `conflict.returnValue`, or cancel the
    * owner with `await conflict.cancel()` and continue in the current run.
    *
    * Note that awaiting the hook's payload (`await hook`) when the token is
-   * already owned by another active hook still rejects with
+   * already owned by another hook or retained claim still rejects with
    * `HookConflictError`. In the rare case where the conflicting run cannot
    * be identified (a `hook_conflict` event persisted by an old world that
    * did not record the owning run's ID), `getConflict()` also rejects with
@@ -148,6 +150,33 @@ export interface HookOptions {
   token?: string;
 
   /**
+   * **Experimental.** Keeps this hook's token claimed after its workflow run
+   * reaches a terminal state, until the configured deadline has passed.
+   *
+   * Accepts the same values as `sleep()`: a duration string, a number of
+   * milliseconds, or an absolute `Date`. Relative durations are evaluated
+   * when `createHook()` runs and persisted as an absolute deadline.
+   *
+   * The live hook is not retained and cannot be resumed after the run ends.
+   * Only the token claim is retained, so another hook using the same token
+   * receives a conflict during the retention window. Calling `dispose()`
+   * (including through `using`) always releases the token immediately.
+   *
+   * World implementations may ignore this experimental option if they do not
+   * support retained hook-token claims.
+   *
+   * @example
+   *
+   * ```ts
+   * const hook = createHook({
+   *   token: `order:${orderId}`,
+   *   experimental_retention: '30d',
+   * });
+   * ```
+   */
+  experimental_retention?: StringValue | Date | number;
+
+  /**
    * Additional user-defined data to include with the hook payload.
    *
    * @example
@@ -179,7 +208,7 @@ export interface HookOptions {
 }
 
 export interface WebhookOptions
-  extends Omit<HookOptions, 'token' | 'isWebhook'> {
+  extends Omit<HookOptions, 'token' | 'isWebhook' | 'experimental_retention'> {
   /**
    * If set to a `Response` object, the webhook will automatically
    * respond with the specified response.
