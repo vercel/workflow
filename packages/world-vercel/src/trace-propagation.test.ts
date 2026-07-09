@@ -200,10 +200,16 @@ describe('streamer write trace propagation', () => {
     // the instrumented envelope, so workflow-server can correlate the write.
     expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
 
+    // The stream write shares the instrumented envelope but is named for the
+    // stream operation (not the bare `http PUT` verb) and carries stream
+    // attributes so write latency is sliceable by run/stream.
     const clientSpan = exporter
       .getFinishedSpans()
-      .find((s) => s.name === 'http PUT');
+      .find((s) => s.name === 'workflow.stream.write');
     expect(clientSpan).toBeDefined();
+    expect(clientSpan?.attributes['workflow.stream.operation']).toBe('write');
+    expect(clientSpan?.attributes['workflow.stream.name']).toBe('user');
+    expect(clientSpan?.attributes['workflow.run.id']).toBe('wrun_1');
     expect(clientSpan?.spanContext().traceId).toBe(traceId);
     expect(clientSpan?.parentSpanId).toBe(spanId);
     expect(traceparent).toBe(

@@ -9,6 +9,12 @@ import { z } from 'zod';
 import { getStreamDispatcher } from './http-client.js';
 import { getVercelDiagnostics, instrumentedFetch } from './http-core.js';
 import {
+  WorkflowRunId,
+  WorkflowStreamName,
+  WorkflowStreamOperation,
+  WorkflowStreamStartIndex,
+} from './telemetry.js';
+import {
   type APIConfig,
   getHttpConfig,
   type HttpConfig,
@@ -68,6 +74,28 @@ function getStreamReadUrl(name: string, runId: string, httpConfig: HttpConfig) {
   return new URL(
     `${httpConfig.baseUrl}/v3/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
   );
+}
+
+/**
+ * Stream-operation attributes layered onto the shared HTTP client span (see
+ * instrumentedFetch). These make stream writes/reads sliceable by run, stream
+ * name, and operation — beyond the generic `http PUT`/`http GET` verb — and
+ * are no-ops when no OTEL SDK is registered (the span is undefined).
+ */
+function streamSpanAttributes(args: {
+  runId: string;
+  name: string;
+  operation: 'write' | 'write_multi' | 'close' | 'read';
+  startIndex?: number;
+}): Record<string, string | number> {
+  return {
+    ...WorkflowRunId(args.runId),
+    ...WorkflowStreamName(args.name),
+    ...WorkflowStreamOperation(args.operation),
+    ...(typeof args.startIndex === 'number'
+      ? WorkflowStreamStartIndex(args.startIndex)
+      : {}),
+  };
 }
 
 function createStreamRequestError(
@@ -167,6 +195,12 @@ export function createStreamer(config?: APIConfig): Streamer {
           dispatcher: getStreamDispatcher(config),
           timeoutMs: null,
           logLabel: url.pathname,
+          spanName: 'workflow.stream.write',
+          attributes: streamSpanAttributes({
+            runId: resolvedRunId,
+            name,
+            operation: 'write',
+          }),
           buildError: async (res) =>
             createStreamRequestError('write', url, res, await res.text()),
         });
@@ -210,6 +244,12 @@ export function createStreamer(config?: APIConfig): Streamer {
             dispatcher: getStreamDispatcher(config),
             timeoutMs: null,
             logLabel: url.pathname,
+            spanName: 'workflow.stream.write',
+            attributes: streamSpanAttributes({
+              runId: resolvedRunId,
+              name,
+              operation: 'write_multi',
+            }),
             buildError: async (res) =>
               createStreamRequestError('write', url, res, await res.text()),
           });
@@ -232,6 +272,12 @@ export function createStreamer(config?: APIConfig): Streamer {
           dispatcher: getStreamDispatcher(config),
           timeoutMs: null,
           logLabel: url.pathname,
+          spanName: 'workflow.stream.write',
+          attributes: streamSpanAttributes({
+            runId: resolvedRunId,
+            name,
+            operation: 'close',
+          }),
           buildError: async (res) =>
             createStreamRequestError('close', url, res, await res.text()),
         });
@@ -254,6 +300,13 @@ export function createStreamer(config?: APIConfig): Streamer {
           dispatcher: undefined,
           timeoutMs: null,
           logLabel: url.pathname,
+          spanName: 'workflow.stream.read',
+          attributes: streamSpanAttributes({
+            runId,
+            name,
+            operation: 'read',
+            startIndex,
+          }),
           buildError: (res) =>
             new Error(`Failed to fetch stream: ${res.status}`),
         });

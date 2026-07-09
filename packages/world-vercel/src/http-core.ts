@@ -311,6 +311,17 @@ export interface InstrumentedFetchOptions {
   /** Short label for logs (endpoint path). Defaults to the full URL. */
   logLabel?: string;
   /**
+   * Override the client-span name. Defaults to `http ${method}`. Pass a
+   * semantic operation name (e.g. `workflow.stream.write`) so the operation is
+   * discoverable in traces beyond the generic HTTP verb.
+   */
+  spanName?: string;
+  /**
+   * Extra attributes merged onto the client span, in addition to the standard
+   * HTTP attributes (e.g. stream name / run id on stream operations).
+   */
+  attributes?: Record<string, string | number>;
+  /**
    * Build the error to throw on a non-2xx response. Receives the raw Response
    * so the caller can read its body in the right format and craft a path-
    * specific message (the message *strings* legitimately differ per API
@@ -348,16 +359,19 @@ export async function instrumentedFetch(
     cacheBust = true,
     logLabel,
     buildError,
+    spanName,
+    attributes,
   } = opts;
   const label = logLabel ?? url;
 
   return trace(
-    `http ${method}`,
+    spanName ?? `http ${method}`,
     { kind: await getSpanKind('CLIENT') },
     async (span) => {
       span?.setAttributes(
         httpClientSpanAttributes({ method, url, peerService })
       );
+      if (attributes) span?.setAttributes(attributes);
 
       // Explicitly propagate trace context so the receiving server can parent
       // its spans to this client span — the custom undici dispatcher bypasses
