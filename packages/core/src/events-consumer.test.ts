@@ -207,6 +207,41 @@ describe('EventsConsumer', () => {
       expect(consumer.callbacks).toHaveLength(0);
     });
 
+    it('should drain consecutively consumable events within a single tick', async () => {
+      // Optimization: when the consumers for a run of events are already
+      // registered (the common replay case), the consumer drains them all in
+      // one synchronous pass rather than paying one process.nextTick per
+      // event. A single tick is enough to fully advance the index here.
+      const events = [
+        createMockEvent({ id: 'event-1', sequence_number: 1 }),
+        createMockEvent({ id: 'event-2', sequence_number: 2 }),
+        createMockEvent({ id: 'event-3', sequence_number: 3 }),
+      ];
+      const consumer = new EventsConsumer(events, defaultOptions);
+      // A single long-lived consumer that consumes every real event (mirrors a
+      // step consumer walking step_created -> step_started -> step_completed)
+      // and returns NotConsumed once it reaches the end-of-events sentinel.
+      const callback = vi
+        .fn()
+        .mockImplementation((event: Event | null) =>
+          event === null
+            ? EventConsumerResult.NotConsumed
+            : EventConsumerResult.Consumed
+        );
+
+      consumer.subscribe(callback);
+      await waitForNextTick();
+
+      // Three real events consumed plus one call with the null sentinel, all
+      // within a single tick.
+      expect(callback).toHaveBeenCalledTimes(4);
+      expect(callback).toHaveBeenNthCalledWith(1, events[0]);
+      expect(callback).toHaveBeenNthCalledWith(2, events[1]);
+      expect(callback).toHaveBeenNthCalledWith(3, events[2]);
+      expect(callback).toHaveBeenNthCalledWith(4, null);
+      expect(consumer.eventIndex).toBe(3);
+    });
+
     it('should handle event index beyond events array length', async () => {
       const event = createMockEvent();
       const consumer = new EventsConsumer([event], defaultOptions);

@@ -6,7 +6,7 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import type { Event, World } from '@workflow/world';
+import { type Event, SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Mock version module to avoid missing generated file
@@ -47,6 +47,7 @@ function createMockWorld(
   const events = overrides.events ?? [];
 
   return {
+    specVersion: SPEC_VERSION_CURRENT,
     runs: {
       get: vi.fn().mockResolvedValue(run),
     },
@@ -145,6 +146,33 @@ describe('Run.exists', () => {
 
     const run = new Run('wrun_123');
     await expect(run.exists).rejects.toThrow('Internal server error');
+  });
+});
+
+describe('Run.getReadable', () => {
+  afterEach(() => {
+    setWorld(undefined as unknown as World);
+  });
+
+  it('does not fetch the run encryption key for an empty stream', async () => {
+    const world = createMockWorld();
+    world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(undefined);
+    world.streams = {
+      get: vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    new Run('wrun_123').getReadable();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(world.runs.get).not.toHaveBeenCalled();
+    expect(world.getEncryptionKeyForRun).not.toHaveBeenCalled();
   });
 });
 
@@ -295,6 +323,7 @@ describe('Run.returnValue when run.status === "failed"', () => {
 
   function makeFailedRunWorld(error: Uint8Array, errorCode?: string): World {
     return {
+      specVersion: SPEC_VERSION_CURRENT,
       runs: {
         get: vi.fn().mockResolvedValue({
           runId: 'wrun_failed',

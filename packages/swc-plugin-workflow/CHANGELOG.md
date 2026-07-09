@@ -1,5 +1,13 @@
 # @workflow/swc-plugin
 
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- [#2484](https://github.com/vercel/workflow/pull/2484) [`da37349`](https://github.com/vercel/workflow/commit/da373493d211c09056f745332b18f55ef801da2b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix detect mode discovery for object-property step handlers so eager builds register steps declared in callback objects.
+
+- [#2398](https://github.com/vercel/workflow/pull/2398) [`53ede30`](https://github.com/vercel/workflow/commit/53ede3079c19494c53e181917f26c2499a19e012) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix dead-code elimination stripping module-scope declarations referenced only by a destructuring-default initializer (e.g. `const { ttl = TTL } = options;`), which caused a runtime `ReferenceError` when the default fired.
+
 ## 5.0.0-beta.4
 
 ### Patch Changes

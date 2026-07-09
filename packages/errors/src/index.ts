@@ -392,7 +392,7 @@ export interface RuntimeDecryptionErrorContext {
  */
 export class RuntimeDecryptionError extends WorkflowRuntimeError {
   /** Optional structured context about the failed encrypt/decrypt call. */
-  readonly context?: RuntimeDecryptionErrorContext;
+  declare readonly context?: RuntimeDecryptionErrorContext;
 
   constructor(
     message: string,

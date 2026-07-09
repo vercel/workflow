@@ -7,6 +7,10 @@ summary: Cancel a running agent cooperatively with AbortController. A stop hook 
 
 Cancel a running agent from the outside — for example, a "Stop" button in a chat UI, an admin cancellation endpoint, or a timeout fallback.
 
+<Callout type="warn">
+This recipe uses the deprecated `DurableAgent` API. For new agents, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) and follow the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent). The cancellation patterns here (`run.cancel()`, stop-signal hook + `Promise.race`, `AbortController`) apply to either API.
+</Callout>
+
 ## Pattern
 
 Create an `AbortController` in the workflow and race the agent (passing its signal) against a stop hook. When the hook fires, `controller.abort()` is called — the signal propagates into the agent step and cancels the underlying model stream. Before returning, a `data-stopped` part is written to the stream so any streaming clients can render a clean end state.
@@ -153,4 +157,4 @@ export function StopButton({ runId }: { runId: string }) {
 * [`defineHook()`](/docs/api-reference/workflow/define-hook) — type-safe hook for the stop signal
 * [`getWorkflowMetadata()`](/docs/api-reference/workflow/get-workflow-metadata) — access the run ID for deterministic hook tokens
 * [`getWritable()`](/docs/api-reference/workflow/get-writable) — stream output and the stop notification to the client
-* [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) — the agent that respects the abort signal via its `signal` option
+* [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) — AI SDK's durable agent that respects the abort signal (replaces `DurableAgent`)

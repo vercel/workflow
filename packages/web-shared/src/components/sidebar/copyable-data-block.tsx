@@ -44,7 +44,7 @@ export function EncryptedDataBlock() {
   );
 }
 
-const serializeForClipboard = (value: unknown): string => {
+export const serializeForClipboard = (value: unknown): string => {
   if (typeof value === 'string') return value;
   if (
     typeof value === 'number' ||

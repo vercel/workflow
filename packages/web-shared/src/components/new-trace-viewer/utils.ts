@@ -1,5 +1,9 @@
+import {
+  formatDuration,
+  formatDurationPrecise,
+  getHighResInMs,
+} from '../trace-viewer/util/timing';
 import type { Span, SpanEvent } from './types';
-import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
 
 // ---------------------------------------------------------------------------
 // Root bounds
@@ -37,6 +41,64 @@ export function getSpanDurationMs(span: Span): number {
   );
 }
 
+export function isSpanErrored(span: Span): boolean {
+  const workflowStatus = (span.attributes.data as Record<string, unknown>)
+    ?.status as string | undefined;
+  return span.status.code === 2 || workflowStatus === 'failed';
+}
+
+// ---------------------------------------------------------------------------
+// Viewport
+// ---------------------------------------------------------------------------
+
+export interface ViewportRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * Clamp a candidate viewport to the root extent. The requested duration is
+ * preserved where possible (clamped to [minDurationMs, root duration]), then
+ * the window is shifted back inside the root bounds.
+ */
+export function clampViewportToRoot(
+  next: ViewportRange,
+  rootStart: number,
+  rootEnd: number,
+  minDurationMs: number
+): ViewportRange {
+  const rootDuration = Math.max(rootEnd - rootStart, minDurationMs);
+  const duration = Math.min(
+    rootDuration,
+    Math.max(minDurationMs, next.end - next.start)
+  );
+  const maxStart = rootEnd - duration;
+  const start = Math.min(Math.max(next.start, rootStart), maxStart);
+  return { start, end: start + duration };
+}
+
+// ---------------------------------------------------------------------------
+// Wheel gestures — shared between the timeline and the minimap
+// ---------------------------------------------------------------------------
+
+/** Convert a wheel delta to pixel units (line-mode deltas arrive in lines). */
+export function wheelDeltaToPixels(delta: number, deltaMode: number): number {
+  return deltaMode === 1 ? delta * 16 : delta;
+}
+
+/**
+ * Exponential zoom factor for a wheel gesture. Coarse mouse-wheel steps are
+ * damped harder than trackpad pinches so both feel similar.
+ */
+export function wheelZoomScaleFactor(event: {
+  deltaY: number;
+  deltaMode: number;
+}): number {
+  const dy = wheelDeltaToPixels(event.deltaY, event.deltaMode);
+  const isMouseWheel = event.deltaMode === 1 || Math.abs(event.deltaY) >= 50;
+  return 2 ** (dy / (isMouseWheel ? 200 : 60));
+}
+
 // ---------------------------------------------------------------------------
 // Time markers
 // ---------------------------------------------------------------------------
@@ -56,6 +118,8 @@ const NICE_INTERVALS = [
 
 const MAX_MARKERS = 8;
 
+const MS_IN_SECOND = 1000;
+
 function pickInterval(viewDuration: number, maxTicks: number): number {
   for (const interval of NICE_INTERVALS) {
     if (viewDuration / interval <= maxTicks) return interval;
@@ -72,6 +136,13 @@ export function computeTimeMarkers(
   const maxTicks = 6;
   const interval = pickInterval(viewDuration, maxTicks);
 
+  // Sub-second steps need fractional labels, or ticks past 1s collide as
+  // duplicate whole seconds ("…1s, 2s, 2s, 3s"). Scale decimals to the step.
+  const fractionDigits =
+    interval >= MS_IN_SECOND
+      ? 0
+      : Math.ceil(-Math.log10(interval / MS_IN_SECOND));
+
   const firstTick = Math.ceil(offset / interval) * interval;
   const markers: TimeMarker[] = [];
 
@@ -80,7 +151,10 @@ export function computeTimeMarkers(
     if (position < -0.01 || position > 1.01) continue;
     markers.push({
       position: Math.min(Math.max(position, 0), 1),
-      label: formatDuration(Math.abs(t), true),
+      label:
+        fractionDigits === 0
+          ? formatDuration(Math.abs(t), true)
+          : formatDurationPrecise(Math.abs(t), fractionDigits),
       value: t,
     });
     if (markers.length >= MAX_MARKERS) break;
@@ -184,7 +258,9 @@ export function getResourceColor(resource: string): {
 
 export type SegmentStatus =
   | 'queued'
+  | 'pending'
   | 'running'
+  | 'completed'
   | 'failed'
   | 'retrying'
   | 'succeeded'
@@ -242,7 +318,7 @@ function computeStepSegmentsFromSpan(
   ]);
 
   if (marks.length === 0) {
-    segments.push({ startFraction: 0, endFraction: 1, status: 'running' });
+    segments.push({ startFraction: 0, endFraction: 1, status: 'queued' });
     return segments;
   }
 
@@ -277,7 +353,7 @@ function computeStepSegmentsFromSpan(
             ? 'failed'
             : nextType === 'step_completed'
               ? 'succeeded'
-              : 'running';
+              : 'retrying';
         segments.push({
           startFraction: markFrac,
           endFraction: nextFrac,
@@ -312,44 +388,17 @@ function computeHookSegmentsFromSpan(
   const segments: Segment[] = [];
   if (duration <= 0) return segments;
 
-  const sorted = [...events]
-    .map((e) => ({ name: e.name, time: getHighResInMs(e.timestamp) }))
-    .sort((a, b) => a.time - b.time);
-
-  const received = sorted.find((e) => e.name === 'hook_received');
-  const disposed = sorted.find((e) => e.name === 'hook_disposed');
-
-  if (!received && !disposed) {
-    segments.push({ startFraction: 0, endFraction: 1, status: 'waiting' });
-    return segments;
-  }
-
-  const receivedFrac = received
-    ? timeToFraction(received.time, startMs, duration)
-    : null;
+  const disposed = sortedEventMarks(events, ['hook_disposed'])[0];
   const disposedFrac = disposed
     ? timeToFraction(disposed.time, startMs, duration)
     : null;
 
-  if (receivedFrac !== null && receivedFrac > 0.001) {
+  const waitingEnd = disposedFrac ?? 1;
+  if (waitingEnd > 0.001) {
     segments.push({
       startFraction: 0,
-      endFraction: receivedFrac,
+      endFraction: waitingEnd,
       status: 'waiting',
-    });
-  } else if (receivedFrac === null && disposedFrac !== null) {
-    segments.push({
-      startFraction: 0,
-      endFraction: disposedFrac,
-      status: 'waiting',
-    });
-  }
-
-  if (receivedFrac !== null) {
-    segments.push({
-      startFraction: receivedFrac,
-      endFraction: disposedFrac ?? 1,
-      status: 'received',
     });
   }
 
@@ -373,6 +422,13 @@ function computeSleepSegmentsFromSpan(
   return [{ startFraction: 0, endFraction: 1, status: 'sleeping' }];
 }
 
+function runSegmentStatus(runStatus: string | undefined): SegmentStatus {
+  if (runStatus === 'failed') return 'failed';
+  if (runStatus === 'pending') return 'pending';
+  if (runStatus === 'running') return 'running';
+  return 'completed';
+}
+
 function computeRunSegmentsFromSpan(
   startMs: number,
   duration: number,
@@ -387,11 +443,12 @@ function computeRunSegmentsFromSpan(
     .map((e) => ({ name: e.name, time: getHighResInMs(e.timestamp) }))
     .sort((a, b) => a.time - b.time);
 
+  const runData = attributes?.data as Record<string, unknown> | undefined;
+  const runStatus = runData?.status as string | undefined;
+
   const hasRunCreated = sorted.some((e) => e.name === 'run_created');
 
   if (!hasRunCreated) {
-    const runData = attributes?.data as Record<string, unknown> | undefined;
-    const runStatus = runData?.status as string | undefined;
     return computeV1RunSegments(startMs, duration, activeStartMs, runStatus);
   }
 
@@ -413,7 +470,7 @@ function computeRunSegmentsFromSpan(
   segments.push({
     startFraction: cursor,
     endFraction: 1,
-    status: failedEvent ? 'failed' : 'running',
+    status: failedEvent ? 'failed' : runSegmentStatus(runStatus),
   });
 
   return segments;
@@ -443,7 +500,7 @@ function computeV1RunSegments(
   segments.push({
     startFraction: cursor,
     endFraction: 1,
-    status: runStatus === 'failed' ? 'failed' : 'running',
+    status: runSegmentStatus(runStatus),
   });
 
   return segments;
@@ -479,4 +536,58 @@ export function computeSpanSegments(span: Span): Segment[] {
     default:
       return [];
   }
+}
+
+// ---------------------------------------------------------------------------
+// Span markers — point-in-time events rendered as ticks on top of a bar
+// ---------------------------------------------------------------------------
+
+export interface SpanMarker {
+  timeMs: number;
+}
+
+// `hook_received` = a resumption; `attr_set` = attributes written mid-span.
+const MARKER_EVENT_NAMES = ['hook_received', 'attr_set'];
+
+export function computeSpanMarkers(span: Span): SpanMarker[] {
+  return sortedEventMarks(span.events, MARKER_EVENT_NAMES).map((mark) => ({
+    timeMs: mark.time,
+  }));
+}
+
+export interface OffscreenSide {
+  count: number;
+  /** Nearest off-screen marker — the one a reveal jumps to. */
+  nearestMs: number;
+}
+
+export interface OffscreenMarkers {
+  left: OffscreenSide | null;
+  right: OffscreenSide | null;
+}
+
+/** Partition markers outside `[visibleStartMs, visibleEndMs]` by side. */
+export function computeOffscreenMarkers(
+  markers: SpanMarker[],
+  visibleStartMs: number,
+  visibleEndMs: number
+): OffscreenMarkers {
+  let leftCount = 0;
+  let rightCount = 0;
+  let nearestLeft = Number.NEGATIVE_INFINITY;
+  let nearestRight = Number.POSITIVE_INFINITY;
+  for (const { timeMs } of markers) {
+    if (timeMs < visibleStartMs) {
+      leftCount++;
+      if (timeMs > nearestLeft) nearestLeft = timeMs;
+    } else if (timeMs > visibleEndMs) {
+      rightCount++;
+      if (timeMs < nearestRight) nearestRight = timeMs;
+    }
+  }
+  return {
+    left: leftCount > 0 ? { count: leftCount, nearestMs: nearestLeft } : null,
+    right:
+      rightCount > 0 ? { count: rightCount, nearestMs: nearestRight } : null,
+  };
 }

@@ -94,7 +94,7 @@ npx workflow cancel \
   --backend vercel
 ```
 
-The `--workflowName` filter expects the generated workflow ID, not only the exported function's short name. Use the `workflowName` value from `workflow inspect runs`, and use [`parseWorkflowName()`](/docs/api-reference/workflow-api/world/observability) when you need display-friendly names.
+The `--workflowName` filter expects the generated workflow ID, not only the exported function's short name. Use the `workflowName` value from `workflow inspect runs`, and use [`parseWorkflowName()`](/docs/api-reference/workflow-observability/parse-workflow-name) when you need display-friendly names.
 
 In the [observability UI](/docs/observability), use **Rerun on latest** to enqueue the workflow again with the same inputs against the latest deployment.
 

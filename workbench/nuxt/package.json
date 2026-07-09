@@ -18,10 +18,11 @@
     "workflow": "workspace:*",
     "@workflow/ai": "workspace:*",
     "ai": "catalog:",
-    "h3": "^1.15.4",
+    "h3": "^1.15.5",
     "lodash.chunk": "^4.2.0",
-    "nuxt": "^4.4.2",
+    "nuxt": "^4.4.8",
     "openai": "^6.6.0",
+    "vite": "7.3.6",
     "zod": "catalog:"
   },
   "dependencies": {

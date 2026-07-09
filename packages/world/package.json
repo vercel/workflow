@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world",
-  "version": "5.0.0-beta.7",
+  "version": "5.0.0-beta.16",
   "description": "The Workflows World interface",
   "type": "module",
   "main": "dist/index.js",
@@ -23,9 +23,7 @@
     "clean": "tsc --build --clean && rm -rf dist"
   },
   "dependencies": {
-    "ulid": "catalog:"
-  },
-  "peerDependencies": {
+    "ulid": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

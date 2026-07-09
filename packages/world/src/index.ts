@@ -1,17 +1,30 @@
+export type * from './analytics.js';
+export {
+  AnalyticsEventSchema,
+  AnalyticsHookSchema,
+  AnalyticsRunSchema,
+  AnalyticsStepSchema,
+  AnalyticsWaitSchema,
+} from './analytics.js';
 export type * from './attributes.js';
 export {
-  applyAttributeChanges,
   ATTRIBUTE_KEY_MAX_LENGTH,
   ATTRIBUTE_MAX_PER_RUN,
   ATTRIBUTE_VALUE_MAX_BYTES,
   AttributeChangeSchema,
   AttributeChangesSchema,
   AttributeValidationError,
+  applyAttributeChanges,
   RESERVED_ATTRIBUTE_KEY_PREFIX,
   validateAttributeChanges,
   validateAttributeKey,
   validateAttributeValue,
 } from './attributes.js';
+export {
+  _resetEnvWarnCacheForTests,
+  type EnvNumberOptions,
+  envNumber,
+} from './env-config.js';
 export type * from './events.js';
 export {
   BaseEventSchema,
@@ -19,18 +32,26 @@ export {
   EVENT_DATA_REF_FIELDS,
   EventSchema,
   EventTypeSchema,
+  HookCreatedEventSchema,
+  isTerminalRunEventType,
   stripEventDataRefs,
+  TERMINAL_RUN_EVENT_TYPES,
+  TerminalRunEventTypeSchema,
 } from './events.js';
 export type * from './hooks.js';
 export { HookSchema } from './hooks.js';
 export type * from './interfaces.js';
 export type * from './queue.js';
 export {
+  getQueuePrefixKind,
+  getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   MessageId,
+  parseQueueName,
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,
+  resolveQueueNamespace,
   StepInvokePayloadSchema,
   ValidQueueName,
   WorkflowInvokePayloadSchema,
@@ -38,6 +59,9 @@ export {
 export { reenqueueActiveRuns } from './recovery.js';
 export type * from './runs.js';
 export {
+  isTerminalWorkflowRunStatus,
+  TERMINAL_WORKFLOW_RUN_STATUSES,
+  TerminalWorkflowRunStatusSchema,
   WorkflowRunBaseSchema,
   WorkflowRunSchema,
   WorkflowRunStatusSchema,
@@ -64,11 +88,19 @@ export {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
 } from './spec-version.js';
 export type * from './steps.js';
-export { StepSchema, StepStatusSchema } from './steps.js';
+export {
+  isTerminalStepStatus,
+  StepSchema,
+  StepStatusSchema,
+  TERMINAL_STEP_STATUSES,
+  TerminalStepStatusSchema,
+} from './steps.js';
 export {
   DEFAULT_TIMESTAMP_THRESHOLD_FUTURE_MS,
   DEFAULT_TIMESTAMP_THRESHOLD_MS,

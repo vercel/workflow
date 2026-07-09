@@ -91,7 +91,7 @@ Note: File extensions are stripped from local paths for cleaner IDs.
 
 In step mode, step function bodies are kept intact and registered using an inline IIFE that stores them in a global registry via `Symbol.for("@workflow/core//registeredSteps")`, with no module imports. Workflow functions throw an error if called directly (since they should only run in the workflow runtime).
 
-After the step-mode rewrite, the transform also runs a dead code elimination (DCE) pass. Because step bodies are preserved (unlike workflow mode where they are replaced with proxies), imports, helper functions, and other declarations referenced from step bodies are also preserved. However, code that is reachable only from workflow bodies that were replaced with throwing stubs can still be removed.
+After the step-mode rewrite, the transform also runs a dead code elimination (DCE) pass. Because step bodies are preserved (unlike workflow mode where they are replaced with proxies), imports, helper functions, and other declarations referenced from step bodies are also preserved. However, code that is reachable only from workflow bodies that were replaced with throwing stubs can still be removed. A reference counts even when it appears only inside a destructuring-default initializer — e.g. `const { ttl = TTL } = options;` counts as a use of `TTL`, so the declaration is not stripped.
 
 Object property step functions are hoisted to module-level variables and the original call site is replaced with a reference to the hoisted variable, making `.stepId` accessible at the call site.
 
@@ -438,7 +438,7 @@ export async function subtract(a, b) {
 
 In workflow mode, step function bodies are replaced with a `globalThis[Symbol.for("WORKFLOW_USE_STEP")]` call. Workflow functions keep their bodies and are registered with `globalThis.__private_workflows.set()`.
 
-After the workflow-mode rewrite, the transform also runs a dead code elimination (DCE) pass. Because step bodies are replaced with step proxies, imports, helper functions, nested steps, and other pure statements that were only referenced from those original step bodies become eligible for removal. Exports and any identifiers still referenced by the transformed workflow code are preserved.
+After the workflow-mode rewrite, the transform also runs a dead code elimination (DCE) pass. Because step bodies are replaced with step proxies, imports, helper functions, nested steps, and other pure statements that were only referenced from those original step bodies become eligible for removal. Exports and any identifiers still referenced by the transformed workflow code are preserved. A reference counts even when it appears only inside a destructuring-default initializer — e.g. `const { ttl = TTL } = options;` counts as a use of `TTL`, so the declaration is not stripped.
 
 ### Step Functions
 
