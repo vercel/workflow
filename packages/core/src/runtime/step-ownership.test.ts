@@ -71,6 +71,18 @@ describe('stepLeaseRemainingSeconds', () => {
       stepLeaseRemainingSeconds(makeStep({ lastStartedAt: undefined }), 0)
     ).toBe(0);
   });
+
+  it('clamps to the configured lease under client-behind-server clock skew', () => {
+    // lastStartedAt is the server-stamped event createdAt; nowMs is the
+    // local clock. A client running behind the server computes a remainder
+    // longer than the lease — with the lease at the 900s cap that would be
+    // a delaySeconds SQS-backed worlds reject (> 900). The clamp keeps the
+    // backstop delay within the queue's per-message maximum.
+    process.env[LEASE_ENV] = '900';
+    const step = makeStep({ lastStartedAt: 1_000_000 });
+    // Local clock 30s behind the server stamp.
+    expect(stepLeaseRemainingSeconds(step, 970_000)).toBe(900);
+  });
 });
 
 describe('backstopIdempotencyKey', () => {

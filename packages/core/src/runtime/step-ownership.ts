@@ -30,15 +30,24 @@ export function isStepOwnershipActive(step: StepInvocationQueueItem): boolean {
  * `step_started`. 0 means the lease has expired (or the start timestamp is
  * missing — the degraded mode for worlds whose events lack usable
  * timestamps), in which case dispatch falls back to the immediate enqueue.
+ *
+ * The result is clamped to the configured lease: `lastStartedAt` is the
+ * server-stamped event `createdAt` while `nowMs` is the local clock, so a
+ * client running behind the server would otherwise compute a remainder
+ * LONGER than the lease itself — and with the lease tuned to the 900s cap,
+ * a `delaySeconds` above the queue's per-message maximum, which SQS-backed
+ * worlds reject outright (the wake replay's enqueue would throw and ride
+ * the redelivery loop). The clamp makes skew strictly harmless; remaining
+ * time can never legitimately exceed the full lease anyway.
  */
 export function stepLeaseRemainingSeconds(
   step: StepInvocationQueueItem,
   nowMs: number
 ): number {
   if (step.lastStartedAt === undefined) return 0;
-  const remainingMs =
-    step.lastStartedAt + getInlineOwnershipLeaseSeconds() * 1000 - nowMs;
-  return Math.max(0, Math.ceil(remainingMs / 1000));
+  const leaseSeconds = getInlineOwnershipLeaseSeconds();
+  const remainingMs = step.lastStartedAt + leaseSeconds * 1000 - nowMs;
+  return Math.min(leaseSeconds, Math.max(0, Math.ceil(remainingMs / 1000)));
 }
 
 /**
