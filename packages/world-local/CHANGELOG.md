@@ -1,5 +1,15 @@
 # @workflow/world-local
 
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- [#2830](https://github.com/vercel/workflow/pull/2830) [`79a9813`](https://github.com/vercel/workflow/commit/79a9813f25eb907809fcd329accb76ac4d274480) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Fix hook operations scaling with total event history: hook creation, hook cache rebuilds, and token lookups now use durable per-token/per-hookId indexes instead of scanning the entire global event log, and run-termination hook cleanup uses per-run markers instead of reading every live hook. Directory listings read files concurrently, `runs.list` defaults to a page size of 200, and compiled filename regexes are reused.
+
+- Updated dependencies [[`3f69666`](https://github.com/vercel/workflow/commit/3f696668bcc436cd4b3e29213ee1d9d12e2e5b01), [`712ed61`](https://github.com/vercel/workflow/commit/712ed61f0a37937c3990429508c582f3edbd4576)]:
+  - @workflow/world@5.0.0-beta.17
+  - @workflow/errors@5.0.0-beta.10
+
 ## 5.0.0-beta.24
 
 ### Patch Changes

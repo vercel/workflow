@@ -1,5 +1,29 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.29
+
+### Minor Changes
+
+- [#2817](https://github.com/vercel/workflow/pull/2817) [`d6defd4`](https://github.com/vercel/workflow/commit/d6defd490adb92e82d1f42b523746d0ded351ec5) Thanks [@mitul-s](https://github.com/mitul-s)! - Add an optional `getModuleSourceUrl` resolver to the trace viewer sidebar data so hosts can render the Module row in the span detail panel as a link to the module's source (e.g. the deployment source view on vercel.com).
+
+### Patch Changes
+
+- [#2827](https://github.com/vercel/workflow/pull/2827) [`0459ffc`](https://github.com/vercel/workflow/commit/0459ffc8c1c61576f8987cc5d003f23f50d92116) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix middle truncation on detail panel
+
+- [#2832](https://github.com/vercel/workflow/pull/2832) [`3679833`](https://github.com/vercel/workflow/commit/36798335ea61ce5eef293c0dd99ea2c41db5182a) Thanks [@mitul-s](https://github.com/mitul-s)! - Use solid instead of alpha borders for trace viewer event-list dividers.
+
+- [#2840](https://github.com/vercel/workflow/pull/2840) [`712ed61`](https://github.com/vercel/workflow/commit/712ed61f0a37937c3990429508c582f3edbd4576) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optional reason to run cancellation (`run.cancel({ cancelReason })`), recorded on the cancellation event and shown in the run detail view.
+
+- [#2838](https://github.com/vercel/workflow/pull/2838) [`f2f4b9d`](https://github.com/vercel/workflow/commit/f2f4b9d29f3c9ce3b310f41a26f5ed82e8b9c817) Thanks [@mitul-s](https://github.com/mitul-s)! - Make the trace event-list/timeline split-pane divider drag match the span detail panel: wider hit target, hover/focus/drag highlight, double-click reset, and keyboard/ARIA resize.
+
+- [#2826](https://github.com/vercel/workflow/pull/2826) [`68ad966`](https://github.com/vercel/workflow/commit/68ad966d12468ccc8adc3a973ffb7e25a47f62c1) Thanks [@mitul-s](https://github.com/mitul-s)! - Keep the Input/Output sections of the span attribute panel open after decrypting run data.
+
+- [#2835](https://github.com/vercel/workflow/pull/2835) [`cfdb86d`](https://github.com/vercel/workflow/commit/cfdb86dc73fd8bf3c5eec706e6defc2ddcb7f439) Thanks [@mitul-s](https://github.com/mitul-s)! - Smooth the new trace viewer's click-to-focus zoom with a stronger ease-in-out curve.
+
+- Updated dependencies [[`3f69666`](https://github.com/vercel/workflow/commit/3f696668bcc436cd4b3e29213ee1d9d12e2e5b01), [`3f69666`](https://github.com/vercel/workflow/commit/3f696668bcc436cd4b3e29213ee1d9d12e2e5b01), [`712ed61`](https://github.com/vercel/workflow/commit/712ed61f0a37937c3990429508c582f3edbd4576)]:
+  - @workflow/core@5.0.0-beta.29
+  - @workflow/world@5.0.0-beta.17
+
 ## 5.0.0-beta.28
 
 ### Minor Changes
