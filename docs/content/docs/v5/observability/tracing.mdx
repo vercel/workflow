@@ -57,7 +57,7 @@ Stream spans are emitted by the SDK's world backend on the client that writes or
 | `workflow.stream.name` | The stream name, on stream write/read spans. |
 | `workflow.stream.operation` | The stream operation: `write`, `write_multi`, `close`, or `read`. |
 | `workflow.stream.write.chunk_rtt` | Time between emissions of a chunk to the wire, and receiving the `ack` message for that chunk. |
-| `workflow.stream.read.ttfc_ms` | Client-observed end-to-end time-to-first-chunk for a live read, in ms — read dispatch → first non-empty chunk in the reader, including the network hop. |
+| `workflow.stream.read.ttfc_ms` | Time between opening a read connection and observing and receiving the first chunk back. |
 
 ## Trace shape: one trace per invocation
 

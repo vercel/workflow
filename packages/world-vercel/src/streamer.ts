@@ -196,7 +196,7 @@ export function createStreamer(config?: APIConfig): Streamer {
           timeoutMs: null,
           logLabel: url.pathname,
           spanName: 'workflow.stream.write',
-          durationAttribute: 'workflow.stream.write.e2e_ms',
+          durationAttribute: 'workflow.stream.write.chunk_rtt',
           attributes: streamSpanAttributes({
             runId: resolvedRunId,
             name,
@@ -246,7 +246,7 @@ export function createStreamer(config?: APIConfig): Streamer {
             timeoutMs: null,
             logLabel: url.pathname,
             spanName: 'workflow.stream.write',
-            durationAttribute: 'workflow.stream.write.e2e_ms',
+            durationAttribute: 'workflow.stream.write.chunk_rtt',
             attributes: streamSpanAttributes({
               runId: resolvedRunId,
               name,
@@ -275,7 +275,7 @@ export function createStreamer(config?: APIConfig): Streamer {
           timeoutMs: null,
           logLabel: url.pathname,
           spanName: 'workflow.stream.write',
-          durationAttribute: 'workflow.stream.write.e2e_ms',
+          durationAttribute: 'workflow.stream.write.chunk_rtt',
           attributes: streamSpanAttributes({
             runId: resolvedRunId,
             name,

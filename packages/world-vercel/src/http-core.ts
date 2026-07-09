@@ -324,9 +324,9 @@ export interface InstrumentedFetchOptions {
   /**
    * When set, stamp the measured request round-trip (dispatch -> response
    * received, in ms) onto the client span under this attribute key. For a
-   * write PUT this equals the client->server end-to-end latency, since the
-   * server responds only after capturing the chunk. Equivalent to the span's
-   * own duration; exposed as a named attribute for direct querying.
+   * write PUT this is the per-chunk client->server round-trip (the server acks
+   * only after capturing the chunk). Equivalent to the span's own duration;
+   * exposed as a named attribute for direct querying.
    */
   durationAttribute?: string;
   /**
