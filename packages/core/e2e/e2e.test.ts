@@ -353,7 +353,12 @@ describe('e2e', () => {
     'bundled steps can read traced runtime assets',
     { timeout: 60_000 },
     async () => {
-      const run = await start(await e2e('runtimeAssetsWorkflow'), []);
+      const workflow = await getWorkflowMetadata(
+        deploymentUrl,
+        'workflows/runtime-assets.ts',
+        'runtimeAssetsWorkflow'
+      );
+      const run = await start(workflow, []);
       await expect(run.returnValue).resolves.toBe(
         'query-engine-asset\n|model RuntimeAsset {\n  id Int @id\n}\n'
       );

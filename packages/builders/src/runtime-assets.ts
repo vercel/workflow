@@ -222,16 +222,18 @@ async function copyRuntimeFiles(
   const copied = new Map<string, string>();
 
   for (const runtimeFile of runtimeFiles) {
-    const realSourcePath = await realpath(runtimeFile.sourcePath);
+    const sourcePath = await realpath(runtimeFile.sourcePath);
     const outputPaths = getOutputPaths({
       functionDir,
-      sourcePath: runtimeFile.sourcePath,
+      sourcePath,
       workingDir,
-      parentDirs: runtimeFile.parentDirs,
+      parentDirs: await Promise.all(
+        runtimeFile.parentDirs.map((parentDir) => realpath(parentDir))
+      ),
     });
     if (outputPaths.length === 0) {
       throw new Error(
-        `Runtime asset cannot be placed in the function: ${runtimeFile.sourcePath}`
+        `Runtime asset cannot be placed in the function: ${sourcePath}`
       );
     }
 
@@ -239,21 +241,21 @@ async function copyRuntimeFiles(
       const outputFile = relative(functionDir, outputPath).replace(/\\/g, '/');
       if (GENERATED_FUNCTION_FILES.has(outputFile)) {
         throw new Error(
-          `Runtime asset conflicts with generated function output: ${runtimeFile.sourcePath}`
+          `Runtime asset conflicts with generated function output: ${sourcePath}`
         );
       }
 
       const existingSource = copied.get(outputPath);
-      if (existingSource && existingSource !== realSourcePath) {
+      if (existingSource && existingSource !== sourcePath) {
         throw new Error(
-          `Conflicting runtime assets for ${outputFile}: ${existingSource} and ${realSourcePath}`
+          `Conflicting runtime assets for ${outputFile}: ${existingSource} and ${sourcePath}`
         );
       }
       if (existingSource) continue;
 
       await mkdir(dirname(outputPath), { recursive: true });
-      await copyFile(realSourcePath, outputPath);
-      copied.set(outputPath, realSourcePath);
+      await copyFile(sourcePath, outputPath);
+      copied.set(outputPath, sourcePath);
     }
   }
 
