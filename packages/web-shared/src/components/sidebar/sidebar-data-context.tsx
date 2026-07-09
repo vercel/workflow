@@ -29,6 +29,10 @@ export interface SidebarDataContextValue {
   hasEncryptedData?: boolean;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  getModuleSourceUrl?: (info: {
+    moduleSpecifier: string;
+    deploymentId: string;
+  }) => string | undefined;
 }
 
 const SidebarDataContext = createContext<SidebarDataContextValue | null>(null);
