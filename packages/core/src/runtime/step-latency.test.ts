@@ -195,7 +195,8 @@ describe('computeStepLatencyTracking', () => {
     // step events disqualify TTFS but qualify STSO.
     expect(tracking).toEqual({
       prevStepEndMs: 4_500,
-      stsoAfterTerminalSteps: 1,
+      stepCount: 1,
+      eventCount: 3,
       turbo: false,
     });
   });
@@ -207,7 +208,8 @@ describe('computeStepLatencyTracking', () => {
     });
     expect(tracking).toEqual({
       prevStepEndMs: 5_000,
-      stsoAfterTerminalSteps: 1,
+      stepCount: 1,
+      eventCount: 1,
       turbo: false,
     });
   });
@@ -224,7 +226,8 @@ describe('computeStepLatencyTracking', () => {
     });
     expect(tracking).toEqual({
       prevStepEndMs: new Date('2024-01-01T00:00:00.000Z').getTime(),
-      stsoAfterTerminalSteps: 2,
+      stepCount: 2,
+      eventCount: 3,
       turbo: false,
     });
   });
@@ -291,7 +294,8 @@ describe('computeStepLatencyEventData', () => {
     const data = computeStepLatencyEventData({
       tracking: {
         prevStepEndMs: 1_500,
-        stsoAfterTerminalSteps: 7,
+        stepCount: 7,
+        eventCount: 42,
         turbo: false,
       },
       stepCodeStartedAtMs: 2_000,
@@ -301,7 +305,8 @@ describe('computeStepLatencyEventData', () => {
     });
     expect(data).toEqual({
       stso: 500,
-      stsoAfterTerminalSteps: 7,
+      stepCount: 7,
+      eventCount: 42,
       optimizations: ['lazyStepStart'],
     });
   });
@@ -312,7 +317,8 @@ describe('computeStepLatencyEventData', () => {
         ttfsAnchorMs: 5_000,
         preStepBlockingMs: 0,
         prevStepEndMs: 5_000,
-        stsoAfterTerminalSteps: 3,
+        stepCount: 3,
+        eventCount: 9,
         turbo: false,
       },
       stepCodeStartedAtMs: 4_000,
@@ -323,7 +329,8 @@ describe('computeStepLatencyEventData', () => {
     expect(data).toEqual({
       ttfs: 0,
       stso: 0,
-      stsoAfterTerminalSteps: 3,
+      stepCount: 3,
+      eventCount: 9,
       optimizations: [],
     });
   });

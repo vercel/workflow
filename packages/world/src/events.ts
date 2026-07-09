@@ -126,9 +126,10 @@ const stepLatencyTelemetryFields = {
   // two steps ran back-to-back (the previous event-log entry is a
   // step_completed/step_failed).
   stso: z.number().optional(),
-  // Number of unique terminal steps already in the event log when the STSO
-  // gap began. Only present alongside stso.
-  stsoAfterTerminalSteps: z.number().int().positive().optional(),
+  // Progress counters taken when the STSO gap began. Only present alongside
+  // stso.
+  stepCount: z.number().int().positive().optional(),
+  eventCount: z.number().int().positive().optional(),
   // Names of the runtime's optional startup-latency optimizations that were
   // active for this measurement (e.g. 'turbo', 'lazyStepStart',
   // 'optimisticStart'), so latency metrics can be segmented by them.

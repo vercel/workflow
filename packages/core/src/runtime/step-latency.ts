@@ -46,12 +46,10 @@ export interface StepLatencyTracking {
    * when the step qualifies for STSO.
    */
   prevStepEndMs?: number;
-  /**
-   * Number of unique terminal steps already in the event log when the STSO
-   * gap began. For a sequential run, the gap between steps 1 and 2 carries 1.
-   * Parallel batches can advance this count by more than one between samples.
-   */
-  stsoAfterTerminalSteps?: number;
+  /** Number of unique terminal steps already in the event log. */
+  stepCount?: number;
+  /** Number of events already in the event log. */
+  eventCount?: number;
   /** Whether turbo mode is active for this invocation. */
   turbo: boolean;
 }
@@ -60,7 +58,8 @@ export interface StepLatencyTracking {
 export interface StepLatencyEventData {
   ttfs?: number;
   stso?: number;
-  stsoAfterTerminalSteps?: number;
+  stepCount?: number;
+  eventCount?: number;
   optimizations?: string[];
 }
 
@@ -175,7 +174,8 @@ export function computeStepLatencyTracking(params: {
   // attr_set, ...) in between and this suspension scheduling nothing but
   // steps.
   let prevStepEndMs: number | undefined;
-  let stsoAfterTerminalSteps: number | undefined;
+  let stepCount: number | undefined;
+  let eventCount: number | undefined;
   const lastEvent = events[events.length - 1];
   if (
     !params.suspensionHasWaits &&
@@ -195,7 +195,8 @@ export function computeStepLatencyTracking(params: {
         terminalStepIds.add(event.correlationId);
       }
     }
-    stsoAfterTerminalSteps = terminalStepIds.size;
+    stepCount = terminalStepIds.size;
+    eventCount = events.length;
   }
 
   if (!ttfsEligible && prevStepEndMs === undefined) {
@@ -216,7 +217,7 @@ export function computeStepLatencyTracking(params: {
         }
       : {}),
     ...(prevStepEndMs !== undefined
-      ? { prevStepEndMs, stsoAfterTerminalSteps }
+      ? { prevStepEndMs, stepCount, eventCount }
       : {}),
     turbo: params.turbo,
   };
@@ -279,8 +280,11 @@ export function computeStepLatencyEventData(params: {
   return {
     ...(ttfs !== undefined ? { ttfs } : {}),
     ...(stso !== undefined ? { stso } : {}),
-    ...(stso !== undefined && tracking.stsoAfterTerminalSteps !== undefined
-      ? { stsoAfterTerminalSteps: tracking.stsoAfterTerminalSteps }
+    ...(stso !== undefined && tracking.stepCount !== undefined
+      ? { stepCount: tracking.stepCount }
+      : {}),
+    ...(stso !== undefined && tracking.eventCount !== undefined
+      ? { eventCount: tracking.eventCount }
       : {}),
     optimizations,
   };
