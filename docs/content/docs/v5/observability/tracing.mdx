@@ -56,7 +56,7 @@ Stream spans are emitted by the SDK's world backend on the client that writes or
 | `workflow.queue.overhead_ms` | Time between the message being enqueued and the handler starting — queue dwell plus any cold start. |
 | `workflow.stream.name` | The stream name, on stream write/read spans. |
 | `workflow.stream.operation` | The stream operation: `write`, `write_multi`, `close`, or `read`. |
-| `workflow.stream.write.e2e_ms` | Client→backend round-trip for a stream write, in ms — the backend acks only after capturing the chunk, so this is the client-observed write latency including the network hop. |
+| `workflow.stream.write.chunk_rtt` | Time between emissions of a chunk to the wire, and receiving the `ack` message for that chunk. |
 | `workflow.stream.read.ttfc_ms` | Client-observed end-to-end time-to-first-chunk for a live read, in ms — read dispatch → first non-empty chunk in the reader, including the network hop. |
 
 ## Trace shape: one trace per invocation
