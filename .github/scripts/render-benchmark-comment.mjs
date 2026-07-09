@@ -13,6 +13,7 @@
  *   node render-benchmark-comment.mjs \
  *     --status running|completed|failed \
  *     [--results-dir <dir>]        # dir with bench-results-*.json files
+ *     [--baseline-dir <dir>]       # main-branch results to diff averages against
  *     [--previous-body <file>]     # previous comment body to carry history from
  *     [--commit <sha>] [--run-url <url>] \
  *     [--output <file>]            # defaults to stdout
@@ -48,6 +49,7 @@ export function parseArgs(argv) {
   const args = {
     status: 'completed',
     resultsDir: undefined,
+    baselineDir: undefined,
     previousBody: undefined,
     commit: undefined,
     runUrl: undefined,
@@ -65,6 +67,9 @@ export function parseArgs(argv) {
         break;
       case '--results-dir':
         args.resultsDir = next();
+        break;
+      case '--baseline-dir':
+        args.baselineDir = next();
         break;
       case '--previous-body':
         args.previousBody = next();
@@ -150,6 +155,50 @@ function formatMs(value) {
 }
 
 /**
+ * Annotates each metric row with the matching baseline average (from the most
+ * recent main-branch run), keyed by backend/app/metric/scenario. The
+ * annotation is stored on the entry so history re-renders keep showing the
+ * delta each run was originally compared against.
+ */
+export function annotateWithBaseline(results, baseline) {
+  if (!baseline || baseline.length === 0) return results;
+  const baselineAvgs = new Map();
+  for (const result of baseline) {
+    for (const row of result.metrics ?? []) {
+      baselineAvgs.set(
+        `${result.backend}/${result.app}/${row.metric}/${row.scenario}`,
+        row.avg
+      );
+    }
+  }
+  return results.map((result) => ({
+    ...result,
+    metrics: (result.metrics ?? []).map((row) => {
+      const baselineAvg = baselineAvgs.get(
+        `${result.backend}/${result.app}/${row.metric}/${row.scenario}`
+      );
+      return typeof baselineAvg === 'number' ? { ...row, baselineAvg } : row;
+    }),
+  }));
+}
+
+/** Formats the avg-vs-main delta, e.g. " (+4.2%)"; empty without a baseline. */
+function formatDelta(current, baselineAvg) {
+  if (
+    typeof current !== 'number' ||
+    typeof baselineAvg !== 'number' ||
+    baselineAvg <= 0 ||
+    !Number.isFinite(current / baselineAvg)
+  ) {
+    return '';
+  }
+  const pct = ((current - baselineAvg) / baselineAvg) * 100;
+  if (Math.abs(pct) < 0.5) return ' (±0%)';
+  const digits = Math.abs(pct) >= 10 ? 0 : 1;
+  return ` (${pct > 0 ? '+' : ''}${pct.toFixed(digits)}%)`;
+}
+
+/**
  * Formats a percentile cell, marking it 🟢/🔴 against its target when one is
  * defined for this row.
  */
@@ -182,7 +231,7 @@ function renderResultTable(result) {
     const name = label ? `**${label.name}**` : row.metric;
     const targets = row.targets ?? {};
     lines.push(
-      `| ${name} | ${row.scenario} | ${formatMs(row.avg)} | ${formatCell(row.p75, targets.p75)} | ${formatCell(row.p90, targets.p90)} | ${formatCell(row.p99, targets.p99)} | ${row.samples} |`
+      `| ${name} | ${row.scenario} | ${formatMs(row.avg)}${formatDelta(row.avg, row.baselineAvg)} | ${formatCell(row.p75, targets.p75)} | ${formatCell(row.p90, targets.p90)} | ${formatCell(row.p99, targets.p99)} | ${row.samples} |`
     );
   }
   return lines.join('\n');
@@ -249,8 +298,17 @@ function renderFooter(entries) {
   ).join(' · ');
   const scenarioLegend = buildScenarioLegend(results);
   const targetsLegend = buildTargetsLegend(results);
+  const hasBaseline = results.some((result) =>
+    (result.metrics ?? []).some((row) => typeof row.baselineAvg === 'number')
+  );
 
   return [
+    ...(hasBaseline
+      ? [
+          '<sub>Avg deltas compare against the most recent benchmark run on `main` at the time of this run.</sub>',
+          '',
+        ]
+      : []),
     `<sub>Metrics — ${definitions}</sub>`,
     ...(scenarioLegend ? ['', `<sub>Scenarios — ${scenarioLegend}</sub>`] : []),
     ...(targetsLegend
@@ -312,6 +370,7 @@ function renderHistorySection(shownPrevious) {
 export function renderComment({
   status,
   results,
+  baseline = [],
   history,
   commit,
   runUrl,
@@ -324,7 +383,7 @@ export function renderComment({
         commit,
         runUrl,
         generatedAt: now.toISOString(),
-        results,
+        results: annotateWithBaseline(results, baseline),
       },
       ...entries,
     ].slice(0, MAX_HISTORY_ENTRIES);
@@ -367,6 +426,10 @@ function main() {
     : '';
   const history = extractHistory(previousBody);
   const results = loadResults(args.resultsDir);
+  const baseline = loadResults(args.baselineDir);
+  if (args.baselineDir && baseline.length === 0) {
+    console.error(`No baseline results found in ${args.baselineDir}`);
+  }
 
   if (args.status === 'completed' && results.length === 0) {
     console.error('No benchmark results found for status=completed');
@@ -376,6 +439,7 @@ function main() {
   const body = renderComment({
     status: args.status,
     results,
+    baseline,
     history,
     commit: args.commit,
     runUrl: args.runUrl,

@@ -1,5 +1,12 @@
 # @workflow/vite
 
+## 5.0.0-beta.29
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.29
+
 ## 5.0.0-beta.28
 
 ### Patch Changes

@@ -44,6 +44,11 @@ import {
 } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
+import {
+  computeStepLatencyEventData,
+  type StepLatencyEventData,
+  type StepLatencyTracking,
+} from './step-latency.js';
 import { safeWaitUntil } from './wait-until.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
@@ -124,6 +129,15 @@ export interface StepExecutorParams {
    * outside turbo, where `run_started` was already awaited up front.
    */
   runReadyBarrier?: Promise<unknown>;
+  /**
+   * Latency telemetry (TTFS / STSO): eligibility and anchor timestamps decided
+   * by the orchestrator. When set, this executor computes the final values
+   * against the wall clock taken immediately before user code runs and
+   * attaches them to the step's terminal event. Set only for the first step of
+   * an inline batch, and only on first-attempt executions that qualify — see
+   * runtime/step-latency.ts.
+   */
+  latencyTracking?: StepLatencyTracking;
 }
 
 /**
@@ -531,6 +545,11 @@ export async function executeStep(
     const ops: Promise<void>[] = [];
     let opsSettled = true;
 
+    // Latency telemetry to attach to this step's terminal event. Computed
+    // right before user code runs; declared here so the failure path (the
+    // catch below) can attach it to step_failed too.
+    let latencyEventData: StepLatencyEventData | undefined;
+
     try {
       const attempt = step.attempt;
 
@@ -585,6 +604,28 @@ export async function executeStep(
       let userCodeFailed = false;
 
       const executionStartTime = Date.now();
+      latencyEventData = computeStepLatencyEventData({
+        tracking: params.latencyTracking,
+        stepCodeStartedAtMs: executionStartTime,
+        attempt,
+        lazyStepStart: params.lazyStepInput !== undefined,
+        optimisticStart,
+      });
+      if (latencyEventData) {
+        // Mirror the latency telemetry onto the step span so traces show
+        // TTFS/STSO alongside the flame graph, not just Datadog metrics.
+        span?.setAttributes({
+          ...(latencyEventData.ttfs !== undefined
+            ? Attribute.StepTtfsMs(latencyEventData.ttfs)
+            : {}),
+          ...(latencyEventData.stso !== undefined
+            ? Attribute.StepStsoMs(latencyEventData.stso)
+            : {}),
+          ...Attribute.StepLatencyOptimizations(
+            latencyEventData.optimizations ?? []
+          ),
+        });
+      }
       try {
         result = await trace('step.execute', {}, async () => {
           return await contextStorage.run(
@@ -816,6 +857,7 @@ export async function executeStep(
                 globalThis,
                 compression
               ),
+              ...latencyEventData,
             },
           });
         } catch (stepFailErr) {
@@ -884,6 +926,7 @@ export async function executeStep(
                 globalThis,
                 compression
               ),
+              ...latencyEventData,
             },
           });
         } catch (stepFailErr) {
@@ -995,6 +1038,7 @@ export async function executeStep(
             stepName,
             workflowName,
             result: result as Uint8Array,
+            ...latencyEventData,
           },
         },
         params.inlineDeltaSinceCursor !== undefined

@@ -460,6 +460,20 @@ describe('extractStreamIds', () => {
   it('should return empty array for no streams', () => {
     expect(extractStreamIds({ foo: 'bar' })).toEqual([]);
   });
+
+  it('should handle circular references without overflowing the stack', () => {
+    // devalue (which produces the hydrated o11y data this walks) supports
+    // circular references, so a step result containing a cycle reaches here.
+    const obj: Record<string, unknown> = { stream: 'strm_cycle' };
+    obj.self = obj;
+    expect(extractStreamIds(obj)).toEqual(['strm_cycle']);
+  });
+
+  it('should handle circular references through arrays', () => {
+    const arr: unknown[] = ['strm_in_arr'];
+    arr.push(arr);
+    expect(extractStreamIds(arr)).toEqual(['strm_in_arr']);
+  });
 });
 
 describe('truncateId', () => {

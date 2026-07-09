@@ -5,9 +5,15 @@ name: Performance Benchmarks
 # workbench app and posts the results as a sticky PR comment. Re-runs update
 # the same comment; previous results stay available in a collapsed history
 # section (state is embedded in the comment body itself).
+#
+# Runs on pushes to main (against the production deployment) purely to produce
+# baseline artifacts; PR runs download the most recent main baseline and show
+# avg-latency deltas against it in the comment.
 
 on:
   pull_request:
+    branches: [main]
+  push:
     branches: [main]
   workflow_dispatch: # Allow manual triggers
 
@@ -193,6 +199,36 @@ jobs:
           path: benchmark-results
           merge-multiple: true
 
+      # Baseline for the avg-delta column: results from the most recent
+      # successful run of this workflow on main. Uses gh (first-party) rather
+      # than a third-party cross-run artifact action. Filtering to push /
+      # workflow_dispatch events matters for more than tidiness: it excludes
+      # artifacts uploaded by fork PR runs, whose head branch can also be
+      # named "main" (artifact poisoning).
+      - name: Download baseline results from main
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow benchmarks.yml \
+            --branch main \
+            --status success \
+            --limit 20 \
+            --json databaseId,event \
+            --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")][0].databaseId // empty')
+          if [ -z "$run_id" ]; then
+            echo "No successful benchmark run found on main; skipping baseline"
+            exit 0
+          fi
+          echo "Using baseline artifacts from run $run_id"
+          gh run download "$run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'bench-results-*' \
+            --dir baseline-results \
+            || echo "Run $run_id has no benchmark artifacts; skipping baseline"
+
       - name: Find existing benchmark comment
         uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3.1.0
         id: find-comment
@@ -222,6 +258,7 @@ jobs:
           node .github/scripts/render-benchmark-comment.mjs \
             --status "$BENCH_STATUS" \
             --results-dir benchmark-results \
+            --baseline-dir baseline-results \
             --previous-body "$RUNNER_TEMP/previous-comment.md" \
             --commit "$HEAD_SHA" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \

@@ -836,15 +836,24 @@ export function hydrateResourceIO<
 /** Extract all stream IDs from a value (recursively traverses objects/arrays) */
 export function extractStreamIds(obj: unknown): string[] {
   const streamIds: string[] = [];
+  // The hydrated o11y data this walks comes from devalue, which supports
+  // circular and repeated references. Track visited containers so a cycle
+  // (e.g. a step result whose object refers back to itself) doesn't recurse
+  // forever and overflow the stack.
+  const seen = new WeakSet<object>();
 
   function traverse(value: unknown): void {
     if (isStreamId(value)) {
       streamIds.push(value as string);
     } else if (Array.isArray(value)) {
+      if (seen.has(value)) return;
+      seen.add(value);
       for (const item of value) {
         traverse(item);
       }
     } else if (value && typeof value === 'object') {
+      if (seen.has(value)) return;
+      seen.add(value);
       for (const val of Object.values(value)) {
         traverse(val);
       }

@@ -180,6 +180,7 @@ interface SplitEventData {
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
     errorCode?: string;
+    cancelReason?: string;
     /** Structured executionContext, included verbatim in frame meta. */
     executionContext?: Record<string, unknown>;
     /** Initial run attributes (run_created / resilient-start run_started). */
@@ -190,6 +191,15 @@ interface SplitEventData {
     writer?: Record<string, unknown>;
     /** Reserved-attribute-key opt-in (attr_set / run_created / run_started). */
     allowReservedAttributes?: boolean;
+    /** Client-measured time-to-first-step ms (step_completed / step_failed). */
+    ttfs?: number;
+    /** Client-measured step-to-step overhead ms (step_completed / step_failed). */
+    stso?: number;
+    /** Progress counters taken when the STSO gap began. */
+    stepCount?: number;
+    eventCount?: number;
+    /** Runtime optimizations active for the ttfs/stso measurement. */
+    optimizations?: string[];
   };
 }
 
@@ -213,11 +223,17 @@ type MetaSourceField =
   | 'isWebhook'
   | 'isSystem'
   | 'errorCode'
+  | 'cancelReason'
   | 'executionContext'
   | 'attributes'
   | 'changes'
   | 'writer'
-  | 'allowReservedAttributes';
+  | 'allowReservedAttributes'
+  | 'ttfs'
+  | 'stso'
+  | 'stepCount'
+  | 'eventCount'
+  | 'optimizations';
 
 /**
  * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
@@ -308,6 +324,11 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   if (typeof eventData.errorCode === 'string') {
     meta.errorCode = eventData.errorCode;
   }
+  // run_cancelled optionally carries a free-text cancellation reason. Small
+  // plaintext metadata, so it rides in the frame meta like errorCode.
+  if (typeof eventData.cancelReason === 'string') {
+    meta.cancelReason = eventData.cancelReason;
+  }
   if (
     eventData.executionContext !== undefined &&
     eventData.executionContext !== null &&
@@ -343,6 +364,34 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.allowReservedAttributes === 'boolean') {
     meta.allowReservedAttributes = eventData.allowReservedAttributes;
+  }
+  // Client-measured latency telemetry on step terminal events (TTFS / STSO).
+  // The server consumes these for metrics; they are not read back.
+  if (typeof eventData.ttfs === 'number') {
+    meta.ttfs = eventData.ttfs;
+  }
+  if (typeof eventData.stso === 'number') {
+    meta.stso = eventData.stso;
+  }
+  if (
+    typeof eventData.stepCount === 'number' &&
+    Number.isSafeInteger(eventData.stepCount) &&
+    eventData.stepCount > 0
+  ) {
+    meta.stepCount = eventData.stepCount;
+  }
+  if (
+    typeof eventData.eventCount === 'number' &&
+    Number.isSafeInteger(eventData.eventCount) &&
+    eventData.eventCount > 0
+  ) {
+    meta.eventCount = eventData.eventCount;
+  }
+  if (
+    Array.isArray(eventData.optimizations) &&
+    eventData.optimizations.every((o) => typeof o === 'string')
+  ) {
+    meta.optimizations = eventData.optimizations as string[];
   }
 
   let payload: Uint8Array | undefined;
