@@ -1914,6 +1914,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(second.eventData.ttfs).toBeUndefined();
     expect(second.eventData.stso).toBeGreaterThanOrEqual(0);
     expect(second.eventData.stso).toBeLessThanOrEqual(elapsed);
+    expect(second.eventData.stsoAfterTerminalSteps).toBe(1);
     expect(second.eventData.optimizations).toEqual([
       'turbo',
       'lazyStepStart',

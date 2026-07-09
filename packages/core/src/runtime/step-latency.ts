@@ -46,6 +46,12 @@ export interface StepLatencyTracking {
    * when the step qualifies for STSO.
    */
   prevStepEndMs?: number;
+  /**
+   * Number of unique terminal steps already in the event log when the STSO
+   * gap began. For a sequential run, the gap between steps 1 and 2 carries 1.
+   * Parallel batches can advance this count by more than one between samples.
+   */
+  stsoAfterTerminalSteps?: number;
   /** Whether turbo mode is active for this invocation. */
   turbo: boolean;
 }
@@ -54,6 +60,7 @@ export interface StepLatencyTracking {
 export interface StepLatencyEventData {
   ttfs?: number;
   stso?: number;
+  stsoAfterTerminalSteps?: number;
   optimizations?: string[];
 }
 
@@ -168,6 +175,7 @@ export function computeStepLatencyTracking(params: {
   // attr_set, ...) in between and this suspension scheduling nothing but
   // steps.
   let prevStepEndMs: number | undefined;
+  let stsoAfterTerminalSteps: number | undefined;
   const lastEvent = events[events.length - 1];
   if (
     !params.suspensionHasWaits &&
@@ -177,6 +185,17 @@ export function computeStepLatencyTracking(params: {
       lastEvent.eventType === 'step_failed')
   ) {
     prevStepEndMs = +(lastEvent.occurredAt ?? lastEvent.createdAt);
+    const terminalStepIds = new Set<string>();
+    for (const event of events) {
+      if (
+        (event.eventType === 'step_completed' ||
+          event.eventType === 'step_failed') &&
+        event.correlationId !== undefined
+      ) {
+        terminalStepIds.add(event.correlationId);
+      }
+    }
+    stsoAfterTerminalSteps = terminalStepIds.size;
   }
 
   if (!ttfsEligible && prevStepEndMs === undefined) {
@@ -196,7 +215,9 @@ export function computeStepLatencyTracking(params: {
           ...(preStepAttrStartMs !== undefined ? { preStepAttrStartMs } : {}),
         }
       : {}),
-    ...(prevStepEndMs !== undefined ? { prevStepEndMs } : {}),
+    ...(prevStepEndMs !== undefined
+      ? { prevStepEndMs, stsoAfterTerminalSteps }
+      : {}),
     turbo: params.turbo,
   };
 }
@@ -258,6 +279,9 @@ export function computeStepLatencyEventData(params: {
   return {
     ...(ttfs !== undefined ? { ttfs } : {}),
     ...(stso !== undefined ? { stso } : {}),
+    ...(stso !== undefined && tracking.stsoAfterTerminalSteps !== undefined
+      ? { stsoAfterTerminalSteps: tracking.stsoAfterTerminalSteps }
+      : {}),
     optimizations,
   };
 }

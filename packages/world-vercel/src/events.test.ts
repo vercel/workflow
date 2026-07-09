@@ -247,7 +247,7 @@ describe('splitEventDataForV4 attribute fields', () => {
     expect(meta.cancelReason).toBeUndefined();
   });
 
-  it('carries latency telemetry (ttfs/stso/optimizations) in the frame meta on step terminal events', () => {
+  it('carries latency telemetry in the frame meta on step terminal events', () => {
     const completed = splitEventDataForV4({
       eventType: 'step_completed',
       correlationId: 'step_1',
@@ -272,10 +272,12 @@ describe('splitEventDataForV4 attribute fields', () => {
         stepName: 's',
         error: new TextEncoder().encode('"boom"'),
         stso: 45,
+        stsoAfterTerminalSteps: 7,
         optimizations: [],
       },
     } as AnyEventRequest);
     expect(failed.meta.stso).toBe(45);
+    expect(failed.meta.stsoAfterTerminalSteps).toBe(7);
     expect(failed.meta.ttfs).toBeUndefined();
     expect(failed.meta.optimizations).toEqual([]);
 
@@ -288,10 +290,12 @@ describe('splitEventDataForV4 attribute fields', () => {
         stepName: 's',
         result: new TextEncoder().encode('"ok"'),
         ttfs: 'fast',
+        stsoAfterTerminalSteps: 0,
         optimizations: [1, 2],
       },
     } as unknown as AnyEventRequest);
     expect(malformed.meta.ttfs).toBeUndefined();
+    expect(malformed.meta.stsoAfterTerminalSteps).toBeUndefined();
     expect(malformed.meta.optimizations).toBeUndefined();
   });
 });
