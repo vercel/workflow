@@ -22,7 +22,7 @@ function isReservedAttributeKey(key: string): boolean {
 }
 
 const rowValueVariants = cva(
-  'max-w-[60%] truncate text-right text-copy-13 text-gray-1000',
+  'min-w-0 flex-1 truncate text-right text-copy-13 text-gray-1000',
   {
     variants: {
       variant: {
@@ -37,7 +37,7 @@ const rowValueVariants = cva(
 );
 
 const rowCopyValueVariants = cva(
-  'flex min-w-0 max-w-[60%] items-center justify-end gap-1 text-copy-13 text-gray-1000',
+  'flex min-w-0 flex-1 items-center justify-end gap-1 text-copy-13 text-gray-1000',
   {
     variants: {
       variant: {

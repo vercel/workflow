@@ -136,14 +136,15 @@ export const monotonicUlid = monotonicFactory(() => Math.random());
  * @param idPrefix - The prefix to strip from filenames (e.g., 'wrun', 'evnt', 'step')
  * @returns A function that extracts Date from filename, or null if not extractable
  */
-export const getObjectCreatedAt =
-  (idPrefix: string) =>
-  (filename: string): Date | null => {
+export const getObjectCreatedAt = (idPrefix: string) => {
+  // Compiled once per query instead of once per filename.
+  const replaceRegex = new RegExp(`^${idPrefix}_`, 'g');
+
+  return (filename: string): Date | null => {
     // Strip tag suffix before ULID extraction
     // e.g., "wrun_ABC.vitest-0.json" → "wrun_ABC.json"
     const cleanName = stripTag(filename.replace(/\.json$/, '')) + '.json';
 
-    const replaceRegex = new RegExp(`^${idPrefix}_`, 'g');
     const dashIndex = cleanName.indexOf('-');
 
     if (dashIndex === -1) {
@@ -164,3 +165,4 @@ export const getObjectCreatedAt =
     const ulid = id.replace(replaceRegex, '');
     return ulidToDate(ulid);
   };
+};

@@ -129,6 +129,9 @@ export interface CreateEventV4Input {
   hookIsWebhook?: boolean;
   hookIsSystem?: boolean;
   errorCode?: string;
+  /** run_cancelled's optional free-text cancellation reason. Small plaintext
+   *  metadata, capped at 512 chars by the @workflow/world schema. */
+  cancelReason?: string;
   /** Arbitrary structured map; rides as a native CBOR object in the
    *  frame meta. Bounded by the server at 2 KB encoded. */
   executionContext?: Record<string, unknown>;
@@ -144,6 +147,17 @@ export interface CreateEventV4Input {
   /** Opt-in for framework-level callers to write `$`-prefixed reserved
    *  attribute keys (attr_set / run_created / run_started). */
   allowReservedAttributes?: boolean;
+  /** Client-measured time-to-first-step ms, riding on the run's first
+   *  step_completed / step_failed. Consumed server-side for latency
+   *  metrics; not read back. */
+  ttfs?: number;
+  /** Client-measured step-to-step overhead ms (previous step's terminal
+   *  event → this step's body starting), riding on step_completed /
+   *  step_failed. Consumed server-side for latency metrics. */
+  stso?: number;
+  /** Runtime optimizations active for the ttfs/stso measurement
+   *  (e.g. 'turbo', 'lazyStepStart', 'optimisticStart'). */
+  optimizations?: string[];
   /** Opt-in inline-delta request. On a step-terminal write
    *  (step_completed / step_failed) the inline loop passes the cursor it
    *  held before the write so the server can return the authoritative
@@ -215,6 +229,7 @@ function buildPostFrameMeta(
     meta.hookIsWebhook = input.hookIsWebhook;
   if (input.hookIsSystem !== undefined) meta.hookIsSystem = input.hookIsSystem;
   if (input.errorCode !== undefined) meta.errorCode = input.errorCode;
+  if (input.cancelReason !== undefined) meta.cancelReason = input.cancelReason;
   if (input.executionContext !== undefined) {
     meta.executionContext = input.executionContext;
   }
@@ -223,6 +238,11 @@ function buildPostFrameMeta(
   if (input.writer !== undefined) meta.writer = input.writer;
   if (input.allowReservedAttributes !== undefined) {
     meta.allowReservedAttributes = input.allowReservedAttributes;
+  }
+  if (input.ttfs !== undefined) meta.ttfs = input.ttfs;
+  if (input.stso !== undefined) meta.stso = input.stso;
+  if (input.optimizations !== undefined) {
+    meta.optimizations = input.optimizations;
   }
   if (input.sinceCursor !== undefined) meta.sinceCursor = input.sinceCursor;
   if (input.skipPreload !== undefined) meta.skipPreload = input.skipPreload;

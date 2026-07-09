@@ -8,6 +8,7 @@
 import '@workflow/core/runtime/world-init';
 
 export type {
+  CancelRunOptions,
   Event,
   StopSleepOptions,
   StopSleepResult,
