@@ -1,0 +1,23 @@
+---
+title: Step executed multiple times
+description: A step ran more than once because its function invocation crashed before it could report a result.
+type: troubleshooting
+summary: Diagnose duplicate step_started events caused by function timeouts, OOMs, or network issues.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/observability
+  - /docs/foundations/errors-and-retries
+---
+
+There may be cases where you see multiple `step_started` events for the same step in a workflow run. This happens if the function invocation executing the step crashes unexpectedly, and the step can not report the error. The step will be re-tried according to your retry policy in this case, but no error will be visible in the [Observability UI](/docs/observability).
+
+## Common Causes
+
+- **Function timeouts**: if your step code runs longer than the configured maximum function duration, it will be killed. Compare the gap between the `step_started` events to your configured function duration to be sure.
+- **Out of memory (OOM)**: if your step code loads enough data into memory, especially if the step is invoked concurrently, the function invocation might run out of memory. You can see your function's peak memory use by going to the [Observability Query page](https://vercel.com/docs/observability) and showing the **Function Invocation Peak Memory** metric, then filtering down the **Route** to `/.well-known/workflow` endpoints.
+- **Network issues**: persistent firewall, network stability, and related issues might prevent your function from reporting results or errors. This should be temporary.
+
+## Getting Help
+
+If you consistently see multiple `step_started` events and have ruled out function timeouts, OOMs, and firewall issues, please [contact support](https://vercel.com/help).

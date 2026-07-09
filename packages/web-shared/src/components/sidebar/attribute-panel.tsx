@@ -3,13 +3,18 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
+import { format } from 'date-fns';
 import type { KeyboardEvent, ReactNode } from 'react';
-import { useCallback, useContext, useMemo, useState } from 'react';
+import { useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
-import { useToast } from '../../lib/toast';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
-import { CopyButton } from '../new-trace-viewer/components/copy-button';
-import { MiddleTruncate } from '../new-trace-viewer/components/middle-truncate/middle-truncate';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleRoot,
+  CollapsibleTrigger,
+} from '../ui/collapsible';
+import { ContextCardProvider } from '../ui/context-card';
 import {
   DecryptClickContext,
   RunClickContext,
@@ -19,9 +24,13 @@ import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
+import {
+  DetailMonoKeyValueRow,
+  RunAttributesCard,
+  RunMetadataCard,
+} from './attributes-block';
 import { ConversationView } from './conversation-view';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
-import { DetailCard } from './detail-card';
 
 /**
  * Tab button for conversation/JSON toggle
@@ -139,16 +148,24 @@ const conversationTabs = [
 function ConversationWithTabs({
   conversation,
   args,
+  defaultOpen,
+  onOpenChange,
 }: {
   conversation: ModelMessage[];
   args: unknown[];
+  defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [activeTab, setActiveTab] = useState<'conversation' | 'json'>(
     'conversation'
   );
 
   return (
-    <DetailCard summary="Input">
+    <Collapsible
+      label="Input"
+      defaultOpen={defaultOpen}
+      onOpenChange={onOpenChange}
+    >
       <TabbedContainer
         tabs={conversationTabs}
         activeTab={activeTab}
@@ -169,7 +186,7 @@ function ConversationWithTabs({
           </div>
         )}
       </TabbedContainer>
-    </DetailCard>
+    </Collapsible>
   );
 }
 
@@ -216,6 +233,7 @@ type AttributeKey =
   | keyof WorkflowRun
   | keyof Hook
   | keyof Event
+  | 'occurredAt'
   | 'moduleSpecifier'
   | 'eventData'
   | 'resumeAt'
@@ -250,6 +268,7 @@ const attributeOrder: AttributeKey[] = [
   'projectId',
   'environment',
   'executionContext',
+  'occurredAt',
   'createdAt',
   'startedAt',
   'updatedAt',
@@ -261,6 +280,7 @@ const attributeOrder: AttributeKey[] = [
   'eventData',
   'input',
   'output',
+  'attributes',
   'resumeAt',
 ];
 
@@ -284,10 +304,12 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   runId: 'Run ID',
   token: 'Token',
   eventType: 'Event Type',
+  errorCode: 'Error Code',
   correlationId: 'Correlation ID',
   deploymentId: 'Deployment ID',
   specVersion: 'Spec Version',
   workflowCoreVersion: '@workflow/core version',
+  occurredAt: 'Occurred',
   createdAt: 'Created',
   startedAt: 'Started',
   updatedAt: 'Updated',
@@ -337,15 +359,7 @@ const parseDateValue = (value: unknown): Date | null => {
 };
 
 const formatLocalMillisecondTime = (date: Date): string =>
-  date.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: 'numeric',
-    second: 'numeric',
-    fractionalSecondDigits: 3,
-  });
+  format(date, 'MMM dd HH:mm:ss.SS OO').toUpperCase();
 
 export const localMillisecondTime = (value: unknown): string => {
   const date = parseDateValue(value);
@@ -353,7 +367,6 @@ export const localMillisecondTime = (value: unknown): string => {
     return '-';
   }
 
-  // e.g. 12/17/2025, 9:08:55.182 AM
   return formatLocalMillisecondTime(date);
 };
 
@@ -377,6 +390,8 @@ const timestampWithTooltipOrNull = (value: unknown): ReactNode | null => {
 
 interface DisplayContext {
   stepName?: string;
+  sectionOpen?: boolean;
+  onSectionOpenChange?: (open: boolean) => void;
 }
 
 const attributeToDisplayFn: Record<
@@ -414,14 +429,15 @@ const attributeToDisplayFn: Record<
   projectId: (_value: unknown) => null,
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
-  // Attributes MVP — string-string metadata attached to the run.
-  // Rendered as a JSON block; if empty/missing, hidden by the
-  // hasDisplayContent gate above.
+  // Attributes — string-string metadata attached to the run.
+  // Rendered as key-value rows in its own collapsible section;
+  // if empty/missing, hidden by the hasDisplayContent gate.
   attributes: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
-    return JsonBlock(value);
+    return <RunAttributesCard attributes={value as Record<string, string>} />;
   },
   // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
+  occurredAt: timestampWithTooltipOrNull,
   createdAt: timestampWithTooltipOrNull,
   startedAt: timestampWithTooltipOrNull,
   updatedAt: (_value: unknown) => null,
@@ -432,16 +448,32 @@ const attributeToDisplayFn: Record<
   // Resolved attributes, won't actually use this function
   metadata: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
-    if (isEncryptedMarker(value)) return <EncryptedDataBlock />;
-    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
-    return JsonBlock(value);
+    if (isEncryptedMarker(value)) {
+      return (
+        <Collapsible label="Metadata">
+          <EncryptedDataBlock />
+        </Collapsible>
+      );
+    }
+    if (isExpiredMarker(value)) {
+      return (
+        <Collapsible label="Metadata">
+          <ExpiredFieldBlock />
+        </Collapsible>
+      );
+    }
+    return <RunMetadataCard metadata={value} />;
   },
   input: (value: unknown, context?: DisplayContext) => {
     if (isEncryptedMarker(value)) {
       return (
-        <DetailCard summary="Input">
+        <Collapsible
+          label="Input"
+          defaultOpen={context?.sectionOpen}
+          onOpenChange={context?.onSectionOpenChange}
+        >
           <EncryptedFieldBlock />
-        </DetailCard>
+        </Collapsible>
       );
     }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
@@ -462,16 +494,21 @@ const attributeToDisplayFn: Record<
         if (conversation && conversation.length > 0) {
           return (
             <>
-              <ConversationWithTabs conversation={conversation} args={args} />
+              <ConversationWithTabs
+                conversation={conversation}
+                args={args}
+                defaultOpen={context?.sectionOpen}
+                onOpenChange={context?.onSectionOpenChange}
+              />
               {hasClosureVars && (
-                <DetailCard summary="Closure Variables">
+                <Collapsible label="Closure Variables">
                   {JsonBlock(closureVars)}
-                </DetailCard>
+                </Collapsible>
               )}
               {hasThisVal && (
-                <DetailCard summary="This Value">
+                <Collapsible label="This Value">
                   {JsonBlock(thisVal)}
-                </DetailCard>
+                </Collapsible>
               )}
             </>
           );
@@ -480,12 +517,16 @@ const attributeToDisplayFn: Record<
 
       // Don't render an empty "Input (0 arguments)" card when no input exists.
       if (!hasArgs && !hasClosureVars && !hasThisVal) {
-        return <DetailCard summary="Input (no data)" disabled />;
+        return <Collapsible label="Input (no data)" disabled />;
       }
 
       return (
         <>
-          <DetailCard summary="Input">
+          <Collapsible
+            label="Input"
+            defaultOpen={context?.sectionOpen}
+            onOpenChange={context?.onSectionOpenChange}
+          >
             {Array.isArray(args)
               ? args.map((v, i) => (
                   <div className="mt-2 first:mt-0" key={i}>
@@ -493,14 +534,14 @@ const attributeToDisplayFn: Record<
                   </div>
                 ))
               : JsonBlock(args)}
-          </DetailCard>
+          </Collapsible>
           {hasClosureVars && (
-            <DetailCard summary="Closure Variables">
+            <Collapsible label="Closure Variables">
               {JsonBlock(closureVars)}
-            </DetailCard>
+            </Collapsible>
           )}
           {hasThisVal && (
-            <DetailCard summary="Context">{JsonBlock(thisVal)}</DetailCard>
+            <Collapsible label="Context">{JsonBlock(thisVal)}</Collapsible>
           )}
         </>
       );
@@ -508,10 +549,14 @@ const attributeToDisplayFn: Record<
 
     // Fallback: treat as plain array or object
     if (!hasDisplayContent(value)) {
-      return <DetailCard summary="Input (no data)" disabled />;
+      return <Collapsible label="Input (no data)" disabled />;
     }
     return (
-      <DetailCard summary="Input">
+      <Collapsible
+        label="Input"
+        defaultOpen={context?.sectionOpen}
+        onOpenChange={context?.onSectionOpenChange}
+      >
         {Array.isArray(value)
           ? value.map((v, i) => (
               <div className="mt-2 first:mt-0" key={i}>
@@ -519,27 +564,39 @@ const attributeToDisplayFn: Record<
               </div>
             ))
           : JsonBlock(value)}
-      </DetailCard>
+      </Collapsible>
     );
   },
-  output: (value: unknown) => {
+  output: (value: unknown, context?: DisplayContext) => {
     if (isEncryptedMarker(value)) {
       return (
-        <DetailCard summary="Output">
+        <Collapsible
+          label="Output"
+          defaultOpen={context?.sectionOpen}
+          onOpenChange={context?.onSectionOpenChange}
+        >
           <EncryptedFieldBlock />
-        </DetailCard>
+        </Collapsible>
       );
     }
     if (!hasDisplayContent(value)) return null;
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
-    return <DetailCard summary="Output">{JsonBlock(value)}</DetailCard>;
+    return (
+      <Collapsible
+        label="Output"
+        defaultOpen={context?.sectionOpen}
+        onOpenChange={context?.onSectionOpenChange}
+      >
+        {JsonBlock(value)}
+      </Collapsible>
+    );
   },
   error: (value: unknown) => {
     if (isEncryptedMarker(value)) {
       return (
-        <DetailCard summary="Error" defaultOpen>
+        <Collapsible label="Error" defaultOpen>
           <EncryptedFieldBlock />
-        </DetailCard>
+        </Collapsible>
       );
     }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
@@ -549,32 +606,32 @@ const attributeToDisplayFn: Record<
     // `{ message, stack }`. Render both with the dedicated error block.
     if (isStructuredError(value)) {
       return (
-        <DetailCard summary="Error" defaultOpen>
+        <Collapsible label="Error" defaultOpen>
           <ErrorStackBlock value={value} />
-        </DetailCard>
+        </Collapsible>
       );
     }
 
     return (
-      <DetailCard summary="Error" defaultOpen>
+      <Collapsible label="Error" defaultOpen>
         {JsonBlock(value)}
-      </DetailCard>
+      </Collapsible>
     );
   },
   eventData: (value: unknown) => {
     if (isEncryptedMarker(value)) {
       return (
-        <DetailCard summary="Event Data" defaultOpen>
+        <Collapsible label="Event Data" defaultOpen>
           <EncryptedFieldBlock />
-        </DetailCard>
+        </Collapsible>
       );
     }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
     return (
-      <DetailCard summary="Event Data" defaultOpen>
+      <Collapsible label="Event Data" defaultOpen>
         {JsonBlock(value)}
-      </DetailCard>
+      </Collapsible>
     );
   },
   errorCode: (value: unknown) => {
@@ -588,15 +645,18 @@ const resolvableAttributes = [
   'output',
   'error',
   'metadata',
+  'attributes',
   'eventData',
 ];
 
-// Attributes whose displayFn renders its own section header via DetailCard,
+// Attributes whose displayFn renders its own section header via Collapsible,
 // so the outer AttributeBlock should not duplicate the label.
 const selfHeaderedAttributes = new Set([
   'input',
   'output',
   'error',
+  'metadata',
+  'attributes',
   'eventData',
 ]);
 
@@ -618,7 +678,14 @@ const copyableBasicAttributes = new Set<AttributeKey>([
   'hookId',
   'eventId',
   'deploymentId',
+  'moduleSpecifier',
 ]);
+
+const loadingSectionLabels: Partial<Record<AttributeKey, string>> = {
+  input: 'Input',
+  output: 'Output',
+  eventData: 'Event Data',
+};
 
 export const AttributeBlock = ({
   attribute,
@@ -634,25 +701,24 @@ export const AttributeBlock = ({
   context?: DisplayContext;
 }) => {
   const decryptCtx = useContext(DecryptClickContext);
-  const isExpandableLoadingTarget =
-    attribute === 'input' ||
-    attribute === 'output' ||
-    attribute === 'eventData';
-  if (isLoading && isExpandableLoadingTarget && !hasDisplayContent(value)) {
-    const label =
-      attribute === 'eventData'
-        ? 'Event Data'
-        : attribute === 'output'
-          ? 'Output'
-          : 'Input';
+  const sectionOpenRef = useRef(false);
+  const handleSectionOpenChange = useCallback((open: boolean) => {
+    sectionOpenRef.current = open;
+  }, []);
+  const label = loadingSectionLabels[attribute as AttributeKey];
+  if (isLoading && label && !hasDisplayContent(value)) {
     if (decryptCtx?.hasEncryptedData) {
       return (
-        <DetailCard summary={label} defaultOpen={attribute === 'eventData'}>
+        <Collapsible
+          label={label}
+          defaultOpen={attribute === 'eventData' || sectionOpenRef.current}
+          onOpenChange={handleSectionOpenChange}
+        >
           <EncryptedFieldBlock />
-        </DetailCard>
+        </Collapsible>
       );
     }
-    return <DetailCard summary={label} />;
+    return <Collapsible label={label} />;
   }
 
   const displayFn =
@@ -660,7 +726,11 @@ export const AttributeBlock = ({
   if (!displayFn) {
     return null;
   }
-  const displayValue = displayFn(value, context);
+  const displayValue = displayFn(value, {
+    ...context,
+    sectionOpen: sectionOpenRef.current,
+    onSectionOpenChange: handleSectionOpenChange,
+  });
   if (!displayValue) {
     return null;
   }
@@ -710,6 +780,7 @@ export const AttributeBlock = ({
 export const AttributePanel = ({
   data,
   moduleSpecifier,
+  moduleSourceUrl,
   isLoading,
   error,
   expiredAt,
@@ -721,6 +792,7 @@ export const AttributePanel = ({
 }: {
   data: Record<string, unknown>;
   moduleSpecifier?: string;
+  moduleSourceUrl?: string;
   isLoading?: boolean;
   error?: Error;
   expiredAt?: string | Date;
@@ -735,7 +807,6 @@ export const AttributePanel = ({
   /** Resource type of the selected span — used to show targeted loading skeletons. */
   resource?: string;
 }) => {
-  const toast = useToast();
   // Extract workflowCoreVersion from executionContext for display
   const displayData = useMemo(() => {
     const result = { ...data };
@@ -767,10 +838,8 @@ export const AttributePanel = ({
 
     if (resource === 'sleep') return present;
 
-    // During loading, ensure sections appear so their skeletons render
-    // in the correct position (above the events section).
-    const loadingDefaults = ['input', 'output'];
-    for (const key of loadingDefaults) {
+    const loadingPlaceholders = ['input', 'output'];
+    for (const key of loadingPlaceholders) {
       if (!present.includes(key)) {
         present.push(key);
       }
@@ -821,17 +890,6 @@ export const AttributePanel = ({
     }),
     [displayData.stepName]
   );
-  const handleCopyModuleSpecifier = useCallback((value: string) => {
-    navigator.clipboard
-      .writeText(value)
-      .then(() => {
-        toast.success('moduleSpecifier copied');
-      })
-      .catch(() => {
-        toast.error('Failed to copy moduleSpecifier');
-      });
-  }, []);
-
   const outerDecryptCtx = useContext(DecryptClickContext);
   const decryptValue = onDecrypt
     ? {
@@ -842,101 +900,65 @@ export const AttributePanel = ({
     : outerDecryptCtx;
 
   return (
-    <RunClickContext.Provider value={onRunClick}>
-      <StreamClickContext.Provider value={onStreamClick}>
-        <DecryptClickContext.Provider value={decryptValue}>
-          {visibleBasicAttributes.length > 0 && (
-            <div className="flex flex-col overflow-hidden divide-y divide-gray-alpha-400 mb-3">
-              {orderedBasicAttributes.map((attribute) => {
-                const displayValue = attributeToDisplayFn[
-                  attribute as keyof typeof attributeToDisplayFn
-                ]?.(displayData[attribute as keyof typeof displayData]);
-                const isModuleSpecifier = attribute === 'moduleSpecifier';
-                const isCopyableBasicAttribute =
-                  copyableBasicAttributes.has(attribute as AttributeKey) &&
-                  typeof displayValue === 'string';
-                const moduleSpecifierValue =
-                  typeof displayValue === 'string'
-                    ? displayValue
-                    : String(displayValue ?? displayData.moduleSpecifier ?? '');
+    <ContextCardProvider>
+      <RunClickContext.Provider value={onRunClick}>
+        <StreamClickContext.Provider value={onStreamClick}>
+          <DecryptClickContext.Provider value={decryptValue}>
+            {visibleBasicAttributes.length > 0 && (
+              <CollapsibleRoot defaultOpen>
+                <CollapsibleTrigger>Metadata</CollapsibleTrigger>
+                <CollapsibleContent className="mt-0 mb-2">
+                  <div className="flex flex-col">
+                    {orderedBasicAttributes.map((attribute) => {
+                      const displayValue = attributeToDisplayFn[
+                        attribute as keyof typeof attributeToDisplayFn
+                      ]?.(displayData[attribute as keyof typeof displayData]);
+                      const isCopyableBasicAttribute =
+                        copyableBasicAttributes.has(
+                          attribute as AttributeKey
+                        ) && typeof displayValue === 'string';
+                      const label = getAttributeDisplayName(attribute);
 
-                return (
-                  <div
-                    className="flex items-center justify-between py-2"
-                    key={attribute}
-                  >
-                    <span className="text-label-14 text-gray-900">
-                      {getAttributeDisplayName(attribute)}
-                    </span>
-                    {isModuleSpecifier ? (
-                      <button
-                        type="button"
-                        className="min-w-0 max-w-[70%] truncate text-right text-label-13 font-mono"
-                        style={{
-                          color: 'var(--ds-gray-1000)',
-                          background: 'transparent',
-                          border: 'none',
-                          padding: 0,
-                        }}
-                        title={moduleSpecifierValue}
-                        onClick={() =>
-                          handleCopyModuleSpecifier(moduleSpecifierValue)
-                        }
-                      >
-                        {moduleSpecifierValue}
-                      </button>
-                    ) : isCopyableBasicAttribute ? (
-                      <div
-                        className="flex min-w-0 max-w-[70%] items-center justify-end gap-1 text-right text-[13px] font-mono"
-                        style={{
-                          color: 'var(--ds-gray-1000)',
-                        }}
-                        title={displayValue}
-                      >
-                        <MiddleTruncate
+                      return (
+                        <DetailMonoKeyValueRow
+                          key={attribute}
+                          label={label}
                           value={displayValue}
-                          className="flex-1"
+                          copyText={
+                            isCopyableBasicAttribute ? displayValue : undefined
+                          }
+                          href={
+                            attribute === 'moduleSpecifier'
+                              ? moduleSourceUrl
+                              : undefined
+                          }
                         />
-                        <CopyButton
-                          copyText={displayValue}
-                          ariaLabel={`Copy ${getAttributeDisplayName(attribute)}`}
-                          className="shrink-0 -mr-1"
-                        />
-                      </div>
-                    ) : (
-                      <span className="text-right text-label-13 font-mono">
-                        {displayValue}
-                      </span>
-                    )}
+                      );
+                    })}
+                    {isLoading &&
+                      resource === 'sleep' &&
+                      !displayData.resumeAt && (
+                        <div className="flex items-center justify-between gap-3 py-0.5">
+                          <span className="text-label-13 text-gray-900">
+                            Resume
+                          </span>
+                          <Skeleton className="h-4 w-[55%]" />
+                        </div>
+                      )}
                   </div>
-                );
-              })}
-              {isLoading && resource === 'sleep' && !displayData.resumeAt && (
-                <div className="py-1">
-                  <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
-                    <span
-                      className="text-[14px] first-letter:uppercase"
-                      style={{ color: 'var(--ds-gray-700)' }}
-                    >
-                      resumeAt
-                    </span>
-                    <Skeleton className="h-4 w-[55%]" />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-          {error ? (
-            <ErrorCard
-              title="Failed to load resource details"
-              details={error.message}
-              className="my-4"
-            />
-          ) : hasExpired ? (
-            <ExpiredDataMessage />
-          ) : resolvedAttributes.length > 0 ? (
-            <>
-              {resolvedAttributes.map((attribute) => (
+                </CollapsibleContent>
+              </CollapsibleRoot>
+            )}
+            {error ? (
+              <ErrorCard
+                title="Failed to load resource details"
+                details={error.message}
+                className="my-4"
+              />
+            ) : hasExpired ? (
+              <ExpiredDataMessage />
+            ) : resolvedAttributes.length > 0 ? (
+              resolvedAttributes.map((attribute) => (
                 <AttributeBlock
                   isLoading={isLoading}
                   key={attribute}
@@ -944,11 +966,11 @@ export const AttributePanel = ({
                   value={displayData[attribute as keyof typeof displayData]}
                   context={displayContext}
                 />
-              ))}
-            </>
-          ) : null}
-        </DecryptClickContext.Provider>
-      </StreamClickContext.Provider>
-    </RunClickContext.Provider>
+              ))
+            ) : null}
+          </DecryptClickContext.Provider>
+        </StreamClickContext.Provider>
+      </RunClickContext.Provider>
+    </ContextCardProvider>
   );
 };

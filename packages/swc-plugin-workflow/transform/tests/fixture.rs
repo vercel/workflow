@@ -56,3 +56,24 @@ fn workflow_mode(input: PathBuf) {
         },
     );
 }
+
+#[testing::fixture("tests/fixture/object-property-step/input.js")]
+fn detect_mode_object_property_step(input: PathBuf) {
+    let detect_output = input.parent().unwrap().join("output-detect.js");
+    test_fixture(
+        syntax_for(&input),
+        &|_| {
+            visit_mut_pass(StepTransform::new(
+                TransformMode::Detect,
+                input.file_name().unwrap().to_string_lossy().to_string(),
+                None,
+            ))
+        },
+        &input,
+        &detect_output,
+        FixtureTestConfig {
+            module: Some(true),
+            ..Default::default()
+        },
+    );
+}

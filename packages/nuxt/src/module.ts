@@ -1,5 +1,10 @@
 import { defineNuxtModule } from '@nuxt/kit';
 import type { NuxtModule } from '@nuxt/schema';
+import {
+  ensureWorkflowTargetWorldEnv,
+  resolveWorkflowTargetWorldAlias,
+  WORKFLOW_WORLD_TARGET_MODULE,
+} from '@workflow/builders';
 import type { ModuleOptions as NitroModuleOptions } from '@workflow/nitro';
 
 // Module options TypeScript interface definition
@@ -22,6 +27,11 @@ const module: NuxtModule<ModuleOptions> = defineNuxtModule({
     typescriptPlugin: true,
   },
   setup(options, nuxt) {
+    const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
+    const workflowTargetWorldAlias = resolveWorkflowTargetWorldAlias({
+      workingDir: nuxt.options.rootDir,
+      targetWorld: workflowTargetWorld,
+    });
     nuxt.options.nitro ||= {};
     nuxt.options.nitro.modules ||= [];
 
@@ -44,6 +54,21 @@ const module: NuxtModule<ModuleOptions> = defineNuxtModule({
     // to add anything. Otherwise, normalize to an array while preserving
     // any existing matchers, then append the workflow matchers.
     nuxt.options.vite ||= {};
+    nuxt.options.vite.define ||= {};
+    nuxt.options.vite.define['process.env.WORKFLOW_TARGET_WORLD'] =
+      JSON.stringify(workflowTargetWorld);
+    nuxt.options.vite.resolve ||= {};
+    nuxt.options.vite.resolve.alias ||= {};
+    if (Array.isArray(nuxt.options.vite.resolve.alias)) {
+      nuxt.options.vite.resolve.alias.push({
+        find: WORKFLOW_WORLD_TARGET_MODULE,
+        replacement: workflowTargetWorldAlias,
+      });
+    } else {
+      Object.assign(nuxt.options.vite.resolve.alias, {
+        [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldAlias,
+      });
+    }
     nuxt.options.vite.ssr ||= {};
     const workflowSsrMatchers: (string | RegExp)[] = [
       'workflow',

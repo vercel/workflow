@@ -7,12 +7,12 @@ summary: Build durable, resumable AI agents with AI SDK v7's WorkflowAgent.
 
 ## WorkflowAgent from AI SDK v7
 
-Use AI SDK v7's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) for new durable agent work. It replaces `DurableAgent` in v5 and keeps the current agent pattern in the AI SDK package.
+Use AI SDK v7's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) for new durable agent work. It replaces `DurableAgent` and keeps the current agent pattern in the AI SDK package.
 
 - Import `WorkflowAgent` from `@ai-sdk/workflow` and run it inside a `"use workflow"` function.
 - Stream `ModelCallStreamPart` chunks with `getWritable()`, then convert the run stream to UI message chunks with `createModelCallToUIChunkTransform()` in your route.
 - Mark tool `execute` functions with `"use step"` when they should run as durable workflow steps with retry and observability behavior.
 
 <Callout type="warn">
-`DurableAgent` is deprecated in v5 and remains documented for existing code only. Existing `DurableAgent` users can refer to the [`DurableAgent` API reference](/docs/api-reference/workflow-ai/durable-agent) while migrating.
+`DurableAgent` is deprecated and remains documented for existing code only. See the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent), or the [`DurableAgent` API reference](/docs/api-reference/workflow-ai/durable-agent) while migrating.
 </Callout>

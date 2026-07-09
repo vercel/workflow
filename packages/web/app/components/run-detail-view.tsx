@@ -1,11 +1,10 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
-import type { SpanSelectionInfo } from '@workflow/web-shared';
+import type { FetchSpanDetail } from '@workflow/web-shared';
 import {
   DecryptButton,
   ErrorBoundary,
   EventListView,
-  hydrateResourceIO,
-  hydrateResourceIOWithKey,
+  hydrateResourceIOAsync,
   NewTraceViewer,
   type SidebarDataContextValue,
   StreamViewer,
@@ -56,10 +55,12 @@ import { fetchEvent, getEncryptionKeyForRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
+  fetchSpanDetailResource,
+  getErrorMessage,
+  getErrorTitle,
   recreateRun,
   resumeHook,
   unwrapServerActionResult,
-  useWorkflowResourceData,
   useWorkflowStreams,
   useWorkflowTraceViewerData,
   wakeUpRun,
@@ -153,7 +154,7 @@ function GraphTabContent({
       <div className="flex items-center justify-center w-full h-full">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         <span className="ml-4 text-muted-foreground">
-          Loading workflow graph...
+          Loading workflow graph…
         </span>
       </div>
     );
@@ -204,7 +205,6 @@ type Tab = 'trace' | 'graph' | 'streams' | 'events';
 
 export function RunDetailView({
   runId,
-  // TODO: This should open the right sidebar within the trace viewer
   selectedId: _selectedId,
 }: RunDetailViewProps) {
   const navigate = useNavigate();
@@ -301,9 +301,10 @@ export function RunDetailView({
       if (error) {
         throw error;
       }
-      const fullEvent = encryptionKeyRef.current
-        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
-        : hydrateResourceIO(result);
+      const fullEvent = await hydrateResourceIOAsync(
+        result,
+        encryptionKeyRef.current ?? undefined
+      );
       if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }
@@ -321,9 +322,10 @@ export function RunDetailView({
       if (error) {
         throw error;
       }
-      const fullEvent = encryptionKeyRef.current
-        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
-        : hydrateResourceIO(result);
+      const fullEvent = await hydrateResourceIOAsync(
+        result,
+        encryptionKeyRef.current ?? undefined
+      );
       if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }
@@ -373,34 +375,18 @@ export function RunDetailView({
     enabled: activeTab === 'events',
   });
 
-  const [spanSelection, setSpanSelection] = useState<SpanSelectionInfo | null>(
-    null
-  );
-  const {
-    data: spanDetailData,
-    loading: spanDetailLoading,
-    error: spanDetailError,
-    refresh: refreshSpanDetail,
-  } = useWorkflowResourceData(
-    env,
-    spanSelection?.resource ?? 'run',
-    spanSelection?.resourceId ?? '',
-    {
-      runId: spanSelection?.runId,
-      enabled: Boolean(
-        spanSelection?.resource &&
-          spanSelection?.resourceId &&
-          spanSelection.resource !== 'hook'
-      ),
-      encryptionKey: encryptionKey ?? undefined,
-    }
+  const fetchSpanDetail = useCallback<FetchSpanDetail>(
+    (selection) =>
+      fetchSpanDetailResource(env, selection, {
+        encryptionKey: encryptionKey ?? undefined,
+      }),
+    [env, encryptionKey]
   );
 
   const [isDecrypting, setIsDecrypting] = useState(false);
 
   const handleDecrypt = useCallback(async () => {
     if (encryptionKey) {
-      refreshSpanDetail();
       return;
     }
     setIsDecrypting(true);
@@ -419,20 +405,13 @@ export function RunDetailView({
     } finally {
       setIsDecrypting(false);
     }
-  }, [encryptionKey, env, runId, refreshSpanDetail]);
-
-  const handleSpanSelect = useCallback((info: SpanSelectionInfo) => {
-    setSpanSelection(info);
-  }, []);
+  }, [encryptionKey, env, runId]);
 
   const sidebarData = useMemo<SidebarDataContextValue>(
     () => ({
       run,
       events: allEvents ?? [],
-      spanDetailData: spanDetailData ?? null,
-      spanDetailError,
-      spanDetailLoading,
-      onSpanSelect: handleSpanSelect,
+      fetchSpanDetail,
       onStreamClick: handleStreamClick,
       onRunClick: handleRunRefClick,
       onWakeUpSleep: handleWakeUpSleep,
@@ -446,10 +425,7 @@ export function RunDetailView({
     [
       run,
       allEvents,
-      spanDetailData,
-      spanDetailError,
-      spanDetailLoading,
-      handleSpanSelect,
+      fetchSpanDetail,
       handleStreamClick,
       handleRunRefClick,
       handleWakeUpSleep,
@@ -488,7 +464,7 @@ export function RunDetailView({
       await cancelRun(env, runId);
       // Trigger a refresh of the data
       await update();
-      toast.success('Run cancelled successfully');
+      toast.success('Run cancelled');
     } catch (err) {
       console.error('Failed to cancel run:', err);
       toast.error('Failed to cancel run', {
@@ -512,7 +488,7 @@ export function RunDetailView({
       setShowRerunDialog(false);
       // Start a new run with the same workflow and input arguments
       const newRunId = await recreateRun(env, run.runId);
-      toast.success('New run started successfully', {
+      toast.success('New run started', {
         description: `Run ID: ${newRunId}`,
       });
       // Navigate to the new run
@@ -533,8 +509,10 @@ export function RunDetailView({
     return (
       <Alert variant="destructive" className="m-4">
         <AlertCircle className="h-4 w-4" />
-        <AlertTitle>Error loading workflow run</AlertTitle>
-        <AlertDescription>{error.message}</AlertDescription>
+        <AlertTitle>
+          {getErrorTitle(error, 'Error loading workflow run')}
+        </AlertTitle>
+        <AlertDescription>{getErrorMessage(error)}</AlertDescription>
       </Alert>
     );
   }
@@ -784,7 +762,7 @@ export function RunDetailView({
 
             <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load trace viewer">
-                <div className="h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
+                <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
                   <NewTraceViewer
                     run={run}
                     events={allEvents ?? []}

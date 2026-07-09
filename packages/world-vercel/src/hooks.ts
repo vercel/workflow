@@ -8,6 +8,7 @@ import type {
 } from '@workflow/world';
 import { HookSchema, PaginatedResponseSchema } from '@workflow/world';
 import z from 'zod';
+import { normalizeHookData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';
 import { DEFAULT_RESOLVE_DATA_OPTION, makeRequest } from './utils.js';
 
@@ -17,7 +18,7 @@ function filterHookData(hook: any, resolveData: 'none' | 'all'): Hook {
     const { metadataRef: _metadataRef, ...rest } = hook;
     return rest;
   }
-  return hook;
+  return normalizeHookData(hook) as Hook;
 }
 const HookWithRefsSchema = HookSchema.omit({
   metadata: true,

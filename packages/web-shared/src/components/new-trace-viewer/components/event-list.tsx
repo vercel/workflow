@@ -1,8 +1,7 @@
 import { Circle } from 'lucide-react';
 import { useRef } from 'react';
-import { cn } from '../../../lib/utils';
-import type { Span } from '../types';
-import { formatDuration } from '../../trace-viewer/util/timing';
+import { cn } from '../../../lib/cn';
+import { formatDurationPrecise } from '../../trace-viewer/util/timing';
 import {
   SleepIcon,
   StepForwardIcon,
@@ -10,7 +9,8 @@ import {
   WorkflowIcon,
 } from '../icons';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
-import { getSpanDurationMs } from '../utils';
+import type { Span } from '../types';
+import { getSpanDurationMs, isSpanErrored } from '../utils';
 import { MiddleTruncate } from './middle-truncate/middle-truncate';
 import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
 
@@ -53,9 +53,7 @@ const EventRow = ({
   onSelectSpan: (spanId: string) => void;
 }) => {
   const durationMs = getSpanDurationMs(span);
-  const workflowStatus = (span.attributes.data as Record<string, unknown>)
-    ?.status as string | undefined;
-  const isErrored = span.status.code === 2 || workflowStatus === 'failed';
+  const isErrored = isSpanErrored(span);
   const { icon: Icon, className: tagClassName } = getEventStyle(
     span.resource,
     isErrored
@@ -86,7 +84,7 @@ const EventRow = ({
           </div>
           <div className="ml-2 shrink-0">
             <span className="text-label-14 text-gray-900 tabular-nums">
-              {formatDuration(durationMs)}
+              {formatDurationPrecise(durationMs)}
             </span>
           </div>
         </div>
@@ -114,7 +112,7 @@ const EventList = ({
       ref={listRef}
       id="event-list"
       role="tree"
-      className="block min-h-0 overflow-visible divide-y divide-gray-alpha-400 border-b border-gray-alpha-400"
+      className="block min-h-0 overflow-visible divide-y divide-gray-400 border-b border-gray-400"
       style={{
         paddingTop: start * ROW_HEIGHT_PX,
         paddingBottom: (spans.length - end) * ROW_HEIGHT_PX,

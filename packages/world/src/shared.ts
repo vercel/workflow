@@ -25,6 +25,16 @@ export interface PaginationOptions {
   sortOrder?: 'asc' | 'desc';
 }
 
+export const PageInfoSchema = z.object({
+  currentLookbackDays: z.number(),
+  maxLookbackDays: z.number(),
+  currentWindowStart: z.coerce.date(),
+  maxWindowStart: z.coerce.date(),
+  upgradeAvailable: z.boolean(),
+});
+
+export type PageInfo = z.infer<typeof PageInfoSchema>;
+
 // Shared schema for paginated responses
 export const PaginatedResponseSchema = <T extends z.ZodTypeAny>(
   dataSchema: T
@@ -33,6 +43,7 @@ export const PaginatedResponseSchema = <T extends z.ZodTypeAny>(
     data: z.array(dataSchema),
     cursor: z.string().nullable(),
     hasMore: z.boolean(),
+    pageInfo: PageInfoSchema.optional(),
   });
 
 // Inferred type from schema

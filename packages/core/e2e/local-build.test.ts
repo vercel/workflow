@@ -3,10 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { usesVercelWorld } from '../../utils/src/world-target';
-import {
-  getWorkbenchAppPath,
-  isNextLazyDiscoveryEnabledForTest,
-} from './utils';
+import { getWorkbenchAppPath } from './utils';
 
 interface CommandResult {
   stdout: string;
@@ -92,17 +89,80 @@ const DIAGNOSTICS_MANIFEST_PATHS: Record<string, string> = {
   'nextjs-turbopack': '.next/diagnostics/workflows-manifest.json',
 };
 
-const DEFERRED_BUILD_MODE_PROJECTS = new Set([
-  'nextjs-webpack',
-  'nextjs-turbopack',
-]);
-const DEFERRED_BUILD_UNSUPPORTED_WARNING = 'lazyDiscovery requires Next.js >=';
-const EAGER_DISCOVERY_LOG = 'Discovering workflow directives';
-const WORKFLOW_BUNDLE_LOGS = [
-  'Created intermediate workflow bundle',
-  'Created final workflow bundle',
-];
-const STEP_BUNDLE_LOG = 'Created steps bundle';
+const SOURCE_MAP_WARNING = 'failed to read input source map';
+const SOURCE_MAP_FIXTURE_PACKAGE = 'workflow-sourcemap-warning-fixture';
+const SOURCE_MAP_COMMENT = '//# sourceMapping' + 'URL=index.js.map';
+
+async function writeFileWithParents(
+  filePath: string,
+  content: string
+): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, content);
+}
+
+async function setupNextSourceMapWarningFixture(
+  appPath: string
+): Promise<() => Promise<void>> {
+  const packageDir = path.join(
+    appPath,
+    'node_modules',
+    SOURCE_MAP_FIXTURE_PACKAGE
+  );
+  const workflowPath = path.join(
+    appPath,
+    'workflows',
+    'source-map-warning-fixture.ts'
+  );
+
+  await writeFileWithParents(
+    path.join(packageDir, 'package.json'),
+    JSON.stringify(
+      {
+        name: SOURCE_MAP_FIXTURE_PACKAGE,
+        version: '0.0.0',
+        type: 'module',
+        main: './index.js',
+        types: './index.d.ts',
+      },
+      null,
+      2
+    )
+  );
+  await writeFileWithParents(
+    path.join(packageDir, 'index.js'),
+    `export const sourceMapWarningFixtureValue = Symbol.for('workflow-serialize').description ?? 'workflow-serialize';
+${SOURCE_MAP_COMMENT}
+`
+  );
+  await writeFileWithParents(
+    path.join(packageDir, 'index.d.ts'),
+    `export declare const sourceMapWarningFixtureValue: string;
+`
+  );
+  await writeFileWithParents(
+    workflowPath,
+    `import { sourceMapWarningFixtureValue } from '${SOURCE_MAP_FIXTURE_PACKAGE}';
+
+async function readSourceMapWarningFixture() {
+  'use step';
+  return sourceMapWarningFixtureValue;
+}
+
+export async function sourceMapWarningFixtureWorkflow() {
+  'use workflow';
+  return readSourceMapWarningFixture();
+}
+`
+  );
+
+  return async () => {
+    await Promise.all([
+      fs.rm(packageDir, { recursive: true, force: true }),
+      fs.rm(workflowPath, { force: true }),
+    ]);
+  };
+}
 
 describe.each([
   'example',
@@ -125,36 +185,48 @@ describe.each([
       return;
     }
 
-    const result = await runCommandWithLiveOutput(
-      'pnpm',
-      ['build'],
-      getWorkbenchAppPath(project)
-    );
+    const appPath = getWorkbenchAppPath(project);
+    const cleanup =
+      project === 'nextjs-turbopack'
+        ? await setupNextSourceMapWarningFixture(appPath)
+        : async () => {};
+    const preserveFixtureForBuiltOutput =
+      project === 'nextjs-turbopack' && process.env.CI === 'true';
 
-    expect(result.output).not.toContain('Error:');
-
-    if (
-      DEFERRED_BUILD_MODE_PROJECTS.has(project) &&
-      isNextLazyDiscoveryEnabledForTest()
-    ) {
-      const deferredBuildSupported = !result.output.includes(
-        DEFERRED_BUILD_UNSUPPORTED_WARNING
+    if (project === 'sveltekit') {
+      const importResult = await runCommandWithLiveOutput(
+        process.execPath,
+        [
+          '-e',
+          "import('workflow/sveltekit').then(() => console.log('workflow/sveltekit import ok')).catch((error) => { console.error(error); process.exit(1); })",
+        ],
+        appPath
       );
-      if (deferredBuildSupported) {
-        expect(result.output).not.toContain(EAGER_DISCOVERY_LOG);
-        for (const workflowBundleLog of WORKFLOW_BUNDLE_LOGS) {
-          expect(result.output).not.toContain(workflowBundleLog);
-        }
-        expect(result.output).not.toContain(STEP_BUNDLE_LOG);
+
+      expect(importResult.output).toContain('workflow/sveltekit import ok');
+    }
+
+    let result: CommandResult;
+    try {
+      result = await runCommandWithLiveOutput('pnpm', ['build'], appPath);
+    } finally {
+      // CI starts the just-built app in the same prepared workbench path after
+      // this test. Turbopack production bundles can retain references to the
+      // fixture package/source, so keep them available until the job ends.
+      if (!preserveFixtureForBuiltOutput) {
+        await cleanup();
       }
     }
+
+    expect(result.output).not.toContain('Error:');
+    expect(result.output).not.toContain(SOURCE_MAP_WARNING);
 
     const diagnosticsManifestPath = usesVercelWorld()
       ? '.vercel/output/diagnostics/workflows-manifest.json'
       : DIAGNOSTICS_MANIFEST_PATHS[project];
     if (diagnosticsManifestPath) {
       const resolvedDiagnosticsManifestPath = path.join(
-        getWorkbenchAppPath(project),
+        appPath,
         diagnosticsManifestPath
       );
       await fs.access(resolvedDiagnosticsManifestPath);
@@ -164,7 +236,7 @@ describe.each([
     const esmBundlePath = ESM_STEP_BUNDLE_PROJECTS[project];
     if (esmBundlePath) {
       const bundleContent = await readFileIfExists(
-        path.join(getWorkbenchAppPath(project), esmBundlePath)
+        path.join(appPath, esmBundlePath)
       );
       expect(bundleContent).not.toBeNull();
       // ESM output should NOT contain CJS polyfill

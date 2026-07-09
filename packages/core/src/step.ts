@@ -9,6 +9,7 @@ import {
 } from './private.js';
 import type { Serializable } from './schemas.js';
 import { hydrateStepError, hydrateStepReturnValue } from './serialization.js';
+import { getOrHydrateStepReturnValue } from './step-hydration-cache.js';
 
 export function createUseStep(ctx: WorkflowOrchestratorContext) {
   return function useStep<Args extends Serializable[], Result>(
@@ -183,14 +184,34 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // takes variable time, promises resolve in event log order.
           // Each step's hydration + resolve waits for all prior hydrations
           // to complete before executing, preserving deterministic ordering.
+          //
+          // Memoization: on every replay this consumer re-runs and would
+          // otherwise re-decrypt + re-parse the same serialized result — O(N²)
+          // across an invocation for a sequential N-step workflow. The
+          // per-run `stepHydrationCache` short-circuits that work on
+          // subsequent replays. Crucially, the cache lookup happens INSIDE
+          // this same promiseQueue slot (and still resolves via `resolve`),
+          // so a cache hit occupies the exact same position in the ordered
+          // delivery chain a re-hydrate would have — preserving the
+          // determinism that pendingDeliveries, the delivery barriers, and
+          // Promise.race/all replay depend on. Only primitive results are
+          // memoized; non-primitives re-hydrate fresh each replay so a shared
+          // reference can never carry a mutation between replays.
+          const completedEventId = event.eventId;
+          const serializedResult = event.eventData.result;
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
-              const hydratedResult = await hydrateStepReturnValue(
-                event.eventData.result,
-                ctx.runId,
-                ctx.encryptionKey,
-                ctx.globalThis
+              const hydratedResult = await getOrHydrateStepReturnValue(
+                ctx.stepHydrationCache,
+                completedEventId,
+                () =>
+                  hydrateStepReturnValue(
+                    serializedResult,
+                    ctx.runId,
+                    ctx.encryptionKey,
+                    ctx.globalThis
+                  )
               );
               resolve(hydratedResult as Result);
             } catch (error) {
