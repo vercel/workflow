@@ -87,8 +87,8 @@ function useAnimatedViewport(initial: ViewportRange) {
       const anim = { raf: 0, from, to: target, start: performance.now() };
 
       const tick = () => {
-        const t = Math.min((performance.now() - anim.start) / 150, 1);
-        const e = 1 - (1 - t) * (1 - t);
+        const t = Math.min((performance.now() - anim.start) / 240, 1);
+        const e = t < 0.5 ? 8 * t * t * t * t : 1 - (-2 * t + 2) ** 4 / 2;
         setViewportState({
           start: anim.from.start + (anim.to.start - anim.from.start) * e,
           end: anim.from.end + (anim.to.end - anim.from.end) * e,
@@ -565,7 +565,7 @@ function NewTraceViewerContent({
           <div
             ref={timelineRef}
             id="trace-timeline"
-            className="block min-h-0 overflow-visible relative"
+            className="@container block min-h-0 overflow-visible relative"
             onDoubleClick={resetZoom}
             onMouseMove={handleTimelineMouseMove}
             onMouseLeave={handleTimelineMouseLeave}
@@ -581,6 +581,10 @@ function NewTraceViewerContent({
               onRevealTime={handleRevealTime}
               hoverFraction={hoverFraction}
               altHeld={altHeld}
+            />
+            <TraceShortcutHelper
+              hasMultipleSpans={trace.spans.length > 1}
+              reducedMotion={reducedMotion}
             />
           </div>
         </SplitPane>
@@ -618,11 +622,6 @@ function NewTraceViewerContent({
         containerRef={paneRootRef}
         onNavigateToSpan={navigateToSpan}
         onClose={handleClearActiveSpan}
-      />
-
-      <TraceShortcutHelper
-        hasMultipleSpans={trace.spans.length > 1}
-        reducedMotion={reducedMotion}
       />
     </div>
   );

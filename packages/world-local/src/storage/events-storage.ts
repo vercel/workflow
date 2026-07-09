@@ -64,6 +64,11 @@ import {
   releaseHookTokenClaimIfOwnedBy,
 } from './helpers.js';
 import {
+  deleteHookByRunMarker,
+  writeHookByRunMarker,
+  writeHookCreatedIndexEntries,
+} from './hook-index.js';
+import {
   deleteAllHooksForRun,
   rebuildLiveHookByTokenFromEventLog,
 } from './hooks-storage.js';
@@ -311,6 +316,17 @@ async function repairHookEntityFromPersistedEvent(
     isWebhook: eventData.isWebhook ?? true,
     isSystem: eventData.isSystem ?? false,
   };
+  // This path can repair events published by pre-index writers, so
+  // (idempotently) index the persisted event before the entity write.
+  await writeHookCreatedIndexEntries(
+    basedir,
+    eventData.token,
+    runId,
+    hookId,
+    persistedEventId,
+    tag
+  );
+  await writeHookByRunMarker(basedir, runId, hookId, tag);
   await writeExclusive(
     taggedPath(basedir, 'hooks', hookId, tag),
     JSON.stringify(hook, jsonReplacer, 2)
@@ -1960,6 +1976,19 @@ export function createEventsStorage(
           hookEntityWriteOptions = writeHookEntityWithOverwrite
             ? { overwrite: true }
             : undefined;
+
+          // Index entries before the event publish (see hook-index.ts
+          // crash-ordering invariant). `eventId` is final here — the
+          // dedup-recovery branch above already reassigned it to the
+          // canonical id when applicable.
+          await writeHookCreatedIndexEntries(
+            basedir,
+            hookData.token,
+            effectiveRunId,
+            data.correlationId,
+            eventId,
+            tag
+          );
         } else if (data.eventType === 'hook_disposed') {
           // hook_disposed: Deletes hook entity, rejects duplicates.
           // Uses writeExclusive on a lock file to atomically prevent concurrent
@@ -2021,6 +2050,12 @@ export function createEventsStorage(
             );
           }
           await deleteJSON(hookPath);
+          await deleteHookByRunMarker(
+            basedir,
+            effectiveRunId,
+            data.correlationId,
+            tag
+          );
         } else if (data.eventType === 'wait_created' && 'eventData' in data) {
           // wait_created: Creates wait entity with status 'waiting'.
           // Atomic claim on a per-(runId, correlationId) constraint file
@@ -2190,6 +2225,9 @@ export function createEventsStorage(
         // The branch sets `hookEntityWriteOptions` iff this event
         // type writes an entity.
         if (hook && data.eventType === 'hook_created') {
+          // Marker before entity (see hook-index.ts crash-ordering
+          // invariant).
+          await writeHookByRunMarker(basedir, hook.runId, hook.hookId, tag);
           await writeJSON(
             taggedPath(basedir, 'hooks', hook.hookId, tag),
             hook,

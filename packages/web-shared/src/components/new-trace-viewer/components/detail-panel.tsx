@@ -264,6 +264,7 @@ export function TraceDetailPanel({
             showSeparateEventOccurrenceTimestamps={
               sidebar.showSeparateEventOccurrenceTimestamps
             }
+            getModuleSourceUrl={sidebar.getModuleSourceUrl}
           />
         </ErrorBoundary>
       </div>
