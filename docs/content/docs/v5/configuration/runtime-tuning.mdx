@@ -1,0 +1,143 @@
+---
+title: Runtime Tuning
+description: Runtime environment variables for replay, inline execution, queue delivery, compression, tracing, and advanced limits.
+type: reference
+summary: Tune Workflow runtime behavior where workflows execute.
+related:
+  - /docs/configuration/worlds
+  - /docs/how-it-works/event-sourcing
+---
+
+Runtime variables are read where workflows execute. Set them on the deployment or dev server.
+
+## Replay and queue delivery
+
+### `WORKFLOW_REPLAY_TIMEOUT_MS`
+
+- Default: `240000`
+- Clamp: `30000` to `780000`
+- Charged time budget for replay and orchestration work in one handler invocation.
+- Covers loading events, re-running the workflow function, resolving suspensions, and scheduling follow-up work.
+- Does not include time spent inside inline `"use step"` bodies. Steps are bounded by the platform function duration instead.
+
+For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPLAY_TIMEOUT_MS=300000`, because the replay budget is paused while the step body runs.
+
+### `WORKFLOW_REPLAY_TIMEOUT_MAX_RETRIES`
+
+- Default: `3`
+- Queue deliveries that may hit the replay timeout before the run is failed with `REPLAY_TIMEOUT`.
+
+### `WORKFLOW_MAX_QUEUE_DELIVERIES`
+
+- Default: `48`
+- Delivery attempts before a run or step is failed gracefully.
+- Can only be lowered. The default is calibrated so Workflow can record failure before the queue expires the message.
+
+### `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`
+
+- Default: `3`
+- Recovery replays before replay divergence is recorded as corruption.
+
+## Inline execution
+
+### `WORKFLOW_V2_TIMEOUT_MS`
+
+- Default: `120000`
+- Wall-clock guard for the inline replay loop.
+- Once elapsed, the handler requeues the workflow instead of continuing to run more inline work in the same invocation.
+
+### `WORKFLOW_MAX_INLINE_STEPS`
+
+- Default: `3`
+- Clamp: `1` to `16`
+- Number of newly-created steps one invocation runs inline in parallel before queueing the rest.
+
+### `WORKFLOW_TURBO`
+
+- Default: enabled
+- Fast path for a run's first delivery.
+- Set `0` or `false` to disable.
+
+### `WORKFLOW_OPTIMISTIC_INLINE_START`
+
+- Default: disabled
+- Starts inline step bodies before their `step_started` event is confirmed.
+- Use only when step side effects are idempotent.
+- Set `0` or `false` to force it off, including the first-delivery fast path used by `WORKFLOW_TURBO`.
+
+## Compression and tracing
+
+### `WORKFLOW_DISABLE_COMPRESSION`
+
+- Default: compression enabled
+- Set `1` to disable compression when writing payloads.
+- Reads still decompress existing payloads.
+
+### `WORKFLOW_COMPRESSION_CODEC`
+
+- Default: automatic
+- Forces the write-side codec to `zstd` or `gzip`.
+- Invalid values are ignored. Automatic mode prefers `zstd` when the current Node.js runtime supports it, otherwise it falls back to `gzip`.
+
+### `WORKFLOW_TRACE_MODE`
+
+- Default: `linked`
+- OpenTelemetry span topology for runs.
+- Accepts `linked` or `continuous`.
+
+### `DEBUG`
+
+- Default: unset
+- Debug log filter with wildcards and negation.
+- Examples: `workflow:*`, `workflow:*,-workflow:telemetry:*`.
+
+## Queue namespace
+
+### `WORKFLOW_QUEUE_NAMESPACE`
+
+- Default: none
+- Queue topic namespace shared by build output and Worlds.
+- Must match `^[a-z][a-z0-9]*$`.
+- Set it consistently at build and runtime.
+
+## Streams and waits
+
+These variables are primarily for tests, debugging, or unusual deployments.
+
+### `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
+
+- Default: `10`
+- Stream write buffering interval.
+- Also available as `streamFlushIntervalMs` on Worlds that expose it.
+
+### `WORKFLOW_FRAMED_STREAM_MAX_RECONNECTS`
+
+- Default: `50`
+- Consecutive reconnect cap for framed stream readers.
+
+### `WORKFLOW_FRAMED_STREAM_MAX_TOTAL_RECONNECTS`
+
+- Default: `1000`
+- Total reconnect cap per stream session.
+
+### `WORKFLOW_WAIT_CONTINUATION_MAX_DELAY_SECONDS`
+
+- Default: `82800` (23 hours)
+- Longest single queue delay used for `sleep()` continuations.
+- If a wait is longer than this, Workflow queues one continuation for the maximum delay, then queues another continuation after that message fires, repeating until the wait's target time is reached.
+
+### `WORKFLOW_NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS`
+
+- Default: `2`
+- Clock-skew tolerance for wait continuations that arrive near their target time.
+
+### `WORKFLOW_DEFERRED_CHECK_DELAY_MS`
+
+- Default: `100`
+- Delay before the unconsumed-event check fires.
+- Minimum: `10`.
+
+### `WORKFLOW_LOCK_POLL_INTERVAL_MS`
+
+- Default: `10`
+- Poll interval for detecting stream lock release.

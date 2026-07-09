@@ -5,6 +5,7 @@ import {
   RESERVED_ATTRIBUTE_KEY_PREFIX,
 } from '@workflow/world';
 import { cva, type VariantProps } from 'class-variance-authority';
+import { ArrowUpRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '../../lib/cn';
 import { CopyButton } from '../new-trace-viewer/components/copy-button';
@@ -21,7 +22,7 @@ function isReservedAttributeKey(key: string): boolean {
 }
 
 const rowValueVariants = cva(
-  'max-w-[60%] truncate text-right text-copy-13 text-gray-1000',
+  'min-w-0 flex-1 truncate text-right text-copy-13 text-gray-1000',
   {
     variants: {
       variant: {
@@ -36,7 +37,7 @@ const rowValueVariants = cva(
 );
 
 const rowCopyValueVariants = cva(
-  'flex min-w-0 max-w-[60%] items-center justify-end gap-1 text-copy-13 text-gray-1000',
+  'flex min-w-0 flex-1 items-center justify-end gap-1 text-copy-13 text-gray-1000',
   {
     variants: {
       variant: {
@@ -54,6 +55,7 @@ type DetailKeyValueRowProps = {
   label: string;
   value?: ReactNode;
   copyText?: string;
+  href?: string;
   removed?: boolean;
 };
 
@@ -61,6 +63,7 @@ function DetailKeyValueRowBase({
   label,
   value,
   copyText,
+  href,
   removed = false,
   variant,
 }: DetailKeyValueRowProps & VariantProps<typeof rowValueVariants>) {
@@ -77,13 +80,32 @@ function DetailKeyValueRowBase({
         </span>
       ) : copyText ? (
         <div className={cn(rowCopyValueVariants({ variant }))} title={copyText}>
-          <MiddleTruncate
-            value={copyText}
-            className={cn(
-              rowValueVariants({ variant, className: 'text-right' })
-            )}
-            style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}
-          />
+          {href ? (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              className={cn(
+                rowValueVariants({ variant }),
+                'flex min-w-0 items-center gap-0.5 hover:underline'
+              )}
+            >
+              <MiddleTruncate
+                value={copyText}
+                className="min-w-0 text-right"
+                style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}
+              />
+              <ArrowUpRight aria-hidden className="h-3 w-3 shrink-0" />
+            </a>
+          ) : (
+            <MiddleTruncate
+              value={copyText}
+              className={cn(
+                rowValueVariants({ variant, className: 'text-right' })
+              )}
+              style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}
+            />
+          )}
           <CopyButton
             copyText={copyText}
             ariaLabel={`Copy ${label}`}
@@ -92,7 +114,18 @@ function DetailKeyValueRowBase({
         </div>
       ) : (
         <span className={cn(rowValueVariants({ variant }))} title={stringValue}>
-          {value}
+          {href ? (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              className="hover:underline"
+            >
+              {value}
+            </a>
+          ) : (
+            value
+          )}
         </span>
       )}
     </div>

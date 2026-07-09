@@ -16,6 +16,11 @@
 
 export type { ResumeHookResult } from '~/lib/types';
 export {
+  useInfiniteList,
+  useWorkflowRunsInfinite,
+} from './client/hooks/use-infinite-list';
+export { useLoadMoreOnScroll } from './client/hooks/use-load-more-on-scroll';
+export {
   usePaginatedList,
   useWorkflowHooks,
   useWorkflowRuns,
@@ -28,6 +33,7 @@ export { useWorkflowTraceViewerData } from './client/hooks/use-trace-viewer';
 export { useWorkflowStreams } from './client/hooks/use-workflow-streams';
 export {
   cancelRun,
+  fetchHookToken,
   recreateRun,
   reenqueueRun,
   resumeHook,
@@ -35,6 +41,7 @@ export {
 } from './client/workflow-actions';
 export {
   getErrorMessage,
+  getErrorTitle,
   unwrapServerActionResult,
   WorkflowWebAPIError,
 } from './client/workflow-errors';

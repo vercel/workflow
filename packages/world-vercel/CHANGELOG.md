@@ -1,5 +1,35 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.25
+
+### Minor Changes
+
+- [#2833](https://github.com/vercel/workflow/pull/2833) [`3f69666`](https://github.com/vercel/workflow/commit/3f696668bcc436cd4b3e29213ee1d9d12e2e5b01) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Report time-to-first-step and step-to-step overhead latency telemetry on step completion events.
+
+### Patch Changes
+
+- [#2840](https://github.com/vercel/workflow/pull/2840) [`712ed61`](https://github.com/vercel/workflow/commit/712ed61f0a37937c3990429508c582f3edbd4576) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optional reason to run cancellation (`run.cancel({ cancelReason })`), recorded on the cancellation event and shown in the run detail view.
+
+- Updated dependencies [[`3f69666`](https://github.com/vercel/workflow/commit/3f696668bcc436cd4b3e29213ee1d9d12e2e5b01), [`712ed61`](https://github.com/vercel/workflow/commit/712ed61f0a37937c3990429508c582f3edbd4576)]:
+  - @workflow/world@5.0.0-beta.17
+  - @workflow/errors@5.0.0-beta.10
+
+## 5.0.0-beta.24
+
+### Patch Changes
+
+- [#2752](https://github.com/vercel/workflow/pull/2752) [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d) Thanks [@ijjk](https://github.com/ijjk)! - Statically inject the configured world package into host bundles instead of selecting worlds dynamically at runtime.
+
+- [#2812](https://github.com/vercel/workflow/pull/2812) [`fe327e6`](https://github.com/vercel/workflow/commit/fe327e69e205417f864fc4109f6e8b79e92e141a) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Support `startTime`/`endTime` on `world.analytics.runs.list` to bound the listing window.
+
+- [#2468](https://github.com/vercel/workflow/pull/2468) [`49a50e8`](https://github.com/vercel/workflow/commit/49a50e83d94656e1df123df1f27258fa7f1d3216) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Standardize first-party World packages on `createWorld()`, support relative target World modules consistently, and align the Postgres World `DATABASE_URL` fallback with bootstrap.
+
+- [#2789](https://github.com/vercel/workflow/pull/2789) [`03862ed`](https://github.com/vercel/workflow/commit/03862edb651a37767df59c81898a8a4aadbb9d1c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Send the `x-vercel-queue-region` header on proxy-mode queue sends so they route to the region's VQS dataplane host like direct in-function sends do.
+
+- Updated dependencies [[`fe327e6`](https://github.com/vercel/workflow/commit/fe327e69e205417f864fc4109f6e8b79e92e141a)]:
+  - @workflow/world@5.0.0-beta.16
+  - @workflow/errors@5.0.0-beta.10
+
 ## 5.0.0-beta.23
 
 ### Minor Changes

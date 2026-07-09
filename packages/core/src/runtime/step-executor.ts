@@ -22,6 +22,7 @@ import type { CryptoKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import {
+  cancelAbortReaders,
   dehydrateStepError,
   dehydrateStepReturnValue,
   hydrateStepArguments,
@@ -43,6 +44,11 @@ import {
 } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
+import {
+  computeStepLatencyEventData,
+  type StepLatencyEventData,
+  type StepLatencyTracking,
+} from './step-latency.js';
 import { safeWaitUntil } from './wait-until.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
@@ -123,6 +129,15 @@ export interface StepExecutorParams {
    * outside turbo, where `run_started` was already awaited up front.
    */
   runReadyBarrier?: Promise<unknown>;
+  /**
+   * Latency telemetry (TTFS / STSO): eligibility and anchor timestamps decided
+   * by the orchestrator. When set, this executor computes the final values
+   * against the wall clock taken immediately before user code runs and
+   * attaches them to the step's terminal event. Set only for the first step of
+   * an inline batch, and only on first-attempt executions that qualify — see
+   * runtime/step-latency.ts.
+   */
+  latencyTracking?: StepLatencyTracking;
 }
 
 /**
@@ -530,6 +545,11 @@ export async function executeStep(
     const ops: Promise<void>[] = [];
     let opsSettled = true;
 
+    // Latency telemetry to attach to this step's terminal event. Computed
+    // right before user code runs; declared here so the failure path (the
+    // catch below) can attach it to step_failed too.
+    let latencyEventData: StepLatencyEventData | undefined;
+
     try {
       const attempt = step.attempt;
 
@@ -573,40 +593,94 @@ export async function executeStep(
           : `http://localhost:${(await getPortLazy()) ?? 3000}`
       );
 
+      // --- User code execution ---
+      // Wrap only stepFn.apply() (user step code) so cleanup below runs on
+      // BOTH success and failure. A user-code throw is captured here and
+      // re-raised after cancelAbortReaders, so it still flows to the outer
+      // catch (step_failed/step_retrying) — but the abort-stream reader is
+      // torn down first. Without this, a throwing/retrying signal-bearing
+      // step would leak a real-time abort reader per attempt.
+      let userCodeError: unknown;
+      let userCodeFailed = false;
+
       const executionStartTime = Date.now();
-      result = await trace('step.execute', {}, async () => {
-        return await contextStorage.run(
-          {
-            stepMetadata: {
-              stepName,
-              stepId,
-              stepStartedAt: new Date(+stepStartedAt),
-              attempt,
-            },
-            workflowMetadata: {
-              workflowName,
-              workflowRunId,
-              workflowStartedAt: new Date(+workflowStartedAt),
-              url: workflowBaseUrl,
-              features: { encryption: !!encryptionKey },
-            },
-            workflowDeploymentId: params.workflowDeploymentId,
-            ops,
-            preCompletionOps,
-            closureVars: hydratedInput.closureVars,
-            encryptionKey,
-            // Turbo optimistic start runs this body before `run_started` is
-            // durable. Expose the barrier so a direct step-body world write
-            // (e.g. `experimental_setAttributes`) can order itself after the
-            // run exists. Undefined on the await path (run already durable).
-            runReadyBarrier: optimisticStart
-              ? params.runReadyBarrier
-              : undefined,
-          },
-          () => stepFn.apply(thisVal, args)
-        );
+      latencyEventData = computeStepLatencyEventData({
+        tracking: params.latencyTracking,
+        stepCodeStartedAtMs: executionStartTime,
+        attempt,
+        lazyStepStart: params.lazyStepInput !== undefined,
+        optimisticStart,
       });
+      if (latencyEventData) {
+        // Mirror the latency telemetry onto the step span so traces show
+        // TTFS/STSO alongside the flame graph, not just Datadog metrics.
+        span?.setAttributes({
+          ...(latencyEventData.ttfs !== undefined
+            ? Attribute.StepTtfsMs(latencyEventData.ttfs)
+            : {}),
+          ...(latencyEventData.stso !== undefined
+            ? Attribute.StepStsoMs(latencyEventData.stso)
+            : {}),
+          ...Attribute.StepLatencyOptimizations(
+            latencyEventData.optimizations ?? []
+          ),
+        });
+      }
+      try {
+        result = await trace('step.execute', {}, async () => {
+          return await contextStorage.run(
+            {
+              stepMetadata: {
+                stepName,
+                stepId,
+                stepStartedAt: new Date(+stepStartedAt),
+                attempt,
+              },
+              workflowMetadata: {
+                workflowName,
+                workflowRunId,
+                workflowStartedAt: new Date(+workflowStartedAt),
+                url: workflowBaseUrl,
+                features: { encryption: !!encryptionKey },
+              },
+              workflowDeploymentId: params.workflowDeploymentId,
+              ops,
+              preCompletionOps,
+              closureVars: hydratedInput.closureVars,
+              encryptionKey,
+              // Turbo optimistic start runs this body before `run_started` is
+              // durable. Expose the barrier so a direct step-body world write
+              // (e.g. `experimental_setAttributes`) can order itself after the
+              // run exists. Undefined on the await path (run already durable).
+              runReadyBarrier: optimisticStart
+                ? params.runReadyBarrier
+                : undefined,
+            },
+            () => stepFn.apply(thisVal, args)
+          );
+        });
+      } catch (err) {
+        userCodeError = err;
+        userCodeFailed = true;
+      }
       const executionTimeMs = Date.now() - executionStartTime;
+
+      // Tear down any abort-stream readers opened while hydrating the step's
+      // arguments (a serialized AbortSignal opens a real-time abort reader for
+      // the step's duration). Without this the reader's `read()` promise never
+      // settles, so the `ops` flush below always loses the 500ms race and the
+      // step reports `hasPendingOps` — forcing the inline loop to queue a
+      // continuation and paying a full round-trip per signal-bearing step.
+      // The non-inline `step-handler` path already does this after user code.
+      // Runs unconditionally (success or failure) so a throwing step doesn't
+      // leak the reader.
+      cancelAbortReaders(...args, thisVal, hydratedInput.closureVars);
+
+      // Re-raise a user-code failure now that cleanup has run; the outer
+      // catch maps it to step_failed/step_retrying.
+      if (userCodeFailed) {
+        throw userCodeError;
+      }
 
       span?.setAttributes({
         ...Attribute.QueueExecutionTimeMs(executionTimeMs),
@@ -783,6 +857,7 @@ export async function executeStep(
                 globalThis,
                 compression
               ),
+              ...latencyEventData,
             },
           });
         } catch (stepFailErr) {
@@ -851,6 +926,7 @@ export async function executeStep(
                 globalThis,
                 compression
               ),
+              ...latencyEventData,
             },
           });
         } catch (stepFailErr) {
@@ -962,6 +1038,7 @@ export async function executeStep(
             stepName,
             workflowName,
             result: result as Uint8Array,
+            ...latencyEventData,
           },
         },
         params.inlineDeltaSinceCursor !== undefined
