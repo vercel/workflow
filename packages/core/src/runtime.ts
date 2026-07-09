@@ -33,7 +33,6 @@ import { describeError } from './describe-error.js';
 import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
-  getInlineOwnershipLeaseSeconds,
   getMaxQueueDeliveries,
   getReplayDivergenceMaxRetries,
   isInlineOwnershipEnabled,
@@ -56,6 +55,12 @@ import {
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { executeStep } from './runtime/step-executor.js';
 import { computeStepLatencyTracking } from './runtime/step-latency.js';
+import {
+  backstopIdempotencyKey,
+  hasPendingStepOwnedByMessage,
+  isStepOwnershipActive,
+  stepLeaseRemainingSeconds,
+} from './runtime/step-ownership.js';
 import { runStepSingleFlight } from './runtime/step-single-flight.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
@@ -280,85 +285,6 @@ function hasOpenHookOrWait(events: Event[]): boolean {
     if (
       e.eventType === 'wait_created' &&
       !completedWaitIds.has(e.correlationId)
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Whether inline step ownership is active for a pending step: created,
- * latest `step_started` carries an owner stamp, and no `step_retrying` has
- * been observed (from `step_retrying` on, the step is queue-owned by its
- * delayed retry handoff / replay requeue, so ownership is permanently
- * lapsed for the correlation ID). Derived per-replay from the event log by
- * the step consumer in step.ts — see StepInvocationQueueItem.
- */
-function isStepOwnershipActive(step: StepInvocationQueueItem): boolean {
-  return (
-    step.hasCreatedEvent === true &&
-    step.ownerMessageId !== undefined &&
-    step.sawRetrying !== true
-  );
-}
-
-/**
- * Seconds left on an owned step's liveness lease, anchored at its latest
- * `step_started`. 0 means the lease has expired (or the start timestamp is
- * missing — the degraded mode for worlds whose events lack usable
- * timestamps), in which case dispatch falls back to the immediate enqueue.
- */
-function stepLeaseRemainingSeconds(
-  step: StepInvocationQueueItem,
-  nowMs: number
-): number {
-  if (step.lastStartedAt === undefined) return 0;
-  const remainingMs =
-    step.lastStartedAt + getInlineOwnershipLeaseSeconds() * 1000 - nowMs;
-  return Math.max(0, Math.ceil(remainingMs / 1000));
-}
-
-/**
- * Whether any of the given pending correlation IDs is inline-owned by
- * `messageId` per the raw event log: its LATEST `step_started` carries
- * `ownerMessageId === messageId` and no `step_retrying` follows it. Used by
- * the background-step fast path, which sees raw events (not the replay's
- * queueItems), to decide whether to fall through to the main loop so this
- * invocation can recover a step it owns instead of returning and leaving it
- * to the delayed backstop.
- */
-function hasPendingStepOwnedByMessage(
-  events: Event[],
-  pendingCorrelationIds: Set<string | undefined>,
-  messageId: string
-): boolean {
-  // Latest-wins scan: events are in log order, so later entries overwrite.
-  // A step_retrying lapses ownership permanently (matching the sawRetrying
-  // semantics of the replay consumer in step.ts) — from that point the step
-  // is queue-owned, whatever starts follow.
-  const latestOwner = new Map<string, string | undefined>();
-  const sawRetrying = new Set<string>();
-  for (const e of events) {
-    if (e.correlationId === undefined) continue;
-    if (e.eventType === 'step_started') {
-      const owner =
-        'eventData' in e &&
-        e.eventData &&
-        'ownerMessageId' in e.eventData &&
-        typeof e.eventData.ownerMessageId === 'string'
-          ? e.eventData.ownerMessageId
-          : undefined;
-      latestOwner.set(e.correlationId, owner);
-    } else if (e.eventType === 'step_retrying') {
-      sawRetrying.add(e.correlationId);
-    }
-  }
-  for (const id of pendingCorrelationIds) {
-    if (
-      id !== undefined &&
-      !sawRetrying.has(id) &&
-      latestOwner.get(id) === messageId
     ) {
       return true;
     }
@@ -1713,17 +1639,15 @@ export function workflowEntrypoint(
                         //     dead with lease expired → immediate dispatch,
                         //     preserving step-level failure semantics for
                         //     poison steps; lease refreshed by owner
-                        //     recovery → re-arm). Crucially the backstop
-                        //     must NOT occupy the step message's
-                        //     idempotencyKey (correlationId): the owner's
-                        //     retry handoff enqueues the step under that key
-                        //     with a short backoff, and a pending backstop
-                        //     step-message sharing the key would absorb it —
-                        //     turning a 1s retry into a full-lease stall
-                        //     (this wedged the abort-mid-flight e2e). The
-                        //     `:backstop` key suffix caps wake fan-out at
-                        //     one pending backstop per step while staying
-                        //     out of the step message's dedupe space.
+                        //     recovery → re-arm). The backstop's
+                        //     idempotencyKey is scoped to the ownership
+                        //     EPOCH (latest step_started timestamp), NOT
+                        //     just the correlation ID, and must never be
+                        //     the step message's own key — see
+                        //     backstopIdempotencyKey for both invariants
+                        //     (fixed keys either absorb the retry handoff
+                        //     or dedupe the refreshed-lease re-arm against
+                        //     the in-flight backstop itself).
                         //   - Not owned (never stamped / eager / ownership
                         //     lapsed at step_retrying / lease expired /
                         //     kill-switched) → immediate enqueue, exactly as
@@ -1802,7 +1726,7 @@ export function workflowEntrypoint(
                                 },
                                 {
                                   delaySeconds: backstopDelaySeconds,
-                                  idempotencyKey: `${step.correlationId}:backstop`,
+                                  idempotencyKey: backstopIdempotencyKey(step),
                                 }
                               )
                             );
