@@ -92,7 +92,8 @@ export default class GithubAnnotationReporter implements Reporter {
    * dashboard URLs that we can use to enrich failure info.
    */
   private enrichFromDiagnosticsSidecar() {
-    const appName = process.env.APP_NAME || 'unknown';
+    const appName =
+      process.env.E2E_REPORT_APP_NAME || process.env.APP_NAME || 'unknown';
     const isVercel = !!process.env.WORKFLOW_VERCEL_ENV;
     const backend = isVercel ? 'vercel' : 'local';
     const sidecarPath = path.resolve(
@@ -145,7 +146,8 @@ export default class GithubAnnotationReporter implements Reporter {
   }
 
   private writeFailuresSidecar() {
-    const appName = process.env.APP_NAME || 'unknown';
+    const appName =
+      process.env.E2E_REPORT_APP_NAME || process.env.APP_NAME || 'unknown';
     const isVercel = !!process.env.WORKFLOW_VERCEL_ENV;
     const backend = isVercel ? 'vercel' : 'local';
     const filePath = path.resolve(

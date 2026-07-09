@@ -82,7 +82,8 @@ async function start<T>(
 }
 
 function getE2EMetadataPath() {
-  const appName = process.env.APP_NAME || 'unknown';
+  const appName =
+    process.env.E2E_REPORT_APP_NAME || process.env.APP_NAME || 'unknown';
   // Detect if this is a Vercel deployment
   const isVercel = !!process.env.WORKFLOW_VERCEL_ENV;
   const backend = isVercel ? 'vercel' : 'local';

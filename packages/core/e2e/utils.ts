@@ -765,7 +765,8 @@ let currentTestName = 'unknown';
 export function writeDiagnosticsSidecar() {
   if (globalCollectedRunIds.length === 0) return;
 
-  const appName = process.env.APP_NAME || 'unknown';
+  const appName =
+    process.env.E2E_REPORT_APP_NAME || process.env.APP_NAME || 'unknown';
   const isVercel = !!process.env.WORKFLOW_VERCEL_ENV;
   const backend = isVercel ? 'vercel' : 'local';
   const filePath = path.resolve(
