@@ -44,7 +44,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterAll, describe, test } from 'vitest';
+import { afterAll, beforeAll, describe, test } from 'vitest';
 import { start } from '../src/runtime';
 import { getWorkflowMetadata, setupWorld } from './utils';
 
@@ -88,9 +88,17 @@ const STSO_BUCKETS = [
 ];
 // Guard timeouts so a single stuck run fails fast instead of eating the job.
 const RUN_TIMEOUT_MS = envInt('BENCH_RUN_TIMEOUT_MS', 120_000);
+// Preflight guard: a trivial 1-step run must complete within this window
+// before any scenario spends its attempt budget (see beforeAll below).
+const PREFLIGHT_TIMEOUT_MS = envInt('BENCH_PREFLIGHT_TIMEOUT_MS', 180_000);
 // An iteration can flake on transient network errors; grant each scenario a
 // bounded fraction of spare (retry) attempts on top of its iteration count.
 const MAX_FAILURE_RATIO = 0.2;
+// When a scenario has produced zero successful iterations after this many
+// attempts, the target is systematically broken (not flaking) — abort the
+// scenario instead of burning the full attempt budget at RUN_TIMEOUT_MS per
+// attempt.
+const ZERO_SUCCESS_ABORT_ATTEMPTS = 3;
 
 interface BenchStepTiming {
   start: number;
@@ -223,7 +231,20 @@ async function runStreamIteration(
       slMs,
     };
   } catch (error) {
-    (error as Error).message += ` (run ${run.runId})`;
+    // A stream-read timeout alone can't distinguish "the run never executed"
+    // (queue not delivering to this deployment) from "the read path is
+    // broken" (run finished but chunks never became visible). Probe the run
+    // state so the failure log answers that question.
+    let runState = 'unknown';
+    try {
+      await withTimeout(run.returnValue, 5_000, 'run state probe');
+      runState = 'run completed';
+    } catch (probe) {
+      runState = (probe as Error).message.startsWith('Timed out')
+        ? 'run still not finished'
+        : `run failed: ${(probe as Error).message}`;
+    }
+    (error as Error).message += ` (run ${run.runId}; ${runState})`;
     throw error;
   }
 }
@@ -301,6 +322,11 @@ async function runScenario<T>(
         `[bench] ${name} attempt ${attempts}/${maxAttempts} failed:`,
         error
       );
+      if (results.length === 0 && attempts >= ZERO_SUCCESS_ABORT_ATTEMPTS) {
+        throw new Error(
+          `${name}: no successful iterations after ${attempts} attempts — target looks systematically broken, aborting scenario; last error: ${(error as Error).message}`
+        );
+      }
     }
   }
 
@@ -418,6 +444,30 @@ const SCENARIO_DESCRIPTIONS = [
 ];
 
 describe('workflow benchmarks', () => {
+  // Preflight: prove the deployment executes workflows at all before any
+  // scenario spends its attempt budget. Without this, a target that accepts
+  // run creation but never executes runs (e.g. queue not delivering to the
+  // deployment) makes every iteration of every scenario wait out
+  // RUN_TIMEOUT_MS, and the job dies at its time limit without a useful
+  // error.
+  beforeAll(async () => {
+    const wf = await benchWf('benchSequentialStepsWorkflow');
+    const run = await start(wf, [1]);
+    try {
+      const returnValue = await withTimeout(
+        run.returnValue,
+        PREFLIGHT_TIMEOUT_MS,
+        `preflight run (run ${run.runId})`
+      );
+      timingsFromReturnValue(returnValue, run.runId);
+      console.log(`[bench] preflight ok (run ${run.runId})`);
+    } catch (error) {
+      throw new Error(
+        `Benchmark preflight failed — the deployment accepted the run but did not execute it to completion; aborting all scenarios. ${(error as Error).message}`
+      );
+    }
+  }, PREFLIGHT_TIMEOUT_MS + 60_000);
+
   test(
     'scenario: 1 step + stream (turbo)',
     { timeout: 30 * 60_000 },
