@@ -2,7 +2,13 @@ import { decode, isTagged } from '@workflow/world-vercel/run-id';
 import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
-import { getRun, getWorld, start as rawStart } from '../src/runtime';
+import {
+  getHookByToken,
+  getRun,
+  getWorld,
+  start as rawStart,
+  resumeHook,
+} from '../src/runtime';
 import {
   getWorkflowMetadata,
   isLocalDeployment,
@@ -367,6 +373,99 @@ describe.skipIf(isLocalDeployment())('multi-region (world-vercel)', () => {
         // otherwise the implicit-tagging assertion below tests nothing.
         expect(startedInRegion).toBe(region);
         await expectRunInRegion(run, region, label);
+      }
+    );
+  });
+
+  describe('hooks on non-iad1 runs', () => {
+    // Hooks are resolved by OPAQUE token — the token carries no region
+    // hint, so hook lookup/resume must work no matter which region owns
+    // the run's data. This is the exact path a follow-up message takes
+    // in a hook-driven app (create → suspend → resume-by-token), and it
+    // is regression coverage for the failure where hooks created by
+    // non-iad1 runs could not be resolved by token: the first message
+    // worked and every follow-up failed with "Hook not found".
+    type HookPayload = { message: string; customData: string; done?: boolean };
+
+    const hookWorkflow = () =>
+      getWorkflowMetadata(deploymentUrl, 'workflows/99_e2e.ts', 'hookWorkflow');
+
+    /**
+     * Poll `getHookByToken` until the hook belonging to `runId` is
+     * registered (hook creation happens asynchronously inside the
+     * workflow after start() returns). Mirrors the waitForHook helper
+     * in e2e.test.ts.
+     */
+    async function waitForHook(
+      token: string,
+      runId: string,
+      timeoutMs = 60_000
+    ) {
+      const deadline = Date.now() + timeoutMs;
+      let lastError: unknown;
+      while (Date.now() < deadline) {
+        try {
+          const hook = await getHookByToken(token);
+          if (hook.runId === runId) return hook;
+          lastError = new Error(
+            `hook for token resolved to unexpected run ${hook.runId}`
+          );
+        } catch (error) {
+          lastError = error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+      throw new Error(
+        `Timed out after ${timeoutMs}ms waiting for hook on run ${runId}. Last error: ${String(lastError)}`
+      );
+    }
+
+    // The non-iad1 members of the detailed trio. (iad1 hooks are covered
+    // by the main e2e suite; the mechanism under test here is lookup of
+    // hooks whose owning run lives OUTSIDE the default region.)
+    test.each(['sfo1', 'fra1'] as const)(
+      'hook created by a %s run resolves by token and resumes the run',
+      { timeout: 120_000 },
+      async (region) => {
+        const label = `e2e-region-hook-${region}`;
+        const token = `${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+        const run = await start<HookPayload[]>(
+          await hookWorkflow(),
+          [token, label],
+          { region }
+        );
+
+        // The run — and therefore the data of the hook it creates — is
+        // owned by the tagged non-default region.
+        const ulid = run.runId.slice('wrun_'.length);
+        expect(isTagged(ulid)).toBe(true);
+        const decoded = decode(ulid);
+        expect(decoded.tagged && decoded.region).toBe(region);
+
+        // Resolve by opaque token from the test process.
+        const hook = await waitForHook(token, run.runId);
+        expect(hook.runId).toBe(run.runId);
+        expect((hook.metadata as { customData?: string })?.customData).toBe(
+          label
+        );
+
+        // Resume the suspended run by token — twice, sequentially, so
+        // the payload order in the run's event log is deterministic.
+        await resumeHook(token, { message: 'one', customData: label });
+        await resumeHook(token, {
+          message: 'two',
+          customData: label,
+          done: true,
+        });
+
+        // The workflow observed both payloads in order and completed.
+        const payloads = await run.returnValue;
+        expect(payloads.map((p) => p.message)).toEqual(['one', 'two']);
+
+        const world = await getWorld();
+        const serverRun = await world.runs.get(run.runId);
+        expect(serverRun.status).toBe('completed');
       }
     );
   });
