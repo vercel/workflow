@@ -30,18 +30,25 @@ export function workflowTransformPlugin(
     resolveId: {
       order: 'pre',
       async handler(source, importer, options) {
-        // `@opentelemetry/api` is an optional peer the SDK imports lazily. When
-        // it isn't installed, Rollup/Vite would otherwise fail the build with
-        // "failed to resolve import '@opentelemetry/api'" (observed in
-        // SvelteKit's pipeline). Mark it external so the build stays green; the
-        // runtime try/catch loads the real API when the peer is present and
-        // disables tracing when it isn't. External (not a stub alias) is
-        // deliberate — a stub would permanently disable tracing.
+        // `@opentelemetry/api` is an optional peer the SDK imports lazily.
+        // Externalize it ONLY when it isn't installed: otherwise Rollup/Vite
+        // fails the build with "failed to resolve import '@opentelemetry/api'"
+        // when the peer is absent (observed in SvelteKit's pipeline). When the
+        // peer IS installed we must let it resolve and bundle normally — a
+        // self-contained output (Nitro's `.output/server`, esbuild) ships no
+        // node_modules, so forcing it external there strands the runtime
+        // `import('@opentelemetry/api')` and crashes the server with
+        // ERR_MODULE_NOT_FOUND. Externalize (not a stub alias) so tracing still
+        // loads the real API at runtime when present.
         if (
           source === WORKFLOW_OPTIONAL_OTEL_API_MODULE ||
           source.startsWith(`${WORKFLOW_OPTIONAL_OTEL_API_MODULE}/`)
         ) {
-          return { id: source, external: true };
+          const resolved = await this.resolve(source, importer, {
+            ...options,
+            skipSelf: true,
+          });
+          return resolved ?? { id: source, external: true };
         }
 
         if (source !== WORKFLOW_WORLD_TARGET_MODULE) {
