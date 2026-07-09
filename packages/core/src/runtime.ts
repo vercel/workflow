@@ -1698,19 +1698,32 @@ export function workflowEntrypoint(
                         //     the step it crashed on, via a re-stamped bare
                         //     step_started).
                         //   - Inline-owned, owner !== this message  →
-                        //     enqueue a DELAYED backstop (delaySeconds =
-                        //     ownership lease remaining) instead of an
-                        //     immediate message. The owning invocation is
-                        //     (likely) still running the body; an immediate
-                        //     message would bare-start the running step and
-                        //     execute it a second time (workflow#2780). The
-                        //     idempotencyKey caps it at one pending backstop
-                        //     no matter how many wakes replay, and the
-                        //     backstop doubles as the escape hatch for a
-                        //     lost/exhausted owner message (post-lease it
-                        //     executes on the normal background path, or
-                        //     terminal-rejects → skipped if the owner
-                        //     completed the step).
+                        //     ensure a DELAYED backstop wake exists
+                        //     (delaySeconds = ownership lease remaining)
+                        //     instead of enqueueing the step. The owning
+                        //     invocation is (likely) still running the body;
+                        //     an immediate step message would bare-start the
+                        //     running step and execute it a second time
+                        //     (workflow#2780). The backstop is a plain run
+                        //     continuation, NOT a step message: when it
+                        //     fires, this same decision table handles
+                        //     whatever state the step is in by then
+                        //     (terminal → nothing pending; queue-owned after
+                        //     step_retrying → normal keyed dispatch; owner
+                        //     dead with lease expired → immediate dispatch,
+                        //     preserving step-level failure semantics for
+                        //     poison steps; lease refreshed by owner
+                        //     recovery → re-arm). Crucially the backstop
+                        //     must NOT occupy the step message's
+                        //     idempotencyKey (correlationId): the owner's
+                        //     retry handoff enqueues the step under that key
+                        //     with a short backoff, and a pending backstop
+                        //     step-message sharing the key would absorb it —
+                        //     turning a 1s retry into a full-lease stall
+                        //     (this wedged the abort-mid-flight e2e). The
+                        //     `:backstop` key suffix caps wake fan-out at
+                        //     one pending backstop per step while staying
+                        //     out of the step message's dedupe space.
                         //   - Not owned (never stamped / eager / ownership
                         //     lapsed at step_retrying / lease expired /
                         //     kill-switched) → immediate enqueue, exactly as
@@ -1759,18 +1772,18 @@ export function workflowEntrypoint(
                             ownedRecoverySteps.push(step);
                             continue;
                           }
-                          // Delayed backstop while another invocation's
-                          // ownership lease is live; immediate enqueue
-                          // otherwise (lease expired ⇒ delaySeconds 0 ⇒
-                          // same as today, which is also the degraded mode
-                          // for worlds with unstable message IDs — the
-                          // owner check above never matches there).
+                          // Delayed backstop wake while another invocation's
+                          // ownership lease is live; immediate step enqueue
+                          // otherwise (lease expired ⇒ remaining 0 ⇒ same as
+                          // today, which is also the degraded mode for
+                          // worlds with unstable message IDs — the owner
+                          // check above never matches there).
                           const backstopDelaySeconds = ownershipActive
                             ? stepLeaseRemainingSeconds(step, dispatchNowMs)
                             : 0;
                           if (backstopDelaySeconds > 0) {
                             runtimeLogger.debug(
-                              'Pending step is inline-owned by a live invocation; ensuring delayed backstop instead of immediate requeue',
+                              'Pending step is inline-owned by a live invocation; ensuring delayed backstop wake instead of immediate requeue',
                               {
                                 workflowRunId: runId,
                                 stepId: step.correlationId,
@@ -1778,6 +1791,22 @@ export function workflowEntrypoint(
                                 backstopDelaySeconds,
                               }
                             );
+                            dispatches.push(
+                              queueMessage(
+                                world,
+                                getWorkflowQueueName(workflowName, namespace),
+                                {
+                                  runId,
+                                  traceCarrier,
+                                  requestedAt: new Date(),
+                                },
+                                {
+                                  delaySeconds: backstopDelaySeconds,
+                                  idempotencyKey: `${step.correlationId}:backstop`,
+                                }
+                              )
+                            );
+                            continue;
                           }
                           dispatches.push(
                             queueMessage(
@@ -1792,9 +1821,6 @@ export function workflowEntrypoint(
                               },
                               {
                                 idempotencyKey: step.correlationId,
-                                ...(backstopDelaySeconds > 0
-                                  ? { delaySeconds: backstopDelaySeconds }
-                                  : {}),
                               }
                             )
                           );

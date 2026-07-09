@@ -1,0 +1,158 @@
+[
+  {
+    "testName": "abortTimeoutWorkflow: timeout cancels long-running step",
+    "runId": "wrun_01KX27GSYCT3RNM27MH0N9SFR4",
+    "timestamp": "2026-07-09T01:22:49.428Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortParallelWorkflow: abort cancels all parallel steps",
+    "runId": "wrun_01KX27GXWNKDYK70WSF5WEWGZ0",
+    "timestamp": "2026-07-09T01:22:53.464Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortFromStepWorkflow: step abort cancels an in-flight sibling step",
+    "runId": "wrun_01KX27H1T1PTC77RGVJGHR82GW",
+    "timestamp": "2026-07-09T01:22:57.476Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortAlreadyAbortedWorkflow: pre-aborted signal seen by step",
+    "runId": "wrun_01KX27H3RQDCCPDCG3MXMFYTWV",
+    "timestamp": "2026-07-09T01:22:59.482Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortReasonWorkflow: abort reason preserved across boundaries",
+    "runId": "wrun_01KX27H4R6Z151H2S8DJF82S1H",
+    "timestamp": "2026-07-09T01:23:00.492Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortAfterCompletionWorkflow: abort after step completes is a no-op",
+    "runId": "wrun_01KX27H7PDA157EH1G5ZTBWHJ4",
+    "timestamp": "2026-07-09T01:23:03.505Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortViaHookWorkflow: external hook triggers abort on in-flight step",
+    "runId": "wrun_01KX27H8NVDRC95XDZ77A3X1SW",
+    "timestamp": "2026-07-09T01:23:04.515Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortExternalSignalWorkflow: signal passed as workflow input",
+    "runId": "wrun_01KX27H9XQR91A611QR425G87W",
+    "timestamp": "2026-07-09T01:23:05.791Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortExternalSignalInFlightWorkflow: external abort fires mid-flight, propagates to nested steps",
+    "runId": "wrun_01KX27HAX9AYV4YMAKTP01GDVT",
+    "timestamp": "2026-07-09T01:23:06.795Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortAnyInWorkflowWorkflow: AbortSignal.any composes signals inside the workflow VM",
+    "runId": "wrun_01KX27HDVDCX8579YKB2M9DE92",
+    "timestamp": "2026-07-09T01:23:09.808Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortAnyInStepWorkflow: AbortSignal.any inside a step composes deserialized signals",
+    "runId": "wrun_01KX27HETZ3HAZFA97MF6KNM15",
+    "timestamp": "2026-07-09T01:23:10.820Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortSurvivesReplayWorkflow: controller state consistent across replay",
+    "runId": "wrun_01KX27HHS764JYHVSZZ7R5XRMB",
+    "timestamp": "2026-07-09T01:23:13.835Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortThrowIfAbortedWorkflow: throwIfAborted causes FatalError, no retries",
+    "runId": "wrun_01KX27HKR3ZG6XR9FA0ABHS3NK",
+    "timestamp": "2026-07-09T01:23:15.849Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortReasonTypesWorkflow: various abort reason types propagate correctly",
+    "runId": "wrun_01KX27HQNHGP5GM37A6YWND7K3",
+    "timestamp": "2026-07-09T01:23:19.859Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortFetchUncaughtWorkflow: uncaught fetch AbortError is FatalError, no retries",
+    "runId": "wrun_01KX27HRMY6JSF3VH797TR5GR9",
+    "timestamp": "2026-07-09T01:23:20.864Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortFetchInFlightWorkflow: aborting cancels an in-flight fetch",
+    "runId": "wrun_01KX27HSMDBW0SE3PNQW57JWZP",
+    "timestamp": "2026-07-09T01:23:21.872Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortVoidSleepTimeoutWorkflow: documented `void sleep().then(abort)` pattern works",
+    "runId": "wrun_01KX27HWJG6KJJSWXTZPGQ4V4H",
+    "timestamp": "2026-07-09T01:23:24.883Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortDeterministicBranchWorkflow: if-check takes same path on first-run and replay",
+    "runId": "wrun_01KX27HZGHBBM0MHXYSWJGY8E5",
+    "timestamp": "2026-07-09T01:23:27.893Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortListenerWorkflow: signal.addEventListener fires on the deserialized step signal",
+    "runId": "wrun_01KX27J0G0GQBMHV810K2DAAB2",
+    "timestamp": "2026-07-09T01:23:28.899Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortThrowIfAbortedMidFlightWorkflow: throwIfAborted in a polling loop bails when abort fires",
+    "runId": "wrun_01KX27J2ERNWM9R32HRD0T14ZQ",
+    "timestamp": "2026-07-09T01:23:30.907Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortDeterministicBranchFromStepWorkflow: branches stay consistent when abort comes from a step",
+    "runId": "wrun_01KX27J99Z0V8W7AS0GT8QNPR0",
+    "timestamp": "2026-07-09T01:23:37.923Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortHookOrderingWorkflow [listener-first-abort-first]: addEventListener → hook.then → abort() → resumeHook",
+    "runId": "wrun_01KX27JB8Q77TQPT3AS0N27BB8",
+    "timestamp": "2026-07-09T01:23:39.930Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortHookOrderingWorkflow [listener-first-hook-first]: addEventListener → hook.then → resumeHook → abort()",
+    "runId": "wrun_01KX27JNA0WRJN4AZY2W25FFZQ",
+    "timestamp": "2026-07-09T01:23:50.211Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortHookOrderingWorkflow [hook-first-abort-first]: hook.then → addEventListener → abort() → resumeHook",
+    "runId": "wrun_01KX27JZB6QXY3F8S8C83AK2WD",
+    "timestamp": "2026-07-09T01:24:00.489Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortHookOrderingWorkflow [hook-first-hook-first]: hook.then → addEventListener → resumeHook → abort()",
+    "runId": "wrun_01KX27K9CEAWEMP1GXH3H1163Y",
+    "timestamp": "2026-07-09T01:24:10.771Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "distributedAbortController - manual abort triggers signal",
+    "runId": "wrun_01KX27KKDPWWY6A5T2HR6B0RRG",
+    "timestamp": "2026-07-09T01:24:21.049Z",
+    "dashboardUrl": null
+  }
+]
