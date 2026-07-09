@@ -14,6 +14,10 @@ import type {
   RunCreatedEventRequest,
 } from './events.js';
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
+import type {
+  ReportWorkflowObservabilityEventRequest,
+  ReportWorkflowObservabilityEventResponse,
+} from './observability.js';
 import type { Queue } from './queue.js';
 import type {
   GetWorkflowRunParams,
@@ -284,6 +288,13 @@ export interface World extends Queue, Streamer, Storage {
    * resolution path.
    */
   analytics?: Analytics;
+
+  observability?: {
+    reportEvent(
+      runId: string,
+      data: ReportWorkflowObservabilityEventRequest
+    ): Promise<ReportWorkflowObservabilityEventResponse>;
+  };
 
   /**
    * The Workflow protocol spec version this World implements.
