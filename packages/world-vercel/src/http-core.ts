@@ -322,6 +322,14 @@ export interface InstrumentedFetchOptions {
    */
   attributes?: Record<string, string | number>;
   /**
+   * When set, stamp the measured request round-trip (dispatch -> response
+   * received, in ms) onto the client span under this attribute key. For a
+   * write PUT this equals the client->server end-to-end latency, since the
+   * server responds only after capturing the chunk. Equivalent to the span's
+   * own duration; exposed as a named attribute for direct querying.
+   */
+  durationAttribute?: string;
+  /**
    * Build the error to throw on a non-2xx response. Receives the raw Response
    * so the caller can read its body in the right format and craft a path-
    * specific message (the message *strings* legitimately differ per API
@@ -361,6 +369,7 @@ export async function instrumentedFetch(
     buildError,
     spanName,
     attributes,
+    durationAttribute,
   } = opts;
   const label = logLabel ?? url;
 
@@ -424,6 +433,7 @@ export async function instrumentedFetch(
 
       httpLog(method, label, response, ms);
       span?.setAttributes({ ...HttpResponseStatusCode(response.status) });
+      if (durationAttribute) span?.setAttributes({ [durationAttribute]: ms });
 
       if (!response.ok) {
         span?.setAttributes({ ...ErrorType(`HTTP ${response.status}`) });
