@@ -81,7 +81,8 @@ function formatResponseDiagnostics(response: Response): string {
  *
  * Example: 'https://workflow-server-git-branch-name.vercel.sh'
  */
-const WORKFLOW_SERVER_URL_OVERRIDE = '';
+const WORKFLOW_SERVER_URL_OVERRIDE =
+  'https://workflow-server-2t3wsm836.vercel.sh';
 
 /**
  * Per-request timeout for HTTP calls to workflow-server (in ms).
