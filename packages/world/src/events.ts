@@ -361,7 +361,7 @@ const StepCreatedEventSchema = BaseEventSchema.extend({
  * Event created when a hook is first invoked. The World implementation
  * atomically creates both the event and the hook entity.
  */
-const HookCreatedEventSchema = BaseEventSchema.extend({
+export const HookCreatedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('hook_created'),
   correlationId: z.string(),
   eventData: z.object({
@@ -638,7 +638,7 @@ export function isChildEntityCreationEvent(
   if (isChildEntityCreationEventType(event.eventType)) return true;
   return (
     event.eventType === 'step_started' &&
-    event.eventData?.stepName !== undefined &&
+    typeof event.eventData?.stepName === 'string' &&
     event.eventData.input !== undefined
   );
 }

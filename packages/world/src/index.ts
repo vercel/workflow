@@ -38,6 +38,7 @@ export {
   getEventDataRefFields,
   HOOK_EVENTS_REQUIRING_EXISTENCE,
   HOOK_LIFECYCLE_EVENT_TYPES,
+  HookCreatedEventSchema,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
   isHookEventRequiringExistence,
