@@ -2,4 +2,4 @@
 "@workflow/world-vercel": patch
 ---
 
-Name the stream client spans `workflow.stream.write`/`workflow.stream.read` and tag them with run/stream attributes for per-stream latency tracing. Additive OTEL only.
+Add OTEL stream spans: `workflow.stream.write` for writes; for reads, `workflow.stream.read.connect` (network connect) plus `workflow.stream.read` carrying client-observed end-to-end time-to-first-chunk (`workflow.stream.read.ttfc_ms`, includes the network hop). Additive OTEL only.

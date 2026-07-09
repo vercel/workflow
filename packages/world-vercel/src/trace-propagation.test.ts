@@ -20,7 +20,10 @@ import {
 import { z } from 'zod';
 import { getWorkflowRunEventsV4 } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
-import { injectTraceContextIntoHeaders } from './telemetry.js';
+import {
+  injectTraceContextIntoHeaders,
+  recordElapsedSpan,
+} from './telemetry.js';
 import { makeRequest } from './utils.js';
 
 vi.mock('@vercel/oidc', () => ({
@@ -84,6 +87,23 @@ describe('injectTraceContextIntoHeaders', () => {
     const headers = new Headers();
     await injectTraceContextIntoHeaders(headers);
     expect(headers.get('traceparent')).toBeNull();
+  });
+});
+
+describe('recordElapsedSpan (back-dated timing span)', () => {
+  it('emits a span whose duration reflects the elapsed interval', async () => {
+    const startMs = Date.now() - 250;
+    await recordElapsedSpan('workflow.stream.read', startMs, {
+      attributes: { 'workflow.stream.read.ttfc_ms': 250 },
+    });
+    const span = exporter
+      .getFinishedSpans()
+      .find((s) => s.name === 'workflow.stream.read');
+    expect(span).toBeDefined();
+    expect(span!.attributes['workflow.stream.read.ttfc_ms']).toBe(250);
+    // duration is hrtime [seconds, nanos]; the 250ms back-date should show up.
+    const durationSec = span!.duration[0] + span!.duration[1] / 1e9;
+    expect(durationSec).toBeGreaterThanOrEqual(0.2);
   });
 });
 

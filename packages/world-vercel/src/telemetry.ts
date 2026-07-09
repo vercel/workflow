@@ -108,6 +108,23 @@ export async function injectTraceContextIntoHeaders(
   }
 }
 
+/**
+ * Emit a span whose start is back-dated to `startEpochMs` and whose end is now,
+ * so its duration reflects an elapsed interval only measurable at its end (e.g.
+ * time-to-first-chunk, known when the first chunk lands). Unlike `trace()`,
+ * this doesn't wrap a callback — it records an already-elapsed span in one shot.
+ * No-op when no OpenTelemetry SDK is registered.
+ */
+export async function recordElapsedSpan(
+  spanName: string,
+  startEpochMs: number,
+  opts?: SpanOptions
+): Promise<void> {
+  const tracer = await getTracer();
+  if (!tracer) return;
+  tracer.startSpan(spanName, { ...opts, startTime: startEpochMs }).end();
+}
+
 // Semantic conventions for World/Storage tracing
 // Standard OTEL conventions: https://opentelemetry.io/docs/specs/semconv/http/http-spans/
 function SemanticConvention<T>(...names: string[]) {
@@ -179,4 +196,14 @@ export const WorkflowStreamOperation = SemanticConvention<string>(
 /** Requested start index for a live stream read (workflow.stream.start_index) */
 export const WorkflowStreamStartIndex = SemanticConvention<number>(
   'workflow.stream.start_index'
+);
+
+/**
+ * Client-observed end-to-end time-to-first-chunk for a live read, in ms
+ * (workflow.stream.read.ttfc_ms): read dispatch -> first non-empty chunk in the
+ * reader, including the network hop. The client-side complement to the server's
+ * server-derived ttfc_ms.
+ */
+export const WorkflowStreamReadTtfcMs = SemanticConvention<number>(
+  'workflow.stream.read.ttfc_ms'
 );

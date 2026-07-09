@@ -9,9 +9,12 @@ import { z } from 'zod';
 import { getStreamDispatcher } from './http-client.js';
 import { getVercelDiagnostics, instrumentedFetch } from './http-core.js';
 import {
+  getSpanKind,
+  recordElapsedSpan,
   WorkflowRunId,
   WorkflowStreamName,
   WorkflowStreamOperation,
+  WorkflowStreamReadTtfcMs,
   WorkflowStreamStartIndex,
 } from './telemetry.js';
 import {
@@ -291,6 +294,16 @@ export function createStreamer(config?: APIConfig): Streamer {
         if (typeof startIndex === 'number') {
           url.searchParams.set('startIndex', String(startIndex));
         }
+        const readAttributes = streamSpanAttributes({
+          runId,
+          name,
+          operation: 'read',
+          startIndex,
+        });
+        // Client-observed time-to-first-chunk is measured from the moment we
+        // dispatch the read; the `.connect` span below only covers up to
+        // response headers (the network-connect portion).
+        const readStart = Date.now();
         // Live read: keep the global dispatcher and no request timeout so the
         // long-lived, reconnecting read isn't truncated.
         const response = await instrumentedFetch({
@@ -300,20 +313,42 @@ export function createStreamer(config?: APIConfig): Streamer {
           dispatcher: undefined,
           timeoutMs: null,
           logLabel: url.pathname,
-          spanName: 'workflow.stream.read',
-          attributes: streamSpanAttributes({
-            runId,
-            name,
-            operation: 'read',
-            startIndex,
-          }),
+          spanName: 'workflow.stream.read.connect',
+          attributes: readAttributes,
           buildError: (res) =>
             new Error(`Failed to fetch stream: ${res.status}`),
         });
         if (!response.body) {
           throw new Error('No response body for stream');
         }
-        return response.body as ReadableStream<Uint8Array>;
+
+        // Client-observed end-to-end time-to-first-chunk: read dispatch -> the
+        // first non-empty chunk landing in the reader (includes the network hop
+        // and any server-side wait for the producer). Emitted once as a span
+        // back-dated to `readStart`, so its duration IS the TTFC — the
+        // client-side complement to the server's server-derived ttfc_ms. v3+
+        // servers flush a leading zero-length chunk to commit headers, so empty
+        // chunks are skipped. No-op when no OpenTelemetry SDK is registered.
+        const readSpanKind = await getSpanKind('CLIENT');
+        let firstChunkSeen = false;
+        const ttfcProbe = new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            if (!firstChunkSeen && chunk.byteLength > 0) {
+              firstChunkSeen = true;
+              void recordElapsedSpan('workflow.stream.read', readStart, {
+                kind: readSpanKind,
+                attributes: {
+                  ...readAttributes,
+                  ...WorkflowStreamReadTtfcMs(Date.now() - readStart),
+                },
+              });
+            }
+            controller.enqueue(chunk);
+          },
+        });
+        return (response.body as ReadableStream<Uint8Array>).pipeThrough(
+          ttfcProbe
+        );
       },
 
       async getChunks(
