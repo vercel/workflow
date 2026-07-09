@@ -201,6 +201,19 @@ const StepStartedEventSchema = BaseEventSchema.extend({
       // Lazy-start: the dehydrated step input, present only when this
       // step_started is also responsible for creating the step.
       input: SerializedDataSchema.optional(),
+      // Inline step ownership: the queue message ID of the invocation whose
+      // handler is executing this step's body inline. Stamped on the lazy
+      // step_started (and re-stamped on an owner-recovery bare start) so
+      // that a wake replay can tell "this attempt is in flight in a live
+      // invocation" apart from "this attempt died with its process" — the
+      // owner's queue message doubles as the liveness lease (a crash means
+      // the queue redelivers that same messageId, which is allowed to
+      // re-execute). Ownership derives from the step's LATEST step_started:
+      // an unstamped bare start (a retry attempt driven by a queued step
+      // message) clears it. Absent on eager steps and from older runtimes.
+      // Requires the queue's messageId to be stable across redeliveries of
+      // one message (see the Queue.createQueueHandler meta contract).
+      ownerMessageId: z.string().optional(),
     })
     .optional(),
 });

@@ -30,11 +30,13 @@ import {
   isWorldContractError,
 } from './classify-error.js';
 import { describeError } from './describe-error.js';
-import { WorkflowSuspension } from './global.js';
+import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
+  getInlineOwnershipLeaseSeconds,
   getMaxQueueDeliveries,
   getReplayDivergenceMaxRetries,
+  isInlineOwnershipEnabled,
   isTurboEnabled,
 } from './runtime/constants.js';
 import {
@@ -54,6 +56,7 @@ import {
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { executeStep } from './runtime/step-executor.js';
 import { computeStepLatencyTracking } from './runtime/step-latency.js';
+import { runStepSingleFlight } from './runtime/step-single-flight.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import {
@@ -277,6 +280,85 @@ function hasOpenHookOrWait(events: Event[]): boolean {
     if (
       e.eventType === 'wait_created' &&
       !completedWaitIds.has(e.correlationId)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether inline step ownership is active for a pending step: created,
+ * latest `step_started` carries an owner stamp, and no `step_retrying` has
+ * been observed (from `step_retrying` on, the step is queue-owned by its
+ * delayed retry handoff / replay requeue, so ownership is permanently
+ * lapsed for the correlation ID). Derived per-replay from the event log by
+ * the step consumer in step.ts — see StepInvocationQueueItem.
+ */
+function isStepOwnershipActive(step: StepInvocationQueueItem): boolean {
+  return (
+    step.hasCreatedEvent === true &&
+    step.ownerMessageId !== undefined &&
+    step.sawRetrying !== true
+  );
+}
+
+/**
+ * Seconds left on an owned step's liveness lease, anchored at its latest
+ * `step_started`. 0 means the lease has expired (or the start timestamp is
+ * missing — the degraded mode for worlds whose events lack usable
+ * timestamps), in which case dispatch falls back to the immediate enqueue.
+ */
+function stepLeaseRemainingSeconds(
+  step: StepInvocationQueueItem,
+  nowMs: number
+): number {
+  if (step.lastStartedAt === undefined) return 0;
+  const remainingMs =
+    step.lastStartedAt + getInlineOwnershipLeaseSeconds() * 1000 - nowMs;
+  return Math.max(0, Math.ceil(remainingMs / 1000));
+}
+
+/**
+ * Whether any of the given pending correlation IDs is inline-owned by
+ * `messageId` per the raw event log: its LATEST `step_started` carries
+ * `ownerMessageId === messageId` and no `step_retrying` follows it. Used by
+ * the background-step fast path, which sees raw events (not the replay's
+ * queueItems), to decide whether to fall through to the main loop so this
+ * invocation can recover a step it owns instead of returning and leaving it
+ * to the delayed backstop.
+ */
+function hasPendingStepOwnedByMessage(
+  events: Event[],
+  pendingCorrelationIds: Set<string | undefined>,
+  messageId: string
+): boolean {
+  // Latest-wins scan: events are in log order, so later entries overwrite.
+  // A step_retrying lapses ownership permanently (matching the sawRetrying
+  // semantics of the replay consumer in step.ts) — from that point the step
+  // is queue-owned, whatever starts follow.
+  const latestOwner = new Map<string, string | undefined>();
+  const sawRetrying = new Set<string>();
+  for (const e of events) {
+    if (e.correlationId === undefined) continue;
+    if (e.eventType === 'step_started') {
+      const owner =
+        'eventData' in e &&
+        e.eventData &&
+        'ownerMessageId' in e.eventData &&
+        typeof e.eventData.ownerMessageId === 'string'
+          ? e.eventData.ownerMessageId
+          : undefined;
+      latestOwner.set(e.correlationId, owner);
+    } else if (e.eventType === 'step_retrying') {
+      sawRetrying.add(e.correlationId);
+    }
+  }
+  for (const id of pendingCorrelationIds) {
+    if (
+      id !== undefined &&
+      !sawRetrying.has(id) &&
+      latestOwner.get(id) === messageId
     ) {
       return true;
     }
@@ -618,9 +700,37 @@ export function workflowEntrypoint(
                   // observes the committed events and makes progress; we then
                   // return `undefined` so the queue treats this delivery as done
                   // rather than also rescheduling it.
+                  // Inline-ownership invariant guard: correlation IDs of
+                  // steps whose bodies this invocation is executing under an
+                  // ownership stamp (lazy inline + owned recovery), while the
+                  // body is in flight. Crash recovery depends on the owning
+                  // message NOT being acked while such a step is non-terminal
+                  // (ack = handler return or reinvoke, which acks + enqueues
+                  // under a NEW message id — the redelivery of the old id is
+                  // what re-executes an orphaned owned step). All executeStep
+                  // calls are awaited before any ack path runs, so this set
+                  // is empty at every ack by construction; the check exists
+                  // to catch future refactors that break that ordering.
+                  const inFlightOwnedSteps = new Set<string>();
+                  const assertNoInFlightOwnedSteps = (
+                    ackPath: string
+                  ): void => {
+                    if (inFlightOwnedSteps.size > 0) {
+                      runtimeLogger.error(
+                        'Invariant violation: acking the workflow message while owned inline steps are still executing — crash recovery for these steps is broken',
+                        {
+                          workflowRunId: runId,
+                          ackPath,
+                          stepIds: [...inFlightOwnedSteps],
+                        }
+                      );
+                    }
+                  };
+
                   const reinvoke = async (
                     delaySeconds: number
                   ): Promise<{ timeoutSeconds: number } | undefined> => {
+                    assertNoInFlightOwnedSteps('reinvoke');
                     if (!turbo) return { timeoutSeconds: delaySeconds };
                     await queueMessage(
                       world,
@@ -660,16 +770,31 @@ export function workflowEntrypoint(
                       replayBudget.pause();
                       let stepResult: Awaited<ReturnType<typeof executeStep>>;
                       try {
-                        stepResult = await executeStep({
-                          world,
-                          workflowRunId: runId,
-                          workflowDeploymentId: bgRun.deploymentId,
-                          workflowName,
-                          workflowStartedAt: bgStartedAt,
-                          stepId: incomingStepId,
-                          stepName: incomingStepName,
-                          runSpecVersion: bgRun.specVersion,
-                        });
+                        // Single-flight: a delayed backstop (or retry) message
+                        // can arrive while another execution of this same step
+                        // is mid-body in this process — most importantly on
+                        // worlds with no invocation kill bound (world-local),
+                        // where the ownership lease is not a death proof. The
+                        // loser awaits the winner's settlement, then acks
+                        // without executing. No ownerMessageId here: the bare
+                        // step_started of a queue-driven execution
+                        // intentionally clears inline ownership (the step is
+                        // queue-owned from this point).
+                        stepResult = await runStepSingleFlight(
+                          runId,
+                          incomingStepId,
+                          () =>
+                            executeStep({
+                              world,
+                              workflowRunId: runId,
+                              workflowDeploymentId: bgRun.deploymentId,
+                              workflowName,
+                              workflowStartedAt: bgStartedAt,
+                              stepId: incomingStepId,
+                              stepName: incomingStepName,
+                              runSpecVersion: bgRun.specVersion,
+                            })
+                        );
                       } finally {
                         replayBudget.resume();
                       }
@@ -724,23 +849,44 @@ export function workflowEntrypoint(
                             stepTerminalIds.add(e.correlationId);
                           }
                         }
-                        let hasPendingSteps = false;
+                        const pendingStepIds = new Set<string | undefined>();
                         for (const id of stepCreatedIds) {
                           if (!stepTerminalIds.has(id)) {
-                            hasPendingSteps = true;
-                            break;
+                            pendingStepIds.add(id);
                           }
                         }
 
-                        if (hasPendingSteps) {
-                          // Other steps still in progress. Return without
-                          // queuing — the last handler to complete will see
-                          // all steps done and replay inline.
-                          runtimeLogger.debug(
-                            'Background step done but other steps pending, returning',
-                            { workflowRunId: runId }
-                          );
-                          return;
+                        if (pendingStepIds.size > 0) {
+                          // A pending step that THIS message inline-owns (a
+                          // previous delivery of this message stamped its
+                          // step_started and then crashed mid-body) must be
+                          // recovered here: only the owning message may
+                          // re-execute it before the ownership lease expires,
+                          // and wake replays merely ensure a delayed
+                          // backstop. Fall through to the main loop, whose
+                          // dispatch table routes it to owned recovery.
+                          if (
+                            isInlineOwnershipEnabled() &&
+                            hasPendingStepOwnedByMessage(
+                              cachedEvents,
+                              pendingStepIds,
+                              metadata.messageId
+                            )
+                          ) {
+                            runtimeLogger.debug(
+                              'Background step done; falling through to recover an inline step owned by this message',
+                              { workflowRunId: runId }
+                            );
+                          } else {
+                            // Other steps still in progress. Return without
+                            // queuing — the last handler to complete will see
+                            // all steps done and replay inline.
+                            runtimeLogger.debug(
+                              'Background step done but other steps pending, returning',
+                              { workflowRunId: runId }
+                            );
+                            return;
+                          }
                         }
 
                         // All steps done — fall through to the main replay loop.
@@ -1543,12 +1689,36 @@ export function workflowEntrypoint(
                         // elapsed wait via the "complete elapsed waits"
                         // pass.
                         //
-                        // Step queueing is unconditional (covers crash
-                        // recovery: if a prior handler wrote step_created
-                        // but crashed before queueing, a later handler will
-                        // queue them; idempotencyKey on correlationId
-                        // dedupes redundant queues across concurrent
-                        // handlers).
+                        // Step dispatch decision table (per pending step not
+                        // designated lazy-inline):
+                        //
+                        //   - Inline-owned, owner === this message  →
+                        //     execute in THIS invocation (owned recovery: a
+                        //     redelivery of the owning message re-executes
+                        //     the step it crashed on, via a re-stamped bare
+                        //     step_started).
+                        //   - Inline-owned, owner !== this message  →
+                        //     enqueue a DELAYED backstop (delaySeconds =
+                        //     ownership lease remaining) instead of an
+                        //     immediate message. The owning invocation is
+                        //     (likely) still running the body; an immediate
+                        //     message would bare-start the running step and
+                        //     execute it a second time (workflow#2780). The
+                        //     idempotencyKey caps it at one pending backstop
+                        //     no matter how many wakes replay, and the
+                        //     backstop doubles as the escape hatch for a
+                        //     lost/exhausted owner message (post-lease it
+                        //     executes on the normal background path, or
+                        //     terminal-rejects → skipped if the owner
+                        //     completed the step).
+                        //   - Not owned (never stamped / eager / ownership
+                        //     lapsed at step_retrying / lease expired /
+                        //     kill-switched) → immediate enqueue, exactly as
+                        //     before. This covers crash recovery: if a prior
+                        //     handler wrote step_created but crashed before
+                        //     queueing, a later handler queues it;
+                        //     idempotencyKey on correlationId dedupes
+                        //     redundant queues across concurrent handlers.
                         //
                         // The wait continuation is what makes
                         // `Promise.race(step, sleep)` behave correctly with
@@ -1569,9 +1739,45 @@ export function workflowEntrypoint(
                         // delay/key selection rationale.
                         const traceCarrier = await nextTraceCarrier();
                         const dispatches: Promise<unknown>[] = [];
+                        const inlineOwnership = isInlineOwnershipEnabled();
+                        const dispatchNowMs = Date.now();
+                        const ownedRecoverySteps: StepInvocationQueueItem[] =
+                          [];
                         for (const step of pendingSteps) {
                           if (inlineCorrelationIds.has(step.correlationId)) {
                             continue;
+                          }
+                          const ownershipActive =
+                            inlineOwnership && isStepOwnershipActive(step);
+                          if (
+                            ownershipActive &&
+                            step.ownerMessageId === metadata.messageId
+                          ) {
+                            // Owned recovery: this delivery IS the owning
+                            // message; re-execute the step in this
+                            // invocation instead of queueing it.
+                            ownedRecoverySteps.push(step);
+                            continue;
+                          }
+                          // Delayed backstop while another invocation's
+                          // ownership lease is live; immediate enqueue
+                          // otherwise (lease expired ⇒ delaySeconds 0 ⇒
+                          // same as today, which is also the degraded mode
+                          // for worlds with unstable message IDs — the
+                          // owner check above never matches there).
+                          const backstopDelaySeconds = ownershipActive
+                            ? stepLeaseRemainingSeconds(step, dispatchNowMs)
+                            : 0;
+                          if (backstopDelaySeconds > 0) {
+                            runtimeLogger.debug(
+                              'Pending step is inline-owned by a live invocation; ensuring delayed backstop instead of immediate requeue',
+                              {
+                                workflowRunId: runId,
+                                stepId: step.correlationId,
+                                ownerMessageId: step.ownerMessageId,
+                                backstopDelaySeconds,
+                              }
+                            );
                           }
                           dispatches.push(
                             queueMessage(
@@ -1586,6 +1792,9 @@ export function workflowEntrypoint(
                               },
                               {
                                 idempotencyKey: step.correlationId,
+                                ...(backstopDelaySeconds > 0
+                                  ? { delaySeconds: backstopDelaySeconds }
+                                  : {}),
                               }
                             )
                           );
@@ -1609,10 +1818,44 @@ export function workflowEntrypoint(
                         }
                         await Promise.all(dispatches);
 
+                        // The set of steps THIS invocation executes: the
+                        // deferred lazy-inline batch plus any owned-recovery
+                        // steps (this message's redelivery re-executing a
+                        // step it crashed on — no lazyStepInput; the input
+                        // hydrates from the step entity like the background
+                        // path, and the bare step_started re-stamps
+                        // ownership).
+                        const inlineExecutions: Array<{
+                          correlationId: string;
+                          stepName: string;
+                          lazyStepInput?: (typeof lazyInlineSteps)[number]['dehydratedInput'];
+                        }> = [
+                          ...lazyInlineSteps.map((s) => ({
+                            correlationId: s.correlationId,
+                            stepName: s.stepName,
+                            lazyStepInput: s.dehydratedInput,
+                          })),
+                          ...ownedRecoverySteps.map((s) => ({
+                            correlationId: s.correlationId,
+                            stepName: s.stepName,
+                          })),
+                        ];
+                        if (ownedRecoverySteps.length > 0) {
+                          runtimeLogger.info(
+                            'Re-executing inline steps owned by this message (crash recovery)',
+                            {
+                              workflowRunId: runId,
+                              stepIds: ownedRecoverySteps.map(
+                                (s) => s.correlationId
+                              ),
+                            }
+                          );
+                        }
+
                         // Nothing to execute inline — everything has been
                         // queued (or no work needs scheduling). Exit and let
                         // the queue drive subsequent replays.
-                        if (lazyInlineSteps.length === 0) {
+                        if (inlineExecutions.length === 0) {
                           // A `hook.getConflict()` awaiter needs an immediate
                           // re-invocation: the replay consumes the
                           // just-committed hook_created and resolves the
@@ -1672,6 +1915,7 @@ export function workflowEntrypoint(
                           err.waitCount === 0 &&
                           pendingSteps.length === 1 &&
                           lazyInlineSteps.length === 1 &&
+                          ownedRecoverySteps.length === 0 &&
                           !suspensionResult.waitTimeout &&
                           !hasOpenHookOrWait(cachedEvents ?? []);
 
@@ -1744,37 +1988,71 @@ export function workflowEntrypoint(
                         >[];
                         try {
                           stepResults = await Promise.all(
-                            lazyInlineSteps.map((s, stepIndex) =>
-                              executeStep({
-                                world,
-                                workflowRunId: runId,
-                                workflowDeploymentId: workflowRun.deploymentId,
-                                workflowName,
-                                workflowStartedAt,
-                                stepId: s.correlationId,
-                                stepName: s.stepName,
-                                runSpecVersion: workflowRun.specVersion,
-                                // Lazy inline start: send the deferred step's
-                                // input on step_started so the world creates the
-                                // step on the fly.
-                                lazyStepInput: s.dehydratedInput,
-                                // Turbo: force optimistic start and hold the lazy
-                                // step_started until the backgrounded run_started
-                                // lands (the body still runs immediately). Both
-                                // are undefined/false outside turbo.
-                                forceOptimisticStart,
-                                runReadyBarrier,
-                                ...(stepIndex === 0 && latencyTracking
-                                  ? { latencyTracking }
-                                  : {}),
-                                ...(requestInlineDelta && preInlineWriteCursor
-                                  ? {
-                                      inlineDeltaSinceCursor:
-                                        preInlineWriteCursor,
-                                    }
-                                  : {}),
-                              })
-                            )
+                            inlineExecutions.map((s, stepIndex) => {
+                              const run = () =>
+                                executeStep({
+                                  world,
+                                  workflowRunId: runId,
+                                  workflowDeploymentId:
+                                    workflowRun.deploymentId,
+                                  workflowName,
+                                  workflowStartedAt,
+                                  stepId: s.correlationId,
+                                  stepName: s.stepName,
+                                  runSpecVersion: workflowRun.specVersion,
+                                  // Lazy inline start: send the deferred step's
+                                  // input on step_started so the world creates
+                                  // the step on the fly. Absent for
+                                  // owned-recovery steps, whose input hydrates
+                                  // from the existing step entity.
+                                  lazyStepInput: s.lazyStepInput,
+                                  // Inline ownership: stamp (or re-stamp) this
+                                  // invocation's queue message ID on the
+                                  // step_started, so wake replays see the body
+                                  // as in flight here and suppress the
+                                  // immediate requeue (workflow#2780).
+                                  ownerMessageId: metadata.messageId,
+                                  // Turbo: force optimistic start and hold the
+                                  // lazy step_started until the backgrounded
+                                  // run_started lands (the body still runs
+                                  // immediately). Both are undefined/false
+                                  // outside turbo.
+                                  forceOptimisticStart,
+                                  runReadyBarrier,
+                                  ...(stepIndex === 0 &&
+                                  s.lazyStepInput !== undefined &&
+                                  latencyTracking
+                                    ? { latencyTracking }
+                                    : {}),
+                                  ...(requestInlineDelta && preInlineWriteCursor
+                                    ? {
+                                        inlineDeltaSinceCursor:
+                                          preInlineWriteCursor,
+                                      }
+                                    : {}),
+                                });
+                              // Invariant bookkeeping: this invocation owns
+                              // these bodies until they settle — see
+                              // assertNoInFlightOwnedSteps.
+                              inFlightOwnedSteps.add(s.correlationId);
+                              // Lazy steps are brand-new (their create-claim
+                              // is the exactly-once gate), but an
+                              // owned-recovery step already exists and its
+                              // delayed backstop message may fire mid-body
+                              // in this same process — route those through
+                              // the in-process single-flight.
+                              const executed =
+                                s.lazyStepInput === undefined
+                                  ? runStepSingleFlight(
+                                      runId,
+                                      s.correlationId,
+                                      run
+                                    )
+                                  : run();
+                              return executed.finally(() =>
+                                inFlightOwnedSteps.delete(s.correlationId)
+                              );
+                            })
                           );
                         } finally {
                           replayBudget.resume();
@@ -1793,7 +2071,7 @@ export function workflowEntrypoint(
                         // messages and the background-step handler replays once
                         // all steps are done.
                         const toRetry: {
-                          step: (typeof lazyInlineSteps)[number];
+                          step: (typeof inlineExecutions)[number];
                           delaySeconds: number;
                         }[] = [];
                         let anyPendingOps = false;
@@ -1816,9 +2094,9 @@ export function workflowEntrypoint(
                         // background steps because a retry implies `step_started`
                         // already succeeded and the step exists.
                         let throttleTimeout: number | undefined;
-                        for (let i = 0; i < lazyInlineSteps.length; i++) {
+                        for (let i = 0; i < inlineExecutions.length; i++) {
                           const r = stepResults[i];
-                          const s = lazyInlineSteps[i];
+                          const s = inlineExecutions[i];
                           if (r.type === 'retry') {
                             toRetry.push({
                               step: s,
@@ -1948,7 +2226,7 @@ export function workflowEntrypoint(
                         // it instead of issuing an incremental events.list. Only
                         // the completed path carries a delta; multi-step batches
                         // never request one.
-                        if (lazyInlineSteps.length === 1) {
+                        if (inlineExecutions.length === 1) {
                           const only = stepResults[0];
                           if (
                             only.type === 'completed' &&

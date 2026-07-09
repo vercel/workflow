@@ -122,14 +122,40 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         }
 
         if (event.eventType === 'step_started') {
-          // Step was started - don't do anything. The step is left in the invocationQueue which
-          // will allow it to be re-enqueued. We rely on the queue's idempotency to prevent it from
-          // actually being over enqueued.
+          // Step was started but is not terminal — it stays in the
+          // invocationQueue so the suspension handler can decide how to
+          // dispatch it. Record the inline-ownership state from the event:
+          // the LATEST start wins, so a stamped start (inline execution or
+          // owner recovery) sets the owner and an unstamped one (a retry
+          // attempt driven by a queued step message, or an older runtime)
+          // clears it. The dispatch loop uses this to suppress the immediate
+          // requeue of a step whose owning invocation may still be running
+          // its body (vercel/workflow#2780).
+          const queueItem = ctx.invocationsQueue.get(correlationId);
+          if (queueItem && queueItem.type === 'step') {
+            const ownerMessageId =
+              'eventData' in event &&
+              event.eventData &&
+              'ownerMessageId' in event.eventData &&
+              typeof event.eventData.ownerMessageId === 'string'
+                ? event.eventData.ownerMessageId
+                : undefined;
+            queueItem.ownerMessageId = ownerMessageId;
+            queueItem.lastStartedAt = +event.createdAt;
+          }
           return EventConsumerResult.Consumed;
         }
 
         if (event.eventType === 'step_retrying') {
-          // Step is being retried - just consume the event and wait for next step_started
+          // Step is being retried — consume the event and wait for the next
+          // step_started. From here on the step is queue-owned (the delayed
+          // retry handoff message, or the replay requeue), so inline
+          // ownership is permanently lapsed for this correlation ID.
+          const queueItem = ctx.invocationsQueue.get(correlationId);
+          if (queueItem && queueItem.type === 'step') {
+            queueItem.sawRetrying = true;
+            queueItem.ownerMessageId = undefined;
+          }
           return EventConsumerResult.Consumed;
         }
 

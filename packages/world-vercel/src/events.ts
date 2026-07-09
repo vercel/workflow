@@ -181,6 +181,8 @@ interface SplitEventData {
     hookIsSystem?: boolean;
     errorCode?: string;
     cancelReason?: string;
+    /** Inline-ownership stamp on step_started (owning queue message ID). */
+    ownerMessageId?: string;
     /** Structured executionContext, included verbatim in frame meta. */
     executionContext?: Record<string, unknown>;
     /** Initial run attributes (run_created / resilient-start run_started). */
@@ -221,6 +223,7 @@ type MetaSourceField =
   | 'isSystem'
   | 'errorCode'
   | 'cancelReason'
+  | 'ownerMessageId'
   | 'executionContext'
   | 'attributes'
   | 'changes'
@@ -323,6 +326,14 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   // plaintext metadata, so it rides in the frame meta like errorCode.
   if (typeof eventData.cancelReason === 'string') {
     meta.cancelReason = eventData.cancelReason;
+  }
+  // step_started's inline-ownership stamp: the queue message ID of the
+  // invocation running this step's body inline. The backend persists it on
+  // the step_started event row and re-emits it on event lists so wake
+  // replays can observe the active owner — dropping it here would silently
+  // disable ownership (replays would requeue in-flight inline steps again).
+  if (typeof eventData.ownerMessageId === 'string') {
+    meta.ownerMessageId = eventData.ownerMessageId;
   }
   if (
     eventData.executionContext !== undefined &&
