@@ -83,9 +83,11 @@ export class LocalBuilder extends BaseBuilder {
     workflowsRouteContent = workflowsRouteContent.replace(
       /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
       (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
+const flowHandler = workflowEntrypoint(workflowCode${options});
+
 export const POST = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
-  return workflowEntrypoint(workflowCode${options})(normalRequest);
+  return flowHandler(normalRequest);
 }
 
 export const prerender = false;`

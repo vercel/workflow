@@ -12,16 +12,12 @@ import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from './private.js';
 import { REPLAY_DIVERGENCE_MAX_RETRIES } from './runtime/constants.js';
-import { setWorld as setRuntimeWorld } from './runtime/world.js';
+import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
 import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from './serialization.js';
-
-function setWorld(world: Parameters<typeof setRuntimeWorld>[0]) {
-  setRuntimeWorld(world);
-}
 
 // Capture every promise handed to `waitUntil` so tests can assert that
 // progress-critical sends are never registered on a detached, unconsumed
@@ -177,6 +173,33 @@ describe('workflowEntrypoint replay guards', () => {
         expect.any(Function)
       );
     });
+  });
+
+  it('retries workflow queue handler registration after a failure', async () => {
+    const createQueueHandler = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('not ready');
+      })
+      .mockImplementation(
+        () => async () => new Response(null, { status: 204 })
+      );
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler,
+    } as any);
+
+    const entrypoint = workflowEntrypoint(
+      `async function workflow() {
+        return 'done';
+      }${getWorkflowTransformCode('workflow')}`
+    );
+    await vi.waitFor(() => expect(createQueueHandler).toHaveBeenCalledOnce());
+
+    const response = await entrypoint(new Request('https://example.test'));
+
+    expect(response.status).toBe(204);
+    expect(createQueueHandler).toHaveBeenCalledTimes(2);
   });
 
   it('records run_failed when run_started response schema validation fails', async () => {

@@ -100,20 +100,19 @@ export const getWorldHandlers = async (): Promise<WorldHandlers> => {
     assertWorldSupportsRuntimeProtocol(globalSymbols[StubbedWorldCache]);
     return globalSymbols[StubbedWorldCache];
   }
-  // Store the promise immediately to prevent race conditions with concurrent calls.
-  // Clear on rejection so subsequent calls can retry instead of caching the failure.
   if (!globalSymbols[StubbedWorldCachePromise]) {
     globalSymbols[StubbedWorldCachePromise] = createWorld().catch((err) => {
       globalSymbols[StubbedWorldCachePromise] = undefined;
       throw err;
     });
   }
-  const _world = await globalSymbols[StubbedWorldCachePromise];
-  assertWorldSupportsRuntimeProtocol(_world);
-  globalSymbols[StubbedWorldCache] = _world;
+  const loadedWorld = await globalSymbols[StubbedWorldCachePromise];
+  const world = globalSymbols[StubbedWorldCache] ?? loadedWorld;
+  assertWorldSupportsRuntimeProtocol(world);
+  globalSymbols[StubbedWorldCache] = world;
   return {
-    createQueueHandler: _world.createQueueHandler,
-    specVersion: _world.specVersion,
+    createQueueHandler: world.createQueueHandler,
+    specVersion: world.specVersion,
   };
 };
 
@@ -122,17 +121,17 @@ export const getWorld = async (): Promise<World> => {
     assertWorldSupportsRuntimeProtocol(globalSymbols[WorldCache]);
     return globalSymbols[WorldCache];
   }
-  // Store the promise immediately to prevent race conditions with concurrent calls.
-  // Clear on rejection so subsequent calls can retry instead of caching the failure.
   if (!globalSymbols[WorldCachePromise]) {
     globalSymbols[WorldCachePromise] = createWorld().catch((err) => {
       globalSymbols[WorldCachePromise] = undefined;
       throw err;
     });
   }
-  globalSymbols[WorldCache] = await globalSymbols[WorldCachePromise];
-  assertWorldSupportsRuntimeProtocol(globalSymbols[WorldCache]);
-  return globalSymbols[WorldCache];
+  const loadedWorld = await globalSymbols[WorldCachePromise];
+  const world = globalSymbols[WorldCache] ?? loadedWorld;
+  assertWorldSupportsRuntimeProtocol(world);
+  globalSymbols[WorldCache] = world;
+  return world;
 };
 
 /**

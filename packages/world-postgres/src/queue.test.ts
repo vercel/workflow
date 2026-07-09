@@ -366,9 +366,13 @@ describe('Postgres queue', () => {
     ).rejects.toThrow();
   });
 
-  it('prefers a direct handler over the remote fallback', async () => {
+  it('prefers the explicit remote executor over a direct handler', async () => {
     vi.stubEnv('WORKFLOW_LOCAL_BASE_URL', 'https://worker.example.test');
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn(async (url: string) =>
+      url.endsWith('?__health')
+        ? new Response(null, { status: 200 })
+        : Response.json({ ok: true })
+    );
     vi.stubGlobal('fetch', fetchMock);
     const handler = vi.fn(async () => undefined);
     const queue = buildQueue(pool);
@@ -382,8 +386,8 @@ describe('Postgres queue', () => {
       jobHelpers(1)
     );
 
-    expect(handler).toHaveBeenCalledTimes(1);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('returns an HTTP-compatible queue handler', async () => {

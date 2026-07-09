@@ -2158,9 +2158,17 @@ export function workflowEntrypoint(
       }
     );
 
-  const handlerPromise = getWorldHandlers().then(handler);
-  void handlerPromise.catch(() => undefined);
-  let handlerRequested = false;
+  let handlerPromise: Promise<(req: Request) => Promise<Response>> | undefined;
+  const getHandler = () => {
+    if (handlerPromise) return handlerPromise;
+    const promise = getWorldHandlers().then(handler);
+    handlerPromise = promise;
+    void promise.catch(() => {
+      if (handlerPromise === promise) handlerPromise = undefined;
+    });
+    return promise;
+  };
+  void getHandler();
   let invocationCount = 0;
   const entrypointCreatedAt = Date.now();
   const routeModuleBodyInitMs =
@@ -2170,8 +2178,7 @@ export function workflowEntrypoint(
 
   return withHealthCheck(async (req) => {
     invocationCount += 1;
-    const handlerCached = handlerRequested;
-    handlerRequested = true;
+    const handlerCached = invocationCount > 1 && handlerPromise !== undefined;
     const spanKind = await getSpanKind('SERVER');
 
     return trace(
@@ -2194,9 +2201,9 @@ export function workflowEntrypoint(
       },
       async (span) => {
         const routeHandler = handlerCached
-          ? await handlerPromise
+          ? await getHandler()
           : await trace('workflow.route.init', () =>
-              trace('workflow.route.get_world_handlers', () => handlerPromise)
+              trace('workflow.route.get_world_handlers', getHandler)
             );
 
         const response = await routeHandler(req);

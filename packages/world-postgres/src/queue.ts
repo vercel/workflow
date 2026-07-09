@@ -128,10 +128,10 @@ function parseTransportValue(body: Uint8Array): unknown {
 
 /**
  * The Postgres queue stores workflow and step jobs in Graphile Worker. The
- * runner starts as soon as its database is ready. Each delivery uses a
- * registered in-process handler when one exists, then falls back to a healthy
- * local HTTP endpoint for compatibility. When no executor is available, the
- * job is durably replaced with a short-delay job before the current job is
+ * runner starts as soon as its database is ready. An explicit remote executor
+ * takes precedence; otherwise each delivery uses a registered handler, then a
+ * healthy local HTTP endpoint for compatibility. When no executor is available,
+ * the job is durably replaced with a short-delay job before the current job is
  * acked.
  */
 export type PostgresQueue = Queue & {
@@ -271,9 +271,6 @@ export function createQueue(
   }
 
   async function resolveExecutor(prefix: QueuePrefix): Promise<QueueExecutor> {
-    const handler = getRegisteredHandler(prefix);
-    if (handler) return { type: 'direct', handler };
-
     const remoteBaseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
     if (remoteBaseUrl) {
       if (
@@ -285,6 +282,9 @@ export function createQueue(
       healthyRemotePrefixes.add(prefix);
       return { type: 'http', baseUrl: remoteBaseUrl };
     }
+
+    const handler = getRegisteredHandler(prefix);
+    if (handler) return { type: 'direct', handler };
 
     const baseUrl = await resolveWorkflowBaseUrl();
     if (!baseUrl || !(await probeHealth(getHealthUrl(baseUrl, prefix)))) {

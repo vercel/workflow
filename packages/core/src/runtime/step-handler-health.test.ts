@@ -12,26 +12,33 @@ describe('stepEntrypoint registration', () => {
     vi.resetModules();
   });
 
-  it('registers the step queue handler before the first request', async () => {
-    const createQueueHandler = vi.fn(
-      (
-        _prefix: string,
-        _handler: (message: unknown, metadata: unknown) => Promise<unknown>
-      ) =>
-        async () =>
-          new Response(null, { status: 204 })
-    );
+  it('registers before the first request and retries after a failure', async () => {
+    const createQueueHandler = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('not ready');
+      })
+      .mockImplementation(
+        () => async () => new Response(null, { status: 204 })
+      );
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
       createQueueHandler,
     } as any);
 
-    await import('./step-handler.js');
+    const { stepEntrypoint } = await import('./step-handler.js');
     await vi.waitFor(() => {
       expect(createQueueHandler).toHaveBeenCalledWith(
         '__wkf_step_',
         expect.any(Function)
       );
     });
+
+    const response = await stepEntrypoint(
+      new Request('https://example.test/.well-known/workflow/v1/step')
+    );
+
+    expect(response.status).toBe(204);
+    expect(createQueueHandler).toHaveBeenCalledTimes(2);
   });
 });
