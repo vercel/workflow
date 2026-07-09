@@ -628,6 +628,27 @@ function PayloadBlock({
     return <AttrSetEventBlock data={cleaned} />;
   }
 
+  // Cancellation reason — render the free-text reason as a readable line
+  // instead of a raw JSON payload (the only field run_cancelled carries).
+  if (eventType === 'run_cancelled') {
+    const cancelReason =
+      cleaned != null &&
+      typeof cleaned === 'object' &&
+      typeof (cleaned as Record<string, unknown>).cancelReason === 'string'
+        ? ((cleaned as Record<string, unknown>).cancelReason as string)
+        : null;
+    if (cancelReason) {
+      return (
+        <div className="p-2 text-xs" style={{ color: 'var(--ds-gray-1000)' }}>
+          <span style={{ color: 'var(--ds-gray-900)' }}>Reason: </span>
+          <span className="whitespace-pre-wrap break-words">
+            {cancelReason}
+          </span>
+        </div>
+      );
+    }
+  }
+
   return (
     <div className="relative group/payload">
       <div

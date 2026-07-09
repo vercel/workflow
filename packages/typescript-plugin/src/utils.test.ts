@@ -1,7 +1,30 @@
 import ts from 'typescript/lib/tsserverlibrary';
 import { describe, expect, it } from 'vitest';
 import { createTestProgram } from './test-helpers';
-import { findFunctionCalls, getDirective, isAsyncFunction } from './utils';
+import {
+  findFunctionCalls,
+  getDirective,
+  isAsyncFunction,
+  isDirectiveFunctionLike,
+} from './utils';
+
+function getFirstMethod(source: string): ts.MethodDeclaration {
+  const { sourceFile } = createTestProgram(source);
+  let method: ts.MethodDeclaration | undefined;
+
+  function visit(node: ts.Node) {
+    if (ts.isMethodDeclaration(node)) {
+      method = node;
+    }
+    ts.forEachChild(node, visit);
+  }
+  ts.forEachChild(sourceFile, visit);
+
+  if (!method) {
+    throw new Error('Expected source to contain a method declaration');
+  }
+  return method;
+}
 
 describe('getDirective', () => {
   it('returns "use workflow" for workflow functions', () => {
@@ -12,12 +35,12 @@ describe('getDirective', () => {
       }
     `;
 
-    const { program, sourceFile } = createTestProgram(source);
+    const { sourceFile } = createTestProgram(source);
 
     let result: string | null = null;
     ts.forEachChild(sourceFile, (node) => {
       if (ts.isFunctionDeclaration(node)) {
-        result = getDirective(node, sourceFile, ts);
+        result = getDirective(node, ts);
       }
     });
 
@@ -32,12 +55,12 @@ describe('getDirective', () => {
       }
     `;
 
-    const { program, sourceFile } = createTestProgram(source);
+    const { sourceFile } = createTestProgram(source);
 
     let result: string | null = null;
     ts.forEachChild(sourceFile, (node) => {
       if (ts.isFunctionDeclaration(node)) {
-        result = getDirective(node, sourceFile, ts);
+        result = getDirective(node, ts);
       }
     });
 
@@ -51,12 +74,12 @@ describe('getDirective', () => {
       }
     `;
 
-    const { program, sourceFile } = createTestProgram(source);
+    const { sourceFile } = createTestProgram(source);
 
     let result: string | null = null;
     ts.forEachChild(sourceFile, (node) => {
       if (ts.isFunctionDeclaration(node)) {
-        result = getDirective(node, sourceFile, ts);
+        result = getDirective(node, ts);
       }
     });
 
@@ -71,12 +94,12 @@ describe('getDirective', () => {
       }
     `;
 
-    const { program, sourceFile } = createTestProgram(source);
+    const { sourceFile } = createTestProgram(source);
 
     let result: string | null = null;
     ts.forEachChild(sourceFile, (node) => {
       if (ts.isFunctionDeclaration(node)) {
-        result = getDirective(node, sourceFile, ts);
+        result = getDirective(node, ts);
       }
     });
 
@@ -91,18 +114,46 @@ describe('getDirective', () => {
       };
     `;
 
-    const { program, sourceFile } = createTestProgram(source);
+    const { sourceFile } = createTestProgram(source);
 
     let result: string | null = null;
     function visit(node: ts.Node) {
       if (ts.isArrowFunction(node)) {
-        result = getDirective(node, sourceFile, ts);
+        result = getDirective(node, ts);
       }
       ts.forEachChild(node, visit);
     }
     ts.forEachChild(sourceFile, visit);
 
     expect(result).toBe('use workflow');
+  });
+
+  it('handles method declarations', () => {
+    const source = `
+      class JobRunner {
+        static async run() {
+          'use workflow';
+          return 123;
+        }
+      }
+    `;
+
+    expect(getDirective(getFirstMethod(source), ts)).toBe('use workflow');
+  });
+});
+
+describe('isDirectiveFunctionLike', () => {
+  it('returns true for function-like nodes that can carry directives', () => {
+    const source = `
+      class JobRunner {
+        static async run() {
+          'use workflow';
+          return 123;
+        }
+      }
+    `;
+
+    expect(isDirectiveFunctionLike(getFirstMethod(source), ts)).toBe(true);
   });
 });
 
@@ -200,7 +251,7 @@ describe('findFunctionCalls', () => {
       }
     `;
 
-    const { program, sourceFile } = createTestProgram(source);
+    const { sourceFile } = createTestProgram(source);
 
     let calls: ts.CallExpression[] = [];
     ts.forEachChild(sourceFile, (node) => {
@@ -221,7 +272,7 @@ describe('findFunctionCalls', () => {
       }
     `;
 
-    const { program, sourceFile } = createTestProgram(source);
+    const { sourceFile } = createTestProgram(source);
 
     let calls: ts.CallExpression[] = [];
     ts.forEachChild(sourceFile, (node) => {
@@ -242,7 +293,7 @@ describe('findFunctionCalls', () => {
       }
     `;
 
-    const { program, sourceFile } = createTestProgram(source);
+    const { sourceFile } = createTestProgram(source);
 
     let calls: ts.CallExpression[] = [];
     ts.forEachChild(sourceFile, (node) => {

@@ -78,6 +78,20 @@ export const EventTypeSchema = z.enum([
   'wait_created',
   'wait_completed',
 ]);
+export type EventType = z.infer<typeof EventTypeSchema>;
+export const TerminalRunEventTypeSchema = EventTypeSchema.extract([
+  'run_completed',
+  'run_failed',
+  'run_cancelled',
+] as const);
+export type TerminalRunEventType = z.infer<typeof TerminalRunEventTypeSchema>;
+export const TERMINAL_RUN_EVENT_TYPES = TerminalRunEventTypeSchema.options;
+
+export function isTerminalRunEventType(
+  eventType: string
+): eventType is TerminalRunEventType {
+  return TERMINAL_RUN_EVENT_TYPES.includes(eventType as TerminalRunEventType);
+}
 
 // Base event schema with common properties
 // TODO: Event data on all specific event schemas can actually be undefined,
@@ -95,6 +109,33 @@ export const BaseEventSchema = z.object({
 // Note: Serialized data fields use SerializedDataSchema to support both:
 // - specVersion >= 2: Uint8Array (binary devalue format)
 // - specVersion 1: any (legacy JSON format)
+// Client-measured latency telemetry carried on a step's terminal event so a
+// backend can emit latency metrics without extra event-log queries. Fields
+// are populated as applicable by the runtime, only on the terminal event of
+// a first-attempt step execution that qualified for measurement (see
+// `@workflow/core` runtime/step-latency.ts). Backends may consume these for
+// metrics and are not required to persist them.
+const stepLatencyTelemetryFields = {
+  // Time-to-first-step: milliseconds from run creation until the run's first
+  // step body began executing, minus time spent committing hook_created
+  // events. Only reported when nothing else (hooks received, waits,
+  // attributes, other steps) happened before the first step.
+  ttfs: z.number().optional(),
+  // Step-to-step overhead: milliseconds between the previous step's terminal
+  // event and this step's body beginning to execute. Only reported when the
+  // two steps ran back-to-back (the previous event-log entry is a
+  // step_completed/step_failed).
+  stso: z.number().optional(),
+  // Progress counters taken when the STSO gap began. Only present alongside
+  // stso.
+  stepCount: z.number().int().positive().optional(),
+  eventCount: z.number().int().positive().optional(),
+  // Names of the runtime's optional startup-latency optimizations that were
+  // active for this measurement (e.g. 'turbo', 'lazyStepStart',
+  // 'optimisticStart'), so latency metrics can be segmented by them.
+  optimizations: z.array(z.string()).optional(),
+};
+
 const StepCompletedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_completed'),
   correlationId: z.string(),
@@ -105,6 +146,7 @@ const StepCompletedEventSchema = BaseEventSchema.extend({
     // Optional: older runtimes omit it and the backend falls back to a read.
     workflowName: z.string().optional(),
     result: SerializedDataSchema,
+    ...stepLatencyTelemetryFields,
   }),
 });
 
@@ -116,6 +158,7 @@ const StepFailedEventSchema = BaseEventSchema.extend({
     // The thrown value, serialized via the workflow serialization pipeline.
     // Can be any JavaScript value (string, number, object, Error, etc.)
     error: SerializedDataSchema,
+    ...stepLatencyTelemetryFields,
   }),
 });
 
@@ -184,7 +227,7 @@ const StepCreatedEventSchema = BaseEventSchema.extend({
  * Event created when a hook is first invoked. The World implementation
  * atomically creates both the event and the hook entity.
  */
-const HookCreatedEventSchema = BaseEventSchema.extend({
+export const HookCreatedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('hook_created'),
   correlationId: z.string(),
   eventData: z.object({
@@ -354,6 +397,14 @@ const RunFailedEventSchema = BaseEventSchema.extend({
  */
 const RunCancelledEventSchema = BaseEventSchema.extend({
   eventType: z.literal('run_cancelled'),
+  eventData: z
+    .object({
+      // Optional free-text reason for the cancellation. Kept as small
+      // plaintext metadata (like run_failed's errorCode) so it survives
+      // resolveData: 'none' and can be displayed without decryption.
+      cancelReason: z.string().max(512).optional(),
+    })
+    .optional(),
 });
 
 // Discriminated union for user-creatable events (requests to world.events.create)
@@ -421,6 +472,7 @@ export const EventSchema = AllEventsSchema.and(
 
 // Inferred types
 export type Event = z.infer<typeof EventSchema>;
+export type HookCreatedEvent = z.infer<typeof HookCreatedEventSchema>;
 export type HookReceivedEvent = z.infer<typeof HookReceivedEventSchema>;
 export type HookConflictEvent = z.infer<typeof HookConflictEventSchema>;
 

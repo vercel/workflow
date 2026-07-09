@@ -2,9 +2,9 @@
   "extends": "@workflow/tsconfig/base.json",
   "compilerOptions": {
     "outDir": "dist",
+    "rootDir": "./src",
     "target": "es2022",
     "module": "preserve",
-    "baseUrl": ".",
     "moduleResolution": "bundler"
   },
   "include": ["src"],

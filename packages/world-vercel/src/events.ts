@@ -48,6 +48,7 @@ import {
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
+import { withEventPostRetry } from './event-retry.js';
 import {
   createWorkflowRunEventV4,
   type DecodedV4Event,
@@ -56,6 +57,10 @@ import {
   getWorkflowRunEventsV4,
 } from './events-v4.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
+import {
+  normalizeEventData,
+  normalizeSerializedData,
+} from './serialized-data.js';
 import { deserializeStep } from './steps.js';
 import {
   type APIConfig,
@@ -175,6 +180,7 @@ interface SplitEventData {
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
     errorCode?: string;
+    cancelReason?: string;
     /** Structured executionContext, included verbatim in frame meta. */
     executionContext?: Record<string, unknown>;
     /** Initial run attributes (run_created / resilient-start run_started). */
@@ -185,6 +191,15 @@ interface SplitEventData {
     writer?: Record<string, unknown>;
     /** Reserved-attribute-key opt-in (attr_set / run_created / run_started). */
     allowReservedAttributes?: boolean;
+    /** Client-measured time-to-first-step ms (step_completed / step_failed). */
+    ttfs?: number;
+    /** Client-measured step-to-step overhead ms (step_completed / step_failed). */
+    stso?: number;
+    /** Progress counters taken when the STSO gap began. */
+    stepCount?: number;
+    eventCount?: number;
+    /** Runtime optimizations active for the ttfs/stso measurement. */
+    optimizations?: string[];
   };
 }
 
@@ -208,11 +223,17 @@ type MetaSourceField =
   | 'isWebhook'
   | 'isSystem'
   | 'errorCode'
+  | 'cancelReason'
   | 'executionContext'
   | 'attributes'
   | 'changes'
   | 'writer'
-  | 'allowReservedAttributes';
+  | 'allowReservedAttributes'
+  | 'ttfs'
+  | 'stso'
+  | 'stepCount'
+  | 'eventCount'
+  | 'optimizations';
 
 /**
  * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
@@ -303,6 +324,11 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   if (typeof eventData.errorCode === 'string') {
     meta.errorCode = eventData.errorCode;
   }
+  // run_cancelled optionally carries a free-text cancellation reason. Small
+  // plaintext metadata, so it rides in the frame meta like errorCode.
+  if (typeof eventData.cancelReason === 'string') {
+    meta.cancelReason = eventData.cancelReason;
+  }
   if (
     eventData.executionContext !== undefined &&
     eventData.executionContext !== null &&
@@ -338,6 +364,34 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.allowReservedAttributes === 'boolean') {
     meta.allowReservedAttributes = eventData.allowReservedAttributes;
+  }
+  // Client-measured latency telemetry on step terminal events (TTFS / STSO).
+  // The server consumes these for metrics; they are not read back.
+  if (typeof eventData.ttfs === 'number') {
+    meta.ttfs = eventData.ttfs;
+  }
+  if (typeof eventData.stso === 'number') {
+    meta.stso = eventData.stso;
+  }
+  if (
+    typeof eventData.stepCount === 'number' &&
+    Number.isSafeInteger(eventData.stepCount) &&
+    eventData.stepCount > 0
+  ) {
+    meta.stepCount = eventData.stepCount;
+  }
+  if (
+    typeof eventData.eventCount === 'number' &&
+    Number.isSafeInteger(eventData.eventCount) &&
+    eventData.eventCount > 0
+  ) {
+    meta.eventCount = eventData.eventCount;
+  }
+  if (
+    Array.isArray(eventData.optimizations) &&
+    eventData.optimizations.every((o) => typeof o === 'string')
+  ) {
+    meta.optimizations = eventData.optimizations as string[];
   }
 
   let payload: Uint8Array | undefined;
@@ -401,6 +455,10 @@ function coerceEventDates(raw: Record<string, unknown>): Event {
   return raw as unknown as Event;
 }
 
+function coerceNormalizedEvent(raw: Record<string, unknown>): Event {
+  return coerceEventDates(normalizeEventData(raw));
+}
+
 /**
  * Turn a v4 event (frame meta + frame body) into the Event shape the
  * workflow runtime expects.
@@ -408,10 +466,11 @@ function coerceEventDates(raw: Record<string, unknown>): Event {
  * Both GET single-event and LIST use the same frame format: meta is the
  * full event entity with the payload field as a RefDescriptor, body is
  * the resolved payload bytes (possibly empty). This helper splices the
- * body bytes into `eventData[fieldName]` unchanged — the runtime's
- * hydrate helpers (hydrateStepIO, hydrateRunError, …) consume the raw
- * devalue-with-format-prefix Uint8Array directly. No CBOR decode here,
- * symmetric with the pass-through write in `splitEventDataForV4`.
+ * body bytes into `eventData[fieldName]`, normalizing any zstd wrapper
+ * back to the raw devalue-with-format-prefix Uint8Array the runtime's
+ * hydrate helpers (hydrateStepIO, hydrateRunError, …) consume. No CBOR
+ * decode here, symmetric with the pass-through write in
+ * `splitEventDataForV4`.
  */
 function buildEventFromV4(
   decoded: DecodedV4Event,
@@ -422,7 +481,10 @@ function buildEventFromV4(
 
   if (payloadBody.byteLength > 0) {
     const payloadField = payloadFieldFor(decoded.eventType);
-    if (payloadField) eventData[payloadField] = payloadBody;
+    const normalizedPayload = normalizeSerializedData(payloadBody);
+    if (payloadField && normalizedPayload instanceof Uint8Array) {
+      eventData[payloadField] = normalizedPayload;
+    }
   }
 
   const raw = {
@@ -448,7 +510,7 @@ function buildEventFromV4(
       : {}),
   };
 
-  const event = coerceEventDates(raw);
+  const event = coerceNormalizedEvent(raw);
 
   // For resolveData='none', strip eventData entirely. Reuse the world-
   // side helper so behavior stays in sync with other backends.
@@ -522,7 +584,18 @@ export async function createWorkflowRunEvent(
   config?: APIConfig
 ): Promise<EventResult> {
   try {
-    return await createWorkflowRunEventInner(id, data, params, config);
+    // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
+    // socket/headers timeouts, transient 5xx) in-process for event types that
+    // are idempotent-on-retry. A write that landed but whose response was lost
+    // re-surfaces as a 409 (or plain success for run_started/attr_set) the
+    // callers already handle, so this avoids a needless step re-execution on
+    // the next queue delivery. Non-retryable
+    // types (step_started, step_retrying, hook_received) run once. See
+    // ./event-retry for the validated per-event classification.
+    return await withEventPostRetry(
+      () => createWorkflowRunEventInner(id, data, params, config),
+      data.eventType
+    );
   } catch (err) {
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
@@ -627,18 +700,23 @@ async function createWorkflowRunEventInner(
   );
 
   // The server already CBOR-decoded into result.body — just thread the
-  // fields through. Step has a wire-format adapter; runs use the
-  // pass-through deserializeError helper (run/step dates arrive as real
-  // Dates — the server's entity getters convert before CBOR-encoding).
-  // The returned `event` and preloaded `events` go through
-  // coerceEventDates: they can be read back from the backing store
-  // server-side (e.g. the run_started TTFB preload queries the event
-  // log), where nested eventData dates are ISO strings — same coercion
-  // the GET/LIST path applies, and the v3 path applied via its zod wire
-  // schemas.
-  // The returned event honors the caller's resolveData: 'none' strips
-  // payload fields, matching the v3 path's stripEventAndLegacyRefs
-  // behavior and the Storage contract.
+  // fields through. This is the runtime's event-append path (world.events
+  // .create is only ever called from the workflow runtime, never from
+  // o11y), and the runtime re-hydrates every payload it consumes through
+  // the decompress-aware helpers (hydrateStepReturnValue, hydrateRunError,
+  // …). So we deliberately do NOT decompress here: doing so would be
+  // redundant work on the TTFB-sensitive run_started/inline-delta path and
+  // would make the runtime's deserialize compression telemetry report
+  // `codec: none` for payloads that were compressed at rest. gzip/zstd
+  // normalization for o11y/display lives on the read paths (getEvent,
+  // getWorkflowRunEvents, getStep, getRun, getHook).
+  //
+  // `event`/`events` go through coerceEventDates only: they can be read
+  // back from the backing store server-side (e.g. the run_started TTFB
+  // preload queries the event log), where nested eventData dates are ISO
+  // strings — same coercion the GET/LIST path applies. The returned event
+  // honors the caller's resolveData: 'none' strips payload fields,
+  // matching the v3 path's stripEventAndLegacyRefs behavior.
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const body = result.body;
   return {

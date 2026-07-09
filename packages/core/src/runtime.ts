@@ -9,6 +9,7 @@ import {
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import { setWorkflowBasePath } from '@workflow/utils';
 import {
   parseWorkflowName,
   workflowDisplayName,
@@ -23,14 +24,18 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-import { classifyRunError, isWorldContractError } from './classify-error.js';
+import {
+  classifyRunError,
+  isRetryableWorldError,
+  isWorldContractError,
+} from './classify-error.js';
 import { describeError } from './describe-error.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
+  getMaxQueueDeliveries,
+  getReplayDivergenceMaxRetries,
   isTurboEnabled,
-  MAX_QUEUE_DELIVERIES,
-  REPLAY_DIVERGENCE_MAX_RETRIES,
 } from './runtime/constants.js';
 import {
   getQueueOverhead,
@@ -46,7 +51,9 @@ import {
   handleReplayBudgetExhausted,
   ReplayBudget,
 } from './runtime/replay-budget.js';
+import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { executeStep } from './runtime/step-executor.js';
+import { computeStepLatencyTracking } from './runtime/step-latency.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import {
@@ -95,6 +102,7 @@ export {
   type WorkflowReadableStreamOptions,
 } from './runtime/run.js';
 export {
+  type CancelRunOptions,
   cancelRun,
   listStreams,
   type ReadStreamOptions,
@@ -119,9 +127,11 @@ export {
 // filesystem operations into the flow route bundle.
 export {
   createWorld,
+  createWorldFromModule,
   getWorld,
   getWorldHandlers,
   setWorld,
+  type WorldFactoryModule,
 } from './runtime/world.js';
 
 function getWorkflowSetupErrorCode(err: unknown): RunErrorCode | null {
@@ -287,8 +297,14 @@ function hasOpenHookOrWait(events: Event[]): boolean {
  */
 export function workflowEntrypoint(
   workflowCode: string,
-  options?: { namespace?: string; routeModuleBodyStartedAt?: number }
+  options?: {
+    namespace?: string;
+    routeModuleBodyStartedAt?: number;
+    basePath?: string;
+  }
 ): (req: Request) => Promise<Response> {
+  setWorkflowBasePath(options?.basePath);
+
   const NO_INLINE_REPLAY_AFTER_MS =
     Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
 
@@ -340,13 +356,14 @@ export function workflowEntrypoint(
         // log line and child loggers below, so callers don't repeat it.
         const runLogger = runtimeLogger.forRun(runId, workflowName);
 
-        if (metadata.attempt > MAX_QUEUE_DELIVERIES) {
+        const maxQueueDeliveries = getMaxQueueDeliveries();
+        if (metadata.attempt > maxQueueDeliveries) {
           const maxDeliveriesDescription = describeError(
             undefined,
             RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
           );
           runLogger.error(
-            `Workflow handler exceeded max deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+            `Workflow handler exceeded max deliveries (${metadata.attempt}/${maxQueueDeliveries})`,
             {
               attempt: metadata.attempt,
               errorCode: maxDeliveriesDescription.errorCode,
@@ -357,7 +374,7 @@ export function workflowEntrypoint(
             const world = await getWorld();
             const getEncryptionKey = memoizeEncryptionKey(world, runId);
             const err = new FatalError(
-              `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`
+              `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${maxQueueDeliveries})`
             );
             await world.events.create(
               runId,
@@ -520,6 +537,26 @@ export function workflowEntrypoint(
                   let preloadedEvents: Event[] | undefined;
                   let preloadedEventsCursor: string | null | undefined;
 
+                  // Latency telemetry (TTFS) state — see runtime/step-latency.ts.
+                  // Whether this invocation's FIRST event snapshot contained
+                  // nothing beyond run_created/run_started: anything else was
+                  // written by an earlier invocation, whose contribution to
+                  // time-to-first-step (including the queue hop back here)
+                  // cannot be measured wall-clock, so TTFS is not reported.
+                  // Set once, on the first iteration's loaded snapshot.
+                  let invocationStartedClean: boolean | undefined;
+                  // Wall-clock ms spent committing hook_created events before
+                  // the first step ran, accumulated across suspension passes
+                  // and subtracted from TTFS.
+                  let preStepBlockingMs = 0;
+                  // Snapshot of the accumulator as of the suspension that
+                  // wrote the run's first attr_set (whose hook phase ran
+                  // before its attr writes). When a pre-step setAttributes
+                  // ends the TTFS measurement at the attr write, only hook
+                  // time from BEFORE that point may be subtracted — later
+                  // hook writes fall outside the measured window.
+                  let preStepBlockingBeforeAttrMs: number | undefined;
+
                   // Turbo mode fast-paths the very first delivery of the very
                   // first invocation, where it is provably safe to: background
                   // `run_started`, skip the initial event-log load (nothing has
@@ -530,8 +567,11 @@ export function workflowEntrypoint(
                   // delivery; `incomingStepId` would mark a background-step
                   // invocation and `replayDivergence` a recovery replay — both
                   // ineligible. The single-handler guarantee that makes forced
-                  // optimistic start safe ends once a hook/wait/attr is created,
-                  // so turbo exits at that point (see `forceOptimisticStart`).
+                  // optimistic start safe ends once a hook or wait is created
+                  // (they introduce resume invocations), so turbo exits at that
+                  // point (see `forceOptimisticStart`). Workflow attribute
+                  // writes introduce no such invocation source — they resolve
+                  // via an in-process replay and don't end turbo.
                   const turbo =
                     isTurboEnabled() &&
                     runInput !== undefined &&
@@ -571,7 +611,7 @@ export function workflowEntrypoint(
                   // (e.g. graphile-worker) a reschedule comes back as delivery
                   // attempt 1 — so turbo re-engages, skips the event-log load
                   // again, replays against an empty log, never observes the
-                  // hook/attr event this invocation just wrote, and re-suspends
+                  // hook event this invocation just wrote, and re-suspends
                   // forever (the run wedges). Under turbo we instead enqueue an
                   // explicit continuation that carries NO `runInput`, so the
                   // next delivery is a normal (non-turbo) load-and-replay that
@@ -1224,6 +1264,21 @@ export function workflowEntrypoint(
                       // Update cache reference (may have been set for first time)
                       cachedEvents = events;
 
+                      // Latency telemetry: judge TTFS eligibility against the
+                      // invocation's first snapshot. Waits completed above
+                      // would already disqualify via the event-type check, so
+                      // evaluating after the wait pass is equivalent.
+                      // attr_set is permitted: a redelivery can land after a
+                      // committed pre-step attr_set, and the detour it marks
+                      // is subtracted via preStepAttrStartMs regardless of
+                      // which invocation wrote it (see runtime/step-latency.ts).
+                      invocationStartedClean ??= events.every(
+                        (e) =>
+                          e.eventType === 'run_created' ||
+                          e.eventType === 'run_started' ||
+                          e.eventType === 'attr_set'
+                      );
+
                       // Snapshot the cursor as it stands for this iteration's
                       // event log, before any inline writes (step_created via
                       // handleSuspension, step_started/step_completed via
@@ -1247,7 +1302,12 @@ export function workflowEntrypoint(
                         workflowRun,
                         events,
                         encryptionKey,
-                        stepHydrationCache
+                        stepHydrationCache,
+                        // Turbo: the end-of-run drain inside runWorkflow commits
+                        // fire-and-forget `*_created` events before the terminal
+                        // `awaitRunReady()` below, so gate those writes on the
+                        // backgrounded run_started too. Undefined outside turbo.
+                        runReadyBarrier
                       );
                       runtimeLogger.debug('Workflow replay completed', {
                         workflowRunId: runId,
@@ -1398,6 +1458,13 @@ export function workflowEntrypoint(
                           });
                           return;
                         }
+                        preStepBlockingMs += suspensionResult.hookCreationMs;
+                        if (
+                          suspensionResult.hasAttributeEvents &&
+                          preStepBlockingBeforeAttrMs === undefined
+                        ) {
+                          preStepBlockingBeforeAttrMs = preStepBlockingMs;
+                        }
                         runtimeLogger.debug('Suspension handled', {
                           workflowRunId: runId,
                           suspensionMs: Date.now() - suspensionStart,
@@ -1415,13 +1482,22 @@ export function workflowEntrypoint(
                           return await reinvoke(0);
                         }
 
-                        // Native workflow attribute events are resolved through
-                        // replay. Re-invoke before processing pending steps:
-                        // in Promise.race([setAttributes(), step()]), the
-                        // durable attribute event can win without executing
-                        // the losing step.
+                        // Native workflow attribute events are resolved
+                        // through replay: the next loop iteration reloads the
+                        // log (now holding the just-committed attr_set) and
+                        // replays, resolving the setAttributes promise. Skip
+                        // step processing for this pass so that replay decides
+                        // races first — in Promise.race([setAttributes(),
+                        // step()]), the durable attribute event must be able
+                        // to win without executing the losing step. The replay
+                        // happens in-process rather than via a queue
+                        // re-invocation: unlike hooks and waits, an attr_set
+                        // introduces no out-of-band invocation source that the
+                        // handler would need to yield the message for, so
+                        // paying a delivery round-trip here would only add
+                        // latency before the workflow's next step.
                         if (suspensionResult.hasAttributeEvents) {
-                          return await reinvoke(0);
+                          continue;
                         }
 
                         const pendingSteps = suspensionResult.pendingSteps;
@@ -1601,14 +1677,17 @@ export function workflowEntrypoint(
 
                         // Turbo mode forces optimistic inline start for this
                         // batch — but only while the run is still "clean" (a pure
-                        // step suspension). The moment a hook or wait (or attr) is
+                        // step suspension). The moment a hook or wait is
                         // created, later resume/parallel invocations become
                         // possible, so the single-handler guarantee that makes
                         // forced optimistic start safe no longer holds — turbo
                         // exits and the steps take the normal (env-gated)
-                        // await-then-run path. The hook-conflict / attr cases
-                        // already returned early above and the awaited-hook case
-                        // emptied lazyInlineSteps; the checks below are defensive.
+                        // await-then-run path. The hook-conflict case already
+                        // returned early above, the attr case continued into a
+                        // fresh replay (so a batch-scheduling suspension never
+                        // carries attr events), and the awaited-hook case
+                        // emptied lazyInlineSteps; the checks below are
+                        // defensive.
                         //
                         // The `suspensionResult.*` flags only reflect what THIS
                         // batch created, so they do not catch a hook/wait opened
@@ -1633,13 +1712,39 @@ export function workflowEntrypoint(
                         // bounded by the platform's function maxDuration, not the
                         // replay timeout — so the budget check at the top of the
                         // next loop iteration doesn't charge the step bodies.
+                        // Latency telemetry: decide whether this batch's first
+                        // step qualifies for TTFS/STSO measurement. Only the
+                        // batch's first step carries the tracking so a
+                        // parallel batch emits one sample per scheduling gap,
+                        // not one per sibling. Turbo's synthesized run
+                        // snapshot has a local-clock createdAt, so under
+                        // turbo only the run-id ULID timestamp is trusted.
+                        const latencyTracking = computeStepLatencyTracking({
+                          events: cachedEvents ?? [],
+                          invocationStartedClean:
+                            invocationStartedClean === true,
+                          runCreatedAtMs:
+                            runIdCreatedAt(runId) ??
+                            (turbo ? undefined : +workflowRun.createdAt),
+                          preStepBlockingMs,
+                          preStepBlockingBeforeAttrMs,
+                          // This suspension's own hook/wait writes are not in
+                          // cachedEvents yet, so report them explicitly.
+                          suspensionHasWaits:
+                            err.waitCount > 0 ||
+                            suspensionResult.waitTimeout !== undefined,
+                          suspensionCreatedHooks:
+                            err.hookCount > 0 || suspensionResult.hasHookEvents,
+                          turbo,
+                        });
+
                         replayBudget.pause();
                         let stepResults: Awaited<
                           ReturnType<typeof executeStep>
                         >[];
                         try {
                           stepResults = await Promise.all(
-                            lazyInlineSteps.map((s) =>
+                            lazyInlineSteps.map((s, stepIndex) =>
                               executeStep({
                                 world,
                                 workflowRunId: runId,
@@ -1659,6 +1764,9 @@ export function workflowEntrypoint(
                                 // are undefined/false outside turbo.
                                 forceOptimisticStart,
                                 runReadyBarrier,
+                                ...(stepIndex === 0 && latencyTracking
+                                  ? { latencyTracking }
+                                  : {}),
                                 ...(requestInlineDelta && preInlineWriteCursor
                                   ? {
                                       inlineDeltaSinceCursor:
@@ -1854,14 +1962,42 @@ export function workflowEntrypoint(
                           }
                         }
                       } else {
+                        // Transient infrastructure failures talking to the
+                        // world (workflow-server) — an exhausted RetryAgent
+                        // (UND_ERR_REQ_RETRY from a sustained 429/503 storm),
+                        // a dropped socket, a connect/DNS failure, or a client
+                        // timeout — must NOT fail the run. Rethrow so the queue
+                        // redelivers and a fresh invocation retries the replay
+                        // once the backend recovers. The @vercel/queue handler
+                        // applies a fast (1s→60s) backoff by delivery count,
+                        // avoiding the ~5min default visibility-timeout redrive
+                        // (and never killing the process via run_failed).
+                        if (isRetryableWorldError(err)) {
+                          runLogger.warn(
+                            'Transient world error during replay; redelivering via queue instead of failing the run',
+                            {
+                              errorName:
+                                err instanceof Error
+                                  ? err.name
+                                  : 'UnknownError',
+                              errorMessage:
+                                err instanceof Error
+                                  ? err.message
+                                  : String(err),
+                              deliveryAttempt: metadata.attempt,
+                            }
+                          );
+                          throw err;
+                        }
+
                         let terminalError = err;
                         if (ReplayDivergenceError.is(err)) {
                           const divergenceCount =
                             (replayDivergence?.count ?? 0) + 1;
+                          const maxRecoveryReplays =
+                            getReplayDivergenceMaxRetries();
 
-                          if (
-                            divergenceCount <= REPLAY_DIVERGENCE_MAX_RETRIES
-                          ) {
+                          if (divergenceCount <= maxRecoveryReplays) {
                             runLogger.warn(
                               'Workflow replay diverged; queueing a recovery replay before declaring the event log corrupted',
                               {
@@ -1871,8 +2007,7 @@ export function workflowEntrypoint(
                                   replayDivergence?.eventId,
                                 divergenceCount,
                                 deliveryAttempt: metadata.attempt,
-                                maxRecoveryReplays:
-                                  REPLAY_DIVERGENCE_MAX_RETRIES,
+                                maxRecoveryReplays,
                                 errorMessage: err.message,
                               }
                             );
@@ -1893,7 +2028,7 @@ export function workflowEntrypoint(
                           }
 
                           terminalError = new CorruptedEventLogError(
-                            `Workflow replay diverged ${divergenceCount} times after ${REPLAY_DIVERGENCE_MAX_RETRIES} recovery replays; latest divergent event was ${err.eventId}. Last divergence: ${err.message}`,
+                            `Workflow replay diverged ${divergenceCount} times after ${maxRecoveryReplays} recovery replays; latest divergent event was ${err.eventId}. Last divergence: ${err.message}`,
                             { cause: err }
                           );
                         }

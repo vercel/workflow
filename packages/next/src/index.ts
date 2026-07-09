@@ -1,6 +1,14 @@
 import { copyFileSync, mkdirSync, statSync } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
+import {
+  ensureWorkflowTargetWorldEnv,
+  isWorkflowTargetWorldPath,
+  resolveConfiguredProjectRoot,
+  resolveProjectRoot,
+  resolveWorkflowTargetWorldAlias,
+  WORKFLOW_WORLD_TARGET_MODULE,
+} from '@workflow/builders';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
@@ -16,7 +24,14 @@ const VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES = [
   VERCEL_WORLD_PACKAGE,
   ...VERCEL_WORLD_DEPENDENCY_PACKAGES,
 ];
-
+const WORKFLOW_SERVER_TRANSPILE_PACKAGES = [
+  'workflow',
+  '@workflow/core',
+  '@workflow/serde',
+  '@workflow/errors',
+  '@workflow/utils',
+  '@workflow/ai',
+];
 const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
 const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
 const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
@@ -27,6 +42,14 @@ const workflowSerdeComputedPropertyPattern =
 
 const PSEUDO_EXTERNAL_PACKAGES = new Set(['server-only', 'client-only']);
 const warnedAutoRemovedServerExternalPackages = new Set<string>();
+const BASE_PATH_SYMBOL = Symbol.for('@workflow/core/basePath');
+const globalConfig = globalThis as typeof globalThis &
+  Record<symbol, string | undefined>;
+
+// Keep this local: @workflow/next is CommonJS, while @workflow/utils is ESM-only.
+function setWorkflowBasePath(basePath: string | undefined): void {
+  globalConfig[BASE_PATH_SYMBOL] = basePath ?? '';
+}
 
 interface WorkflowPatternMatch {
   hasUseWorkflow: boolean;
@@ -335,18 +358,15 @@ export function withWorkflow(
     };
   } = {}
 ) {
+  const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
+  if (workflowTargetWorld === '@workflow/world-local') {
+    process.env.WORKFLOW_LOCAL_DATA_DIR ??= '.next/workflow-data';
+  }
+
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
-    if (!process.env.WORKFLOW_TARGET_WORLD) {
-      process.env.WORKFLOW_TARGET_WORLD = 'local';
-      process.env.WORKFLOW_LOCAL_DATA_DIR = '.next/workflow-data';
-    }
     const maybePort = workflows?.local?.port;
     if (maybePort) {
       process.env.PORT = maybePort.toString();
-    }
-  } else {
-    if (!process.env.WORKFLOW_TARGET_WORLD) {
-      process.env.WORKFLOW_TARGET_WORLD = 'vercel';
     }
   }
 
@@ -375,6 +395,23 @@ export function withWorkflow(
     }
     // shallow clone to avoid read-only on top-level
     nextConfig = Object.assign({}, nextConfig);
+    const workflowBasePath = nextConfig.basePath;
+    setWorkflowBasePath(workflowBasePath);
+    nextConfig.env = {
+      ...nextConfig.env,
+      WORKFLOW_TARGET_WORLD: workflowTargetWorld,
+    };
+    const workingDir = process.cwd();
+    const workflowTargetWorldWebpackAlias = resolveWorkflowTargetWorldAlias({
+      workingDir,
+      targetWorld: workflowTargetWorld,
+    });
+    const workflowTargetWorldIsPath =
+      isWorkflowTargetWorldPath(workflowTargetWorld);
+    const workflowTargetWorldTranspilePackages =
+      workflowTargetWorld === VERCEL_WORLD_PACKAGE || workflowTargetWorldIsPath
+        ? []
+        : [workflowTargetWorld];
     nextConfig.serverExternalPackages = [
       ...new Set([
         ...(nextConfig.serverExternalPackages || []),
@@ -382,6 +419,13 @@ export function withWorkflow(
         // local builds do not try to parse @vercel/queue's keyring dependency
         // tree.
         ...VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES,
+      ]),
+    ];
+    nextConfig.transpilePackages = [
+      ...new Set([
+        ...(nextConfig.transpilePackages || []),
+        ...WORKFLOW_SERVER_TRANSPILE_PACKAGES,
+        ...workflowTargetWorldTranspilePackages,
       ]),
     ];
     const existingCompiler = nextConfig.compiler ?? {};
@@ -441,8 +485,19 @@ export function withWorkflow(
     if (!nextConfig.turbopack.rules) {
       nextConfig.turbopack.rules = {};
     }
+    nextConfig.turbopack.resolveAlias = {
+      ...((nextConfig.turbopack.resolveAlias as Record<string, unknown>) || {}),
+      [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldIsPath
+        ? workflowTargetWorldWebpackAlias
+        : workflowTargetWorld,
+    };
     const existingRules = nextConfig.turbopack.rules as any;
-    const nextVersion = resolveNextVersion(process.cwd());
+    const nextVersion = resolveNextVersion(workingDir);
+    const configuredProjectRoot =
+      nextConfig.outputFileTracingRoot ?? nextConfig.turbopack?.root;
+    const projectRoot = configuredProjectRoot
+      ? resolveConfiguredProjectRoot(workingDir, configuredProjectRoot)
+      : resolveProjectRoot(workingDir);
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
 
     const shouldWatch = process.env.NODE_ENV === 'development';
@@ -474,10 +529,11 @@ export function withWorkflow(
               'jsx',
               'js',
             ],
-            projectRoot: nextConfig.outputFileTracingRoot,
-            moduleSpecifierRoot: process.cwd(),
-            workingDir: process.cwd(),
+            projectRoot,
+            moduleSpecifierRoot: workingDir,
+            workingDir,
             distDir,
+            basePath: workflowBasePath,
             diagnosticsDir: `${distDir}/diagnostics`,
             buildTarget: 'next',
             workflowsBundlePath: '', // not used in base
@@ -524,7 +580,7 @@ export function withWorkflow(
                   // Uses backreferences (\2, \3) to ensure matching quote types
                   {
                     content:
-                      /(use workflow|use step|from\s+(['"])@workflow\/serde\2|Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\3\s*\))/,
+                      /(use workflow|use step|@workflow\/core\/runtime\/world-target|from\s+(['"])@workflow\/serde\2|Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\3\s*\))/,
                   },
                 ],
               },
@@ -537,7 +593,11 @@ export function withWorkflow(
     // configure the loader for webpack
     const existingWebpackModify = nextConfig.webpack;
     nextConfig.webpack = (...args) => {
-      const [webpackConfig] = args;
+      let [webpackConfig] = args;
+      webpackConfig = existingWebpackModify
+        ? (existingWebpackModify(...args) ?? webpackConfig)
+        : webpackConfig;
+
       if (!webpackConfig.module) {
         webpackConfig.module = {};
       }
@@ -551,9 +611,24 @@ export function withWorkflow(
         loader: loaderPath,
       });
 
-      return existingWebpackModify
-        ? (existingWebpackModify(...args) ?? webpackConfig)
-        : webpackConfig;
+      webpackConfig.resolve ||= {};
+      const existingAlias = webpackConfig.resolve.alias;
+      if (Array.isArray(existingAlias)) {
+        webpackConfig.resolve.alias = [
+          ...existingAlias,
+          {
+            name: WORKFLOW_WORLD_TARGET_MODULE,
+            alias: workflowTargetWorldWebpackAlias,
+          },
+        ];
+      } else {
+        webpackConfig.resolve.alias = {
+          ...(existingAlias || {}),
+          [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldWebpackAlias,
+        };
+      }
+
+      return webpackConfig;
     };
     // only run this in the main process so it only runs once
     // as Next.js uses child processes for different builds

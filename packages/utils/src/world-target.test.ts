@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import {
+  getWorldImport,
   isVercelWorldTarget,
+  normalizeWorkflowTargetWorldImport,
   resolveWorkflowTargetWorld,
   usesVercelWorld,
 } from './world-target.js';
@@ -25,6 +27,38 @@ describe('resolveWorkflowTargetWorld', () => {
 
   test('defaults to local when no world env vars are set', () => {
     expect(resolveWorkflowTargetWorld({})).toBe('local');
+  });
+});
+
+describe('getWorldImport', () => {
+  test('returns configured custom world import when WORKFLOW_TARGET_WORLD is set', () => {
+    expect(
+      getWorldImport({
+        WORKFLOW_TARGET_WORLD: '@workflow/world-postgres',
+        VERCEL_DEPLOYMENT_ID: 'deployment-id',
+      })
+    ).toBe('@workflow/world-postgres');
+  });
+
+  test('normalizes built-in aliases to import specifiers', () => {
+    expect(normalizeWorkflowTargetWorldImport('local')).toBe(
+      '@workflow/world-local'
+    );
+    expect(normalizeWorkflowTargetWorldImport('vercel')).toBe(
+      '@workflow/world-vercel'
+    );
+  });
+
+  test('defaults to Vercel import when VERCEL_DEPLOYMENT_ID is set', () => {
+    expect(
+      getWorldImport({
+        VERCEL_DEPLOYMENT_ID: 'deployment-id',
+      })
+    ).toBe('@workflow/world-vercel');
+  });
+
+  test('defaults to local import when no world env vars are set', () => {
+    expect(getWorldImport({})).toBe('@workflow/world-local');
   });
 });
 

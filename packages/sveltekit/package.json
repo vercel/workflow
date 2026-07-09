@@ -1,6 +1,6 @@
 {
   "name": "@workflow/sveltekit",
-  "version": "5.0.0-beta.25",
+  "version": "5.0.0-beta.29",
   "description": "SvelteKit integration for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -38,6 +38,6 @@
     "@types/fs-extra": "11.0.4",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "vite": "7.3.2"
+    "vite": "7.3.6"
   }
 }

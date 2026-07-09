@@ -4,6 +4,7 @@ import type { Hook, Step, WorkflowRun } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { Pool } from 'pg';
+import { decodeTime } from 'ulid';
 import {
   afterAll,
   beforeAll,
@@ -700,6 +701,49 @@ describe('Storage (Postgres integration)', () => {
         expect(updated.status).toBe('running');
         expect(updated.startedAt).toBeInstanceOf(Date);
         expect(updated.attempt).toBe(1); // Incremented by step_started
+      });
+
+      it('allocates the step_started event id after the guarded step update', async () => {
+        const stepId = 'step-start-lock';
+        await createStep(events, testRunId, {
+          stepId,
+          stepName: 'test-step',
+          input: new Uint8Array([1]),
+        });
+
+        const lockPool = new Pool({
+          connectionString: container.getConnectionUri(),
+          max: 1,
+        });
+        const client = await lockPool.connect();
+
+        try {
+          await client.query('BEGIN');
+          await client.query(
+            'SELECT 1 FROM workflow.workflow_steps WHERE run_id = $1 AND step_id = $2 FOR UPDATE',
+            [testRunId, stepId]
+          );
+
+          const started = events.create(testRunId, {
+            eventType: 'step_started',
+            correlationId: stepId,
+          });
+
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          const releasedAt = Date.now();
+          await client.query('COMMIT');
+
+          const result = await started;
+          if (!result.event) {
+            throw new Error('Expected step_started event');
+          }
+          expect(
+            decodeTime(result.event.eventId.slice('wevt_'.length))
+          ).toBeGreaterThanOrEqual(releasedAt);
+        } finally {
+          client.release();
+          await lockPool.end();
+        }
       });
 
       it('should update step status to completed via step_completed event', async () => {

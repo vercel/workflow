@@ -2,12 +2,18 @@ import readline from 'node:readline';
 import { Args, Flags } from '@oclif/core';
 import { cancelRun } from '@workflow/core/runtime';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
+import type { WorkflowRun } from '@workflow/world';
 import chalk from 'chalk';
 import Table from 'easy-table';
 import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
+import {
+  getObservabilityUpgradeRequiredMessage,
+  isObservabilityUpgradeRequiredError,
+} from '../lib/inspect/errors.js';
 import { cliFlags } from '../lib/inspect/flags.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
+import { planWindowStartFromResponse } from '../lib/inspect/time-window.js';
 
 export default class Cancel extends BaseCommand {
   static description =
@@ -23,7 +29,10 @@ export default class Cancel extends BaseCommand {
   ];
 
   async catch(error: any) {
-    if (LOGGING_CONFIG.VERBOSE_MODE) {
+    if (isObservabilityUpgradeRequiredError(error)) {
+      logger.error(getObservabilityUpgradeRequiredMessage());
+      process.exit(1);
+    } else if (LOGGING_CONFIG.VERBOSE_MODE) {
       console.error(error);
     }
     throw error;
@@ -99,13 +108,50 @@ export default class Cancel extends BaseCommand {
       process.exit(1);
     }
 
-    // Fetch matching runs
-    const runs = await world.runs.list({
-      status: flags.status as any,
-      workflowName: flags.workflowName,
-      pagination: { limit: flags.limit || 50 },
-      resolveData: 'none',
-    });
+    // Fetch matching runs. Only metadata is needed to display and cancel, so
+    // prefer the analytics read path when the backend provides one.
+    const status = flags.status as WorkflowRun['status'] | undefined;
+    const limit = flags.limit || 50;
+    const analytics = world.analytics;
+    const fetchMatches = async () => {
+      if (!analytics) {
+        return world.runs.list({
+          status,
+          workflowName: flags.workflowName,
+          pagination: { limit },
+          resolveData: 'none',
+        });
+      }
+      // The analytics backend defaults its listing to a recent window
+      // (trailing 24h on the Vercel backend), but bulk cancel must match
+      // across the plan's whole observability window — a run can sleep or
+      // wait on a hook for days without emitting recent events. Probe for
+      // the plan window bounds first, then match across them.
+      const probe = await analytics.runs.list({
+        status,
+        workflowName: flags.workflowName,
+        pagination: { limit: 1 },
+      });
+      const windowStart = planWindowStartFromResponse(probe);
+      return analytics.runs.list({
+        status,
+        workflowName: flags.workflowName,
+        ...(windowStart
+          ? { startTime: windowStart, endTime: new Date().toISOString() }
+          : {}),
+        pagination: { limit },
+      });
+    };
+    const runList = await fetchMatches();
+    const runs = {
+      data: runList.data.map((run) => ({
+        runId: run.runId,
+        workflowName: run.workflowName,
+        status: run.status,
+        startedAt: run.startedAt,
+      })),
+      hasMore: runList.hasMore,
+    };
 
     if (runs.data.length === 0) {
       logger.warn('No matching runs found.');

@@ -1,4 +1,5 @@
 export type {
+  CancelRunOptions,
   Event,
   StartOptions,
   StopSleepOptions,

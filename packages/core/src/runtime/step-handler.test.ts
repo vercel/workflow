@@ -184,7 +184,7 @@ vi.mock('@workflow/utils/get-port', () => ({
 }));
 
 import { getStepFunction } from '../private.js';
-import { dehydrateStepError } from '../serialization.js';
+import { cancelAbortReaders, dehydrateStepError } from '../serialization.js';
 import {
   getErrorName,
   getErrorStack,
@@ -1134,6 +1134,51 @@ describe('executeStep inline-delta threading', () => {
     expect(createdEventTypes()).toEqual(['step_started', 'step_completed']);
   });
 
+  it('throws (does NOT defer as throttled) when a firewall-challenge 429 maps to a TRANSPORT error on step_started', async () => {
+    // world-vercel routes a firewall challenge to a TRANSPORT WorkflowWorldError
+    // rather than ThrottleError precisely so it propagates here: a throw flows
+    // into the replay loop's retryable-world-error rethrow (delivery-count
+    // backoff + MAX_QUEUE_DELIVERIES cap), instead of `{ type: 'throttled' }`
+    // which self-enqueues a fresh message and resets the delivery count.
+    const challengeError = new WorkflowWorldError(
+      'rate limited (x-vercel-mitigated=challenge)',
+      { status: 429, code: 'TRANSPORT' }
+    );
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(challengeError);
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    await expect(
+      executeStep({ world: world as never, ...baseParams })
+    ).rejects.toBe(challengeError);
+  });
+
+  it('defers (throttled) when a genuine application-level 429 (ThrottleError) hits step_started', async () => {
+    // A real server throttle keeps the Retry-After-paced defer.
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.reject(
+            new ThrottleError('slow down', { retryAfter: 3 })
+          );
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+    expect(result.type).toBe('throttled');
+    if (result.type !== 'throttled') throw new Error('unreachable');
+    expect(result.timeoutSeconds).toBe(3);
+  });
+
   it('treats a RunExpiredError from step_completed as gone', async () => {
     mockStepCompleted(() =>
       Promise.reject(new RunExpiredError('run already completed'))
@@ -1144,6 +1189,73 @@ describe('executeStep inline-delta threading', () => {
 
     expect(result).toEqual({ type: 'gone' });
     expect(createdEventTypes()).toEqual(['step_started', 'step_completed']);
+  });
+});
+
+describe('executeStep abort-reader cleanup', () => {
+  const baseParams = {
+    workflowRunId: 'wrun_test123',
+    workflowName: 'test-workflow',
+    workflowStartedAt: Date.now(),
+    stepId: 'step_abc',
+    stepName: 'myStep',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getStepFunction).mockReturnValue(mockStepFn);
+    vi.mocked(normalizeUnknownError).mockImplementation(
+      async (err: unknown) => ({
+        message: err instanceof Error ? err.message : String(err),
+        name: err instanceof Error ? err.name : 'Error',
+        stack: err instanceof Error ? err.stack : undefined,
+      })
+    );
+    mockStepFn.mockReset().mockResolvedValue('step-result');
+    mockStepFn.maxRetries = 3;
+    mockEventsCreate.mockReset().mockImplementation((_runId, event) => {
+      if (event.eventType === 'step_started') {
+        return Promise.resolve({
+          step: {
+            stepId: 'step_abc',
+            status: 'running',
+            attempt: 1,
+            startedAt: new Date(),
+            input: [],
+          },
+          event: {},
+        });
+      }
+      return Promise.resolve({ event: {} });
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Regression: a serialized AbortSignal opens a real-time abort-stream reader
+  // for the step's duration; cleanup must run whether the step succeeds OR
+  // throws, otherwise a throwing/retrying signal-bearing step leaks that reader
+  // (a filesystem poll + emitter listeners on world-local) on every attempt.
+  it('tears down abort readers even when the step function throws', async () => {
+    mockStepFn.mockReset().mockRejectedValue(new Error('boom'));
+
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    // The user-code error is still surfaced (retry, since attempt < maxRetries)…
+    expect(result.type).toBe('retry');
+    // …and cleanup ran on the failure path before the error was re-raised.
+    expect(cancelAbortReaders).toHaveBeenCalledTimes(1);
+  });
+
+  it('tears down abort readers on the success path', async () => {
+    const world = await getWorld();
+    const result = await executeStep({ world: world as never, ...baseParams });
+
+    expect(result.type).toBe('completed');
+    expect(cancelAbortReaders).toHaveBeenCalledTimes(1);
   });
 });
 

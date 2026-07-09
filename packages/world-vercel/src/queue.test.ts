@@ -17,6 +17,9 @@ const {
 
   const mockSend = vi.fn();
   const mockHandleCallback = vi.fn();
+  // Must be a `function` (not an arrow): queue.ts calls `new QueueClient(...)`,
+  // and an arrow function cannot be used as a constructor.
+  // biome-ignore lint/complexity/useArrowFunction: needs to be newable
   const MockQueueClient = vi.fn().mockImplementation(function () {
     return {
       send: mockSend,
@@ -45,6 +48,7 @@ vi.mock('./utils.js', () => ({
 }));
 
 import { createQueue } from './queue.js';
+import { getHttpUrl } from './utils.js';
 
 describe('createQueue', () => {
   beforeEach(() => {
@@ -53,6 +57,69 @@ describe('createQueue', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe('proxy region header', () => {
+    it('sends x-vercel-queue-region when using the api.vercel.com proxy', async () => {
+      // `./utils.js` is module-mocked with `usingProxy: false`; flip it to
+      // proxy mode for this construction.
+      vi.mocked(getHttpUrl).mockReturnValueOnce({
+        baseUrl: 'https://api.vercel.com/v1/workflow',
+        usingProxy: true,
+      });
+      mockSend.mockResolvedValue({ messageId: 'msg-123' });
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+      try {
+        const queue = createQueue({
+          token: 'test-token',
+          projectConfig: { projectId: 'prj_123', teamId: 'team_456' },
+        });
+        await queue.queue('__wkf_workflow_test', { runId: 'run-123' });
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
+
+      const ctorCalls = (
+        MockQueueClient as unknown as { mock: { calls: unknown[][] } }
+      ).mock.calls;
+      const ctorArg = ctorCalls[ctorCalls.length - 1][0] as {
+        region?: string;
+        headers?: Record<string, string>;
+      };
+      expect(ctorArg.headers?.['x-vercel-queue-region']).toBe(ctorArg.region);
+      expect(ctorArg.headers?.['x-vercel-queue-region']).toBeDefined();
+    });
+
+    it('does not send x-vercel-queue-region on the direct (non-proxy) path', async () => {
+      mockSend.mockResolvedValue({ messageId: 'msg-123' });
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+      try {
+        const queue = createQueue();
+        await queue.queue('__wkf_workflow_test', { runId: 'run-123' });
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
+
+      const ctorCalls = (
+        MockQueueClient as unknown as { mock: { calls: unknown[][] } }
+      ).mock.calls;
+      const ctorArg = ctorCalls[ctorCalls.length - 1][0] as {
+        headers?: Record<string, string>;
+      };
+      // Direct sends dial `<region>.vercel-queue.com` via the SDK's own
+      // base-URL resolution; the header is proxy-only.
+      expect(ctorArg.headers?.['x-vercel-queue-region']).toBeUndefined();
+    });
   });
 
   describe('queue()', () => {
@@ -390,7 +457,21 @@ describe('createQueue', () => {
             messageId: 'msg-123',
             deliveryCount: 8,
           })
-        ).toEqual({ afterSeconds: 60 });
+        ).toEqual({ afterSeconds: 128 });
+        // Ramps toward the 900s ceiling (VQS clamps each redelivery to its
+        // 900s SQS limit) so a sustained outage spans most of the 24h window.
+        expect(
+          options.retry(new Error('workflow server unavailable'), {
+            messageId: 'msg-123',
+            deliveryCount: 11,
+          })
+        ).toEqual({ afterSeconds: 900 });
+        expect(
+          options.retry(new Error('workflow server unavailable'), {
+            messageId: 'msg-123',
+            deliveryCount: 20,
+          })
+        ).toEqual({ afterSeconds: 900 });
 
         randomSpy.mockReturnValue(0.999);
         expect(
@@ -404,7 +485,7 @@ describe('createQueue', () => {
             messageId: 'msg-123',
             deliveryCount: 8,
           })
-        ).toEqual({ afterSeconds: 45 });
+        ).toEqual({ afterSeconds: 96 });
       } finally {
         randomSpy.mockRestore();
       }

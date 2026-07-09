@@ -10,6 +10,25 @@ export const WorkflowRunStatusSchema = z.enum([
   'failed',
   'cancelled',
 ]);
+export type WorkflowRunStatus = z.infer<typeof WorkflowRunStatusSchema>;
+export const TerminalWorkflowRunStatusSchema = WorkflowRunStatusSchema.extract([
+  'completed',
+  'failed',
+  'cancelled',
+] as const);
+export type TerminalWorkflowRunStatus = z.infer<
+  typeof TerminalWorkflowRunStatusSchema
+>;
+export const TERMINAL_WORKFLOW_RUN_STATUSES =
+  TerminalWorkflowRunStatusSchema.options;
+
+export function isTerminalWorkflowRunStatus(
+  status: string
+): status is TerminalWorkflowRunStatus {
+  return TERMINAL_WORKFLOW_RUN_STATUSES.includes(
+    status as TerminalWorkflowRunStatus
+  );
+}
 
 /**
  * Base schema for the Workflow runs. Prefer using WorkflowRunSchema
@@ -121,7 +140,6 @@ export const WorkflowRunSchema = z.discriminatedUnion('status', [
 ]);
 
 // Inferred types
-export type WorkflowRunStatus = z.infer<typeof WorkflowRunStatusSchema>;
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
 
 /**

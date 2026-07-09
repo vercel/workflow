@@ -1,5 +1,6 @@
 import type { World } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
+import { createAnalytics } from './analytics.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue } from './queue.js';
@@ -8,6 +9,7 @@ import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 import type { APIConfig } from './utils.js';
 
+export { createAnalytics } from './analytics.js';
 export {
   createGetEncryptionKeyForRun,
   deriveRunKey,
@@ -18,7 +20,7 @@ export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';
 export type { APIConfig } from './utils.js';
 
-export function createVercelWorld(config?: APIConfig): World {
+export function createWorld(config?: APIConfig): World {
   // Project ID for HKDF key derivation context.
   // Use config value first (set correctly by CLI/web), fall back to env var (runtime).
   const projectId =
@@ -41,6 +43,7 @@ export function createVercelWorld(config?: APIConfig): World {
     processExitTriggersQueueRedelivery: true,
     ...createQueue(config),
     ...createStorage(config),
+    analytics: createAnalytics(config),
     ...instrumentObject('world.streams', createStreamer(config)),
     getEncryptionKeyForRun: createGetEncryptionKeyForRun(
       projectId,
@@ -50,4 +53,11 @@ export function createVercelWorld(config?: APIConfig): World {
     ),
     resolveLatestDeploymentId: createResolveLatestDeploymentId(config),
   };
+}
+
+/**
+ * @deprecated Use `createWorld()` instead.
+ */
+export function createVercelWorld(config?: APIConfig): World {
+  return createWorld(config);
 }

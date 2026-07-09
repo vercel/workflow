@@ -1,5 +1,80 @@
 # workflow
 
+## 5.0.0-beta.29
+
+### Patch Changes
+
+- Updated dependencies [[`3f69666`](https://github.com/vercel/workflow/commit/3f696668bcc436cd4b3e29213ee1d9d12e2e5b01), [`3f69666`](https://github.com/vercel/workflow/commit/3f696668bcc436cd4b3e29213ee1d9d12e2e5b01), [`712ed61`](https://github.com/vercel/workflow/commit/712ed61f0a37937c3990429508c582f3edbd4576)]:
+  - @workflow/core@5.0.0-beta.29
+  - @workflow/cli@5.0.0-beta.29
+  - @workflow/next@5.0.0-beta.29
+  - @workflow/nitro@5.0.0-beta.29
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/errors@5.0.0-beta.10
+  - @workflow/astro@5.0.0-beta.29
+  - @workflow/nest@5.0.0-beta.29
+  - @workflow/nuxt@5.0.0-beta.29
+  - @workflow/rollup@5.0.0-beta.29
+  - @workflow/sveltekit@5.0.0-beta.29
+
+## 5.0.0-beta.28
+
+### Patch Changes
+
+- [#2752](https://github.com/vercel/workflow/pull/2752) [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d) Thanks [@ijjk](https://github.com/ijjk)! - Statically inject the configured world package into host bundles instead of selecting worlds dynamically at runtime.
+
+- [#2468](https://github.com/vercel/workflow/pull/2468) [`49a50e8`](https://github.com/vercel/workflow/commit/49a50e83d94656e1df123df1f27258fa7f1d3216) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Standardize first-party World packages on `createWorld()`, support relative target World modules consistently, and align the Postgres World `DATABASE_URL` fallback with bootstrap.
+
+- Updated dependencies [[`17d4ce2`](https://github.com/vercel/workflow/commit/17d4ce225309d83a434cb2e4b1a34e2b647b4e04), [`54f46f9`](https://github.com/vercel/workflow/commit/54f46f976da8d8d5a646bceab60cfab7f0ae47e9), [`fe327e6`](https://github.com/vercel/workflow/commit/fe327e69e205417f864fc4109f6e8b79e92e141a), [`2552d8b`](https://github.com/vercel/workflow/commit/2552d8bc218526f0386bf403e06ddc23932d62ea), [`2ca34ac`](https://github.com/vercel/workflow/commit/2ca34ac69c5c201ef85a61fe3a10cc75ca3c22c4), [`7637196`](https://github.com/vercel/workflow/commit/7637196cf0f605ce62243bf8c7762a26153dcd36), [`239031a`](https://github.com/vercel/workflow/commit/239031ad9e1d27942f8e30a59fd6fef254544fff), [`e7e5a0e`](https://github.com/vercel/workflow/commit/e7e5a0e56d10778554b0ea23d0d66ff9feb66bd9), [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d), [`aae47b9`](https://github.com/vercel/workflow/commit/aae47b9fddc871832938a6cd17dbc5d31c3d50af), [`49a50e8`](https://github.com/vercel/workflow/commit/49a50e83d94656e1df123df1f27258fa7f1d3216)]:
+  - @workflow/cli@5.0.0-beta.28
+  - @workflow/next@5.0.0-beta.28
+  - @workflow/sveltekit@5.0.0-beta.28
+  - @workflow/core@5.0.0-beta.28
+  - @workflow/utils@5.0.0-beta.6
+  - @workflow/astro@5.0.0-beta.28
+  - @workflow/nest@5.0.0-beta.28
+  - @workflow/nitro@5.0.0-beta.28
+  - @workflow/nuxt@5.0.0-beta.28
+  - @workflow/rollup@5.0.0-beta.28
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/errors@5.0.0-beta.10
+
+## 5.0.0-beta.27
+
+### Patch Changes
+
+- [#2678](https://github.com/vercel/workflow/pull/2678) [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475) Thanks [@ijjk](https://github.com/ijjk)! - Speed up Next.js workflow dev rebuilds, ignore commented imports during HMR discovery, and avoid Turbopack resolving custom-world dynamic imports.
+
+- Updated dependencies [[`923ddd9`](https://github.com/vercel/workflow/commit/923ddd98d9c93b533b2fd3f3bd62e7f4b8a490c8), [`532b0e1`](https://github.com/vercel/workflow/commit/532b0e10d6c3105aa86dc871a7a206f784d5a22d), [`5a23159`](https://github.com/vercel/workflow/commit/5a231598e41ce7cd46b647c9aaaa900e55ad3c35), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`7eabc1f`](https://github.com/vercel/workflow/commit/7eabc1f4c68af51eb99c23135ea3945b43842dbd), [`3077b8a`](https://github.com/vercel/workflow/commit/3077b8a8034c61b85ced46166f53c1532fddfd65), [`24f3707`](https://github.com/vercel/workflow/commit/24f370773d1d64b8383eb07537a01d63a7ad37db), [`eb7f60c`](https://github.com/vercel/workflow/commit/eb7f60c7e950b21c8f927b538dc64ff877ce7bb9), [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8)]:
+  - @workflow/nitro@5.0.0-beta.27
+  - @workflow/astro@5.0.0-beta.27
+  - @workflow/next@5.0.0-beta.27
+  - @workflow/sveltekit@5.0.0-beta.27
+  - @workflow/core@5.0.0-beta.27
+  - @workflow/utils@5.0.0-beta.5
+  - @workflow/nuxt@5.0.0-beta.27
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/cli@5.0.0-beta.27
+  - @workflow/nest@5.0.0-beta.27
+  - @workflow/rollup@5.0.0-beta.27
+  - @workflow/errors@5.0.0-beta.9
+
+## 5.0.0-beta.26
+
+### Patch Changes
+
+- Updated dependencies [[`603ad97`](https://github.com/vercel/workflow/commit/603ad9761581e11eaab8e734f1d9c3ab246d4115), [`2477ad8`](https://github.com/vercel/workflow/commit/2477ad85a7acd72338a7301dde1528763b6b1528)]:
+  - @workflow/core@5.0.0-beta.26
+  - @workflow/cli@5.0.0-beta.26
+  - @workflow/next@5.0.0-beta.26
+  - @workflow/nitro@5.0.0-beta.26
+  - @workflow/typescript-plugin@5.0.0-beta.4
+  - @workflow/astro@5.0.0-beta.26
+  - @workflow/nest@5.0.0-beta.26
+  - @workflow/rollup@5.0.0-beta.26
+  - @workflow/sveltekit@5.0.0-beta.26
+  - @workflow/nuxt@5.0.0-beta.26
+
 ## 5.0.0-beta.25
 
 ### Patch Changes
