@@ -21,16 +21,14 @@ let otelApiPromise: Promise<typeof api | null> | null = null;
 
 async function getOtelApi(): Promise<typeof api | null> {
   if (!otelApiPromise) {
-    // The specifier is built at runtime so Rollup/Vite/Turbopack can't
-    // statically resolve it: `@opentelemetry/api` is an optional peer
-    // dependency, and bundlers that statically follow `import('…')` strings
-    // fail the build (e.g. SvelteKit's Rollup pipeline) when the consumer
-    // hasn't installed it. The dynamic specifier preserves the optional
-    // semantics — present at runtime → loads, absent → caught and disabled.
-    const specifier = ['@opentelemetry', 'api'].join('/');
-    otelApiPromise = import(specifier)
-      .then((m) => m as typeof api)
-      .catch(() => null);
+    // Static specifier is intentional: esbuild-bundled targets (the CLI's
+    // `vercel-build-output-api` build, Nitro, Astro) ship a self-contained
+    // bundle with no node_modules, so `@opentelemetry/api` (an optional peer)
+    // must be inlined at build time — a runtime-built specifier is opaque to
+    // esbuild and would silently disable tracing there. Bundlers that reject
+    // an unresolvable static `import()` when the peer is absent (Rollup/Vite,
+    // e.g. SvelteKit) externalize it in the framework integration instead.
+    otelApiPromise = import('@opentelemetry/api').catch(() => null);
   }
   return otelApiPromise;
 }

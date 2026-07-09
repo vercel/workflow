@@ -22,7 +22,9 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean && rm -rf dist"
+    "clean": "tsc --build --clean && rm -rf dist",
+    "test": "vitest run src",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@swc/core": "catalog:",
@@ -33,6 +35,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "rollup": "^4.62.2"
+    "rollup": "^4.62.2",
+    "vitest": "catalog:"
   }
 }

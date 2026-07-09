@@ -153,15 +153,19 @@ export async function withTraceContext<T>(
 }
 
 const OtelApi = once(async () => {
-  // The specifier is built at runtime so Rollup/Vite/Turbopack can't
-  // statically resolve it: `@opentelemetry/api` is an optional peer
-  // dependency, and bundlers that statically follow `import('…')` strings
-  // fail the build (e.g. SvelteKit's Rollup pipeline) when the consumer
-  // hasn't installed it. The dynamic specifier preserves the optional
-  // semantics — present at runtime → loads, absent → caught and disabled.
-  const specifier = ['@opentelemetry', 'api'].join('/');
+  // `@opentelemetry/api` is an optional peer dependency. The static specifier
+  // is intentional: esbuild-bundled targets (the CLI's
+  // `vercel-build-output-api` build, Nitro, Astro) ship a self-contained
+  // bundle with no node_modules, so the package must be *inlined* at build
+  // time for spans to work at runtime — a runtime-built specifier is opaque to
+  // esbuild and would silently disable tracing there. Bundlers that reject an
+  // unresolvable static `import()` when the peer isn't installed (Rollup/Vite,
+  // e.g. SvelteKit) instead externalize `@opentelemetry/api` in the workflow
+  // framework integration, which keeps the build green and still loads real
+  // OTel when the peer is present. Runtime semantics: present → loaded, absent
+  // → caught and tracing disabled.
   try {
-    return (await import(specifier)) as typeof api;
+    return await import('@opentelemetry/api');
   } catch {
     runtimeLogger.info('OpenTelemetry not available, tracing will be disabled');
     return null;

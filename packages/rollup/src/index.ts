@@ -6,6 +6,7 @@ import {
   isGeneratedWorkflowFile,
   resolveModuleSpecifier,
   shouldTransformFile,
+  WORKFLOW_OPTIONAL_OTEL_API_MODULE,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
 import { resolveModulePath } from 'exsolve';
@@ -29,6 +30,20 @@ export function workflowTransformPlugin(
     resolveId: {
       order: 'pre',
       async handler(source, importer, options) {
+        // `@opentelemetry/api` is an optional peer the SDK imports lazily. When
+        // it isn't installed, Rollup/Vite would otherwise fail the build with
+        // "failed to resolve import '@opentelemetry/api'" (observed in
+        // SvelteKit's pipeline). Mark it external so the build stays green; the
+        // runtime try/catch loads the real API when the peer is present and
+        // disables tracing when it isn't. External (not a stub alias) is
+        // deliberate — a stub would permanently disable tracing.
+        if (
+          source === WORKFLOW_OPTIONAL_OTEL_API_MODULE ||
+          source.startsWith(`${WORKFLOW_OPTIONAL_OTEL_API_MODULE}/`)
+        ) {
+          return { id: source, external: true };
+        }
+
         if (source !== WORKFLOW_WORLD_TARGET_MODULE) {
           return null;
         }
