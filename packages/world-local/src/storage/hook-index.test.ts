@@ -268,16 +268,27 @@ describe('hook indexes', () => {
       async () => {
         const runId = await newRun();
         const HOOKS = 10;
+        const TRIALS = 5;
 
+        // Median of several trials, not a single sample: a lone slow trial
+        // (e.g. a Windows CI runner's antivirus briefly locking a just-
+        // written file — the reason `write()` in fs.ts retries EPERM/EBUSY)
+        // would otherwise swing a single-sample measurement by itself, in
+        // either direction, and produce a flaky pass or fail.
         async function timeHookCreations(prefix: string): Promise<number> {
-          const start = performance.now();
-          for (let i = 0; i < HOOKS; i++) {
-            await createHook(storage, runId, {
-              hookId: `hook_${prefix}_${i}`,
-              token: `${prefix}-token-${i}`,
-            });
+          const trialTimes: number[] = [];
+          for (let trial = 0; trial < TRIALS; trial++) {
+            const start = performance.now();
+            for (let i = 0; i < HOOKS; i++) {
+              await createHook(storage, runId, {
+                hookId: `hook_${prefix}_${trial}_${i}`,
+                token: `${prefix}-token-${trial}-${i}`,
+              });
+            }
+            trialTimes.push(performance.now() - start);
           }
-          return performance.now() - start;
+          trialTimes.sort((a, b) => a - b);
+          return trialTimes[Math.floor(trialTimes.length / 2)];
         }
 
         // Baseline on an empty history (also completes the backfill).
