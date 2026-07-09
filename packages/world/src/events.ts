@@ -110,8 +110,8 @@ export const BaseEventSchema = z.object({
 // - specVersion >= 2: Uint8Array (binary devalue format)
 // - specVersion 1: any (legacy JSON format)
 // Client-measured latency telemetry carried on a step's terminal event so a
-// backend can emit latency metrics without extra event-log queries. All three
-// fields are populated together by the runtime, only on the terminal event of
+// backend can emit latency metrics without extra event-log queries. Fields
+// are populated as applicable by the runtime, only on the terminal event of
 // a first-attempt step execution that qualified for measurement (see
 // `@workflow/core` runtime/step-latency.ts). Backends may consume these for
 // metrics and are not required to persist them.
@@ -126,6 +126,10 @@ const stepLatencyTelemetryFields = {
   // two steps ran back-to-back (the previous event-log entry is a
   // step_completed/step_failed).
   stso: z.number().optional(),
+  // Progress counters taken when the STSO gap began. Only present alongside
+  // stso.
+  stepCount: z.number().int().positive().optional(),
+  eventCount: z.number().int().positive().optional(),
   // Names of the runtime's optional startup-latency optimizations that were
   // active for this measurement (e.g. 'turbo', 'lazyStepStart',
   // 'optimisticStart'), so latency metrics can be segmented by them.

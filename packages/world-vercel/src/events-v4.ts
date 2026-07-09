@@ -159,6 +159,9 @@ export interface CreateEventV4Input {
    *  event → this step's body starting), riding on step_completed /
    *  step_failed. Consumed server-side for latency metrics. */
   stso?: number;
+  /** Progress counters taken when the STSO gap began. */
+  stepCount?: number;
+  eventCount?: number;
   /** Runtime optimizations active for the ttfs/stso measurement
    *  (e.g. 'turbo', 'lazyStepStart', 'optimisticStart'). */
   optimizations?: string[];
@@ -248,6 +251,8 @@ function buildPostFrameMeta(
   }
   if (input.ttfs !== undefined) meta.ttfs = input.ttfs;
   if (input.stso !== undefined) meta.stso = input.stso;
+  if (input.stepCount !== undefined) meta.stepCount = input.stepCount;
+  if (input.eventCount !== undefined) meta.eventCount = input.eventCount;
   if (input.optimizations !== undefined) {
     meta.optimizations = input.optimizations;
   }

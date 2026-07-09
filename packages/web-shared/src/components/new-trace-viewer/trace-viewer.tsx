@@ -565,7 +565,7 @@ function NewTraceViewerContent({
           <div
             ref={timelineRef}
             id="trace-timeline"
-            className="block min-h-0 overflow-visible relative"
+            className="@container block min-h-0 overflow-visible relative"
             onDoubleClick={resetZoom}
             onMouseMove={handleTimelineMouseMove}
             onMouseLeave={handleTimelineMouseLeave}
@@ -581,6 +581,10 @@ function NewTraceViewerContent({
               onRevealTime={handleRevealTime}
               hoverFraction={hoverFraction}
               altHeld={altHeld}
+            />
+            <TraceShortcutHelper
+              hasMultipleSpans={trace.spans.length > 1}
+              reducedMotion={reducedMotion}
             />
           </div>
         </SplitPane>
@@ -618,11 +622,6 @@ function NewTraceViewerContent({
         containerRef={paneRootRef}
         onNavigateToSpan={navigateToSpan}
         onClose={handleClearActiveSpan}
-      />
-
-      <TraceShortcutHelper
-        hasMultipleSpans={trace.spans.length > 1}
-        reducedMotion={reducedMotion}
       />
     </div>
   );

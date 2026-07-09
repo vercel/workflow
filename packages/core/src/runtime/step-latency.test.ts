@@ -9,12 +9,18 @@ const RUN_ID = 'wrun_test';
 
 function makeEvent(
   eventType: Event['eventType'],
-  overrides: { createdAt?: Date; occurredAt?: Date } = {}
+  overrides: {
+    createdAt?: Date;
+    occurredAt?: Date;
+    correlationId?: string;
+  } = {}
 ): Event {
   return {
     eventId: `e-${Math.random().toString(36).slice(2)}`,
     runId: RUN_ID,
     eventType,
+    correlationId:
+      overrides.correlationId ?? `corr-${Math.random().toString(36).slice(2)}`,
     createdAt: overrides.createdAt ?? new Date('2024-01-01T00:00:00.000Z'),
     ...(overrides.occurredAt ? { occurredAt: overrides.occurredAt } : {}),
   } as Event;
@@ -187,7 +193,12 @@ describe('computeStepLatencyTracking', () => {
       ],
     });
     // step events disqualify TTFS but qualify STSO.
-    expect(tracking).toEqual({ prevStepEndMs: 4_500, turbo: false });
+    expect(tracking).toEqual({
+      prevStepEndMs: 4_500,
+      stepCount: 1,
+      eventCount: 3,
+      turbo: false,
+    });
   });
 
   it('falls back to createdAt for STSO when occurredAt is absent', () => {
@@ -195,7 +206,30 @@ describe('computeStepLatencyTracking', () => {
       ...BASE,
       events: [makeEvent('step_failed', { createdAt: new Date(5_000) })],
     });
-    expect(tracking).toEqual({ prevStepEndMs: 5_000, turbo: false });
+    expect(tracking).toEqual({
+      prevStepEndMs: 5_000,
+      stepCount: 1,
+      eventCount: 1,
+      turbo: false,
+    });
+  });
+
+  it('counts unique terminal steps before the STSO gap', () => {
+    const tracking = computeStepLatencyTracking({
+      ...BASE,
+      events: [
+        makeEvent('step_completed', { correlationId: 'step_1' }),
+        makeEvent('step_failed', { correlationId: 'step_2' }),
+        makeEvent('step_completed', { correlationId: 'step_2' }),
+      ],
+      invocationStartedClean: false,
+    });
+    expect(tracking).toEqual({
+      prevStepEndMs: new Date('2024-01-01T00:00:00.000Z').getTime(),
+      stepCount: 2,
+      eventCount: 3,
+      turbo: false,
+    });
   });
 
   it('does not mark STSO when the last event is not a step terminal', () => {
@@ -258,13 +292,23 @@ describe('computeStepLatencyEventData', () => {
 
   it('computes stso against the previous step terminal timestamp', () => {
     const data = computeStepLatencyEventData({
-      tracking: { prevStepEndMs: 1_500, turbo: false },
+      tracking: {
+        prevStepEndMs: 1_500,
+        stepCount: 7,
+        eventCount: 42,
+        turbo: false,
+      },
       stepCodeStartedAtMs: 2_000,
       attempt: 1,
       lazyStepStart: true,
       optimisticStart: false,
     });
-    expect(data).toEqual({ stso: 500, optimizations: ['lazyStepStart'] });
+    expect(data).toEqual({
+      stso: 500,
+      stepCount: 7,
+      eventCount: 42,
+      optimizations: ['lazyStepStart'],
+    });
   });
 
   it('clamps negative durations (cross-machine clock skew) to zero', () => {
@@ -273,6 +317,8 @@ describe('computeStepLatencyEventData', () => {
         ttfsAnchorMs: 5_000,
         preStepBlockingMs: 0,
         prevStepEndMs: 5_000,
+        stepCount: 3,
+        eventCount: 9,
         turbo: false,
       },
       stepCodeStartedAtMs: 4_000,
@@ -280,7 +326,13 @@ describe('computeStepLatencyEventData', () => {
       lazyStepStart: false,
       optimisticStart: false,
     });
-    expect(data).toEqual({ ttfs: 0, stso: 0, optimizations: [] });
+    expect(data).toEqual({
+      ttfs: 0,
+      stso: 0,
+      stepCount: 3,
+      eventCount: 9,
+      optimizations: [],
+    });
   });
 
   it('reports nothing on a retry attempt', () => {

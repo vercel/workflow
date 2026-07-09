@@ -82,6 +82,8 @@ export function createDevTests(config?: DevTestConfig) {
       : process.platform === 'win32'
         ? 140_000
         : 70_000;
+    const multiPhaseHmrTestTimeoutMs =
+      hmrTestTimeoutMs + hmrRediscoveryTimeoutMs;
     const flowRouteHmrFuzzTimeoutMs = finalConfig.canary ? 480_000 : 240_000;
     const readManifestStepFunctionNames = async (): Promise<string[]> => {
       const manifestJson = await fs.readFile(workflowManifestPath, 'utf8');
@@ -458,7 +460,11 @@ export async function hmrPageWorkflow() {
 
     test(
       'should rebuild on workflow change',
-      { timeout: hmrTestTimeoutMs },
+      {
+        timeout: usesNextFlowRoute
+          ? multiPhaseHmrTestTimeoutMs
+          : hmrTestTimeoutMs,
+      },
       async () => {
         if (usesNextFlowRoute) {
           await waitForHmrReady();
@@ -491,7 +497,7 @@ ${apiFileContent}`
           );
           await pollUntil({
             description: 'workflow-change fixture to appear in manifest',
-            timeoutMs: 50_000,
+            timeoutMs: hmrRediscoveryTimeoutMs,
             check: async () => {
               await prewarm();
               expect(await readManifestWorkflowFunctionNames()).toContain(
@@ -517,7 +523,7 @@ export async function myNewWorkflow() {
 
         await pollUntil({
           description: 'generated workflow to include myNewWorkflow',
-          timeoutMs: usesNextFlowRoute ? 50_000 : 25_000,
+          timeoutMs: usesNextFlowRoute ? hmrRediscoveryTimeoutMs : 25_000,
           check: async () => {
             if (usesNextFlowRoute) {
               await prewarm();
@@ -717,7 +723,7 @@ ${apiFileContent}`
 
         await pollUntil({
           description: 'generated workflow to include newWorkflowFile',
-          timeoutMs: 50_000,
+          timeoutMs: hmrRediscoveryTimeoutMs,
           check: async () => {
             if (usesNextFlowRoute) {
               const manifestJson = await fs.readFile(
