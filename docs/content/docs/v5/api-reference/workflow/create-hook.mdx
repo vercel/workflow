@@ -187,8 +187,6 @@ The Hook remains active until the workflow ends, even if the configured time pas
 This option is experimental. A World that does not support it will ignore it. `createWebhook()` does not accept this option.
 </Callout>
 
-`experimental_expires` stores a deadline; it does not schedule work at that time. When another Hook tries to use the token, the World compares the stored deadline. A World may reject values beyond its supported maximum.
-
 ### Waiting for Multiple Payloads
 
 You can also wait for multiple payloads by using the `for await...of` syntax.
