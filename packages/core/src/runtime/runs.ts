@@ -13,6 +13,15 @@ import { start } from './start.js';
 export interface RecreateRunOptions {
   deploymentId?: string;
   specVersion?: number;
+  /**
+   * Queue namespace of the target deployment (e.g. `'eve'` for topics like
+   * `__eve_wkf_workflow_*`). Falls back to `WORKFLOW_QUEUE_NAMESPACE` in
+   * the calling process. Cross-context callers (e.g. the observability
+   * dashboard) must pass the target deployment's namespace explicitly —
+   * a run enqueued to a topic the target deployment has no consumer for
+   * is never picked up.
+   */
+  namespace?: string;
 }
 
 export interface StopSleepResult {
@@ -35,6 +44,22 @@ export interface StopSleepOptions {
    * If not provided, all pending sleep calls will be interrupted.
    */
   correlationIds?: string[];
+  /**
+   * Queue namespace of the run's deployment (e.g. `'eve'`), used when
+   * re-enqueueing the run after completing its waits. Falls back to
+   * `WORKFLOW_QUEUE_NAMESPACE` in the calling process. Cross-context
+   * callers (e.g. the observability dashboard) must pass it explicitly.
+   */
+  namespace?: string;
+}
+
+export interface ReenqueueRunOptions {
+  /**
+   * Queue namespace of the run's deployment (e.g. `'eve'`). Falls back to
+   * `WORKFLOW_QUEUE_NAMESPACE` in the calling process. Cross-context
+   * callers (e.g. the observability dashboard) must pass it explicitly.
+   */
+  namespace?: string;
 }
 
 export interface CancelRunOptions {
@@ -80,6 +105,7 @@ export async function recreateRunFromExisting(
         deploymentId,
         world,
         specVersion,
+        namespace: options.namespace,
       }
     );
     return newRun.runId;
@@ -125,11 +151,15 @@ export async function cancelRun(
 /**
  * Re-enqueue a workflow run.
  */
-export async function reenqueueRun(world: World, runId: string): Promise<void> {
+export async function reenqueueRun(
+  world: World,
+  runId: string,
+  options?: ReenqueueRunOptions
+): Promise<void> {
   try {
     const run = await world.runs.get(runId, { resolveData: 'none' });
     await world.queue(
-      getWorkflowQueueName(run.workflowName),
+      getWorkflowQueueName(run.workflowName, options?.namespace),
       {
         runId,
       },
@@ -225,7 +255,7 @@ export async function wakeUpRun(
 
     if (stoppedCount > 0) {
       await world.queue(
-        getWorkflowQueueName(run.workflowName),
+        getWorkflowQueueName(run.workflowName, options?.namespace),
         {
           runId,
         },

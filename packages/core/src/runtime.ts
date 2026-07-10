@@ -115,6 +115,7 @@ export {
   listStreams,
   type ReadStreamOptions,
   type RecreateRunOptions,
+  type ReenqueueRunOptions,
   readStream,
   recreateRunFromExisting,
   reenqueueRun,

@@ -89,6 +89,21 @@ export interface StartOptionsBase {
    * the `experimental_setAttributes` option of the same name.
    */
   allowReservedAttributes?: boolean;
+
+  /**
+   * Queue namespace of the target deployment. Scopes the workflow queue
+   * topic to `__{namespace}_wkf_workflow_*` (e.g. `'eve'`) instead of the
+   * default `__wkf_workflow_*`, and is also used for the cross-deployment
+   * capability probe. Falls back to `WORKFLOW_QUEUE_NAMESPACE` in the
+   * calling process.
+   *
+   * Within a deployment the env fallback is correct. Cross-context callers
+   * (e.g. the observability dashboard replaying a run) must pass the
+   * TARGET deployment's namespace explicitly: the env fallback resolves in
+   * the caller's process, and a run enqueued to a topic the target has no
+   * consumer for is never picked up.
+   */
+  namespace?: string;
 }
 
 export interface StartOptionsWithDeploymentId extends StartOptionsBase {
@@ -260,6 +275,7 @@ export async function start<TArgs extends unknown[], TResult>(
         const probe = await healthCheck(world, 'workflow', {
           deploymentId,
           timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
+          namespace: opts.namespace,
         }).catch(() => undefined);
         const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
         framedByteStreams = capabilities.framedByteStreams;
@@ -378,7 +394,7 @@ export async function start<TArgs extends unknown[], TResult>(
           { v1Compat }
         ),
         world.queue(
-          getWorkflowQueueName(workflowName),
+          getWorkflowQueueName(workflowName, opts.namespace),
           {
             runId,
             traceCarrier,
