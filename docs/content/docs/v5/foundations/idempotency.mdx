@@ -244,7 +244,42 @@ export async function processOrder(orderId: string, confirmed: boolean) {
 }
 ```
 
-**Supersede an active owner.** This strategy applies only when retention is disabled. Cancellation does not transfer ownership: after cancelling, create a new Hook and proceed only after `getConflict()` returns `null`. The cancellation can race a terminal transition, so handle that outcome and retry the claim. With retention enabled, cancellation makes the owner terminal but leaves its claim in place until the deadline.
+**Supersede the owner.** Newest-wins: cancel the active run, then claim the released token. Cancellation disposes the owner's hooks; the retry loop covers the window where that disposal has not propagated yet:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+type OrderRequest = { confirmed: boolean };
+declare function chargeOrder(orderId: string): Promise<void>; // @setup
+
+export async function processOrderNewestWins(orderId: string) {
+  "use workflow";
+
+  const token = `order:${orderId}`;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    using request = createHook<OrderRequest>({ token });
+
+    const conflict = await request.getConflict();
+    if (!conflict) {
+      // Token claimed — this run is now the owner.
+      const { confirmed } = await request;
+      if (confirmed) {
+        await chargeOrder(orderId);
+      }
+      return { status: "processed" as const };
+    }
+
+    await conflict.cancel(); // [!code highlight]
+  }
+
+  throw new Error(`Could not claim ${token} after cancelling the owner`);
+}
+```
+
+<Callout type="warn">
+Do not combine this pattern with `experimental_retention`. Cancellation makes a retained owner terminal but does not release its token claim; the claim remains until its deadline. Cancellation also does not transfer ownership by itself, so protected work must remain behind a later `getConflict()` that returns `null`.
+</Callout>
 
 If duplicate requests should only reuse the active run without sending data, use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) as an advisory pre-check before calling `start()`. The workflow should still check `hook.getConflict()`, because the lookup and `start()` are not atomic.
 
