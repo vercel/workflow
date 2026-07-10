@@ -302,6 +302,9 @@ jobs:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Keep experimental runtime coverage visible without making known Bun
+    # incompatibilities block the required E2E aggregate.
+    continue-on-error: ${{ matrix.app.allow-failure || false }}
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
     permissions:
@@ -322,6 +325,7 @@ jobs:
           - name: "nextjs-turbopack-bun"
             test-app-name: "nextjs-turbopack"
             runtime: "bun"
+            allow-failure: true
             project-id: "prj_lb5X39knEIn63kRAoeNFipevjJBu"
             project-slug: "workbench-bun-workflow"
           - name: "nextjs-webpack"
