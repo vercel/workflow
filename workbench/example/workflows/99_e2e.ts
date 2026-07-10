@@ -420,32 +420,6 @@ export async function fetchWorkflow() {
 
 //////////////////////////////////////////////////////////
 
-async function bunRuntimeInfoStep() {
-  'use step';
-
-  // This import is intentionally left in the step bundle. It covers the
-  // regression from #393, where the builder tried to resolve Bun builtins
-  // instead of treating them as runtime-provided modules.
-  // @ts-expect-error `bun` is a runtime builtin without Node.js type declarations.
-  const bun = await import('bun');
-  const processVersion = (
-    process.versions as Record<string, string | undefined>
-  ).bun;
-
-  return {
-    version: bun.version as string,
-    revision: bun.revision as string,
-    processVersion,
-  };
-}
-
-export async function bunRuntimeInfoWorkflow() {
-  'use workflow';
-  return await bunRuntimeInfoStep();
-}
-
-//////////////////////////////////////////////////////////
-
 type CborReplayPayload = {
   chunkBatches: string[][];
   serializedBytes: number;

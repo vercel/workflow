@@ -1209,11 +1209,14 @@ describe('e2e', () => {
   });
 
   test.runIf(e2eRuntime === 'bun')(
-    'Bun runtime builtin and version (#393)',
+    'Bun runtime version',
     { timeout: 60_000 },
     async () => {
-      const run = await start(await e2e('bunRuntimeInfoWorkflow'), []);
-      detectedRuntime = await run.returnValue;
+      const response = await fetch(new URL('/api/bun-runtime', deploymentUrl), {
+        headers: await getTrustedSourcesHeaders(),
+      });
+      expect(response.ok).toBe(true);
+      detectedRuntime = await response.json();
 
       expect(detectedRuntime.version).toMatch(/^1\.\d+\.\d+(?:[-+].+)?$/);
       expect(detectedRuntime.revision).toMatch(/^[0-9a-f]+$/i);
