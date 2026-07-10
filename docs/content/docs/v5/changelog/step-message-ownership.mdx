@@ -1,226 +1,331 @@
 ---
 title: Inline step message ownership
-description: Stamp the owning queue message ID on inline step_started so wake replays stop re-dispatching in-flight steps — fixing duplicate step execution (issue #2780).
+description: Why inline step_started now records its owning queue message ID, why ownership is bounded by a lease, and why the alternatives — from queue serialization to heartbeats — were rejected. Fixes duplicate inline step execution (issue #2780).
 ---
 
 # Inline step message ownership
 
 > Fixes [#2780](https://github.com/vercel/workflow/issues/2780) (duplicate
 > inline step execution when a hook or wait wakes a run mid-step). This page
-> is the design document; the "implementation phases" below describe how the
-> change is structured in the codebase. Kill switch:
+> is the design defense for the change: what it does, why each choice was
+> made, and why the alternatives were rejected. Kill switch:
 > `WORKFLOW_INLINE_OWNERSHIP=0`; lease tuning:
 > `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS` (see
 > [Runtime tuning](/v5/docs/configuration/runtime-tuning)).
 
-**One-line design:** the lazy `step_started` that creates an inline step also records the
-queue message ID of the invocation that owns attempt 1. Ownership lasts until the first
-`step_retrying` (or terminal event). While ownership is active, wake replays do **not**
-immediately requeue the step — they ensure a *delayed backstop wake* exists instead —
-and the only party allowed to (re-)execute it is a handler processing the owning message
-(i.e., the original invocation, or its queue redelivery after a crash).
+## What this change does
 
-## Motivation
+The lazy `step_started` that creates an inline step now also records the queue message ID
+of the invocation running its body (`eventData.ownerMessageId`). While that ownership is
+active — until the step's first `step_retrying` or terminal event — a replay triggered by
+anything other than the owning message does **not** requeue the step. It instead ensures a
+*delayed backstop wake* exists, timed to the remainder of an ownership lease. Only a
+handler processing the owning message (the original invocation, or the queue's redelivery
+of it after a crash) may re-execute the step before that lease expires.
+
+## The bug being fixed
 
 An inline step has no queue message — that is the point of inline execution (it saves the
-dispatch round-trip). But the runtime's crash-recovery rule queues every created,
-non-terminal step **unconditionally** on each replay (`runtime.ts`, pending-step dispatch),
-relying on the queue's `idempotencyKey = correlationId` to dedupe. For inline steps there is
-no prior message to dedupe against, so any wake that replays the run mid-step —
-`hook_received`, an elapsed wait continuation, cancellation — enqueues a *first* message for
-that correlation id. Its consumer sends a bare `step_started` on the `running` step (allowed:
-retries legitimately re-start non-terminal steps) and runs the body a second time,
-concurrently with the original. One `step_completed` wins; every side effect happened twice.
+dispatch round-trip). But the runtime's crash-recovery rule queued every created,
+non-terminal step **unconditionally** on each replay, relying on the queue's
+`idempotencyKey = correlationId` to dedupe repeats. For inline steps there is no prior
+message to dedupe against, so any wake that replayed the run mid-step — `hook_received`,
+an elapsed wait continuation, a cancellation — enqueued a *first* message for that
+correlation ID. Its consumer sent a bare `step_started` on the `running` step (which is
+allowed: retries legitimately re-start non-terminal steps) and ran the body a second time,
+concurrently with the original. One `step_completed` won the terminal write; every side
+effect had already happened twice.
 
-The missing primitive is distinguishing "attempt is in flight in a live invocation" from
-"attempt died with its process". Rather than inventing a liveness mechanism, this design
-reuses the queue's: a delivery of the owning message *is* the liveness lease.
+Note what is *not* broken: the unconditional requeue is correct for eager steps and is
+itself the crash-recovery mechanism for a handler that wrote `step_created` and died
+before enqueueing. Any fix must suppress the requeue *only* while a live invocation is
+demonstrably running the body — which turns the bug into a liveness problem.
 
-## Design decisions
+## The core problem is liveness, and why we did not build a liveness mechanism
 
-| Decision | Choice | Rationale |
-|---|---|---|
-| Ownership identity | Queue `messageId` from handler meta (`createQueueHandler` already delivers `meta.messageId`; verified stable across redeliveries in world-local — one id per message, reused across the retry loop) | No queue-interface change needed. The stability requirement must be documented in the World contract; worlds with unstable ids degrade gracefully to backstop-lease behavior (below), never to a wedge. |
-| Ownership scope | Attempt 1 only: active while step is created + started + non-terminal + **no `step_retrying`** | From `step_retrying` on, the step is queue-owned (the delayed retry handoff, or replay requeue). Blanket suppression would break crash-during-retry-handoff recovery and the throttle path's replay-driven dispatch. |
-| Non-owner behavior | **Delayed backstop wake**, not pure skip: enqueue a plain run continuation (no `stepId`) with `delaySeconds = lease remaining`, `idempotencyKey = correlationId + ':backstop:' + lastStartedAt` (scoped to the **ownership epoch** — the latest `step_started` timestamp) | Folds the expiry escape hatch into the replay itself: when the backstop fires, the dispatch decision table handles whatever state the step is in by then (terminal → no-op; queue-owned after `step_retrying` → normal keyed dispatch; owner dead + lease expired → immediate dispatch, preserving *step-level* catchable failure semantics for poison steps; lease refreshed by owner recovery → re-arm). Two constraints shape the key. (1) It must **not** be the step message's `idempotencyKey = correlationId`: the owner's retry handoff enqueues the step under that key with a short backoff, and a pending backstop step-message sharing it would absorb the retry — turning a 1s backoff into a full-lease stall (caught by the abort-mid-flight e2e). (2) It must **change on owner-recovery re-stamp**: queues dedupe a key for the original message's lifetime, including while a delivery is in flight, so a *fixed* `:backstop` key means a backstop firing during a refreshed lease cannot publish its own replacement (the re-arm dedupes against the in-flight message and is dropped) — if the recovered owner then dies with its redelivery budget exhausted, no escape hatch remains. The epoch suffix gives each re-stamp a fresh key while still capping fan-out at one pending backstop per epoch (epochs are bounded by the queue's redelivery budget for the owning message). |
-| Lease duration | Fixed constant, default 860s, env-tunable (`WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`) | No runtime or build-time signal for the resolved function `maxDuration` exists (builders emit `maxDuration: 'max'`, resolved per-plan by the platform at deploy). The death bound instead comes from a platform rule: durations >800s require explicit per-function numeric config, so `'max'` resolves ≤800s — 860s dominates any builder-emitted workflow route. Revisit when the platform ceiling moves (30-minute beta). Worlds without an invocation kill bound (world-local, self-hosted) get no death proof from any constant — the in-process single-flight layer covers them. |
-| In-process single-flight | Required layer, not optional: per-process map keyed `runId:correlationId` around `executeStep`; loser awaits winner's settlement, then acks without executing | Makes the backstop safe where the lease is *not* a death proof: world-local is single-process, so single-flight fully absorbs a backstop firing mid-step there; on Fluid compute it also absorbs same-instance races. Cross-instance long-step duplicates on multi-instance self-hosted worlds remain the documented residual (mitigate by raising the lease env). |
-| Owner recovery | Owner (same messageId) re-executes via bare `step_started` that **re-stamps** `ownerMessageId` | Bare start is the already-permitted at-least-once restart; input is on the step entity. Re-stamping is required: an owner-recovery start must not read as "unowned" to a later wake (ownership state derives from the *latest* `step_started`). Retry attempts (from queue-owned messages) send unstamped bare starts → ownership naturally clears. |
-| Eager steps | Untouched — no stamping | Their execution is owned by their own step message + idempotency dedupe; stamping the orchestrator's id there would be wrong. |
+The missing primitive is the ability to distinguish "this attempt is in flight in a live
+invocation" from "this attempt died with its process." Stateless compute offers no death
+signal: a crashed function emits nothing, and the event log looks identical either way
+(`step_started`, no terminal event).
 
-## Dispatch decision table
+The classic answers are heartbeats or a lock store: the executing invocation periodically
+renews a claim, and recovery waits for the claim to go stale. We rejected building one:
 
-Replaces the unconditional requeue in the pending-step dispatch loop (`runtime.ts`). For
-each `pendingSteps` entry not designated lazy-inline:
+- **It adds World API surface.** Every backend — Vercel, local filesystem, community
+  Postgres/Turso/Redis worlds — would have to implement a renewable-claim store with
+  expiry semantics. The event log is the World contract's one source of truth; a second,
+  mutable liveness store beside it is a large contract change for a race fix.
+- **It adds steady-state write load.** Heartbeats cost a write per interval per in-flight
+  step, paid by every healthy run to detect the rare crashed one.
+- **It does not remove the hard part.** A heartbeat still needs an expiry to survive a
+  crashed heartbeater — that expiry *is* a lease. Any liveness design degenerates to
+  "claim + bounded staleness"; the machinery around it is overhead.
+
+Instead, the design reuses a liveness signal the system already has: **the queue's
+delivery state**. An un-acked queue message is precisely "work that a live invocation may
+be processing, which will be redelivered if the processor died." Stamping the owning
+message ID on the step makes the queue's own at-least-once machinery serve as the claim,
+the crash detector, and the recovery driver — with zero new World surface and zero
+steady-state writes beyond one field on an event we already write.
+
+### Why the identity is the queue `messageId`
+
+`createQueueHandler` already delivers `meta.messageId`, and one enqueued message keeps its
+ID across redelivery attempts. That stability is exactly the property recovery needs: "a
+delivery whose ID matches the stamp" means "the queue redelivered the work that crashed" —
+permission to re-execute. The requirement is now documented in the
+[Queue contract](/v5/docs/api-reference/workflow-runtime/world/queue); a World whose queue
+mints fresh IDs per delivery degrades gracefully (the owner check never matches, so
+crashed steps recover via the delayed backstop instead of immediately) — it never wedges
+and never duplicates.
+
+### Why ownership lives in the event log
+
+Ownership state is derived per-replay from the step's events, not held in memory or in a
+side store. Every replayer — the owner's redelivery, a hook wake, the backstop — computes
+the same answer from the same log, which is the workflow runtime's existing consistency
+model. The rules are chosen so the log alone is sufficient:
+
+- **Latest `step_started` wins.** A stamped start (inline execution, or owner recovery)
+  sets the owner; an unstamped bare start (a retry attempt driven by a queued step
+  message, or an older runtime) clears it. This is why owner recovery must *re-stamp* its
+  bare start: an unstamped recovery start would read as "unowned" to a later wake, which
+  would immediately requeue the step the owner is re-running — reintroducing the bug on
+  the recovery path.
+- **`step_retrying` lapses ownership permanently** for the correlation ID. From the first
+  retry on, the step is queue-owned: the retry handoff enqueues a real step message, and
+  the ordinary `idempotencyKey = correlationId` dedupe works again. Extending ownership
+  across retries was rejected deliberately — retry backoffs are delay-dominated (the
+  owning invocation would hold compute open doing nothing), each attempt would pay a
+  replay to re-derive state, and transferring ownership between attempts adds a state
+  machine where the queue-owned path already recovers correctly.
+- **Eager steps are untouched.** Their execution is owned by their own step message and
+  its idempotency dedupe; stamping the orchestrator's ID on them would claim work the
+  orchestrator is not performing.
+
+## Why ownership requires a lease
+
+Ownership cannot be unconditional. Suppose replays deferred to the owner forever: an owner
+that dies *and exhausts its redelivery budget* (poison delivery, queue retention limits,
+operator interference) leaves a stamped, non-terminal step that no message will ever
+drive. Every future wake would defer to a ghost. Unbounded ownership converts "duplicate
+execution" into "permanently wedged run" — a strictly worse failure mode.
+
+So ownership is honored only for a bounded window: `leaseRemaining = min(lease, max(0,
+lastStartedAt + lease − now))`, anchored at the latest `step_started`'s server-assigned
+timestamp. Within the window, non-owner replays defer (and arm the backstop); after it,
+dispatch falls back to the pre-existing immediate enqueue. The lease is the upper bound on
+"how long a dead owner can delay recovery," and equally the lower bound on "how long a
+live owner is protected from duplicates."
+
+The upper clamp exists for clock skew: `lastStartedAt` is server-stamped while `now` is
+the local clock, so a client running behind the server would otherwise compute a remainder
+*longer* than the lease — and above 900s, a `delaySeconds` that SQS-backed queues reject
+outright.
+
+### Why a fixed constant, and why 860 seconds
+
+The correct lease is "longer than any invocation can possibly live" — beyond that point
+the owner is provably dead on platforms that kill invocations. Ideally we would derive it
+from the workflow route's resolved `maxDuration`. **No such signal exists**: builders emit
+`maxDuration: 'max'`, which the platform resolves per-plan at deploy time; there is no
+environment variable, request-context deadline, or build-time value to read. Deriving the
+lease was rejected because there is nothing to derive it from.
+
+860s is justified by a platform rule rather than a measurement: durations above 800s
+require explicit per-function numeric configuration, so `'max'` resolves to ≤ 800s for
+any builder-emitted workflow route, and 860 dominates it with headroom. The constant is
+env-tunable (`WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`, clamped to 1..900 — 900 being the
+queue's maximum per-message delay, so a single delayed backstop message always suffices
+and no delay chaining is needed). The code comment carries the 30-minute-`maxDuration`
+beta caveat so the constant is revisited when the platform ceiling moves.
+
+On worlds with **no** invocation kill bound (world-local's single process, self-hosted
+deployments), no constant is a death proof — which is why the in-process single-flight
+below is a required layer, not an optimization.
+
+## Why the non-owner action is a delayed backstop wake — not a skip, and not a step message
+
+The naive non-owner behavior is to simply *skip* the requeue. Rejected: a pure skip makes
+lease expiry useless, because nothing is scheduled to *observe* the expiry. If the owner
+dies and no external wake happens to arrive later, the run wedges. The escape hatch has to
+be folded into the suppression itself.
+
+So the non-owner enqueues a **plain run continuation** (no `stepId`) with `delaySeconds =
+leaseRemaining`. When it fires, it replays the run and re-enters the same dispatch
+decision table, which handles every state the step can be in by then: terminal → nothing
+pending; queue-owned after `step_retrying` → normal keyed dispatch; owner dead with lease
+expired → immediate dispatch — preserving *step-level* failure semantics for poison steps
+(the step fails and the workflow's `catch` sees it, rather than the run dying on a
+delivery-budget backstop); lease refreshed by owner recovery → re-arm for the new
+remainder.
+
+Two shapes of this backstop were tried and rejected by hard evidence, and both lessons are
+now encoded in `backstopIdempotencyKey`:
+
+1. **The backstop must not be the step's own message.** The first implementation enqueued
+   the step message itself (keyed `correlationId`) with the lease delay. But the owner's
+   retry handoff enqueues the step under that *same* key with a ~1s backoff — and the
+   pending backstop absorbed it, turning a 1-second retry into a full-lease stall. Caught
+   by the abort-mid-flight e2e wedging on every world-local lane.
+2. **The backstop key must change when ownership is re-stamped.** Queues dedupe an
+   idempotency key for the original message's lifetime — *including while a delivery is
+   in flight*. With a fixed `${correlationId}:backstop` key, a backstop firing during a
+   lease that owner recovery had refreshed could never publish its own replacement (the
+   re-arm deduped against the in-flight backstop itself and was dropped); if the
+   recovered owner then died with its redelivery budget exhausted, no escape hatch
+   remained. Caught in review. The key is therefore scoped to the **ownership epoch**:
+   `${correlationId}:backstop:${lastStartedAt}`. Wakes within one epoch still dedupe to a
+   single pending backstop; each owner-recovery re-stamp opens a new epoch with a fresh
+   key; pending backstops stay bounded by the owning message's redelivery budget.
+
+## The dispatch decision table
+
+For each pending step in the replay's suspension set that is not designated for lazy
+inline execution:
 
 | Step state | Action |
 |---|---|
 | Uncreated (`!hasCreatedEvent`) | Unchanged: lazy-inline candidate or eager create+queue |
-| Created, ownership active, `owner === myMessageId` | **Execute in this invocation** (owned re-execution list, alongside `lazyInlineSteps`) |
-| Created, ownership active, `owner !== myMessageId` | **Ensure backstop wake**: plain run continuation, `delaySeconds = leaseRemaining`, `idempotencyKey = correlationId + ':backstop:' + lastStartedAt` (epoch-scoped — see design decisions) |
-| Created, ownership lapsed (`step_retrying` seen) or never owned (eager) | Unchanged: immediate enqueue, `idempotencyKey = correlationId` |
-| Terminal | Unchanged: not in `pendingSteps` |
+| Created, ownership active, `owner === myMessageId` | **Execute in this invocation** (owned recovery, alongside the lazy-inline batch; input hydrates from the step entity; the bare `step_started` re-stamps) |
+| Created, ownership active, `owner !== myMessageId` | **Ensure backstop wake**: plain run continuation, `delaySeconds = leaseRemaining`, epoch-scoped idempotency key |
+| Created, ownership lapsed (`step_retrying` seen), never owned (eager / old events), lease expired, or kill-switched | Unchanged: immediate enqueue, `idempotencyKey = correlationId` |
+| Terminal | Unchanged: not in the pending set |
 
-## Implementation phases
+Two invariants keep the table sound:
 
-### Phase 0 — Invariant audit (pre-work)
+- **No path acks the owning message while an owned step is non-terminal.** Ack means
+  handler return or `reinvoke()` (which acks and continues under a *new* message ID); an
+  acked owner can never be redelivered, so recovery would fall to the backstop for the
+  full lease. All inline bodies are awaited before any ack path, a dev assertion
+  (`error`-level log) guards the ordering against refactors, and turbo's `reinvoke()`
+  paths are safe by construction: turbo requires delivery attempt 1, while owned-recovery
+  steps can only exist on redeliveries (attempt ≥ 2) — a previous delivery of the same
+  message must have stamped them. That mutual exclusion is documented at turbo's
+  engagement gate.
+- **Owned recovery must not be silently orphaned by early returns.** The background-step
+  fast path used to return without replaying when other steps were still pending; it now
+  falls through to the main loop when one of those pending steps is owned by the arriving
+  message, so a redelivered owner actually performs its recovery instead of leaving it to
+  the backstop.
 
-Prove/enforce: **no path acks the orchestrator message while an owned step is
-non-terminal.** Ack = handler return or `reinvoke()` (which acks + enqueues under a new id).
+## Why in-process single-flight is a required layer
 
-- Audit every `return`/`reinvoke` in the inline loop (`runtime.ts`): attribute-events
-  `reinvoke(0)` (fires before designation — OK), throttle `reinvoke(backoff)` (throttled
-  steps are uncreated/unowned — OK), `hasPendingOps` continuation (steps terminal — OK),
-  retry handoff (ownership lapsed at `step_retrying` — OK), plus turbo/optimistic paths
-  (`step-executor.ts`).
-- Deliverable: a dev-mode assertion (or at minimum an error log) at ack points when an
-  owned non-terminal step exists in the invocation's designation set. This guards the
-  invariant against future refactors — it is load-bearing for crash recovery.
+The lease bounds *cross-instance* duplication only on platforms that kill invocations. On
+world-local (one process, no kill bound) a delayed backstop can fire while the owning
+execution is still mid-body *in the same process* — and on Fluid compute, an owner
+redelivery and a backstop can land on the same instance. A module-level map keyed
+`runId:correlationId` absorbs both: the loser awaits the winner's settlement and then acks
+**without executing**.
 
-### Phase 1 — Contract & schema (worlds first)
+The loser must not ack-and-skip early (before the winner settles): a crash after an early
+ack would consume the loser's message while the winner's outcome is unknown, potentially
+orphaning the step with no message left to drive it. Awaiting settlement first keeps the
+at-least-once envelope intact — if the loser's own invocation hits its deadline while
+waiting, its message redelivers and re-checks, degrading gracefully to polling.
 
-1. `packages/world/src/events.ts`: add optional `ownerMessageId: z.string()` to the
-   `step_started` eventData schema.
-2. `packages/world-vercel`: the compile-time wire guard
-   (`assertEventDataWireContractExhaustive` in `events.ts`) will **fail the build** until
-   the field is routed — add to `MetaSourceField` + the bespoke extraction in
-   `splitEventDataForV4`, **and** to the read-side merge (frame meta → eventData) so
-   replays see it. The world-vercel backend must accept, persist, and re-emit the field on
-   event lists before SDK clients start sending it (deploy ordering).
-3. `packages/world-local`: storage passes eventData through; verify the `step_started`
-   validation admits the field and it survives `events.list`. No synthesis changes —
-   ownership is read from `step_started`, not the synthetic `step_created`.
-4. `packages/world-postgres` + World authoring docs: schema passthrough + document the new
-   field and the messageId-stability expectation.
+Cross-instance duplicates on multi-instance *self-hosted* worlds during steps longer than
+the lease remain the documented residual (mitigate by raising the lease env). This equals
+the trade-off every lease-based system makes; eliminating it entirely requires the
+heartbeat machinery rejected above.
 
-### Phase 2 — Core: stamping
+## Alternatives considered and rejected
 
-Thread `metadata.messageId` (already in scope in the queue handler) into the execution
-context down to `executeStep` params, and stamp `eventData.ownerMessageId` on the **three**
-lazy `step_started` sites in `packages/core/src/runtime/step-executor.ts`: the
-optimistic-start path, the normal lazy path, and the unregistered-step failure path (stamp
-for consistency — it terminal-fails immediately, but the log should never show an unowned
-lazy start).
+- **Flow-route queue concurrency = 1 (serialize all run messages).** Kills the very
+  parallelism the wake mechanism exists for: `Promise.race(step, sleep)` works because
+  the wait continuation fires in a *separate* invocation while the inline step blocks
+  its handler — with one slot, the sleep could never win. It is also a queue-backend
+  feature the World contract does not guarantee, and it serializes unrelated work
+  (hooks, cancellations) behind long step bodies. Noted as a long-term option only if
+  ownership proves unmaintainable.
+- **Inline-eligibility latch (never inline while hooks/waits are open).** The cheapest
+  hotfix — the condition is already computed for turbo's latch — but it permanently
+  forfeits inline execution for exactly the workflows that use hooks, taxing every run to
+  prevent a race that needs an in-flight step to matter. And it is incomplete:
+  cancellation can wake *any* run mid-step, hooks or not.
+- **Inline retries / transferring ownership across attempts.** Rejected above: backoffs
+  are delay-dominated, attempts would pay replay costs to stay inline, and the
+  queue-owned retry path already recovers correctly. Ownership deliberately ends at
+  `step_retrying`.
+- **Heartbeat / lock-store liveness.** Rejected above: new World surface for every
+  backend, steady-state write amplification, and it still needs a lease to survive a
+  crashed heartbeater — all cost, same bound.
+- **Deriving the lease from the route's `maxDuration`.** Nothing to derive from: builders
+  emit `'max'`, resolved per-plan by the platform at deploy; no runtime or build-time API
+  exposes the resolved value.
+- **Fixing it in the backend.** The server sees the same event log and has the same
+  liveness blind spot; it would need its own claim mechanism, and world-local plus every
+  community World would remain broken. The dispatch semantics live in the runtime, so the
+  fix does too.
 
-### Phase 3 — Core: replay ownership tracking
+## Wire format, compatibility, and rollout
 
-`packages/core/src/step.ts` event consumers (queueItem type in
-`packages/core/src/global.ts`):
+- `ownerMessageId` is an optional field on the `step_started` eventData schema
+  (`@workflow/world`). In `@workflow/world-vercel` it rides the v4 frame meta; the
+  compile-time wire guard (`assertEventDataWireContractExhaustive`) fails the build if a
+  schema field is not explicitly routed, which is what forces the split/merge sites to be
+  handled. The backend persists it verbatim on the event row (the lazy-input strip on
+  `step_started` leaves it untouched, and the synthetic `step_created` never carries it)
+  and re-emits it on event lists.
+- **Deploy order: backend before SDK.** An older backend silently drops the meta field →
+  replays see unowned steps → exactly today's behavior. Safe, but a pointless window to
+  ship into.
+- **Version skew is a non-issue**: runs are pinned to their deployment, and old events
+  simply lack the field → unowned → current behavior. Nothing to migrate.
+- **Kill switch**: `WORKFLOW_INLINE_OWNERSHIP=0` reverts dispatch to the unconditional
+  immediate requeue. Stamping continues (it is inert data), so the switch is purely a
+  dispatch-behavior toggle.
+- **Degraded modes are all "today's behavior", never worse**: unstable message IDs (owner
+  check never matches → backstop-lease recovery), missing/unusable event timestamps
+  (lease remaining 0 → immediate enqueue), old backend (field dropped → unowned).
 
-- `step_started`: record `ownerMessageId` (or undefined for bare starts) and
-  `lastStartedAt` from the event onto the queueItem. **Latest start wins** — an unstamped
-  start (retry attempt) clears ownership; an owner-recovery start re-establishes it.
-- `step_retrying`: set `sawRetrying = true` (ownership permanently lapsed for this
-  correlation id).
-- Surface these through the suspension handler's `pendingSteps`.
+## Accepted residual risks
 
-### Phase 4 — Core: dispatch changes
+- **Redelivery-while-alive** (visibility lapse or heartbeat partition inside the queue):
+  the owner check passes on a redelivery racing the live owner → duplicate. This equals
+  the queue's at-least-once envelope — the floor for any client-side design — and is
+  strictly rarer than the every-wake duplication being fixed. The in-process single-flight
+  absorbs the same-instance case.
+- **Multi-instance self-hosted worlds with steps longer than the lease** (see
+  single-flight section): raise the lease env.
+- **A backstop per ownership epoch**: an owner crash-looping through its redelivery
+  budget arms up to one delayed wake per re-stamp. Bounded by the queue's delivery
+  budget; each fires as a cheap replay no-op if the step completed.
 
-Implement the decision table in the pending-step dispatch loop:
+## Observability
 
-- New `ownedRecoverySteps` list executed alongside `lazyInlineSteps` — same `executeStep`
-  machinery but without `lazyStepInput` (input hydrates from the step entity, as the
-  background path does), with the re-stamped bare `step_started`. Retry/throttle results
-  feed the existing handoff/`reinvoke` handling unchanged.
-- The backstop wake replaces the immediate step enqueue only for ownership-active steps.
-- No consumer changes: the backstop is a plain run continuation, so on arrival it simply
-  replays and re-enters this same decision table (a completed run short-circuits at the
-  terminal-run check).
+- Span attributes on `workflow.execute`:
+  `workflow.inline_ownership.owned_recovery_steps` (crash recovery re-executed owned
+  steps) and `workflow.inline_ownership.backstop_wakes_armed` (a replay suppressed an
+  immediate requeue).
+- Always-printed `warn` logs when owned recovery runs (a prior delivery died mid-body)
+  and when the single-flight absorbs a would-be duplicate (a burst of these means leases
+  are expiring under live executions — raise the lease env). Invariant violations log at
+  `error`. Backstop arming logs at `debug` (`DEBUG=workflow:runtime:*`), since it can
+  legitimately fire on every wake replay during a long inline step.
 
-### Phase 5 — Lease constant + in-process single-flight
+## How the design is protected by tests
 
-- Lease: `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`, default 860. No derivation — neither
-  runtime nor build time can see the resolved `maxDuration` (builders emit `'max'`,
-  resolved per-plan by the platform; no env var or request-context deadline API exists).
-  Justification for 860: the platform requires explicit per-function numeric config for
-  >800s, so `'max'` ≤ 800s. A code comment must carry this reasoning and the
-  30-minute-beta caveat so the constant gets revisited when the platform ceiling moves.
-- `leaseRemaining = min(lease, max(0, lastStartedAt + lease − now))`; 0 ⇒ enqueue
-  immediately (also the degraded mode for worlds with unstable message ids). The upper
-  clamp guards against client-behind-server clock skew: `lastStartedAt` is the
-  server-stamped event `createdAt`, `now` is the local clock, and an unclamped remainder
-  above 900s would be rejected by SQS-backed queues as a `delaySeconds`.
-- Single-flight (required companion): module-level `Map<runId:correlationId, Promise>`
-  around `executeStep` for background + owned-recovery + backstop paths. Loser awaits the
-  winner's settlement, then acks WITHOUT executing (never ack-and-skip early — a crash
-  after an early ack would orphan the step with no message left). If the loser's
-  invocation hits its own deadline first, the message redelivers and re-checks — graceful
-  degradation to polling. This is what makes a mid-step backstop harmless on world-local
-  (single process, no invocation kill bound — no lease constant can be a death proof
-  there).
-
-### Phase 6 — Tests
-
-- **Unit (core)**: queueItem ownership state machine (stamp → wake sees owner → retrying
-  clears → bare start clears → re-stamp restores); dispatch table branches; backstop
-  key epoch behavior (same-epoch wakes dedupe; re-stamp changes the key so a backstop
-  firing during a refreshed lease can publish its replacement despite in-flight key
-  retention — the full owner-recovery re-arm sequence).
-- **#2780 repro, ported to `workbench/vitest`** (sibling of
-  `workbench/vitest/test/hook-token-reuse.test.ts`): open hook + 1.5s inline step + resume
-  at ~400ms → side-effect marker fires **exactly once**; wake replay observed enqueueing
-  only the delayed backstop.
-- **Crash recovery (world-local / world-testing inline-batches harness)**: kill the
-  handler mid-inline-step → redelivery re-executes under same messageId → completes;
-  assert re-stamped start in the log.
-- **Poison/backstop**: owner message exhausted → backstop fires after lease → step
-  executes on the background path (or terminal-rejects if completed) — run does not wedge;
-  failure surfaces at *step* level.
-- **Regression sweep**: retry handoff (delayed retry + dedupe), throttle replay re-inline,
-  `Promise.race(step, sleep)` with sleep winning mid-step, turbo lanes, multi-step inline
-  batches with staggered failures.
-- **E2E**: world-vercel prod lanes are mandatory for sign-off — world-local's synchronous
-  single-process behavior masks world-vercel-only races.
-
-### Phase 7 — Rollout
-
-1. **Order: world-vercel backend before SDK release** (an older backend would silently
-   drop the meta field → replays see unowned steps → today's behavior; safe but pointless
-   — avoid shipping that window).
-2. Kill switch in the SDK: `WORKFLOW_INLINE_OWNERSHIP=0` reverts dispatch to unconditional
-   immediate requeue (stamping can stay — it's inert data).
-3. Telemetry (implemented): span attributes
-   `workflow.inline_ownership.owned_recovery_steps` and
-   `workflow.inline_ownership.backstop_wakes_armed` on the `workflow.execute`
-   span; always-printed `warn` logs for owned recovery (a prior delivery
-   crashed mid-body) and for a single-flight absorption (a duplicate
-   execution was suppressed in-process); an `error` log for the Phase 0
-   invariant violation. Backstop arming also logs at `debug`
-   (`DEBUG=workflow:runtime:*`), since it can fire on every wake replay
-   during a long inline step.
-4. Version skew: runs are pinned to their deployment, so no mixed-version replay. Old
-   events lack the field → unowned → current behavior. Nothing to migrate.
-
-## Edge cases
-
-- **Redelivery-while-alive** (visibility lapse / heartbeat partition): the owner check
-  passes on the redelivery → duplicate. Accepted residue — equals the queue's
-  at-least-once envelope, strictly rarer than today's every-wake duplication. Not fixable
-  client-side; note in code.
-- **Manual/operator re-enqueue of a run message**: new message, not the owner → backstop
-  path, no wedge, no duplicate before lease expiry.
-- **`reinvoke()` chains**: new message id each hop. Safe because designation happens
-  per-invocation and Phase 0 guarantees no owned non-terminal step exists at reinvoke
-  time.
-- **Turbo forced-optimistic start**: the body may run before the stamped create settles;
-  ownership doesn't change the existing execute-then-discard posture. Turbo latches off
-  once hooks/waits open, so overlap with wake-prone runs is minimal — but stamp
-  regardless.
-- **`queue()` returning `messageId: null`**: irrelevant — stamping uses the *handler's*
-  meta id (always present), not the enqueue return.
-- **Run-start message**: a normal queue message with a real id (`runInput` delivery); no
-  special-casing.
+- The **#2780 repro** (`workbench/vitest/test/inline-step-ownership.test.ts`): hook
+  resume mid-inline-step → side-effect marker fires exactly once. Verified bidirectional:
+  with `WORKFLOW_INLINE_OWNERSHIP=0` the marker fires twice.
+- **Unit**: the ownership state machine (stamp → wake sees owner → retrying clears → bare
+  start clears → re-stamp restores), lease math including the clock-skew clamp, and the
+  backstop key's epoch behavior — including a regression test walking the full
+  owner-recovery re-arm sequence against a dedupe model matching world-local's in-flight
+  key retention; single-flight winner/loser semantics.
+- **Wire**: schema round-trip tests on both sides, plus backend integration tests
+  asserting the field survives materialization and the lazy-input strip, and never leaks
+  into synthetic `step_created`.
+- **E2E**: the full suite including the abort/cancellation lanes that caught backstop
+  shape #1 — world-vercel prod lanes are mandatory for sign-off, since world-local's
+  synchronous single-process behavior masks distributed races.
 
 ## Open questions
 
-1. Confirm platform behavior: `'max'` resolves ≤800s even for accounts in the 30-minute
+1. Confirm platform behavior: `'max'` resolves ≤ 800s even for accounts in the 30-minute
    beta, and users cannot raise a generated workflow route's `maxDuration` via
    `vercel.json` `functions` config without the builder seeing it (if they can, the
    builder should detect the override and fail or bake it into the lease).
-2. ~~Queue `delaySeconds` upper bound vs lease length~~ — resolved: the lease
-   is clamped to 900s (the queue's maximum per-message delay), so one delayed
-   backstop message always suffices and no delay chaining is needed.
-3. Does world-postgres's handler meta deliver a stable id across retries? If not:
+2. Does world-postgres's handler meta deliver a stable ID across retries? If not:
    document degraded (backstop-lease) mode for community worlds, don't block on it.
-4. ~~Short-term mitigation first?~~ — resolved: shipped directly, no interim
-   latch.
