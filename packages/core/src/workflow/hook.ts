@@ -75,10 +75,10 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     if (
       options.isWebhook === true &&
-      options.experimental_retention !== undefined
+      options.experimental_expires !== undefined
     ) {
       throw new Error(
-        'Webhook hooks do not support `experimental_retention`. Use a non-webhook `createHook()` with `resumeHook()` for retained token claims.'
+        'Webhook hooks do not support `experimental_expires`. Use a non-webhook `createHook()` with `resumeHook()`.'
       );
     }
 
@@ -86,9 +86,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     const correlationId = `hook_${ctx.generateUlid()}`;
     const token = options.token ?? ctx.generateNanoid();
     const tokenReusableAfter =
-      options.experimental_retention === undefined
+      options.experimental_expires === undefined
         ? undefined
-        : parseDurationToDate(options.experimental_retention);
+        : parseDurationToDate(options.experimental_expires);
 
     // Add hook creation to invocations queue (using Map for O(1) operations)
     const isWebhook = options.isWebhook ?? false;
@@ -181,8 +181,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         if (queueItem && queueItem.type === 'hook') {
           queueItem.hasCreatedEvent = true;
           // The event log is authoritative on replay. In particular, an old
-          // event with no retention field must not gain retention merely
-          // because newly deployed workflow code added the option.
+          // event with no expiration field must not gain one merely because
+          // newly deployed workflow code added the option.
           queueItem.tokenReusableAfter = event.eventData.tokenReusableAfter;
         }
         hasCreated = true;

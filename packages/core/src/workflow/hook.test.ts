@@ -1173,12 +1173,12 @@ describe('createCreateHook', () => {
     }
   });
 
-  it('evaluates hook token retention with the same duration parser as sleep', () => {
+  it('evaluates hook token expiration with the same duration parser as sleep', () => {
     const ctx = setupWorkflowContext([]);
     const createHook = createCreateHook(ctx);
     const dateNow = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
     try {
-      createHook({ experimental_retention: 1_000 });
+      createHook({ experimental_expires: 1_000 });
 
       const queueItem = ctx.invocationsQueue.values().next().value;
       expect(queueItem?.type).toBe('hook');
@@ -1200,7 +1200,7 @@ describe('createCreateHook', () => {
       expected: new Date('2026-07-15T00:00:00.000Z'),
     },
     {
-      name: 'keeps an old event without retention unretained',
+      name: 'keeps an old event without an expiration time unchanged',
       eventData: { token: 'test-token' },
       expected: undefined,
     },
@@ -1218,7 +1218,7 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook({
       token: 'test-token',
-      experimental_retention: '30d',
+      experimental_expires: '30d',
     });
 
     await expect(hook.getConflict()).resolves.toBeNull();
@@ -1230,13 +1230,13 @@ describe('createCreateHook', () => {
     }
   });
 
-  it('rejects token retention for a webhook hook', () => {
+  it('rejects token expiration for a webhook hook', () => {
     const ctx = setupWorkflowContext([]);
     const createHook = createCreateHook(ctx);
 
     expect(() =>
-      createHook({ isWebhook: true, experimental_retention: '30d' })
-    ).toThrow('Webhook hooks do not support `experimental_retention`.');
+      createHook({ isWebhook: true, experimental_expires: '30d' })
+    ).toThrow('Webhook hooks do not support `experimental_expires`.');
     expect(ctx.invocationsQueue.size).toBe(0);
   });
 

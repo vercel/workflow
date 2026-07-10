@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CreateEventSchema, EventSchema } from './events';
 
-describe('hook_created token retention', () => {
+describe('hook_created token expiration', () => {
   it('coerces tokenReusableAfter to a Date', () => {
     const parsed = CreateEventSchema.parse({
       eventType: 'hook_created',

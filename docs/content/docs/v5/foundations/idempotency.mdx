@@ -149,15 +149,15 @@ export async function POST(request: Request) {
 Calling `resumeHook()` first avoids starting a duplicate after the Hook exists. It does not close the short gap between `start()` and `createHook()`: two requests can still start two runs. The `getConflict()` check inside the workflow stops the losing run before it does duplicate work. A native API that starts a run and creates its Hook atomically is planned.
 </Callout>
 
-By default, the token becomes reusable when the workflow ends. Set `experimental_retention` to keep it reserved for late duplicate requests. The Hook itself is still removed and cannot be resumed. See [`createHook()` token retention](/docs/api-reference/workflow/create-hook#keep-a-token-reserved-after-the-run-ends) for examples and supported deadline formats.
+By default, the token expires when the workflow ends. Set `experimental_expires` to keep it reserved for late duplicate requests. The Hook itself is still removed and cannot be resumed. See [`createHook()` token expiration](/docs/api-reference/workflow/create-hook#set-when-a-hook-token-expires) for examples and supported values.
 
-`experimental_retention` stops another run from using the token. It does not cache what the first run returned. A duplicate can read `conflict.returnValue` only while the first run is still stored. If callers need that result after old runs are deleted, save it in your own database under the same key, such as the order ID.
+`experimental_expires` stops another run from using the token until it expires. It does not cache what the first run returned. A duplicate can read `conflict.returnValue` only while the first run is still stored. If callers need that result after old runs are deleted, save it in your own database under the same key, such as the order ID.
 
 ### Conflict-handling strategies
 
 The example above rejects the duplicate by returning the owner's `runId`. You can also handle a conflict in these ways:
 
-If `getConflict()` returns a run, the current run does not own the token and must not do the work guarded by that token. With retention enabled, the owner may already be finished. In that case its Hook cannot be resumed, and cancelling the finished run will not free the token.
+If `getConflict()` returns a run, the current run does not own the token and must not do the work guarded by that token. With a later expiration time, the owner may already be finished. In that case its Hook cannot be resumed, and cancelling the finished run will not expire the token.
 
 **Adopt the owner's result.** Wait for the active run to finish and return its result, so callers cannot tell which run did the work:
 
@@ -209,7 +209,7 @@ export async function processOrder(orderId: string) {
 }
 ```
 
-**Signal an active owner instead of doing the work.** Without retention, the duplicate run can deliver its input to an owner that is still active. `resumeHook()` can race owner completion, so production code should handle `HookNotFoundError`:
+**Signal an active owner instead of doing the work.** With the default expiration behavior, the duplicate run can deliver its input to an owner that is still active. `resumeHook()` can race owner completion, so production code should handle `HookNotFoundError`:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -276,7 +276,7 @@ export async function processOrderNewestWins(orderId: string) {
 ```
 
 <Callout type="warn">
-Do not use this newest-wins pattern with `experimental_retention`. Cancelling the owner removes its Hook, but the token stays reserved until its retention deadline. The new run cannot claim it before then.
+Do not use this newest-wins pattern with `experimental_expires`. Cancelling the owner removes its Hook, but the token stays reserved until it expires. The new run cannot use it before then.
 </Callout>
 
 If duplicate requests should only reuse the active run without sending data, use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) as an advisory pre-check before calling `start()`. The workflow should still check `hook.getConflict()`, because the lookup and `start()` are not atomic.

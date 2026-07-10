@@ -129,7 +129,7 @@ Unlike other entities, hooks don't have a `status` field—the states above are 
 
 While a hook is active, its token is reserved and cannot be used by other workflows. If a workflow attempts to create a hook with a token that is already in use by another active hook, a `hook_conflict` event is recorded instead of `hook_created`. Current worlds include the token and the run ID that currently owns it, though older persisted events or world implementations may only include the token. This causes `hook.getConflict()` to resolve with the conflicting run and the hook's payload promise to reject with a `HookConflictError`, which you can detect with `HookConflictError.is(error)`. See the [hook-conflict error](/docs/errors/hook-conflict) documentation for more details.
 
-When a workflow ends, its Hooks are removed and cannot receive more payloads. Their tokens are reusable by default. With `experimental_retention`, a token can stay reserved until its deadline even though the Hook is gone. An explicit `hook_disposed` event always releases the token immediately.
+When a workflow ends, its Hooks are removed and cannot receive more payloads. Their tokens expire by default. With `experimental_expires`, a token can stay reserved after its Hook is gone. An explicit `hook_disposed` event always expires the token immediately.
 
 See [Hooks & Webhooks](/docs/foundations/hooks) for more on how hooks and webhooks work.
 

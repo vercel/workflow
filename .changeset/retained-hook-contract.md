@@ -4,4 +4,4 @@
 '@workflow/world-vercel': minor
 ---
 
-Add the experimental hook-token retention contract and forward its absolute reuse deadline through workflow events.
+Add `experimental_expires` for keeping a Hook token unavailable after its run ends, and forward the absolute expiration time through workflow events.

@@ -120,7 +120,7 @@ describe('createWorkflowRunEvent with v1Compat', () => {
  * actually reach the frame meta with the right values and renames.
  */
 describe('splitEventDataForV4 attribute fields', () => {
-  it('carries the hook token retention deadline in the frame meta', () => {
+  it('carries the hook token expiration time in the frame meta', () => {
     const tokenReusableAfter = new Date('2026-07-10T12:00:00.000Z');
     const { payload, meta } = splitEventDataForV4({
       eventType: 'hook_created',

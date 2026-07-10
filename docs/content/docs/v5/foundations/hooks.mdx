@@ -489,7 +489,7 @@ When using custom tokens with `createHook()`:
 - **Make them deterministic**: Base them on data the external system can reconstruct (like channel IDs, user IDs, etc.)
 - **Use namespacing**: Prefix tokens to avoid conflicts (e.g., `slack:${channelId}`, `github:${repoId}`)
 - **Include routing information**: Ensure the token contains enough information to identify the correct workflow instance
-- **Decide how long the token should stay reserved**: By default the token is reusable after the run ends. Use [`experimental_retention`](/docs/api-reference/workflow/create-hook#keep-a-token-reserved-after-the-run-ends) to block late duplicates, and do not automatically dispose that Hook.
+- **Decide when the token should expire**: By default the token expires when the run ends. Use [`experimental_expires`](/docs/api-reference/workflow/create-hook#set-when-a-hook-token-expires) to block late duplicates, and do not automatically dispose that Hook.
 
 ### Response Handling in Webhooks
 

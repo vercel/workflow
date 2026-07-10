@@ -151,30 +151,34 @@ export interface HookOptions {
   token?: string;
 
   /**
-   * **Experimental.** Keeps this Hook's token reserved after its workflow run
-   * ends, until the configured deadline.
+   * **Experimental.** Sets when this Hook's token expires after its workflow
+   * run ends.
    *
    * Accepts the same values as `sleep()`: a duration string, a number of
    * milliseconds, or an absolute `Date`. Relative durations start when
    * `createHook()` runs, not when the workflow ends.
    *
-   * The Hook cannot be resumed after the run ends. Another Hook using the same
-   * token receives a conflict until the deadline. Calling `dispose()`
-   * (including through `using`) releases the token immediately.
+   * Expiration never stops an active Hook. If the configured time passes while
+   * the workflow is still running, the token expires when the run ends. After
+   * the run ends, the Hook cannot be resumed. Another Hook using the same token
+   * receives a conflict until the token expires.
+   *
+   * Calling `dispose()` (including through `using`) expires the token
+   * immediately.
    *
    * World implementations may ignore this experimental option if they do not
-   * support token retention.
+   * support token expiration.
    *
    * @example
    *
    * ```ts
    * const hook = createHook({
    *   token: `order:${orderId}`,
-   *   experimental_retention: '30d',
+   *   experimental_expires: '30d',
    * });
    * ```
    */
-  experimental_retention?: StringValue | Date | number;
+  experimental_expires?: StringValue | Date | number;
 
   /**
    * Additional user-defined data to include with the hook payload.
@@ -208,7 +212,7 @@ export interface HookOptions {
 }
 
 export interface WebhookOptions
-  extends Omit<HookOptions, 'token' | 'isWebhook' | 'experimental_retention'> {
+  extends Omit<HookOptions, 'token' | 'isWebhook' | 'experimental_expires'> {
   /**
    * If set to a `Response` object, the webhook will automatically
    * respond with the specified response.

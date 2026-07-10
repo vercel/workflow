@@ -149,9 +149,9 @@ On a conflict, `getConflict()` returns the run that owns the token. That run may
 Custom hook tokens are the recommended way to coordinate active workflow runs. Use a deterministic token from your domain, such as an order ID or conversation ID, create the hook near the beginning of the workflow, and check `await hook.getConflict()` before work that depends on owning the token. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
 </Callout>
 
-### Keep a Token Reserved After the Run Ends
+### Set When a Hook Token Expires
 
-By default, a hook token becomes reusable when its workflow run ends. Set `experimental_retention` to keep the token reserved for late duplicate requests:
+By default, a Hook token expires when its workflow run ends, so another Hook can use it. Set `experimental_expires` to keep the token reserved for late duplicate requests:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -164,7 +164,7 @@ export async function processOrder(orderId: string) {
   // Do not use `using` here. It calls dispose() and releases the token.
   const ownership = createHook({ // [!code highlight]
     token: `order:${orderId}`, // [!code highlight]
-    experimental_retention: "30d", // [!code highlight]
+    experimental_expires: "30d", // [!code highlight]
   }); // [!code highlight]
 
   const conflict = await ownership.getConflict();
@@ -177,22 +177,24 @@ export async function processOrder(orderId: string) {
 }
 ```
 
-`experimental_retention` accepts the same values as [`sleep()`](/docs/api-reference/workflow/sleep): a duration string such as `"30d"`, a number of milliseconds, or an absolute `Date`.
+`experimental_expires` accepts the same values as [`sleep()`](/docs/api-reference/workflow/sleep): a duration string such as `"30d"`, a number of milliseconds, or an absolute `Date`.
 
 The duration starts when `createHook()` runs, not when the workflow ends. For example, with `"30d"`:
 
 - If the workflow finishes after 1 day, the token stays reserved for 29 more days.
 - If the workflow runs for 40 days, the token stays reserved until the workflow finishes.
 
-After the workflow ends, the Hook cannot receive more payloads. Only the token remains reserved. Another Hook using the same token receives a conflict and can use `getConflict()` to find the original run.
+Expiration never stops an active Hook. If the configured time passes while the workflow is still running, the token expires when the run ends.
 
-Calling `hook.dispose()` releases the token immediately, even when retention is configured. The `using` keyword calls `dispose()` automatically, so do not use `using` for a Hook whose token should remain reserved after the run ends.
+After the workflow ends, the Hook cannot receive more payloads. Until the token expires, another Hook using the same token receives a conflict and can use `getConflict()` to find the original run.
+
+Calling `hook.dispose()` expires the token immediately. The `using` keyword calls `dispose()` automatically, so do not use `using` when the token should stay reserved after the run ends.
 
 <Callout type="warn">
 This option is experimental. A World that does not support it will ignore it. `createWebhook()` does not accept this option.
 </Callout>
 
-The token may become reusable slightly after the deadline because of scheduling, network latency, or cleanup delays. Do not use short millisecond values as a precise timer. A World may also reject a deadline beyond its maximum retention window.
+The token may expire slightly late because of scheduling, network latency, or cleanup delays. Do not use short millisecond values as a precise timer. A World may also reject an expiration time beyond its maximum supported window.
 
 ### Waiting for Multiple Payloads
 

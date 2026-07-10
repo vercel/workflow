@@ -30,7 +30,7 @@ function createWorld(eventsCreate: ReturnType<typeof vi.fn>): World {
 }
 
 describe('handleSuspension', () => {
-  it('persists a hook token retention deadline on hook_created', async () => {
+  it('persists when a hook token becomes reusable on hook_created', async () => {
     const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
       event,
     }));
