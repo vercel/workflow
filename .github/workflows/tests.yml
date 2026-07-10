@@ -321,6 +321,7 @@ jobs:
             project-slug: "example-nextjs-workflow-turbopack"
           - name: "nextjs-turbopack-bun"
             test-app-name: "nextjs-turbopack"
+            runtime: "bun"
             project-id: "prj_lb5X39knEIn63kRAoeNFipevjJBu"
             project-slug: "workbench-bun-workflow"
           - name: "nextjs-webpack"
@@ -394,6 +395,7 @@ jobs:
           # keeping Bun's result and diagnostics artifacts distinguishable.
           APP_NAME: ${{ matrix.app.test-app-name || matrix.app.name }}
           E2E_REPORT_APP_NAME: ${{ matrix.app.name }}
+          E2E_RUNTIME: ${{ matrix.app.runtime || 'node' }}
           WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"

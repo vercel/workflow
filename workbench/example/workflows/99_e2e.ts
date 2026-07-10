@@ -420,6 +420,89 @@ export async function fetchWorkflow() {
 
 //////////////////////////////////////////////////////////
 
+async function bunRuntimeInfoStep() {
+  'use step';
+
+  // This import is intentionally left in the step bundle. It covers the
+  // regression from #393, where the builder tried to resolve Bun builtins
+  // instead of treating them as runtime-provided modules.
+  // @ts-expect-error `bun` is a runtime builtin without Node.js type declarations.
+  const bun = await import('bun');
+  const processVersion = (
+    process.versions as Record<string, string | undefined>
+  ).bun;
+
+  return {
+    version: bun.version as string,
+    revision: bun.revision as string,
+    processVersion,
+  };
+}
+
+export async function bunRuntimeInfoWorkflow() {
+  'use workflow';
+  return await bunRuntimeInfoStep();
+}
+
+//////////////////////////////////////////////////////////
+
+type CborReplayPayload = {
+  chunkBatches: string[][];
+  serializedBytes: number;
+};
+
+async function prepareCborReplayPayloadStep(): Promise<CborReplayPayload> {
+  'use step';
+
+  // Mirrors the shape reported in #1735: eight batches of five document IDs
+  // and roughly 2 KB of serialized step output.
+  const chunkBatches = Array.from({ length: 8 }, (_, batchIndex) =>
+    Array.from(
+      { length: 5 },
+      (_, itemIndex) => `document-${batchIndex}-${itemIndex}-${'x'.repeat(32)}`
+    )
+  );
+  const serializedBytes = JSON.stringify({ chunkBatches }).length;
+  return { chunkBatches, serializedBytes };
+}
+
+async function processCborReplayBatchStep(index: number, batch: string[]) {
+  'use step';
+  return { index, count: batch.length, firstId: batch[0] };
+}
+
+async function recordCborReplayPhaseStep(phase: string) {
+  'use step';
+  return phase;
+}
+
+export async function cborReplayRegressionWorkflow() {
+  'use workflow';
+
+  const prepared = await prepareCborReplayPayloadStep();
+  const phases = [
+    await recordCborReplayPhaseStep('indexes'),
+    await recordCborReplayPhaseStep('status'),
+  ];
+  const processed = [];
+  for (let index = 0; index < prepared.chunkBatches.length; index++) {
+    processed.push(
+      await processCborReplayBatchStep(index, prepared.chunkBatches[index])
+    );
+  }
+  phases.push(await recordCborReplayPhaseStep('cleanup'));
+  phases.push(await recordCborReplayPhaseStep('finalize'));
+
+  return {
+    serializedBytes: prepared.serializedBytes,
+    batchCount: processed.length,
+    documentCount: processed.reduce((total, batch) => total + batch.count, 0),
+    phases,
+  };
+}
+
+//////////////////////////////////////////////////////////
+
 export async function promiseRaceStressTestDelayStep(
   dur: number,
   resp: number
