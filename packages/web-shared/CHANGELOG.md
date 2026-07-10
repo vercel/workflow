@@ -1,5 +1,19 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.30
+
+### Patch Changes
+
+- [#2864](https://github.com/vercel/workflow/pull/2864) [`8b3a358`](https://github.com/vercel/workflow/commit/8b3a3580e0b0d262ec3e78616c7dd9e220d942df) Thanks [@mitul-s](https://github.com/mitul-s)! - Remove unused `flex-1` from attribute copy-value rows so values hug their content.
+
+- [#2790](https://github.com/vercel/workflow/pull/2790) [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Centralize workflow event type classifiers and event-data payload field helpers.
+
+- [#2837](https://github.com/vercel/workflow/pull/2837) [`392d347`](https://github.com/vercel/workflow/commit/392d347e5d7d5a6388b7db5c17c48c1e91d2e7d9) Thanks [@mitul-s](https://github.com/mitul-s)! - Anchor the trace viewer shortcut helper to the timeline's left edge and hide it below a container-query width instead of a viewport breakpoint.
+
+- Updated dependencies [[`f28150c`](https://github.com/vercel/workflow/commit/f28150c62667f069dbe3c47e83102fef499ab92b), [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9), [`9958424`](https://github.com/vercel/workflow/commit/9958424f22903299e3fe556ab298bd3aaa45c6ac), [`6603628`](https://github.com/vercel/workflow/commit/66036282b5d18c9bef4dea4275782bc977842606), [`48fcc4e`](https://github.com/vercel/workflow/commit/48fcc4efcc7e6c639c51ce4f8971d4d3b1ebdd23), [`36c63af`](https://github.com/vercel/workflow/commit/36c63af4a88adc4f404decc54b1f2130d444d264), [`2c6ee61`](https://github.com/vercel/workflow/commit/2c6ee614b50d12ed850e7589cf296150b2143a56)]:
+  - @workflow/core@5.0.0-beta.30
+  - @workflow/world@5.0.0-beta.18
+
 ## 5.0.0-beta.29
 
 ### Minor Changes
