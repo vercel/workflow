@@ -46,8 +46,12 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
    * owns the token. The owner may still be running or may have reached a
    * terminal state while retaining its claim. The workflow can decide how to
    * handle the duplicate in code: return or log `conflict.runId`, inspect
-   * `await conflict.status`, await `conflict.returnValue`, or cancel the
-   * owner with `await conflict.cancel()` and continue in the current run.
+   * `await conflict.status`, or await `conflict.returnValue`.
+   *
+   * A conflict means this hook did not acquire the token. Cancelling the owner
+   * does not transfer ownership, and a retained claim survives cancellation
+   * until its deadline. Never perform protected work until a new hook has
+   * registered successfully without a conflict.
    *
    * Note that awaiting the hook's payload (`await hook`) when the token is
    * already owned by another hook or retained claim still rejects with

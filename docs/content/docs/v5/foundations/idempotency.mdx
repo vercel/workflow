@@ -159,6 +159,8 @@ Some workflow systems resolve duplicate IDs with a fixed, pre-declared policy â€
 
 The example above implements **reject the duplicate**: return the owner's `runId` and let the caller decide. Other common strategies:
 
+A conflict means the current run did not acquire the token. It must not perform protected work unless a new Hook later registers without a conflict. A retained terminal claim cannot receive payloads or be released by cancelling its run; reject the duplicate or adopt the stored run result until the claim expires.
+
 **Adopt the owner's result.** Wait for the active run to finish and return its result, so callers cannot tell which run did the work:
 
 ```typescript lineNumbers
@@ -184,7 +186,7 @@ export async function processOrder(orderId: string) {
 }
 ```
 
-**Inspect the owner before deciding.** Branch on the owner's live state:
+**Inspect the owner before deciding.** Branch on the owner's state without assuming the current run owns the token:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -202,17 +204,14 @@ export async function processOrder(orderId: string) {
   const conflict = await request.getConflict();
   if (conflict) {
     const status = await conflict.status; // [!code highlight]
-    if (status === "running") {
-      return { status: "duplicate" as const, runId: conflict.runId };
-    }
-    // Owner already reached a terminal state; its hook will be released.
+    return { status: "duplicate" as const, ownerStatus: status, runId: conflict.runId };
   }
 
   return await processOwnedOrder(orderId);
 }
 ```
 
-**Signal the owner instead of doing the work.** The duplicate run knows the token, so it can deliver this run's input to the owner's hook from a step:
+**Signal an active owner instead of doing the work.** Without retention, the duplicate run can deliver its input to an owner that is still active. `resumeHook()` can race owner completion, so production code should handle `HookNotFoundError`:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -233,6 +232,10 @@ export async function processOrder(orderId: string, confirmed: boolean) {
 
   const conflict = await request.getConflict();
   if (conflict) {
+    const status = await conflict.status;
+    if (status !== "pending" && status !== "running") {
+      return { status: "duplicate" as const, runId: conflict.runId };
+    }
     await forwardToOwner(token, { confirmed }); // [!code highlight]
     return { status: "forwarded" as const, runId: conflict.runId };
   }
@@ -241,38 +244,7 @@ export async function processOrder(orderId: string, confirmed: boolean) {
 }
 ```
 
-**Supersede the owner.** Newest-wins: cancel the active run, then claim the released token. Cancellation disposes the owner's hooks; the retry loop covers the window where that disposal has not propagated yet:
-
-```typescript lineNumbers
-import { createHook } from "workflow";
-
-type OrderRequest = { confirmed: boolean };
-declare function chargeOrder(orderId: string): Promise<void>; // @setup
-
-export async function processOrderNewestWins(orderId: string) {
-  "use workflow";
-
-  const token = `order:${orderId}`;
-
-  for (let attempt = 0; attempt < 3; attempt++) {
-    using request = createHook<OrderRequest>({ token });
-
-    const conflict = await request.getConflict();
-    if (!conflict) {
-      // Token claimed â€” this run is now the owner.
-      const { confirmed } = await request;
-      if (confirmed) {
-        await chargeOrder(orderId);
-      }
-      return { status: "processed" as const };
-    }
-
-    await conflict.cancel(); // [!code highlight]
-  }
-
-  throw new Error(`Could not claim ${token} after cancelling the owner`);
-}
-```
+**Supersede an active owner.** This strategy applies only when retention is disabled. Cancellation does not transfer ownership: after cancelling, create a new Hook and proceed only after `getConflict()` returns `null`. The cancellation can race a terminal transition, so handle that outcome and retry the claim. With retention enabled, cancellation makes the owner terminal but leaves its claim in place until the deadline.
 
 If duplicate requests should only reuse the active run without sending data, use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) as an advisory pre-check before calling `start()`. The workflow should still check `hook.getConflict()`, because the lookup and `start()` are not atomic.
 
