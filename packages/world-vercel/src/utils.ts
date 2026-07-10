@@ -36,7 +36,7 @@ import { version } from './version.js';
  * themselves while a branch override is active.
  */
 // TEMPORARY: points e2e at the backend preview deployment that serves the
-// v3 stream write endpoints. Must be reverted to '' before merge (the lint
+// WS stream-write endpoint. Must be reverted to '' before merge (the lint
 // guard enforces this).
 export const WORKFLOW_SERVER_URL_OVERRIDE =
   'https://workflow-server-git-peter-streaming-writes.vercel.sh';

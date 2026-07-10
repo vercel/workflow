@@ -78,23 +78,27 @@ const getMaxChunksPerRequest = (): number =>
 // no request timeout — the live read is long-lived and a whole-request deadline
 // would truncate it.
 
-// All stream reads and writes use the v3 stream endpoint:
+// Writes (PUT) and stream completion use the v2 stream endpoint.
+function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
+  return new URL(
+    `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
+  );
+}
+
+// Versioned at v3 for two reasons:
 //  - GET (live read): on a max-duration timeout (or a mid-stream connection
-//    drop) the server errors the response body instead of closing it cleanly,
-//    which is what lets the reconnecting reader
+//    drop) the server errors the response body instead of closing it
+//    cleanly, which is what lets the reconnecting reader
 //    (`createReconnectingFramedStream`) resume from the next chunk rather
 //    than treating the timeout as end-of-stream. Reading from v2 would
 //    silently truncate long-lived streams at the server's 2-minute limit.
-//  - GET .../ws (write channel): upgrades to a WebSocket on
-//    which each binary message is one chunk, persisted + published on arrival
-//    and acked back on the same connection — the write path for framed-v2
-//    streams. The dedicated path also makes the rollout observable: any hit
-//    on it in request logs is a streaming-mode writer.
-//  - PUT (write/writeMulti/close): the batched fallback path and the done
-//    marker. Handler semantics match v2; keeping current-generation writers
-//    on one version makes rollout and request-log analysis unambiguous.
-// Snapshot reads (chunks/info) and the stream list stay on v2.
-function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
+//  - GET .../ws (write channel): the only path a WebSocket upgrade exists
+//    on. Each binary message sent on it is one chunk, persisted + published
+//    on arrival and acked back on the same connection — the write path for
+//    framed-v2 streams.
+// Writes, completion, and snapshot reads (chunks/info/list) stay on v2 — see
+// getStreamUrl.
+function getStreamReadUrl(name: string, runId: string, httpConfig: HttpConfig) {
   return new URL(
     `${httpConfig.baseUrl}/v3/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
   );
@@ -198,7 +202,7 @@ async function openWriteChannel(
   config?: APIConfig
 ): Promise<StreamWriteChannel> {
   const httpConfig = await getHttpConfig(config);
-  const url = getStreamUrl(name, runId, httpConfig);
+  const url = getStreamReadUrl(name, runId, httpConfig);
   url.pathname = `${url.pathname}/ws`;
   url.protocol = 'wss:';
 
@@ -471,7 +475,7 @@ export function createStreamer(config?: APIConfig): Streamer {
 
       async get(runId: string, name: string, startIndex?: number) {
         const httpConfig = await getHttpConfig(config);
-        const url = getStreamUrl(name, runId, httpConfig);
+        const url = getStreamReadUrl(name, runId, httpConfig);
         if (typeof startIndex === 'number') {
           url.searchParams.set('startIndex', String(startIndex));
         }

@@ -307,7 +307,7 @@ describe('streams.write error diagnostics', () => {
     await expect(
       streamer.streams.write('wrun_test', 'user', 'chunk')
     ).rejects.toThrow(
-      'Stream write failed: HTTP 500 (PUT https://test.example.com/v3/runs/wrun_test/stream/user; x-vercel-id=sfo1::abc; x-vercel-error=FUNCTION_INVOCATION_FAILED): Internal Server Error\nrequest-token'
+      'Stream write failed: HTTP 500 (PUT https://test.example.com/v2/runs/wrun_test/stream/user; x-vercel-id=sfo1::abc; x-vercel-error=FUNCTION_INVOCATION_FAILED): Internal Server Error\nrequest-token'
     );
   });
 });
@@ -356,9 +356,9 @@ describe('writeMulti pagination', () => {
     await streamer.streams.writeMulti?.('run-1', 's', chunks);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    // Batch writes target the v3 endpoint, not v2.
+    // Batch writes target the v2 endpoint.
     const url = new URL(fetchSpy.mock.calls[0][0] as string);
-    expect(url.pathname).toBe('/v3/runs/run-1/stream/s');
+    expect(url.pathname).toBe('/v2/runs/run-1/stream/s');
   });
 
   it('paginates into multiple requests when chunks > MAX_CHUNKS_PER_REQUEST', async () => {
@@ -499,7 +499,7 @@ describe('writeMulti over the WebSocket write channel', () => {
     ]);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const url = new URL(fetchSpy.mock.calls[0][0] as string);
-    expect(url.pathname).toBe('/v3/runs/run-9/stream/out');
+    expect(url.pathname).toBe('/v2/runs/run-9/stream/out');
   });
 
   it('uses the batched PUT path when no retransmit grant is given', async () => {
