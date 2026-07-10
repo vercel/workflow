@@ -47,7 +47,21 @@ npm install workflow@latest
 
 If this error is displayed, automatic replay recovery has already been exhausted and the run has been marked as `failed`. You can re-run it using the **Re-run** button in the Workflow Dashboard.
 
-### 3. Report the issue
+### 3. Disable optional performance optimizations
+
+If the error recurs, you can trade performance for stricter execution ordering. By default the runtime uses optimistic optimizations that allow concurrent work on a single run; for complex workflows (many parallel steps, hooks, and sleeps racing each other) these are involved in the rare event-log races behind this error. Two environment variables disable them:
+
+```bash
+WORKFLOW_PRECONDITION_GUARD=1
+WORKFLOW_SEQUENTIAL_REPLAYS=1
+```
+
+- `WORKFLOW_PRECONDITION_GUARD=1` makes the backend reject an event written from a stale view of the run, so the runtime reloads and retries instead of recording conflicting events.
+- [`WORKFLOW_SEQUENTIAL_REPLAYS=1`](/docs/deploying/world/vercel-world#workflow_sequential_replays) (Vercel deployments only) serializes orchestrator invocations per run, so two replays can never race each other.
+
+Set both as project-level environment variables and redeploy (`WORKFLOW_SEQUENTIAL_REPLAYS` is read at build time and runtime). Both have real costs — added run latency, delayed aborts and timeouts, and 2x queue delivery billing under sequential replays — so review their reference docs before enabling them broadly. If the error stops recurring with these set, mention that in your report below; it significantly narrows down the underlying bug.
+
+### 4. Report the issue
 
 If the error persists after upgrading, please [open an issue on GitHub](https://github.com/vercel/workflow/issues/new) so we can investigate and fix the underlying bug. Include the following details to help us diagnose the problem:
 
