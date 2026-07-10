@@ -89,6 +89,17 @@ export interface StartOptionsBase {
    * the `experimental_setAttributes` option of the same name.
    */
   allowReservedAttributes?: boolean;
+
+  /**
+   * The ID of an existing run this run is being replayed from, if any.
+   *
+   * Recorded on the new run's `executionContext` as `replayedFromRunId` so
+   * tooling (e.g. the dashboard runs list) can show that a run originated as
+   * a replay and link back to its source. Set automatically by
+   * {@link recreateRunFromExisting}; there's usually no reason to pass it
+   * directly.
+   */
+  replayedFromRunId?: string;
 }
 
 export interface StartOptionsWithDeploymentId extends StartOptionsBase {
@@ -356,6 +367,10 @@ export async function start<TArgs extends unknown[], TResult>(
         traceCarrier,
         workflowCoreVersion,
         features: { encryption: !!encryptionKey },
+        // Preserve replay lineage so the run can be shown as "Replay of <id>".
+        ...(opts.replayedFromRunId
+          ? { replayedFromRunId: opts.replayedFromRunId }
+          : {}),
       };
 
       // Call events.create (run_created) and queue in parallel.

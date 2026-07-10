@@ -770,6 +770,62 @@ describe('start', () => {
     });
   });
 
+  describe('replay lineage (executionContext.replayedFromRunId)', () => {
+    let mockEventsCreate: ReturnType<typeof vi.fn>;
+    let mockQueue: ReturnType<typeof vi.fn>;
+
+    const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+      workflowId: 'test-workflow',
+    });
+
+    beforeEach(() => {
+      mockEventsCreate = vi.fn().mockImplementation((runId) => {
+        return Promise.resolve({
+          run: { runId: runId ?? 'wrun_test123', status: 'pending' },
+        });
+      });
+      mockQueue = vi.fn().mockResolvedValue(undefined);
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      });
+    });
+
+    afterEach(() => {
+      setWorld(undefined);
+      vi.clearAllMocks();
+    });
+
+    it('records replayedFromRunId in executionContext when provided', async () => {
+      await start(validWorkflow, [], { replayedFromRunId: 'wrun_source' });
+
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          eventType: 'run_created',
+          eventData: expect.objectContaining({
+            executionContext: expect.objectContaining({
+              replayedFromRunId: 'wrun_source',
+            }),
+          }),
+        }),
+        expect.anything()
+      );
+    });
+
+    it('omits replayedFromRunId from executionContext when not provided', async () => {
+      await start(validWorkflow, []);
+
+      const eventData = mockEventsCreate.mock.calls[0]?.[1]?.eventData;
+      expect(eventData.executionContext).not.toHaveProperty(
+        'replayedFromRunId'
+      );
+    });
+  });
+
   describe('overload type inference', () => {
     // Type-only assertions that don't execute start() at runtime.
     // We use expectTypeOf on the function signature's return type directly.
