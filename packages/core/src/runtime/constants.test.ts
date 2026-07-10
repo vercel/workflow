@@ -2,12 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../logger.js';
 import {
   _resetReplayTimeoutWarnCacheForTests,
+  getInlineOwnershipLeaseSeconds,
   getMaxInlineSteps,
   getMaxQueueDeliveries,
   getReplayTimeoutMs,
+  INLINE_OWNERSHIP_LEASE_SECONDS,
+  isInlineOwnershipEnabled,
   isOptimisticInlineStartEnabled,
   isOptimisticInlineStartExplicitlyDisabled,
   isTurboEnabled,
+  MAX_INLINE_OWNERSHIP_LEASE_SECONDS,
   MAX_INLINE_STEPS,
   MAX_MAX_INLINE_STEPS,
   MAX_QUEUE_DELIVERIES,
@@ -311,5 +315,81 @@ describe('getMaxQueueDeliveries', () => {
     // may only lower it, never raise it.
     process.env[ENV] = String(MAX_QUEUE_DELIVERIES + 100);
     expect(getMaxQueueDeliveries()).toBe(MAX_QUEUE_DELIVERIES);
+  });
+});
+
+describe('isInlineOwnershipEnabled', () => {
+  const originalEnv = process.env.WORKFLOW_INLINE_OWNERSHIP;
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.WORKFLOW_INLINE_OWNERSHIP;
+    } else {
+      process.env.WORKFLOW_INLINE_OWNERSHIP = originalEnv;
+    }
+  });
+
+  it('defaults to enabled when unset', () => {
+    delete process.env.WORKFLOW_INLINE_OWNERSHIP;
+    expect(isInlineOwnershipEnabled()).toBe(true);
+  });
+
+  it('defaults to enabled when empty', () => {
+    process.env.WORKFLOW_INLINE_OWNERSHIP = '';
+    expect(isInlineOwnershipEnabled()).toBe(true);
+  });
+
+  it('is disabled by an explicit "0" (kill switch)', () => {
+    process.env.WORKFLOW_INLINE_OWNERSHIP = '0';
+    expect(isInlineOwnershipEnabled()).toBe(false);
+  });
+
+  it('is disabled by "false" (case-insensitive)', () => {
+    process.env.WORKFLOW_INLINE_OWNERSHIP = 'FALSE';
+    expect(isInlineOwnershipEnabled()).toBe(false);
+  });
+
+  it('stays enabled for "1" and other truthy values', () => {
+    process.env.WORKFLOW_INLINE_OWNERSHIP = '1';
+    expect(isInlineOwnershipEnabled()).toBe(true);
+    process.env.WORKFLOW_INLINE_OWNERSHIP = 'yes';
+    expect(isInlineOwnershipEnabled()).toBe(true);
+  });
+});
+
+describe('getInlineOwnershipLeaseSeconds', () => {
+  const ENV = 'WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS';
+
+  beforeEach(() => {
+    delete process.env[ENV];
+  });
+
+  afterEach(() => {
+    delete process.env[ENV];
+  });
+
+  it('returns the default when unset', () => {
+    expect(getInlineOwnershipLeaseSeconds()).toBe(
+      INLINE_OWNERSHIP_LEASE_SECONDS
+    );
+  });
+
+  it('allows a custom override', () => {
+    process.env[ENV] = '120';
+    expect(getInlineOwnershipLeaseSeconds()).toBe(120);
+  });
+
+  it('clamps above the queue max-delay ceiling', () => {
+    // Backstops must fit in a single delayed queue message (900s SQS cap),
+    // so the lease is clamped rather than requiring delay chaining.
+    process.env[ENV] = '3600';
+    expect(getInlineOwnershipLeaseSeconds()).toBe(
+      MAX_INLINE_OWNERSHIP_LEASE_SECONDS
+    );
+  });
+
+  it('clamps a non-positive override up to 1', () => {
+    process.env[ENV] = '0';
+    expect(getInlineOwnershipLeaseSeconds()).toBe(1);
   });
 });

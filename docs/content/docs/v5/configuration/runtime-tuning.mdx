@@ -65,6 +65,19 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Use only when step side effects are idempotent.
 - Set `0` or `false` to force it off, including the first-delivery fast path used by `WORKFLOW_TURBO`.
 
+### `WORKFLOW_INLINE_OWNERSHIP`
+
+- Default: enabled
+- Records which queue message owns each inline step execution, so a wake (hook resume, elapsed wait) that replays the run mid-step schedules a delayed backstop instead of immediately re-dispatching — and re-executing — the step. See [Inline step message ownership](/v5/docs/changelog/step-message-ownership).
+- Set `0` or `false` to revert to the previous unconditional immediate re-dispatch.
+
+### `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`
+
+- Default: `860`
+- Clamp: `1` to `900`
+- How long after an inline step's latest `step_started` other invocations assume its owner may still be executing the body. Within the lease they defer the step's backstop message; past it they enqueue immediately.
+- Raise this on self-hosted multi-instance deployments whose inline steps run longer than the default (the default is sized for Vercel's function duration ceiling).
+
 ## Compression and tracing
 
 ### `WORKFLOW_DISABLE_COMPRESSION`

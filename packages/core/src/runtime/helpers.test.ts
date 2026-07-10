@@ -223,6 +223,55 @@ describe('healthCheck response parsing', () => {
     expect(result.specVersion).toBeUndefined();
     expect(result.workflowCoreVersion).toBeUndefined();
   });
+
+  it('publishes to the default health-check topic when no namespace is given', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({ healthy: true, endpoint: 'workflow' })
+    );
+
+    await healthCheck(world, 'workflow', { timeout: 1000 });
+
+    expect(world.queue).toHaveBeenCalledWith(
+      '__wkf_workflow_health_check',
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
+  it('publishes to the namespaced health-check topic when a namespace is given', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({ healthy: true, endpoint: 'workflow' })
+    );
+
+    const result = await healthCheck(world, 'workflow', {
+      timeout: 1000,
+      namespace: 'eve',
+    });
+
+    expect(result.healthy).toBe(true);
+    expect(world.queue).toHaveBeenCalledWith(
+      '__eve_wkf_workflow_health_check',
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
+  it('returns unhealthy within the timeout when streams.get never resolves', async () => {
+    // Regression test: some worlds hold the stream GET open until data is
+    // written (workflow-server holds unwritten streams for ~2 minutes).
+    // The timeout must bound that call too, not just the poll loop.
+    const world = {
+      queue: vi.fn().mockResolvedValue(undefined),
+      streams: {
+        get: vi.fn(() => new Promise<never>(() => {})),
+      },
+    } as unknown as World;
+
+    const result = await healthCheck(world, 'workflow', { timeout: 300 });
+
+    expect(result.healthy).toBe(false);
+    expect(result.error).toMatch(/timed out/);
+  });
 });
 
 describe('loadWorkflowRunEvents', () => {

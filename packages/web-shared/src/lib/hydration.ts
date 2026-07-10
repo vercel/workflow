@@ -16,21 +16,7 @@ import {
   type Revivers,
   serializedInstanceToRef,
 } from '@workflow/core/serialization-format';
-import { EVENT_DATA_REF_FIELDS } from '@workflow/world';
-
-const V4_EXTRA_EVENT_DATA_REF_FIELDS: Record<string, string[]> = {
-  run_started: ['input'],
-  step_started: ['input'],
-};
-
-export function getEventDataRefFields(eventType: string): string[] {
-  return [
-    ...new Set([
-      ...(EVENT_DATA_REF_FIELDS[eventType] ?? []),
-      ...(V4_EXTRA_EVENT_DATA_REF_FIELDS[eventType] ?? []),
-    ]),
-  ];
-}
+import { getEventDataRefFields } from '@workflow/world';
 
 // Re-export types and utilities that consumers need
 export {

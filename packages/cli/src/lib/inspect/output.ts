@@ -6,7 +6,14 @@ import {
 } from '@workflow/core/serialization';
 import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, Hook, Step, WorkflowRun, World } from '@workflow/world';
+import {
+  type Event,
+  type Hook,
+  isWaitEventType,
+  type Step,
+  type WorkflowRun,
+  type World,
+} from '@workflow/world';
 import chalk from 'chalk';
 
 import { formatDistance } from 'date-fns';
@@ -619,7 +626,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
 
   const useAnalytics = !opts.withData && Boolean(world.analytics);
   const resolveData = opts.withData ? 'all' : 'none';
-  const status = opts.status as WorkflowRun['status'] | undefined;
+  const status = opts.status;
 
   // Resolve --since/--until into an explicit listing window. Only the
   // analytics read path supports one; the runtime storage APIs have no time
@@ -1371,7 +1378,7 @@ export const listSleeps = async (
     // Group wait events by correlationId
     const waitEventsByCorrelation = new Map<string, Event[]>();
     for (const event of events.data) {
-      if (event.correlationId?.startsWith('wait_')) {
+      if (isWaitEventType(event.eventType) && event.correlationId) {
         const existing = waitEventsByCorrelation.get(event.correlationId) ?? [];
         existing.push(event);
         waitEventsByCorrelation.set(event.correlationId, existing);
