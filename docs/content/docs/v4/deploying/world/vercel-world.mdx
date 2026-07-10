@@ -111,6 +111,19 @@ Vercel team ID for API requests. Automatically detected.
 
 Custom base URL for the Vercel workflow API. Automatically detected.
 
+### `WORKFLOW_SAFE_MODE`
+
+Set `WORKFLOW_SAFE_MODE=1` to prefer execution safety over performance. Safe mode enables every safety-over-performance flag that you have not set explicitly — currently:
+
+- `WORKFLOW_PRECONDITION_GUARD=1` — the backend rejects an event written from a stale view of the run, so the runtime reloads and retries instead of recording conflicting events.
+- `WORKFLOW_SEQUENTIAL_REPLAYS=1` (Vercel deployments) — orchestrator invocations are serialized per run, so two replays can never race each other.
+
+An explicitly set individual variable always wins, so you can opt back out of a single behavior (for example `WORKFLOW_SEQUENTIAL_REPLAYS=0`) while keeping the rest of safe mode.
+
+<Callout type="warn">
+  Safe mode trades performance for stricter execution ordering: expect added run latency, and — under sequential replays — delayed aborts and timeouts plus 2x queue delivery billing. Like the variables it controls, it is read at **both build time and runtime**, so set it as a project-level environment variable and redeploy.
+</Callout>
+
 ### Programmatic configuration
 
 {/*@skip-typecheck: incomplete code sample*/}

@@ -548,14 +548,21 @@ export interface MutableEventLog {
  * Whether the optimistic-concurrency guard for event creation is enabled.
  * Off by default: replay-context creates only send a `stateUpdatedAt`
  * snapshot (and can therefore be rejected with 412 by the backend) when
- * `WORKFLOW_PRECONDITION_GUARD=1` is set where the runtime executes.
+ * `WORKFLOW_PRECONDITION_GUARD=1` is set where the runtime executes — or
+ * when `WORKFLOW_SAFE_MODE=1` is set and `WORKFLOW_PRECONDITION_GUARD` is
+ * not set explicitly (safe mode fills the default of every
+ * safety-over-performance flag; an explicit per-flag value always wins).
  */
 export function isPreconditionGuardEnabled(): boolean {
   // TEMP(ci-default-on): force the guard ON (unless explicitly '0') so the
   // e2e lanes (which run against the paired workflow-server preview via the
   // temporary URL override in world-vercel/utils.ts) exercise the 412 path.
-  // REVERT BEFORE MERGE together with that override — restore
-  // `return process.env.WORKFLOW_PRECONDITION_GUARD === '1';`.
+  // REVERT BEFORE MERGE together with that override — restore:
+  //   const explicit = process.env.WORKFLOW_PRECONDITION_GUARD;
+  //   if (explicit !== undefined && explicit !== '') {
+  //     return explicit === '1';
+  //   }
+  //   return process.env.WORKFLOW_SAFE_MODE === '1';
   return process.env.WORKFLOW_PRECONDITION_GUARD !== '0';
 }
 

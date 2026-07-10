@@ -446,10 +446,13 @@ describe('latestEventStateUpdatedAt', () => {
 
 describe('withPreconditionRetry', () => {
   let originalGuard: string | undefined;
+  let originalSafeMode: string | undefined;
 
   beforeEach(() => {
     eventsListMock.mockReset();
     originalGuard = process.env.WORKFLOW_PRECONDITION_GUARD;
+    originalSafeMode = process.env.WORKFLOW_SAFE_MODE;
+    delete process.env.WORKFLOW_SAFE_MODE;
     process.env.WORKFLOW_PRECONDITION_GUARD = '1';
   });
 
@@ -459,6 +462,48 @@ describe('withPreconditionRetry', () => {
     } else {
       delete process.env.WORKFLOW_PRECONDITION_GUARD;
     }
+    if (originalSafeMode !== undefined) {
+      process.env.WORKFLOW_SAFE_MODE = originalSafeMode;
+    } else {
+      delete process.env.WORKFLOW_SAFE_MODE;
+    }
+  });
+
+  it('WORKFLOW_SAFE_MODE=1 arms the guard when the specific variable is unset', async () => {
+    delete process.env.WORKFLOW_PRECONDITION_GUARD;
+    process.env.WORKFLOW_SAFE_MODE = '1';
+    const time = 1_700_000_000_000;
+    const log: MutableEventLog = {
+      events: [makeUlidEvent(time)],
+      cursor: 'c0',
+    };
+    const op = vi.fn(async (stateUpdatedAt?: number) => {
+      expect(stateUpdatedAt).toBe(time);
+      return 'ok';
+    });
+
+    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
+      'ok'
+    );
+    expect(op).toHaveBeenCalledTimes(1);
+  });
+
+  it('an explicit WORKFLOW_PRECONDITION_GUARD=0 wins over WORKFLOW_SAFE_MODE', async () => {
+    process.env.WORKFLOW_PRECONDITION_GUARD = '0';
+    process.env.WORKFLOW_SAFE_MODE = '1';
+    const log: MutableEventLog = {
+      events: [makeUlidEvent(1_700_000_000_000)],
+      cursor: 'c0',
+    };
+    const op = vi.fn(async (stateUpdatedAt?: number) => {
+      expect(stateUpdatedAt).toBeUndefined();
+      return 'ok';
+    });
+
+    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
+      'ok'
+    );
+    expect(op).toHaveBeenCalledTimes(1);
   });
 
   // TEMP(ci-default-on): skipped while the guard is forced on for CI.

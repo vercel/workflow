@@ -196,6 +196,13 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Default: `https://api.vercel.com/v1/workflow`
 - Workflow API proxy URL for external tooling.
 
+### `WORKFLOW_SAFE_MODE`
+
+- Default: disabled
+- Set `1` to prefer execution safety over performance: enables every safety-over-performance flag not set explicitly (currently [`WORKFLOW_PRECONDITION_GUARD`](/docs/configuration/runtime-tuning#workflow_precondition_guard) and, on Vercel deployments, `WORKFLOW_SEQUENTIAL_REPLAYS`).
+- An explicitly set individual variable wins over safe mode.
+- Read at **both build time and runtime** — set it as a project-level environment variable and redeploy. See [Vercel World](/docs/deploying/world/vercel-world#workflow_safe_mode) for costs.
+
 ### `VERCEL_WORKFLOW_SERVER_URL`
 
 - Factory option: none
