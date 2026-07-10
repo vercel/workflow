@@ -302,9 +302,6 @@ jobs:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Keep experimental runtime coverage visible without making known Bun
-    # incompatibilities block the required E2E aggregate.
-    continue-on-error: ${{ matrix.app.allow-failure || false }}
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
     permissions:
@@ -378,6 +375,9 @@ jobs:
 
       - name: Waiting for the Vercel deployment
         id: waitForDeployment
+        # Experimental runtimes still publish diagnostics when their deployment
+        # or tests fail, but must not turn the PR check red.
+        continue-on-error: ${{ matrix.app.allow-failure || false }}
         uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
         with:
           project-slug: ${{ matrix.app.project-slug }}
@@ -390,6 +390,8 @@ jobs:
         run: echo "ms=$(($(date +%s) * 1000))" >> "$GITHUB_OUTPUT"
 
       - name: Run E2E Tests
+        id: runE2E
+        continue-on-error: ${{ matrix.app.allow-failure || false }}
         run: pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-prod-$E2E_REPORT_APP_NAME.json"
         env:
           NODE_OPTIONS: "--enable-source-maps"
@@ -418,7 +420,8 @@ jobs:
           VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
 
       - name: Capture runtime logs on failure
-        if: failure()
+        if: ${{ failure() || (matrix.app.allow-failure == true && steps.waitForDeployment.outcome == 'success' && steps.runE2E.outcome == 'failure') }}
+        continue-on-error: ${{ matrix.app.allow-failure || false }}
         env:
           APP_NAME: ${{ matrix.app.test-app-name || matrix.app.name }}
           E2E_REPORT_APP_NAME: ${{ matrix.app.name }}
@@ -449,6 +452,13 @@ jobs:
             e2e-runtime-logs-${{ matrix.app.name }}-vercel.json
           retention-days: 7
           if-no-files-found: ignore
+
+      - name: Report allowed E2E failure
+        if: ${{ always() && matrix.app.allow-failure == true && (steps.waitForDeployment.outcome == 'failure' || steps.runE2E.outcome == 'failure') }}
+        env:
+          WAIT_OUTCOME: ${{ steps.waitForDeployment.outcome }}
+          TEST_OUTCOME: ${{ steps.runE2E.outcome }}
+        run: echo "::warning title=Experimental Bun E2E failure::deployment=$WAIT_OUTCOME tests=$TEST_OUTCOME; see the job summary and artifacts"
 
   getTestMatrix:
     name: Get Test Matrix
