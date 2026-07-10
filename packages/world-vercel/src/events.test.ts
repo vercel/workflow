@@ -228,6 +228,83 @@ describe('splitEventDataForV4 attribute fields', () => {
     expect(started.payload).toBeInstanceOf(Uint8Array);
     expect(started.meta.input).toBeUndefined();
   });
+
+  it('carries the run_cancelled cancelReason in the frame meta, not the payload', () => {
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'run_cancelled',
+      specVersion: 4,
+      eventData: { cancelReason: 'superseded by newer run' },
+    } as AnyEventRequest);
+
+    expect(payload).toBeUndefined();
+    expect(meta.cancelReason).toBe('superseded by newer run');
+  });
+
+  it('omits cancelReason from meta when run_cancelled carries no reason', () => {
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'run_cancelled',
+      specVersion: 4,
+    } as AnyEventRequest);
+
+    expect(payload).toBeUndefined();
+    expect(meta.cancelReason).toBeUndefined();
+  });
+
+  it('carries latency telemetry in the frame meta on step terminal events', () => {
+    const completed = splitEventDataForV4({
+      eventType: 'step_completed',
+      correlationId: 'step_1',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        workflowName: 'wf',
+        result: new TextEncoder().encode('"ok"'),
+        ttfs: 123,
+        optimizations: ['turbo', 'lazyStepStart'],
+      },
+    } as AnyEventRequest);
+    expect(completed.meta.ttfs).toBe(123);
+    expect(completed.meta.stso).toBeUndefined();
+    expect(completed.meta.optimizations).toEqual(['turbo', 'lazyStepStart']);
+
+    const failed = splitEventDataForV4({
+      eventType: 'step_failed',
+      correlationId: 'step_2',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        error: new TextEncoder().encode('"boom"'),
+        stso: 45,
+        stepCount: 7,
+        eventCount: 42,
+        optimizations: [],
+      },
+    } as AnyEventRequest);
+    expect(failed.meta.stso).toBe(45);
+    expect(failed.meta.stepCount).toBe(7);
+    expect(failed.meta.eventCount).toBe(42);
+    expect(failed.meta.ttfs).toBeUndefined();
+    expect(failed.meta.optimizations).toEqual([]);
+
+    // Malformed values (non-number, non-string-array) are dropped, not sent.
+    const malformed = splitEventDataForV4({
+      eventType: 'step_completed',
+      correlationId: 'step_3',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        result: new TextEncoder().encode('"ok"'),
+        ttfs: 'fast',
+        stepCount: 0,
+        eventCount: 2.5,
+        optimizations: [1, 2],
+      },
+    } as unknown as AnyEventRequest);
+    expect(malformed.meta.ttfs).toBeUndefined();
+    expect(malformed.meta.stepCount).toBeUndefined();
+    expect(malformed.meta.eventCount).toBeUndefined();
+    expect(malformed.meta.optimizations).toBeUndefined();
+  });
 });
 
 describe('createWorkflowRunEvent response coercion', () => {

@@ -193,6 +193,19 @@ describe.each([
     const preserveFixtureForBuiltOutput =
       project === 'nextjs-turbopack' && process.env.CI === 'true';
 
+    if (project === 'sveltekit') {
+      const importResult = await runCommandWithLiveOutput(
+        process.execPath,
+        [
+          '-e',
+          "import('workflow/sveltekit').then(() => console.log('workflow/sveltekit import ok')).catch((error) => { console.error(error); process.exit(1); })",
+        ],
+        appPath
+      );
+
+      expect(importResult.output).toContain('workflow/sveltekit import ok');
+    }
+
     let result: CommandResult;
     try {
       result = await runCommandWithLiveOutput('pnpm', ['build'], appPath);

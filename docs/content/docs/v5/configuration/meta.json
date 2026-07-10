@@ -1,0 +1,12 @@
+{
+  "title": "Configuration",
+  "pages": [
+    "index",
+    "framework-options",
+    "worlds",
+    "runtime-tuning",
+    "build-and-diagnostics",
+    "cli-and-web-ui"
+  ],
+  "defaultOpen": false
+}
