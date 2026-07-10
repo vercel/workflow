@@ -551,7 +551,12 @@ export interface MutableEventLog {
  * `WORKFLOW_PRECONDITION_GUARD=1` is set where the runtime executes.
  */
 export function isPreconditionGuardEnabled(): boolean {
-  return process.env.WORKFLOW_PRECONDITION_GUARD === '1';
+  // TEMP(ci-default-on): force the guard ON (unless explicitly '0') so the
+  // e2e lanes (which run against the paired workflow-server preview via the
+  // temporary URL override in world-vercel/utils.ts) exercise the 412 path.
+  // REVERT BEFORE MERGE together with that override — restore
+  // `return process.env.WORKFLOW_PRECONDITION_GUARD === '1';`.
+  return process.env.WORKFLOW_PRECONDITION_GUARD !== '0';
 }
 
 /**
