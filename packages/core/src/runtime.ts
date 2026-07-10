@@ -42,12 +42,12 @@ import {
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
-  latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
   type MutableEventLog,
   memoizeEncryptionKey,
   parseHealthCheckPayload,
   queueMessage,
+  stateUpdatedAtForCreate,
   withHealthCheck,
   withPreconditionRetry,
 } from './runtime/helpers.js';
@@ -1353,7 +1353,7 @@ export function workflowEntrypoint(
                           },
                           {
                             requestId,
-                            stateUpdatedAt: latestEventStateUpdatedAt(events),
+                            stateUpdatedAt: stateUpdatedAtForCreate(events),
                           }
                         );
                       } catch (err) {
@@ -1401,8 +1401,19 @@ export function workflowEntrypoint(
                         // guard per-create (rather than wrapping the whole call)
                         // so a retry never re-issues an already-created event.
                         const suspensionStart = Date.now();
+                        // The snapshot refresh above always sets cachedEvents
+                        // before the replay can suspend. Re-narrow it for this
+                        // catch scope instead of defaulting to an empty array:
+                        // that fallback would silently disarm the precondition
+                        // guard (no snapshot sent) and let a mid-suspension
+                        // reload merge into a throwaway array.
+                        if (!cachedEvents) {
+                          throw new Error(
+                            'Invariant violation: workflow suspended before its event log was loaded'
+                          );
+                        }
                         const suspensionLog: MutableEventLog = {
-                          events: cachedEvents ?? [],
+                          events: cachedEvents,
                           cursor: eventsCursor,
                         };
                         let suspensionResult: Awaited<

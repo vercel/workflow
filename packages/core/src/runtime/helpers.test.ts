@@ -1,7 +1,7 @@
 import { PreconditionFailedError, WorkflowWorldError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { ulid } from 'ulid';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getWorkflowQueueName,
   healthCheck,
@@ -445,8 +445,38 @@ describe('latestEventStateUpdatedAt', () => {
 });
 
 describe('withPreconditionRetry', () => {
+  let originalGuard: string | undefined;
+
   beforeEach(() => {
     eventsListMock.mockReset();
+    originalGuard = process.env.WORKFLOW_PRECONDITION_GUARD;
+    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
+  });
+
+  afterEach(() => {
+    if (originalGuard !== undefined) {
+      process.env.WORKFLOW_PRECONDITION_GUARD = originalGuard;
+    } else {
+      delete process.env.WORKFLOW_PRECONDITION_GUARD;
+    }
+  });
+
+  it('passes no snapshot to op when the guard is not opted in', async () => {
+    delete process.env.WORKFLOW_PRECONDITION_GUARD;
+    const log: MutableEventLog = {
+      events: [makeUlidEvent(1_700_000_000_000)],
+      cursor: 'c0',
+    };
+    const op = vi.fn(async (stateUpdatedAt?: number) => {
+      expect(stateUpdatedAt).toBeUndefined();
+      return 'ok';
+    });
+
+    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
+      'ok'
+    );
+    expect(op).toHaveBeenCalledTimes(1);
+    expect(eventsListMock).not.toHaveBeenCalled();
   });
 
   it('passes the latest snapshot time to op and returns its result without reloading', async () => {
