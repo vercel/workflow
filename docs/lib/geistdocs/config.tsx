@@ -4,6 +4,7 @@ import { LogoAiSdk } from '@vercel/geistdocs/assets/logos/logo-ai-sdk';
 import { LogoChatSdk } from '@vercel/geistdocs/assets/logos/logo-chat-sdk';
 import { LogoEve } from '@vercel/geistdocs/assets/logos/logo-eve';
 import { LogoFlagsSdk } from '@vercel/geistdocs/assets/logos/logo-flags-sdk';
+import { LogoTurborepo } from '@vercel/geistdocs/assets/logos/logo-turborepo';
 import { defineConfig, type GeistdocsNavItem } from '@vercel/geistdocs/config';
 import {
   agent,
@@ -40,6 +41,7 @@ export const config = defineConfig({
     { href: 'https://ai-sdk.dev/', logo: <LogoAiSdk height={12} /> },
     { href: 'https://flags-sdk.dev/', logo: <LogoFlagsSdk height={20} /> },
     { href: 'https://chat-sdk.dev/', logo: <LogoChatSdk height={20} /> },
+    { href: 'https://turborepo.dev/', logo: <LogoTurborepo height={14} /> },
     {
       href: 'https://elements.ai-sdk.dev/',
       logo: <LogoAiElements height={12} />,
