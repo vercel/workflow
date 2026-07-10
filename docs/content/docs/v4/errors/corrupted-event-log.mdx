@@ -57,7 +57,7 @@ WORKFLOW_SEQUENTIAL_REPLAYS=1
 ```
 
 - `WORKFLOW_PRECONDITION_GUARD=1` makes the backend reject an event written from a stale view of the run, so the runtime reloads and retries instead of recording conflicting events.
-- [`WORKFLOW_SEQUENTIAL_REPLAYS=1`](/docs/deploying/world/vercel-world#workflow_sequential_replays) (Vercel deployments only) serializes orchestrator invocations per run, so two replays can never race each other.
+- [`WORKFLOW_SEQUENTIAL_REPLAYS=1`](/docs/deploying/world/vercel-world) (Vercel deployments only) serializes orchestrator invocations per run, so two replays can never race each other.
 
 Set both as project-level environment variables and redeploy (`WORKFLOW_SEQUENTIAL_REPLAYS` is read at build time and runtime). Both have real costs — added run latency, delayed aborts and timeouts, and 2x queue delivery billing under sequential replays — so review their reference docs before enabling them broadly. If the error stops recurring with these set, mention that in your report below; it significantly narrows down the underlying bug.
 
