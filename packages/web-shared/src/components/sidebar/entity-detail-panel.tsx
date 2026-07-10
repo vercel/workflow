@@ -1,7 +1,12 @@
 'use client';
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, Hook, WorkflowRun } from '@workflow/world';
+import {
+  type Event,
+  type Hook,
+  isTerminalWorkflowRunStatus,
+  type WorkflowRun,
+} from '@workflow/world';
 import clsx from 'clsx';
 import { Send, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -77,10 +82,7 @@ export function EntityDetailPanel({
     correlationId: string
   ) => Promise<{ stoppedCount: number }>;
   /** Callback to load event data for a specific event (lazy loading) */
-  onLoadEventData?: (
-    correlationId: string,
-    eventId: string
-  ) => Promise<unknown | null>;
+  onLoadEventData?: (event: Event) => Promise<unknown | null>;
   /** Callback to resolve a hook with a payload. */
   onResolveHook?: (
     hookToken: string,
@@ -133,8 +135,7 @@ export function EntityDetailPanel({
   const canWakeUp = useMemo(() => {
     void rawEventsLength;
     if (resource !== 'sleep' || !rawEvents) return false;
-    const terminalStates = ['completed', 'failed', 'cancelled'];
-    if (terminalStates.includes(run.status)) return false;
+    if (isTerminalWorkflowRunStatus(run.status)) return false;
     const hasWaitCreated = rawEvents.some(
       (e) => e.eventType === 'wait_created'
     );
@@ -153,8 +154,7 @@ export function EntityDetailPanel({
     // Check if we already resolved this hook in this session
     if (resolvedHookIds.has(resourceId)) return false;
 
-    const terminalStates = ['completed', 'failed', 'cancelled'];
-    if (terminalStates.includes(run.status)) return false;
+    if (isTerminalWorkflowRunStatus(run.status)) return false;
     const hasHookDisposed = rawEvents.some(
       (e) => e.eventType === 'hook_disposed'
     );

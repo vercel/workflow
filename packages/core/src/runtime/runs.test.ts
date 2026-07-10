@@ -19,7 +19,7 @@ import {
   hydrateStepReturnValue,
 } from '../serialization.js';
 import { Run } from './run.js';
-import { wakeUpRun } from './runs.js';
+import { reenqueueRun, wakeUpRun } from './runs.js';
 import { setWorld } from './world.js';
 
 function createMockWorld(
@@ -106,6 +106,52 @@ describe('wakeUpRun', () => {
     const world = createMockWorld({ events, createError: serverError });
 
     await expect(wakeUpRun(world, 'wrun_123')).rejects.toThrow(AggregateError);
+  });
+
+  it('should re-enqueue to the namespaced queue when namespace is provided', async () => {
+    const events: Event[] = [
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'wait_created',
+        correlationId: 'wait_abc',
+        eventData: { resumeAt: new Date('2024-01-01T00:00:01.000Z') },
+        createdAt: new Date(),
+      },
+    ];
+
+    const world = createMockWorld({ events });
+    await wakeUpRun(world, 'wrun_123', { namespace: 'eve' });
+
+    expect(world.queue).toHaveBeenCalledWith(
+      '__eve_wkf_workflow_test-workflow',
+      expect.anything(),
+      expect.anything()
+    );
+  });
+});
+
+describe('reenqueueRun', () => {
+  it('should enqueue to the default queue when no namespace is provided', async () => {
+    const world = createMockWorld();
+    await reenqueueRun(world, 'wrun_123');
+
+    expect(world.queue).toHaveBeenCalledWith(
+      '__wkf_workflow_test-workflow',
+      { runId: 'wrun_123' },
+      expect.anything()
+    );
+  });
+
+  it('should enqueue to the namespaced queue when namespace is provided', async () => {
+    const world = createMockWorld();
+    await reenqueueRun(world, 'wrun_123', { namespace: 'eve' });
+
+    expect(world.queue).toHaveBeenCalledWith(
+      '__eve_wkf_workflow_test-workflow',
+      { runId: 'wrun_123' },
+      expect.anything()
+    );
   });
 });
 

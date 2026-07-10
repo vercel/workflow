@@ -203,6 +203,16 @@ export interface Queue {
 
   /**
    * Creates an HTTP queue handler for processing messages from a specific queue.
+   *
+   * `meta.messageId` SHOULD be stable across redeliveries of the same message
+   * (one ID per enqueued message, reused on every delivery attempt). The
+   * runtime's inline step ownership uses it as a liveness lease: the lazy
+   * `step_started` records the handling invocation's messageId, and only a
+   * delivery of that same message may re-execute the step before the
+   * ownership lease expires (crash recovery via queue redelivery). A World
+   * whose queue mints a fresh ID per delivery degrades gracefully — owner
+   * redeliveries fall back to the delayed-backstop path instead of executing
+   * immediately, adding recovery latency but never wedging or duplicating.
    */
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
