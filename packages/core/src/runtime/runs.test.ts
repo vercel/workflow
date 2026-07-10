@@ -31,7 +31,7 @@ import {
   hydrateStepReturnValue,
 } from '../serialization.js';
 import { Run } from './run.js';
-import { reenqueueRun, wakeUpRun } from './runs.js';
+import { recreateRunFromExisting, reenqueueRun, wakeUpRun } from './runs.js';
 import { start } from './start.js';
 import { setWorld } from './world.js';
 
