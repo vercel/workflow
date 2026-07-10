@@ -234,8 +234,10 @@ function getPhysicalQueueName(
     loggedSequentialReplays = true;
     // One-time breadcrumb so a half-applied configuration (env var set without
     // a maxConcurrency-bearing flow trigger, or vice versa) is diagnosable
-    // from function logs.
-    console.log(
+    // from function logs. Must go to stderr: this code also runs inside CLI
+    // commands whose stdout is a machine-parsed JSON contract (e.g.
+    // `workflow health --json`).
+    console.warn(
       '[workflow] WORKFLOW_SEQUENTIAL_REPLAYS=1: routing flow messages to per-run queue topics'
     );
   }
