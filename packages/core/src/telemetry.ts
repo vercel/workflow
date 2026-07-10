@@ -203,6 +203,23 @@ export async function trace<T>(
 }
 
 /**
+ * Emit a span whose start is back-dated to `startEpochMs` and whose end is now,
+ * so its duration reflects an interval only measurable at its end (e.g.
+ * time-to-first-chunk, known when the first chunk arrives). Unlike `trace()`,
+ * this records an already-elapsed span in one shot rather than wrapping a
+ * callback. No-op when OpenTelemetry is not available.
+ */
+export async function recordElapsedSpan(
+  spanName: string,
+  startEpochMs: number,
+  opts?: SpanOptions
+): Promise<void> {
+  const tracer = await Tracer.value;
+  if (!tracer) return;
+  tracer.startSpan(spanName, { ...opts, startTime: startEpochMs }).end();
+}
+
+/**
  * Applies workflow suspension attributes to the given span if the error is a WorkflowSuspension
  * which is technically not an error, but an algebraic effect indicating suspension.
  */
