@@ -33,8 +33,8 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
 
   /**
    * Returns a promise that resolves with the conflicting {@link Run} if
-   * another hook or retained claim already owns this hook's token, or `null`
-   * once the hook has been registered and is ready to receive payloads.
+   * another Hook already owns this token, including a token kept reserved
+   * after its run ended, or `null` once this Hook has registered.
    *
    * Calling `createHook()` alone does not register the hook — registration
    * only happens when the workflow suspends. Awaiting `getConflict()`
@@ -42,19 +42,16 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
    * used to claim the token (and detect token conflicts early) without
    * waiting for payload data.
    *
-   * When a conflict is detected, the resolved `Run` is the run that
-   * owns the token. The owner may still be running or may have reached a
-   * terminal state while retaining its claim. The workflow can decide how to
-   * handle the duplicate in code: return or log `conflict.runId`, inspect
-   * `await conflict.status`, or await `conflict.returnValue`.
+   * When a conflict is detected, the resolved `Run` owns the token. It may
+   * still be active, or its token may remain reserved after it finished. The
+   * duplicate can use its run ID, status, or return value.
    *
-   * A conflict means this hook did not acquire the token. Cancelling the owner
-   * does not transfer ownership, and a retained claim survives cancellation
-   * until its deadline. Never perform protected work until a new hook has
-   * registered successfully without a conflict.
+   * A conflict means this Hook does not own the token. Cancelling the owner
+   * does not transfer ownership or free a retained token. Do not perform
+   * protected work until a new Hook registers without a conflict.
    *
    * Note that awaiting the hook's payload (`await hook`) when the token is
-   * already owned by another hook or retained claim still rejects with
+   * already owned by another Hook or reserved by a finished run still rejects with
    * `HookConflictError`. In the rare case where the conflicting run cannot
    * be identified (a `hook_conflict` event persisted by an old world that
    * did not record the owning run's ID), `getConflict()` also rejects with
@@ -154,20 +151,19 @@ export interface HookOptions {
   token?: string;
 
   /**
-   * **Experimental.** Keeps this hook's token claimed after its workflow run
-   * reaches a terminal state, until the configured deadline has passed.
+   * **Experimental.** Keeps this Hook's token reserved after its workflow run
+   * ends, until the configured deadline.
    *
    * Accepts the same values as `sleep()`: a duration string, a number of
-   * milliseconds, or an absolute `Date`. Relative durations are evaluated
-   * when `createHook()` runs and persisted as an absolute deadline.
+   * milliseconds, or an absolute `Date`. Relative durations start when
+   * `createHook()` runs, not when the workflow ends.
    *
-   * The live hook is not retained and cannot be resumed after the run ends.
-   * Only the token claim is retained, so another hook using the same token
-   * receives a conflict during the retention window. Calling `dispose()`
-   * (including through `using`) always releases the token immediately.
+   * The Hook cannot be resumed after the run ends. Another Hook using the same
+   * token receives a conflict until the deadline. Calling `dispose()`
+   * (including through `using`) releases the token immediately.
    *
    * World implementations may ignore this experimental option if they do not
-   * support retained hook-token claims.
+   * support token retention.
    *
    * @example
    *

@@ -112,7 +112,9 @@ export async function orderWorkflow(orderId: string) {
 }
 ```
 
-Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.getConflict()` suspends the workflow to commit the hook registration, then resolves with `null` once the hook is registered and ready to receive payloads, or with a `Run` handle for the run that owns the token if another hook or retained claim already owns it (see [`HookConflictError`](/docs/errors/hook-conflict)). For `hook_conflict` events persisted by older worlds that did not record the owning run's ID, `getConflict()` rejects with `HookConflictError` instead of resolving with an incomplete handle. The conflicting run's accessors are durable steps, so the workflow can inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel an active owner with `await conflict.cancel()`. Cancellation does not transfer ownership, and a retained claim survives it until its deadline — see [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies.
+Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.getConflict()` suspends the workflow to commit the hook registration, then resolves with `null` once the hook is ready, or with the run that already owns the token. The owner may still be active, or its token may remain reserved after it finished. A conflict means the current Hook does not own the token. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for handling examples.
+
+Events written by older Worlds may not include the owner's run ID. For those events, `getConflict()` throws `HookConflictError`.
 
 ### Custom Tokens for Deterministic Hooks
 
@@ -487,7 +489,7 @@ When using custom tokens with `createHook()`:
 - **Make them deterministic**: Base them on data the external system can reconstruct (like channel IDs, user IDs, etc.)
 - **Use namespacing**: Prefix tokens to avoid conflicts (e.g., `slack:${channelId}`, `github:${repoId}`)
 - **Include routing information**: Ensure the token contains enough information to identify the correct workflow instance
-- **Choose an explicit retention policy for idempotency claims**: By default the token is reusable after the run ends. Use [`experimental_retention`](/docs/api-reference/workflow/create-hook#retaining-a-token-claim-after-completion) when late duplicates must still conflict, and do not automatically dispose that ownership hook.
+- **Decide how long the token should stay reserved**: By default the token is reusable after the run ends. Use [`experimental_retention`](/docs/api-reference/workflow/create-hook#keep-a-token-reserved-after-the-run-ends) to block late duplicates, and do not automatically dispose that Hook.
 
 ### Response Handling in Webhooks
 

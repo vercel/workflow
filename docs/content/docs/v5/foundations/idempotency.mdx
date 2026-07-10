@@ -149,9 +149,9 @@ export async function POST(request: Request) {
 This avoids creating a new run only after the first run has registered its hook. Because `start()` returns before the run body executes and calls `createHook()`, two concurrent requests can both observe "no hook yet" and each call `start()`. The race is resolved inside the workflow body, where the losing run observes `getConflict()` resolving with the active owner and returns without doing duplicate-sensitive work â€” and the route detects it by comparing the resumed hook's `runId` against the run it just started, without waiting for either run to finish. A native API for atomically starting a run and registering a hook is in the works. Until then, model recovery inside the workflow by checking `hook.getConflict()`.
 </Callout>
 
-By default, this is active-run coordination: when the workflow reaches a terminal state, the token can be used again. To reject late duplicates for a bounded window, set `experimental_retention` and leave the ownership Hook undisposed. The live Hook still disappears when the run ends; only its token claim remains. See [`createHook()` token retention](/docs/api-reference/workflow/create-hook#retaining-a-token-claim-after-completion) for the API, accepted deadline formats, and World support limitations.
+By default, the token becomes reusable when the workflow ends. Set `experimental_retention` to keep it reserved for late duplicate requests. The Hook itself is still removed and cannot be resumed. See [`createHook()` token retention](/docs/api-reference/workflow/create-hook#keep-a-token-reserved-after-the-run-ends) for examples and supported deadline formats.
 
-Retained claims reject duplicates but do not store or return the original workflow result by themselves. A duplicate receives the conflicting `Run` and can inspect its status or return value while that run remains available. If the result must outlive workflow-run retention, persist it under the same domain key in application storage.
+`experimental_retention` prevents duplicate work; it does not save the result. A duplicate can use `conflict.returnValue` while the original run is still available. If callers need the result for longer, save it in your own database under the same key, such as the order ID.
 
 ### Conflict-handling strategies
 
@@ -159,7 +159,7 @@ Some workflow systems resolve duplicate IDs with a fixed, pre-declared policy â€
 
 The example above implements **reject the duplicate**: return the owner's `runId` and let the caller decide. Other common strategies:
 
-A conflict means the current run did not acquire the token. It must not perform protected work unless a new Hook later registers without a conflict. A retained terminal claim cannot receive payloads or be released by cancelling its run; reject the duplicate or adopt the stored run result until the claim expires.
+If `getConflict()` returns a run, the current run does not own the token and must not do the work guarded by that token. With retention enabled, the owner may already be finished. In that case its Hook cannot be resumed, and cancelling the finished run will not free the token.
 
 **Adopt the owner's result.** Wait for the active run to finish and return its result, so callers cannot tell which run did the work:
 
@@ -278,7 +278,7 @@ export async function processOrderNewestWins(orderId: string) {
 ```
 
 <Callout type="warn">
-Do not combine this pattern with `experimental_retention`. Cancellation makes a retained owner terminal but does not release its token claim; the claim remains until its deadline. Cancellation also does not transfer ownership by itself, so protected work must remain behind a later `getConflict()` that returns `null`.
+Do not combine this pattern with `experimental_retention`. Cancelling the owner does not free a retained token. The loop may continue only after a new Hook calls `getConflict()` and receives `null`.
 </Callout>
 
 If duplicate requests should only reuse the active run without sending data, use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) as an advisory pre-check before calling `start()`. The workflow should still check `hook.getConflict()`, because the lookup and `start()` are not atomic.
