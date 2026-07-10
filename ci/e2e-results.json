@@ -1,6 +1,6 @@
 {
-  "lastUpdated": "2026-07-10T22:08:28.090Z",
-  "commit": "36c63af4a88adc4f404decc54b1f2130d444d264",
+  "lastUpdated": "2026-07-10T22:25:35.096Z",
+  "commit": "5de1b7a100ed340221d5fae9f955e845c719e018",
   "branch": "main",
   "type": "e2e",
   "worlds": {
@@ -66,10 +66,10 @@
     },
     "postgres": {
       "status": "passing",
-      "total": 2142,
-      "passed": 1873,
+      "total": 1989,
+      "passed": 1745,
       "failed": 0,
-      "skipped": 269,
+      "skipped": 244,
       "frameworks": {
         "astro": {
           "total": 153,
@@ -122,14 +122,14 @@
           "failed": 0
         }
       },
-      "progress": 87
+      "progress": 88
     },
     "vercel": {
       "status": "partial",
-      "total": 1224,
-      "passed": 1073,
-      "failed": 2,
-      "skipped": 149,
+      "total": 1836,
+      "passed": 1572,
+      "failed": 7,
+      "skipped": 257,
       "frameworks": {
         "astro": {
           "total": 153,
@@ -141,20 +141,35 @@
           "passed": 126,
           "failed": 0
         },
+        "fastify": {
+          "total": 153,
+          "passed": 125,
+          "failed": 1
+        },
+        "hono": {
+          "total": 153,
+          "passed": 125,
+          "failed": 1
+        },
         "nextjs-turbopack": {
           "total": 153,
-          "passed": 150,
-          "failed": 0
+          "passed": 149,
+          "failed": 1
         },
         "nextjs-webpack": {
           "total": 153,
           "passed": 150,
           "failed": 0
         },
-        "nuxt": {
+        "nitro": {
           "total": 153,
           "passed": 126,
           "failed": 0
+        },
+        "nuxt": {
+          "total": 153,
+          "passed": 125,
+          "failed": 1
         },
         "sveltekit": {
           "total": 153,
@@ -163,11 +178,11 @@
         },
         "vite": {
           "total": 153,
-          "passed": 125,
-          "failed": 1
+          "passed": 124,
+          "failed": 2
         }
       },
-      "progress": 88
+      "progress": 86
     }
   }
 }
