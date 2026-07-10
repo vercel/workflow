@@ -1235,7 +1235,6 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
 
     expect(() =>
-      // @ts-expect-error Verify the runtime error for untyped JavaScript callers.
       createHook({ isWebhook: true, experimental_retention: '30d' })
     ).toThrow('Webhook hooks do not support `experimental_retention`.');
     expect(ctx.invocationsQueue.size).toBe(0);
