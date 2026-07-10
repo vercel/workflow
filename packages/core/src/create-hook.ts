@@ -121,7 +121,7 @@ export interface Webhook<T extends Request> extends Hook<T> {
   url: string;
 }
 
-export interface HookOptions {
+interface HookBaseOptions {
   /**
    * Unique token that is used to associate with the hook.
    *
@@ -150,33 +150,6 @@ export interface HookOptions {
   token?: string;
 
   /**
-   * **Experimental.** Keeps this hook's token claimed after its workflow run
-   * reaches a terminal state, until the configured deadline has passed.
-   *
-   * Accepts the same values as `sleep()`: a duration string, a number of
-   * milliseconds, or an absolute `Date`. Relative durations are evaluated
-   * when `createHook()` runs and persisted as an absolute deadline.
-   *
-   * The live hook is not retained and cannot be resumed after the run ends.
-   * Only the token claim is retained, so another hook using the same token
-   * receives a conflict during the retention window. Calling `dispose()`
-   * (including through `using`) always releases the token immediately.
-   *
-   * World implementations may ignore this experimental option if they do not
-   * support retained hook-token claims.
-   *
-   * @example
-   *
-   * ```ts
-   * const hook = createHook({
-   *   token: `order:${orderId}`,
-   *   experimental_retention: '30d',
-   * });
-   * ```
-   */
-  experimental_retention?: StringValue | Date | number;
-
-  /**
    * Additional user-defined data to include with the hook payload.
    *
    * @example
@@ -191,24 +164,52 @@ export interface HookOptions {
    * ```
    */
   metadata?: Serializable;
-
-  /**
-   * Whether this hook can be resumed via the public webhook endpoint.
-   *
-   * When `true`, the hook can be triggered by sending an HTTP request to the
-   * public workflow webhook URL. This is automatically set when using
-   * `createWebhook()`.
-   *
-   * When `false` (the default), the hook can only be resumed server-side
-   * via `resumeHook()`.
-   *
-   * @default false
-   */
-  isWebhook?: boolean;
 }
 
-export interface WebhookOptions
-  extends Omit<HookOptions, 'token' | 'isWebhook' | 'experimental_retention'> {
+export type HookOptions = HookBaseOptions &
+  (
+    | {
+        /**
+         * **Experimental.** Keeps this hook's token claimed after its workflow
+         * run reaches a terminal state, until the configured deadline passes.
+         *
+         * Accepts the same values as `sleep()`: a duration string, a number of
+         * milliseconds, or an absolute `Date`. Relative durations are evaluated
+         * when `createHook()` runs and persisted as an absolute deadline.
+         *
+         * The live hook is not retained and cannot be resumed after the run ends.
+         * Only the token claim is retained, so another hook using the same token
+         * receives a conflict during the retention window. Calling `dispose()`
+         * (including through `using`) always releases the token immediately.
+         *
+         * World implementations may ignore this experimental option if they do
+         * not support retained hook-token claims.
+         *
+         * @example
+         *
+         * ```ts
+         * const hook = createHook({
+         *   token: `order:${orderId}`,
+         *   experimental_retention: '30d',
+         * });
+         * ```
+         */
+        experimental_retention?: StringValue | Date | number;
+
+        /**
+         * Whether this hook can be resumed via the public webhook endpoint.
+         *
+         * The default `false` restricts the hook to server-side `resumeHook()`.
+         * `createWebhook()` sets this internal option to `true`.
+         *
+         * @default false
+         */
+        isWebhook?: false;
+      }
+    | { isWebhook: true; experimental_retention?: never }
+  );
+
+export interface WebhookOptions extends Omit<HookBaseOptions, 'token'> {
   /**
    * If set to a `Response` object, the webhook will automatically
    * respond with the specified response.
