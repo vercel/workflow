@@ -2,7 +2,7 @@ import readline from 'node:readline';
 import { Args, Flags } from '@oclif/core';
 import { cancelRun } from '@workflow/core/runtime';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
-import type { WorkflowRun } from '@workflow/world';
+import { WorkflowRunStatusSchema } from '@workflow/world';
 import chalk from 'chalk';
 import Table from 'easy-table';
 import { BaseCommand } from '../base.js';
@@ -50,7 +50,7 @@ export default class Cancel extends BaseCommand {
     status: Flags.string({
       description: 'Filter runs by status for bulk cancel',
       required: false,
-      options: ['running', 'completed', 'failed', 'cancelled', 'pending'],
+      options: [...WorkflowRunStatusSchema.options],
       helpGroup: 'Bulk Cancel',
       helpLabel: '--status',
     }),
@@ -110,7 +110,9 @@ export default class Cancel extends BaseCommand {
 
     // Fetch matching runs. Only metadata is needed to display and cancel, so
     // prefer the analytics read path when the backend provides one.
-    const status = flags.status as WorkflowRun['status'] | undefined;
+    const status = flags.status
+      ? WorkflowRunStatusSchema.parse(flags.status)
+      : undefined;
     const limit = flags.limit || 50;
     const analytics = world.analytics;
     const fetchMatches = async () => {

@@ -1,14 +1,10 @@
 import { WorkflowWorldError } from '@workflow/errors';
-import { EVENT_DATA_REF_FIELDS } from '@workflow/world';
+import { getEventDataRefFields } from '@workflow/world';
 
 const FORMAT_PREFIX_LENGTH = 4;
 const GZIP_FORMAT_PREFIX = 'gzip';
 const ZSTD_FORMAT_PREFIX = 'zstd';
 const formatDecoder = new TextDecoder();
-const V4_EXTRA_EVENT_DATA_REF_FIELDS: Record<string, string[]> = {
-  run_started: ['input'],
-  step_started: ['input'],
-};
 
 interface NodeZlibDecode {
   gunzipSync?: (data: Uint8Array) => Uint8Array;
@@ -103,12 +99,7 @@ export function normalizeEventData<T extends Record<string, unknown>>(
   }
 
   const eventType = typeof event.eventType === 'string' ? event.eventType : '';
-  const refFields = [
-    ...new Set([
-      ...(EVENT_DATA_REF_FIELDS[eventType] ?? []),
-      ...(V4_EXTRA_EVENT_DATA_REF_FIELDS[eventType] ?? []),
-    ]),
-  ];
+  const refFields = getEventDataRefFields(eventType);
   if (refFields.length === 0) {
     return event;
   }
