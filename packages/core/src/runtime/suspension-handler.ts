@@ -336,7 +336,7 @@ export async function handleSuspension({
               correlationId: queueItem.correlationId,
               eventData: {
                 token: queueItem.token,
-                tokenReusableAfter: queueItem.tokenReusableAfter,
+                tokenExpiresAt: queueItem.tokenExpiresAt,
                 metadata: hookMetadata,
                 isWebhook: queueItem.isWebhook ?? false,
                 ...(queueItem.isSystem && { isSystem: true }),

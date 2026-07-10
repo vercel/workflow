@@ -1183,7 +1183,7 @@ describe('createCreateHook', () => {
       const queueItem = ctx.invocationsQueue.values().next().value;
       expect(queueItem?.type).toBe('hook');
       if (queueItem?.type === 'hook') {
-        expect(queueItem.tokenReusableAfter).toEqual(new Date(1_001_000));
+        expect(queueItem.tokenExpiresAt).toEqual(new Date(1_001_000));
       }
     } finally {
       dateNow.mockRestore();
@@ -1195,7 +1195,7 @@ describe('createCreateHook', () => {
       name: 'uses the persisted deadline',
       eventData: {
         token: 'test-token',
-        tokenReusableAfter: new Date('2026-07-15T00:00:00.000Z'),
+        tokenExpiresAt: new Date('2026-07-15T00:00:00.000Z'),
       },
       expected: new Date('2026-07-15T00:00:00.000Z'),
     },
@@ -1226,7 +1226,7 @@ describe('createCreateHook', () => {
     const queueItem = ctx.invocationsQueue.values().next().value;
     expect(queueItem?.type).toBe('hook');
     if (queueItem?.type === 'hook') {
-      expect(queueItem.tokenReusableAfter).toEqual(expected);
+      expect(queueItem.tokenExpiresAt).toEqual(expected);
     }
   });
 

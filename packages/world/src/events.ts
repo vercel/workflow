@@ -383,7 +383,7 @@ export const HookCreatedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z.object({
     token: z.string(),
-    tokenReusableAfter: z.coerce.date().optional(),
+    tokenExpiresAt: z.coerce.date().optional(),
     metadata: SerializedDataSchema.optional(),
     isWebhook: z.boolean().optional(),
     isSystem: z.boolean().optional(),

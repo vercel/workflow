@@ -35,7 +35,7 @@ describe('handleSuspension', () => {
       event,
     }));
     const world = createWorld(eventsCreate);
-    const tokenReusableAfter = new Date('2026-08-01T00:00:00.000Z');
+    const tokenExpiresAt = new Date('2026-08-01T00:00:00.000Z');
     const pending = new Map([
       [
         'hook_retained',
@@ -43,7 +43,7 @@ describe('handleSuspension', () => {
           type: 'hook' as const,
           correlationId: 'hook_retained',
           token: 'order:123',
-          tokenReusableAfter,
+          tokenExpiresAt,
         },
       ],
     ]);
@@ -60,7 +60,7 @@ describe('handleSuspension', () => {
         eventType: 'hook_created',
         eventData: expect.objectContaining({
           token: 'order:123',
-          tokenReusableAfter,
+          tokenExpiresAt,
         }),
       }),
       expect.anything()

@@ -85,7 +85,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // Generate hook ID and token
     const correlationId = `hook_${ctx.generateUlid()}`;
     const token = options.token ?? ctx.generateNanoid();
-    const tokenReusableAfter =
+    const tokenExpiresAt =
       options.experimental_expires === undefined
         ? undefined
         : parseDurationToDate(options.experimental_expires);
@@ -97,7 +97,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       type: 'hook',
       correlationId,
       token,
-      tokenReusableAfter,
+      tokenExpiresAt,
       metadata: options.metadata,
       isWebhook,
     });
@@ -183,7 +183,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           // The event log is authoritative on replay. In particular, an old
           // event with no expiration field must not gain one merely because
           // newly deployed workflow code added the option.
-          queueItem.tokenReusableAfter = event.eventData.tokenReusableAfter;
+          queueItem.tokenExpiresAt = event.eventData.tokenExpiresAt;
         }
         hasCreated = true;
 

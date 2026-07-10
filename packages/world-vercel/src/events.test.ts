@@ -121,20 +121,20 @@ describe('createWorkflowRunEvent with v1Compat', () => {
  */
 describe('splitEventDataForV4 attribute fields', () => {
   it('carries the hook token expiration time in the frame meta', () => {
-    const tokenReusableAfter = new Date('2026-07-10T12:00:00.000Z');
+    const tokenExpiresAt = new Date('2026-07-10T12:00:00.000Z');
     const { payload, meta } = splitEventDataForV4({
       eventType: 'hook_created',
       correlationId: 'hook_1',
       specVersion: 5,
       eventData: {
         token: 'order:123',
-        tokenReusableAfter,
+        tokenExpiresAt,
       },
     } as AnyEventRequest);
 
     expect(payload).toBeUndefined();
     expect(meta.hookToken).toBe('order:123');
-    expect(meta.hookTokenReusableAfter).toEqual(tokenReusableAfter);
+    expect(meta.hookTokenExpiresAt).toEqual(tokenExpiresAt);
   });
 
   it('carries attr_set changes/writer/allowReservedAttributes in the frame meta', () => {
