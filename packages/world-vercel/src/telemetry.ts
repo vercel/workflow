@@ -162,3 +162,21 @@ export const WorkflowRunId = SemanticConvention<string>('workflow.run.id');
 
 /** Unique identifier for the step instance */
 export const StepId = SemanticConvention<string>('step.id');
+
+/** Name of the stream being written or read (workflow.stream.name) */
+export const WorkflowStreamName = SemanticConvention<string>(
+  'workflow.stream.name'
+);
+
+/**
+ * Stream operation performed by the client span
+ * (workflow.stream.operation): write | write_multi | close | read.
+ */
+export const WorkflowStreamOperation = SemanticConvention<string>(
+  'workflow.stream.operation'
+);
+
+/** Requested start index for a live stream read (workflow.stream.start_index) */
+export const WorkflowStreamStartIndex = SemanticConvention<number>(
+  'workflow.stream.start_index'
+);
