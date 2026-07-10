@@ -460,7 +460,9 @@ describe('createQueue', () => {
       expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test_wrun_abc');
     });
 
-    it('does not rewrite the topic when the flag is unset', async () => {
+    // TEMP(ci-default-on): skipped while sequential replays are forced on for CI.
+    // REVERT BEFORE MERGE (drop the TEMP commit to restore).
+    it.skip('does not rewrite the topic when the flag is unset', async () => {
       delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
 
       const queue = createQueue();
@@ -538,7 +540,9 @@ describe('createQueue', () => {
       );
     });
 
-    it('does not rewrite health check topics when the flag is unset', async () => {
+    // TEMP(ci-default-on): skipped while sequential replays are forced on for CI.
+    // REVERT BEFORE MERGE (drop the TEMP commit to restore).
+    it.skip('does not rewrite health check topics when the flag is unset', async () => {
       delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
 
       const queue = createQueue();

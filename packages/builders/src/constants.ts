@@ -118,10 +118,12 @@ export const WORKFLOW_QUEUE_TRIGGER = createWorkflowQueueTrigger();
  * the route's `experimentalTriggers` config.
  */
 export function getWorkflowQueueTrigger(options?: { namespace?: string }) {
+  // TEMP(ci-default-on): force sequential replays ON regardless of the env var
+  // so CI e2e jobs exercise maxConcurrency + payload-dependent topics. REVERT
+  // BEFORE MERGE — restore the `...(process.env.WORKFLOW_SEQUENTIAL_REPLAYS
+  // === '1' && { maxConcurrency: 1 })` gate.
   return {
     ...createWorkflowQueueTrigger(options),
-    ...(process.env.WORKFLOW_SEQUENTIAL_REPLAYS === '1' && {
-      maxConcurrency: 1,
-    }),
+    maxConcurrency: 1,
   };
 }
