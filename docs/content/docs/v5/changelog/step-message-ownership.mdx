@@ -135,8 +135,11 @@ Implement the decision table in the pending-step dispatch loop:
   Justification for 860: the platform requires explicit per-function numeric config for
   >800s, so `'max'` ≤ 800s. A code comment must carry this reasoning and the
   30-minute-beta caveat so the constant gets revisited when the platform ceiling moves.
-- `leaseRemaining = max(0, lastStartedAt + lease − now)`; 0 ⇒ enqueue immediately (also
-  the degraded mode for worlds with unstable message ids).
+- `leaseRemaining = min(lease, max(0, lastStartedAt + lease − now))`; 0 ⇒ enqueue
+  immediately (also the degraded mode for worlds with unstable message ids). The upper
+  clamp guards against client-behind-server clock skew: `lastStartedAt` is the
+  server-stamped event `createdAt`, `now` is the local clock, and an unclamped remainder
+  above 900s would be rejected by SQS-backed queues as a `delaySeconds`.
 - Single-flight (required companion): module-level `Map<runId:correlationId, Promise>`
   around `executeStep` for background + owned-recovery + backstop paths. Loser awaits the
   winner's settlement, then acks WITHOUT executing (never ack-and-skip early — a crash
@@ -176,8 +179,15 @@ Implement the decision table in the pending-step dispatch loop:
    — avoid shipping that window).
 2. Kill switch in the SDK: `WORKFLOW_INLINE_OWNERSHIP=0` reverts dispatch to unconditional
    immediate requeue (stamping can stay — it's inert data).
-3. Telemetry: span attributes / runtime logs for `owned_recovery_executed`,
-   `requeue_suppressed_backstop`, and the Phase 0 invariant violation.
+3. Telemetry (implemented): span attributes
+   `workflow.inline_ownership.owned_recovery_steps` and
+   `workflow.inline_ownership.backstop_wakes_armed` on the `workflow.execute`
+   span; always-printed `warn` logs for owned recovery (a prior delivery
+   crashed mid-body) and for a single-flight absorption (a duplicate
+   execution was suppressed in-process); an `error` log for the Phase 0
+   invariant violation. Backstop arming also logs at `debug`
+   (`DEBUG=workflow:runtime:*`), since it can fire on every wake replay
+   during a long inline step.
 4. Version skew: runs are pinned to their deployment, so no mixed-version replay. Old
    events lack the field → unowned → current behavior. Nothing to migrate.
 

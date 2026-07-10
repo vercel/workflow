@@ -580,6 +580,17 @@ export function workflowEntrypoint(
                   // point (see `forceOptimisticStart`). Workflow attribute
                   // writes introduce no such invocation source — they resolve
                   // via an in-process replay and don't end turbo.
+                  // NOTE: `metadata.attempt === 1` is also load-bearing for
+                  // inline step ownership: owned-recovery steps (a step
+                  // stamped by a PREVIOUS delivery of this message) can only
+                  // exist on attempt ≥ 2, so turbo and owned recovery are
+                  // mutually exclusive. The turbo `reinvoke()` paths (hook
+                  // conflict, throttle backoff) ack this message and continue
+                  // under a NEW message id — safe only because no
+                  // non-terminal step can be inline-owned by the acked id
+                  // when turbo is on. If turbo ever engages on redeliveries,
+                  // those paths must first check for owned pending steps and
+                  // fall back to `{ timeoutSeconds }` redelivery.
                   const turbo =
                     isTurboEnabled() &&
                     runInput !== undefined &&
@@ -1680,6 +1691,7 @@ export function workflowEntrypoint(
                         const dispatchNowMs = Date.now();
                         const ownedRecoverySteps: StepInvocationQueueItem[] =
                           [];
+                        let backstopWakesArmed = 0;
                         for (const step of pendingSteps) {
                           if (inlineCorrelationIds.has(step.correlationId)) {
                             continue;
@@ -1706,6 +1718,7 @@ export function workflowEntrypoint(
                             ? stepLeaseRemainingSeconds(step, dispatchNowMs)
                             : 0;
                           if (backstopDelaySeconds > 0) {
+                            backstopWakesArmed++;
                             runtimeLogger.debug(
                               'Pending step is inline-owned by a live invocation; ensuring delayed backstop wake instead of immediate requeue',
                               {
@@ -1790,9 +1803,32 @@ export function workflowEntrypoint(
                             stepName: s.stepName,
                           })),
                         ];
+                        // Ownership telemetry (design doc Phase 7): span
+                        // attributes so production traces show when crash
+                        // recovery ran or a wake was converted into a
+                        // backstop, and a warn (always printed, unlike
+                        // debug/info) for owned recovery — it means a prior
+                        // delivery of this message died mid-step-body.
+                        if (
+                          backstopWakesArmed > 0 ||
+                          ownedRecoverySteps.length > 0
+                        ) {
+                          span?.setAttributes({
+                            ...(ownedRecoverySteps.length > 0
+                              ? Attribute.WorkflowOwnedRecoverySteps(
+                                  ownedRecoverySteps.length
+                                )
+                              : {}),
+                            ...(backstopWakesArmed > 0
+                              ? Attribute.WorkflowBackstopWakesArmed(
+                                  backstopWakesArmed
+                                )
+                              : {}),
+                          });
+                        }
                         if (ownedRecoverySteps.length > 0) {
-                          runtimeLogger.info(
-                            'Re-executing inline steps owned by this message (crash recovery)',
+                          runtimeLogger.warn(
+                            'Re-executing inline steps owned by this queue message — a previous delivery crashed mid-body and this redelivery is recovering them',
                             {
                               workflowRunId: runId,
                               stepIds: ownedRecoverySteps.map(

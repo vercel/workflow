@@ -48,7 +48,13 @@ export async function runStepSingleFlight(
   const key = `${runId}:${correlationId}`;
   const existing = inFlightSteps.get(key);
   if (existing) {
-    runtimeLogger.info(
+    // warn (always printed, unlike debug/info): the single-flight is
+    // absorbing what would have been a duplicate execution — typically a
+    // delayed backstop or retry message landing in the same process while
+    // the owner is still mid-body. Rare by design; a burst of these means
+    // leases are expiring under live executions (raise
+    // WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS).
+    runtimeLogger.warn(
       'Step execution already in flight in this process; awaiting its settlement instead of executing again',
       { workflowRunId: runId, stepId: correlationId }
     );

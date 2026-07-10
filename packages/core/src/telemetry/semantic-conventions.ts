@@ -130,6 +130,24 @@ export const WorkflowWaitsCreated = SemanticConvention<number>(
   'workflow.waits.created'
 );
 
+/**
+ * Number of inline-owned steps this invocation re-executed because it is a
+ * redelivery of their owning queue message (crash recovery for inline
+ * steps — see the inline step ownership changelog, workflow#2780).
+ */
+export const WorkflowOwnedRecoverySteps = SemanticConvention<number>(
+  'workflow.inline_ownership.owned_recovery_steps'
+);
+
+/**
+ * Number of pending steps for which this replay suppressed the immediate
+ * requeue (another invocation inline-owns them under a live lease) and
+ * ensured a delayed backstop wake instead.
+ */
+export const WorkflowBackstopWakesArmed = SemanticConvention<number>(
+  'workflow.inline_ownership.backstop_wakes_armed'
+);
+
 // Route attributes
 
 /** The workflow runtime route being handled */
