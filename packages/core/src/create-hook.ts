@@ -194,7 +194,7 @@ export type HookOptions = HookBaseOptions &
          * });
          * ```
          */
-        experimental_retention?: StringValue | Date | number;
+        experimental_retention: StringValue | Date | number;
 
         /**
          * Whether this hook can be resumed via the public webhook endpoint.
@@ -206,7 +206,7 @@ export type HookOptions = HookBaseOptions &
          */
         isWebhook?: false;
       }
-    | { isWebhook: true; experimental_retention?: never }
+    | { experimental_retention?: never; isWebhook?: boolean }
   );
 
 export interface WebhookOptions extends Omit<HookBaseOptions, 'token'> {
