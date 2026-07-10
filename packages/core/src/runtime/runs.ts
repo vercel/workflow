@@ -80,8 +80,6 @@ export async function recreateRunFromExisting(
         deploymentId,
         world,
         specVersion,
-        // Record the run we're replaying from so the new run can be surfaced
-        // as a replay (e.g. "Replay of <runId>") in tooling.
         replayedFromRunId: runId,
       }
     );

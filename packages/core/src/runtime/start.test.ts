@@ -824,6 +824,32 @@ describe('start', () => {
         'replayedFromRunId'
       );
     });
+
+    it('rejects a replayedFromRunId without the wrun_ prefix', async () => {
+      await expect(
+        start(validWorkflow, [], { replayedFromRunId: 'not-a-run-id' })
+      ).rejects.toThrow(/replayedFromRunId must be a "wrun_"-prefixed run ID/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('rejects a replayedFromRunId that exceeds the length cap', async () => {
+      await expect(
+        start(validWorkflow, [], {
+          replayedFromRunId: `wrun_${'x'.repeat(300)}`,
+        })
+      ).rejects.toThrow(/at most 256 characters/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-string replayedFromRunId', async () => {
+      await expect(
+        start(validWorkflow, [], {
+          // Types forbid this, but JS callers can still pass it.
+          replayedFromRunId: 12345 as unknown as string,
+        })
+      ).rejects.toThrow(/replayedFromRunId must be a "wrun_"-prefixed run ID/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
   });
 
   describe('overload type inference', () => {

@@ -98,6 +98,10 @@ export interface StartOptionsBase {
    * a replay and link back to its source. Set automatically by
    * {@link recreateRunFromExisting}; there's usually no reason to pass it
    * directly.
+   *
+   * Must be a run ID: a `wrun_`-prefixed string of at most 256 characters.
+   * It is persisted verbatim on the size-capped run item, so `start()`
+   * rejects anything else to keep the option from being misused to bloat it.
    */
   replayedFromRunId?: string;
 }
@@ -330,6 +334,27 @@ export async function start<TArgs extends unknown[], TResult>(
           }
         : {};
 
+      // `replayedFromRunId` is stamped verbatim into `executionContext`, which
+      // is persisted on the (size-capped) run item. It's meant to be a run ID
+      // (~31 chars), so reject anything that isn't a short `wrun_`-prefixed
+      // string up front rather than let the option be misused to bloat it.
+      if (opts.replayedFromRunId !== undefined) {
+        const id: unknown = opts.replayedFromRunId;
+        if (
+          typeof id !== 'string' ||
+          !id.startsWith('wrun_') ||
+          id.length > 256
+        ) {
+          const received =
+            typeof id === 'string'
+              ? `${JSON.stringify(id.slice(0, 64))} (length ${id.length})`
+              : `a ${typeof id} value`;
+          throw new WorkflowRuntimeError(
+            `replayedFromRunId must be a "wrun_"-prefixed run ID of at most 256 characters; received ${received}.`
+          );
+        }
+      }
+
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both
       // key derivation and the run_created event. The World implementation
@@ -367,7 +392,6 @@ export async function start<TArgs extends unknown[], TResult>(
         traceCarrier,
         workflowCoreVersion,
         features: { encryption: !!encryptionKey },
-        // Preserve replay lineage so the run can be shown as "Replay of <id>".
         ...(opts.replayedFromRunId
           ? { replayedFromRunId: opts.replayedFromRunId }
           : {}),
