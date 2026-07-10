@@ -224,10 +224,10 @@ function getPhysicalQueueName(
   queueName: ValidQueueName,
   payload: QueuePayload
 ): string {
-  // TEMP(ci-default-on): force payload-dependent topic routing ON regardless
-  // of the env var so CI e2e jobs exercise it. REVERT BEFORE MERGE — restore
-  // the `process.env.WORKFLOW_SEQUENTIAL_REPLAYS !== '1' ||` clause.
-  if (!FLOW_TOPIC_PATTERN.test(queueName)) {
+  if (
+    process.env.WORKFLOW_SEQUENTIAL_REPLAYS !== '1' ||
+    !FLOW_TOPIC_PATTERN.test(queueName)
+  ) {
     return queueName;
   }
   if (!loggedSequentialReplays) {

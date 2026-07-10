@@ -21,9 +21,7 @@ describe('getWorkflowQueueTrigger', () => {
     }
   });
 
-  // TEMP(ci-default-on): skipped while sequential replays are forced on for CI.
-  // REVERT BEFORE MERGE (drop the TEMP commit to restore).
-  it.skip('omits maxConcurrency by default', () => {
+  it('omits maxConcurrency by default', () => {
     delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
     const trigger = getWorkflowQueueTrigger();
     expect(trigger.topic).toBe('__wkf_workflow_*');
@@ -39,9 +37,7 @@ describe('getWorkflowQueueTrigger', () => {
     });
   });
 
-  // TEMP(ci-default-on): skipped while sequential replays are forced on for CI.
-  // REVERT BEFORE MERGE (drop the TEMP commit to restore).
-  it.skip('does not set maxConcurrency for non-"1" values', () => {
+  it('does not set maxConcurrency for non-"1" values', () => {
     process.env.WORKFLOW_SEQUENTIAL_REPLAYS = 'true';
     const trigger = getWorkflowQueueTrigger();
     expect('maxConcurrency' in trigger).toBe(false);
