@@ -1,4 +1,5 @@
 ---
+'workflow': minor
 '@workflow/core': minor
 '@workflow/world-vercel': minor
 '@workflow/world': minor

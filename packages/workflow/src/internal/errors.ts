@@ -2,6 +2,7 @@ export {
   EntityConflictError,
   HookConflictError,
   HookNotFoundError,
+  PreconditionFailedError,
   RunExpiredError,
   RunNotSupportedError,
   StepNotRegisteredError,
