@@ -1430,6 +1430,19 @@ export function workflowEntrypoint(
                             runReadyBarrier,
                           });
                         } catch (suspensionError) {
+                          // A suspension create whose stale (412) rejection
+                          // survived the in-guard reload retries: schedule an
+                          // explicit immediate re-invocation (a rethrow relies
+                          // on redelivery of a message the turbo path already
+                          // acked — the run would stall for the queue's ~300s
+                          // default visibility timeout).
+                          if (PreconditionFailedError.is(suspensionError)) {
+                            runtimeLogger.warn(
+                              'Suspension event creation rejected as stale after reload retries; re-invoking run for a fresh replay',
+                              { workflowRunId: runId, loopIteration }
+                            );
+                            return await reinvoke(0);
+                          }
                           if (!FatalError.is(suspensionError)) {
                             // Transient failures propagate to the queue
                             // handler so the message is redelivered.
@@ -2013,15 +2026,19 @@ export function workflowEntrypoint(
                         // Stale-snapshot rejection of a result-bearing create
                         // (run_completed sends the snapshot but is intentionally
                         // NOT retried in place), or one that survived the
-                        // in-guard reload retries. Don't fail the run — rethrow
-                        // so the queue re-invokes the flow route with a fresh
-                        // replay that observes the new event.
+                        // in-guard reload retries. Don't fail the run — schedule
+                        // an explicit immediate re-invocation so a fresh replay
+                        // observes the new event. Rethrowing instead would rely
+                        // on redelivery of the CURRENT message, which the turbo
+                        // path has already acked — empirically the run then
+                        // stalls for the queue's ~300s default visibility
+                        // timeout before completing.
                         if (PreconditionFailedError.is(err)) {
                           runtimeLogger.warn(
-                            'Event creation rejected as stale; re-invoking run via queue for a fresh replay',
+                            'Event creation rejected as stale; re-invoking run for a fresh replay',
                             { workflowRunId: runId, loopIteration }
                           );
-                          throw err;
+                          return await reinvoke(0);
                         }
 
                         // Transient infrastructure failures talking to the

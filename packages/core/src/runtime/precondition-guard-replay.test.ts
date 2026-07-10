@@ -589,12 +589,16 @@ describe('precondition guard through the real replay loop', () => {
     );
   });
 
-  it('does not retry a 412-rejected run_completed in place; the error propagates and the run is not failed', async () => {
+  it('does not retry a 412-rejected run_completed in place; it schedules an immediate re-invocation and the run is not failed', async () => {
     const result = await runCompletedRejectionScenario();
 
-    await expect(result.handlerInvocation).rejects.toThrow(
-      PreconditionFailedError
-    );
+    // The handler must NOT throw (the turbo path has already acked the
+    // message, so a rethrow would strand the run until the queue's ~300s
+    // default visibility timeout). It resolves with an immediate re-invoke
+    // so a fresh replay observes the new event.
+    await expect(result.handlerInvocation).resolves.toEqual({
+      timeoutSeconds: 0,
+    });
 
     // The stale result must not be re-committed: exactly one attempt, carrying
     // the loaded snapshot (ULID time of run_started).
