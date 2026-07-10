@@ -122,6 +122,9 @@ When enabled, each run is given its own queue topic and the flow route is config
 
   Enabling sequential replays has a cost. Per [Vercel Queues pricing](https://vercel.com/docs/queues/pricing), push deliveries under `maxConcurrency` are billed at **2x units** for that operation, so every flow-route delivery costs double while this is enabled. It also creates one queue topic per run, which increases the number of distinct queues surfaced in queue observability, and each flow invocation waits for a per-run concurrency slot before delivery, which can add queueing latency. Leave it off unless you specifically need the per-run serialization guarantee.
 
+
+  While a replay holds a run's slot — including time spent executing steps inline — other wake messages for that run (hook resumes, aborts and cancellations, and run-timeout enforcement) wait for the slot. Expect aborts and timeouts to be delayed by up to the duration of the longest single invocation.
+
   The guarantee covers messages sent by the Workflow SDK itself. External producers that compute a flow topic name directly (rather than enqueueing through the SDK) still deliver, but bypass the per-run serialization slot.
 </Callout>
 
