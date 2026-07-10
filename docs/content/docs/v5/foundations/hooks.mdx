@@ -112,9 +112,7 @@ export async function orderWorkflow(orderId: string) {
 }
 ```
 
-Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.getConflict()` suspends the workflow to commit the hook registration, then resolves with `null` once the hook is ready, or with the run that already owns the token. The owner may still be active, or its token may remain reserved after it finished. A conflict means the current Hook does not own the token. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for handling examples.
-
-Events written by older Worlds may not include the owner's run ID. For those events, `getConflict()` throws `HookConflictError`.
+`await hook.getConflict()` registers the Hook without waiting for data. It returns `null` if registration succeeds, or the run already using the token. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for handling examples.
 
 ### Custom Tokens for Deterministic Hooks
 
@@ -489,7 +487,6 @@ When using custom tokens with `createHook()`:
 - **Make them deterministic**: Base them on data the external system can reconstruct (like channel IDs, user IDs, etc.)
 - **Use namespacing**: Prefix tokens to avoid conflicts (e.g., `slack:${channelId}`, `github:${repoId}`)
 - **Include routing information**: Ensure the token contains enough information to identify the correct workflow instance
-- **Decide when the token should expire**: By default the token expires when the run ends. Use [`experimental_expires`](/docs/api-reference/workflow/create-hook#set-when-a-hook-token-expires) to block late duplicates, and do not automatically dispose that Hook.
 
 ### Response Handling in Webhooks
 

@@ -95,7 +95,7 @@ interface Storage {
 
 **Hook Tokens:** Hook tokens must be unique. If a `hook_created` event conflicts with an active Hook or a token still reserved after its run ended, return a `hook_conflict` event and include the owner's run ID as `eventData.conflictingRunId`.
 
-**Automatic Hook Cleanup:** When a workflow ends, remove its live Hooks. Expire each token by default. If your World supports `experimental_expires`, keep the token reserved until `tokenReusableAfter`.
+**Automatic Hook Cleanup:** When a run ends, remove its live Hooks. Make each token available unless its `tokenReusableAfter` is still in the future. A `hook_disposed` event always makes the token available immediately.
 
 ## Queue Interface
 

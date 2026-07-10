@@ -96,7 +96,7 @@ export async function processOrder(orderId: string): Promise<OrderResult> {
 }
 ```
 
-Only one Hook can own `order:${orderId}`. If two runs use that token, `getConflict()` returns the first run to the duplicate. The duplicate returns before it reaches `chargeOrder()`.
+Only one Hook can use `order:${orderId}`. If two runs race, one receives a conflict and returns before it reaches `chargeOrder()`.
 
 Outside the workflow, try to resume the hook first. If the hook is not registered yet, start the workflow and retry the resume until the new run creates the hook:
 
@@ -149,17 +149,13 @@ export async function POST(request: Request) {
 Calling `resumeHook()` first avoids starting a duplicate after the Hook exists. It does not close the short gap between `start()` and `createHook()`: two requests can still start two runs. The `getConflict()` check inside the workflow stops the losing run before it does duplicate work. A native API that starts a run and creates its Hook atomically is planned.
 </Callout>
 
-By default, the token expires when the workflow ends. Set `experimental_expires` to keep it reserved for late duplicate requests. The Hook itself is still removed and cannot be resumed. See [`createHook()` token expiration](/docs/api-reference/workflow/create-hook#set-when-a-hook-token-expires) for examples and supported values.
-
-`experimental_expires` stops another run from using the token until it expires. It does not cache what the first run returned. A duplicate can read `conflict.returnValue` only while the first run is still stored. If callers need that result after old runs are deleted, save it in your own database under the same key, such as the order ID.
+By default, another Hook can use the token after the workflow ends. Set `experimental_expires` to delay that. The original Hook still ends with the workflow and cannot be resumed. See [`createHook()` expiration](/docs/api-reference/workflow/create-hook#set-when-another-hook-can-use-the-token) for examples and supported values.
 
 ### Conflict-handling strategies
 
-The example above rejects the duplicate by returning the owner's `runId`. You can also handle a conflict in these ways:
+The example above rejects the duplicate by returning the other run's `runId`.
 
-If `getConflict()` returns a run, the current run does not own the token and must not do the work guarded by that token. With a later expiration time, the owner may already be finished. In that case its Hook cannot be resumed, and cancelling the finished run will not expire the token.
-
-**Adopt the owner's result.** Wait for the active run to finish and return its result, so callers cannot tell which run did the work:
+**Adopt the owner's result.** Wait for the active run to finish and return its result:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -184,7 +180,7 @@ export async function processOrder(orderId: string) {
 }
 ```
 
-**Inspect the owner before deciding.** Branch on the owner's state without assuming the current run owns the token:
+**Inspect the owner before deciding.** Branch on its status:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -209,7 +205,7 @@ export async function processOrder(orderId: string) {
 }
 ```
 
-**Signal an active owner instead of doing the work.** With the default expiration behavior, the duplicate run can deliver its input to an owner that is still active. `resumeHook()` can race owner completion, so production code should handle `HookNotFoundError`:
+**Signal an active owner instead of doing the work.** If the other run is still active, the duplicate can send it the input. `resumeHook()` can race the other run finishing, so production code should handle `HookNotFoundError`:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -242,7 +238,7 @@ export async function processOrder(orderId: string, confirmed: boolean) {
 }
 ```
 
-**Supersede the owner.** Newest-wins: cancel the active run, then claim the released token. Cancellation disposes the owner's hooks; the retry loop covers the window where that disposal has not propagated yet:
+**Use the newest run.** With the default expiration, cancel the active run, then retry until its token becomes available:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -260,7 +256,7 @@ export async function processOrderNewestWins(orderId: string) {
 
     const conflict = await request.getConflict();
     if (!conflict) {
-      // Token claimed — this run is now the owner.
+      // This run now owns the token.
       const { confirmed } = await request;
       if (confirmed) {
         await chargeOrder(orderId);
@@ -271,12 +267,12 @@ export async function processOrderNewestWins(orderId: string) {
     await conflict.cancel(); // [!code highlight]
   }
 
-  throw new Error(`Could not claim ${token} after cancelling the owner`);
+  throw new Error(`Token ${token} is still unavailable after cancelling the other run`);
 }
 ```
 
 <Callout type="warn">
-Do not use this newest-wins pattern with `experimental_expires`. Cancelling the owner removes its Hook, but the token stays reserved until it expires. The new run cannot use it before then.
+This pattern does not work with `experimental_expires`: cancelling the old run does not make its token available early.
 </Callout>
 
 If duplicate requests should only reuse the active run without sending data, use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) as an advisory pre-check before calling `start()`. The workflow should still check `hook.getConflict()`, because the lookup and `start()` are not atomic.

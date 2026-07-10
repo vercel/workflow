@@ -32,30 +32,16 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
   token: string;
 
   /**
-   * Returns a promise that resolves with the conflicting {@link Run} if
-   * another Hook already owns this token, including a token kept reserved
-   * after its run ended, or `null` once this Hook has registered.
+   * Returns the {@link Run} already using this token, or `null` when this Hook
+   * registers successfully.
    *
    * Calling `createHook()` alone does not register the hook — registration
    * only happens when the workflow suspends. Awaiting `getConflict()`
-   * suspends the workflow to commit the hook registration, so it can be
-   * used to claim the token (and detect token conflicts early) without
-   * waiting for payload data.
+   * suspends the workflow to commit the hook registration without waiting for
+   * payload data.
    *
-   * When a conflict is detected, the resolved `Run` owns the token. It may
-   * still be active, or its token may remain reserved after it finished. The
-   * duplicate can use its run ID, status, or return value.
-   *
-   * A conflict means this Hook does not own the token. Cancelling the owner
-   * does not transfer ownership or free a retained token. Do not perform
-   * protected work until a new Hook registers without a conflict.
-   *
-   * Note that awaiting the hook's payload (`await hook`) when the token is
-   * already owned by another Hook or reserved by a finished run still rejects with
-   * `HookConflictError`. In the rare case where the conflicting run cannot
-   * be identified (a `hook_conflict` event persisted by an old world that
-   * did not record the owning run's ID), `getConflict()` also rejects with
-   * `HookConflictError` rather than resolving with an incomplete value.
+   * If it returns a run, this Hook was not created. Awaiting the Hook instead
+   * rejects with `HookConflictError`.
    *
    * @example
    * ```ts
@@ -63,9 +49,9 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
    * const conflict = await hook.getConflict();
    * if (conflict) {
    *   // another run already owns this token
-   *   return { dedupedTo: conflict.runId };
+   *   return { status: 'duplicate', runId: conflict.runId };
    * }
-   * // token is now claimed, without waiting for payload data
+   * // this Hook registered without waiting for payload data
    * ```
    */
   getConflict(): Promise<Run<unknown> | null>;
@@ -151,23 +137,21 @@ export interface HookOptions {
   token?: string;
 
   /**
-   * **Experimental.** Sets when this Hook's token expires after its workflow
-   * run ends.
+   * **Experimental.** Sets when another Hook can use this token after the run
+   * ends.
    *
    * Accepts the same values as `sleep()`: a duration string, a number of
    * milliseconds, or an absolute `Date`. Relative durations start when
    * `createHook()` runs, not when the workflow ends.
    *
-   * Expiration never stops an active Hook. If the configured time passes while
-   * the workflow is still running, the token expires when the run ends. After
-   * the run ends, the Hook cannot be resumed. Another Hook using the same token
-   * receives a conflict until the token expires.
+   * The Hook remains active until the workflow ends, even if the configured
+   * time passes first. Another Hook can use the token only after both the run
+   * has ended and the configured time has passed.
    *
-   * Calling `dispose()` (including through `using`) expires the token
+   * Calling `dispose()` (including through `using`) releases the token
    * immediately.
    *
-   * World implementations may ignore this experimental option if they do not
-   * support token expiration.
+   * World implementations may ignore this experimental option.
    *
    * @example
    *
