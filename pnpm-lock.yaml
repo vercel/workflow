@@ -22,8 +22,8 @@ catalogs:
       specifier: 3.2.0
       version: 3.2.0
     '@vercel/queue':
-      specifier: 0.3.1
-      version: 0.3.1
+      specifier: 0.4.0
+      version: 0.4.0
     '@vitest/coverage-v8':
       specifier: ^4.0.18
       version: 4.0.18
@@ -1365,7 +1365,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.3.1
+        version: 0.4.0(@opentelemetry/api@1.9.0)
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1411,7 +1411,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.3.1
+        version: 0.4.0(@opentelemetry/api@1.9.1)
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1524,7 +1524,7 @@ importers:
         version: 3.2.0
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.3.1
+        version: 0.4.0(@opentelemetry/api@1.9.0)
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -9086,6 +9086,15 @@ packages:
   '@vercel/queue@0.3.1':
     resolution: {integrity: sha512-6pjdXyNfdCQnj1nyeB1rPtll/XUhmciyeZJD0rpIUUwmcIfR+utDl6+iFvlHvsBdqAVT8UC6ydObT0v+xldfUQ==}
     engines: {node: '>=20.0.0'}
+
+  '@vercel/queue@0.4.0':
+    resolution: {integrity: sha512-2HctPb2+6Pj1DMxbPohMq574rE9OP3fUAGhwV0R4Qv1FHQIR+qti92G8FGjFMJGUSFxVlWdNwVfgHU2hZlM6Dw==}
+    engines: {node: '>=20.0.0'}
+    peerDependencies:
+      '@opentelemetry/api': ^1.0.0
+    peerDependenciesMeta:
+      '@opentelemetry/api':
+        optional: true
 
   '@vercel/react-router@1.2.6':
     resolution: {integrity: sha512-8+n/roFtLhpkq6dMAXXSWf4N5Uypckh2E8Uxduh+tdE+Z9AG4KXfFzGyHoyFYZqoUh6jgwsiFkDokSAymm4NHg==}
@@ -24667,7 +24676,7 @@ snapshots:
 
   '@ts-morph/common@0.28.1':
     dependencies:
-      minimatch: 10.2.4
+      minimatch: 10.2.5
       path-browserify: 1.0.1
       tinyglobby: 0.2.17
 
@@ -25149,6 +25158,25 @@ snapshots:
       minimatch: 10.2.5
       mixpart: 0.0.6
       picocolors: 1.1.1
+    optional: true
+
+  '@vercel/queue@0.4.0(@opentelemetry/api@1.9.0)':
+    dependencies:
+      '@vercel/oidc': 3.2.0
+      minimatch: 10.2.5
+      mixpart: 0.0.6
+      picocolors: 1.1.1
+    optionalDependencies:
+      '@opentelemetry/api': 1.9.0
+
+  '@vercel/queue@0.4.0(@opentelemetry/api@1.9.1)':
+    dependencies:
+      '@vercel/oidc': 3.2.0
+      minimatch: 10.2.5
+      mixpart: 0.0.6
+      picocolors: 1.1.1
+    optionalDependencies:
+      '@opentelemetry/api': 1.9.1
 
   '@vercel/react-router@1.2.6(@react-router/dev@7.13.1(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.32.0)(react-router@7.13.1(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(terser@5.44.0)(tsx@4.20.6)(typescript@6.0.3)(vite@6.4.1(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))(yaml@2.9.0))(@react-router/node@7.13.1(react-router@7.13.1(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(typescript@6.0.3))(isbot@5.1.35)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)':
     dependencies:
