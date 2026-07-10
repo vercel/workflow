@@ -117,10 +117,24 @@ export const WORKFLOW_QUEUE_TRIGGER = createWorkflowQueueTrigger();
  * Must be read at build time, where the env var gates what is written into
  * the route's `experimentalTriggers` config.
  */
+/**
+ * Whether sequential replays are enabled: `WORKFLOW_SEQUENTIAL_REPLAYS=1`,
+ * or `WORKFLOW_SAFE_MODE=1` when `WORKFLOW_SEQUENTIAL_REPLAYS` is not set
+ * explicitly (safe mode fills the default of every safety-over-performance
+ * flag; an explicit per-flag value always wins). Read at call time.
+ */
+export function isSequentialReplaysEnabled(): boolean {
+  const explicit = process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+  if (explicit !== undefined && explicit !== '') {
+    return explicit === '1';
+  }
+  return process.env.WORKFLOW_SAFE_MODE === '1';
+}
+
 export function getWorkflowQueueTrigger(options?: { namespace?: string }) {
   return {
     ...createWorkflowQueueTrigger(options),
-    ...(process.env.WORKFLOW_SEQUENTIAL_REPLAYS === '1' && {
+    ...(isSequentialReplaysEnabled() && {
       maxConcurrency: 1,
     }),
   };
