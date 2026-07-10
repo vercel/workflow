@@ -14,6 +14,7 @@ export {
 export {
   createWorkflowEntrypointOptionsCode,
   createWorkflowQueueTrigger,
+  getWorkflowQueueTrigger,
   WORKFLOW_QUEUE_TRIGGER,
 } from './constants.js';
 export {
