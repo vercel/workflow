@@ -105,6 +105,7 @@ export async function recreateRunFromExisting(
         deploymentId,
         world,
         specVersion,
+        replayedFromRunId: runId,
         namespace: options.namespace,
       }
     );

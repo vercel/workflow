@@ -1,5 +1,14 @@
 # @workflow/rollup
 
+## 5.0.0-beta.30
+
+### Patch Changes
+
+- [#1947](https://github.com/vercel/workflow/pull/1947) [`25b1509`](https://github.com/vercel/workflow/commit/25b1509e19badb6498927d3fc0d6f23b65329396) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Externalize the optional `@opentelemetry/api` peer in the Rollup/Vite framework builds (SvelteKit, Nitro, Nuxt, Astro, Vite) only when it isn't installed, so a build no longer fails with "failed to resolve import '@opentelemetry/api'". When the peer is present it is bundled/resolved as before, so tracing keeps working — including in self-contained outputs like Nitro's `.output/server`.
+
+- Updated dependencies [[`df7e71d`](https://github.com/vercel/workflow/commit/df7e71de1c8e5407221219235f941c9fb58b6707), [`25b1509`](https://github.com/vercel/workflow/commit/25b1509e19badb6498927d3fc0d6f23b65329396)]:
+  - @workflow/builders@5.0.0-beta.30
+
 ## 5.0.0-beta.29
 
 ### Patch Changes

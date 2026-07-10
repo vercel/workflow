@@ -6,6 +6,7 @@ import {
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  workflowRunIdSchema,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
@@ -90,6 +91,20 @@ export interface StartOptionsBase {
    */
   allowReservedAttributes?: boolean;
 
+  /**
+   * The ID of an existing run this run is being replayed from, if any.
+   *
+   * Recorded on the new run's `executionContext` as `replayedFromRunId` so
+   * tooling (e.g. the dashboard runs list) can show that a run originated as
+   * a replay and link back to its source. Set automatically by
+   * {@link recreateRunFromExisting}; there's usually no reason to pass it
+   * directly.
+   *
+   * Must be a run ID: `wrun_` followed by a 26-char ULID. It's a foreign key
+   * to the source run, so `start()` validates the exact shape and rejects
+   * anything else rather than persist a lineage link that points at garbage.
+   */
+  replayedFromRunId?: string;
   /**
    * Queue namespace of the target deployment. Scopes the workflow queue
    * topic to `__{namespace}_wkf_workflow_*` (e.g. `'eve'`) instead of the
@@ -335,6 +350,19 @@ export async function start<TArgs extends unknown[], TResult>(
           }
         : {};
 
+      // `replayedFromRunId` is a foreign key to the source run; reject anything
+      // that isn't a real run ID so the lineage link can't point at garbage.
+      if (
+        opts.replayedFromRunId !== undefined &&
+        !workflowRunIdSchema.safeParse(opts.replayedFromRunId).success
+      ) {
+        throw new WorkflowRuntimeError(
+          `replayedFromRunId must be a run ID (wrun_<ulid>); received ${JSON.stringify(
+            String(opts.replayedFromRunId).slice(0, 64)
+          )}.`
+        );
+      }
+
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both
       // key derivation and the run_created event. The World implementation
@@ -372,6 +400,9 @@ export async function start<TArgs extends unknown[], TResult>(
         traceCarrier,
         workflowCoreVersion,
         features: { encryption: !!encryptionKey },
+        ...(opts.replayedFromRunId
+          ? { replayedFromRunId: opts.replayedFromRunId }
+          : {}),
       };
 
       // Call events.create (run_created) and queue in parallel.

@@ -12,6 +12,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // Mock version module to avoid missing generated file
 vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
 
+// Stub `start` so recreateRunFromExisting can be tested for the options it
+// forwards without exercising the full run-creation pipeline (serialization,
+// telemetry, queueing).
+vi.mock('./start.js', () => ({ start: vi.fn() }));
+
+// Keep serialization real except for argument hydration, which needs a real
+// serialized payload we don't have in these unit tests.
+vi.mock('../serialization.js', async (importActual) => {
+  const actual = await importActual<typeof import('../serialization.js')>();
+  return { ...actual, hydrateWorkflowArguments: vi.fn().mockResolvedValue([]) };
+});
+
 import { registerSerializationClass } from '../class-serialization.js';
 import {
   dehydrateRunError,
@@ -19,7 +31,8 @@ import {
   hydrateStepReturnValue,
 } from '../serialization.js';
 import { Run } from './run.js';
-import { reenqueueRun, wakeUpRun } from './runs.js';
+import { recreateRunFromExisting, reenqueueRun, wakeUpRun } from './runs.js';
+import { start } from './start.js';
 import { setWorld } from './world.js';
 
 function createMockWorld(
@@ -151,6 +164,31 @@ describe('reenqueueRun', () => {
       '__eve_wkf_workflow_test-workflow',
       { runId: 'wrun_123' },
       expect.anything()
+    );
+  });
+});
+
+describe('recreateRunFromExisting', () => {
+  afterEach(() => {
+    vi.mocked(start).mockReset();
+  });
+
+  it('forwards the source run id to start as replayedFromRunId', async () => {
+    const world = createMockWorld({
+      run: { runId: 'wrun_source', deploymentId: 'deploy_source' },
+    });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    const newRunId = await recreateRunFromExisting(world, 'wrun_source');
+
+    expect(newRunId).toBe('wrun_new');
+    expect(start).toHaveBeenCalledWith(
+      { workflowId: 'test-workflow' },
+      expect.any(Array),
+      expect.objectContaining({
+        replayedFromRunId: 'wrun_source',
+        deploymentId: 'deploy_source',
+      })
     );
   });
 });

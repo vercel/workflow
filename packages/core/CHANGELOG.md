@@ -1,5 +1,31 @@
 # @workflow/core
 
+## 5.0.0-beta.30
+
+### Minor Changes
+
+- [#2850](https://github.com/vercel/workflow/pull/2850) [`f28150c`](https://github.com/vercel/workflow/commit/f28150c62667f069dbe3c47e83102fef499ab92b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Report step progress alongside step-to-step overhead latency telemetry.
+
+- [#2872](https://github.com/vercel/workflow/pull/2872) [`36c63af`](https://github.com/vercel/workflow/commit/36c63af4a88adc4f404decc54b1f2130d444d264) Thanks [@mitul-s](https://github.com/mitul-s)! - Record the source run on replays: `recreateRunFromExisting` now stamps `replayedFromRunId` into the new run's `executionContext` (and `start` accepts a matching option) so tooling can surface a run as a replay and link back to its origin.
+
+### Patch Changes
+
+- [#2790](https://github.com/vercel/workflow/pull/2790) [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Centralize workflow event type classifiers and event-data payload field helpers.
+
+- [#2687](https://github.com/vercel/workflow/pull/2687) [`9958424`](https://github.com/vercel/workflow/commit/9958424f22903299e3fe556ab298bd3aaa45c6ac) Thanks [@Osamaali313](https://github.com/Osamaali313)! - Fix `extractStreamIds` overflowing the stack on circular references. The hydrated observability data it walks comes from devalue, which preserves circular and repeated references, so a step result containing a cycle would crash run inspection (`wf inspect` and the web dashboard) with a `RangeError`. The traversal now tracks visited containers and skips cycles.
+
+- [#2848](https://github.com/vercel/workflow/pull/2848) [`6603628`](https://github.com/vercel/workflow/commit/66036282b5d18c9bef4dea4275782bc977842606) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix duplicate inline step execution when a hook or wait wakes a run while the step is still running (#2780). The lazy `step_started` now records the owning queue message ID, and wake replays schedule a delayed backstop for in-flight inline steps instead of immediately re-dispatching them. Disable with `WORKFLOW_INLINE_OWNERSHIP=0`.
+
+- [#2874](https://github.com/vercel/workflow/pull/2874) [`48fcc4e`](https://github.com/vercel/workflow/commit/48fcc4efcc7e6c639c51ce4f8971d4d3b1ebdd23) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add a `namespace` option to `start()`, `recreateRunFromExisting()`, `reenqueueRun()`, and `wakeUpRun()` for targeting deployments with namespaced queue topics, and make `healthCheck()` respect its timeout when the stream read hangs.
+
+- [#2857](https://github.com/vercel/workflow/pull/2857) [`2c6ee61`](https://github.com/vercel/workflow/commit/2c6ee614b50d12ed850e7589cf296150b2143a56) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add stream latency to OTEL spans
+
+- Updated dependencies [[`f28150c`](https://github.com/vercel/workflow/commit/f28150c62667f069dbe3c47e83102fef499ab92b), [`84df8f3`](https://github.com/vercel/workflow/commit/84df8f3a05bb52ae4a8c45c9238b91e6958f300b), [`4dce2ae`](https://github.com/vercel/workflow/commit/4dce2aeca283d3aee152dab0082563373ac6b633), [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9), [`6603628`](https://github.com/vercel/workflow/commit/66036282b5d18c9bef4dea4275782bc977842606), [`2c6ee61`](https://github.com/vercel/workflow/commit/2c6ee614b50d12ed850e7589cf296150b2143a56)]:
+  - @workflow/world@5.0.0-beta.18
+  - @workflow/world-vercel@5.0.0-beta.26
+  - @workflow/world-local@5.0.0-beta.26
+  - @workflow/errors@5.0.0-beta.10
+
 ## 5.0.0-beta.29
 
 ### Minor Changes

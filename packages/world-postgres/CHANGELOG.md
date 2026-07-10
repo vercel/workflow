@@ -1,5 +1,18 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.24
+
+### Patch Changes
+
+- [#2876](https://github.com/vercel/workflow/pull/2876) [`84df8f3`](https://github.com/vercel/workflow/commit/84df8f3a05bb52ae4a8c45c9238b91e6958f300b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Update `@vercel/queue` from 0.3.1 to 0.4.0
+
+- [#2790](https://github.com/vercel/workflow/pull/2790) [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Centralize workflow event type classifiers and event-data payload field helpers.
+
+- Updated dependencies [[`f28150c`](https://github.com/vercel/workflow/commit/f28150c62667f069dbe3c47e83102fef499ab92b), [`84df8f3`](https://github.com/vercel/workflow/commit/84df8f3a05bb52ae4a8c45c9238b91e6958f300b), [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9), [`6603628`](https://github.com/vercel/workflow/commit/66036282b5d18c9bef4dea4275782bc977842606)]:
+  - @workflow/world@5.0.0-beta.18
+  - @workflow/world-local@5.0.0-beta.26
+  - @workflow/errors@5.0.0-beta.10
+
 ## 5.0.0-beta.23
 
 ### Patch Changes

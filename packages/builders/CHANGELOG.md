@@ -1,5 +1,19 @@
 # @workflow/builders
 
+## 5.0.0-beta.30
+
+### Patch Changes
+
+- [#2853](https://github.com/vercel/workflow/pull/2853) [`df7e71d`](https://github.com/vercel/workflow/commit/df7e71de1c8e5407221219235f941c9fb58b6707) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Use the Windows-safe generated-file writer for step registration output.
+
+- [#1947](https://github.com/vercel/workflow/pull/1947) [`25b1509`](https://github.com/vercel/workflow/commit/25b1509e19badb6498927d3fc0d6f23b65329396) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Externalize the optional `@opentelemetry/api` peer in the Rollup/Vite framework builds (SvelteKit, Nitro, Nuxt, Astro, Vite) only when it isn't installed, so a build no longer fails with "failed to resolve import '@opentelemetry/api'". When the peer is present it is bundled/resolved as before, so tracing keeps working — including in self-contained outputs like Nitro's `.output/server`.
+
+- Updated dependencies [[`f28150c`](https://github.com/vercel/workflow/commit/f28150c62667f069dbe3c47e83102fef499ab92b), [`84df8f3`](https://github.com/vercel/workflow/commit/84df8f3a05bb52ae4a8c45c9238b91e6958f300b), [`4dce2ae`](https://github.com/vercel/workflow/commit/4dce2aeca283d3aee152dab0082563373ac6b633), [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9), [`9958424`](https://github.com/vercel/workflow/commit/9958424f22903299e3fe556ab298bd3aaa45c6ac), [`6603628`](https://github.com/vercel/workflow/commit/66036282b5d18c9bef4dea4275782bc977842606), [`48fcc4e`](https://github.com/vercel/workflow/commit/48fcc4efcc7e6c639c51ce4f8971d4d3b1ebdd23), [`36c63af`](https://github.com/vercel/workflow/commit/36c63af4a88adc4f404decc54b1f2130d444d264), [`2c6ee61`](https://github.com/vercel/workflow/commit/2c6ee614b50d12ed850e7589cf296150b2143a56)]:
+  - @workflow/core@5.0.0-beta.30
+  - @workflow/world-vercel@5.0.0-beta.26
+  - @workflow/world-local@5.0.0-beta.26
+  - @workflow/errors@5.0.0-beta.10
+
 ## 5.0.0-beta.29
 
 ### Patch Changes
