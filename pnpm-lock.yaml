@@ -456,6 +456,9 @@ importers:
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      sharp:
+        specifier: 0.34.5
+        version: 0.34.5
 
   packages/cli:
     dependencies:

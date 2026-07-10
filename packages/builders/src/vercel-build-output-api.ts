@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { pluralize } from '@workflow/utils';
 import { BaseBuilder } from './base-builder.js';
 import { WORKFLOW_QUEUE_TRIGGER } from './constants.js';
 import { copyRuntimeAssets } from './runtime-assets.js';
@@ -33,16 +32,11 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     });
 
     assert(stepsMetafile, 'Vercel Build Output API requires a steps metafile');
-    const copiedAssets = await copyRuntimeAssets({
+    await copyRuntimeAssets({
       functionDir: workflowsFuncDir,
       workingDir: this.config.workingDir,
       metafile: stepsMetafile,
     });
-    if (copiedAssets > 0) {
-      this.logBaseBuilderInfo(
-        `Copied ${copiedAssets} traced runtime ${pluralize('asset', 'assets', copiedAssets)} into the workflow function`
-      );
-    }
 
     // Create package.json and .vc-config.json for combined function
     await this.createPackageJson(workflowsFuncDir, 'module');

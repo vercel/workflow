@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, readFile, realpath, stat } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, realpath } from 'node:fs/promises';
 import {
   basename,
   dirname,
@@ -32,7 +32,7 @@ const GENERATED_FUNCTION_FILES = new Set([
 const SECRET_FILE_NAMES = new Set(['.env', '.npmrc']);
 const SECRET_FILE_EXTENSIONS = new Set(['.key', '.pem']);
 
-const TRANSPILE_LOADERS: Record<string, 'ts' | 'tsx' | 'jsx'> = {
+const TRANSPILE_LOADERS: Partial<Record<string, 'ts' | 'tsx' | 'jsx'>> = {
   '.ts': 'ts',
   '.mts': 'ts',
   '.cts': 'ts',
@@ -65,13 +65,16 @@ function getPackageDir(filePath: string): string | undefined {
   const markerIndex = normalized.lastIndexOf(marker);
   if (markerIndex === -1) return;
 
-  const segments = normalized.slice(markerIndex + marker.length).split('/');
-  const packageName =
-    segments[0]?.startsWith('@') || segments[0]?.startsWith('.')
-      ? segments.slice(0, 2)
-      : segments.slice(0, 1);
-  assert(packageName.length > 0, `Invalid node_modules path: ${filePath}`);
-  return join(normalized.slice(0, markerIndex + marker.length), ...packageName);
+  const [name, nestedName] = normalized
+    .slice(markerIndex + marker.length)
+    .split('/');
+  assert(name, `Invalid node_modules path: ${filePath}`);
+  const packageDir = normalized.slice(0, markerIndex + marker.length);
+  if (!name.startsWith('@') && !name.startsWith('.')) {
+    return join(packageDir, name);
+  }
+  assert(nestedName, `Invalid scoped package path: ${filePath}`);
+  return join(packageDir, name, nestedName);
 }
 
 function isRuntimeAsset(
@@ -91,11 +94,12 @@ function isRuntimeAsset(
         assert.fail(`Unknown nft trace reason: ${String(reasonType)}`);
     }
   }
+  const packageDir = getPackageDir(file);
   return (
     isNativeLibrary(file) ||
     isSecretFile(file) ||
     reasonTypes.some((type) => type === 'asset' || type === 'sharedlib') ||
-    nativePackageDirs.has(getPackageDir(file) ?? '')
+    (packageDir !== undefined && nativePackageDirs.has(packageDir))
   );
 }
 
@@ -188,9 +192,6 @@ async function getRuntimeFiles(
         `Refusing to deploy secret-like runtime asset: ${sourcePath}`
       );
     }
-    const sourceStats = await stat(sourcePath);
-    if (sourceStats.isDirectory()) continue;
-    assert(sourceStats.isFile(), `Runtime asset is not a file: ${sourcePath}`);
 
     runtimeFiles.push({
       sourcePath,
@@ -218,7 +219,7 @@ async function copyRuntimeFiles(
   runtimeFiles: RuntimeFile[],
   functionDir: string,
   workingDir: string
-): Promise<number> {
+): Promise<void> {
   const copied = new Map<string, string>();
 
   for (const runtimeFile of runtimeFiles) {
@@ -258,8 +259,6 @@ async function copyRuntimeFiles(
       copied.set(outputPath, sourcePath);
     }
   }
-
-  return copied.size;
 }
 
 export async function copyRuntimeAssets({
@@ -270,7 +269,7 @@ export async function copyRuntimeAssets({
   functionDir: string;
   workingDir: string;
   metafile: Metafile;
-}): Promise<number> {
+}): Promise<void> {
   const entries = Object.keys(metafile.inputs)
     .map((input) => resolve(workingDir, input))
     .filter(existsSync);
@@ -288,5 +287,5 @@ export async function copyRuntimeAssets({
     buildLogger.debug(`Runtime asset trace warning: ${warning.message}`);
   }
   const runtimeFiles = await getRuntimeFiles(trace, traceBase);
-  return copyRuntimeFiles(runtimeFiles, functionDir, realWorkingDir);
+  await copyRuntimeFiles(runtimeFiles, functionDir, realWorkingDir);
 }

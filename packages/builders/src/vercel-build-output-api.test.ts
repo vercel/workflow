@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -14,6 +15,7 @@ const BUILD_TIMEOUT = 120_000;
 const engineFile = 'libquery_engine-darwin.dylib.node';
 const engineContents = 'fake native query engine\n';
 const schemaContents = 'model Fake { id Int @id }\n';
+const require = createRequire(import.meta.url);
 
 async function write(path: string, contents: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -38,6 +40,26 @@ function createBuilder(workingDir: string): VercelBuildOutputAPIBuilder {
     suppressCreateManifestLogs: true,
   };
   return new VercelBuildOutputAPIBuilder(config);
+}
+
+function executeStep(workingDir: string, stepName: string): string {
+  const bundleUrl = pathToFileURL(
+    join(getFlowFuncDir(workingDir), 'index.mjs')
+  ).href;
+  const output = execFileSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `await import(${JSON.stringify(bundleUrl)});
+const steps = globalThis[Symbol.for('@workflow/core//registeredSteps')];
+const step = [...steps].find(([id]) => id.endsWith(${JSON.stringify(`//${stepName}`)}))?.[1];
+if (!step) throw new Error(${JSON.stringify(`${stepName} step was not registered`)});
+process.stdout.write(JSON.stringify(await step()));`,
+    ],
+    { encoding: 'utf8' }
+  );
+  return JSON.parse(output);
 }
 
 /**
@@ -187,23 +209,9 @@ describe('VercelBuildOutputAPIBuilder traced runtime assets', () => {
       expect(
         await readFile(join(getFlowFuncDir(workingDir), engineFile), 'utf8')
       ).toBe(engineContents);
-      const bundleUrl = pathToFileURL(
-        join(getFlowFuncDir(workingDir), 'index.mjs')
-      ).href;
-      const output = execFileSync(
-        process.execPath,
-        [
-          '--input-type=module',
-          '-e',
-          `await import(${JSON.stringify(bundleUrl)});
-const steps = globalThis[Symbol.for('@workflow/core//registeredSteps')];
-const step = [...steps].find(([id]) => id.endsWith('//readEngine'))?.[1];
-if (!step) throw new Error('readEngine step was not registered');
-process.stdout.write(JSON.stringify(await step()));`,
-        ],
-        { encoding: 'utf8' }
+      expect(executeStep(workingDir, 'readEngine')).toBe(
+        engineContents + schemaContents
       );
-      expect(JSON.parse(output)).toBe(engineContents + schemaContents);
     }
   );
 
@@ -279,75 +287,42 @@ export async function reportWorkflow(): Promise<string> {
   );
 
   it(
-    'executes a dynamically loaded native package',
+    'executes sharp with its traced native packages (#1003)',
     { timeout: BUILD_TIMEOUT },
     async () => {
       await writeWorkflowRuntimeStub(workingDir);
-      await write(
-        join(workingDir, 'node_modules/native-loader/package.json'),
-        JSON.stringify({ name: 'native-loader', main: 'index.js' })
+      const sharpPackageDir = dirname(dirname(require.resolve('sharp')));
+      symlinkSync(
+        sharpPackageDir,
+        join(workingDir, 'node_modules/sharp'),
+        process.platform === 'win32' ? 'junction' : 'dir'
       );
       await write(
-        join(workingDir, 'node_modules/native-loader/index.js'),
-        `const { createRequire } = require('node:module');
-module.exports = createRequire(__filename)('@fake/native-' + process.platform);
-`
-      );
-      const nativePackage = join(
-        workingDir,
-        'node_modules/@fake',
-        `native-${process.platform}`
-      );
-      await write(
-        join(nativePackage, 'package.json'),
-        JSON.stringify({
-          name: `@fake/native-${process.platform}`,
-          exports: './index.js',
-        })
-      );
-      await write(
-        join(nativePackage, 'index.js'),
-        `const { readFileSync } = require('node:fs');
-const { join } = require('node:path');
-exports.readBinding = () => readFileSync(join(__dirname, 'binding.node'), 'utf8');
-`
-      );
-      await write(join(nativePackage, 'binding.node'), 'native binding\n');
-      await write(
-        join(workingDir, 'src/workflows/native.ts'),
-        `import { readBinding } from 'native-loader';
+        join(workingDir, 'src/workflows/sharp.ts'),
+        `import sharp from 'sharp';
 
-export async function readNativeBinding(): Promise<string> {
+export async function resizeImage(): Promise<string> {
   'use step';
-  return readBinding();
+  const { data, info } = await sharp({
+    create: {
+      width: 2,
+      height: 2,
+      channels: 4,
+      background: '#ff0000',
+    },
+  }).png().toBuffer({ resolveWithObject: true });
+  return info.width + 'x' + info.height + ':' + data.subarray(1, 4).toString();
 }
 
-export async function nativeWorkflow(): Promise<string> {
+export async function sharpWorkflow(): Promise<string> {
   'use workflow';
-  return readNativeBinding();
+  return resizeImage();
 }
 `
       );
 
       await createBuilder(workingDir).build();
-
-      const bundleUrl = pathToFileURL(
-        join(getFlowFuncDir(workingDir), 'index.mjs')
-      ).href;
-      const output = execFileSync(
-        process.execPath,
-        [
-          '--input-type=module',
-          '-e',
-          `await import(${JSON.stringify(bundleUrl)});
-const steps = globalThis[Symbol.for('@workflow/core//registeredSteps')];
-const step = [...steps].find(([id]) => id.endsWith('//readNativeBinding'))?.[1];
-if (!step) throw new Error('readNativeBinding step was not registered');
-process.stdout.write(JSON.stringify(await step()));`,
-        ],
-        { encoding: 'utf8' }
-      );
-      expect(JSON.parse(output)).toBe('native binding\n');
+      expect(executeStep(workingDir, 'resizeImage')).toBe('2x2:PNG');
     }
   );
 

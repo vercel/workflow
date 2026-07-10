@@ -36,7 +36,8 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "@workflow/tsconfig": "workspace:*"
+    "@workflow/tsconfig": "workspace:*",
+    "sharp": "0.34.5"
   },
   "dependencies": {
     "@swc/core": "catalog:",

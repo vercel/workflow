@@ -1179,10 +1179,8 @@ export const __steps_registered = true;
       : this.getEsmRequireBanner(format);
 
     const esbuildCtx = await esbuild.context({
-      // Skip the metafile in watch mode: it would be regenerated on every
-      // dev rebuild but is only read by production builds that trace
-      // runtime assets.
-      metafile: !this.config.watch,
+      // Only the Vercel Build Output builder traces bundled runtime assets.
+      metafile: this.config.buildTarget === 'vercel-build-output-api',
       banner: {
         js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${importMetaBanner}${esmRequireBanner}`,
       },
