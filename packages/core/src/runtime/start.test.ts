@@ -800,7 +800,8 @@ describe('start', () => {
     });
 
     it('records replayedFromRunId in executionContext when provided', async () => {
-      await start(validWorkflow, [], { replayedFromRunId: 'wrun_source' });
+      const sourceRunId = 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+      await start(validWorkflow, [], { replayedFromRunId: sourceRunId });
 
       expect(mockEventsCreate).toHaveBeenCalledWith(
         expect.stringMatching(/^wrun_/),
@@ -808,7 +809,7 @@ describe('start', () => {
           eventType: 'run_created',
           eventData: expect.objectContaining({
             executionContext: expect.objectContaining({
-              replayedFromRunId: 'wrun_source',
+              replayedFromRunId: sourceRunId,
             }),
           }),
         }),
@@ -828,16 +829,16 @@ describe('start', () => {
     it('rejects a replayedFromRunId without the wrun_ prefix', async () => {
       await expect(
         start(validWorkflow, [], { replayedFromRunId: 'not-a-run-id' })
-      ).rejects.toThrow(/replayedFromRunId must be a "wrun_"-prefixed run ID/);
+      ).rejects.toThrow(/replayedFromRunId must be a run ID/);
       expect(mockEventsCreate).not.toHaveBeenCalled();
     });
 
-    it('rejects a replayedFromRunId that exceeds the length cap', async () => {
+    it('rejects a wrun_-prefixed value whose body is not a valid ULID', async () => {
       await expect(
         start(validWorkflow, [], {
           replayedFromRunId: `wrun_${'x'.repeat(300)}`,
         })
-      ).rejects.toThrow(/at most 256 characters/);
+      ).rejects.toThrow(/replayedFromRunId must be a run ID/);
       expect(mockEventsCreate).not.toHaveBeenCalled();
     });
 
@@ -847,7 +848,7 @@ describe('start', () => {
           // Types forbid this, but JS callers can still pass it.
           replayedFromRunId: 12345 as unknown as string,
         })
-      ).rejects.toThrow(/replayedFromRunId must be a "wrun_"-prefixed run ID/);
+      ).rejects.toThrow(/replayedFromRunId must be a run ID/);
       expect(mockEventsCreate).not.toHaveBeenCalled();
     });
   });

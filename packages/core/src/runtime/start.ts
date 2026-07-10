@@ -6,6 +6,7 @@ import {
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  workflowRunIdSchema,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
@@ -99,9 +100,9 @@ export interface StartOptionsBase {
    * {@link recreateRunFromExisting}; there's usually no reason to pass it
    * directly.
    *
-   * Must be a run ID: a `wrun_`-prefixed string of at most 256 characters.
-   * It is persisted verbatim on the size-capped run item, so `start()`
-   * rejects anything else to keep the option from being misused to bloat it.
+   * Must be a run ID: `wrun_` followed by a 26-char ULID. It's a foreign key
+   * to the source run, so `start()` validates the exact shape and rejects
+   * anything else rather than persist a lineage link that points at garbage.
    */
   replayedFromRunId?: string;
   /**
@@ -349,25 +350,17 @@ export async function start<TArgs extends unknown[], TResult>(
           }
         : {};
 
-      // `replayedFromRunId` is stamped verbatim into `executionContext`, which
-      // is persisted on the (size-capped) run item. It's meant to be a run ID
-      // (~31 chars), so reject anything that isn't a short `wrun_`-prefixed
-      // string up front rather than let the option be misused to bloat it.
-      if (opts.replayedFromRunId !== undefined) {
-        const id: unknown = opts.replayedFromRunId;
-        if (
-          typeof id !== 'string' ||
-          !id.startsWith('wrun_') ||
-          id.length > 256
-        ) {
-          const received =
-            typeof id === 'string'
-              ? `${JSON.stringify(id.slice(0, 64))} (length ${id.length})`
-              : `a ${typeof id} value`;
-          throw new WorkflowRuntimeError(
-            `replayedFromRunId must be a "wrun_"-prefixed run ID of at most 256 characters; received ${received}.`
-          );
-        }
+      // `replayedFromRunId` is a foreign key to the source run; reject anything
+      // that isn't a real run ID so the lineage link can't point at garbage.
+      if (
+        opts.replayedFromRunId !== undefined &&
+        !workflowRunIdSchema.safeParse(opts.replayedFromRunId).success
+      ) {
+        throw new WorkflowRuntimeError(
+          `replayedFromRunId must be a run ID (wrun_<ulid>); received ${JSON.stringify(
+            String(opts.replayedFromRunId).slice(0, 64)
+          )}.`
+        );
       }
 
       // Resolve encryption key for the new run. The runId has already been

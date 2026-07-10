@@ -125,6 +125,8 @@ export {
   DEFAULT_TIMESTAMP_THRESHOLD_PAST_MS,
   ulidToDate,
   validateUlidTimestamp,
+  workflowRunIdSchema,
 } from './ulid.js';
+export type { WorkflowRunId } from './ulid.js';
 export type * from './waits.js';
 export { WaitSchema, WaitStatusSchema } from './waits.js';
