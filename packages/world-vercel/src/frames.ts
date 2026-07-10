@@ -118,15 +118,22 @@ export async function* decodeFrames(
     // Release the source when the consumer stops before EOF (early
     // break/return): an unconsumed body pins its undici socket out of the
     // connection pool. No-op once the stream is already drained.
-    await closeQuietly(() => chunks.return?.());
+    //
+    // Fire-and-forget, NOT awaited: on a service-backed World this cancel
+    // can hit the network (an H2 stream reset, or an H1 socket teardown),
+    // and awaiting it here would block every early-exit caller (getEventV4,
+    // every replay's list read) on that round-trip. Awaiting it previously
+    // hung indefinitely on the Next.js Vercel Function lanes specifically —
+    // same class of bug as the abort-stream reader in #2807.
+    closeQuietly(() => chunks.return?.());
   }
 }
 
-/** Best-effort source cleanup, safe to run from a `finally`: swallows errors
- *  so cleanup can't mask the original outcome. */
-async function closeQuietly(close: () => unknown): Promise<void> {
+/** Best-effort source cleanup, safe to run detached from a `finally`:
+ *  swallows errors so cleanup can't mask the original outcome. */
+function closeQuietly(close: () => unknown): void {
   try {
-    await close();
+    void Promise.resolve(close()).catch(() => {});
   } catch {
     // best-effort
   }
@@ -145,6 +152,7 @@ async function* readerToIterator(
     }
   } finally {
     // Cancel on early exit so the socket is released, not just unlocked.
-    await closeQuietly(() => reader.cancel());
+    // Fire-and-forget — see closeQuietly's call site above.
+    closeQuietly(() => reader.cancel());
   }
 }
