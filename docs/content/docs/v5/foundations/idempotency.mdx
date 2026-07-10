@@ -151,7 +151,7 @@ Calling `resumeHook()` first avoids starting a duplicate after the Hook exists. 
 
 By default, the token becomes reusable when the workflow ends. Set `experimental_retention` to keep it reserved for late duplicate requests. The Hook itself is still removed and cannot be resumed. See [`createHook()` token retention](/docs/api-reference/workflow/create-hook#keep-a-token-reserved-after-the-run-ends) for examples and supported deadline formats.
 
-Retention only reserves the token. It does not save the workflow's result. While Workflow still stores the original run, a duplicate can read `conflict.returnValue`. If the result must remain available after that run is deleted, save it in your own database under the same key, such as the order ID.
+`experimental_retention` stops another run from using the token. It does not cache what the first run returned. A duplicate can read `conflict.returnValue` only while the first run is still stored. If callers need that result after old runs are deleted, save it in your own database under the same key, such as the order ID.
 
 ### Conflict-handling strategies
 
