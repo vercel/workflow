@@ -105,11 +105,40 @@ model. The rules are chosen so the log alone is sufficient:
 
 ## Why ownership requires a lease
 
-Ownership cannot be unconditional. Suppose replays deferred to the owner forever: an owner
-that dies *and exhausts its redelivery budget* (poison delivery, queue retention limits,
-operator interference) leaves a stamped, non-terminal step that no message will ever
-drive. Every future wake would defer to a ghost. Unbounded ownership converts "duplicate
-execution" into "permanently wedged run" — a strictly worse failure mode.
+Ownership cannot be unconditional. Note first what the lease is *not* for: an owner that
+crash-loops through the SDK's delivery budget does not wedge the run even without one —
+the flow handler fails the run when it receives an over-budget delivery
+(`metadata.attempt > maxQueueDeliveries`). The lease exists because that check, and owner
+recovery itself, both depend on assumptions the World contract does not actually promise:
+
+- **Owner-message loss the SDK never observes.** The exhaustion check only fires if the
+  queue *delivers* the over-budget attempt. At-least-once doesn't guarantee that: a
+  queue-side redrive policy can dead-letter the message below the SDK's budget (a
+  community SQS world with a small `maxReceiveCount`), retention can expire it, an
+  operator can purge it. The run is then still `running`, the step stamped and
+  non-terminal, and no message exists. With unbounded ownership every future wake defers
+  to a ghost — a permanent wedge; with the lease, the already-armed backstop (or the
+  first wake after expiry) recovers the step.
+- **Worlds with unstable message IDs — there the lease is the *entire* recovery
+  mechanism.** If a queue mints a fresh ID per delivery, the owner check never matches,
+  including on the crashed owner's own redelivery. Unbounded ownership would defer
+  forever to a stamp no delivery can ever match, while each deferring replay acks its own
+  message — the run drains to zero messages while still `running`. The lease is what
+  makes the graceful-degradation claim in the Queue contract true.
+- **Insurance on the ack invariant.** Correctness leans on "no path acks the owning
+  message while an owned step is non-terminal" (see the decision-table invariants). That
+  is an audited property of today's code, not of the contract; a future refactor or a
+  queue implementation bug could violate it. The lease caps the cost of any such bug at
+  one bounded stall instead of a permanent wedge.
+- **Failure granularity for poison steps.** Even on the well-behaved exhaustion path,
+  lease expiry lets a poison step execute and fail on the background path — a
+  *step-level*, `catch`-able failure the workflow can handle. Unbounded ownership funnels
+  the same poison into run-level "exceeded max deliveries", which kills the whole run
+  uncatchably, and only after the full backed-off delivery budget.
+
+In short: unbounded ownership is a bet that message-ID stability, queue delivery
+guarantees, and the ack invariant all hold, forever, on every World. The lease caps the
+cost of losing any of those bets at a single bounded stall.
 
 So ownership is honored only for a bounded window: `leaseRemaining = min(lease, max(0,
 lastStartedAt + lease − now))`, anchored at the latest `step_started`'s server-assigned
