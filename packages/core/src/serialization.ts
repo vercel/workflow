@@ -84,7 +84,7 @@ import {
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
 import * as Attr from './telemetry/semantic-conventions.js';
-import { getActiveSpan } from './telemetry.js';
+import { getActiveSpan, getSpanKind, recordElapsedSpan } from './telemetry.js';
 import { getAbortStreamId } from './util.js';
 import { WorkflowAbortSignal } from './workflow/abort-controller.js';
 
@@ -552,6 +552,33 @@ export function getByteUnframingStream(): TransformStream<
   });
 }
 
+/**
+ * Emit the client-observed end-to-end time-to-first-chunk span for a live read:
+ * read dispatch (`startEpochMs`) → the first non-empty chunk reaching the
+ * reader, including the network hop. Fire-and-forget; no-op without OTEL.
+ */
+function recordReadTimeToFirstChunk(
+  startEpochMs: number,
+  runId: string,
+  name: string,
+  startIndex?: number
+): void {
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.read', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.operation': 'read',
+        'workflow.stream.read.ttfc_ms': Date.now() - startEpochMs,
+        ...(typeof startIndex === 'number'
+          ? { 'workflow.stream.start_index': startIndex }
+          : {}),
+      },
+    });
+  })();
+}
+
 export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
   #reader?: ReadableStreamDefaultReader<Uint8Array>;
 
@@ -559,6 +586,13 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
     if (typeof name !== 'string' || name.length === 0) {
       throw new WorkflowRuntimeError(`"name" is required, got "${name}"`);
     }
+    // Client-observed time-to-first-chunk state. `readStart` is stamped when the
+    // reader starts consuming (first pull → the read dispatch); the span is
+    // emitted once, when the first non-empty chunk reaches the reader. So its
+    // duration is the end-to-end TTFC including the network hop. No-op without
+    // an OpenTelemetry SDK registered.
+    let readStart: number | undefined;
+    let firstChunkReported = false;
     super({
       // @ts-expect-error Not sure why TypeScript is complaining about this
       type: 'bytes',
@@ -566,6 +600,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
       pull: async (controller) => {
         let reader = this.#reader;
         if (!reader) {
+          if (readStart === undefined) readStart = Date.now();
           const world = await getWorldLazy();
           const stream = await world.streams.get(runId, name, startIndex);
           reader = this.#reader = stream.getReader();
@@ -580,6 +615,17 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
           this.#reader = undefined;
           controller.close();
         } else {
+          // The server flushes a leading zero-length chunk (v3+) to commit
+          // response headers before any data; skip empties so TTFC measures to
+          // the first real chunk.
+          if (
+            !firstChunkReported &&
+            result.value.byteLength > 0 &&
+            readStart !== undefined
+          ) {
+            firstChunkReported = true;
+            recordReadTimeToFirstChunk(readStart, runId, name, startIndex);
+          }
           // Forward raw bytes; encryption/decryption is handled at the
           // framing level by getSerializeStream/getDeserializeStream.
           controller.enqueue(result.value);
