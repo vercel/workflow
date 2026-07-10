@@ -3,8 +3,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { experimental_reportObservabilityEvent } from './report-observability-event.js';
 import { contextStorage, type StepContext } from './step/context-storage.js';
 
+const waitUntilPromises: Promise<unknown>[] = [];
+
+vi.mock('@vercel/functions', () => ({
+  waitUntil: vi.fn((promise: Promise<unknown>) => {
+    waitUntilPromises.push(promise);
+  }),
+}));
+
 const WORLD_CACHE = Symbol.for('@workflow/world//cache');
 const globals = globalThis as Record<symbol, unknown>;
+
+async function flushWaitUntil(): Promise<void> {
+  await vi.waitFor(() => expect(waitUntilPromises.length).toBeGreaterThan(0));
+  await Promise.all(waitUntilPromises.splice(0));
+}
 
 function stepContext(runId = 'run_123'): StepContext {
   return {
@@ -30,6 +43,7 @@ describe('experimental_reportObservabilityEvent', () => {
 
   beforeEach(() => {
     originalWorld = globals[WORLD_CACHE];
+    waitUntilPromises.length = 0;
   });
 
   afterEach(() => {
@@ -43,12 +57,12 @@ describe('experimental_reportObservabilityEvent', () => {
   });
 
   it('no-ops outside workflow context', async () => {
-    await expect(
+    expect(
       experimental_reportObservabilityEvent({
         type: 'action.result',
         data: { status: 'failed' },
       })
-    ).resolves.toBeUndefined();
+    ).toBeUndefined();
   });
 
   it('posts event through an observability-capable world', async () => {
@@ -65,6 +79,7 @@ describe('experimental_reportObservabilityEvent', () => {
         meta: { at: '2026-01-01T00:00:00.000Z' },
       })
     );
+    await flushWaitUntil();
 
     expect(reportEvent).toHaveBeenCalledWith('run_123', {
       event: {
@@ -79,13 +94,14 @@ describe('experimental_reportObservabilityEvent', () => {
   it('no-ops when the world has no observability reporter', async () => {
     globals[WORLD_CACHE] = { specVersion: SPEC_VERSION_CURRENT };
 
-    await expect(
+    expect(
       contextStorage.run(stepContext(), () =>
         experimental_reportObservabilityEvent({
           type: 'action.result',
           data: { status: 'failed' },
         })
       )
-    ).resolves.toBeUndefined();
+    ).toBeUndefined();
+    await flushWaitUntil();
   });
 });
