@@ -1,3 +1,7 @@
+import {
+  createWorkflowBaseUrl,
+  createWorkflowHealthEndpoint,
+} from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import { once } from './util.js';
 
@@ -42,6 +46,14 @@ export const config = once<Config>(() => {
   return { dataDir, baseUrl };
 });
 
+export function resolveDirectBaseUrl(config: Partial<Config>): string {
+  return (
+    config.baseUrl ??
+    process.env.WORKFLOW_LOCAL_BASE_URL ??
+    createWorkflowBaseUrl('http://localhost')
+  );
+}
+
 /**
  * Resolves the base URL for queue requests following the priority order:
  * 1. config.baseUrl (highest priority - full override from args)
@@ -62,16 +74,18 @@ export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
   }
 
   if (typeof config.port === 'number') {
-    return `http://localhost:${config.port}`;
+    return createWorkflowBaseUrl(`http://localhost:${config.port}`);
   }
 
   if (process.env.PORT) {
-    return `http://localhost:${process.env.PORT}`;
+    return createWorkflowBaseUrl(`http://localhost:${process.env.PORT}`);
   }
 
-  const detectedPort = await getWorkflowPort();
+  const detectedPort = await getWorkflowPort({
+    endpoint: createWorkflowHealthEndpoint(),
+  });
   if (detectedPort) {
-    return `http://localhost:${detectedPort}`;
+    return createWorkflowBaseUrl(`http://localhost:${detectedPort}`);
   }
 
   throw new Error('Unable to resolve base URL for workflow queue.');

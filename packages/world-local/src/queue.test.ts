@@ -1,3 +1,4 @@
+import { setWorkflowBasePath } from '@workflow/utils';
 import type { StepInvokePayload } from '@workflow/world';
 import { MessageId, ValidQueueName } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -48,6 +49,7 @@ describe('queue timeout re-enqueue', () => {
 
   afterEach(async () => {
     await localQueue.close();
+    setWorkflowBasePath(undefined);
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -165,6 +167,24 @@ describe('queue timeout re-enqueue', () => {
     });
   });
 
+  it('uses basePath when delivering to direct in-process handlers', async () => {
+    await localQueue.close();
+    localQueue = createQueue({});
+    setWorkflowBasePath('/v2');
+    const handler = vi.fn(async () => Response.json({ ok: true }));
+
+    localQueue.registerHandler('__wkf_step_', handler);
+    await localQueue.queue('__wkf_step_test' as any, stepPayload);
+
+    await vi.waitFor(() => {
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    expect(handler.mock.calls[0]?.[0].url).toBe(
+      'http://localhost/v2/.well-known/workflow/v1/step'
+    );
+  });
+
   it('queue retries immediately when handler returns timeoutSeconds: 0', async () => {
     const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
     vi.mocked(mockSetTimeout).mockClear();
@@ -191,7 +211,9 @@ describe('queue timeout re-enqueue', () => {
   });
 
   it('logs actionable guidance for detached ArrayBuffer proxy failures', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
     const fetchError = new TypeError('fetch failed');
     (fetchError as TypeError & { cause?: unknown }).cause = new TypeError(
       'Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer'

@@ -1,3 +1,4 @@
+import { createWorkflowUrl } from '@workflow/utils';
 import type {
   Hook,
   HookOptions,
@@ -48,7 +49,7 @@ export function createWebhook(
     | Webhook<RequestWithResponse>;
 
   const { url } = getWorkflowMetadata();
-  hook.url = `${url}/.well-known/workflow/v1/webhook/${encodeURIComponent(hook.token)}`;
+  hook.url = createWorkflowUrl(url, { type: 'webhook', token: hook.token });
 
   return hook;
 }

@@ -1,5 +1,6 @@
 import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
+import { createWorkflowUrl } from '@workflow/utils';
 import {
   MessageId,
   parseQueueName,
@@ -12,7 +13,7 @@ import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
 import { z } from 'zod/v4';
 import type { Config } from './config.js';
-import { resolveBaseUrl } from './config.js';
+import { resolveBaseUrl, resolveDirectBaseUrl } from './config.js';
 import { jsonReplacer, jsonReviver } from './fs.js';
 import { getPackageInfo } from './init.js';
 
@@ -184,7 +185,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
           if (directHandler) {
             const req = new Request(
-              `http://localhost/.well-known/workflow/v1/${pathname}`,
+              createWorkflowUrl(resolveDirectBaseUrl(config), {
+                type: pathname,
+              }),
               {
                 method: 'POST',
                 headers,
@@ -196,7 +199,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             const baseUrl = await resolveBaseUrl(config);
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
             response = await fetch(
-              `${baseUrl}/.well-known/workflow/v1/${pathname}`,
+              createWorkflowUrl(baseUrl, { type: pathname }),
               {
                 method: 'POST',
                 duplex: 'half',
