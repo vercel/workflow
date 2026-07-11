@@ -349,6 +349,22 @@ describe('e2e', () => {
     );
   });
 
+  test.runIf(process.env.APP_NAME === 'example')(
+    'bundled steps can read traced runtime assets',
+    { timeout: 60_000 },
+    async () => {
+      const workflow = await getWorkflowMetadata(
+        deploymentUrl,
+        'workflows/runtime-assets.ts',
+        'runtimeAssetsWorkflow'
+      );
+      const run = await start(workflow, []);
+      await expect(run.returnValue).resolves.toBe(
+        'query-engine-asset\n|model RuntimeAsset {\n  id Int @id\n}\n'
+      );
+    }
+  );
+
   // `deploymentId: 'latest'` only resolves to a different deployment in
   // worlds with atomic, immutable deployments (Vercel). In local dev and
   // Postgres worlds there is nothing to resolve between, so it has no effect:

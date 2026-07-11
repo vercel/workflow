@@ -1,0 +1,291 @@
+import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { copyFile, mkdir, readFile, realpath } from 'node:fs/promises';
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  parse,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
+import {
+  type NodeFileTraceReasonType,
+  type NodeFileTraceResult,
+  nodeFileTrace,
+} from '@vercel/nft';
+import { buildLogger } from '@workflow/core/logger';
+import { type Metafile, transform } from 'esbuild';
+
+const GENERATED_FUNCTION_FILES = new Set([
+  '.vc-config.json',
+  '__step_registrations.mjs',
+  '__step_registrations.mjs.map',
+  'index.mjs',
+  'index.mjs.map',
+  'package.json',
+]);
+
+const SECRET_FILE_NAMES = new Set(['.env', '.npmrc']);
+const SECRET_FILE_EXTENSIONS = new Set(['.key', '.pem']);
+
+const TRANSPILE_LOADERS: Partial<Record<string, 'ts' | 'tsx' | 'jsx'>> = {
+  '.ts': 'ts',
+  '.mts': 'ts',
+  '.cts': 'ts',
+  '.tsx': 'tsx',
+  '.jsx': 'jsx',
+};
+
+function isSecretFile(filePath: string): boolean {
+  const name = basename(filePath);
+  return (
+    SECRET_FILE_NAMES.has(name) ||
+    name.startsWith('.env.') ||
+    SECRET_FILE_EXTENSIONS.has(extname(name))
+  );
+}
+
+function isNativeLibrary(filePath: string): boolean {
+  const name = basename(filePath);
+  return (
+    name.endsWith('.node') ||
+    name.endsWith('.dylib') ||
+    name.endsWith('.dll') ||
+    /\.so(?:\.|$)/.test(name)
+  );
+}
+
+function getPackageDir(filePath: string): string | undefined {
+  const normalized = filePath.replace(/\\/g, '/');
+  const marker = '/node_modules/';
+  const markerIndex = normalized.lastIndexOf(marker);
+  if (markerIndex === -1) return;
+
+  const [name, nestedName] = normalized
+    .slice(markerIndex + marker.length)
+    .split('/');
+  assert(name, `Invalid node_modules path: ${filePath}`);
+  const packageDir = normalized.slice(0, markerIndex + marker.length);
+  if (!name.startsWith('@') && !name.startsWith('.')) {
+    return join(packageDir, name);
+  }
+  assert(nestedName, `Invalid scoped package path: ${filePath}`);
+  return join(packageDir, name, nestedName);
+}
+
+function isRuntimeAsset(
+  file: string,
+  reasonTypes: NodeFileTraceReasonType[],
+  nativePackageDirs: Set<string>
+): boolean {
+  for (const reasonType of reasonTypes) {
+    switch (reasonType) {
+      case 'initial':
+      case 'resolve':
+      case 'dependency':
+      case 'asset':
+      case 'sharedlib':
+        break;
+      default:
+        assert.fail(`Unknown nft trace reason: ${String(reasonType)}`);
+    }
+  }
+  const packageDir = getPackageDir(file);
+  return (
+    isNativeLibrary(file) ||
+    isSecretFile(file) ||
+    reasonTypes.some((type) => type === 'asset' || type === 'sharedlib') ||
+    (packageDir !== undefined && nativePackageDirs.has(packageDir))
+  );
+}
+
+async function readFileForTrace(
+  filePath: string
+): Promise<Buffer | string | null> {
+  let contents: Buffer;
+  try {
+    contents = await readFile(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+
+  const loader = TRANSPILE_LOADERS[extname(filePath)];
+  if (!loader) return contents;
+  return (await transform(contents.toString(), { loader })).code;
+}
+
+function isInside(directory: string, filePath: string): boolean {
+  const path = relative(directory, filePath);
+  return path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+}
+
+function getOutputPaths({
+  functionDir,
+  sourcePath,
+  workingDir,
+  parentDirs,
+}: {
+  functionDir: string;
+  sourcePath: string;
+  workingDir: string;
+  parentDirs: string[];
+}): string[] {
+  const outputPaths = new Set<string>();
+  const normalizedSource = sourcePath.replace(/\\/g, '/');
+  const nodeModulesMarker = '/node_modules/';
+  const nodeModulesIndex = normalizedSource.lastIndexOf(nodeModulesMarker);
+
+  if (nodeModulesIndex !== -1) {
+    outputPaths.add(
+      join(
+        functionDir,
+        'node_modules',
+        normalizedSource.slice(nodeModulesIndex + nodeModulesMarker.length)
+      )
+    );
+  }
+
+  if (isInside(workingDir, sourcePath)) {
+    outputPaths.add(join(functionDir, relative(workingDir, sourcePath)));
+  }
+
+  for (const parentDir of parentDirs) {
+    const outputPath = resolve(functionDir, relative(parentDir, sourcePath));
+    if (isInside(functionDir, outputPath) && outputPath !== functionDir) {
+      outputPaths.add(outputPath);
+    }
+  }
+
+  return [...outputPaths];
+}
+
+type RuntimeFile = { sourcePath: string; parentDirs: string[] };
+
+async function getRuntimeFiles(
+  { fileList, reasons }: NodeFileTraceResult,
+  traceBase: string
+): Promise<RuntimeFile[]> {
+  const absolutePath = (filePath: string) =>
+    isAbsolute(filePath) ? filePath : join(traceBase, filePath);
+  const nativePackageDirs = new Set(
+    [...fileList]
+      .map(absolutePath)
+      .filter(isNativeLibrary)
+      .map(getPackageDir)
+      .filter((packageDir) => packageDir !== undefined)
+  );
+  const runtimeFiles: RuntimeFile[] = [];
+
+  for (const file of fileList) {
+    const reason = reasons.get(file);
+    assert(reason, `Missing trace reason for ${file}`);
+
+    const sourcePath = absolutePath(file);
+    if (!isRuntimeAsset(sourcePath, reason.type, nativePackageDirs)) continue;
+    if (isSecretFile(sourcePath)) {
+      throw new Error(
+        `Refusing to deploy secret-like runtime asset: ${sourcePath}`
+      );
+    }
+
+    runtimeFiles.push({
+      sourcePath,
+      parentDirs:
+        isNativeLibrary(sourcePath) ||
+        reason.type.some((type) => type === 'asset' || type === 'sharedlib')
+          ? [...reason.parents].map((parent) => dirname(absolutePath(parent)))
+          : [],
+    });
+  }
+
+  for (const packageDir of nativePackageDirs) {
+    const sourcePath = join(packageDir, 'package.json');
+    assert(
+      existsSync(sourcePath),
+      `Native package has no package.json: ${packageDir}`
+    );
+    runtimeFiles.push({ sourcePath, parentDirs: [] });
+  }
+
+  return runtimeFiles;
+}
+
+async function copyRuntimeFiles(
+  runtimeFiles: RuntimeFile[],
+  functionDir: string,
+  workingDir: string
+): Promise<void> {
+  const copied = new Map<string, string>();
+
+  for (const runtimeFile of runtimeFiles) {
+    const sourcePath = await realpath(runtimeFile.sourcePath);
+    const outputPaths = getOutputPaths({
+      functionDir,
+      sourcePath,
+      workingDir,
+      parentDirs: await Promise.all(
+        runtimeFile.parentDirs.map((parentDir) => realpath(parentDir))
+      ),
+    });
+    if (outputPaths.length === 0) {
+      throw new Error(
+        `Runtime asset cannot be placed in the function: ${sourcePath}`
+      );
+    }
+
+    for (const outputPath of outputPaths) {
+      const outputFile = relative(functionDir, outputPath).replace(/\\/g, '/');
+      if (GENERATED_FUNCTION_FILES.has(outputFile)) {
+        throw new Error(
+          `Runtime asset conflicts with generated function output: ${sourcePath}`
+        );
+      }
+
+      const existingSource = copied.get(outputPath);
+      if (existingSource && existingSource !== sourcePath) {
+        throw new Error(
+          `Conflicting runtime assets for ${outputFile}: ${existingSource} and ${sourcePath}`
+        );
+      }
+      if (existingSource) continue;
+
+      await mkdir(dirname(outputPath), { recursive: true });
+      await copyFile(sourcePath, outputPath);
+      copied.set(outputPath, sourcePath);
+    }
+  }
+}
+
+export async function copyRuntimeAssets({
+  functionDir,
+  workingDir,
+  metafile,
+}: {
+  functionDir: string;
+  workingDir: string;
+  metafile: Metafile;
+}): Promise<void> {
+  const entries = Object.keys(metafile.inputs)
+    .map((input) => resolve(workingDir, input))
+    .filter(existsSync);
+  assert(entries.length > 0, 'The steps bundle has no traceable inputs');
+
+  const traceBase = parse(workingDir).root;
+  const realWorkingDir = await realpath(workingDir);
+  const trace = await nodeFileTrace(entries, {
+    base: traceBase,
+    processCwd: workingDir,
+    mixedModules: true,
+    readFile: readFileForTrace,
+  });
+  for (const warning of trace.warnings) {
+    buildLogger.debug(`Runtime asset trace warning: ${warning.message}`);
+  }
+  const runtimeFiles = await getRuntimeFiles(trace, traceBase);
+  await copyRuntimeFiles(runtimeFiles, functionDir, realWorkingDir);
+}

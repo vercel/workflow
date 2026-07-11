@@ -1,7 +1,9 @@
+import assert from 'node:assert/strict';
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { BaseBuilder } from './base-builder.js';
 import { WORKFLOW_QUEUE_TRIGGER } from './constants.js';
+import { copyRuntimeAssets } from './runtime-assets.js';
 
 export class VercelBuildOutputAPIBuilder extends BaseBuilder {
   async build(): Promise<void> {
@@ -21,12 +23,19 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     const workflowsFuncDir = join(workflowGeneratedDir, 'flow.func');
     await mkdir(workflowsFuncDir, { recursive: true });
 
-    const { manifest } = await this.createCombinedBundle({
+    const { manifest, stepsMetafile } = await this.createCombinedBundle({
       inputFiles,
       stepsOutfile: join(workflowsFuncDir, '__step_registrations.mjs'),
       flowOutfile: join(workflowsFuncDir, 'index.mjs'),
       tsconfigPath,
       bundleFinalOutput: true,
+    });
+
+    assert(stepsMetafile, 'Vercel Build Output API requires a steps metafile');
+    await copyRuntimeAssets({
+      functionDir: workflowsFuncDir,
+      workingDir: this.config.workingDir,
+      metafile: stepsMetafile,
     });
 
     // Create package.json and .vc-config.json for combined function

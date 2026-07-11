@@ -36,10 +36,12 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "@workflow/tsconfig": "workspace:*"
+    "@workflow/tsconfig": "workspace:*",
+    "sharp": "0.34.5"
   },
   "dependencies": {
     "@swc/core": "catalog:",
+    "@vercel/nft": "0.30.4",
     "@workflow/core": "workspace:*",
     "@workflow/errors": "workspace:*",
     "@workflow/utils": "workspace:*",

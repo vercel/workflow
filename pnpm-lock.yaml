@@ -407,6 +407,9 @@ importers:
       '@swc/core':
         specifier: 'catalog:'
         version: 1.15.3
+      '@vercel/nft':
+        specifier: 0.30.4
+        version: 0.30.4(rollup@4.62.2)
       '@workflow/core':
         specifier: workspace:*
         version: link:../core
@@ -453,6 +456,9 @@ importers:
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      sharp:
+        specifier: 0.34.5
+        version: 0.34.5
 
   packages/cli:
     dependencies:
@@ -9049,6 +9055,11 @@ packages:
     peerDependenciesMeta:
       '@aws-sdk/credential-provider-web-identity':
         optional: true
+
+  '@vercel/nft@0.30.4':
+    resolution: {integrity: sha512-wE6eAGSXScra60N2l6jWvNtVK0m+sh873CpfZW4KI2v8EHuUQp+mSEi4T+IcdPCSEDgCdAS/7bizbhQlkjzrSA==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   '@vercel/nft@1.5.0':
     resolution: {integrity: sha512-IWTDeIoWhQ7ZtRO/JRKH+jhmeQvZYhtGPmzw/QGDY+wDCQqfm25P9yIdoAFagu4fWsK4IwZXDFIjrmp5rRm/sA==}
@@ -25114,6 +25125,25 @@ snapshots:
       '@vercel/oidc': 3.2.0
     optionalDependencies:
       '@aws-sdk/credential-provider-web-identity': 3.972.49
+
+  '@vercel/nft@0.30.4(rollup@4.62.2)':
+    dependencies:
+      '@mapbox/node-pre-gyp': 2.0.0
+      '@rollup/pluginutils': 5.3.0(rollup@4.62.2)
+      acorn: 8.16.0
+      acorn-import-attributes: 1.9.5(acorn@8.16.0)
+      async-sema: 3.1.1
+      bindings: 1.5.0
+      estree-walker: 2.0.2
+      glob: 10.5.0
+      graceful-fs: 4.2.11
+      node-gyp-build: 4.8.4
+      picomatch: 4.0.4
+      resolve-from: 5.0.0
+    transitivePeerDependencies:
+      - encoding
+      - rollup
+      - supports-color
 
   '@vercel/nft@1.5.0(rollup@4.62.2)':
     dependencies:
