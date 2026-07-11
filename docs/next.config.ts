@@ -161,6 +161,19 @@ const config: NextConfig = {
         destination: '/cookbook/agent-patterns/agent-cancellation',
         permanent: true,
       },
+      // setAttributes graduated from experimental_setAttributes; the API
+      // reference page moved with it. Cover both the versioned (v5) path and
+      // the unversioned path so links keep working once v5 becomes default.
+      {
+        source: '/v5/docs/api-reference/workflow/experimental-set-attributes',
+        destination: '/v5/docs/api-reference/workflow/set-attributes',
+        permanent: true,
+      },
+      {
+        source: '/docs/api-reference/workflow/experimental-set-attributes',
+        destination: '/docs/api-reference/workflow/set-attributes',
+        permanent: true,
+      },
       {
         source: '/python',
         destination: '/docs/getting-started/python',

@@ -1,8 +1,8 @@
 ---
-title: experimental_setAttributes
+title: setAttributes
 description: Attach string metadata to workflow run for observability.
 type: reference
-summary: Use experimental_setAttributes inside a workflow or step function to set run attributes.
+summary: Use setAttributes inside a workflow or step function to set run attributes.
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
@@ -12,17 +12,13 @@ related:
 
 Attaches string metadata to the current workflow run.
 
-<Callout>
-This API is experimental and may change before the stable attributes API is released.
-</Callout>
-
 ```typescript lineNumbers
-import { experimental_setAttributes } from "workflow"
+import { setAttributes } from "workflow"
 
 export async function orderWorkflow(orderId: string) {
   "use workflow"
 
-  await experimental_setAttributes({
+  await setAttributes({
     phase: "received",
     orderId,
   })
@@ -35,24 +31,24 @@ export async function orderWorkflow(orderId: string) {
 
 <TSDoc
 definition={`
-import { experimental_setAttributes } from "workflow";
-export default experimental_setAttributes;`}
+import { setAttributes } from "workflow";
+export default setAttributes;`}
 showSections={['parameters']}
 />
 
 ## Usage
 
-Call `experimental_setAttributes` from a `"use workflow"` function or a `"use step"` function. Calling it from plain application code is not supported because there is no active workflow run.
+Call `setAttributes` from a `"use workflow"` function or a `"use step"` function. Calling it from plain application code is not supported because there is no active workflow run.
 
 Attribute values must be strings. Pass `undefined` to remove an attribute:
 
 ```typescript lineNumbers
-import { experimental_setAttributes } from "workflow"
+import { setAttributes } from "workflow"
 
 export async function cleanupAttributes() {
   "use workflow"
 
-  await experimental_setAttributes({ staleKey: undefined })
+  await setAttributes({ staleKey: undefined })
 }
 ```
 
@@ -62,4 +58,8 @@ Validation errors throw [`FatalError`](/docs/api-reference/workflow/fatal-error)
 
 Calls from both workflow and step bodies append a native `attr_set` event, which the World materializes onto `run.attributes`. Workflow-originated events record a workflow writer; step-originated events record the originating step ID and attempt.
 
-Native attributes require spec version 4 or later. Step-body storage errors throw from `experimental_setAttributes`; catch them inside the step if the write should be best-effort. Workflow-body writes are committed when the workflow suspends: transient storage errors are retried with the suspension, while a write the World rejects as invalid — such as exceeding the per-run attribute cap across multiple calls — fails the run with the validation error.
+Native attributes require spec version 4 or later. Step-body storage errors throw from `setAttributes`; catch them inside the step if the write should be best-effort. Workflow-body writes are committed when the workflow suspends: transient storage errors are retried with the suspension, while a write the World rejects as invalid — such as exceeding the per-run attribute cap across multiple calls — fails the run with the validation error.
+
+<Callout>
+This function was previously exported as `experimental_setAttributes`. The old name still works as a deprecated alias — update imports to `setAttributes`.
+</Callout>

@@ -84,7 +84,7 @@ export const WorkflowRunBaseSchema = z.object({
   errorCode: z.string().optional(),
   /**
    * Plaintext string-string metadata attached to the run via
-   * `experimental_setAttributes()` (or, in the future, materialized
+   * `setAttributes()` (or, in the future, materialized
    * from `attr_set` events). Stored unencrypted alongside other
    * plaintext fields so observability surfaces can read it without
    * going through the decryption pipeline.
