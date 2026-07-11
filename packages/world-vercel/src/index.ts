@@ -3,7 +3,7 @@ import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { instrumentObject } from './instrumentObject.js';
-import { createObservability } from './observability.js';
+import { createExecutionErrorOccurrences } from './execution-error-occurrence.js';
 import { createQueue } from './queue.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';
 import { createStorage } from './storage.js';
@@ -45,7 +45,7 @@ export function createWorld(config?: APIConfig): World {
     ...createQueue(config),
     ...createStorage(config),
     analytics: createAnalytics(config),
-    ...createObservability(config),
+    ...createExecutionErrorOccurrences(config),
     ...instrumentObject('world.streams', createStreamer(config)),
     getEncryptionKeyForRun: createGetEncryptionKeyForRun(
       projectId,

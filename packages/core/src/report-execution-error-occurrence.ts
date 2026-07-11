@@ -1,10 +1,10 @@
-import type { WorkflowObservabilityEvent } from '@workflow/world';
+import type { WorkflowExecutionErrorOccurrence } from '@workflow/world';
 import { safeWaitUntil } from './runtime/wait-until.js';
 import { getWorldLazy } from './runtime/get-world-lazy.js';
 import { contextStorage } from './step/context-storage.js';
 
-export function experimental_reportObservabilityEvent(
-  event: WorkflowObservabilityEvent
+export function experimental_reportExecutionErrorOccurrence(
+  event: WorkflowExecutionErrorOccurrence
 ): void {
   const store = contextStorage.getStore();
   const runId = store?.workflowMetadata?.workflowRunId;
@@ -17,7 +17,7 @@ export function experimental_reportObservabilityEvent(
           await store.runReadyBarrier;
         } catch {
           // Ordering barrier only. If the run truly does not exist, reporting below
-          // fails and is swallowed as best-effort observability.
+          // fails and is swallowed as best-effort execution-error reporting.
         }
       }
       const world = await getWorldLazy();
@@ -28,10 +28,10 @@ export function experimental_reportObservabilityEvent(
             attempt: store.stepMetadata.attempt,
           } as const)
         : undefined;
-      await world.observability?.reportEvent(runId, { event, writer });
+      await world.executionErrors?.reportOccurrence(runId, { event, writer });
     })(),
     () => {
-      // Observability indexing must never change workflow execution behavior.
+      // Execution-error indexing must never change workflow execution behavior.
     }
   );
 }

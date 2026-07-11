@@ -41,13 +41,13 @@ export {
 export type * from './hooks.js';
 export { HookSchema } from './hooks.js';
 export type * from './interfaces.js';
-export type * from './observability.js';
+export type * from './execution-error-occurrence.js';
 export {
-  ReportWorkflowObservabilityEventRequestSchema,
-  ReportWorkflowObservabilityEventResponseSchema,
-  WorkflowObservabilityEventSchema,
-  WorkflowObservabilityEventWriterSchema,
-} from './observability.js';
+  ReportWorkflowExecutionErrorOccurrenceRequestSchema,
+  ReportWorkflowExecutionErrorOccurrenceResponseSchema,
+  WorkflowExecutionErrorOccurrenceSchema,
+  WorkflowExecutionErrorOccurrenceWriterSchema,
+} from './execution-error-occurrence.js';
 export type * from './queue.js';
 export {
   getQueuePrefixKind,

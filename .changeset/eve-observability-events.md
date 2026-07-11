@@ -4,4 +4,4 @@
 '@workflow/world-vercel': patch
 ---
 
-Add an experimental workflow observability event reporter for platform-side agent issue materialization.
+Add an experimental execution-error occurrence reporter for agent run observability.

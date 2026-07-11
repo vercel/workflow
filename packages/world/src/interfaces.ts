@@ -15,9 +15,9 @@ import type {
 } from './events.js';
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
 import type {
-  ReportWorkflowObservabilityEventRequest,
-  ReportWorkflowObservabilityEventResponse,
-} from './observability.js';
+  ReportWorkflowExecutionErrorOccurrenceRequest,
+  ReportWorkflowExecutionErrorOccurrenceResponse,
+} from './execution-error-occurrence.js';
 import type { Queue } from './queue.js';
 import type {
   GetWorkflowRunParams,
@@ -289,11 +289,11 @@ export interface World extends Queue, Streamer, Storage {
    */
   analytics?: Analytics;
 
-  observability?: {
-    reportEvent(
+  executionErrors?: {
+    reportOccurrence(
       runId: string,
-      data: ReportWorkflowObservabilityEventRequest
-    ): Promise<ReportWorkflowObservabilityEventResponse>;
+      data: ReportWorkflowExecutionErrorOccurrenceRequest
+    ): Promise<ReportWorkflowExecutionErrorOccurrenceResponse>;
   };
 
   /**

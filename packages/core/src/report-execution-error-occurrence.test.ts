@@ -1,6 +1,6 @@
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { experimental_reportObservabilityEvent } from './report-observability-event.js';
+import { experimental_reportExecutionErrorOccurrence } from './report-execution-error-occurrence.js';
 import { contextStorage, type StepContext } from './step/context-storage.js';
 
 const waitUntilPromises: Promise<unknown>[] = [];
@@ -22,7 +22,7 @@ async function flushWaitUntil(): Promise<void> {
 function stepContext(runId = 'run_123'): StepContext {
   return {
     stepMetadata: {
-      stepName: 'observabilityStep',
+      stepName: 'executionErrorStep',
       stepId: 'step',
       stepStartedAt: new Date('2026-01-01T00:00:00.000Z'),
       attempt: 2,
@@ -38,7 +38,7 @@ function stepContext(runId = 'run_123'): StepContext {
   };
 }
 
-describe('experimental_reportObservabilityEvent', () => {
+describe('experimental_reportExecutionErrorOccurrence', () => {
   let originalWorld: unknown;
 
   beforeEach(() => {
@@ -58,22 +58,22 @@ describe('experimental_reportObservabilityEvent', () => {
 
   it('no-ops outside workflow context', async () => {
     expect(
-      experimental_reportObservabilityEvent({
+      experimental_reportExecutionErrorOccurrence({
         type: 'action.result',
         data: { status: 'failed' },
       })
     ).toBeUndefined();
   });
 
-  it('posts event through an observability-capable world', async () => {
-    const reportEvent = vi.fn().mockResolvedValue({ ok: true });
+  it('posts event through an execution-error-capable world', async () => {
+    const reportOccurrence = vi.fn().mockResolvedValue({ ok: true });
     globals[WORLD_CACHE] = {
       specVersion: SPEC_VERSION_CURRENT,
-      observability: { reportEvent },
+      executionErrors: { reportOccurrence },
     };
 
     await contextStorage.run(stepContext(), () =>
-      experimental_reportObservabilityEvent({
+      experimental_reportExecutionErrorOccurrence({
         type: 'action.result',
         data: { status: 'failed' },
         meta: { at: '2026-01-01T00:00:00.000Z' },
@@ -81,7 +81,7 @@ describe('experimental_reportObservabilityEvent', () => {
     );
     await flushWaitUntil();
 
-    expect(reportEvent).toHaveBeenCalledWith('run_123', {
+    expect(reportOccurrence).toHaveBeenCalledWith('run_123', {
       event: {
         type: 'action.result',
         data: { status: 'failed' },
@@ -91,12 +91,12 @@ describe('experimental_reportObservabilityEvent', () => {
     });
   });
 
-  it('no-ops when the world has no observability reporter', async () => {
+  it('no-ops when the world has no execution-error reporter', async () => {
     globals[WORLD_CACHE] = { specVersion: SPEC_VERSION_CURRENT };
 
     expect(
       contextStorage.run(stepContext(), () =>
-        experimental_reportObservabilityEvent({
+        experimental_reportExecutionErrorOccurrence({
           type: 'action.result',
           data: { status: 'failed' },
         })

@@ -25,7 +25,7 @@ export {
   type WebhookOptions,
 } from './create-hook.js';
 export { defineHook, type TypedHook } from './define-hook.js';
-export { experimental_reportObservabilityEvent } from './report-observability-event.js';
+export { experimental_reportExecutionErrorOccurrence } from './report-execution-error-occurrence.js';
 export { experimental_setAttributes } from './set-attributes.js';
 export { sleep } from './sleep.js';
 export {
