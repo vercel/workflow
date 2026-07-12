@@ -1,21 +1,32 @@
 import type { Queue } from './queue.js';
 import type { Storage } from './interfaces.js';
 import type { ValidQueueName } from './queue.js';
+import { getQueueTopicPrefix, resolveQueueNamespace } from './queue.js';
 
 /**
  * Re-enqueue all active (pending/running) workflow runs so they resume
  * processing after a world restart. The workflow handler is idempotent
  * (event-log replay), so duplicate enqueues are safe.
  *
+ * Queue names are built with the active queue namespace so recovered runs
+ * target the same queues as live enqueues; a handler registered under a
+ * namespaced prefix would otherwise reject them with `Unhandled queue`.
+ *
  * @param runs - Storage runs interface for listing active runs
  * @param enqueue - Queue's enqueue method
  * @param label - Log prefix for identifying the world implementation (e.g. "world-local")
+ * @param namespace - Optional queue namespace; defaults to `WORKFLOW_QUEUE_NAMESPACE`
  */
 export async function reenqueueActiveRuns(
   runs: Storage['runs'],
   enqueue: Queue['queue'],
-  label: string
+  label: string,
+  namespace?: string
 ): Promise<void> {
+  const prefix = getQueueTopicPrefix(
+    'workflow',
+    resolveQueueNamespace(namespace)
+  );
   let reenqueued = 0;
   for (const status of ['pending', 'running'] as const) {
     let cursor: string | undefined;
@@ -28,7 +39,7 @@ export async function reenqueueActiveRuns(
       });
       for (const run of page.data) {
         try {
-          const queueName: ValidQueueName = `__wkf_workflow_${run.workflowName}`;
+          const queueName: ValidQueueName = `${prefix}${run.workflowName}`;
           await enqueue(queueName, { runId: run.runId });
           reenqueued++;
         } catch (err) {
