@@ -1,5 +1,26 @@
 # workflow
 
+## 5.0.0-beta.31
+
+### Minor Changes
+
+- [#2882](https://github.com/vercel/workflow/pull/2882) [`0b956f6`](https://github.com/vercel/workflow/commit/0b956f65cb0ab30501c72e934fc8d4352c4c3ea2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Rename `experimental_setAttributes` to `setAttributes` — the attributes feature is no longer experimental. The old name remains available as a deprecated alias.
+
+### Patch Changes
+
+- Updated dependencies [[`0b956f6`](https://github.com/vercel/workflow/commit/0b956f65cb0ab30501c72e934fc8d4352c4c3ea2)]:
+  - @workflow/core@5.0.0-beta.31
+  - @workflow/cli@5.0.0-beta.31
+  - @workflow/errors@5.0.0-beta.10
+  - @workflow/next@5.0.0-beta.31
+  - @workflow/nitro@5.0.0-beta.31
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.31
+  - @workflow/nest@5.0.0-beta.31
+  - @workflow/nuxt@5.0.0-beta.31
+  - @workflow/rollup@5.0.0-beta.31
+  - @workflow/sveltekit@5.0.0-beta.31
+
 ## 5.0.0-beta.30
 
 ### Patch Changes

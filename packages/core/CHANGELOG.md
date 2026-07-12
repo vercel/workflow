@@ -1,5 +1,19 @@
 # @workflow/core
 
+## 5.0.0-beta.31
+
+### Minor Changes
+
+- [#2882](https://github.com/vercel/workflow/pull/2882) [`0b956f6`](https://github.com/vercel/workflow/commit/0b956f65cb0ab30501c72e934fc8d4352c4c3ea2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Rename `experimental_setAttributes` to `setAttributes` — the attributes feature is no longer experimental. The old name remains available as a deprecated alias.
+
+### Patch Changes
+
+- Updated dependencies [[`7a1ea5a`](https://github.com/vercel/workflow/commit/7a1ea5a45afd07601934a2f3ff1d1044f3bd9db8), [`0b956f6`](https://github.com/vercel/workflow/commit/0b956f65cb0ab30501c72e934fc8d4352c4c3ea2)]:
+  - @workflow/world@5.0.0-beta.19
+  - @workflow/world-local@5.0.0-beta.27
+  - @workflow/errors@5.0.0-beta.10
+  - @workflow/world-vercel@5.0.0-beta.27
+
 ## 5.0.0-beta.30
 
 ### Minor Changes
