@@ -57,7 +57,7 @@ export type StepContext = {
    * Turbo mode only: a promise that resolves once the backgrounded
    * `run_started` has landed (the run exists). Set when the step body runs
    * optimistically — before `run_started`/`step_started` are confirmed — so a
-   * direct step-body world write (e.g. `experimental_setAttributes`, which
+   * direct step-body world write (e.g. `setAttributes`, which
    * resolves to a host-side `attr_set` create) can gate on it and never race
    * ahead of the run's creation. `undefined` outside turbo and on the await
    * path, where `run_started` was already durable before the body ran.

@@ -15,7 +15,7 @@ export function normalizeAttributeChanges(
 ): AttributeChange[] {
   if (attrs === null || typeof attrs !== 'object' || Array.isArray(attrs)) {
     throw new FatalError(
-      `experimental_setAttributes requires a plain object, got ${
+      `setAttributes requires a plain object, got ${
         attrs === null ? 'null' : Array.isArray(attrs) ? 'array' : typeof attrs
       }`
     );

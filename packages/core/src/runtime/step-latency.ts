@@ -32,7 +32,7 @@ export interface StepLatencyTracking {
    * Epoch ms the first pre-step `attr_set` write began (its client-stamped
    * `occurredAt`, falling back to `createdAt`). When present, the TTFS
    * measurement ENDS here instead of at the step's code start: a
-   * workflow-body `experimental_setAttributes` before the first step
+   * workflow-body `setAttributes` before the first step
    * resolves through an extra replay (see the `hasAttributeEvents` branch in
    * runtime.ts), so everything from this write until the step body runs is
    * the duration of the setAttributes call — which is subtracted by ending
@@ -77,7 +77,7 @@ export interface StepLatencyEventData {
  * - `hook_created`: a fire-and-forget `createHook()` before the first step
  *   commits in the same invocation, whose measured duration is subtracted via
  *   {@link StepLatencyTracking.preStepBlockingMs}.
- * - `attr_set` (workflow-body `experimental_setAttributes`): resolves through
+ * - `attr_set` (workflow-body `setAttributes`): resolves through
  *   an extra replay before steps run. Subtracted by ending the measurement at
  *   the first attr write's timestamp instead — see
  *   {@link StepLatencyTracking.preStepAttrStartMs}.

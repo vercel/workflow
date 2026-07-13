@@ -10,6 +10,10 @@ related:
   - /docs/api-reference/workflow-api/get-run
 ---
 
+<CopyPrompt
+  text="Compose these workflows. For direct composition, `await` the child workflow function from the parent &quot;use workflow&quot; function — the child's steps flatten into the parent's event log and run as a single run sharing the parent's lifecycle. For independent background work, spawn the child with `start()` from `workflow/api` wrapped in a &quot;use step&quot; helper (in v4, `start()` must be called from a step) and return `run.runId` so callers can track it with `getRun()`. Choose flattening when the parent needs the child's result; choose background spawn when the child should have its own run, retries, and lifetime. Keep all inputs and outputs serializable. Verify flattened execution, background spawn with a separate runId, and replay determinism."
+/>
+
 Workflows can call other workflows. Choose between two composition modes depending on whether the parent needs the child's result inline (direct await) or wants to fire the child off as an independent run (background spawn). For massive fan-out with hook-based waiting and partial-failure handling, see [Child Workflows](/cookbook/advanced/child-workflows).
 
 ## When to use this

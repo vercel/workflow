@@ -1,6 +1,6 @@
 {
   "name": "@workflow/next",
-  "version": "5.0.0-beta.29",
+  "version": "5.0.0-beta.32",
   "description": "Next.js integration for Workflow SDK",
   "type": "commonjs",
   "main": "dist/index.js",
@@ -46,6 +46,7 @@
     "@types/semver": "7.7.1",
     "@workflow/tsconfig": "workspace:*",
     "next": "16.2.10",
+    "typescript": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {

@@ -1,7 +1,9 @@
 import type { MetadataRoute } from 'next';
 
 const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http';
-const baseUrl = `${protocol}://${process.env.NEXT_PUBLIC_VERCEL_PROJECT_PRODUCTION_URL}`;
+const host =
+  process.env.NEXT_PUBLIC_VERCEL_PROJECT_PRODUCTION_URL ?? 'localhost:3000';
+const baseUrl = `${protocol}://${host}`;
 
 export default function robots(): MetadataRoute.Robots {
   return {

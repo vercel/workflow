@@ -616,7 +616,7 @@ export async function handleSuspension({
             // succeed. Surface it as a FatalError so the caller fails the
             // run with a clear error instead of wedging it in redelivery.
             const fatal = new FatalError(
-              `experimental_setAttributes failed World validation: ${
+              `setAttributes failed World validation: ${
                 err instanceof Error ? err.message : String(err)
               }`
             );

@@ -9,6 +9,10 @@ related:
   - /docs/foundations/workflows-and-steps
 ---
 
+<CopyPrompt
+  text="In this Hono app, run `npm i workflow nitro rollup`. Create `nitro.config.ts` with `modules: [&quot;workflow/nitro&quot;]` and `routes: { &quot;/**&quot;: &quot;./src/index.ts&quot; }`. Add package scripts `dev: &quot;nitro dev&quot;` and `build: &quot;nitro build&quot;`. Add the TypeScript plugin `{ &quot;name&quot;: &quot;workflow&quot; }` to `tsconfig.json` if TypeScript is used. Create `workflows/user-signup.ts` with `handleUserSignup(email)`, `&quot;use workflow&quot;`, `sleep` from `workflow`, and `&quot;use step&quot;` helpers. Add `src/index.ts` with a Hono app, POST `/api/signup`, `start(handleUserSignup, [email])` from `workflow/api`, and JSON response. Run `npm run dev`, call `curl -X POST --json '{&quot;email&quot;:&quot;hello@example.com&quot;}' http://localhost:3000/api/signup`, and inspect with `npx workflow web` or `npx workflow inspect runs`."
+/>
+
 <Steps>
 
 <Step>

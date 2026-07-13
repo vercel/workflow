@@ -4090,19 +4090,17 @@ describe('e2e', () => {
   );
 
   // ==========================================================================
-  // experimental_setAttributes (experimental MVP)
+  // setAttributes
   // ==========================================================================
 
-  describe('experimental_setAttributes', () => {
+  describe('setAttributes', () => {
     test(
       'start: initial attributes are seeded on run creation',
       { timeout: 30_000 },
       async () => {
-        const run = await start(
-          await e2e('experimentalSetAttributesWorkflow'),
-          [2],
-          { attributes: { sourceAtStart: 'api' } }
-        );
+        const run = await start(await e2e('setAttributesWorkflow'), [2], {
+          attributes: { sourceAtStart: 'api' },
+        });
         await run.returnValue;
 
         const world = await getWorld();
@@ -4118,14 +4116,10 @@ describe('e2e', () => {
       'start: reserved-prefix initial attributes are seeded with allowReservedAttributes',
       { timeout: 30_000 },
       async () => {
-        const run = await start(
-          await e2e('experimentalSetAttributesWorkflow'),
-          [2],
-          {
-            attributes: { $seededByFramework: 'e2e', tenant: 't1' },
-            allowReservedAttributes: true,
-          }
-        );
+        const run = await start(await e2e('setAttributesWorkflow'), [2], {
+          attributes: { $seededByFramework: 'e2e', tenant: 't1' },
+          allowReservedAttributes: true,
+        });
         await run.returnValue;
 
         // The reserved key passes validation on the client and at the
@@ -4142,13 +4136,10 @@ describe('e2e', () => {
     );
 
     test(
-      'experimentalSetAttributesWorkflow: workflow-body calls append native attr_set events and merge correctly',
+      'setAttributesWorkflow: workflow-body calls append native attr_set events and merge correctly',
       { timeout: 30_000 },
       async () => {
-        const run = await start(
-          await e2e('experimentalSetAttributesWorkflow'),
-          [7]
-        );
+        const run = await start(await e2e('setAttributesWorkflow'), [7]);
         const output = await run.returnValue;
         expect(output).toBe(21);
 
@@ -4170,11 +4161,11 @@ describe('e2e', () => {
     );
 
     test(
-      'experimentalSetAttributesInsideStepWorkflow: step-body calls append attributed native events',
+      'setAttributesInsideStepWorkflow: step-body calls append attributed native events',
       { timeout: 30_000 },
       async () => {
         const run = await start(
-          await e2e('experimentalSetAttributesInsideStepWorkflow'),
+          await e2e('setAttributesInsideStepWorkflow'),
           [9]
         );
         const output = await run.returnValue;
@@ -4200,11 +4191,11 @@ describe('e2e', () => {
     );
 
     test(
-      'fire-and-forget: void experimental_setAttributes lands without awaiting',
+      'fire-and-forget: void setAttributes lands without awaiting',
       { timeout: 30_000 },
       async () => {
         const run = await start(
-          await e2e('experimentalSetAttributesFireAndForgetWorkflow'),
+          await e2e('setAttributesFireAndForgetWorkflow'),
           []
         );
         await run.returnValue;
@@ -4221,10 +4212,7 @@ describe('e2e', () => {
       'Promise.all of disjoint-key writes: every key lands',
       { timeout: 30_000 },
       async () => {
-        const run = await start(
-          await e2e('experimentalSetAttributesParallelWorkflow'),
-          []
-        );
+        const run = await start(await e2e('setAttributesParallelWorkflow'), []);
         const output = await run.returnValue;
         expect(output).toBe('done');
 
@@ -4242,7 +4230,7 @@ describe('e2e', () => {
       { timeout: 30_000 },
       async () => {
         const run = await start(
-          await e2e('experimentalSetAttributesThrowsAfterWorkflow'),
+          await e2e('setAttributesThrowsAfterWorkflow'),
           []
         );
         // The workflow throws — `returnValue` rejects.
@@ -4269,7 +4257,7 @@ describe('e2e', () => {
       { timeout: 30_000 },
       async () => {
         const run = await start(
-          await e2e('experimentalSetAttributesValidationWorkflow'),
+          await e2e('setAttributesValidationWorkflow'),
           []
         );
         const outcomes = (await run.returnValue) as Record<string, string>;
@@ -4306,7 +4294,7 @@ describe('e2e', () => {
       'start: invalid initial attributes are rejected before a run is created',
       { timeout: 30_000 },
       async () => {
-        const workflow = await e2e('experimentalSetAttributesWorkflow');
+        const workflow = await e2e('setAttributesWorkflow');
         await expect(
           start(workflow, [1], { attributes: { $reserved: 'x' } })
         ).rejects.toThrow(/reserved prefix/);

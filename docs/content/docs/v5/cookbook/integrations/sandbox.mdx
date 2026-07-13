@@ -10,6 +10,10 @@ related:
   - /docs/cookbook/agent-patterns/durable-agent
 ---
 
+<CopyPrompt
+  text="Implement a durable Vercel Sandbox-backed coding-agent workflow. Install the Sandbox package used by this project and `workflow`. Create an exported workflow function with &quot;use workflow&quot; that owns the agent session. Put sandbox creation, command execution, snapshot, refresh, and cleanup into helper functions with &quot;use step&quot;. Persist the sandbox ID, snapshot ID, and workflow run ID in the project data store so clients can reconnect. Use `getWritable()` from `workflow` to stream agent progress and command output. Use `sleep()` to hibernate, refresh, or enforce idle timeouts. Add API routes to start a session, reconnect by run ID, and stop/cleanup. Verify first run, reconnect after reload, snapshot restore, timeout, and cleanup behavior."
+/>
+
 [Vercel Sandbox](https://vercel.com/docs/sandbox) provides isolated code execution environments. The `@vercel/sandbox` package has first-class support for the Workflow SDK — the `Sandbox` class is serializable, and its methods (`create`, `runCommand`, `stop`, `snapshot`) implicitly run as steps. You can use `Sandbox` directly inside a workflow function without wrapping each call in a separate `"use step"` function.
 
 ## Why Workflow + Sandbox

@@ -1068,6 +1068,12 @@ function createBatchSink(
     resolve: () => void;
     reject: (err: unknown) => void;
   }> = [];
+  // Client-observed write-batch timing: stamped at `write()` entry for the
+  // first chunk of a batch — before the backpressure wait on any in-flight
+  // flush — so the emitted span covers the full app-perceived latency
+  // (queueing + flush-timer dwell + RPC). Cleared when a flush takes the
+  // batch; restored on write failure so a retried batch keeps its true t0.
+  let batchStartAt: number | undefined;
 
   const flush = async (): Promise<void> => {
     if (flushTimer) {
@@ -1079,20 +1085,46 @@ function createBatchSink(
     // Copy chunks to flush, but don't clear the buffer until the write
     // succeeds — this prevents data loss if the write operation fails.
     const chunksToFlush = buffer.slice();
-    if (
-      typeof world.streams.writeMulti === 'function' &&
-      (chunksToFlush.length > 1 || retransmitSafe)
-    ) {
-      await world.streams.writeMulti(
+    const batchStart = batchStartAt;
+    batchStartAt = undefined;
+    const dispatchAt = Date.now();
+    try {
+      if (
+        typeof world.streams.writeMulti === 'function' &&
+        (chunksToFlush.length > 1 || retransmitSafe)
+      ) {
+        await world.streams.writeMulti(
+          runId,
+          name,
+          chunksToFlush,
+          retransmitSafe ? { retransmitSafe } : undefined
+        );
+      } else {
+        for (const chunk of chunksToFlush) {
+          await world.streams.write(runId, name, chunk);
+        }
+      }
+    } catch (error) {
+      // The batch stays buffered for retry — restore its original t0 (the
+      // oldest, if a newer write stamped one meanwhile) so the eventually
+      // successful flush reports the full dwell.
+      if (batchStart !== undefined) {
+        batchStartAt =
+          batchStartAt === undefined
+            ? batchStart
+            : Math.min(batchStartAt, batchStart);
+      }
+      throw error;
+    }
+    if (batchStart !== undefined) {
+      recordStreamWriteFlush(
+        batchStart,
+        dispatchAt,
         runId,
         name,
-        chunksToFlush,
-        retransmitSafe ? { retransmitSafe } : undefined
+        chunksToFlush.length,
+        chunksToFlush.reduce((sum, c) => sum + c.byteLength, 0)
       );
-    } else {
-      for (const chunk of chunksToFlush) {
-        await world.streams.write(runId, name, chunk);
-      }
     }
     buffer = [];
   };
@@ -1116,6 +1148,10 @@ function createBatchSink(
 
   return {
     async write(chunk) {
+      // Batch t0 for the write-flush span: at entry, before the
+      // backpressure wait below, so queueing behind an in-flight flush
+      // counts toward the app-perceived dwell.
+      if (batchStartAt === undefined) batchStartAt = Date.now();
       if (flushPromise) {
         await flushPromise;
         flushPromise = null;
@@ -1160,6 +1196,39 @@ function createBatchSink(
       return world.streams.abort?.(runId, name, reason);
     },
   };
+}
+
+/**
+ * Emit the client-observed span for one flushed batch of stream writes: first
+ * `write()` of the batch (`startEpochMs`) → the server write settling. The
+ * span's duration is therefore the app-perceived latency of the batch
+ * (buffer dwell + backpressure + RPC); `buffer_dwell_ms` isolates the
+ * pre-dispatch share so client-side batching cost can be told apart from
+ * network/server time. Named `workflow.stream.flush` — the per-request RPC
+ * beneath it is world-vercel's `workflow.stream.write` span (chunk_rtt), and
+ * the two must stay distinguishable. Fire-and-forget; no-op without OTEL.
+ */
+function recordStreamWriteFlush(
+  startEpochMs: number,
+  dispatchEpochMs: number,
+  runId: string,
+  name: string,
+  chunkCount: number,
+  byteCount: number
+): void {
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.flush', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.operation': 'flush',
+        'workflow.stream.flush.buffer_dwell_ms': dispatchEpochMs - startEpochMs,
+        'workflow.stream.flush.chunks': chunkCount,
+        'workflow.stream.flush.bytes': byteCount,
+      },
+    });
+  })();
 }
 
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
