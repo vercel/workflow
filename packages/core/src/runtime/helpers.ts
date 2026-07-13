@@ -554,11 +554,15 @@ export interface MutableEventLog {
  * safety-over-performance flag; an explicit per-flag value always wins).
  */
 export function isPreconditionGuardEnabled(): boolean {
-  const explicit = process.env.WORKFLOW_PRECONDITION_GUARD;
-  if (explicit !== undefined && explicit !== '') {
-    return explicit === '1';
-  }
-  return process.env.WORKFLOW_SAFE_MODE === '1';
+  // TEMP(ci-default-on): force the guard ON (unless explicitly '0') so the
+  // e2e lanes exercise the 412 precondition path against the backend.
+  // REVERT BEFORE MERGE — restore:
+  //   const explicit = process.env.WORKFLOW_PRECONDITION_GUARD;
+  //   if (explicit !== undefined && explicit !== '') {
+  //     return explicit === '1';
+  //   }
+  //   return process.env.WORKFLOW_SAFE_MODE === '1';
+  return process.env.WORKFLOW_PRECONDITION_GUARD !== '0';
 }
 
 /**
