@@ -1,7 +1,6 @@
 import {
   type Analytics,
   AnalyticsAttributeKeySchema,
-  AnalyticsAttributeValueSchema,
   AnalyticsEventSchema,
   AnalyticsHookSchema,
   type AnalyticsListAttributesParams,
@@ -88,17 +87,6 @@ export function createAnalytics(config?: APIConfig): Analytics {
           endpoint: `/v2/analytics/attributes${createQueryString(searchParams)}`,
           config,
           schema: PaginatedResponseSchema(AnalyticsAttributeKeySchema),
-        });
-      },
-      listValues(params) {
-        const searchParams = new URLSearchParams();
-        searchParams.set('key', params.key);
-        appendAttributeListParams(searchParams, params);
-
-        return makeRequest({
-          endpoint: `/v2/analytics/attributes/values${createQueryString(searchParams)}`,
-          config,
-          schema: PaginatedResponseSchema(AnalyticsAttributeValueSchema),
         });
       },
     },

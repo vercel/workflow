@@ -101,22 +101,12 @@ export const AnalyticsAttributeKeySchema = z.object({
   lastSeenAt: z.coerce.date(),
 });
 
-export const AnalyticsAttributeValueSchema = z.object({
-  value: z.string(),
-  runCount: z.coerce.number(),
-  firstSeenAt: z.coerce.date(),
-  lastSeenAt: z.coerce.date(),
-});
-
 export type AnalyticsRun = z.infer<typeof AnalyticsRunSchema>;
 export type AnalyticsStep = z.infer<typeof AnalyticsStepSchema>;
 export type AnalyticsEvent = z.infer<typeof AnalyticsEventSchema>;
 export type AnalyticsHook = z.infer<typeof AnalyticsHookSchema>;
 export type AnalyticsWait = z.infer<typeof AnalyticsWaitSchema>;
 export type AnalyticsAttributeKey = z.infer<typeof AnalyticsAttributeKeySchema>;
-export type AnalyticsAttributeValue = z.infer<
-  typeof AnalyticsAttributeValueSchema
->;
 
 export interface AnalyticsListRunsParams {
   workflowName?: string;
@@ -153,11 +143,6 @@ export interface AnalyticsListAttributesParams {
   startTime?: string;
   endTime?: string;
   pagination?: PaginationOptions;
-}
-
-export interface AnalyticsListAttributeValuesParams
-  extends AnalyticsListAttributesParams {
-  key: string;
 }
 
 export interface AnalyticsListRunScopedParams {
@@ -201,14 +186,6 @@ export interface Analytics {
     list(
       params?: AnalyticsListAttributesParams
     ): Promise<PaginatedResponse<AnalyticsAttributeKey>>;
-    /**
-     * List the distinct values observed for one attribute key. Run counts
-     * are latest-write-wins: each run counts only under its latest value
-     * for the key, matching what `runs.list({ attributes })` would return.
-     */
-    listValues(
-      params: AnalyticsListAttributeValuesParams
-    ): Promise<PaginatedResponse<AnalyticsAttributeValue>>;
   };
   steps: {
     get(runId: string, stepId: string): Promise<AnalyticsStep>;

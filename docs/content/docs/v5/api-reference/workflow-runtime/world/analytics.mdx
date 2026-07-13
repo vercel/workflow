@@ -103,25 +103,6 @@ for (const { key, runCount, lastSeenAt } of page.data) {
 
 **Returns:** `PaginatedResponse<AnalyticsAttributeKey>` — `{ key, runCount, firstSeenAt, lastSeenAt }`
 
-### attributes.listValues()
-
-List the distinct values observed for one attribute key. Run counts are latest-write-wins, so they agree with what `runs.list({ attributes })` returns for each value.
-
-```typescript lineNumbers
-const page = await world.analytics.attributes.listValues({ // [!code highlight]
-  key: "source", // [!code highlight]
-}); // [!code highlight]
-```
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `params.key` | `string` | The attribute key (required) |
-| `params.workflowName` | `string` | Only count runs of one workflow |
-| `params.startTime` / `params.endTime` | `string` | ISO 8601 window; must be provided together |
-| `params.pagination` | `PaginationOptions` | Cursor pagination |
-
-**Returns:** `PaginatedResponse<AnalyticsAttributeValue>` — `{ value, runCount, firstSeenAt, lastSeenAt }`
-
 ---
 
 ## analytics.steps, analytics.events, analytics.hooks, analytics.waits

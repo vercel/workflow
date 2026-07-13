@@ -240,7 +240,6 @@ declare global {
       };
       attributes: {
         list: (...args: any[]) => Promise<any>;
-        listValues: (...args: any[]) => Promise<any>;
       };
       steps: {
         get: (...args: any[]) => Promise<any>;

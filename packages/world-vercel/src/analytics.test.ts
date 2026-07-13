@@ -63,14 +63,4 @@ describe('createAnalytics attributes', () => {
       sortOrder: 'asc',
     });
   });
-
-  it('lists attribute values for a key', async () => {
-    const analytics = createAnalytics();
-    await analytics.attributes.listValues({ key: '$eve.type' });
-
-    const { endpoint } = state.makeRequest.mock.calls[0][0];
-    const url = new URL(endpoint, 'https://example.test');
-    expect(url.pathname).toBe('/v2/analytics/attributes/values');
-    expect(url.searchParams.get('key')).toBe('$eve.type');
-  });
 });

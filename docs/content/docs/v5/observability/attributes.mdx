@@ -84,9 +84,6 @@ const world = await getWorld();
 // Which attribute keys exist, and on how many runs?
 const keys = await world.analytics.attributes.list();
 
-// Which values does `phase` take?
-const phases = await world.analytics.attributes.listValues({ key: "phase" });
-
 // List runs whose latest attributes match every pair
 const stuck = await world.analytics.runs.list({
   attributes: { phase: "received" }, // [!code highlight]
