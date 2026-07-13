@@ -56,6 +56,20 @@ if (!deploymentUrl) {
 const DISTRIBUTED_CLOCK_TOLERANCE_MS = 1_000;
 const RACE_WINNER_MAX_DURATION_MS = 5_000;
 const EVENT_POLL_PAGE_SIZE = 100;
+const e2eRuntime = process.env.E2E_RUNTIME || 'node';
+const shouldRunNextTurbopackRuntimeComparison =
+  process.env.APP_NAME === 'nextjs-turbopack' &&
+  (!!process.env.WORKFLOW_VERCEL_ENV ||
+    e2eRuntime === 'bun' ||
+    e2eRuntime === 'node-comparison');
+
+let detectedRuntime:
+  | {
+      version: string;
+      revision: string;
+      processVersion?: string;
+    }
+  | undefined;
 
 function expectElapsedAtLeast(
   actualMs: number,
@@ -82,7 +96,8 @@ async function start<T>(
 }
 
 function getE2EMetadataPath() {
-  const appName = process.env.APP_NAME || 'unknown';
+  const appName =
+    process.env.E2E_REPORT_APP_NAME || process.env.APP_NAME || 'unknown';
   // Detect if this is a Vercel deployment
   const isVercel = !!process.env.WORKFLOW_VERCEL_ENV;
   const backend = isVercel ? 'vercel' : 'local';
@@ -95,6 +110,10 @@ function writeE2EMetadata() {
 
   const metadata = {
     runIds: getCollectedRunIds(),
+    runtime: {
+      requested: e2eRuntime,
+      detected: detectedRuntime,
+    },
     vercel: {
       projectSlug: process.env.WORKFLOW_VERCEL_PROJECT_SLUG,
       environment: process.env.WORKFLOW_VERCEL_ENV,
@@ -1188,6 +1207,40 @@ describe('e2e', () => {
       completed: false,
     });
   });
+
+  test.runIf(e2eRuntime === 'bun')(
+    'Bun runtime version',
+    { timeout: 60_000 },
+    async () => {
+      const response = await fetch(new URL('/api/bun-runtime', deploymentUrl), {
+        headers: await getTrustedSourcesHeaders(),
+      });
+      expect(response.ok).toBe(true);
+      detectedRuntime = await response.json();
+
+      expect(detectedRuntime.version).toMatch(/^1\.\d+\.\d+(?:[-+].+)?$/);
+      expect(detectedRuntime.revision).toMatch(/^[0-9a-f]+$/i);
+      expect(detectedRuntime.processVersion).toBe(detectedRuntime.version);
+      console.log(`Detected Bun runtime: ${detectedRuntime.version}`);
+    }
+  );
+
+  test.runIf(shouldRunNextTurbopackRuntimeComparison)(
+    'CBOR event replay with cumulative step I/O (#1735)',
+    { timeout: 120_000 },
+    async () => {
+      const run = await start(await e2e('cborReplayRegressionWorkflow'), []);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue.serializedBytes).toBeGreaterThanOrEqual(1_800);
+      expect(returnValue.serializedBytes).toBeLessThan(3_000);
+      expect(returnValue).toMatchObject({
+        batchCount: 8,
+        documentCount: 40,
+        phases: ['indexes', 'status', 'cleanup', 'finalize'],
+      });
+    }
+  );
 
   test('promiseRaceStressTestWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('promiseRaceStressTestWorkflow'), []);

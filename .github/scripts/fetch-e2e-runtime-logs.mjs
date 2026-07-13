@@ -24,6 +24,8 @@
  * Optional env: E2E_START_MS (window start; defaults to 90 minutes ago),
  *               E2E_END_MS (window end; defaults to now — useful for
  *               re-fetching a historical window when triaging locally),
+ *               E2E_REPORT_APP_NAME (artifact name when a deployment target
+ *               reuses another workbench app's test compatibility gates),
  *               WORKFLOW_VERCEL_ENV (production | preview)
  */
 
@@ -44,6 +46,7 @@ const {
   VERCEL_DEPLOYMENT_ID: deploymentId,
   WORKFLOW_VERCEL_ENV: environment,
   APP_NAME: appName,
+  E2E_REPORT_APP_NAME: reportAppName = appName,
   E2E_START_MS: e2eStartMs,
   E2E_END_MS: e2eEndMs,
 } = process.env;
@@ -67,7 +70,7 @@ function readFailedRunIds() {
   const failedRunIds = new Map(); // runId -> testName
   const failuresPath = path.resolve(
     process.cwd(),
-    `e2e-failures-${appName}-vercel.json`
+    `e2e-failures-${reportAppName}-vercel.json`
   );
   try {
     const failures = JSON.parse(fs.readFileSync(failuresPath, 'utf-8'));
@@ -164,7 +167,7 @@ async function main() {
 
   const outPath = path.resolve(
     process.cwd(),
-    `e2e-runtime-logs-${appName}-vercel.json`
+    `e2e-runtime-logs-${reportAppName}-vercel.json`
   );
   fs.writeFileSync(
     outPath,

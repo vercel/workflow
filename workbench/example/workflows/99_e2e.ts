@@ -420,6 +420,63 @@ export async function fetchWorkflow() {
 
 //////////////////////////////////////////////////////////
 
+type CborReplayPayload = {
+  chunkBatches: string[][];
+  serializedBytes: number;
+};
+
+async function prepareCborReplayPayloadStep(): Promise<CborReplayPayload> {
+  'use step';
+
+  // Mirrors the shape reported in #1735: eight batches of five document IDs
+  // and roughly 2 KB of serialized step output.
+  const chunkBatches = Array.from({ length: 8 }, (_, batchIndex) =>
+    Array.from(
+      { length: 5 },
+      (_, itemIndex) => `document-${batchIndex}-${itemIndex}-${'x'.repeat(32)}`
+    )
+  );
+  const serializedBytes = JSON.stringify({ chunkBatches }).length;
+  return { chunkBatches, serializedBytes };
+}
+
+async function processCborReplayBatchStep(index: number, batch: string[]) {
+  'use step';
+  return { index, count: batch.length, firstId: batch[0] };
+}
+
+async function recordCborReplayPhaseStep(phase: string) {
+  'use step';
+  return phase;
+}
+
+export async function cborReplayRegressionWorkflow() {
+  'use workflow';
+
+  const prepared = await prepareCborReplayPayloadStep();
+  const phases = [
+    await recordCborReplayPhaseStep('indexes'),
+    await recordCborReplayPhaseStep('status'),
+  ];
+  const processed = [];
+  for (let index = 0; index < prepared.chunkBatches.length; index++) {
+    processed.push(
+      await processCborReplayBatchStep(index, prepared.chunkBatches[index])
+    );
+  }
+  phases.push(await recordCborReplayPhaseStep('cleanup'));
+  phases.push(await recordCborReplayPhaseStep('finalize'));
+
+  return {
+    serializedBytes: prepared.serializedBytes,
+    batchCount: processed.length,
+    documentCount: processed.reduce((total, batch) => total + batch.count, 0),
+    phases,
+  };
+}
+
+//////////////////////////////////////////////////////////
+
 export async function promiseRaceStressTestDelayStep(
   dur: number,
   resp: number
