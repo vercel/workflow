@@ -184,7 +184,7 @@ The Hook remains active until the workflow ends, even if the configured time pas
 `hook.dispose()` releases the token immediately. Because `using` calls `dispose()`, do not use it when the token should remain unavailable after the run ends.
 
 <Callout type="warn">
-This option is experimental. A World that does not support it will ignore it. `createWebhook()` does not accept this option.
+This option is experimental and is not currently supported by any built-in World. Worlds that do not support it ignore it. `createWebhook()` does not accept this option.
 </Callout>
 
 ### Waiting for Multiple Payloads
