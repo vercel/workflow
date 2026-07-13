@@ -1,5 +1,19 @@
 # @workflow/world
 
+## 5.0.0-beta.20
+
+### Minor Changes
+
+- [#2903](https://github.com/vercel/workflow/pull/2903) [`f2be954`](https://github.com/vercel/workflow/commit/f2be954bb7fee078bc4b78118edaa157130fa362) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add `analytics.attributes.list()` for attribute key discovery, and an `attributes` key=value filter to `analytics.runs.list()`.
+
+- [#1981](https://github.com/vercel/workflow/pull/1981) [`9da2d76`](https://github.com/vercel/workflow/commit/9da2d762604c2b73eb39f07fc0b069aea643e18d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add optional `createRunId(options?)` to the `World` interface and `region` to `QueueOptions`. Worlds can now mint custom run IDs (reading whichever start-option fields they recognise) and route messages to a specific region.
+
+### Patch Changes
+
+- [#2899](https://github.com/vercel/workflow/pull/2899) [`ac41e7d`](https://github.com/vercel/workflow/commit/ac41e7d1d77d48d783ca49d01394dc325afd7ea2) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Parse timezone-naive analytics timestamps as UTC so CLI and local web output shows correct times in any timezone.
+
+- [#2896](https://github.com/vercel/workflow/pull/2896) [`c31e30c`](https://github.com/vercel/workflow/commit/c31e30caacab20c0d9c0df38349929ae1e0aebdf) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Show world-specific run fields (e.g. region on Vercel) in `workflow inspect` output via the new optional `World.describeRun` hook.
+
 ## 5.0.0-beta.19
 
 ### Patch Changes

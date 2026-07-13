@@ -1,5 +1,26 @@
 # workflow
 
+## 5.0.0-beta.33
+
+### Minor Changes
+
+- [#1981](https://github.com/vercel/workflow/pull/1981) [`9da2d76`](https://github.com/vercel/workflow/commit/9da2d762604c2b73eb39f07fc0b069aea643e18d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - `start()` now delegates run ID generation to `world.createRunId(options)` when the world provides it, falling back to a monotonic ULID otherwise. The full options bag is passed through so worlds can read whichever fields they recognise. Adds a new `region` option that worlds may consume — when set, it is also forwarded onto the queue options so the initial workflow message is routed to the matching region.
+
+### Patch Changes
+
+- Updated dependencies [[`9da2d76`](https://github.com/vercel/workflow/commit/9da2d762604c2b73eb39f07fc0b069aea643e18d), [`a4d8de0`](https://github.com/vercel/workflow/commit/a4d8de03e6381d170ccf0c76ed77e05dc5545456), [`c31e30c`](https://github.com/vercel/workflow/commit/c31e30caacab20c0d9c0df38349929ae1e0aebdf)]:
+  - @workflow/core@5.0.0-beta.33
+  - @workflow/next@5.0.0-beta.33
+  - @workflow/sveltekit@5.0.0-beta.33
+  - @workflow/cli@5.0.0-beta.33
+  - @workflow/errors@5.0.0-beta.10
+  - @workflow/nitro@5.0.0-beta.33
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.33
+  - @workflow/nest@5.0.0-beta.33
+  - @workflow/nuxt@5.0.0-beta.33
+  - @workflow/rollup@5.0.0-beta.33
+
 ## 5.0.0-beta.32
 
 ### Patch Changes
