@@ -73,23 +73,23 @@ describe('WorkflowServerWritableStream write-flush telemetry', () => {
     vi.clearAllMocks();
   });
 
-  it('emits a CLIENT workflow.stream.write span per flushed batch with dwell/chunk/byte attributes', async () => {
+  it('emits a CLIENT workflow.stream.flush span per flushed batch with dwell/chunk/byte attributes', async () => {
     const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
     const writer = stream.getWriter();
 
     await writer.write(new Uint8Array([1, 2, 3]));
     await writer.close();
 
-    const [span] = await waitForSpans('workflow.stream.write', 1);
+    const [span] = await waitForSpans('workflow.stream.flush', 1);
     expect(span).toBeDefined();
     expect(span.kind).toBe(SpanKind.CLIENT);
     expect(span.attributes['workflow.run.id']).toBe('run-123');
     expect(span.attributes['workflow.stream.name']).toBe('test-stream');
-    expect(span.attributes['workflow.stream.operation']).toBe('write');
-    expect(span.attributes['workflow.stream.write.chunks']).toBe(1);
-    expect(span.attributes['workflow.stream.write.bytes']).toBe(3);
+    expect(span.attributes['workflow.stream.operation']).toBe('flush');
+    expect(span.attributes['workflow.stream.flush.chunks']).toBe(1);
+    expect(span.attributes['workflow.stream.flush.bytes']).toBe(3);
 
-    const dwell = span.attributes['workflow.stream.write.buffer_dwell_ms'];
+    const dwell = span.attributes['workflow.stream.flush.buffer_dwell_ms'];
     expect(typeof dwell).toBe('number');
     expect(dwell as number).toBeGreaterThanOrEqual(0);
 
@@ -108,10 +108,10 @@ describe('WorkflowServerWritableStream write-flush telemetry', () => {
     await writer.write(new Uint8Array([3]));
     await writer.close();
 
-    const spans = await waitForSpans('workflow.stream.write', 3);
+    const spans = await waitForSpans('workflow.stream.flush', 3);
     expect(spans).toHaveLength(3);
     for (const span of spans) {
-      expect(span.attributes['workflow.stream.write.chunks']).toBe(1);
+      expect(span.attributes['workflow.stream.flush.chunks']).toBe(1);
     }
   });
 
@@ -135,10 +135,10 @@ describe('WorkflowServerWritableStream write-flush telemetry', () => {
     await writePromise;
     await writer.close();
 
-    const [span] = await waitForSpans('workflow.stream.write', 1);
+    const [span] = await waitForSpans('workflow.stream.flush', 1);
     expect(span).toBeDefined();
     const dwell = span.attributes[
-      'workflow.stream.write.buffer_dwell_ms'
+      'workflow.stream.flush.buffer_dwell_ms'
     ] as number;
     expect(dwell).toBeGreaterThanOrEqual(40);
   });
@@ -153,7 +153,7 @@ describe('WorkflowServerWritableStream write-flush telemetry', () => {
     expect(
       exporter
         .getFinishedSpans()
-        .filter((s) => s.name === 'workflow.stream.write')
+        .filter((s) => s.name === 'workflow.stream.flush')
     ).toHaveLength(0);
   });
 });

@@ -877,8 +877,9 @@ const getStreamFlushIntervalMs = (): number =>
  * span's duration is therefore the app-perceived latency of the batch
  * (buffer dwell + backpressure + RPC); `buffer_dwell_ms` isolates the
  * pre-dispatch share so client-side batching cost can be told apart from
- * network/server time (the RPC itself has its own `world.streams.*` child
- * span). Fire-and-forget; no-op without OTEL.
+ * network/server time. Named `workflow.stream.flush` — the per-request RPC
+ * beneath it is world-vercel's `workflow.stream.write` span (chunk_rtt), and
+ * the two must stay distinguishable. Fire-and-forget; no-op without OTEL.
  */
 function recordStreamWriteFlush(
   startEpochMs: number,
@@ -889,15 +890,15 @@ function recordStreamWriteFlush(
   byteCount: number
 ): void {
   void (async () => {
-    await recordElapsedSpan('workflow.stream.write', startEpochMs, {
+    await recordElapsedSpan('workflow.stream.flush', startEpochMs, {
       kind: await getSpanKind('CLIENT'),
       attributes: {
         'workflow.run.id': runId,
         'workflow.stream.name': name,
-        'workflow.stream.operation': 'write',
-        'workflow.stream.write.buffer_dwell_ms': dispatchEpochMs - startEpochMs,
-        'workflow.stream.write.chunks': chunkCount,
-        'workflow.stream.write.bytes': byteCount,
+        'workflow.stream.operation': 'flush',
+        'workflow.stream.flush.buffer_dwell_ms': dispatchEpochMs - startEpochMs,
+        'workflow.stream.flush.chunks': chunkCount,
+        'workflow.stream.flush.bytes': byteCount,
       },
     });
   })();
