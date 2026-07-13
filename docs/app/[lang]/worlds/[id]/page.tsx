@@ -1,9 +1,10 @@
+import type { TableOfContents } from 'fumadocs-core/toc';
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import type { ReactNode } from 'react';
+import type { ComponentType, ReactNode } from 'react';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
 import { getMDXComponents } from '@/components/geistdocs/mdx-components';
 import { WorldDataProvider } from '@/components/worlds/WorldDataProvider';
@@ -79,10 +80,14 @@ export default async function WorldDetailPage({ params }: PageProps) {
     const page = source.getPage(slugs);
 
     if (page) {
-      const MDX = page.data.body;
+      const pageData = page.data as typeof page.data & {
+        body: ComponentType<{ components?: Record<string, unknown> }>;
+        toc: TableOfContents;
+      };
+      const MDX = pageData.body;
 
       // Extract TOC from MDX headings (only h2s, not h3s)
-      tocItems = page.data.toc
+      tocItems = pageData.toc
         .filter((item) => item.depth === 2)
         .map((item) => ({
           id: item.url.slice(1), // Remove leading #

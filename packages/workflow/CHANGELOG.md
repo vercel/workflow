@@ -1,5 +1,76 @@
 # workflow
 
+## 5.0.0-beta.32
+
+### Patch Changes
+
+- Updated dependencies [[`4a43e39`](https://github.com/vercel/workflow/commit/4a43e39fec61519a2756f4f5e7bae5ccdac6f662)]:
+  - @workflow/core@5.0.0-beta.32
+  - @workflow/cli@5.0.0-beta.32
+  - @workflow/next@5.0.0-beta.32
+  - @workflow/nitro@5.0.0-beta.32
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.32
+  - @workflow/nest@5.0.0-beta.32
+  - @workflow/nuxt@5.0.0-beta.32
+  - @workflow/rollup@5.0.0-beta.32
+  - @workflow/sveltekit@5.0.0-beta.32
+
+## 5.0.0-beta.31
+
+### Minor Changes
+
+- [#2882](https://github.com/vercel/workflow/pull/2882) [`0b956f6`](https://github.com/vercel/workflow/commit/0b956f65cb0ab30501c72e934fc8d4352c4c3ea2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Rename `experimental_setAttributes` to `setAttributes` — the attributes feature is no longer experimental. The old name remains available as a deprecated alias.
+
+### Patch Changes
+
+- Updated dependencies [[`0b956f6`](https://github.com/vercel/workflow/commit/0b956f65cb0ab30501c72e934fc8d4352c4c3ea2)]:
+  - @workflow/core@5.0.0-beta.31
+  - @workflow/cli@5.0.0-beta.31
+  - @workflow/errors@5.0.0-beta.10
+  - @workflow/next@5.0.0-beta.31
+  - @workflow/nitro@5.0.0-beta.31
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.31
+  - @workflow/nest@5.0.0-beta.31
+  - @workflow/nuxt@5.0.0-beta.31
+  - @workflow/rollup@5.0.0-beta.31
+  - @workflow/sveltekit@5.0.0-beta.31
+
+## 5.0.0-beta.30
+
+### Patch Changes
+
+- Updated dependencies [[`f28150c`](https://github.com/vercel/workflow/commit/f28150c62667f069dbe3c47e83102fef499ab92b), [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9), [`9958424`](https://github.com/vercel/workflow/commit/9958424f22903299e3fe556ab298bd3aaa45c6ac), [`6603628`](https://github.com/vercel/workflow/commit/66036282b5d18c9bef4dea4275782bc977842606), [`48fcc4e`](https://github.com/vercel/workflow/commit/48fcc4efcc7e6c639c51ce4f8971d4d3b1ebdd23), [`25b1509`](https://github.com/vercel/workflow/commit/25b1509e19badb6498927d3fc0d6f23b65329396), [`36c63af`](https://github.com/vercel/workflow/commit/36c63af4a88adc4f404decc54b1f2130d444d264), [`2c6ee61`](https://github.com/vercel/workflow/commit/2c6ee614b50d12ed850e7589cf296150b2143a56)]:
+  - @workflow/core@5.0.0-beta.30
+  - @workflow/cli@5.0.0-beta.30
+  - @workflow/rollup@5.0.0-beta.30
+  - @workflow/astro@5.0.0-beta.30
+  - @workflow/nest@5.0.0-beta.30
+  - @workflow/next@5.0.0-beta.30
+  - @workflow/nitro@5.0.0-beta.30
+  - @workflow/nuxt@5.0.0-beta.30
+  - @workflow/sveltekit@5.0.0-beta.30
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/errors@5.0.0-beta.10
+
+## 5.0.0-beta.29
+
+### Patch Changes
+
+- Updated dependencies [[`3f69666`](https://github.com/vercel/workflow/commit/3f696668bcc436cd4b3e29213ee1d9d12e2e5b01), [`3f69666`](https://github.com/vercel/workflow/commit/3f696668bcc436cd4b3e29213ee1d9d12e2e5b01), [`712ed61`](https://github.com/vercel/workflow/commit/712ed61f0a37937c3990429508c582f3edbd4576)]:
+  - @workflow/core@5.0.0-beta.29
+  - @workflow/cli@5.0.0-beta.29
+  - @workflow/next@5.0.0-beta.29
+  - @workflow/nitro@5.0.0-beta.29
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/errors@5.0.0-beta.10
+  - @workflow/astro@5.0.0-beta.29
+  - @workflow/nest@5.0.0-beta.29
+  - @workflow/nuxt@5.0.0-beta.29
+  - @workflow/rollup@5.0.0-beta.29
+  - @workflow/sveltekit@5.0.0-beta.29
+
 ## 5.0.0-beta.28
 
 ### Patch Changes

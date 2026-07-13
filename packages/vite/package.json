@@ -1,7 +1,7 @@
 {
   "name": "@workflow/vite",
   "description": "Vite plugin for Workflow SDK",
-  "version": "5.0.0-beta.28",
+  "version": "5.0.0-beta.32",
   "type": "module",
   "main": "dist/index.js",
   "files": [
@@ -34,6 +34,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
+    "typescript": "catalog:",
     "vite": "7.3.6"
   }
 }

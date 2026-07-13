@@ -6,6 +6,7 @@ import {
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  workflowRunIdSchema,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
@@ -99,9 +100,38 @@ export interface StartOptionsBase {
    * Only flip this to `true` if your caller is itself a framework or
    * library that owns a `$`-prefixed sub-namespace and knows the
    * conventions of any other tools writing into it. Same semantics as
-   * the `experimental_setAttributes` option of the same name.
+   * the `setAttributes` option of the same name.
    */
   allowReservedAttributes?: boolean;
+
+  /**
+   * The ID of an existing run this run is being replayed from, if any.
+   *
+   * Recorded on the new run's `executionContext` as `replayedFromRunId` so
+   * tooling (e.g. the dashboard runs list) can show that a run originated as
+   * a replay and link back to its source. Set automatically by
+   * {@link recreateRunFromExisting}; there's usually no reason to pass it
+   * directly.
+   *
+   * Must be a run ID: `wrun_` followed by a 26-char ULID. It's a foreign key
+   * to the source run, so `start()` validates the exact shape and rejects
+   * anything else rather than persist a lineage link that points at garbage.
+   */
+  replayedFromRunId?: string;
+  /**
+   * Queue namespace of the target deployment. Scopes the workflow queue
+   * topic to `__{namespace}_wkf_workflow_*` (e.g. `'eve'`) instead of the
+   * default `__wkf_workflow_*`, and is also used for the cross-deployment
+   * capability probe. Falls back to `WORKFLOW_QUEUE_NAMESPACE` in the
+   * calling process.
+   *
+   * Within a deployment the env fallback is correct. Cross-context callers
+   * (e.g. the observability dashboard replaying a run) must pass the
+   * TARGET deployment's namespace explicitly: the env fallback resolves in
+   * the caller's process, and a run enqueued to a topic the target has no
+   * consumer for is never picked up.
+   */
+  namespace?: string;
 }
 
 export interface StartOptionsWithDeploymentId extends StartOptionsBase {
@@ -273,6 +303,7 @@ export async function start<TArgs extends unknown[], TResult>(
         const probe = await healthCheck(world, 'workflow', {
           deploymentId,
           timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
+          namespace: opts.namespace,
         }).catch(() => undefined);
         const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
         framedByteStreams = capabilities.framedByteStreams;
@@ -341,6 +372,19 @@ export async function start<TArgs extends unknown[], TResult>(
           }
         : {};
 
+      // `replayedFromRunId` is a foreign key to the source run; reject anything
+      // that isn't a real run ID so the lineage link can't point at garbage.
+      if (
+        opts.replayedFromRunId !== undefined &&
+        !workflowRunIdSchema.safeParse(opts.replayedFromRunId).success
+      ) {
+        throw new WorkflowRuntimeError(
+          `replayedFromRunId must be a run ID (wrun_<ulid>); received ${JSON.stringify(
+            String(opts.replayedFromRunId).slice(0, 64)
+          )}.`
+        );
+      }
+
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both
       // key derivation and the run_created event. The World implementation
@@ -378,6 +422,9 @@ export async function start<TArgs extends unknown[], TResult>(
         traceCarrier,
         workflowCoreVersion,
         features: { encryption: !!encryptionKey },
+        ...(opts.replayedFromRunId
+          ? { replayedFromRunId: opts.replayedFromRunId }
+          : {}),
       };
 
       // Call events.create (run_created) and queue in parallel.
@@ -400,7 +447,7 @@ export async function start<TArgs extends unknown[], TResult>(
           { v1Compat }
         ),
         world.queue(
-          getWorkflowQueueName(workflowName),
+          getWorkflowQueueName(workflowName, opts.namespace),
           {
             runId,
             traceCarrier,

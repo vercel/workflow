@@ -32,6 +32,7 @@ export {
   WORKFLOW_NODE_FILENAME_BANNER,
 } from './node-compat-banner.js';
 export { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
+export { WORKFLOW_OPTIONAL_OTEL_API_MODULE } from './optional-otel-api.js';
 export { WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS } from './optional-pg-native-alias.js';
 export { WORKFLOW_OPTIONAL_TYPESCRIPT_ALIAS } from './optional-typescript-alias.js';
 export {

@@ -5,6 +5,10 @@ type: guide
 summary: Split items into fixed-size batches, process each batch concurrently with Promise.allSettled, and pace batches with sleep to avoid overloading downstream services.
 ---
 
+<CopyPrompt
+  text="Implement durable batch processing. Import `sleep` from `workflow`. In an exported &quot;use workflow&quot; function, split the input records into chunks of a fixed `batchSize`. For each batch, call a &quot;use step&quot; helper such as `processRecord(record)` for every record using `Promise.allSettled` so one record failure does not hide the rest. Record successes and failures in a serializable result object. Between batches, `await sleep(&quot;1s&quot;)` or another configured delay to respect downstream rate limits. Make the step idempotent using record IDs or external idempotency keys. Verify all-success, partial-failure, and rate-paced execution paths."
+/>
+
 Use batching when you need to process a large list of items in parallel while controlling concurrency. Items are split into fixed-size batches, each batch runs concurrently, and failures in one batch don't affect others.
 
 ## When to use this

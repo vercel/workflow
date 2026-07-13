@@ -69,6 +69,7 @@
   "devDependencies": {
     "@workflow/tsconfig": "workspace:*",
     "ai": "catalog:",
+    "typescript": "catalog:",
     "workflow": "workspace:*"
   },
   "peerDependencies": {

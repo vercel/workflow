@@ -770,6 +770,89 @@ describe('start', () => {
     });
   });
 
+  describe('replay lineage (executionContext.replayedFromRunId)', () => {
+    let mockEventsCreate: ReturnType<typeof vi.fn>;
+    let mockQueue: ReturnType<typeof vi.fn>;
+
+    const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+      workflowId: 'test-workflow',
+    });
+
+    beforeEach(() => {
+      mockEventsCreate = vi.fn().mockImplementation((runId) => {
+        return Promise.resolve({
+          run: { runId: runId ?? 'wrun_test123', status: 'pending' },
+        });
+      });
+      mockQueue = vi.fn().mockResolvedValue(undefined);
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      });
+    });
+
+    afterEach(() => {
+      setWorld(undefined);
+      vi.clearAllMocks();
+    });
+
+    it('records replayedFromRunId in executionContext when provided', async () => {
+      const sourceRunId = 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+      await start(validWorkflow, [], { replayedFromRunId: sourceRunId });
+
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          eventType: 'run_created',
+          eventData: expect.objectContaining({
+            executionContext: expect.objectContaining({
+              replayedFromRunId: sourceRunId,
+            }),
+          }),
+        }),
+        expect.anything()
+      );
+    });
+
+    it('omits replayedFromRunId from executionContext when not provided', async () => {
+      await start(validWorkflow, []);
+
+      const eventData = mockEventsCreate.mock.calls[0]?.[1]?.eventData;
+      expect(eventData.executionContext).not.toHaveProperty(
+        'replayedFromRunId'
+      );
+    });
+
+    it('rejects a replayedFromRunId without the wrun_ prefix', async () => {
+      await expect(
+        start(validWorkflow, [], { replayedFromRunId: 'not-a-run-id' })
+      ).rejects.toThrow(/replayedFromRunId must be a run ID/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('rejects a wrun_-prefixed value whose body is not a valid ULID', async () => {
+      await expect(
+        start(validWorkflow, [], {
+          replayedFromRunId: `wrun_${'x'.repeat(300)}`,
+        })
+      ).rejects.toThrow(/replayedFromRunId must be a run ID/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-string replayedFromRunId', async () => {
+      await expect(
+        start(validWorkflow, [], {
+          // Types forbid this, but JS callers can still pass it.
+          replayedFromRunId: 12345 as unknown as string,
+        })
+      ).rejects.toThrow(/replayedFromRunId must be a run ID/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+  });
+
   describe('overload type inference', () => {
     // Type-only assertions that don't execute start() at runtime.
     // We use expectTypeOf on the function signature's return type directly.
@@ -812,7 +895,6 @@ describe('start', () => {
       expectTypeOf<DeploymentIdOverload>().toMatchTypeOf<typeof start>();
     });
   });
-
   describe('createRunId', () => {
     let mockEventsCreate: ReturnType<typeof vi.fn>;
     let mockQueue: ReturnType<typeof vi.fn>;
@@ -949,6 +1031,103 @@ describe('start', () => {
         expect.stringMatching(/^wrun_[0-9A-HJKMNP-TV-Z]{26}$/),
         expect.objectContaining({ eventType: 'run_created' }),
         expect.any(Object)
+      );
+    });
+  });
+
+  describe('queue namespace', () => {
+    let mockEventsCreate: ReturnType<typeof vi.fn>;
+    let mockQueue: ReturnType<typeof vi.fn>;
+
+    const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+      workflowId: 'test-workflow',
+    });
+
+    beforeEach(() => {
+      mockEventsCreate = vi.fn().mockImplementation((runId) => {
+        return Promise.resolve({
+          run: { runId: runId ?? 'wrun_test123', status: 'pending' },
+        });
+      });
+      mockQueue = vi.fn().mockResolvedValue(undefined);
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      });
+    });
+
+    afterEach(() => {
+      setWorld(undefined);
+      vi.clearAllMocks();
+    });
+
+    it('enqueues to the default topic when no namespace is provided', async () => {
+      await start(validWorkflow, []);
+
+      expect(mockQueue).toHaveBeenCalledWith(
+        '__wkf_workflow_test-workflow',
+        expect.anything(),
+        expect.anything()
+      );
+    });
+
+    it('enqueues to the namespaced topic when a namespace is provided', async () => {
+      await start(validWorkflow, [], { namespace: 'eve' });
+
+      expect(mockQueue).toHaveBeenCalledWith(
+        '__eve_wkf_workflow_test-workflow',
+        expect.anything(),
+        expect.anything()
+      );
+    });
+
+    it('probes the namespaced health-check topic on cross-deployment starts', async () => {
+      // Cross-deployment starts (explicit deploymentId different from the
+      // current one) run a capability probe before enqueueing. The probe
+      // must target the same namespaced topic family as the run itself —
+      // otherwise deployments using a queue namespace never see it.
+      const healthResponse = JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: SPEC_VERSION_CURRENT,
+        workflowCoreVersion: '0.0.0-test',
+      });
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        streams: {
+          get: vi.fn(
+            async () =>
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode(healthResponse));
+                  controller.close();
+                },
+              })
+          ),
+        },
+      });
+
+      await start(validWorkflow, [], {
+        deploymentId: 'dpl_other',
+        namespace: 'eve',
+      });
+
+      expect(mockQueue).toHaveBeenCalledWith(
+        '__eve_wkf_workflow_health_check',
+        expect.objectContaining({ __healthCheck: true }),
+        expect.objectContaining({ deploymentId: 'dpl_other' })
+      );
+      expect(mockQueue).toHaveBeenCalledWith(
+        '__eve_wkf_workflow_test-workflow',
+        expect.anything(),
+        expect.objectContaining({ deploymentId: 'dpl_other' })
       );
     });
   });

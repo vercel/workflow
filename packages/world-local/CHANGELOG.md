@@ -1,5 +1,37 @@
 # @workflow/world-local
 
+## 5.0.0-beta.27
+
+### Patch Changes
+
+- [#2888](https://github.com/vercel/workflow/pull/2888) [`7a1ea5a`](https://github.com/vercel/workflow/commit/7a1ea5a45afd07601934a2f3ff1d1044f3bd9db8) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Use the active queue namespace when re-enqueuing workflow runs during world startup recovery.
+
+- Updated dependencies [[`7a1ea5a`](https://github.com/vercel/workflow/commit/7a1ea5a45afd07601934a2f3ff1d1044f3bd9db8), [`0b956f6`](https://github.com/vercel/workflow/commit/0b956f65cb0ab30501c72e934fc8d4352c4c3ea2)]:
+  - @workflow/world@5.0.0-beta.19
+  - @workflow/errors@5.0.0-beta.10
+
+## 5.0.0-beta.26
+
+### Patch Changes
+
+- [#2876](https://github.com/vercel/workflow/pull/2876) [`84df8f3`](https://github.com/vercel/workflow/commit/84df8f3a05bb52ae4a8c45c9238b91e6958f300b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Update `@vercel/queue` from 0.3.1 to 0.4.0
+
+- [#2790](https://github.com/vercel/workflow/pull/2790) [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Centralize workflow event type classifiers and event-data payload field helpers.
+
+- Updated dependencies [[`f28150c`](https://github.com/vercel/workflow/commit/f28150c62667f069dbe3c47e83102fef499ab92b), [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9), [`6603628`](https://github.com/vercel/workflow/commit/66036282b5d18c9bef4dea4275782bc977842606)]:
+  - @workflow/world@5.0.0-beta.18
+  - @workflow/errors@5.0.0-beta.10
+
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- [#2830](https://github.com/vercel/workflow/pull/2830) [`79a9813`](https://github.com/vercel/workflow/commit/79a9813f25eb907809fcd329accb76ac4d274480) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Fix hook operations scaling with total event history: hook creation, hook cache rebuilds, and token lookups now use durable per-token/per-hookId indexes instead of scanning the entire global event log, and run-termination hook cleanup uses per-run markers instead of reading every live hook. Directory listings read files concurrently, `runs.list` defaults to a page size of 200, and compiled filename regexes are reused.
+
+- Updated dependencies [[`3f69666`](https://github.com/vercel/workflow/commit/3f696668bcc436cd4b3e29213ee1d9d12e2e5b01), [`712ed61`](https://github.com/vercel/workflow/commit/712ed61f0a37937c3990429508c582f3edbd4576)]:
+  - @workflow/world@5.0.0-beta.17
+  - @workflow/errors@5.0.0-beta.10
+
 ## 5.0.0-beta.24
 
 ### Patch Changes

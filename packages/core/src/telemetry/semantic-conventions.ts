@@ -130,6 +130,24 @@ export const WorkflowWaitsCreated = SemanticConvention<number>(
   'workflow.waits.created'
 );
 
+/**
+ * Number of inline-owned steps this invocation re-executed because it is a
+ * redelivery of their owning queue message (crash recovery for inline
+ * steps — see the inline step ownership changelog, workflow#2780).
+ */
+export const WorkflowOwnedRecoverySteps = SemanticConvention<number>(
+  'workflow.inline_ownership.owned_recovery_steps'
+);
+
+/**
+ * Number of pending steps for which this replay suppressed the immediate
+ * requeue (another invocation inline-owns them under a live lease) and
+ * ensured a delayed backstop wake instead.
+ */
+export const WorkflowBackstopWakesArmed = SemanticConvention<number>(
+  'workflow.inline_ownership.backstop_wakes_armed'
+);
+
 // Route attributes
 
 /** The workflow runtime route being handled */
@@ -177,6 +195,29 @@ export const StepMaxRetries = SemanticConvention<number>('step.max_retries');
 /** Whether trace context was propagated to this step execution */
 export const StepTracePropagated = SemanticConvention<boolean>(
   'step.trace.propagated'
+);
+
+/**
+ * Client-measured time-to-first-step latency in milliseconds: run creation →
+ * this step's body beginning to execute, minus pre-step hook-creation time.
+ * Only present on the run's first step execution when it qualified for
+ * measurement (see runtime/step-latency.ts).
+ */
+export const StepTtfsMs = SemanticConvention<number>('step.ttfs_ms');
+
+/**
+ * Client-measured step-to-step overhead in milliseconds: the previous step's
+ * terminal event → this step's body beginning to execute. Only present when
+ * the two steps ran back-to-back.
+ */
+export const StepStsoMs = SemanticConvention<number>('step.stso_ms');
+
+/**
+ * Runtime startup-latency optimizations active for the ttfs/stso measurement
+ * (e.g. 'turbo', 'lazyStepStart', 'optimisticStart').
+ */
+export const StepLatencyOptimizations = SemanticConvention<string[]>(
+  'step.latency_optimizations'
 );
 
 /** Whether the step was skipped during execution */

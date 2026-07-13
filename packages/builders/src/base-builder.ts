@@ -902,9 +902,7 @@ ${importStatements.join('\n')}
 export const __steps_registered = true;
 `;
     await mkdir(dirname(outfile), { recursive: true });
-    const tempPath = `${outfile}.${randomUUID()}.tmp`;
-    await writeFile(tempPath, output);
-    await rename(tempPath, outfile);
+    await this.writeGeneratedFile(outfile, output);
 
     const manifestFiles = Array.from(
       new Set([...stepFiles, ...serdeOnlyFiles, resolvedBuiltInSteps])

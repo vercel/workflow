@@ -10,6 +10,10 @@ related:
   - /cookbook/common-patterns/webhooks
 ---
 
+<CopyPrompt
+  text="Add a deadline to this slow workflow operation. Import `sleep` from `workflow`. In the exported &quot;use workflow&quot; function, race the operation against a durable sleep: `await Promise.race([slowStep(...), deadline(&quot;10m&quot;)])`, where `deadline` is a helper that awaits `sleep(duration)` and returns a sentinel value or throws. Branch on the winner: continue normally on success, run the fallback or compensation path on timeout. Use the same pattern to bound hooks and webhooks. `Promise.race` does not cancel the loser — the underlying step keeps running — so pass an `AbortSignal` into the step for cooperative cancellation and make non-idempotent side effects retry-safe with idempotency keys. Verify the fast path, the timeout path, and side-effect safety when the loser completes late."
+/>
+
 A common requirement is bounding how long a workflow waits for something to finish — a slow step, an external webhook, a human approval. Race the operation against a durable `sleep()` with `Promise.race()` — whichever finishes first wins, and the loser keeps running but its result is ignored.
 
 ## When to use this

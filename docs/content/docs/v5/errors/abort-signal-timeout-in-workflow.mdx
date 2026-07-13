@@ -11,6 +11,10 @@ related:
   - /docs/errors/timeout-in-workflow
 ---
 
+<CopyPrompt
+  text="Replace `AbortSignal.timeout()` inside workflow functions. Find the failing `AbortSignal.timeout(ms)` call in a `&quot;use workflow&quot;` function. Import `sleep` from `workflow`. Create `const controller = new AbortController()`, pass `controller.signal` into the async work that supports cancellation, and start a deterministic timeout with `void sleep(&quot;10s&quot;).then(() => controller.abort())` or a `Promise.race` between the work and `sleep(...)`. Keep actual fetch/SDK side effects inside `&quot;use step&quot;` helpers when they need Node.js APIs. Treat intentional aborts as non-retryable if appropriate by throwing `FatalError`. Verify the operation succeeds before the timeout, aborts after the timeout, and replays without abort-signal-timeout-in-workflow."
+/>
+
 ## Error
 
 ```

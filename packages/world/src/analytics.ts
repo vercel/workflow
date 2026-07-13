@@ -5,7 +5,34 @@ import type { PaginatedResponse, PaginationOptions } from './shared.js';
 import { StepStatusSchema } from './steps.js';
 import { WaitStatusSchema } from './waits.js';
 
-const NullableDateSchema = z.coerce.date().nullable().optional();
+/**
+ * Timezone-naive datetime string, e.g. `2026-07-13 17:09:11.593` — the
+ * shape ClickHouse-backed analytics endpoints serialize `DateTime64`
+ * values as. Such values are UTC by convention but carry no designator.
+ */
+const NAIVE_DATETIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
+
+/**
+ * Date coercion that parses timezone-naive strings as UTC.
+ *
+ * `z.coerce.date()` delegates to `new Date(value)`, which interprets a
+ * naive string in the **process's local timezone**. That is only correct
+ * when the process runs in UTC (e.g. the deployed observability web app's
+ * server actions) and is wrong by the local UTC offset everywhere else —
+ * the CLI on a laptop, `workflow web --localUi`, tests. Normalizing naive
+ * strings to an explicit `Z` designator makes parsing timezone-independent.
+ * Values that already carry timezone information (a `Z` or `±hh:mm`
+ * offset), and non-string inputs (Date, epoch number), are forwarded
+ * without modification before coercion.
+ */
+const UTCDateSchema = z.preprocess((value) => {
+  if (typeof value === 'string' && NAIVE_DATETIME.test(value)) {
+    return `${value.replace(' ', 'T')}Z`;
+  }
+  return value;
+}, z.coerce.date());
+
+const NullableDateSchema = UTCDateSchema.nullable().optional();
 const NullableStringSchema = z.string().nullable().optional();
 const NullableBooleanSchema = z.boolean().nullable().optional();
 
@@ -19,8 +46,8 @@ export const AnalyticsRunSchema = z.object({
   workflowName: z.string(),
   specVersion: z.coerce.number().optional(),
   attributes: z.record(z.string(), z.string()).default({}),
-  createdAt: z.coerce.date(),
-  updatedAt: z.coerce.date(),
+  createdAt: UTCDateSchema,
+  updatedAt: UTCDateSchema,
   startedAt: NullableDateSchema,
   completedAt: NullableDateSchema,
   errorCode: NullableStringSchema,
@@ -34,8 +61,8 @@ export const AnalyticsStepSchema = z.object({
   stepName: NullableStringSchema,
   status: StepStatusSchema,
   attempt: z.number().optional(),
-  createdAt: z.coerce.date(),
-  updatedAt: z.coerce.date(),
+  createdAt: UTCDateSchema,
+  updatedAt: UTCDateSchema,
   startedAt: NullableDateSchema,
   completedAt: NullableDateSchema,
   retryAfter: NullableDateSchema,
@@ -54,8 +81,8 @@ export const AnalyticsEventSchema = z.object({
   workflowName: z.string(),
   deploymentId: z.string(),
   specVersion: z.coerce.number().optional(),
-  runCreatedAt: z.coerce.date(),
-  createdAt: z.coerce.date(),
+  runCreatedAt: UTCDateSchema,
+  createdAt: UTCDateSchema,
   region: NullableStringSchema,
   vercelId: NullableStringSchema,
   requestId: NullableStringSchema,
@@ -72,8 +99,8 @@ export const AnalyticsHookSchema = z.object({
   runId: z.string(),
   hookId: z.string(),
   status: z.enum(['created', 'received', 'disposed', 'conflict']),
-  createdAt: z.coerce.date(),
-  updatedAt: z.coerce.date(),
+  createdAt: UTCDateSchema,
+  updatedAt: UTCDateSchema,
   receivedAt: NullableDateSchema,
   disposedAt: NullableDateSchema,
   isWebhook: NullableBooleanSchema,
@@ -87,8 +114,8 @@ export const AnalyticsWaitSchema = z.object({
   waitId: z.string(),
   status: WaitStatusSchema,
   resumeAt: NullableDateSchema,
-  createdAt: z.coerce.date(),
-  updatedAt: z.coerce.date(),
+  createdAt: UTCDateSchema,
+  updatedAt: UTCDateSchema,
   completedAt: NullableDateSchema,
   workflowCoreVersion: NullableStringSchema,
   workflowEncryptionEnabled: NullableBooleanSchema,

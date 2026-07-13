@@ -21,7 +21,30 @@ let otelApiPromise: Promise<typeof api | null> | null = null;
 
 async function getOtelApi(): Promise<typeof api | null> {
   if (!otelApiPromise) {
-    otelApiPromise = import('@opentelemetry/api').catch(() => null);
+    // Static specifier is intentional: esbuild-bundled targets (the CLI's
+    // `vercel-build-output-api` build, Nitro, Astro) ship a self-contained
+    // bundle with no node_modules, so `@opentelemetry/api` (an optional peer)
+    // must be inlined at build time — a runtime-built specifier is opaque to
+    // esbuild and would silently disable tracing there. Bundlers that reject
+    // an unresolvable static `import()` when the peer is absent (Rollup/Vite,
+    // e.g. SvelteKit) externalize it in the framework integration instead.
+    otelApiPromise = import('@opentelemetry/api').catch((error) => {
+      // A missing module is expected for apps without OTEL — but the same
+      // silent null also swallows bundler/resolution failures in apps that
+      // DO register a tracer, which then just lose every world-vercel span.
+      // Surface the reason under DEBUG so that failure mode is diagnosable.
+      if (
+        typeof process !== 'undefined' &&
+        typeof process.env.DEBUG === 'string' &&
+        (process.env.DEBUG.includes('workflow:') || process.env.DEBUG === '*')
+      ) {
+        console.warn(
+          '[workflow] @opentelemetry/api unavailable — world-vercel spans disabled:',
+          error instanceof Error ? error.message : error
+        );
+      }
+      return null;
+    });
   }
   return otelApiPromise;
 }
@@ -162,3 +185,21 @@ export const WorkflowRunId = SemanticConvention<string>('workflow.run.id');
 
 /** Unique identifier for the step instance */
 export const StepId = SemanticConvention<string>('step.id');
+
+/** Name of the stream being written or read (workflow.stream.name) */
+export const WorkflowStreamName = SemanticConvention<string>(
+  'workflow.stream.name'
+);
+
+/**
+ * Stream operation performed by the client span
+ * (workflow.stream.operation): write | write_multi | close | read.
+ */
+export const WorkflowStreamOperation = SemanticConvention<string>(
+  'workflow.stream.operation'
+);
+
+/** Requested start index for a live stream read (workflow.stream.start_index) */
+export const WorkflowStreamStartIndex = SemanticConvention<number>(
+  'workflow.stream.start_index'
+);

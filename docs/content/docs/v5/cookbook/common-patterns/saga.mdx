@@ -5,6 +5,10 @@ type: guide
 summary: Run a sequence of steps where each registers a compensation. If any step throws a FatalError, compensations execute in reverse order to restore consistency.
 ---
 
+<CopyPrompt
+  text="Implement a saga-style workflow. Import `FatalError` from `workflow`. In the exported &quot;use workflow&quot; function, keep a compensation stack such as `const compensations: Array<() => Promise<void>> = []`. For each forward side effect, create a &quot;use step&quot; helper, await it, then push the matching compensation &quot;use step&quot; helper onto the stack. Throw `FatalError` for permanent business failures and normal errors for retryable failures. In the workflow catch block, run compensations in reverse order with `for (const compensate of compensations.reverse()) await compensate()`, then rethrow or return a failed status. Make each compensation idempotent. Verify successful completion, a fatal failure after multiple steps, and a replay/retry during rollback."
+/>
+
 Use the saga pattern when a business transaction spans multiple services and you need automatic rollback if any step fails. Each forward step registers a compensation, and on failure the workflow unwinds them in reverse order.
 
 ## When to use this

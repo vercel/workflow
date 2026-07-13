@@ -136,6 +136,59 @@ test('renders a completed run with a table and embedded history', async () => {
   assert.strictEqual(history[0].results[0].metrics.length, 4);
 });
 
+test('renders avg deltas against a baseline and embeds them in history', async () => {
+  const { renderComment, extractHistory } = await loadModule();
+  const baseline = sampleResult({
+    metrics: sampleResult()
+      .metrics.filter((row) => row.metric !== 'wo') // no baseline for WO
+      .map((row) => ({
+        ...row,
+        // ttfs 412.3 vs 400 → +3.1%; sl 55.1 vs 50 → +10%; stso 91 vs 91 → ±0%
+        avg: { ttfs: 400, sl: 50, stso: 91 }[row.metric],
+      })),
+  });
+  const body = renderComment({
+    status: 'completed',
+    results: [sampleResult()],
+    baseline: [baseline],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+
+  // 412.3 renders rounded (>= 100), 55.1 keeps its decimal
+  assert.match(body, /\| 412 \(\+3\.1%\) \|/);
+  assert.match(body, /\| 55\.1 \(\+10%\) \|/);
+  assert.match(body, /\| 91 \(±0%\) \|/);
+  // WO has no baseline row → no delta
+  assert.match(body, /\| 1200 \|/);
+  assert.match(
+    body,
+    /Avg deltas compare against the most recent benchmark run on `main`/
+  );
+  // The annotation is embedded so history re-renders keep the delta
+  const history = extractHistory(body);
+  assert.strictEqual(history[0].results[0].metrics[0].baselineAvg, 400);
+  const rerendered = renderComment({
+    status: 'running',
+    results: [],
+    history,
+    commit: 'ffffff1234567890',
+  });
+  assert.match(rerendered, /\| 412 \(\+3\.1%\) \|/);
+});
+
+test('renders no deltas without a baseline', async () => {
+  const { renderComment } = await loadModule();
+  const body = renderComment({
+    status: 'completed',
+    results: [sampleResult()],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+  assert.doesNotMatch(body, /%\)/);
+  assert.doesNotMatch(body, /Avg deltas/);
+});
+
 test('collapses previous results on re-runs', async () => {
   const { renderComment, extractHistory } = await loadModule();
   const first = renderComment({
@@ -259,6 +312,26 @@ test('CLI renders results from a directory and previous body file', async () => 
   const first = fs.readFileSync(firstOut, 'utf8');
   assert.match(first, /398 🔴/);
 
+  // Baseline files arrive nested in per-artifact subdirectories (that's how
+  // the download action extracts them); loadResults must find them anyway.
+  const baselineDir = path.join(dir, 'baseline');
+  fs.mkdirSync(
+    path.join(baselineDir, 'bench-results-nextjs-turbopack-vercel'),
+    {
+      recursive: true,
+    }
+  );
+  const baseline = sampleResult();
+  baseline.metrics = baseline.metrics.map((row) => ({ ...row, avg: 400 }));
+  fs.writeFileSync(
+    path.join(
+      baselineDir,
+      'bench-results-nextjs-turbopack-vercel',
+      'bench-results-nextjs-turbopack-vercel.json'
+    ),
+    JSON.stringify(baseline)
+  );
+
   const secondOut = path.join(dir, 'comment2.md');
   execFileSync(process.execPath, [
     SCRIPT,
@@ -266,6 +339,8 @@ test('CLI renders results from a directory and previous body file', async () => 
     'completed',
     '--results-dir',
     resultsDir,
+    '--baseline-dir',
+    baselineDir,
     '--previous-body',
     firstOut,
     '--commit',
@@ -276,6 +351,8 @@ test('CLI renders results from a directory and previous body file', async () => 
   const second = fs.readFileSync(secondOut, 'utf8');
   assert.match(second, /Previous results \(1\)/);
   assert.match(second, /#### 1111111/);
+  // ttfs avg 412.3 (rendered rounded) vs baseline 400 → +3.1%
+  assert.match(second, /\| 412 \(\+3\.1%\) \|/);
 });
 
 test('CLI fails when completed with no results', async () => {
