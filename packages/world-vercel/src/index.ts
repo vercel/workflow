@@ -1,6 +1,7 @@
 import type { World } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
+import { createRunId } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue } from './queue.js';
@@ -10,6 +11,7 @@ import { createStreamer } from './streamer.js';
 import type { APIConfig } from './utils.js';
 
 export { createAnalytics } from './analytics.js';
+export { createRunId } from './create-run-id.js';
 export {
   createGetEncryptionKeyForRun,
   deriveRunKey,
@@ -45,6 +47,7 @@ export function createWorld(config?: APIConfig): World {
     ...createStorage(config),
     analytics: createAnalytics(config),
     ...instrumentObject('world.streams', createStreamer(config)),
+    createRunId,
     getEncryptionKeyForRun: createGetEncryptionKeyForRun(
       projectId,
       config?.projectConfig?.teamId,

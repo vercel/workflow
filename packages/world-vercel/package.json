@@ -39,6 +39,7 @@
     "@workflow/errors": "workspace:*",
     "@workflow/world": "workspace:*",
     "cbor-x": "1.6.0",
+    "ulid": "catalog:",
     "undici": "catalog:",
     "zod": "catalog:"
   },

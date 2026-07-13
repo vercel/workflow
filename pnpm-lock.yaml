@@ -1537,6 +1537,9 @@ importers:
       cbor-x:
         specifier: 1.6.0
         version: 1.6.0
+      ulid:
+        specifier: 'catalog:'
+        version: 3.0.1
       undici:
         specifier: 'catalog:'
         version: 7.28.0
