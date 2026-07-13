@@ -44,7 +44,7 @@ For self-hosted deployments, use the [Postgres World](/worlds/postgres). For loc
 
 ## Multi-region
 
-The Vercel World runs in every [Vercel Function region](https://vercel.com/docs/regions). Each workflow run is pinned to a single region at creation time, and everything about that run stays there: its stored state, its step execution, and its streams are all served region-locally — no cross-region round trips on the hot path.
+The Vercel World runs in every [Vercel Function region](https://vercel.com/docs/regions). Each workflow run is pinned to a single region at creation time: its stored state, queue dispatch, and streams are all served from that region — no cross-region round trips on the hot path. When your application is deployed in the run's region (the automatic case below), step execution is region-local too.
 
 <Callout type="info">
   Multi-region requires `workflow` **5.x** (currently in beta).
@@ -70,6 +70,18 @@ import { myWorkflow } from "@/workflows/my-workflow";
 
 const run = await start(myWorkflow, [input], { region: "sfo1" });
 ```
+
+<Callout type="warn">
+  The `region` option controls where the run's **data is stored** and where
+  its **queue messages are dispatched from** — it does not deploy your code
+  there. Your workflow and step functions execute in the regions your
+  application is deployed to. For execution to actually happen in the
+  specified region, your app must be deployed there — via
+  [`regions`](https://vercel.com/docs/project-configuration#regions) in
+  `vercel.json` or the Function Regions setting in your project settings.
+  If it isn't, the run's data lives in the requested region but its steps
+  execute in the nearest region your app is deployed to.
+</Callout>
 
 ### Good to know
 
