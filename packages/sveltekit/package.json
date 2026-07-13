@@ -38,6 +38,7 @@
     "@types/fs-extra": "11.0.4",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
+    "typescript": "catalog:",
     "vite": "7.3.6"
   }
 }

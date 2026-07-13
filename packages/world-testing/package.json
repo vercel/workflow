@@ -38,6 +38,7 @@
     "@types/jsonlines": "0.1.5",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
+    "typescript": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {

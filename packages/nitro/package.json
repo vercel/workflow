@@ -40,6 +40,7 @@
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "nitro": "catalog:",
+    "typescript": "catalog:",
     "vite": "7.3.6"
   }
 }

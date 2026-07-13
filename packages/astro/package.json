@@ -36,6 +36,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "astro": "7.0.6"
+    "astro": "7.0.6",
+    "typescript": "catalog:"
   }
 }

@@ -58,6 +58,7 @@
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "genversion": "3.2.0",
+    "typescript": "catalog:",
     "vitest": "catalog:"
   }
 }

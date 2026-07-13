@@ -46,6 +46,7 @@
     "@types/semver": "7.7.1",
     "@workflow/tsconfig": "workspace:*",
     "next": "16.2.10",
+    "typescript": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {

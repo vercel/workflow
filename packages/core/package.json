@@ -126,7 +126,8 @@
     "@types/semver": "7.7.1",
     "@workflow/tsconfig": "workspace:*",
     "cross-env": "10.1.0",
-    "genversion": "3.2.0"
+    "genversion": "3.2.0",
+    "typescript": "catalog:"
   },
   "peerDependencies": {
     "@opentelemetry/api": "1"

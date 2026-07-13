@@ -34,6 +34,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
+    "typescript": "catalog:",
     "vite": "7.3.6"
   }
 }
