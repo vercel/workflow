@@ -407,10 +407,7 @@ export interface World extends Queue, Streamer, Storage {
    *
    * The contract:
    * - **Cheap and pure.** Called once per displayed run, so avoid I/O —
-   *   prefer deriving fields from the entity you are given. Returning a
-   *   Promise is allowed for implementations that cannot avoid async
-   *   work, but consumers may evaluate rows concurrently and output
-   *   rendering blocks on the slowest row.
+   *   prefer deriving fields from the entity you are given.
    * - **Read only what you recognise.** The argument is the run entity
    *   as the caller has it (a full storage run, or a leaner analytics
    *   row) — typed loosely for the same reason as {@link createRunId}.
