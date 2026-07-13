@@ -22,8 +22,8 @@ const NAIVE_DATETIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
  * the CLI on a laptop, `workflow web --localUi`, tests. Normalizing naive
  * strings to an explicit `Z` designator makes parsing timezone-independent.
  * Values that already carry timezone information (a `Z` or `±hh:mm`
- * offset), and non-string inputs (Date, epoch number), pass through
- * unchanged.
+ * offset), and non-string inputs (Date, epoch number), are forwarded
+ * without modification before coercion.
  */
 const UTCDateSchema = z.preprocess((value) => {
   if (typeof value === 'string' && NAIVE_DATETIME.test(value)) {
