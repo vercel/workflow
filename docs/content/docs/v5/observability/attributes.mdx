@@ -73,13 +73,15 @@ Expanding an `attr_set` event — in the run sidebar or the Events tab — shows
 
 ## Searching and filtering by attributes
 
-The [Analytics API](/docs/api-reference/workflow-runtime/world/analytics) can discover which attribute keys and values exist and filter run listings by them:
+The [Analytics API](/docs/api-reference/workflow-runtime/world/analytics) can discover which attribute keys exist and filter run listings by them. The `analytics` namespace is optional on `World` — feature-detect it before use; it is absent on local, Postgres, and other custom Worlds:
 
-{/* @skip-typecheck: world.analytics is optional and checked at runtime */}
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
 
 const world = await getWorld();
+if (!world.analytics) {
+  throw new Error("This World does not support analytics queries"); // [!code highlight]
+}
 
 // Which attribute keys exist, and on how many runs?
 const keys = await world.analytics.attributes.list();
