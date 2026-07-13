@@ -275,6 +275,91 @@ describe('listRuns', () => {
     expect(output.data[0].region).toBeNull();
   });
 
+  it('never lets describeRun overwrite canonical run fields', async () => {
+    const run = {
+      runId: 'wrun_41KX206BTK10M0C31CMN2AS1JS',
+      status: 'running',
+      deploymentId: 'dep-1',
+      workflowName: 'workflow//./src/workflows/test//myWorkflow',
+      specVersion: 2,
+      attributes: {},
+      createdAt: new Date('2026-06-30T00:00:00.000Z'),
+      updatedAt: new Date('2026-06-30T00:00:00.000Z'),
+      startedAt: new Date('2026-06-30T00:00:01.000Z'),
+      completedAt: null,
+      errorCode: null,
+      workflowCoreVersion: null,
+      workflowEncryptionEnabled: false,
+    } satisfies AnalyticsRun;
+    const world = {
+      // Hostile/buggy world: tries to clobber canonical fields.
+      describeRun: vi
+        .fn()
+        .mockReturnValue({ status: 'hacked', runId: 'nope', region: 'sfo1' }),
+      analytics: {
+        runs: {
+          list: vi.fn().mockResolvedValue({
+            data: [run],
+            cursor: null,
+            hasMore: false,
+          }),
+        },
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listRuns(world, { json: true });
+
+    const output = JSON.parse(String(write.mock.calls[0][0]));
+    expect(output.data[0].status).toBe('running');
+    expect(output.data[0].runId).toBe(run.runId);
+    expect(output.data[0].region).toBe('sfo1');
+  });
+
+  it('treats a throwing describeRun as contributing no fields', async () => {
+    const run = {
+      runId: 'wrun_41KX206BTK10M0C31CMN2AS1JS',
+      status: 'running',
+      deploymentId: 'dep-1',
+      workflowName: 'workflow//./src/workflows/test//myWorkflow',
+      specVersion: 2,
+      attributes: {},
+      createdAt: new Date('2026-06-30T00:00:00.000Z'),
+      updatedAt: new Date('2026-06-30T00:00:00.000Z'),
+      startedAt: new Date('2026-06-30T00:00:01.000Z'),
+      completedAt: null,
+      errorCode: null,
+      workflowCoreVersion: null,
+      workflowEncryptionEnabled: false,
+    } satisfies AnalyticsRun;
+    const world = {
+      describeRun: vi.fn().mockImplementation(() => {
+        throw new Error('buggy world');
+      }),
+      analytics: {
+        runs: {
+          list: vi.fn().mockResolvedValue({
+            data: [run],
+            cursor: null,
+            hasMore: false,
+          }),
+        },
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    // Must not throw despite the world violating the no-throw contract.
+    await listRuns(world, { json: true });
+
+    const output = JSON.parse(String(write.mock.calls[0][0]));
+    expect(output.data[0].status).toBe('running');
+    expect('region' in output.data[0]).toBe(false);
+  });
+
   it('adds no world fields when the world lacks describeRun', async () => {
     const run = {
       runId: 'wrun_01KX2M5N3RBNC12RYWYYH4WWQJ',

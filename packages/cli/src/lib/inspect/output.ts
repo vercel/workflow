@@ -459,6 +459,36 @@ const showJson = (data: unknown) => {
   process.stdout.write(`${json}\n`);
 };
 
+/**
+ * Defensively evaluate `World.describeRun` for one run row.
+ *
+ * The interface contract says implementations are pure and must not
+ * throw — but it is an external extension point, so the CLI does not
+ * trust that: a throwing implementation contributes no fields instead
+ * of crashing the command. Keys that already exist on the run row are
+ * dropped so a world can never overwrite canonical fields (`status`,
+ * `runId`, ...) in inspect output.
+ */
+const safeWorldFields = (
+  describeRun: NonNullable<World['describeRun']>,
+  row: Record<string, unknown>
+): Record<string, string | null> => {
+  let fields: Record<string, string | null> | null;
+  try {
+    fields = describeRun(row);
+  } catch {
+    return {};
+  }
+  if (!fields) return {};
+  const safe: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (!(key in row)) {
+      safe[key] = value;
+    }
+  }
+  return safe;
+};
+
 const showJsonPage = <T>(page: PageData<T>) => {
   showJson({
     data: page.data,
@@ -659,7 +689,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
   ): Record<string, unknown>[] => {
     if (!describeRun) return rows;
     return rows.map((row) => {
-      const fields = describeRun(row) ?? {};
+      const fields = safeWorldFields(describeRun, row);
       for (const key of Object.keys(fields)) {
         if (!describedKeys.includes(key)) describedKeys.push(key);
       }
@@ -783,15 +813,19 @@ export const showRun = async (
   try {
     const run = await world.runs.get(runId, { resolveData: 'all' });
     const hydrated = await hydrateResourceIO(run, resolveKey);
-    // World-specific display fields (World.describeRun). Method-style
-    // call preserves `this`; `null` field values are kept so structured
-    // output distinguishes "undeterminable" from "hook absent".
-    const worldFields = world.describeRun?.(
-      run as unknown as Record<string, unknown>
-    );
-    const runWithHydratedIO = worldFields
-      ? { ...hydrated, ...worldFields }
-      : hydrated;
+    // World-specific display fields (World.describeRun), evaluated
+    // defensively — see safeWorldFields. `null` field values are kept so
+    // structured output distinguishes "undeterminable" from "hook absent".
+    const worldFields = world.describeRun
+      ? safeWorldFields(
+          world.describeRun.bind(world),
+          run as unknown as Record<string, unknown>
+        )
+      : undefined;
+    const runWithHydratedIO =
+      worldFields && Object.keys(worldFields).length > 0
+        ? { ...hydrated, ...worldFields }
+        : hydrated;
     if (opts.json) {
       showJson(runWithHydratedIO);
       return;
