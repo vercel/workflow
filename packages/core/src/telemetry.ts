@@ -201,7 +201,7 @@ function logOtelDiagnosticOnce(otel: typeof api, tracer: api.Tracer): void {
     const provider = otel.trace.getTracerProvider();
     const delegate =
       (provider as { getDelegate?: () => unknown }).getDelegate?.() ?? provider;
-    const probe = tracer.startSpan('workflow.otel.probe');
+    const probe = tracer.startSpan('workflow.otel.probe.core');
     console.warn(
       '[workflow:otel-diag] core',
       JSON.stringify({
