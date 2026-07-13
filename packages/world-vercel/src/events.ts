@@ -59,6 +59,7 @@ import {
   getEventV4,
   getWorkflowRunEventsV4,
 } from './events-v4.js';
+import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import {
   normalizeEventData,
@@ -71,6 +72,21 @@ import {
   deserializeError,
   makeRequest,
 } from './utils.js';
+
+function validateWorkflowRunIdTimestamp(id: string): string | null {
+  const raw = id.startsWith('wrun_') ? id.slice('wrun_'.length) : id;
+  try {
+    // world-vercel run IDs may carry region metadata in tagged form; the
+    // shared @workflow/world validator intentionally knows nothing about
+    // that encoding. `decode()` clears the tag bit (the top bit of the
+    // 48-bit timestamp field) so the timestamp validator reads the true
+    // timestamp; the region/version metadata bits remain in the
+    // randomness section, which the validator doesn't inspect.
+    return validateUlidTimestamp(`wrun_${decodeRunId(raw).ulid}`, 'wrun_');
+  } catch {
+    return validateUlidTimestamp(id, 'wrun_');
+  }
+}
 
 /**
  * Union of every field a user-creatable event can carry in `eventData`,
@@ -606,7 +622,7 @@ async function createWorkflowRunEventInner(
   // Defensive check for client-generated run_created IDs that ride too
   // far ahead of wall-clock time — same threshold the v3 path enforced.
   if (data.eventType === 'run_created') {
-    const validationError = validateUlidTimestamp(id, 'wrun_');
+    const validationError = validateWorkflowRunIdTimestamp(id);
     if (validationError) {
       throw new WorkflowWorldError(validationError, { status: 400 });
     }

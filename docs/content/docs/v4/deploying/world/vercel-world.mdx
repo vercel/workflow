@@ -44,9 +44,18 @@ For self-hosted deployments, use the [Postgres World](/worlds/postgres). For loc
 
 ## Limitations
 
-- **Single-region deployment** - The backend infrastructure is currently deployed only in `iad1`. Applications in other regions will route workflow requests to `iad1`, which may result in higher latency. For best performance, deploy your Vercel apps using Workflow to `iad1`. Global deployment is planned to colocate the backend closer to your applications.
+<Callout type="info">
+  **Multi-region support is available starting with `workflow` version
+  5.0.0-beta.33.** On 5.x, workflow runs are pinned to the region that creates them —
+  storage, queuing, and streams are served region-locally instead of routing
+  through `iad1`. See [Multi-region in the v5
+  docs](/v5/docs/deploying/world/vercel-world#multi-region). The limitations
+  below apply to the 4.x release line, which will not support multi-region.
+</Callout>
 
-- **Data residency** - The Vercel World is currently deployed in the `iad1` region. This means independently of the deployment location of your application, the data for your workflows will be stored in the `iad1` region.
+- **Single-region deployment** - On the 4.x release line, the backend infrastructure is used only in `iad1`. Applications in other regions will route workflow requests to `iad1`, which may result in higher latency. For best performance, deploy your Vercel apps using Workflow to `iad1` — or upgrade to `workflow` 5.0.0-beta.33+ for multi-region support.
+
+- **Data residency** - On the 4.x release line, independently of the deployment location of your application, the data for your workflows will be stored in the `iad1` region.
 
 ## Observability
 

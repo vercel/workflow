@@ -1096,4 +1096,179 @@ describe('createQueue', () => {
       }
     });
   });
+
+  describe('region routing', () => {
+    const originalDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
+    const originalRegion = process.env.VERCEL_REGION;
+
+    beforeEach(() => {
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+      delete process.env.VERCEL_REGION;
+      mockSend.mockResolvedValue({ messageId: 'msg-123' });
+    });
+
+    afterEach(() => {
+      if (originalDeploymentId !== undefined) {
+        process.env.VERCEL_DEPLOYMENT_ID = originalDeploymentId;
+      } else {
+        delete process.env.VERCEL_DEPLOYMENT_ID;
+      }
+      if (originalRegion !== undefined) {
+        process.env.VERCEL_REGION = originalRegion;
+      } else {
+        delete process.env.VERCEL_REGION;
+      }
+    });
+
+    it('uses an explicit `opts.region` override', async () => {
+      const queue = createQueue();
+      await queue.queue(
+        '__wkf_workflow_test',
+        { runId: 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV' },
+        { region: 'fra1' }
+      );
+
+      // `queue()` constructs a fresh QueueClient per send (with region);
+      // grab the most recent construction in case other clients (e.g. the
+      // handler's, which omits region) were constructed earlier.
+      const ctorCalls = (
+        MockQueueClient as unknown as { mock: { calls: unknown[][] } }
+      ).mock.calls;
+      const sendTimeCall = ctorCalls[ctorCalls.length - 1][0] as {
+        region?: string;
+      };
+      expect(sendTimeCall.region).toBe('fra1');
+    });
+
+    it('extracts the region from a tagged workflow run ID payload', async () => {
+      // Build a tagged run ID for `sfo1` (regionId=2). We do this by
+      // calling encode() via the public sub-export so the test stays
+      // resilient to bit-layout changes.
+      const { encode } = await import('./run-id/index.js');
+      const runId = `wrun_${encode('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'sfo1')}`;
+
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_test', { runId });
+
+      const ctorCalls = (
+        MockQueueClient as unknown as { mock: { calls: unknown[][] } }
+      ).mock.calls;
+      const sendTimeCall = ctorCalls[ctorCalls.length - 1][0] as {
+        region?: string;
+      };
+      expect(sendTimeCall.region).toBe('sfo1');
+    });
+
+    it('extracts the region from a tagged step payload workflowRunId', async () => {
+      const { encode } = await import('./run-id/index.js');
+      const workflowRunId = `wrun_${encode('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'pdx1')}`;
+
+      const queue = createQueue();
+      await queue.queue('__wkf_step_test', {
+        workflowName: 'wf',
+        workflowRunId,
+        workflowStartedAt: Date.now(),
+        stepId: 'step-1',
+      });
+
+      const ctorCalls = (
+        MockQueueClient as unknown as { mock: { calls: unknown[][] } }
+      ).mock.calls;
+      const sendTimeCall = ctorCalls[ctorCalls.length - 1][0] as {
+        region?: string;
+      };
+      expect(sendTimeCall.region).toBe('pdx1');
+    });
+
+    it('falls back to VERCEL_REGION for un-tagged run IDs', async () => {
+      process.env.VERCEL_REGION = 'cle1';
+
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_test', { runId: 'wrun_untagged' });
+
+      const ctorCalls = (
+        MockQueueClient as unknown as { mock: { calls: unknown[][] } }
+      ).mock.calls;
+      const sendTimeCall = ctorCalls[ctorCalls.length - 1][0] as {
+        region?: string;
+      };
+      expect(sendTimeCall.region).toBe('cle1');
+    });
+
+    it('falls back to iad1 when neither tagging nor VERCEL_REGION is available', async () => {
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_test', { runId: 'wrun_untagged' });
+
+      const ctorCalls = (
+        MockQueueClient as unknown as { mock: { calls: unknown[][] } }
+      ).mock.calls;
+      const sendTimeCall = ctorCalls[ctorCalls.length - 1][0] as {
+        region?: string;
+      };
+      expect(sendTimeCall.region).toBe('iad1');
+    });
+
+    it('falls back to iad1 for health-check payloads (no runId)', async () => {
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_test', {
+        __healthCheck: true,
+        correlationId: 'health-1',
+      });
+
+      const ctorCalls = (
+        MockQueueClient as unknown as { mock: { calls: unknown[][] } }
+      ).mock.calls;
+      const sendTimeCall = ctorCalls[ctorCalls.length - 1][0] as {
+        region?: string;
+      };
+      expect(sendTimeCall.region).toBe('iad1');
+    });
+
+    it('prefers `opts.region` over a payload-derived region', async () => {
+      const { encode } = await import('./run-id/index.js');
+      const runId = `wrun_${encode('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'sfo1')}`;
+
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_test', { runId }, { region: 'fra1' });
+
+      const ctorCalls = (
+        MockQueueClient as unknown as { mock: { calls: unknown[][] } }
+      ).mock.calls;
+      const sendTimeCall = ctorCalls[ctorCalls.length - 1][0] as {
+        region?: string;
+      };
+      expect(sendTimeCall.region).toBe('fra1');
+    });
+
+    it('ignores an unrecognised `opts.region`, falling through to the tagged run ID', async () => {
+      const { encode } = await import('./run-id/index.js');
+      const runId = `wrun_${encode('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'sfo1')}`;
+
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_test', { runId }, { region: 'xyz9' });
+
+      const ctorCalls = (
+        MockQueueClient as unknown as { mock: { calls: unknown[][] } }
+      ).mock.calls;
+      const sendTimeCall = ctorCalls[ctorCalls.length - 1][0] as {
+        region?: string;
+      };
+      expect(sendTimeCall.region).toBe('sfo1');
+    });
+
+    it('ignores an unrecognised VERCEL_REGION, falling back to iad1', async () => {
+      process.env.VERCEL_REGION = 'nope1';
+
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_test', { runId: 'wrun_untagged' });
+
+      const ctorCalls = (
+        MockQueueClient as unknown as { mock: { calls: unknown[][] } }
+      ).mock.calls;
+      const sendTimeCall = ctorCalls[ctorCalls.length - 1][0] as {
+        region?: string;
+      };
+      expect(sendTimeCall.region).toBe('iad1');
+    });
+  });
 });

@@ -735,6 +735,14 @@ function emitGitHubAnnotation(
 export function setupRunTracking(testName: string) {
   currentTestName = testName;
   trackedRuns = [];
+
+  // Heartbeat: announce the test the moment it starts, written straight to
+  // stdout to bypass vitest's per-file console buffering. Without this, a
+  // test that stalls (e.g. polling a run that never progresses) produces no
+  // output until its timeout, making CI look like a silent hang — the
+  // reporter only prints a test's result line once it completes. Emitting the
+  // name on start makes the stalling test immediately identifiable.
+  process.stdout.write(`\n[e2e] ▶ start: ${testName}\n`);
   onTestFailed(
     async (result) => {
       const errorMessage = result.errors?.[0]?.message || 'Test failed';

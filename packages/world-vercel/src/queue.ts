@@ -11,9 +11,11 @@ import {
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   ValidQueueName,
 } from '@workflow/world';
-import { decode, encode } from 'cbor-x';
+import { decode as cborDecode, encode as cborEncode } from 'cbor-x';
 import { z } from 'zod/v4';
 import { getDispatcher } from './http-client.js';
+import { decode as decodeTaggedRunId } from './run-id/index.js';
+import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 
 /**
@@ -27,7 +29,7 @@ class CborTransport implements Transport<unknown> {
   readonly contentType = 'application/cbor';
 
   serialize(value: unknown): Buffer {
-    return Buffer.from(encode(value));
+    return Buffer.from(cborEncode(value));
   }
 
   async deserialize(stream: ReadableStream<Uint8Array>): Promise<unknown> {
@@ -38,7 +40,7 @@ class CborTransport implements Transport<unknown> {
       if (done) break;
       if (value) chunks.push(value);
     }
-    return decode(Buffer.concat(chunks));
+    return cborDecode(Buffer.concat(chunks));
   }
 }
 
@@ -74,7 +76,7 @@ class DualTransport implements Transport<unknown> {
   readonly contentType = 'application/cbor';
 
   serialize(value: unknown): Buffer {
-    return Buffer.from(encode(value));
+    return Buffer.from(cborEncode(value));
   }
 
   async deserialize(stream: ReadableStream<Uint8Array>): Promise<unknown> {
@@ -87,7 +89,7 @@ class DualTransport implements Transport<unknown> {
     }
     const buffer = Buffer.concat(chunks);
     try {
-      return decode(buffer);
+      return cborDecode(buffer);
     } catch {
       return JSON.parse(buffer.toString());
     }
@@ -162,6 +164,77 @@ function getHandlerErrorRetryAfterSeconds(deliveryCount: number): number {
     HANDLER_ERROR_RETRY_AFTER_SECONDS,
     backoffSeconds - jitterSeconds
   );
+}
+
+/**
+ * Default region used when no explicit override, no tagged run ID, and no
+ * `VERCEL_REGION` env var are available. `iad1` preserves the historical
+ * behaviour from before per-message regional routing existed.
+ */
+const FALLBACK_REGION = 'iad1';
+
+/**
+ * Extract the workflow run ID from a queue payload, returning `undefined` for
+ * payloads that don't carry one (e.g. health-check messages).
+ */
+function getRunIdFromPayload(payload: QueuePayload): string | undefined {
+  if ('runId' in payload && typeof payload.runId === 'string') {
+    return payload.runId;
+  }
+  if ('workflowRunId' in payload && typeof payload.workflowRunId === 'string') {
+    return payload.workflowRunId;
+  }
+  return undefined;
+}
+
+/**
+ * Workflow run IDs are prefixed with `wrun_` before the underlying ULID.
+ * Strip that prefix so the payload can be fed to the tagged-ULID decoder.
+ */
+const RUN_ID_PREFIX = 'wrun_';
+
+/**
+ * Decode the embedded region from a tagged workflow run ID, returning
+ * `undefined` if the value is not a tagged ULID or carries an unknown region.
+ */
+function regionFromTaggedRunId(runId: string | undefined): string | undefined {
+  if (!runId) return undefined;
+  const ulid = runId.startsWith(RUN_ID_PREFIX)
+    ? runId.slice(RUN_ID_PREFIX.length)
+    : runId;
+  try {
+    const decoded = decodeTaggedRunId(ulid);
+    if (!decoded.tagged) return undefined;
+    if (decoded.regionId === REGION_IDS.unknown) return undefined;
+    return decoded.region ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Resolve the region the message should be sent to, in order of preference:
+ *   1. Explicit `opts.region` override.
+ *   2. Region embedded in the payload's tagged run ID.
+ *   3. `VERCEL_REGION` environment variable.
+ *   4. {@link FALLBACK_REGION} (preserves pre-regional behaviour).
+ *
+ * The `opts.region` override and `VERCEL_REGION` are arbitrary strings, so
+ * each is validated against the known region table and ignored (falling
+ * through to the next source) when it isn't a routable region code. This keeps
+ * a bad override — e.g. `start({ region: 'xyz9' })` — from
+ * clobbering the payload-derived region with an undeliverable destination.
+ */
+function resolveTargetRegion(
+  payload: QueuePayload,
+  opts?: QueueOptions
+): string {
+  if (isKnownRegionCode(opts?.region)) return opts.region;
+  const fromRunId = regionFromTaggedRunId(getRunIdFromPayload(payload));
+  if (fromRunId) return fromRunId;
+  const fromEnv = process.env.VERCEL_REGION;
+  if (isKnownRegionCode(fromEnv)) return fromEnv;
+  return FALLBACK_REGION;
 }
 
 /**
@@ -278,14 +351,18 @@ export function createQueue(config?: APIConfig): Queue {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config, { usingProxy });
 
-  const region = 'iad1';
-
   const cborTransport = new CborTransport();
   const jsonTransport = new JsonTransport();
   const dualTransport = new DualTransport();
 
+  /**
+   * Options common to every `QueueClient` instantiation. `region` is
+   * intentionally omitted here: `queue()` resolves it per-send from the
+   * payload / opts, and the handler client leaves it unset so the SDK
+   * auto-detects `VERCEL_REGION` (follow-up acks are routed to the region
+   * from the incoming `ce-vqsregion` header regardless).
+   */
   const clientOptions = {
-    region,
     dispatcher: getDispatcher(config),
     transport: dualTransport,
     ...(usingProxy && {
@@ -294,12 +371,7 @@ export function createQueue(config?: APIConfig): Queue {
       resolveBaseUrl: () => new URL(`${baseUrl}/queues-proxy`),
       token: config?.token,
     }),
-    headers: {
-      ...Object.fromEntries(headers.entries()),
-      // The proxy's fixed base URL bypasses the SDK's regional host
-      // resolution, so the region travels as a header instead.
-      ...(usingProxy && { 'x-vercel-queue-region': region }),
-    },
+    headers: Object.fromEntries(headers.entries()),
   };
 
   const queue: QueueFunction = async (
@@ -324,8 +396,28 @@ export function createQueue(config?: APIConfig): Queue {
       SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
     const transport = useCbor ? cborTransport : jsonTransport;
 
+    // Resolve the destination region. Explicit `opts.region` wins, otherwise
+    // we decode it from the payload's tagged run ID so messages produced by
+    // `start()` land in the same region the run was created in. Falls back
+    // to the `VERCEL_REGION` env var, then `iad1` to preserve historical
+    // behaviour for legacy / untagged run IDs.
+    const region = resolveTargetRegion(payload, opts);
+
     const client = new QueueClient({
       ...clientOptions,
+      // When sending through the api.vercel.com proxy, the fixed
+      // `resolveBaseUrl` above replaces the queue SDK's own
+      // region -> `<region>.vercel-queue.com` base-URL resolution, so
+      // the per-send resolved region must travel as a header instead:
+      // the proxy forwards the send to that region's VQS dataplane
+      // host when `x-vercel-queue-region` is present (vercel/api#79056).
+      ...(usingProxy && {
+        headers: {
+          ...clientOptions.headers,
+          'x-vercel-queue-region': region,
+        },
+      }),
+      region,
       deploymentId,
       transport,
     });
