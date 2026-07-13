@@ -1,7 +1,10 @@
 import {
   type Analytics,
+  AnalyticsAttributeKeySchema,
+  AnalyticsAttributeValueSchema,
   AnalyticsEventSchema,
   AnalyticsHookSchema,
+  type AnalyticsListAttributesParams,
   AnalyticsRunSchema,
   AnalyticsStepSchema,
   AnalyticsWaitSchema,
@@ -23,6 +26,20 @@ function appendPagination(
 function createQueryString(params: URLSearchParams): string {
   const query = params.toString();
   return query ? `?${query}` : '';
+}
+
+function appendAttributeListParams(
+  searchParams: URLSearchParams,
+  params: AnalyticsListAttributesParams
+): void {
+  if (params.workflowName) {
+    searchParams.set('workflowName', params.workflowName);
+  }
+  if (params.startTime && params.endTime) {
+    searchParams.set('startTime', params.startTime);
+    searchParams.set('endTime', params.endTime);
+  }
+  appendPagination(searchParams, params.pagination);
 }
 
 export function createAnalytics(config?: APIConfig): Analytics {
@@ -47,12 +64,41 @@ export function createAnalytics(config?: APIConfig): Analytics {
           searchParams.set('startTime', params.startTime);
           searchParams.set('endTime', params.endTime);
         }
+        if (params.attributes && Object.keys(params.attributes).length > 0) {
+          // JSON-encoded rather than repeated key=value pairs: attribute
+          // keys and values are arbitrary user strings that may themselves
+          // contain `=` or `,`.
+          searchParams.set('attributes', JSON.stringify(params.attributes));
+        }
         appendPagination(searchParams, params.pagination);
 
         return makeRequest({
           endpoint: `/v2/analytics/runs${createQueryString(searchParams)}`,
           config,
           schema: PaginatedResponseSchema(AnalyticsRunSchema),
+        });
+      },
+    },
+    attributes: {
+      list(params = {}) {
+        const searchParams = new URLSearchParams();
+        appendAttributeListParams(searchParams, params);
+
+        return makeRequest({
+          endpoint: `/v2/analytics/attributes${createQueryString(searchParams)}`,
+          config,
+          schema: PaginatedResponseSchema(AnalyticsAttributeKeySchema),
+        });
+      },
+      listValues(params) {
+        const searchParams = new URLSearchParams();
+        searchParams.set('key', params.key);
+        appendAttributeListParams(searchParams, params);
+
+        return makeRequest({
+          endpoint: `/v2/analytics/attributes/values${createQueryString(searchParams)}`,
+          config,
+          schema: PaginatedResponseSchema(AnalyticsAttributeValueSchema),
         });
       },
     },
