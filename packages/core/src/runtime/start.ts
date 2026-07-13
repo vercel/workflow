@@ -71,6 +71,19 @@ export interface StartOptionsBase {
   specVersion?: number;
 
   /**
+   * Optional region identifier for the new run. Currently consumed only
+   * by `@workflow/world-vercel`, which embeds the region into the tagged
+   * run ID and routes the initial workflow message to the matching
+   * regional queue. When omitted, the world falls back to its own
+   * default (for `world-vercel`: the `VERCEL_REGION` environment
+   * variable, then the server-side default region `iad1` — a concrete,
+   * routable region is always chosen).
+   *
+   * Worlds without a regional dimension ignore this field.
+   */
+  region?: string;
+
+  /**
    * Plaintext attributes to seed on the run as it is created.
    *
    * Available for native-attributes runs (spec version 4 and later).
@@ -302,8 +315,17 @@ export async function start<TArgs extends unknown[], TResult>(
       const ops: Promise<void>[] = [];
 
       // Generate runId client-side so we have it before serialization
-      // (required for future E2E encryption where runId is part of the encryption context)
-      const runId = `wrun_${ulid()}`;
+      // (required for future E2E encryption where runId is part of the
+      // encryption context). When the World provides a `createRunId()`
+      // implementation, use it so worlds can embed implementation-specific
+      // metadata (e.g., region) into the ID, forwarding the full options
+      // bag so worlds can read whichever fields they recognise; otherwise
+      // fall back to a standard monotonic ULID.
+      const runId = `wrun_${
+        world.createRunId
+          ? world.createRunId(opts as Readonly<Record<string, unknown>>)
+          : ulid()
+      }`;
 
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
@@ -445,6 +467,11 @@ export async function start<TArgs extends unknown[], TResult>(
           {
             deploymentId,
             specVersion,
+            // Forward any caller-supplied region hint so worlds with
+            // per-region queue routing (e.g. world-vercel) can target the
+            // matching queue. Worlds without a regional dimension ignore
+            // this field.
+            ...(opts.region !== undefined ? { region: opts.region } : {}),
           }
         ),
       ]);

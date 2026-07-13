@@ -28,7 +28,23 @@ async function getOtelApi(): Promise<typeof api | null> {
     // esbuild and would silently disable tracing there. Bundlers that reject
     // an unresolvable static `import()` when the peer is absent (Rollup/Vite,
     // e.g. SvelteKit) externalize it in the framework integration instead.
-    otelApiPromise = import('@opentelemetry/api').catch(() => null);
+    otelApiPromise = import('@opentelemetry/api').catch((error) => {
+      // A missing module is expected for apps without OTEL — but the same
+      // silent null also swallows bundler/resolution failures in apps that
+      // DO register a tracer, which then just lose every world-vercel span.
+      // Surface the reason under DEBUG so that failure mode is diagnosable.
+      if (
+        typeof process !== 'undefined' &&
+        typeof process.env.DEBUG === 'string' &&
+        (process.env.DEBUG.includes('workflow:') || process.env.DEBUG === '*')
+      ) {
+        console.warn(
+          '[workflow] @opentelemetry/api unavailable — world-vercel spans disabled:',
+          error instanceof Error ? error.message : error
+        );
+      }
+      return null;
+    });
   }
   return otelApiPromise;
 }

@@ -1,6 +1,6 @@
 {
   "name": "@workflow/nitro",
-  "version": "5.0.0-beta.31",
+  "version": "5.0.0-beta.32",
   "description": "Nitro integration for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -40,6 +40,7 @@
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "nitro": "catalog:",
+    "typescript": "catalog:",
     "vite": "7.3.6"
   }
 }

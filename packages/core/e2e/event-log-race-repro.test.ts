@@ -351,14 +351,22 @@ async function pollTerminalRun(
     }
 
     if (runData.status === 'failed') {
+      // A failed WorkflowRun carries its reason in `error: { code, message }`
+      // — the run has no top-level `errorCode`. Reading the structured error
+      // is what lets us classify USER_ERROR/RUNTIME_ERROR/CORRUPTED_EVENT_LOG
+      // (vs. uncategorised `other`) and surface *why* it failed in the summary.
+      const structuredError = (
+        runData as { error?: { code?: string; message?: string } }
+      ).error;
       return {
         attempt: -1,
         scenario,
         token: '',
         runId: run.runId,
-        outcome: classifyFailure(runData.errorCode),
+        outcome: classifyFailure(structuredError?.code),
         status: runData.status,
-        errorCode: runData.errorCode,
+        errorCode: structuredError?.code,
+        errorMessage: structuredError?.message,
         durationMs: Date.now() - startedAt,
         dashboardUrl: getDashboardUrl(run.runId),
       };

@@ -28,8 +28,8 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "zod": "catalog:",
-    "@workflow/tsconfig": "workspace:*"
+    "@workflow/tsconfig": "workspace:*",
+    "typescript": "catalog:"
   },
   "keywords": [],
   "author": "",

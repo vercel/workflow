@@ -1,5 +1,14 @@
 # @workflow/core
 
+## 5.0.0-beta.32
+
+### Patch Changes
+
+- [#2891](https://github.com/vercel/workflow/pull/2891) [`4a43e39`](https://github.com/vercel/workflow/commit/4a43e39fec61519a2756f4f5e7bae5ccdac6f662) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Emit a client-observed `workflow.stream.flush` span per stream-write batch, with a `buffer_dwell_ms` attribute separating client-side batching cost from network/server time. Log under `DEBUG=workflow:*` when `@opentelemetry/api` fails to load in world-vercel.
+
+- Updated dependencies [[`4a43e39`](https://github.com/vercel/workflow/commit/4a43e39fec61519a2756f4f5e7bae5ccdac6f662)]:
+  - @workflow/world-vercel@5.0.0-beta.28
+
 ## 5.0.0-beta.31
 
 ### Minor Changes

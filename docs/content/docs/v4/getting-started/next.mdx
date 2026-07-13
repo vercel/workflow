@@ -10,6 +10,10 @@ related:
   - /docs/deploying/world/vercel-world
 ---
 
+<CopyPrompt
+  text="In this Next.js app, run `npm i workflow`. Wrap `next.config.ts` with `withWorkflow` from `workflow/next`. If the app has `proxy.ts` or middleware, exclude `.well-known/workflow/` from its matcher. Add `workflows/user-signup.ts` exporting `handleUserSignup(email)` with `&quot;use workflow&quot;`, `sleep` from `workflow`, and `&quot;use step&quot;` helper functions that create a user, send a welcome email, and send an onboarding email. Add `app/api/signup/route.ts` with a POST handler that reads `{ email }`, calls `start(handleUserSignup, [email])` from `workflow/api`, and returns JSON. Run `npm run dev`, trigger `curl -X POST --json '{&quot;email&quot;:&quot;hello@example.com&quot;}' http://localhost:3000/api/signup`, and inspect with `npx workflow web` or `npx workflow inspect runs`."
+/>
+
 <Steps>
 
 <Step>
