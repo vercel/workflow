@@ -47,8 +47,7 @@ For self-hosted deployments, use the [Postgres World](/worlds/postgres). For loc
 The Vercel World runs in every [Vercel Function region](https://vercel.com/docs/regions). Each workflow run is pinned to a single region at creation time: its stored state, queue dispatch, and streams are all served from that region — no cross-region round trips on the hot path. When your application is deployed in the run's region (the automatic case below), step execution is region-local too.
 
 <Callout type="info">
-  Multi-region requires `workflow` **5.x** (currently in beta).
-  {/* TODO: pin the exact minimum version once released */}
+  Multi-region requires `workflow` version **5.0.0-beta.33** or later.
   The 4.x release line does not support region pinning — runs created by
   4.x always live in `iad1`.
 </Callout>
