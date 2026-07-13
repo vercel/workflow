@@ -2,4 +2,4 @@
 '@workflow/nitro': patch
 ---
 
-Dispose watch-mode build contexts when Vite closes a temporary Nitro server.
+Dispose Nitro's temporary watch-mode build contexts after each build.

@@ -10,7 +10,7 @@ related:
   - /docs/foundations/workflows-and-steps
 ---
 
-This guide starts with an existing React Router v8 framework-mode app. You will add Nitro as the server, connect React Router's server build to it, and enable Workflow SDK.
+This guide starts with an existing React Router v8 framework-mode app.
 
 <Steps>
 
@@ -18,16 +18,43 @@ This guide starts with an existing React Router v8 framework-mode app. You will 
 
 ## Install Nitro and Workflow SDK
 
-Install the two additional packages:
+<Tabs items={["npm", "pnpm", "bun", "yarn"]} defaultValue="pnpm">
 
-```package-install
+<Tab value="npm">
+
+```bash
 npm install nitro workflow
 ```
 
-<Callout>
-  Use Nitro v3 for this integration. You can check the installed version with
-  `npm ls nitro`.
-</Callout>
+</Tab>
+
+<Tab value="pnpm">
+
+```bash
+pnpm add nitro workflow
+```
+
+</Tab>
+
+<Tab value="bun">
+
+```bash
+bun add nitro workflow
+```
+
+</Tab>
+
+<Tab value="yarn">
+
+```bash
+yarn add nitro workflow
+```
+
+</Tab>
+
+</Tabs>
+
+This integration requires Nitro v3.
 
 </Step>
 
@@ -67,7 +94,7 @@ export default {
 };
 ```
 
-React Router's Vite plugin generates `virtual:react-router/server-build`. This file gives Nitro a normal `fetch` handler that forwards each application request to that generated server build.
+This adapts React Router's generated server build to the Fetch API handler Nitro expects.
 
 </Step>
 
@@ -109,39 +136,7 @@ export default defineConfig({
 });
 ```
 
-Each part has one job:
-
-- `reactRouter()` creates the client and server-rendering environments.
-- `nitro()` runs `server/ssr.ts` and writes its output beside React Router's output.
-- `workflow({ dirs: ["workflows"] })` compiles only your workflow source directory and adds Workflow SDK's routes to Nitro.
-- The custom `ssr` input tells Vite which file connects Nitro to React Router.
-
-<Callout type="warn">
-  Keep `dirs: ["workflows"]`. Without a source-only directory, a later build
-  can scan the generated `build` directory and try to compile server output as
-  workflow source.
-</Callout>
-
-If your config already has plugins such as Tailwind CSS, keep them in the array. Preserve the relative order of `reactRouter()`, `nitro()`, and `workflow()` shown above.
-
-</Step>
-
-<Step>
-
-## Use Vite for the app scripts
-
-Run the shared build through Vite so all three plugins participate:
-
-```json title="package.json" lineNumbers
-{
-  "scripts": {
-    "dev": "vite dev",
-    "build": "vite build",
-    "start": "node ./build/server/index.mjs",
-    "typegen": "react-router typegen"
-  }
-}
-```
+Keep `dirs: ["workflows"]` so subsequent builds do not scan generated files under `build`. Preserve the relative order of the three plugins; any other Vite plugins can remain.
 
 </Step>
 
@@ -194,10 +189,10 @@ React Router continues to handle your application routes. Nitro handles this ser
 
 ## Run the app
 
-Start development:
+Start the development server:
 
 ```bash
-npm run dev
+pnpm vite dev
 ```
 
 Then start a workflow:
@@ -209,14 +204,14 @@ curl -X POST \
   http://localhost:3000/api/greeting
 ```
 
-For a production check, run:
+Build and start the production server:
 
 ```bash
-npm run build
-npm run start
+pnpm vite build
+node ./build/server/index.mjs
 ```
 
-You can inspect local runs with `npx workflow web`.
+You can inspect local runs with `pnpm workflow web`.
 
 </Step>
 
@@ -226,11 +221,11 @@ You can inspect local runs with `npx workflow web`.
 
 ### React Router pages return 404
 
-Confirm that `environments.ssr.build.rollupOptions.input` points to `./server/ssr.ts` and that the file exports the `fetch` handler shown above.
+Check that the `ssr` environment input points to `./server/ssr.ts`.
 
 ### A second build tries to compile files under `build/server`
 
-Confirm that the Workflow plugin uses `workflow({ dirs: ["workflows"] })`. Also remove the existing `build` directory once before rebuilding.
+Use `workflow({ dirs: ["workflows"] })`, remove the existing `build` directory once, and rebuild.
 
 ### `vite build` finishes output but does not exit
 
