@@ -1,6 +1,5 @@
 {
   "env": {
-    "WORKFLOW_PUBLIC_MANIFEST": "1",
-    "DEBUG": "workflow:*"
+    "WORKFLOW_PUBLIC_MANIFEST": "1"
   }
 }
