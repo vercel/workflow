@@ -31,11 +31,19 @@ import {
   AttributeValidationError,
   EventSchema,
   HookSchema,
+  isChildEntityCreationEvent,
+  isChildEntityCreationEventType,
+  isHookEventRequiringExistence,
   isLegacySpecVersion,
+  isTerminalRunEventType,
+  isTerminalStepStatus,
+  isTerminalWorkflowRunStatus,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
   stripEventDataRefs,
+  TERMINAL_STEP_STATUSES,
+  TERMINAL_WORKFLOW_RUN_STATUSES,
   validateAttributeChanges,
   validateUlidTimestamp,
   WorkflowRunSchema,
@@ -428,19 +436,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       let stepCreatedLazily = false;
       const now = new Date();
 
-      // Helper to check if run is in terminal state
-      const isRunTerminal = (status: string) =>
-        ['completed', 'failed', 'cancelled'].includes(status);
-
-      // Helper to check if step is in terminal state
-      const isStepTerminal = (status: string) =>
-        ['completed', 'failed', 'cancelled'].includes(status);
-
       // Terminal step statuses for use in SQL WHERE clauses (atomic guard).
       // Must match the Vercel world's conditional expressions:
       //   ne(status, 'completed') AND ne(status, 'failed') AND ne(status, 'cancelled')
       const terminalStepStatuses: (typeof Schema.steps.status.enumValues)[number][] =
-        ['completed', 'failed', 'cancelled'];
+        [...TERMINAL_STEP_STATUSES];
 
       // ============================================================
       // VALIDATION: Terminal state and event ordering checks
@@ -586,22 +586,12 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // mirrors the resilient run_started path. Detect it here so the
       // entity-creation terminal-run guard treats it like a creation and the
       // "step must exist" ordering guard below doesn't reject it.
+      const createsChildEntity = isChildEntityCreationEvent(data);
       const lazyStepStart =
-        data.eventType === 'step_started' &&
-        'eventData' in data &&
-        !!data.eventData &&
-        typeof (data.eventData as { stepName?: unknown }).stepName ===
-          'string' &&
-        (data.eventData as { input?: unknown }).input !== undefined;
+        createsChildEntity && data.eventType === 'step_started';
 
       // Run terminal state validation
-      if (currentRun && isRunTerminal(currentRun.status)) {
-        const runTerminalEvents = [
-          'run_started',
-          'run_completed',
-          'run_failed',
-        ];
-
+      if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
         // Idempotent operation: run_cancelled on already cancelled run is allowed
         if (
           data.eventType === 'run_cancelled' &&
@@ -650,10 +640,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         }
 
         // Other run state transitions are not allowed on terminal runs
-        if (
-          runTerminalEvents.includes(data.eventType) ||
-          data.eventType === 'run_cancelled'
-        ) {
+        if (isTerminalRunEventType(data.eventType)) {
           throw new EntityConflictError(
             `Cannot transition run from terminal state "${currentRun.status}"`
           );
@@ -663,12 +650,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         // step_started creates a step, so it is rejected here too — a bare
         // (non-lazy) step_started falls through to the step-validation block
         // below, which uses RunExpiredError for terminal runs.
-        if (
-          data.eventType === 'step_created' ||
-          data.eventType === 'hook_created' ||
-          data.eventType === 'wait_created' ||
-          lazyStepStart
-        ) {
+        if (createsChildEntity) {
           throw new EntityConflictError(
             `Cannot create new entities on run in terminal state "${currentRun.status}"`
           );
@@ -731,14 +713,14 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         // where there is nothing terminal to guard against.
         if (validatedStep) {
           // Step terminal state validation
-          if (isStepTerminal(validatedStep.status)) {
+          if (isTerminalStepStatus(validatedStep.status)) {
             throw new EntityConflictError(
               `Cannot modify step in terminal state "${validatedStep.status}"`
             );
           }
 
           // On terminal runs: only allow completing/failing in-progress steps
-          if (currentRun && isRunTerminal(currentRun.status)) {
+          if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
             if (validatedStep.status !== 'running') {
               throw new RunExpiredError(
                 `Cannot modify non-running step on run in terminal state "${currentRun.status}"`
@@ -749,11 +731,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       }
 
       // Hook-related event validation (ordering)
-      const hookEventsRequiringExistence = ['hook_disposed', 'hook_received'];
-      if (
-        hookEventsRequiringExistence.includes(data.eventType) &&
-        data.correlationId
-      ) {
+      if (isHookEventRequiringExistence(data.eventType) && data.correlationId) {
         const [existingHook] = await drizzle
           .select({ hookId: Schema.hooks.hookId })
           .from(Schema.hooks)
@@ -847,7 +825,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // Must match the Vercel world's conditional expressions:
       //   ne(status, 'completed') AND ne(status, 'failed') AND ne(status, 'cancelled')
       const terminalRunStatuses: (typeof Schema.runs.status.enumValues)[number][] =
-        ['completed', 'failed', 'cancelled'];
+        [...TERMINAL_WORKFLOW_RUN_STATUSES];
 
       // Handle run_completed event: update run status and cleanup hooks
       // Uses conditional UPDATE to prevent completing an already-terminal run.
@@ -877,7 +855,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           if (!existing) {
             throw new WorkflowRunNotFoundError(effectiveRunId);
           }
-          if (isRunTerminal(existing.status)) {
+          if (isTerminalWorkflowRunStatus(existing.status)) {
             throw new EntityConflictError(
               `Cannot transition run from terminal state "${existing.status}"`
             );
@@ -929,7 +907,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           if (!existing) {
             throw new WorkflowRunNotFoundError(effectiveRunId);
           }
-          if (isRunTerminal(existing.status)) {
+          if (isTerminalWorkflowRunStatus(existing.status)) {
             throw new EntityConflictError(
               `Cannot transition run from terminal state "${existing.status}"`
             );
@@ -974,7 +952,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           if (!existing) {
             throw new WorkflowRunNotFoundError(effectiveRunId);
           }
-          if (isRunTerminal(existing.status)) {
+          if (isTerminalWorkflowRunStatus(existing.status)) {
             throw new EntityConflictError(
               `Cannot transition run from terminal state "${existing.status}"`
             );
@@ -1139,15 +1117,12 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           // the ownership claim: only the caller that inserts the row gets to
           // run the step body inline.
           if (lazyStepStart && !validatedStep) {
-            const lazyData = (data as any).eventData as {
-              stepName: string;
-              input: any;
-            };
+            const lazyData = data.eventData;
             const [inserted] = await tx
               .insert(Schema.steps)
               .values({
                 runId: effectiveRunId,
-                stepId: data.correlationId!,
+                stepId: data.correlationId,
                 stepName: lazyData.stepName,
                 input: lazyData.input as SerializedContent,
                 status: 'pending',
@@ -1241,7 +1216,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                 `Step "${data.correlationId}" not found`
               );
             }
-            if (isStepTerminal(existing.status)) {
+            if (isTerminalStepStatus(existing.status)) {
               throw new EntityConflictError(
                 `Cannot modify step in terminal state "${existing.status}"`
               );
@@ -1307,7 +1282,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               `Step "${data.correlationId}" not found`
             );
           }
-          if (isStepTerminal(existing.status)) {
+          if (isTerminalStepStatus(existing.status)) {
             throw new EntityConflictError(
               `Cannot modify step in terminal state "${existing.status}"`
             );
@@ -1352,7 +1327,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               `Step "${data.correlationId}" not found`
             );
           }
-          if (isStepTerminal(existing.status)) {
+          if (isTerminalStepStatus(existing.status)) {
             throw new EntityConflictError(
               `Cannot modify step in terminal state "${existing.status}"`
             );
@@ -1395,7 +1370,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               `Step "${data.correlationId}" not found`
             );
           }
-          if (isStepTerminal(existing.status)) {
+          if (isTerminalStepStatus(existing.status)) {
             throw new EntityConflictError(
               `Cannot modify step in terminal state "${existing.status}"`
             );
@@ -1661,9 +1636,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         // unique constraint we might add) don't get misclassified as a
         // correlationId conflict.
         const isDeduplicatedCorrelatedEvent =
-          data.eventType === 'step_created' ||
-          data.eventType === 'hook_created' ||
-          data.eventType === 'wait_created' ||
+          isChildEntityCreationEventType(data.eventType) ||
           (data.eventType === 'attr_set' &&
             data.eventData.writer.type === 'workflow');
         const pgErr = (err as { code?: string; constraint?: string }).code

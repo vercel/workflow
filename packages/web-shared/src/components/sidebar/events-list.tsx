@@ -1,12 +1,8 @@
 'use client';
 
-import type { Event } from '@workflow/world';
+import { type Event, getEventDataRefFields } from '@workflow/world';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import {
-  getEventDataRefFields,
-  hasEncryptedFields,
-  isExpiredMarker,
-} from '../../lib/hydration';
+import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
 import {
   Collapsible,
   CollapsibleContent,
@@ -20,29 +16,6 @@ import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { AttrSetEventBlock } from './attributes-block';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
-
-/**
- * Event types whose eventData contains an error field with a StructuredError.
- */
-const ERROR_EVENT_TYPES = new Set(['step_failed', 'step_retrying']);
-
-/**
- * Event types that carry user-serialized data in their eventData field.
- */
-const DATA_EVENT_TYPES = new Set([
-  'step_created',
-  'step_completed',
-  'step_failed',
-  'step_retrying',
-  'hook_created',
-  'hook_received',
-  'run_created',
-  'run_completed',
-  'run_failed',
-  'wait_created',
-  'wait_completed',
-  'attr_set',
-]);
 
 const parseDateValue = (value: unknown): Date | null => {
   if (value == null) return null;
@@ -76,10 +49,7 @@ function EventItem({
   showSeparateEventOccurrenceTimestamps = false,
 }: {
   event: Event;
-  onLoadEventData?: (
-    correlationId: string,
-    eventId: string
-  ) => Promise<unknown | null>;
+  onLoadEventData?: (event: Event) => Promise<unknown | null>;
   /** When this changes (e.g., Decrypt was clicked), invalidate cached data */
   encryptionKey?: Uint8Array;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
@@ -96,19 +66,20 @@ function EventItem({
   const existingData =
     'eventData' in event && event.eventData != null ? event.eventData : null;
   const mergedDisplay = loadedData ?? existingData;
-  const canHaveData = DATA_EVENT_TYPES.has(event.eventType);
+  const canHaveData =
+    existingData !== null || getEventDataRefFields(event.eventType).length > 0;
 
   const loadEventData = useCallback(
-    async (options?: { force?: boolean }) => {
-      if (!onLoadEventData || !event.correlationId || !event.eventId) return;
-      if (!options?.force && loadedDataRef.current !== null) {
+    async (force: boolean) => {
+      if (!onLoadEventData) return;
+      if (!force && loadedDataRef.current !== null) {
         return;
       }
 
       try {
         setIsLoading(true);
         setLoadError(null);
-        const data = await onLoadEventData(event.correlationId, event.eventId);
+        const data = await onLoadEventData(event);
         loadedDataRef.current = data;
         setLoadedData(data);
       } catch (err) {
@@ -117,13 +88,13 @@ function EventItem({
         setIsLoading(false);
       }
     },
-    [onLoadEventData, event.correlationId, event.eventId]
+    [onLoadEventData, event]
   );
 
-  const handleExpand = useCallback(async () => {
+  const handleExpand = useCallback(() => {
     if (isLoading) return;
     wasExpandedRef.current = true;
-    await loadEventData();
+    void loadEventData(false);
   }, [isLoading, loadEventData]);
 
   // When the encryption key changes and this event was previously expanded,
@@ -132,7 +103,7 @@ function EventItem({
     if (!encryptionKey || !wasExpandedRef.current) return;
     loadedDataRef.current = null;
     setLoadedData(null);
-    void loadEventData({ force: true });
+    void loadEventData(true);
   }, [encryptionKey, loadEventData]);
 
   const createdAt = new Date(event.createdAt);
@@ -289,11 +260,10 @@ function EventDataBlock({
     return <AttrSetEventBlock data={data} />;
   }
 
-  // For error events (step_failed, step_retrying), the eventData has the shape
-  // { error: StructuredError, stack?: string, ... }. Check both the top-level
-  // value and the nested `error` field for a stack trace.
+  // Error events carry a StructuredError in eventData.error. Check both the
+  // nested field and the top-level value for legacy payloads.
   if (
-    ERROR_EVENT_TYPES.has(eventType) &&
+    getEventDataRefFields(eventType).includes('error') &&
     data != null &&
     typeof data === 'object'
   ) {
@@ -328,10 +298,7 @@ export function EventsList({
   events: Event[];
   isLoading?: boolean;
   error?: Error | null;
-  onLoadEventData?: (
-    correlationId: string,
-    eventId: string
-  ) => Promise<unknown | null>;
+  onLoadEventData?: (event: Event) => Promise<unknown | null>;
   onStreamClick?: (streamId: string) => void;
   onRunClick?: (runId: string) => void;
   /** When provided, signals that decryption is active (triggers re-load of expanded events) */

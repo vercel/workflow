@@ -11,6 +11,26 @@ export interface StepInvocationQueueItem {
   closureVars?: Record<string, Serializable>;
   thisVal?: Serializable;
   hasCreatedEvent?: boolean;
+  /**
+   * Inline step ownership, derived from the step's LATEST `step_started`
+   * during replay: the queue message ID stamped by the invocation running
+   * the step inline, or undefined when the latest start was unstamped (a
+   * retry attempt driven by a queued step message, or an older runtime).
+   * Latest start wins — an unstamped bare start clears a previous stamp; an
+   * owner-recovery re-stamped start restores it.
+   */
+  ownerMessageId?: string;
+  /**
+   * `createdAt` (ms) of the step's latest observed `step_started`. Anchors
+   * the ownership lease: `leaseRemaining = lastStartedAt + lease − now`.
+   */
+  lastStartedAt?: number;
+  /**
+   * Whether a `step_retrying` was observed for this step. From that point
+   * the step is queue-owned (the delayed retry handoff or replay requeue),
+   * so inline ownership is permanently lapsed for this correlation ID.
+   */
+  sawRetrying?: boolean;
 }
 
 export interface HookInvocationQueueItem {

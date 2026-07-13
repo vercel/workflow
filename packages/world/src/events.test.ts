@@ -1,6 +1,46 @@
 import { describe, expect, it } from 'vitest';
 import { CreateEventSchema, EventSchema } from './events';
 
+describe('step_started ownerMessageId', () => {
+  it('accepts a bare step_started with no eventData (legacy contract)', () => {
+    const parsed = CreateEventSchema.parse({
+      eventType: 'step_started',
+      specVersion: 4,
+      correlationId: 'step_00000000000000000000000000',
+    });
+    expect(parsed.eventType).toBe('step_started');
+  });
+
+  it('accepts an optional ownerMessageId on the create request', () => {
+    const parsed = CreateEventSchema.parse({
+      eventType: 'step_started',
+      specVersion: 4,
+      correlationId: 'step_00000000000000000000000000',
+      eventData: { stepName: 'step//file//fn', ownerMessageId: 'msg_abc123' },
+    });
+    expect(
+      (parsed as { eventData?: { ownerMessageId?: string } }).eventData
+        ?.ownerMessageId
+    ).toBe('msg_abc123');
+  });
+
+  it('retains ownerMessageId when reading back a stored step_started event (not stripped)', () => {
+    const parsed = EventSchema.parse({
+      eventType: 'step_started',
+      runId: 'wrun_00000000000000000000000000',
+      eventId: 'evnt_00000000000000000000000000',
+      correlationId: 'step_00000000000000000000000000',
+      createdAt: new Date().toISOString(),
+      specVersion: 4,
+      eventData: { stepName: 'step//file//fn', ownerMessageId: 'msg_abc123' },
+    });
+    expect(
+      (parsed as { eventData?: { ownerMessageId?: string } }).eventData
+        ?.ownerMessageId
+    ).toBe('msg_abc123');
+  });
+});
+
 describe('run_cancelled cancelReason', () => {
   it('accepts a run_cancelled create request with no eventData', () => {
     const parsed = CreateEventSchema.parse({

@@ -6,7 +6,13 @@
  * a fully-formed Trace ready for the trace viewer.
  */
 
-import type { Event, WorkflowRun } from '@workflow/world';
+import {
+  type Event,
+  isHookLifecycleEventType,
+  isStepEventType,
+  isWaitEventType,
+  type WorkflowRun,
+} from '@workflow/world';
 import type { Span } from '../components/trace-viewer/types';
 import {
   getEventTimestamp,
@@ -18,20 +24,6 @@ import {
 } from '../components/workflow-traces/trace-span-construction';
 import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
 
-// ---------------------------------------------------------------------------
-// Event type classifiers
-// ---------------------------------------------------------------------------
-
-export const isStepEvent = (eventType: string) => eventType.startsWith('step_');
-
-export const isTimerEvent = (eventType: string) =>
-  eventType === 'wait_created' || eventType === 'wait_completed';
-
-export const isHookLifecycleEvent = (eventType: string) =>
-  eventType === 'hook_received' ||
-  eventType === 'hook_created' ||
-  eventType === 'hook_disposed';
-
 /**
  * Events that belong to the run root span rather than a child entity span.
  * Mirrors the fallthrough logic in {@link groupEventsByCorrelation}: events
@@ -41,9 +33,9 @@ export const isHookLifecycleEvent = (eventType: string) =>
  */
 export const isRunLevelEvent = (event: Event): boolean =>
   !event.correlationId ||
-  (!isTimerEvent(event.eventType) &&
-    !isHookLifecycleEvent(event.eventType) &&
-    !isStepEvent(event.eventType));
+  (!isWaitEventType(event.eventType) &&
+    !isHookLifecycleEventType(event.eventType) &&
+    !isStepEventType(event.eventType));
 
 /**
  * Filter the raw event list down to the events for a selected span.
@@ -100,17 +92,17 @@ export function groupEventsByCorrelation(events: Event[]): GroupedEvents {
       continue;
     }
 
-    if (isTimerEvent(event.eventType)) {
+    if (isWaitEventType(event.eventType)) {
       pushEvent(timerEvents, correlationId, event);
       continue;
     }
 
-    if (isHookLifecycleEvent(event.eventType)) {
+    if (isHookLifecycleEventType(event.eventType)) {
       pushEvent(hookEvents, correlationId, event);
       continue;
     }
 
-    if (isStepEvent(event.eventType)) {
+    if (isStepEventType(event.eventType)) {
       pushEvent(eventsByStepId, correlationId, event);
       continue;
     }

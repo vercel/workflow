@@ -3,7 +3,11 @@
  * Used by run-actions and trace viewer components.
  */
 
-import type { Event, WorkflowRunStatus } from '@workflow/world';
+import {
+  type Event,
+  isTerminalWorkflowRunStatus,
+  type WorkflowRunStatus,
+} from '@workflow/world';
 
 // Time thresholds for Re-enqueue button visibility
 const STEP_ACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
@@ -140,9 +144,7 @@ export function analyzeEvents(events: Event[] | undefined): EventAnalysis {
 export function isTerminalStatus(
   status: WorkflowRunStatus | undefined
 ): boolean {
-  return (
-    status === 'completed' || status === 'failed' || status === 'cancelled'
-  );
+  return status ? isTerminalWorkflowRunStatus(status) : false;
 }
 
 /**

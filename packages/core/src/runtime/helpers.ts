@@ -143,6 +143,16 @@ export interface HealthCheckOptions {
   timeout?: number;
   /** Deployment ID to send the health check to. Falls back to process.env.VERCEL_DEPLOYMENT_ID. */
   deploymentId?: string;
+  /**
+   * Queue namespace of the target deployment (e.g. `'eve'` for topics like
+   * `__eve_wkf_workflow_*`). Falls back to `WORKFLOW_QUEUE_NAMESPACE` in the
+   * calling process. Cross-context callers (e.g. the observability
+   * dashboard) must pass the target deployment's namespace explicitly —
+   * the env fallback resolves in the caller's process, and a message
+   * published to a mismatched topic has no consumer, so the check would
+   * always time out.
+   */
+  namespace?: string;
 }
 
 /**
@@ -167,6 +177,28 @@ const HEALTH_CHECK_READ_TIMEOUT = 500;
  * Read chunks from a stream with a timeout per read operation.
  * Returns { chunks, timedOut } where timedOut indicates if a read timed out.
  */
+/**
+ * Race a promise against a deadline. Rejects with a timeout error when the
+ * deadline elapses first. Used to bound `world.streams.get()` inside the
+ * health-check poll loop: some worlds hold that request open until the
+ * stream has data (e.g. workflow-server holds unwritten streams open for
+ * ~2 minutes), which would otherwise blow through the configured health
+ * check timeout — the `while` condition is only re-checked between
+ * iterations.
+ */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`Operation timed out after ${ms}ms`)),
+        ms
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 async function readStreamWithTimeout(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   readTimeout: number
@@ -255,7 +287,7 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
 export async function healthCheck(
   world: World,
   endpoint: HealthCheckEndpoint,
-  options?: HealthCheckOptions & { namespace?: string }
+  options?: HealthCheckOptions
 ): Promise<HealthCheckResult> {
   const timeout = options?.timeout ?? DEFAULT_HEALTH_CHECK_TIMEOUT;
   const correlationId = generateId();
@@ -280,9 +312,13 @@ export async function healthCheck(
 
     while (Date.now() - startTime < timeout) {
       try {
-        const stream = await world.streams.get(
-          generateHealthCheckRunId(correlationId),
-          streamName
+        const remainingMs = timeout - (Date.now() - startTime);
+        const stream = await withDeadline(
+          world.streams.get(
+            generateHealthCheckRunId(correlationId),
+            streamName
+          ),
+          remainingMs
         );
         const reader = stream.getReader();
         const { chunks, timedOut } = await readStreamWithTimeout(

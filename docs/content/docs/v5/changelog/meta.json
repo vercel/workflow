@@ -5,7 +5,8 @@
     "eager-processing",
     "resilient-start",
     "lazy-event-creation",
-    "turbo-mode"
+    "turbo-mode",
+    "step-message-ownership"
   ],
   "defaultOpen": false
 }

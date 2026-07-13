@@ -1,4 +1,6 @@
 // Re-export builder types for backwards compatibility
+import type { WorkflowRunStatus } from '@workflow/world';
+
 export type {
   BuildTarget,
   WorkflowConfig,
@@ -18,7 +20,7 @@ export type InspectCLIOptions = {
   sort?: 'asc' | 'desc';
   limit?: number;
   workflowName?: string;
-  status?: string;
+  status?: WorkflowRunStatus;
   /** Listing window start: relative duration (12h, 7d) or timestamp (runs only) */
   since?: string;
   /** Listing window end: relative duration or timestamp; requires --since */

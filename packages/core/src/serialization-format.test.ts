@@ -204,8 +204,8 @@ describe('hydrateResourceIO', () => {
 
     const event = {
       eventId: 'evt_123',
+      eventType: 'step_completed',
       eventData: {
-        type: 'step_completed',
         result: resultPayload,
       },
     };
@@ -213,7 +213,6 @@ describe('hydrateResourceIO', () => {
     const hydrated = hydrateResourceIO(event, testRevivers);
     expect(hydrated.eventId).toBe('evt_123');
     expect(hydrated.eventData.result).toEqual({ key: 'value' });
-    expect(hydrated.eventData.type).toBe('step_completed');
   });
 
   it('should hydrate event eventData.output', () => {
@@ -221,8 +220,8 @@ describe('hydrateResourceIO', () => {
 
     const event = {
       eventId: 'evt_456',
+      eventType: 'run_completed',
       eventData: {
-        type: 'run_completed',
         output: outputPayload,
       },
     };
@@ -230,7 +229,20 @@ describe('hydrateResourceIO', () => {
     const hydrated = hydrateResourceIO(event, testRevivers);
     expect(hydrated.eventId).toBe('evt_456');
     expect(hydrated.eventData.output).toEqual({ message: 'done' });
-    expect(hydrated.eventData.type).toBe('run_completed');
+  });
+
+  it.each([
+    'run_started',
+    'step_started',
+  ] as const)('should hydrate eventData.input for %s events', (eventType) => {
+    const event = {
+      eventId: `evt_${eventType}`,
+      eventType,
+      eventData: { input: makeDevlPayload({ value: eventType }) },
+    };
+
+    const hydrated = hydrateResourceIO(event, testRevivers);
+    expect(hydrated.eventData.input).toEqual({ value: eventType });
   });
 
   it('should hydrate event eventData.metadata for hook_created events', () => {
@@ -238,8 +250,8 @@ describe('hydrateResourceIO', () => {
 
     const event = {
       eventId: 'evt_hook_created',
+      eventType: 'hook_created',
       eventData: {
-        type: 'hook_created',
         token: 'hook_tok_123',
         metadata: metadataPayload,
       },
@@ -259,8 +271,8 @@ describe('hydrateResourceIO', () => {
 
     const event = {
       eventId: 'evt_hook_received',
+      eventType: 'hook_received',
       eventData: {
-        type: 'hook_received',
         payload,
       },
     };
@@ -278,8 +290,8 @@ describe('hydrateResourceIO', () => {
 
     const event = {
       eventId: 'evt_step_failed',
+      eventType: 'step_failed',
       eventData: {
-        type: 'step_failed',
         error: errorPayload,
       },
     };
@@ -290,7 +302,6 @@ describe('hydrateResourceIO', () => {
       message: 'something blew up',
       stack: 'Error: something blew up\n    at foo:1:1',
     });
-    expect(hydrated.eventData.type).toBe('step_failed');
   });
 
   it('should hydrate hook metadata', () => {

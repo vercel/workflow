@@ -29,6 +29,10 @@ export function register() {
 
 No workflow-specific configuration is required. As soon as a tracer provider and propagator are registered, the SDK's spans, context propagation, and span links activate automatically.
 
+<Callout>
+`@opentelemetry/api` is an **optional peer dependency**. An OpenTelemetry SDK such as `@vercel/otel` normally pulls it in transitively, but installing it directly (`npm i @opentelemetry/api`) guarantees it is present in your build — particularly for bundled or serverless targets where the SDK's tracing is inlined at build time. If it can't be resolved, tracing is a silent no-op.
+</Callout>
+
 ## Spans
 
 | Span name | Kind | Emitted when |

@@ -801,10 +801,7 @@ export const WorkflowTraceViewer = ({
   /** Callback when a run reference is clicked in the detail panel */
   onRunClick?: (runId: string) => void;
   /** Callback to load event data for a specific event (lazy loading in sidebar) */
-  onLoadEventData?: (
-    correlationId: string,
-    eventId: string
-  ) => Promise<unknown | null>;
+  onLoadEventData?: (event: Event) => Promise<unknown | null>;
   /** Load next trace page when vertical scroll reaches bottom. */
   onLoadMoreSpans?: () => void | Promise<void>;
   /** Whether trace pagination has more data to load. */
