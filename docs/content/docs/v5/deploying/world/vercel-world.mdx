@@ -36,7 +36,7 @@ That's it. Vercel automatically:
 
 For complete details on pricing, usage limits, and included allotments on Vercel, see the official Vercel documentation:
 
-- **[Vercel Workflow](https://vercel.com/docs/workflow)** — Pricing details, concepts, and observability for Workflow on Vercel
+- **[Vercel Workflow](https://vercel.com/docs/workflows)** — Pricing details, concepts, and observability for Workflow on Vercel
 - **[Vercel limits](https://vercel.com/docs/limits)** — Platform-wide limits including Workflow-specific constraints
 - **[Vercel Hobby plan](https://vercel.com/docs/plans/hobby)** — Free tier included usage for Workflow and other resources
 
@@ -56,7 +56,7 @@ The Vercel World runs in every [Vercel Function region](https://vercel.com/docs/
 
 No configuration is needed. A run is pinned to the region of the function that creates it:
 
-- Deploy your app to a single region (via [`regions`](https://vercel.com/docs/project-configuration#regions) in `vercel.json` or the project settings), and every run lives there.
+- Deploy your app to a single region (via [`regions`](https://vercel.com/docs/project-configuration/vercel-json#regions) in `vercel.json` or the project settings), and every run lives there.
 - Deploy to multiple regions for a globally distributed audience, and each run is pinned to the region that served the user who triggered it — workflow data and streaming stay close to that user.
 
 ### Explicit region selection
@@ -76,7 +76,7 @@ const run = await start(myWorkflow, [input], { region: "sfo1" });
   there. Your workflow and step functions execute in the regions your
   application is deployed to. For execution to actually happen in the
   specified region, your app must be deployed there — via
-  [`regions`](https://vercel.com/docs/project-configuration#regions) in
+  [`regions`](https://vercel.com/docs/project-configuration/vercel-json#regions) in
   `vercel.json` or the Function Regions setting in your project settings.
   If it isn't, the run's data lives in the requested region but its steps
   execute in the nearest region your app is deployed to.
@@ -272,4 +272,4 @@ The Vercel World uses Vercel's infrastructure for workflow execution:
 - **Queuing** - Steps are distributed across serverless functions via [Vercel Queues](https://vercel.com/docs/queues) with automatic retries and [consumer function security](#consumer-function-security)
 - **Authentication** - OIDC tokens provide secure, automatic authentication
 
-For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflow).
+For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflows).
