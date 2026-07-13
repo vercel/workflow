@@ -3,10 +3,9 @@ import { getDocsTreeWithoutCookbook } from './cookbook-source';
 import type { DocsVersion } from './versions';
 import { PRE_RELEASE_VERSION } from './versions';
 
-function rewriteUrl(
-  url: string | undefined,
-  prefix: string
-): string | undefined {
+function rewriteUrl(url: string, prefix: string): string;
+function rewriteUrl(url: undefined, prefix: string): undefined;
+function rewriteUrl(url: string | undefined, prefix: string) {
   if (!url || !prefix) return url;
   // Only rewrite in-app docs links. External and cookbook links are left alone.
   if (!url.startsWith('/docs')) return url;

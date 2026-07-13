@@ -394,6 +394,231 @@ describe('createQueue', () => {
     });
   });
 
+  describe('strict concurrency (WORKFLOW_SEQUENTIAL_REPLAYS)', () => {
+    let originalDeploymentId: string | undefined;
+    let originalStrict: string | undefined;
+    let originalSafeMode: string | undefined;
+
+    beforeEach(() => {
+      originalDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
+      originalStrict = process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+      originalSafeMode = process.env.WORKFLOW_SAFE_MODE;
+      delete process.env.WORKFLOW_SAFE_MODE;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+      mockSend.mockResolvedValue({ messageId: 'msg-123' });
+    });
+
+    afterEach(() => {
+      if (originalDeploymentId !== undefined) {
+        process.env.VERCEL_DEPLOYMENT_ID = originalDeploymentId;
+      } else {
+        delete process.env.VERCEL_DEPLOYMENT_ID;
+      }
+      if (originalStrict !== undefined) {
+        process.env.WORKFLOW_SEQUENTIAL_REPLAYS = originalStrict;
+      } else {
+        delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+      }
+      if (originalSafeMode !== undefined) {
+        process.env.WORKFLOW_SAFE_MODE = originalSafeMode;
+      } else {
+        delete process.env.WORKFLOW_SAFE_MODE;
+      }
+    });
+
+    it('appends runId to the physical flow topic while keeping the logical queueName', async () => {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
+
+      // send(physicalTopic, wrapper, options)
+      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test_wrun_abc');
+      // The logical queue name is preserved so the handler + re-enqueue path
+      // resolves the same per-run physical topic on the next invocation.
+      expect(mockSend.mock.calls[0][1].queueName).toBe('__wkf_workflow_test');
+    });
+
+    it('re-enqueues delayed flow messages to the same per-run physical topic', async () => {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+
+      let capturedHandler: (
+        message: unknown,
+        metadata: unknown
+      ) => Promise<void>;
+      mockHandleCallback.mockImplementation((handler) => {
+        capturedHandler = handler;
+        return async () => new Response('ok');
+      });
+
+      const queue = createQueue();
+      queue.createQueueHandler('__wkf_workflow_', async () => ({
+        timeoutSeconds: 300,
+      }));
+
+      await capturedHandler!(
+        {
+          payload: { runId: 'wrun_abc' },
+          queueName: '__wkf_workflow_test',
+          deploymentId: 'dpl_original',
+        },
+        { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
+      );
+
+      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test_wrun_abc');
+    });
+
+    it('does not rewrite the topic when the flag is unset', async () => {
+      delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
+
+      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test');
+    });
+
+    it('does not rewrite step topics even when the flag is set', async () => {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+
+      const queue = createQueue();
+      await queue.queue('__wkf_step_myStep', {
+        workflowName: 'test-workflow',
+        workflowRunId: 'wrun_abc',
+        workflowStartedAt: Date.now(),
+        stepId: 'step_xyz',
+      });
+
+      expect(mockSend.mock.calls[0][0]).toBe('__wkf_step_myStep');
+    });
+
+    it('WORKFLOW_SAFE_MODE=1 routes to per-run topics when the specific variable is unset', async () => {
+      delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+      process.env.WORKFLOW_SAFE_MODE = '1';
+
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
+
+      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test_wrun_abc');
+    });
+
+    it('an explicit WORKFLOW_SEQUENTIAL_REPLAYS=0 wins over WORKFLOW_SAFE_MODE', async () => {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '0';
+      process.env.WORKFLOW_SAFE_MODE = '1';
+
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
+
+      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test');
+    });
+
+    it('gives inline step executions (flow topic + stepId) a per-step topic for full parallelism', async () => {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+
+      const queue = createQueue();
+      // Inline step executions ride the flow topic as WorkflowInvokePayload
+      // with a stepId. They must NOT share the per-run serialized topic, or
+      // a run's parallel steps would execute one at a time.
+      await queue.queue('__wkf_workflow_test', {
+        runId: 'wrun_abc',
+        stepId: 'step_one',
+      });
+      await queue.queue('__wkf_workflow_test', {
+        runId: 'wrun_abc',
+        stepId: 'step_two',
+      });
+
+      expect(mockSend.mock.calls[0][0]).toBe(
+        '__wkf_workflow_test_wrun_abc_step_one'
+      );
+      expect(mockSend.mock.calls[1][0]).toBe(
+        '__wkf_workflow_test_wrun_abc_step_two'
+      );
+      // The wrapper keeps the logical queue name for handler dispatch.
+      expect(mockSend.mock.calls[0][1].queueName).toBe('__wkf_workflow_test');
+    });
+
+    it('gives each health check its own physical topic so concurrent probes never serialize', async () => {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+
+      const queue = createQueue();
+      // Concurrent probes: with maxConcurrency: 1 applied per concrete topic,
+      // a single shared `…_health_check` topic would process probes one at a
+      // time and let a slow probe time out its successors. Distinct
+      // per-correlation topics keep them independent.
+      await queue.queue('__wkf_workflow_health_check', {
+        __healthCheck: true as const,
+        correlationId: 'corr_123',
+      });
+      await queue.queue('__wkf_workflow_health_check', {
+        __healthCheck: true as const,
+        correlationId: 'corr_456',
+      });
+
+      expect(mockSend.mock.calls[0][0]).toBe(
+        '__wkf_workflow_health_check_corr_123'
+      );
+      expect(mockSend.mock.calls[1][0]).toBe(
+        '__wkf_workflow_health_check_corr_456'
+      );
+      // The wrapper keeps the logical queue name for handler dispatch.
+      expect(mockSend.mock.calls[0][1].queueName).toBe(
+        '__wkf_workflow_health_check'
+      );
+    });
+
+    it('does not rewrite health check topics when the flag is unset', async () => {
+      delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_health_check', {
+        __healthCheck: true as const,
+        correlationId: 'corr_123',
+      });
+
+      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_health_check');
+    });
+
+    it('does not rewrite step health check topics even when the flag is set', async () => {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+
+      const queue = createQueue();
+      await queue.queue('__wkf_step_health_check', {
+        __healthCheck: true as const,
+        correlationId: 'corr_123',
+      });
+
+      expect(mockSend.mock.calls[0][0]).toBe('__wkf_step_health_check');
+    });
+
+    it('appends runId to namespaced flow topics so it composes with WORKFLOW_QUEUE_NAMESPACE', async () => {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+
+      const queue = createQueue();
+      await queue.queue('__custom_wkf_workflow_test', { runId: 'wrun_abc' });
+
+      expect(mockSend.mock.calls[0][0]).toBe(
+        '__custom_wkf_workflow_test_wrun_abc'
+      );
+      expect(mockSend.mock.calls[0][1].queueName).toBe(
+        '__custom_wkf_workflow_test'
+      );
+    });
+
+    it('does not rewrite namespaced step topics even when the flag is set', async () => {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+
+      const queue = createQueue();
+      await queue.queue('__custom_wkf_step_myStep', {
+        workflowName: 'test-workflow',
+        workflowRunId: 'wrun_abc',
+        workflowStartedAt: Date.now(),
+        stepId: 'step_xyz',
+      });
+
+      expect(mockSend.mock.calls[0][0]).toBe('__custom_wkf_step_myStep');
+    });
+  });
+
   describe('createQueueHandler()', () => {
     const setupHandler = ({ timeoutSeconds }: { timeoutSeconds: number }) => {
       let capturedHandler: (

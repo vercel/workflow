@@ -1,5 +1,6 @@
 import { Args, Flags } from '@oclif/core';
 import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
+import { WorkflowRunStatusSchema } from '@workflow/world';
 import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import type { InspectCLIOptions } from '../lib/config/types.js';
@@ -125,7 +126,7 @@ export default class Inspect extends BaseCommand {
     status: Flags.string({
       description: 'filter runs by status (only for runs)',
       required: false,
-      options: ['running', 'completed', 'failed', 'cancelled', 'pending'],
+      options: [...WorkflowRunStatusSchema.options],
       helpGroup: 'Filtering',
       helpLabel: '--status',
     }),
@@ -297,7 +298,9 @@ function toInspectOptions(flags: any): InspectCLIOptions {
     sort: flags.sort as 'asc' | 'desc' | undefined,
     limit: flags.limit,
     workflowName: flags.workflowName,
-    status: flags.status,
+    status: flags.status
+      ? WorkflowRunStatusSchema.parse(flags.status)
+      : undefined,
     since: flags.since,
     until: flags.until,
     withData: flags.withData,

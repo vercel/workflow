@@ -132,6 +132,10 @@ export interface CreateEventV4Input {
   /** run_cancelled's optional free-text cancellation reason. Small plaintext
    *  metadata, capped at 512 chars by the @workflow/world schema. */
   cancelReason?: string;
+  /** step_started's inline-ownership stamp: the queue message ID of the
+   *  invocation running this step's body inline. Persisted on the event row
+   *  so wake replays can observe the active owner. */
+  ownerMessageId?: string;
   /** Arbitrary structured map; rides as a native CBOR object in the
    *  frame meta. Bounded by the server at 2 KB encoded. */
   executionContext?: Record<string, unknown>;
@@ -155,6 +159,9 @@ export interface CreateEventV4Input {
    *  event → this step's body starting), riding on step_completed /
    *  step_failed. Consumed server-side for latency metrics. */
   stso?: number;
+  /** Progress counters taken when the STSO gap began. */
+  stepCount?: number;
+  eventCount?: number;
   /** Runtime optimizations active for the ttfs/stso measurement
    *  (e.g. 'turbo', 'lazyStepStart', 'optimisticStart'). */
   optimizations?: string[];
@@ -238,6 +245,9 @@ function buildPostFrameMeta(
   if (input.hookIsSystem !== undefined) meta.hookIsSystem = input.hookIsSystem;
   if (input.errorCode !== undefined) meta.errorCode = input.errorCode;
   if (input.cancelReason !== undefined) meta.cancelReason = input.cancelReason;
+  if (input.ownerMessageId !== undefined) {
+    meta.ownerMessageId = input.ownerMessageId;
+  }
   if (input.executionContext !== undefined) {
     meta.executionContext = input.executionContext;
   }
@@ -249,6 +259,8 @@ function buildPostFrameMeta(
   }
   if (input.ttfs !== undefined) meta.ttfs = input.ttfs;
   if (input.stso !== undefined) meta.stso = input.stso;
+  if (input.stepCount !== undefined) meta.stepCount = input.stepCount;
+  if (input.eventCount !== undefined) meta.eventCount = input.eventCount;
   if (input.optimizations !== undefined) {
     meta.optimizations = input.optimizations;
   }

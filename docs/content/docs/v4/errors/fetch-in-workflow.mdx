@@ -9,6 +9,10 @@ related:
   - /docs/api-reference/workflow/fetch
 ---
 
+<CopyPrompt
+  text="Fix `fetch` usage inside workflow functions. Search workflow files for direct global `fetch(...)` calls and libraries such as AI SDK calls that use fetch. For simple HTTP calls inside a `&quot;use workflow&quot;` function, import `{ fetch }` from `workflow` and replace the global call. For SDK/client calls that need normal Node.js or provider behavior, move the call into a helper function with `&quot;use step&quot;` and call that step from the workflow. Keep all step inputs and outputs serializable. Verify the workflow starts and replays without the fetch-in-workflow error."
+/>
+
 This error occurs when you try to use `fetch()` directly in a workflow function, or when a library (like the AI SDK) tries to call `fetch()` under the hood.
 
 ## Error Message

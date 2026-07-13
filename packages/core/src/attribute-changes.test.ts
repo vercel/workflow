@@ -37,7 +37,7 @@ describe('normalizeAttributeChanges', () => {
       expect(caught).toBeInstanceOf(FatalError);
       expect((caught as Error).message).toMatch(re);
       expect((caught as Error).message).toContain(
-        'experimental_setAttributes requires a plain object'
+        'setAttributes requires a plain object'
       );
     });
   });

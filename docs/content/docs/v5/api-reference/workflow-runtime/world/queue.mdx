@@ -79,6 +79,8 @@ const handler = world.createQueueHandler(prefix, callback); // [!code highlight]
 
 **Returns:** `(req: Request) => Promise<Response>`
 
+`meta.messageId` should be stable across redeliveries of the same message (one ID per enqueued message, reused on every delivery attempt). The runtime records it on inline `step_started` events as a liveness lease so that only a redelivery of the owning message re-executes a crashed inline step before the lease expires (see [Inline step message ownership](/v5/docs/changelog/step-message-ownership)). A World whose queue mints a fresh ID per delivery degrades gracefully — crashed inline steps recover via the delayed backstop instead of immediately on redelivery — but never wedges or duplicates.
+
 ## Related
 
 - [start()](/docs/api-reference/workflow-api/start) — The standard way to start workflow runs

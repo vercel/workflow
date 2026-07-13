@@ -3,7 +3,11 @@
  */
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, WorkflowRun } from '@workflow/world';
+import {
+  type Event,
+  isTerminalStepEventType,
+  type WorkflowRun,
+} from '@workflow/world';
 import type { Span, SpanEvent } from '../trace-viewer/types';
 import { shouldShowVerticalLine } from './event-colors';
 import { calculateDuration, dateToOtelTime } from './trace-time-utils';
@@ -269,11 +273,7 @@ export function stepToSpan(stepEvents: Event[], maxEndTime: Date): Span | null {
     const completedEvent = stepEvents
       .slice()
       .reverse()
-      .find(
-        (event) =>
-          event.eventType === 'step_completed' ||
-          event.eventType === 'step_failed'
-      );
+      .find((event) => isTerminalStepEventType(event.eventType));
     endTime = getEventTimestamp(completedEvent) ?? new Date(step.completedAt);
   }
 

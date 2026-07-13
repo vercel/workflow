@@ -186,6 +186,88 @@ function getHeadersFromPayload(
   return Object.keys(headers).length > 0 ? headers : undefined;
 }
 
+/**
+ * Resolves the physical VQS topic for a message.
+ *
+ * Normally this is just the logical queue name. When
+ * `WORKFLOW_SEQUENTIAL_REPLAYS` is enabled, messages on flow (workflow)
+ * topics get a payload-dependent physical topic. VQS scopes `maxConcurrency`
+ * per concrete topic, so combined with `maxConcurrency: 1` on the flow
+ * trigger:
+ *
+ * - Orchestrator replays (`WorkflowInvokePayload` without a `stepId`) get a
+ *   per-run topic — at most one replay per run at a time.
+ * - Inline step executions (`WorkflowInvokePayload` WITH a `stepId` — they
+ *   ride the flow topic in the combined handler model) get a per-step topic
+ *   so steps keep full parallelism across a run; only redeliveries of the
+ *   same step serialize.
+ * - Health checks get a per-probe topic (their correlation id) so concurrent
+ *   probes never queue behind one shared `…_health_check` slot.
+ *
+ * Legacy `*_wkf_step_*` topics are intentionally excluded.
+ *
+ * The flow-topic match allows an optional queue namespace prefix
+ * (`__<namespace>_wkf_workflow_`, see `@workflow/builders` constants) so the
+ * behavior composes with `WORKFLOW_QUEUE_NAMESPACE`.
+ *
+ * This rewrite only serializes messages sent through this adapter (the
+ * wrapper's logical `queueName` keeps handler dispatch and re-enqueues on the
+ * same physical topic). A producer that computes the shared topic name itself
+ * still delivers (the trigger subscribes with a wildcard), but bypasses the
+ * per-run concurrency slot.
+ */
+const FLOW_TOPIC_PATTERN = /^__([a-z][a-z0-9]*_)?wkf_workflow_/;
+
+let loggedSequentialReplays = false;
+
+/**
+ * Whether sequential replays are enabled: `WORKFLOW_SEQUENTIAL_REPLAYS=1`,
+ * or `WORKFLOW_SAFE_MODE=1` when `WORKFLOW_SEQUENTIAL_REPLAYS` is not set
+ * explicitly (safe mode fills the default of every safety-over-performance
+ * flag; an explicit per-flag value always wins). Mirrors
+ * `isSequentialReplaysEnabled` in `@workflow/builders` — world-vercel must
+ * not depend on the build-time package, so the check is duplicated.
+ */
+function isSequentialReplaysEnabled(): boolean {
+  const explicit = process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+  if (explicit !== undefined && explicit !== '') {
+    return explicit === '1';
+  }
+  return process.env.WORKFLOW_SAFE_MODE === '1';
+}
+
+function getPhysicalQueueName(
+  queueName: ValidQueueName,
+  payload: QueuePayload
+): string {
+  if (!isSequentialReplaysEnabled() || !FLOW_TOPIC_PATTERN.test(queueName)) {
+    return queueName;
+  }
+  if (!loggedSequentialReplays) {
+    loggedSequentialReplays = true;
+    // One-time breadcrumb so a half-applied configuration (env var set without
+    // a maxConcurrency-bearing flow trigger, or vice versa) is diagnosable
+    // from function logs. Must go to stderr: this code also runs inside CLI
+    // commands whose stdout is a machine-parsed JSON contract (e.g.
+    // `workflow health --json`).
+    console.warn(
+      '[workflow] WORKFLOW_SEQUENTIAL_REPLAYS=1: routing flow messages to per-run queue topics'
+    );
+  }
+  if ('runId' in payload && typeof payload.runId === 'string') {
+    // Inline step execution: full parallelism via a per-step topic.
+    if ('stepId' in payload && typeof payload.stepId === 'string') {
+      return `${queueName}_${payload.runId}_${payload.stepId}`;
+    }
+    // Orchestrator replay: serialize per run.
+    return `${queueName}_${payload.runId}`;
+  }
+  if ('__healthCheck' in payload && typeof payload.correlationId === 'string') {
+    return `${queueName}_${payload.correlationId}`;
+  }
+  return queueName;
+}
+
 type QueueFunction = (
   queueName: ValidQueueName,
   payload: QueuePayload,
@@ -252,11 +334,16 @@ export function createQueue(config?: APIConfig): Queue {
     // preserving Uint8Array values (workflow input in specVersion >= 2).
     const wrapper = {
       payload,
+      // Keep the logical queue name so the handler and re-enqueue path
+      // resolve the same per-run physical topic on the next invocation.
       queueName,
       // Store deploymentId in the message so it can be preserved when re-enqueueing
       deploymentId: opts?.deploymentId,
     };
-    const sanitizedQueueName = queueName.replace(/[^A-Za-z0-9-_]/g, '-');
+    const sanitizedQueueName = getPhysicalQueueName(queueName, payload).replace(
+      /[^A-Za-z0-9-_]/g,
+      '-'
+    );
     try {
       const { messageId } = await client.send(sanitizedQueueName, wrapper, {
         idempotencyKey: opts?.idempotencyKey,

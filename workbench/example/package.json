@@ -17,6 +17,7 @@
     "esbuild": "catalog:"
   },
   "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
     "@vercel/functions": "catalog:",
     "@vercel/otel": "^1.13.0",
     "workflow": "workspace:*",

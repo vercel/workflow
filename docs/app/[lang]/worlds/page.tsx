@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { PlainGlobe } from '@/app/[lang]/(home)/components/vercel-com-visuals/plain-globe';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Button } from '@vercel/geistdocs/components/button';
 import { WorldsFilteredGrid } from '@/components/worlds/WorldsFilteredGrid';
 import { getWorldsData } from '@/lib/worlds-data';
 

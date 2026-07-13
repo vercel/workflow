@@ -32,7 +32,7 @@ export interface StepLatencyTracking {
    * Epoch ms the first pre-step `attr_set` write began (its client-stamped
    * `occurredAt`, falling back to `createdAt`). When present, the TTFS
    * measurement ENDS here instead of at the step's code start: a
-   * workflow-body `experimental_setAttributes` before the first step
+   * workflow-body `setAttributes` before the first step
    * resolves through an extra replay (see the `hasAttributeEvents` branch in
    * runtime.ts), so everything from this write until the step body runs is
    * the duration of the setAttributes call — which is subtracted by ending
@@ -46,6 +46,10 @@ export interface StepLatencyTracking {
    * when the step qualifies for STSO.
    */
   prevStepEndMs?: number;
+  /** Number of unique terminal steps already in the event log. */
+  stepCount?: number;
+  /** Number of events already in the event log. */
+  eventCount?: number;
   /** Whether turbo mode is active for this invocation. */
   turbo: boolean;
 }
@@ -54,6 +58,8 @@ export interface StepLatencyTracking {
 export interface StepLatencyEventData {
   ttfs?: number;
   stso?: number;
+  stepCount?: number;
+  eventCount?: number;
   optimizations?: string[];
 }
 
@@ -71,7 +77,7 @@ export interface StepLatencyEventData {
  * - `hook_created`: a fire-and-forget `createHook()` before the first step
  *   commits in the same invocation, whose measured duration is subtracted via
  *   {@link StepLatencyTracking.preStepBlockingMs}.
- * - `attr_set` (workflow-body `experimental_setAttributes`): resolves through
+ * - `attr_set` (workflow-body `setAttributes`): resolves through
  *   an extra replay before steps run. Subtracted by ending the measurement at
  *   the first attr write's timestamp instead — see
  *   {@link StepLatencyTracking.preStepAttrStartMs}.
@@ -168,6 +174,8 @@ export function computeStepLatencyTracking(params: {
   // attr_set, ...) in between and this suspension scheduling nothing but
   // steps.
   let prevStepEndMs: number | undefined;
+  let stepCount: number | undefined;
+  let eventCount: number | undefined;
   const lastEvent = events[events.length - 1];
   if (
     !params.suspensionHasWaits &&
@@ -177,6 +185,18 @@ export function computeStepLatencyTracking(params: {
       lastEvent.eventType === 'step_failed')
   ) {
     prevStepEndMs = +(lastEvent.occurredAt ?? lastEvent.createdAt);
+    const terminalStepIds = new Set<string>();
+    for (const event of events) {
+      if (
+        (event.eventType === 'step_completed' ||
+          event.eventType === 'step_failed') &&
+        event.correlationId !== undefined
+      ) {
+        terminalStepIds.add(event.correlationId);
+      }
+    }
+    stepCount = terminalStepIds.size;
+    eventCount = events.length;
   }
 
   if (!ttfsEligible && prevStepEndMs === undefined) {
@@ -196,7 +216,9 @@ export function computeStepLatencyTracking(params: {
           ...(preStepAttrStartMs !== undefined ? { preStepAttrStartMs } : {}),
         }
       : {}),
-    ...(prevStepEndMs !== undefined ? { prevStepEndMs } : {}),
+    ...(prevStepEndMs !== undefined
+      ? { prevStepEndMs, stepCount, eventCount }
+      : {}),
     turbo: params.turbo,
   };
 }
@@ -258,6 +280,12 @@ export function computeStepLatencyEventData(params: {
   return {
     ...(ttfs !== undefined ? { ttfs } : {}),
     ...(stso !== undefined ? { stso } : {}),
+    ...(stso !== undefined && tracking.stepCount !== undefined
+      ? { stepCount: tracking.stepCount }
+      : {}),
+    ...(stso !== undefined && tracking.eventCount !== undefined
+      ? { eventCount: tracking.eventCount }
+      : {}),
     optimizations,
   };
 }

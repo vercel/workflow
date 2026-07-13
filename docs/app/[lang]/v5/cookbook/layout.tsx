@@ -11,7 +11,10 @@ const Layout = async ({
   return (
     <div className="bg-background-100">
       <PreReleaseBanner pathname={`/${lang}/v5/cookbook`} />
-      <DocsLayout tree={getCookbookTree(lang, PRE_RELEASE_VERSION.prefix)}>
+      <DocsLayout
+        currentVersion={PRE_RELEASE_VERSION.id}
+        tree={getCookbookTree(lang, PRE_RELEASE_VERSION.prefix)}
+      >
         {children}
       </DocsLayout>
     </div>

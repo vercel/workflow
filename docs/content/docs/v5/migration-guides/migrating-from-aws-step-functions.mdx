@@ -14,6 +14,10 @@ related:
   - /docs/deploying/world/vercel-world
 ---
 
+<CopyPrompt
+  text="Replace this AWS Step Functions state machine with Workflow SDK. Run `npm i workflow`. Translate the ASL state machine into an exported async TypeScript function with `&quot;use workflow&quot;`. Move each Lambda/Task side effect into a helper function with `&quot;use step&quot;`. Replace Wait states with `sleep()` from `workflow`. Replace callback tokens with `defineHook()` plus `resumeHook()` from `workflow/api`, or `createWebhook()` for HTTP callbacks. Replace Parallel and Map states with `Promise.all`, bounded batching, or child workflow runs started with `start()`. Replace Retry/Catch rules with normal errors, `RetryableError`, and `FatalError`. Add an API route or server function that starts the workflow with `start(workflowFn, args)` and verify it against the previous state machine behavior."
+/>
+
 Move an AWS Step Functions state machine to the Workflow SDK by replacing JSON state definitions with TypeScript functions. This guide shows the direct mapping between ASL states and Workflow SDK primitives.
 
 <Callout type="info">

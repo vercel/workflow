@@ -243,8 +243,8 @@ describe('splitEventDataForV4 attribute fields', () => {
     expect(meta.workflowName).toBe('wf');
   });
 
-  it('carries attributes on resilient-start run_started', () => {
-    const { meta } = splitEventDataForV4({
+  it('splits resilient-start run_started input into the payload body', () => {
+    const { payload, meta } = splitEventDataForV4({
       eventType: 'run_started',
       specVersion: 4,
       eventData: {
@@ -255,6 +255,8 @@ describe('splitEventDataForV4 attribute fields', () => {
       },
     } as AnyEventRequest);
 
+    expect(payload).toBeInstanceOf(Uint8Array);
+    expect(meta.input).toBeUndefined();
     expect(meta.attributes).toEqual({ sourceAtStart: 'api' });
   });
 
@@ -307,6 +309,43 @@ describe('splitEventDataForV4 attribute fields', () => {
     expect(started.meta.input).toBeUndefined();
   });
 
+  it('carries the step_started ownerMessageId in the frame meta on the lazy path', () => {
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'step_started',
+      correlationId: 'step_4',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        workflowName: 'wf',
+        input: new TextEncoder().encode('[]'),
+        ownerMessageId: 'msg_owner1',
+      },
+    } as AnyEventRequest);
+    expect(payload).toBeInstanceOf(Uint8Array);
+    expect(meta.ownerMessageId).toBe('msg_owner1');
+  });
+
+  it('carries the ownerMessageId re-stamp on a bare (owned-recovery) step_started', () => {
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'step_started',
+      correlationId: 'step_5',
+      specVersion: 4,
+      eventData: { stepName: 's', ownerMessageId: 'msg_owner1' },
+    } as AnyEventRequest);
+    expect(payload).toBeUndefined();
+    expect(meta.ownerMessageId).toBe('msg_owner1');
+  });
+
+  it('omits ownerMessageId from meta on an unstamped bare step_started', () => {
+    const { meta } = splitEventDataForV4({
+      eventType: 'step_started',
+      correlationId: 'step_6',
+      specVersion: 4,
+      eventData: { stepName: 's' },
+    } as AnyEventRequest);
+    expect(meta.ownerMessageId).toBeUndefined();
+  });
+
   it('carries the run_cancelled cancelReason in the frame meta, not the payload', () => {
     const { payload, meta } = splitEventDataForV4({
       eventType: 'run_cancelled',
@@ -328,7 +367,7 @@ describe('splitEventDataForV4 attribute fields', () => {
     expect(meta.cancelReason).toBeUndefined();
   });
 
-  it('carries latency telemetry (ttfs/stso/optimizations) in the frame meta on step terminal events', () => {
+  it('carries latency telemetry in the frame meta on step terminal events', () => {
     const completed = splitEventDataForV4({
       eventType: 'step_completed',
       correlationId: 'step_1',
@@ -353,10 +392,14 @@ describe('splitEventDataForV4 attribute fields', () => {
         stepName: 's',
         error: new TextEncoder().encode('"boom"'),
         stso: 45,
+        stepCount: 7,
+        eventCount: 42,
         optimizations: [],
       },
     } as AnyEventRequest);
     expect(failed.meta.stso).toBe(45);
+    expect(failed.meta.stepCount).toBe(7);
+    expect(failed.meta.eventCount).toBe(42);
     expect(failed.meta.ttfs).toBeUndefined();
     expect(failed.meta.optimizations).toEqual([]);
 
@@ -369,10 +412,14 @@ describe('splitEventDataForV4 attribute fields', () => {
         stepName: 's',
         result: new TextEncoder().encode('"ok"'),
         ttfs: 'fast',
+        stepCount: 0,
+        eventCount: 2.5,
         optimizations: [1, 2],
       },
     } as unknown as AnyEventRequest);
     expect(malformed.meta.ttfs).toBeUndefined();
+    expect(malformed.meta.stepCount).toBeUndefined();
+    expect(malformed.meta.eventCount).toBeUndefined();
     expect(malformed.meta.optimizations).toBeUndefined();
   });
 });
