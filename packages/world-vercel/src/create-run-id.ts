@@ -120,8 +120,7 @@ export function createRunId(
 }
 
 /**
- * `World.regionForRunId` implementation: derive the region a run's data
- * lives in from its run ID.
+ * Derive the region a run's data lives in from its run ID.
  *
  * - Region-tagged IDs (minted by {@link createRunId}) decode to their
  *   embedded region.
@@ -141,4 +140,25 @@ export function regionForRunId(runId: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * `World.describeRun` implementation: Vercel-specific display fields
+ * for a run.
+ *
+ * Currently a single field — `region`, decoded from the run ID's
+ * region tag (see {@link regionForRunId}) — but the shape leaves room
+ * for additional fields derived from other run-entity properties
+ * (e.g. `executionContext`) without another interface change. A
+ * `null` region means the run ID was present but undecodable;
+ * a missing/non-string run ID contributes nothing.
+ */
+export function describeRun(
+  run: Readonly<Record<string, unknown>>
+): Record<string, string | null> | null {
+  const runId = run.runId;
+  if (typeof runId !== 'string' || runId.length === 0) {
+    return null;
+  }
+  return { region: regionForRunId(runId) };
 }

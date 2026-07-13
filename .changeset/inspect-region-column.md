@@ -4,4 +4,4 @@
 '@workflow/cli': patch
 ---
 
-Show each run's region in `workflow inspect` output via the new optional `World.regionForRunId` reverse lookup.
+Show world-specific run fields (e.g. region on Vercel) in `workflow inspect` output via the new optional `World.describeRun` hook.

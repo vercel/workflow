@@ -646,26 +646,31 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
         (prop) => !WORKFLOW_RUN_IO_PROPS.includes(prop)
       );
 
-  // Region is world-specific: only worlds that can reverse-lookup a
-  // run's region from its ID (World.regionForRunId) get the column.
-  const regionForRunId = world.regionForRunId?.bind(world);
-  const props: string[] = regionForRunId
-    ? (() => {
-        const withRegion: string[] = [...baseProps];
-        withRegion.splice(withRegion.indexOf('status'), 0, 'region');
-        return withRegion;
-      })()
-    : [...baseProps];
-
-  const withRegion = (
+  // World-specific display fields (World.describeRun): each key the
+  // world returns becomes an extra column, inserted before `status`.
+  // Detached call site, so bind explicitly. `null` field values are
+  // preserved (they mean "applicable but undeterminable" per the
+  // interface contract), distinguishing them in JSON output from the
+  // hook being absent entirely.
+  const describeRun = world.describeRun?.bind(world);
+  const describedKeys: string[] = [];
+  const withWorldFields = (
     rows: Record<string, unknown>[]
-  ): Record<string, unknown>[] =>
-    regionForRunId
-      ? rows.map((row) => ({
-          ...row,
-          region: regionForRunId(String(row.runId)) ?? undefined,
-        }))
-      : rows;
+  ): Record<string, unknown>[] => {
+    if (!describeRun) return rows;
+    return rows.map((row) => {
+      const fields = describeRun(row) ?? {};
+      for (const key of Object.keys(fields)) {
+        if (!describedKeys.includes(key)) describedKeys.push(key);
+      }
+      return { ...row, ...fields };
+    });
+  };
+  const propsFor = (baseList: (keyof WorkflowRun)[]): string[] => {
+    const list: string[] = [...baseList];
+    list.splice(list.indexOf('status'), 0, ...describedKeys);
+    return list;
+  };
 
   const fetchRunsPage = async (
     cursor: string | undefined
@@ -683,7 +688,9 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
         pagination,
       });
       return {
-        data: withRegion(runs.data as unknown as Record<string, unknown>[]),
+        data: withWorldFields(
+          runs.data as unknown as Record<string, unknown>[]
+        ),
         cursor: runs.cursor,
         hasMore: runs.hasMore,
         pageInfo: getPageInfo(runs),
@@ -699,7 +706,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       runs.data.map((r) => hydrateResourceIO(r, resolveKey))
     );
     return {
-      data: withRegion(data as unknown as Record<string, unknown>[]),
+      data: withWorldFields(data as unknown as Record<string, unknown>[]),
       cursor: runs.cursor,
       hasMore: runs.hasMore,
       pageInfo: getPageInfo(runs),
@@ -734,7 +741,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       }
     },
     displayPage: async (runs) => {
-      logger.log(showTable(runs, props, opts));
+      logger.log(showTable(runs, propsFor(baseProps), opts));
     },
   });
 };
@@ -776,11 +783,15 @@ export const showRun = async (
   try {
     const run = await world.runs.get(runId, { resolveData: 'all' });
     const hydrated = await hydrateResourceIO(run, resolveKey);
-    // Region is world-specific: present only when the world can
-    // reverse-lookup a run's region from its ID.
-    const region = world.regionForRunId?.(runId) ?? undefined;
-    const runWithHydratedIO =
-      region !== undefined ? { ...hydrated, region } : hydrated;
+    // World-specific display fields (World.describeRun). Method-style
+    // call preserves `this`; `null` field values are kept so structured
+    // output distinguishes "undeterminable" from "hook absent".
+    const worldFields = world.describeRun?.(
+      run as unknown as Record<string, unknown>
+    );
+    const runWithHydratedIO = worldFields
+      ? { ...hydrated, ...worldFields }
+      : hydrated;
     if (opts.json) {
       showJson(runWithHydratedIO);
       return;

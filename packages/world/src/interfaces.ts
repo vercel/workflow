@@ -396,20 +396,29 @@ export interface World extends Queue, Streamer, Storage {
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
 
   /**
-   * Reverse lookup: derive the region a run's data lives in from its
-   * run ID.
+   * World-specific display fields for a run.
    *
-   * Worlds that embed placement metadata in their run IDs (see
-   * {@link createRunId}) can expose it here so tooling — e.g. the
-   * `workflow inspect` CLI — can display a run's region generically.
-   * Consumers must treat this as optional: when the hook is absent the
-   * world has no regional dimension and region output should be
-   * omitted entirely.
+   * Tooling — e.g. the `workflow inspect` CLI — calls this to enrich a
+   * run's listing row / detail output with fields only the world can
+   * derive: a region decoded from the run ID, placement read off the
+   * run's `executionContext`, a shard, a billing tier, etc. Consumers
+   * render each returned key as an additional column/property; when the
+   * hook is absent, no extra fields appear at all.
    *
-   * @param runId - The run ID, with or without the `wrun_` prefix.
-   * @returns The region identifier the run's data lives in, or `null`
-   *   when no region can be determined for the given ID (e.g. it is
-   *   malformed). Implementations must not throw.
+   * The contract:
+   * - **Synchronous and pure** — called once per displayed run, so no
+   *   I/O; derive fields from the entity you are given.
+   * - **Read only what you recognise.** The argument is the run entity
+   *   as the caller has it (a full storage run, or a leaner analytics
+   *   row) — typed loosely for the same reason as {@link createRunId}.
+   *   Tolerate missing fields.
+   * - **Must not throw.**
+   * - A `null` field value means "applicable but undeterminable" and is
+   *   preserved as `null` in structured output (vs. the hook being
+   *   absent, where the key does not exist at all). Return `null` or an
+   *   empty object to add nothing for a given run.
    */
-  regionForRunId?(runId: string): string | null;
+  describeRun?(
+    run: Readonly<Record<string, unknown>>
+  ): Record<string, string | null> | null;
 }
