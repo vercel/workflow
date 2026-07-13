@@ -190,6 +190,83 @@ describe('listRuns', () => {
       },
     });
   });
+
+  it('includes a region property when the world defines regionForRunId', async () => {
+    const run = {
+      runId: 'wrun_41KX206BTK10M0C31CMN2AS1JS',
+      status: 'running',
+      deploymentId: 'dep-1',
+      workflowName: 'workflow//./src/workflows/test//myWorkflow',
+      specVersion: 2,
+      attributes: {},
+      createdAt: new Date('2026-06-30T00:00:00.000Z'),
+      updatedAt: new Date('2026-06-30T00:00:00.000Z'),
+      startedAt: new Date('2026-06-30T00:00:01.000Z'),
+      completedAt: null,
+      errorCode: null,
+      workflowCoreVersion: null,
+      workflowEncryptionEnabled: false,
+    } satisfies AnalyticsRun;
+    const regionForRunId = vi.fn().mockReturnValue('sfo1');
+    const world = {
+      regionForRunId,
+      analytics: {
+        runs: {
+          list: vi.fn().mockResolvedValue({
+            data: [run],
+            cursor: null,
+            hasMore: false,
+          }),
+        },
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listRuns(world, { json: true });
+
+    expect(regionForRunId).toHaveBeenCalledWith(run.runId);
+    const output = JSON.parse(String(write.mock.calls[0][0]));
+    expect(output.data[0].region).toBe('sfo1');
+  });
+
+  it('omits the region property when the world lacks regionForRunId', async () => {
+    const run = {
+      runId: 'wrun_01KX2M5N3RBNC12RYWYYH4WWQJ',
+      status: 'running',
+      deploymentId: 'dep-1',
+      workflowName: 'workflow//./src/workflows/test//myWorkflow',
+      specVersion: 2,
+      attributes: {},
+      createdAt: new Date('2026-06-30T00:00:00.000Z'),
+      updatedAt: new Date('2026-06-30T00:00:00.000Z'),
+      startedAt: new Date('2026-06-30T00:00:01.000Z'),
+      completedAt: null,
+      errorCode: null,
+      workflowCoreVersion: null,
+      workflowEncryptionEnabled: false,
+    } satisfies AnalyticsRun;
+    const world = {
+      analytics: {
+        runs: {
+          list: vi.fn().mockResolvedValue({
+            data: [run],
+            cursor: null,
+            hasMore: false,
+          }),
+        },
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listRuns(world, { json: true });
+
+    const output = JSON.parse(String(write.mock.calls[0][0]));
+    expect('region' in output.data[0]).toBe(false);
+  });
 });
 
 describe('listSteps', () => {

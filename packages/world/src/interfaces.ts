@@ -394,4 +394,22 @@ export interface World extends Queue, Streamer, Storage {
    *   tolerate `undefined` for direct callers.
    */
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
+
+  /**
+   * Reverse lookup: derive the region a run's data lives in from its
+   * run ID.
+   *
+   * Worlds that embed placement metadata in their run IDs (see
+   * {@link createRunId}) can expose it here so tooling — e.g. the
+   * `workflow inspect` CLI — can display a run's region generically.
+   * Consumers must treat this as optional: when the hook is absent the
+   * world has no regional dimension and region output should be
+   * omitted entirely.
+   *
+   * @param runId - The run ID, with or without the `wrun_` prefix.
+   * @returns The region identifier the run's data lives in, or `null`
+   *   when no region can be determined for the given ID (e.g. it is
+   *   malformed). Implementations must not throw.
+   */
+  regionForRunId?(runId: string): string | null;
 }

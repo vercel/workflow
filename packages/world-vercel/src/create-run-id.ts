@@ -1,6 +1,6 @@
 import { monotonicFactory } from 'ulid';
 import { bytesToUlid, ulidToBytes } from './run-id/codec.js';
-import { encode } from './run-id/index.js';
+import { decode, encode } from './run-id/index.js';
 import {
   DEFAULT_REGION_CODE,
   REGION_IDS,
@@ -117,4 +117,28 @@ export function createRunId(
   }
   lastRunId = candidate;
   return candidate;
+}
+
+/**
+ * `World.regionForRunId` implementation: derive the region a run's data
+ * lives in from its run ID.
+ *
+ * - Region-tagged IDs (minted by {@link createRunId}) decode to their
+ *   embedded region.
+ * - Untagged legacy IDs — and tagged IDs whose region code is unknown to
+ *   this SDK version — resolve to {@link DEFAULT_REGION_CODE}: all
+ *   pre-tagging data lives there by convention, matching the backend's
+ *   routing.
+ * - Malformed IDs return `null` (never throws).
+ */
+export function regionForRunId(runId: string): string | null {
+  const bare = runId.startsWith('wrun_') ? runId.slice('wrun_'.length) : runId;
+  try {
+    const decoded = decode(bare);
+    return decoded.tagged && decoded.region
+      ? decoded.region
+      : DEFAULT_REGION_CODE;
+  } catch {
+    return null;
+  }
 }

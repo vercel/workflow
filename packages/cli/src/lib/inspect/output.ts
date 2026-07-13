@@ -640,11 +640,32 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
   }
 
   // Determine which props to show based on withData flag
-  const props = opts.withData
+  const baseProps = opts.withData
     ? WORKFLOW_RUN_LISTED_PROPS
     : WORKFLOW_RUN_LISTED_PROPS.filter(
         (prop) => !WORKFLOW_RUN_IO_PROPS.includes(prop)
       );
+
+  // Region is world-specific: only worlds that can reverse-lookup a
+  // run's region from its ID (World.regionForRunId) get the column.
+  const regionForRunId = world.regionForRunId?.bind(world);
+  const props: string[] = regionForRunId
+    ? (() => {
+        const withRegion: string[] = [...baseProps];
+        withRegion.splice(withRegion.indexOf('status'), 0, 'region');
+        return withRegion;
+      })()
+    : [...baseProps];
+
+  const withRegion = (
+    rows: Record<string, unknown>[]
+  ): Record<string, unknown>[] =>
+    regionForRunId
+      ? rows.map((row) => ({
+          ...row,
+          region: regionForRunId(String(row.runId)) ?? undefined,
+        }))
+      : rows;
 
   const fetchRunsPage = async (
     cursor: string | undefined
@@ -662,7 +683,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
         pagination,
       });
       return {
-        data: runs.data as unknown as Record<string, unknown>[],
+        data: withRegion(runs.data as unknown as Record<string, unknown>[]),
         cursor: runs.cursor,
         hasMore: runs.hasMore,
         pageInfo: getPageInfo(runs),
@@ -678,7 +699,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       runs.data.map((r) => hydrateResourceIO(r, resolveKey))
     );
     return {
-      data: data as unknown as Record<string, unknown>[],
+      data: withRegion(data as unknown as Record<string, unknown>[]),
       cursor: runs.cursor,
       hasMore: runs.hasMore,
       pageInfo: getPageInfo(runs),
@@ -754,7 +775,12 @@ export const showRun = async (
   }
   try {
     const run = await world.runs.get(runId, { resolveData: 'all' });
-    const runWithHydratedIO = await hydrateResourceIO(run, resolveKey);
+    const hydrated = await hydrateResourceIO(run, resolveKey);
+    // Region is world-specific: present only when the world can
+    // reverse-lookup a run's region from its ID.
+    const region = world.regionForRunId?.(runId) ?? undefined;
+    const runWithHydratedIO =
+      region !== undefined ? { ...hydrated, region } : hydrated;
     if (opts.json) {
       showJson(runWithHydratedIO);
       return;
