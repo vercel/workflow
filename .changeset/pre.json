@@ -353,6 +353,7 @@
     "stream-failure-diagnostics",
     "stream-otel-spans",
     "stream-read-v3-reconnect",
+    "stream-write-flush-span",
     "strong-cups-sip",
     "sveltekit-config-loader",
     "sveltekit-h2-noderequire",
