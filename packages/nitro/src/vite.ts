@@ -17,6 +17,8 @@ import nitroModule from './index.js';
 
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder;
+  let nitroInstance: Nitro | undefined;
+  let closePromise: Promise<void> | undefined;
   let workflowBuildDir: string;
   const enqueue = createBuildQueue();
 
@@ -78,6 +80,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
       name: 'workflow:nitro',
       nitro: {
         setup: (nitro: Nitro) => {
+          nitroInstance = nitro;
           // Capture the workflow build directory for exclusion
           workflowBuildDir = join(nitro.options.buildDir, 'workflow');
           nitro.options.workflow = {
@@ -86,10 +89,21 @@ export function workflow(options?: ModuleOptions): Plugin[] {
             _vite: true,
           };
           if (nitro.options.dev) {
-            builder = new LocalBuilder(nitro);
+            const hotUpdateBuilder = new LocalBuilder(nitro);
+            builder = hotUpdateBuilder;
+            nitro.hooks.hook('close', () => hotUpdateBuilder.close());
           }
           return nitroModule.setup(nitro);
         },
+      },
+      async buildEnd() {
+        // Framework plugins can create temporary Vite dev servers during a
+        // production build. Close those Nitro instances when their Vite plugin
+        // container ends so watch-mode builders release their esbuild contexts.
+        if (nitroInstance?.options.dev) {
+          closePromise ??= nitroInstance.close();
+          await closePromise;
+        }
       },
       // NOTE: This is a workaround because Nitro passes the 404 requests to the dev server to handle.
       // For workflow routes, we override to send an empty body to prevent Hono/Vite's SPA fallback.

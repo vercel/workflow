@@ -1,0 +1,248 @@
+---
+title: React Router v7
+description: Add durable workflows to a React Router v7 framework-mode app using Nitro v3.
+type: guide
+summary: Enable the Vite Environment API and configure React Router v7, Nitro v3, and Workflow SDK.
+prerequisites:
+  - /docs/getting-started/react-router
+related:
+  - /docs/getting-started/nitro
+  - /docs/foundations/workflows-and-steps
+---
+
+This guide starts with an existing React Router v7 framework-mode app. It uses the Vite Environment API available in recent React Router v7 releases, including v7.18.1.
+
+<Steps>
+
+<Step>
+
+## Install Nitro and Workflow SDK
+
+Install the two additional packages:
+
+```package-install
+npm install nitro workflow
+```
+
+<Callout>
+  Use Nitro v3 for this integration. You can check the installed version with
+  `npm ls nitro`.
+</Callout>
+
+</Step>
+
+<Step>
+
+## Enable the Vite Environment API
+
+React Router v7 keeps the Vite Environment API behind a future flag. Enable it and set an explicit build directory:
+
+```typescript title="react-router.config.ts" lineNumbers
+import type { Config } from "@react-router/dev/config";
+
+export default {
+  ssr: true,
+  buildDirectory: "build", // [!code highlight]
+  future: {
+    v8_viteEnvironmentApi: true, // [!code highlight]
+  },
+} satisfies Config;
+```
+
+<Callout type="warn">
+  The `v8_viteEnvironmentApi` flag is required on React Router v7. Without it,
+  React Router uses its older build pipeline and cannot share Nitro's custom
+  server environment correctly.
+</Callout>
+
+</Step>
+
+<Step>
+
+## Create the React Router server handler
+
+Create `server/ssr.ts`:
+
+```typescript title="server/ssr.ts" lineNumbers
+import { createRequestHandler } from "react-router";
+
+export default {
+  fetch: createRequestHandler(
+    () => import("virtual:react-router/server-build"),
+    import.meta.env.MODE,
+  ),
+};
+```
+
+React Router's Vite plugin generates `virtual:react-router/server-build`. This file gives Nitro a normal `fetch` handler that forwards each application request to that generated server build.
+
+</Step>
+
+<Step>
+
+## Configure Vite
+
+Update `vite.config.ts`:
+
+```typescript title="vite.config.ts" lineNumbers
+import { reactRouter } from "@react-router/dev/vite";
+import { nitro } from "nitro/vite";
+import { defineConfig } from "vite";
+import { workflow } from "workflow/vite";
+import reactRouterConfig from "./react-router.config";
+
+export default defineConfig({
+  plugins: [
+    reactRouter(),
+    nitro({
+      serverDir: "./server",
+      output: {
+        dir: reactRouterConfig.buildDirectory,
+        serverDir: `${reactRouterConfig.buildDirectory}/server`,
+        publicDir: `${reactRouterConfig.buildDirectory}/client`,
+      },
+    }),
+    workflow({ dirs: ["workflows"] }),
+  ],
+  environments: {
+    ssr: {
+      build: {
+        rollupOptions: {
+          input: "./server/ssr.ts",
+        },
+      },
+    },
+  },
+});
+```
+
+Each part has one job:
+
+- `reactRouter()` creates the client and server-rendering environments.
+- `nitro()` runs `server/ssr.ts` and writes its output beside React Router's output.
+- `workflow({ dirs: ["workflows"] })` compiles only your workflow source directory and adds Workflow SDK's routes to Nitro.
+- The custom `ssr` input tells Vite which file connects Nitro to React Router.
+
+<Callout type="warn">
+  Keep `dirs: ["workflows"]`. Without a source-only directory, a later build
+  can scan the generated `build` directory and try to compile server output as
+  workflow source.
+</Callout>
+
+If your config already has plugins such as Tailwind CSS, keep them in the array. Preserve the relative order of `reactRouter()`, `nitro()`, and `workflow()` shown above.
+
+</Step>
+
+<Step>
+
+## Use Vite for the app scripts
+
+Run the shared build through Vite so all three plugins participate:
+
+```json title="package.json" lineNumbers
+{
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "start": "node ./build/server/index.mjs",
+    "typegen": "react-router typegen"
+  }
+}
+```
+
+</Step>
+
+<Step>
+
+## Create a workflow
+
+Create `workflows/greeting.ts`:
+
+```typescript title="workflows/greeting.ts" lineNumbers
+export async function greetingWorkflow(name: string) {
+  "use workflow";
+
+  return greet(name);
+}
+
+async function greet(name: string) {
+  "use step";
+
+  return `Hello, ${name}!`;
+}
+```
+
+</Step>
+
+<Step>
+
+## Start the workflow from a Nitro route
+
+Create `server/routes/api/greeting.post.ts`:
+
+```typescript title="server/routes/api/greeting.post.ts" lineNumbers
+import { defineHandler } from "nitro";
+import { start } from "workflow/api";
+import { greetingWorkflow } from "../../../workflows/greeting";
+
+export default defineHandler(async (event) => {
+  const { name } = (await event.req.json()) as { name: string };
+  const run = await start(greetingWorkflow, [name]);
+
+  return { runId: run.runId };
+});
+```
+
+React Router continues to handle your application routes. Nitro handles this server route at `POST /api/greeting`, as well as Workflow SDK's internal routes.
+
+</Step>
+
+<Step>
+
+## Run the app
+
+Start development:
+
+```bash
+npm run dev
+```
+
+Then start a workflow:
+
+```bash
+curl -X POST \
+  -H "content-type: application/json" \
+  -d '{"name":"Workflow"}' \
+  http://localhost:3000/api/greeting
+```
+
+For a production check, run:
+
+```bash
+npm run build
+npm run start
+```
+
+You can inspect local runs with `npx workflow web`.
+
+</Step>
+
+</Steps>
+
+## Troubleshooting
+
+### Vite reports an invalid SSR input or `path.replace is not a function`
+
+Confirm that `future.v8_viteEnvironmentApi` is `true` in `react-router.config.ts`. That flag makes React Router v7 use the environment-aware build pipeline required by Nitro.
+
+### React Router pages return 404
+
+Confirm that `environments.ssr.build.rollupOptions.input` points to `./server/ssr.ts` and that the file exports the `fetch` handler shown above.
+
+### A second build tries to compile files under `build/server`
+
+Confirm that the Workflow plugin uses `workflow({ dirs: ["workflows"] })`. Also remove the existing `build` directory once before rebuilding.
+
+### `vite build` finishes output but does not exit
+
+Upgrade to a Workflow SDK version that includes Nitro build-context cleanup and use a current Nitro v3 release.

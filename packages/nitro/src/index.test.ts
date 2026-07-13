@@ -1,7 +1,8 @@
-import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
-import { describe, expect, it } from 'vitest';
+import { BaseBuilder, WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import { describe, expect, it, vi } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
+import { workflow as viteWorkflow } from './vite.js';
 
 type StubOptions = {
   routing: boolean;
@@ -112,6 +113,113 @@ describe('@workflow/nitro virtual handlers', () => {
         `import { POST } from "/tmp/.nitro/workflow/${buildPath}";`
       );
     }
+  });
+});
+
+describe('@workflow/nitro builder lifecycle', () => {
+  it('disposes watch-mode build contexts when Nitro closes', async () => {
+    const hooks = new Map<string, Array<() => Promise<void> | void>>();
+    const nitro = createNitroStub({ routing: true, dev: true });
+    nitro.hooks.hook = (name: string, hook: () => Promise<void> | void) => {
+      const registered = hooks.get(name) ?? [];
+      registered.push(hook);
+      hooks.set(name, registered);
+    };
+
+    const firstStepsContext = { dispose: vi.fn(async () => {}) };
+    const firstWorkflowsContext = { dispose: vi.fn(async () => {}) };
+    const secondStepsContext = { dispose: vi.fn(async () => {}) };
+    const secondWorkflowsContext = { dispose: vi.fn(async () => {}) };
+    const getInputFiles = vi
+      .spyOn(BaseBuilder.prototype as any, 'getInputFiles')
+      .mockResolvedValue([]);
+    const createCombinedBundle = vi
+      .spyOn(BaseBuilder.prototype as any, 'createCombinedBundle')
+      .mockResolvedValueOnce({
+        manifest: {},
+        stepsContext: firstStepsContext,
+        interimBundleCtx: firstWorkflowsContext,
+      })
+      .mockResolvedValueOnce({
+        manifest: {},
+        stepsContext: secondStepsContext,
+        interimBundleCtx: secondWorkflowsContext,
+      });
+    const createWebhookBundle = vi
+      .spyOn(BaseBuilder.prototype as any, 'createWebhookBundle')
+      .mockResolvedValue(undefined);
+    const createManifest = vi
+      .spyOn(BaseBuilder.prototype as any, 'createManifest')
+      .mockResolvedValue(undefined);
+
+    try {
+      await nitroModule.setup(nitro);
+
+      for (const hook of hooks.get('build:before') ?? []) {
+        await hook();
+      }
+
+      expect(firstStepsContext.dispose).not.toHaveBeenCalled();
+      expect(firstWorkflowsContext.dispose).not.toHaveBeenCalled();
+
+      // The first reload is intentionally skipped because build:before already
+      // ran. The next reload replaces the active watch contexts.
+      for (const hook of hooks.get('dev:reload') ?? []) {
+        await hook();
+        await hook();
+      }
+
+      expect(firstStepsContext.dispose).toHaveBeenCalledOnce();
+      expect(firstWorkflowsContext.dispose).toHaveBeenCalledOnce();
+      expect(secondStepsContext.dispose).not.toHaveBeenCalled();
+      expect(secondWorkflowsContext.dispose).not.toHaveBeenCalled();
+
+      for (const hook of hooks.get('close') ?? []) {
+        await hook();
+      }
+
+      expect(secondStepsContext.dispose).toHaveBeenCalledOnce();
+      expect(secondWorkflowsContext.dispose).toHaveBeenCalledOnce();
+    } finally {
+      getInputFiles.mockRestore();
+      createCombinedBundle.mockRestore();
+      createWebhookBundle.mockRestore();
+      createManifest.mockRestore();
+    }
+  });
+
+  it('closes a dev Nitro instance when its Vite plugin container ends', async () => {
+    const closeHooks: Array<() => Promise<void> | void> = [];
+    const nitro = createNitroStub({ routing: true, dev: true });
+    nitro.hooks.hook = (name: string, hook: () => Promise<void> | void) => {
+      if (name === 'close') closeHooks.push(hook);
+    };
+    nitro.close = vi.fn(async () => {
+      for (const hook of closeHooks) await hook();
+    });
+
+    const plugin = viteWorkflow().find(
+      (candidate) => candidate.name === 'workflow:nitro'
+    ) as any;
+
+    await plugin.nitro.setup(nitro);
+    await plugin.buildEnd();
+    await plugin.buildEnd();
+
+    expect(nitro.close).toHaveBeenCalledOnce();
+  });
+
+  it('leaves production Nitro shutdown to the production build lifecycle', async () => {
+    const nitro = createNitroStub({ routing: true, dev: false });
+    nitro.close = vi.fn(async () => {});
+    const plugin = viteWorkflow().find(
+      (candidate) => candidate.name === 'workflow:nitro'
+    ) as any;
+
+    await plugin.nitro.setup(nitro);
+    await plugin.buildEnd();
+
+    expect(nitro.close).not.toHaveBeenCalled();
   });
 });
 

@@ -64,6 +64,8 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
 
 export class LocalBuilder extends BaseBuilder {
   #outDir: string;
+  #buildContexts: Array<{ dispose(): Promise<void> }> = [];
+  #closed = false;
   constructor(nitro: Nitro) {
     const outDir = join(nitro.options.buildDir, 'workflow');
     super({
@@ -85,6 +87,10 @@ export class LocalBuilder extends BaseBuilder {
   #buildQueue: Promise<void> = Promise.resolve();
 
   override build(): Promise<void> {
+    if (this.#closed) {
+      return Promise.reject(new Error('Cannot build after builder is closed'));
+    }
+
     const next = this.#buildQueue.then(
       () => this.#buildOnce(),
       () => this.#buildOnce()
@@ -96,6 +102,30 @@ export class LocalBuilder extends BaseBuilder {
     return next;
   }
 
+  close(): Promise<void> {
+    this.#closed = true;
+    const next = this.#buildQueue.then(
+      () => this.#disposeBuildContexts(),
+      () => this.#disposeBuildContexts()
+    );
+    this.#buildQueue = next.catch(() => {});
+    return next;
+  }
+
+  async #disposeBuildContexts(): Promise<void> {
+    const contexts = this.#buildContexts;
+    this.#buildContexts = [];
+    await Promise.all(contexts.map((context) => context.dispose()));
+  }
+
+  async #replaceBuildContexts(
+    contexts: Array<{ dispose(): Promise<void> }>
+  ): Promise<void> {
+    const previousContexts = this.#buildContexts;
+    this.#buildContexts = contexts;
+    await Promise.all(previousContexts.map((context) => context.dispose()));
+  }
+
   async #buildOnce(): Promise<void> {
     const inputFiles = await this.getInputFiles();
     await mkdir(this.#outDir, { recursive: true });
@@ -104,34 +134,46 @@ export class LocalBuilder extends BaseBuilder {
     // name in its import statement, so we build directly to final names.
     // (The V1 atomic tmp-file pattern doesn't work here because renaming
     // the steps file would leave the flow route's import stale.)
-    const { manifest } = await this.createCombinedBundle({
-      inputFiles,
-      stepsOutfile: join(this.#outDir, 'steps.mjs'),
-      flowOutfile: join(this.#outDir, 'workflows.mjs'),
-      format: 'esm',
-      // bundleFinalOutput: false — Nitro externalizes the workflow build dir
-      // during dev, and its own rollup pipeline handles bundling for prod.
-      // Using true causes "Dynamic require of X is not supported" errors
-      // because esbuild wraps CJS require() calls in ESM output.
-      bundleFinalOutput: false,
-      externalizeNonSteps: true,
-      // In dev, Nitro dynamically imports the generated workflow files from
-      // disk, so there is no later Rollup pass to resolve externalized local
-      // TypeScript imports. In prod, Nitro/Rollup handles those imports.
-      bundleTransitiveLocalStepDependencies: this.config.watch,
-    });
+    const { manifest, stepsContext, interimBundleCtx } =
+      await this.createCombinedBundle({
+        inputFiles,
+        stepsOutfile: join(this.#outDir, 'steps.mjs'),
+        flowOutfile: join(this.#outDir, 'workflows.mjs'),
+        format: 'esm',
+        // bundleFinalOutput: false — Nitro externalizes the workflow build dir
+        // during dev, and its own rollup pipeline handles bundling for prod.
+        // Using true causes "Dynamic require of X is not supported" errors
+        // because esbuild wraps CJS require() calls in ESM output.
+        bundleFinalOutput: false,
+        externalizeNonSteps: true,
+        // In dev, Nitro dynamically imports the generated workflow files from
+        // disk, so there is no later Rollup pass to resolve externalized local
+        // TypeScript imports. In prod, Nitro/Rollup handles those imports.
+        bundleTransitiveLocalStepDependencies: this.config.watch,
+      });
 
-    await this.createWebhookBundle({
-      outfile: join(this.#outDir, 'webhook.mjs'),
-      bundle: false,
-    });
+    const buildContexts = [stepsContext, interimBundleCtx].filter(
+      (context): context is NonNullable<typeof context> => context != null
+    );
 
-    // Generate manifest
-    const workflowBundlePath = join(this.#outDir, 'workflows.mjs');
-    await this.createManifest({
-      workflowBundlePath,
-      manifestDir: this.#outDir,
-      manifest,
-    });
+    try {
+      await this.createWebhookBundle({
+        outfile: join(this.#outDir, 'webhook.mjs'),
+        bundle: false,
+      });
+
+      // Generate manifest
+      const workflowBundlePath = join(this.#outDir, 'workflows.mjs');
+      await this.createManifest({
+        workflowBundlePath,
+        manifestDir: this.#outDir,
+        manifest,
+      });
+    } catch (error) {
+      await Promise.all(buildContexts.map((context) => context.dispose()));
+      throw error;
+    }
+
+    await this.#replaceBuildContexts(buildContexts);
   }
 }

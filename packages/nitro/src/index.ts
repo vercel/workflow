@@ -294,6 +294,8 @@ export default {
       const builder = new LocalBuilder(nitro);
       let isInitialBuild = true;
 
+      nitro.hooks.hook('close', () => builder.close());
+
       nitro.hooks.hook('build:before', async () => {
         await builder.build();
 
