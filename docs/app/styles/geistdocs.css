@@ -1,7 +1,4 @@
-@import "tailwindcss";
-@import "fumadocs-ui/css/shadcn.css";
-@import "fumadocs-ui/css/preset.css";
-@import "tw-animate-css";
+@import "@vercel/geistdocs/styles.css";
 
 @keyframes skeleton-shimmer {
   to {
@@ -9,9 +6,8 @@
   }
 }
 
+@source "../../node_modules/@vercel/geistdocs/dist/**/*.js";
 @source "../../node_modules/streamdown/dist/*.js";
-
-@custom-variant dark (&:is(.dark *));
 
 @theme inline {
   /* Geist border radii */

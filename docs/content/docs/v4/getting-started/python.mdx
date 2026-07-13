@@ -10,6 +10,10 @@ related:
   - /docs/foundations/workflows-and-steps
 ---
 
+<CopyPrompt
+  text="In this Python project, run `pip install vercel`. Add `vercel.json` with `experimentalServices.ai_content_workflow.type = &quot;worker&quot;`, `entrypoint = &quot;app/workflows/ai_content_workflow.py&quot;`, and `topics = [&quot;__wkf_*&quot;]`. Create `app/workflow.py` with `from vercel import workflow` and `wf = workflow.Workflows()`. Create `app/workflows/ai_content_workflow.py` importing `wf`, define `@wf.workflow async def ai_content_workflow(*, topic: str)`, and call step functions such as `generate_draft` and `summarize_draft`. Mark step functions with `@wf.step`, use `await workflow.sleep(&quot;7 days&quot;)` for durable delays where needed, and use a `workflow.BaseHook` Pydantic model plus `.wait(token=...)` and `.resume(token)` for external approval events. Verify the worker entrypoint and route names match the project."
+/>
+
 <Callout type="warn">
 The Python SDK is currently in **beta**. APIs and behavior may change. For the latest documentation and updates, see the [official Vercel Workflow Python documentation](https://vercel.com/docs/workflow/python?language=py).
 </Callout>

@@ -9,6 +9,10 @@ related:
   - /docs/foundations/workflows-and-steps
 ---
 
+<CopyPrompt
+  text="In this TanStack Start app, run `npm i workflow`. In `vite.config.ts`, import `workflow` from `workflow/vite` and add `workflow()` first in the existing `plugins` array before `tanstackStart()`, `nitro()`, or other plugins. Add `{ &quot;name&quot;: &quot;workflow&quot; }` to `compilerOptions.plugins` in `tsconfig.json` if TypeScript is used. Create `src/workflows/user-signup.ts` with `handleUserSignup(email)`, `&quot;use workflow&quot;`, `sleep`, and `&quot;use step&quot;` helpers. Add `src/routes/api/signup.ts` using `createFileRoute(&quot;/api/signup&quot;)`, a POST server handler, `start` from `workflow/api`, and `json` from `@tanstack/react-start`. Run `npm run dev`, call `curl -X POST --json '{&quot;email&quot;:&quot;hello@example.com&quot;}' http://localhost:3000/api/signup`, and inspect with `npx workflow web` or `npx workflow inspect runs`."
+/>
+
 This guide will walk through setting up your first workflow in a TanStack Start app. Along the way, you'll learn more about the concepts that are fundamental to using the Workflow SDK in your own projects.
 
 ---

@@ -1,5 +1,15 @@
 # @workflow/world-local
 
+## 5.0.0-beta.27
+
+### Patch Changes
+
+- [#2888](https://github.com/vercel/workflow/pull/2888) [`7a1ea5a`](https://github.com/vercel/workflow/commit/7a1ea5a45afd07601934a2f3ff1d1044f3bd9db8) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Use the active queue namespace when re-enqueuing workflow runs during world startup recovery.
+
+- Updated dependencies [[`7a1ea5a`](https://github.com/vercel/workflow/commit/7a1ea5a45afd07601934a2f3ff1d1044f3bd9db8), [`0b956f6`](https://github.com/vercel/workflow/commit/0b956f65cb0ab30501c72e934fc8d4352c4c3ea2)]:
+  - @workflow/world@5.0.0-beta.19
+  - @workflow/errors@5.0.0-beta.10
+
 ## 5.0.0-beta.26
 
 ### Patch Changes

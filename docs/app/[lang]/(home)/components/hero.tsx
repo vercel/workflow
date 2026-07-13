@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/command-prompt';
 
 const COMMAND_FOR_HUMANS = 'npm install workflow';
-const COMMAND_FOR_AGENTS = 'npx skills add vercel/workflow@workflow-init';
+const COMMAND_FOR_AGENTS = 'npx skills add vercel/workflow';
 
 type HeroProps = {
   title: string;

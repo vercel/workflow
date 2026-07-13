@@ -696,7 +696,7 @@ export async function executeStep(
               encryptionKey,
               // Turbo optimistic start runs this body before `run_started` is
               // durable. Expose the barrier so a direct step-body world write
-              // (e.g. `experimental_setAttributes`) can order itself after the
+              // (e.g. `setAttributes`) can order itself after the
               // run exists. Undefined on the await path (run already durable).
               runReadyBarrier: optimisticStart
                 ? params.runReadyBarrier

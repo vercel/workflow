@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { Button } from '@/components/ui/button';
+import { Button } from '@vercel/geistdocs/components/button';
 import {
   BenchmarkChart,
   BenchmarkBar,

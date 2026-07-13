@@ -1,9 +1,9 @@
 import { FatalError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WORKFLOW_SET_ATTRIBUTES } from '../symbols.js';
-import { experimental_setAttributes } from './set-attributes.js';
+import { experimental_setAttributes, setAttributes } from './set-attributes.js';
 
-describe('workflow.experimental_setAttributes', () => {
+describe('workflow.setAttributes', () => {
   const dispatchCalls: Array<{
     changes: Array<{ key: string; value: string | null }>;
     options: { allowReservedAttributes?: boolean } | undefined;
@@ -26,7 +26,7 @@ describe('workflow.experimental_setAttributes', () => {
   });
 
   it('dispatches normalized changes through the native attribute primitive', async () => {
-    await experimental_setAttributes({ phase: 'init', orderId: 'ord_1' });
+    await setAttributes({ phase: 'init', orderId: 'ord_1' });
     expect(dispatchCalls).toEqual([
       {
         changes: [
@@ -39,7 +39,7 @@ describe('workflow.experimental_setAttributes', () => {
   });
 
   it('translates undefined values into null (unset semantics)', async () => {
-    await experimental_setAttributes({ phase: 'done', stale: undefined });
+    await setAttributes({ phase: 'done', stale: undefined });
     expect(dispatchCalls).toEqual([
       {
         changes: [
@@ -52,26 +52,26 @@ describe('workflow.experimental_setAttributes', () => {
   });
 
   it('is a no-op for an empty record (no dispatch)', async () => {
-    await experimental_setAttributes({});
+    await setAttributes({});
     expect(dispatchCalls).toHaveLength(0);
   });
 
   it('throws FatalError when the workflow runtime has not initialized attribute dispatch', async () => {
     delete (globalThis as Record<symbol, unknown>)[WORKFLOW_SET_ATTRIBUTES];
-    await expect(
-      experimental_setAttributes({ phase: 'init' })
-    ).rejects.toBeInstanceOf(FatalError);
+    await expect(setAttributes({ phase: 'init' })).rejects.toBeInstanceOf(
+      FatalError
+    );
   });
 
   it('throws FatalError for reserved-prefix keys before any dispatch', async () => {
-    await expect(
-      experimental_setAttributes({ $sys: 'x' })
-    ).rejects.toBeInstanceOf(FatalError);
+    await expect(setAttributes({ $sys: 'x' })).rejects.toBeInstanceOf(
+      FatalError
+    );
     expect(dispatchCalls).toHaveLength(0);
   });
 
   it('dispatches reserved-prefix keys when allowReservedAttributes opt-in is set, and forwards the flag', async () => {
-    await experimental_setAttributes(
+    await setAttributes(
       { '$framework.kind': 'agent' },
       { allowReservedAttributes: true }
     );
@@ -85,7 +85,7 @@ describe('workflow.experimental_setAttributes', () => {
 
   it('still rejects reserved-prefix keys when allowReservedAttributes is explicitly false', async () => {
     await expect(
-      experimental_setAttributes(
+      setAttributes(
         { '$framework.kind': 'agent' },
         { allowReservedAttributes: false }
       )
@@ -93,12 +93,20 @@ describe('workflow.experimental_setAttributes', () => {
     expect(dispatchCalls).toHaveLength(0);
   });
 
+  it('keeps the deprecated experimental_setAttributes alias working', async () => {
+    expect(experimental_setAttributes).toBe(setAttributes);
+    await experimental_setAttributes({ phase: 'init' });
+    expect(dispatchCalls).toEqual([
+      { changes: [{ key: 'phase', value: 'init' }], options: {} },
+    ]);
+  });
+
   it('throws FatalError when called with a non-object', async () => {
     await expect(
-      experimental_setAttributes(null as unknown as Record<string, string>)
+      setAttributes(null as unknown as Record<string, string>)
     ).rejects.toBeInstanceOf(FatalError);
     await expect(
-      experimental_setAttributes([] as unknown as Record<string, string>)
+      setAttributes([] as unknown as Record<string, string>)
     ).rejects.toBeInstanceOf(FatalError);
   });
 });

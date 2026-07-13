@@ -17,49 +17,6 @@ const config: NextConfig = {
     '/worlds/\\[id\\]/opengraph-image': ['./lib/og/assets/**/*'],
   },
 
-  async rewrites() {
-    const markdownAcceptHeader =
-      '(?=.*(?:text/plain|text/markdown))(?!.*text/html.*(?:text/plain|text/markdown)).*';
-
-    return {
-      beforeFiles: [
-        {
-          source: '/docs/:path*',
-          destination: '/llms.mdx/:path*',
-          has: [
-            {
-              type: 'header',
-              key: 'Accept',
-              value: markdownAcceptHeader,
-            },
-          ],
-        },
-        {
-          source: '/cookbook',
-          destination: '/llms.mdx/cookbook',
-          has: [
-            {
-              type: 'header',
-              key: 'Accept',
-              value: markdownAcceptHeader,
-            },
-          ],
-        },
-        {
-          source: '/cookbook/:path*',
-          destination: '/llms.mdx/cookbook/:path*',
-          has: [
-            {
-              type: 'header',
-              key: 'Accept',
-              value: markdownAcceptHeader,
-            },
-          ],
-        },
-      ],
-    };
-  },
-
   async redirects() {
     return [
       {
@@ -159,6 +116,19 @@ const config: NextConfig = {
       {
         source: '/cookbook/agent-patterns/agent-stop-signal',
         destination: '/cookbook/agent-patterns/agent-cancellation',
+        permanent: true,
+      },
+      // setAttributes graduated from experimental_setAttributes; the API
+      // reference page moved with it. Cover both the versioned (v5) path and
+      // the unversioned path so links keep working once v5 becomes default.
+      {
+        source: '/v5/docs/api-reference/workflow/experimental-set-attributes',
+        destination: '/v5/docs/api-reference/workflow/set-attributes',
+        permanent: true,
+      },
+      {
+        source: '/docs/api-reference/workflow/experimental-set-attributes',
+        destination: '/docs/api-reference/workflow/set-attributes',
         permanent: true,
       },
       {

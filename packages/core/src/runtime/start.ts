@@ -87,7 +87,7 @@ export interface StartOptionsBase {
    * Only flip this to `true` if your caller is itself a framework or
    * library that owns a `$`-prefixed sub-namespace and knows the
    * conventions of any other tools writing into it. Same semantics as
-   * the `experimental_setAttributes` option of the same name.
+   * the `setAttributes` option of the same name.
    */
   allowReservedAttributes?: boolean;
 

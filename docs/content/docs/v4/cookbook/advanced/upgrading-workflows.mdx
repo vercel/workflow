@@ -10,6 +10,10 @@ related:
   - /docs/foundations/hooks
 ---
 
+<CopyPrompt
+  text="Add a safe self-upgrade point to this long-running workflow. Identify the loop boundary where no step is mid-side-effect. Define a serializable state object that contains all progress needed to continue. At the boundary, call `start(self, [state], { deploymentId: &quot;latest&quot; })` or the documented replacement workflow with the carried state, then return from the old run. If upgrades should be manual, add a `defineHook()` upgrade signal and resume it from an API route with `resumeHook()` from `workflow/api`. Make the handoff idempotent so retries do not start duplicate successor runs, and verify old-to-new handoff plus duplicate prevention."
+/>
+
 Workflows that block on external events for days, weeks, or months can outlive many deployments. **The key is to identify a clean upgrade point in the workflow** — a moment where it's safe to checkpoint state and start fresh — and then call [`start()`](/docs/api-reference/workflow-api/start) with `deploymentId: "latest"` to spawn a new run carrying that state forward. The current run ends; the next run begins on whatever deployment is live at that moment, so shipped fixes apply immediately without ever migrating an in-flight run.
 
 <Callout type="info">

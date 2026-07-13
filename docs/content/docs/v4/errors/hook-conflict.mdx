@@ -10,6 +10,10 @@ related:
   - /docs/api-reference/workflow/define-hook
 ---
 
+<CopyPrompt
+  text="Fix hook token conflicts. Find every `createHook({ token })` or typed hook creation site. If multiple waits can exist at the same time, include a unique stable discriminator in the token such as `${workflowRunId}:approval:${itemId}` or `${orderId}:${attempt}` instead of reusing one global token. If duplicate work should join an existing run, catch `HookConflictError` from `@workflow/errors`, read the conflicting run ID from the error/result if available, and use `getRun(runId)` plus `resumeHook()` from `workflow/api` to deliver the payload to the active run. Keep token generation deterministic across retries so replay does not create new hook identities. Verify two concurrent runs and a duplicate request no longer throw hook-conflict unexpectedly."
+/>
+
 This error occurs when you try to create a hook with a token that is already in use by another active workflow run. Hook tokens must be unique across all running workflows in your project.
 
 ## Error Message

@@ -9,6 +9,10 @@ related:
   - /docs/foundations/workflows-and-steps#step-functions
 ---
 
+<CopyPrompt
+  text="Make this non-serializable dependency usable inside a durable workflow with the step-as-factory pattern. Instead of passing the object (AI SDK model, cloud SDK client) into the workflow, export a factory that returns an async callback marked with &quot;use step&quot; which constructs and returns the object at execution time, for example `export function openai(...args) { return async () => { &quot;use step&quot;; return openaiProvider(...args); }; }`. Pass the factory across the workflow boundary — the compiler serializes the function reference, not the instance — and invoke it inside steps where full Node.js access is available. Keep the factory's constructor arguments serializable. Verify the workflow builds, replays deterministically, and the dependency is only instantiated during step execution."
+/>
+
 <Callout>
 This is an advanced guide. It dives into workflow internals and is not required reading to use workflow.
 </Callout>
