@@ -1,4 +1,4 @@
 {
-  "title": "World",
+  "title": "Worlds",
   "pages": ["local-world", "vercel-world", "postgres-world"]
 }
