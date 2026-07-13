@@ -1,3 +1,4 @@
+import assert from 'node:assert';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -63,10 +64,10 @@ import {
   getObjectCreatedAt,
   hookDisposeLockPath,
   hookRecoveryMarkerPath,
-  hookTokenClaimPath,
+  hookTokenConstraintPath,
   isHookDisposalCommitted,
   monotonicUlid,
-  releaseHookTokenClaimIfOwnedBy,
+  withHookTokenConstraintLock,
 } from './helpers.js';
 import {
   deleteHookByRunMarker,
@@ -74,8 +75,13 @@ import {
   writeHookCreatedIndexEntries,
 } from './hook-index.js';
 import {
+  type HookTokenConstraint,
+  hasFutureTokenExpiration,
+  readHookTokenConstraint,
+} from './hook-token-constraint.js';
+import {
   deleteAllHooksForRun,
-  rebuildLiveHookByTokenFromEventLog,
+  rebuildHookTokenConstraintFromEventLog,
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
@@ -103,26 +109,6 @@ import { withRunFileLock } from './runs-storage.js';
 // but a shared filesystem), exactly matching the cross-process
 // semantics without spawning subprocesses.
 
-const HookTokenClaimSchema = z.object({
-  // The token-claim writer below has always persisted `hookId`, but
-  // this read schema previously omitted it, which is the bug fixed
-  // by https://github.com/vercel/workflow/issues/2283. `optional()`
-  // is defensive: any claim file that somehow lacks the field still
-  // parses (yielding `undefined`) and falls through to the cross-
-  // hook conflict branch, matching pre-fix behavior.
-  hookId: z.string().optional(),
-  runId: z.string(),
-  // `eventId` is the canonical hook_created event ID the claiming
-  // worker committed to publishing. Persisting it here turns the
-  // claim file into a durable convergence key for cross-worker /
-  // cross-process retries (see comment on the hook_created branch).
-  // `optional()` for backward compatibility: a legacy claim file
-  // written before this field existed falls through to the recovery-
-  // marker upgrade path, which atomically pins a canonical eventId
-  // via a sidecar marker (also a `writeExclusive`).
-  eventId: z.string().optional(),
-});
-
 /**
  * Sidecar recovery marker that pins a canonical `hook_created`
  * eventId for a legacy token claim — one written by a version of
@@ -144,58 +130,9 @@ const HookRecoveryMarkerSchema = z.object({
   eventId: z.string(),
 });
 
-async function readHookTokenClaim(
-  constraintPath: string
-): Promise<z.infer<typeof HookTokenClaimSchema> | null> {
-  try {
-    return await readJSON(constraintPath, HookTokenClaimSchema);
-  } catch (error) {
-    if (error instanceof SyntaxError || error instanceof z.ZodError) {
-      return null;
-    }
-    throw error;
-  }
-}
-
-/**
- * Whether a token claim held by another `(runId, hookId)` can never become
- * live again and may therefore be released by a new claimant:
- *
- *   - the claimed hook's disposal is committed (its dispose lock exists —
- *     the durable release of the claim file just hasn't landed yet, or was
- *     lost to a crash between the lock write and the claim delete), or
- *   - the owning run is terminal (the run-completion cleanup releases all
- *     of the run's claims, but a claimant can observe the claim in the
- *     window before that cleanup lands — or the cleanup crashed), or
- *   - the owning run does not exist (a claim can only be written during a
- *     suspension of an existing run, so an ownerless claim is debris).
- *
- * A claim from a mid-creation writer is never releasable: its owning run
- * exists and is non-terminal, and its dispose lock does not exist.
- */
-async function isHookTokenClaimReleasable(
-  basedir: string,
-  claim: z.infer<typeof HookTokenClaimSchema>,
-  tag?: string
-): Promise<boolean> {
-  if (
-    claim.hookId &&
-    (await isHookDisposalCommitted(basedir, claim.hookId, tag))
-  ) {
-    return true;
-  }
-  const owningRun = await readJSONWithFallback(
-    basedir,
-    'runs',
-    claim.runId,
-    WorkflowRunSchema,
-    tag
-  );
-  if (!owningRun) {
-    return true;
-  }
-  return isTerminalWorkflowRunStatus(owningRun.status);
-}
+type HookTokenConstraintResult =
+  | { type: 'claimed' }
+  | { type: 'existing'; constraint: HookTokenConstraint };
 
 async function readHookRecoveryMarker(
   markerPath: string
@@ -982,6 +919,13 @@ export function createEventsStorage(
           isHookEventRequiringExistence(data.eventType) &&
           data.correlationId
         ) {
+          if (
+            data.eventType === 'hook_received' &&
+            currentRun &&
+            isTerminalWorkflowRunStatus(currentRun.status)
+          ) {
+            throw new HookNotFoundError(data.correlationId);
+          }
           // A resume must never be journaled after the hook's disposal.
           // The disposer's durable order is: dispose lock → claim/entity
           // delete → `hook_disposed` append, so the hook entity can still
@@ -1010,8 +954,8 @@ export function createEventsStorage(
           }
         }
         // `event` may be reassigned later in the `hook_created`
-        // dedup-recovery branch to swap in a canonical eventId /
-        // createdAt persisted in the durable token claim so
+        // dedup-recovery branch to swap in a canonical eventId and
+        // its deterministically derived createdAt so
         // concurrent / cross-process workers converge on a single
         // event in the log.
         let event: Event = {
@@ -1607,307 +1551,191 @@ export function createEventsStorage(
           data.eventType === 'hook_created' &&
           'eventData' in data
         ) {
-          const hookData = data.eventData as {
-            token: string;
-            metadata?: any;
-            isWebhook?: boolean;
-            isSystem?: boolean;
-          };
+          const hookData = data.eventData;
 
-          // Atomically claim the token using an exclusive-create constraint file.
-          // This avoids the TOCTOU race of the previous read-all-then-check approach.
-          const constraintPath = hookTokenClaimPath(basedir, hookData.token);
-          // Persist `eventId` in the claim so concurrent / cross-
-          // process retries can converge on a single canonical
-          // `hook_created` event path. See the recovery comment
-          // below.
-          const claimContent = JSON.stringify({
+          const constraintPath = hookTokenConstraintPath(
+            basedir,
+            hookData.token
+          );
+          const nextConstraint: HookTokenConstraint = {
+            type: 'pinned',
             token: hookData.token,
             hookId: data.correlationId,
             runId: effectiveRunId,
             eventId,
-          });
+            tokenExpiresAt: hookData.tokenExpiresAt,
+          };
+          const constraintContent = JSON.stringify(nextConstraint);
 
-          // Bounded claim loop. A same-token claim can be observed in the
-          // short window where its release is already committed but the
-          // claim file itself is still on disk (or was just deleted):
-          //
-          //   - the claim vanished between the exclusive-create attempt
-          //     and the ownership read → retry immediately;
-          //   - the claim is held by a disposed hook or a terminal/missing
-          //     run (`isHookTokenClaimReleasable`) → wait briefly for the
-          //     in-flight releaser (the hook_disposed handler or the
-          //     run-completion cleanup) to delete it, then reclaim; if it
-          //     never does (the releaser crashed after committing its
-          //     dispose lock / terminal status), release the stale claim
-          //     ourselves and reclaim.
-          //
-          // Without this, a run claiming a token right after the previous
-          // owner disposed it records a durable, spurious hook_conflict
-          // (issue #2778). A genuinely live claim exits the loop on the
-          // first iteration and falls through to the dedup / conflict
-          // handling below.
-          let tokenClaimed = false;
-          let existingClaim: z.infer<typeof HookTokenClaimSchema> | null = null;
-          let releasableObservations = 0;
-          // A claim file that exists (exclusive-create keeps failing) but never
-          // parses is debris: `writeExclusive` writes atomically, so a live
-          // claim is always valid JSON — an unparseable one at the canonical
-          // path is a corrupt/partial leftover. The releaser leaves it alone
-          // (ownership is undeterminable), so nothing else reaps it and it would
-          // block the token forever. Force-delete it after a few observations.
-          let unparseableObservations = 0;
-          for (let attempt = 0; attempt < 10; attempt++) {
-            // When the claim is absent, the event log is the only durable
-            // source that can distinguish a first hook from a crash-lost
-            // token cache.
-            if (!(await readHookTokenClaim(constraintPath))) {
-              await rebuildLiveHookByTokenFromEventLog(
-                basedir,
-                hookData.token,
-                tag
-              );
-            }
-            tokenClaimed = await writeExclusive(constraintPath, claimContent);
-            if (tokenClaimed) break;
-
-            existingClaim = await readHookTokenClaim(constraintPath);
-            if (!existingClaim) {
-              // The claim either vanished (raced a releaser between the
-              // exclusive-create attempt and this read → retry resolves it) or
-              // exists but is unparseable. `readHookTokenClaim` can't tell them
-              // apart, so count consecutive misses; once we're confident it is
-              // not a transient race, delete the (presumed corrupt) file so the
-              // token isn't blocked forever. `deleteJSON` is a no-op if it was
-              // in fact a vanished-claim race.
-              unparseableObservations++;
-              if (unparseableObservations >= 3) {
+          const constraintResult = await withHookTokenConstraintLock(
+            constraintPath,
+            async (): Promise<HookTokenConstraintResult> => {
+              let existing = await readHookTokenConstraint(constraintPath);
+              if (!existing) {
                 await deleteJSON(constraintPath);
-              }
-              continue;
-            }
-            if (
-              existingClaim.runId === effectiveRunId &&
-              existingClaim.hookId === data.correlationId
-            ) {
-              // Our own prior claim — dedup-recovery handling below.
-              break;
-            }
-            if (
-              !(await isHookTokenClaimReleasable(basedir, existingClaim, tag))
-            ) {
-              // Genuinely live claim — conflict handling below.
-              break;
-            }
-            releasableObservations++;
-            if (releasableObservations < 3) {
-              // Give the in-flight releaser a moment to delete the claim.
-              await new Promise((resolve) => setTimeout(resolve, 10));
-            } else {
-              // The releaser is not coming. Release the stale claim and
-              // the hook entity it points at, mirroring the hook_disposed
-              // cleanup.
-              await deleteJSON(constraintPath);
-              if (existingClaim.hookId) {
-                await deleteJSON(
-                  taggedPath(basedir, 'hooks', existingClaim.hookId, tag)
+                existing = await rebuildHookTokenConstraintFromEventLog(
+                  basedir,
+                  hookData.token,
+                  tag
                 );
-                await deleteJSON(
+              }
+
+              if (!existing) {
+                assert(
+                  await writeExclusive(constraintPath, constraintContent),
+                  'Hook token constraint must be available while locked'
+                );
+                return { type: 'claimed' };
+              }
+
+              if (
+                existing.runId === effectiveRunId &&
+                existing.hookId === data.correlationId
+              ) {
+                return { type: 'existing', constraint: existing };
+              }
+
+              if (
+                !(await isHookDisposalCommitted(basedir, existing.hookId, tag))
+              ) {
+                if (hasFutureTokenExpiration(existing)) {
+                  return { type: 'existing', constraint: existing };
+                }
+                const owner = await readJSONWithFallback(
+                  basedir,
+                  'runs',
+                  existing.runId,
+                  WorkflowRunSchema,
+                  tag
+                );
+                if (owner && !isTerminalWorkflowRunStatus(owner.status)) {
+                  return { type: 'existing', constraint: existing };
+                }
+              }
+
+              await deleteJSON(constraintPath);
+              await Promise.all([
+                deleteJSON(taggedPath(basedir, 'hooks', existing.hookId, tag)),
+                deleteJSON(
                   hookRecoveryMarkerPath(
                     basedir,
                     hookData.token,
-                    existingClaim.runId,
-                    existingClaim.hookId
+                    existing.runId,
+                    existing.hookId
                   )
-                );
-              }
+                ),
+                deleteHookByRunMarker(
+                  basedir,
+                  existing.runId,
+                  existing.hookId,
+                  tag
+                ),
+              ]);
+              assert(
+                await writeExclusive(constraintPath, constraintContent),
+                'Hook token constraint must be available after reuse'
+              );
+              return { type: 'claimed' };
             }
-            existingClaim = null;
-          }
+          );
 
-          // Recovery shape: the durable record of a successful hook
-          // creation is the `hook_created` event in the event log. The
-          // claim file and hook entity are written before the event,
-          // and the three writes are NOT atomic, so a crash at any
-          // point can leave one or two of them on disk without the
-          // event. Treating those as "completed" would have the
-          // suspension handler swallow the retry and permanently lose
-          // the `hook_created` event from the log.
-          //
-          // When the dedup branch fires for the same `(runId, hookId)`,
-          // we converge on the canonical `eventId` persisted in the
-          // claim file by the original (winning) `writeExclusive`. By
-          // adopting that eventId for this retry's event write — and
-          // letting the outer no-overwrite `writeJSON` for the event
-          // throw `EntityConflictError` on collision — concurrent /
-          // cross-process workers either:
-          //   - publish the same event at the same path exactly once
-          //     (the loser's `writeJSON` throws EntityConflictError,
-          //     which the runtime's existing concurrent-replay catch
-          //     path at suspension-handler.ts:142 swallows), or
-          //   - converge on a single recovery write when the prior
-          //     claim was orphaned by a crash before the event landed.
-          //
-          // The legacy fallback (`existingClaim.eventId` undefined)
-          // is for claim files written before this field was added —
-          // those probe the event log directly and fall through to a
-          // fresh-eventId recovery write. The legacy path does not
-          // converge across workers but cannot regress behavior for
-          // freshly-written claims.
-          //
-          // The `withHookLock` in-process mutex above keeps two same-
-          // tick in-process callers from racing into this branch with
-          // the winner mid-write, but is not sufficient across
-          // processes — the durable convergence key (`claim.eventId`)
-          // is what closes the cross-process race.
           let writeHookEntityWithOverwrite = false;
+          switch (constraintResult.type) {
+            case 'claimed':
+              break;
+            case 'existing': {
+              const { constraint } = constraintResult;
+              if (
+                constraint.runId !== effectiveRunId ||
+                constraint.hookId !== data.correlationId
+              ) {
+                const conflictEvent: Event = {
+                  eventType: 'hook_conflict',
+                  correlationId: data.correlationId,
+                  eventData: {
+                    token: hookData.token,
+                    conflictingRunId: constraint.runId,
+                  },
+                  runId: effectiveRunId,
+                  eventId,
+                  createdAt: now,
+                  specVersion: effectiveSpecVersion,
+                };
+                await storeEvent(conflictEvent);
+                return {
+                  event: stripEventDataRefs(
+                    conflictEvent,
+                    params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION
+                  ),
+                  run,
+                  step,
+                  hook: undefined,
+                };
+              }
 
-          if (!tokenClaimed) {
-            if (
-              existingClaim?.runId === effectiveRunId &&
-              existingClaim.hookId === data.correlationId
-            ) {
-              // Adopt a canonical eventId for the recovery write. The
-              // outer event publish (`writeExclusive(eventPath)`)
-              // either succeeds (we publish the canonical event,
-              // repairing a partial write left by the original
-              // claimant) or returns `false` and we throw
-              // `EntityConflictError` (the event was already
-              // published — a real duplicate). Either way the log
-              // ends with exactly one `hook_created` event for this
-              // `(runId, hookId)`.
-              //
-              // The canonical eventId comes from one of two places:
-              //
-              //   - `existingClaim.eventId` for claims written by
-              //     this version (the writer above persists the
-              //     candidate eventId atomically with the claim).
-              //     The eventId is durable, so the outer
-              //     `writeExclusive(eventPath)` alone is enough to
-              //     arbitrate publication: it fails iff the event
-              //     was already published at that exact path.
-              //
-              //   - The recovery-marker sidecar for legacy claims
-              //     written before `eventId` was persisted inline
-              //     in the claim. The marker is itself a
-              //     `writeExclusive`, so the first retry pins its
-              //     candidate eventId as canonical and subsequent
-              //     retries adopt it. Without this, two processes
-              //     both reading the same legacy claim would each
-              //     generate their own eventId, land their
-              //     `writeExclusive(eventPath)` calls at different
-              //     paths, and append two events.
-              //
-              //     For legacy claims we also must probe the event
-              //     log for an existing `hook_created` event BEFORE
-              //     pinning a canonical eventId: the pre-upgrade
-              //     writer may have already published the event
-              //     with its own eventId, and the marker has no way
-              //     of knowing that eventId after the fact. Without
-              //     this probe, a post-upgrade retry would pin a
-              //     different eventId, write a hook entity, and
-              //     publish a duplicate event at the marker's path.
-              let canonicalEventId: string;
-              if (existingClaim.eventId) {
-                canonicalEventId = existingClaim.eventId;
-              } else {
-                const alreadyPublishedEventId =
-                  await findExistingHookCreatedEventId(
+              switch (constraint.type) {
+                case 'pinned':
+                  eventId = constraint.eventId;
+                  break;
+                case 'legacy': {
+                  const existingEventId = await findExistingHookCreatedEventId(
                     basedir,
                     effectiveRunId,
                     data.correlationId
                   );
-                if (alreadyPublishedEventId !== null) {
-                  // The pre-upgrade writer may have crashed between
-                  // its event publish and its hook entity write —
-                  // repair the entity from the persisted event's
-                  // payload before surfacing the benign duplicate.
-                  await repairHookEntityFromPersistedEvent(
+                  if (existingEventId) {
+                    await repairHookEntityFromPersistedEvent(
+                      basedir,
+                      effectiveRunId,
+                      data.correlationId,
+                      existingEventId,
+                      tag
+                    );
+                    throw new EntityConflictError(
+                      `Hook "${data.correlationId}" already created`
+                    );
+                  }
+                  const pinned = await pinCanonicalEventIdForLegacyClaim(
                     basedir,
+                    hookData.token,
                     effectiveRunId,
                     data.correlationId,
-                    alreadyPublishedEventId,
-                    tag
+                    eventId
                   );
-                  throw new EntityConflictError(
-                    `Hook "${data.correlationId}" already created`
+                  assert(
+                    pinned,
+                    'Legacy Hook constraint must have an event ID'
+                  );
+                  eventId = pinned;
+                  break;
+                }
+                default: {
+                  const unknownConstraint: never = constraint;
+                  throw new Error(
+                    `Unknown Hook token constraint: ${JSON.stringify(unknownConstraint)}`
                   );
                 }
-                const pinned = await pinCanonicalEventIdForLegacyClaim(
-                  basedir,
-                  hookData.token,
-                  effectiveRunId,
-                  data.correlationId,
-                  eventId
-                );
-                if (pinned === null) {
-                  // Lost the marker race and the marker file is
-                  // unreadable (extremely rare; corrupted disk).
-                  // Treat as a real duplicate so the runtime's
-                  // concurrent-replay catch path swallows this
-                  // attempt instead of risking divergent
-                  // publication.
-                  throw new EntityConflictError(
-                    `Hook "${data.correlationId}" already created`
-                  );
-                }
-                canonicalEventId = pinned;
               }
 
-              // Rebuild `event` with the canonical eventId and a
-              // deterministic `createdAt` derived from the eventId
-              // (a ULID) so two workers writing the same event
-              // produce byte-identical content.
-              eventId = canonicalEventId;
-              const canonicalCreatedAt =
-                ulidToDate(eventId.replace(/^evnt_/, '')) ?? now;
               event = {
                 ...data,
-                runId: effectiveRunId,
-                eventId,
-                createdAt: canonicalCreatedAt,
-                specVersion: effectiveSpecVersion,
-              };
-              writeHookEntityWithOverwrite = true;
-            } else {
-              // Cross-hook / cross-run conflict: a different
-              // (runId, hookId) holds this token. Create a
-              // hook_conflict event so the workflow can fail
-              // gracefully when the hook is awaited.
-              const conflictEvent: Event = {
-                eventType: 'hook_conflict',
-                correlationId: data.correlationId,
                 eventData: {
-                  token: hookData.token,
-                  ...(existingClaim
-                    ? { conflictingRunId: existingClaim.runId }
-                    : {}),
+                  ...data.eventData,
+                  tokenExpiresAt: constraint.tokenExpiresAt,
                 },
                 runId: effectiveRunId,
                 eventId,
-                createdAt: now,
+                createdAt: ulidToDate(eventId.replace(/^evnt_/, '')) ?? now,
                 specVersion: effectiveSpecVersion,
               };
-
-              // Persist and cache the conflict event (create-only,
-              // same path the read cache keys on) so an immediate
-              // replay can serve it without rereading from disk.
-              await storeEvent(conflictEvent);
-
-              const resolveData =
-                params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-              const filteredEvent = stripEventDataRefs(
-                conflictEvent,
-                resolveData
+              writeHookEntityWithOverwrite = true;
+              break;
+            }
+            default: {
+              const unknownResult: never = constraintResult;
+              throw new Error(
+                `Unknown Hook token constraint result: ${JSON.stringify(unknownResult)}`
               );
-
-              // Return EventResult with conflict event (no hook entity created)
-              return {
-                event: filteredEvent,
-                run,
-                step,
-                hook: undefined,
-              };
             }
           }
 
@@ -1994,23 +1822,19 @@ export function createEventsStorage(
             tag
           );
           if (existingHook) {
-            // Release the token claim to free up the token for reuse —
-            // but only if it still points at this hook. A claimant that
-            // force-released this hook's stale claim (see
-            // `isHookTokenClaimReleasable`) may already hold a fresh
-            // claim for the token; deleting unconditionally here would
-            // destroy that live claim and transiently break token
-            // uniqueness. Also delete this hook's recovery marker (if
-            // any) for disk hygiene. The marker's filename hash
-            // includes `(token, runId, hookId)` so different
-            // lifetimes never collide, but cleaning up reduces disk
-            // leak for hooks that go through the recovery path.
-            await releaseHookTokenClaimIfOwnedBy(
+            const constraintPath = hookTokenConstraintPath(
               basedir,
-              existingHook.token,
-              existingHook.runId,
-              existingHook.hookId
+              existingHook.token
             );
+            await withHookTokenConstraintLock(constraintPath, async () => {
+              const constraint = await readHookTokenConstraint(constraintPath);
+              if (
+                constraint?.runId === existingHook.runId &&
+                constraint.hookId === existingHook.hookId
+              ) {
+                await deleteJSON(constraintPath);
+              }
+            });
             await deleteJSON(
               hookRecoveryMarkerPath(
                 basedir,

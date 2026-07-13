@@ -116,6 +116,7 @@ export async function createHook(
   data: {
     hookId: string;
     token: string;
+    tokenExpiresAt?: Date;
     metadata?: SerializedData;
   }
 ): Promise<Hook> {
@@ -123,7 +124,11 @@ export async function createHook(
     eventType: 'hook_created',
     specVersion: SPEC_VERSION_CURRENT,
     correlationId: data.hookId,
-    eventData: { token: data.token, metadata: data.metadata },
+    eventData: {
+      token: data.token,
+      tokenExpiresAt: data.tokenExpiresAt,
+      metadata: data.metadata,
+    },
   });
   if (!result.hook) {
     throw new Error('Expected hook to be created');

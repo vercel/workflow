@@ -6,8 +6,12 @@ import type { Event, Storage } from '@workflow/world';
 import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { writeJSON } from './fs.js';
-import { hashToken, hookDisposeLockPath } from './storage/helpers.js';
+import { deleteJSON, writeJSON } from './fs.js';
+import {
+  hashToken,
+  hookDisposeLockPath,
+  hookTokenConstraintPath,
+} from './storage/helpers.js';
 import { createStorage } from './storage.js';
 import {
   completeWait,
@@ -2148,12 +2152,8 @@ describe('Storage', () => {
       });
 
       it('reaps an unparseable claim of a live hook and recovers the real conflict from the event log', async () => {
-        // A corrupt claim file whose hook is still live must not be trusted as
-        // debris and stolen — but it also must not block the token forever.
-        // The claimant loop reaps the unparseable file after a few observations
-        // (nothing else deletes it — the releaser can't determine ownership),
-        // then rebuilds the live hook's claim from the event log, so the
-        // duplicate still conflicts and now carries the real conflicting run.
+        // Replace the corrupt constraint under its lock, rebuilding the live
+        // Hook from the event log so the duplicate still conflicts.
         const token = 'corrupt-claim-live-hook-token';
 
         await createHook(storage, testRunId, {
@@ -2193,11 +2193,7 @@ describe('Storage', () => {
       });
 
       it('reaps an unparseable orphan claim so a new hook can reuse the token (#2808)', async () => {
-        // Regression for the "unparseable claim blocks its token indefinitely"
-        // gap: a corrupt claim with no live hook behind it (genuine debris —
-        // e.g. a partial/corrupted write) is never reaped by the releaser
-        // (ownership is undeterminable). The claimant loop must delete it after
-        // N observations so the token becomes claimable again.
+        // A corrupt constraint with no event behind it must not block the token.
         const token = 'corrupt-orphan-claim-token';
         const claimPath = path.join(
           testDir,
@@ -2241,6 +2237,7 @@ describe('Storage', () => {
         const hook1 = await createHook(storage, testRunId, {
           hookId: 'hook_1',
           token,
+          tokenExpiresAt: new Date(Date.now() + 60_000),
         });
 
         expect(hook1.token).toBe(token);
@@ -2269,6 +2266,130 @@ describe('Storage', () => {
 
         expect(hook2.token).toBe(token);
         expect(hook2.hookId).toBe('hook_2');
+      });
+
+      it('keeps a terminal token unavailable until expiration', async () => {
+        const token = 'retained-token';
+        await createHook(storage, testRunId, {
+          hookId: 'hook_retained_owner',
+          token,
+          tokenExpiresAt: new Date(Date.now() + 60_000),
+        });
+
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+        await expect(storage.hooks.getByToken(token)).resolves.toMatchObject({
+          runId: testRunId,
+          token,
+        });
+
+        await deleteJSON(hookTokenConstraintPath(testDir, token));
+
+        const duplicate = await createRun(storage, {
+          deploymentId: 'deployment-retained-duplicate',
+          workflowName: 'retained-duplicate',
+          input: new Uint8Array(),
+        });
+        const result = await storage.events.create(duplicate.runId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_retained_duplicate',
+          eventData: { token },
+        });
+
+        expect(result.event?.eventType).toBe('hook_conflict');
+        expect(
+          result.event?.eventType === 'hook_conflict'
+            ? result.event.eventData.conflictingRunId
+            : undefined
+        ).toBe(testRunId);
+        expect(result.hook).toBeUndefined();
+      });
+
+      it('uses expiration only after the owning run is terminal', async () => {
+        const token = 'expiration-boundary-token';
+        const tokenExpiresAt = new Date(Date.now() + 60_000);
+        const replacement = await createRun(storage, {
+          deploymentId: 'deployment-expiration-boundary',
+          workflowName: 'expiration-boundary',
+          input: new Uint8Array(),
+        });
+        await createHook(storage, testRunId, {
+          hookId: 'hook_expiration_boundary_owner',
+          token,
+          tokenExpiresAt,
+        });
+
+        const dateNow = vi
+          .spyOn(Date, 'now')
+          .mockReturnValue(tokenExpiresAt.getTime());
+        try {
+          const conflict = await storage.events.create(replacement.runId, {
+            eventType: 'hook_created',
+            correlationId: 'hook_expiration_boundary_conflict',
+            eventData: { token },
+          });
+          expect(conflict.event.eventType).toBe('hook_conflict');
+
+          await updateRun(storage, testRunId, 'run_completed', {
+            output: new Uint8Array(),
+          });
+          await expect(storage.hooks.getByToken(token)).rejects.toMatchObject({
+            name: 'HookNotFoundError',
+          });
+          const hook = await createHook(storage, replacement.runId, {
+            hookId: 'hook_expiration_boundary_replacement',
+            token,
+          });
+          expect(hook.runId).toBe(replacement.runId);
+        } finally {
+          dateNow.mockRestore();
+        }
+      });
+
+      it('admits only one hook when a token expires concurrently', async () => {
+        const token = 'concurrent-expiry-token';
+        const tokenExpiresAt = new Date();
+        const workerA = createStorage(testDir);
+        const workerB = createStorage(testDir);
+        const contenderA = await createRun(workerA, {
+          deploymentId: 'deployment-concurrent-expiry-a',
+          workflowName: 'concurrent-expiry-a',
+          input: new Uint8Array(),
+        });
+        const contenderB = await createRun(workerB, {
+          deploymentId: 'deployment-concurrent-expiry-b',
+          workflowName: 'concurrent-expiry-b',
+          input: new Uint8Array(),
+        });
+        await createHook(workerA, testRunId, {
+          hookId: 'hook_concurrent_expiry_owner',
+          token,
+          tokenExpiresAt,
+        });
+        await updateRun(workerA, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+
+        const results = await Promise.all([
+          workerA.events.create(contenderA.runId, {
+            eventType: 'hook_created',
+            correlationId: 'hook_concurrent_expiry_a',
+            eventData: { token },
+          }),
+          workerB.events.create(contenderB.runId, {
+            eventType: 'hook_created',
+            correlationId: 'hook_concurrent_expiry_b',
+            eventData: { token },
+          }),
+        ]);
+
+        expect(
+          results.filter((result) => result.event.eventType === 'hook_created')
+        ).toHaveLength(1);
+        expect(
+          results.filter((result) => result.event.eventType === 'hook_conflict')
+        ).toHaveLength(1);
       });
 
       // Regression test for #2778: a claim whose owning run is terminal can
@@ -3392,6 +3513,32 @@ describe('Storage', () => {
       );
       expect(created).toHaveLength(1);
       expect(conflicts).toHaveLength(0);
+    });
+
+    it('keeps the original expiration during same-Hook recovery', async () => {
+      const token = 'orphaned-retention-constraint-token';
+      const hookId = 'hook_orphaned_retention_constraint';
+      const tokenExpiresAt = new Date('2026-08-01T00:00:00.000Z');
+      await writeJSON(hookTokenConstraintPath(testDir, token), {
+        token,
+        hookId,
+        runId: testRunId,
+        eventId: 'evnt_00000000000000000000000000',
+        tokenExpiresAt,
+      });
+
+      const result = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: {
+          token,
+          tokenExpiresAt: new Date('2026-09-01T00:00:00.000Z'),
+        },
+      });
+      if (result.event.eventType !== 'hook_created') {
+        throw new Error(`Expected hook_created, got ${result.event.eventType}`);
+      }
+      expect(result.event.eventData.tokenExpiresAt).toEqual(tokenExpiresAt);
     });
 
     it('should recover an orphaned hook entity with no matching hook_created event', async () => {

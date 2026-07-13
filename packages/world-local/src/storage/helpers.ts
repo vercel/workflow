@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { lock } from 'proper-lockfile';
 import { monotonicFactory } from 'ulid';
 import { resolveWithinBase, stripTag, ulidToDate } from '../fs.js';
 
@@ -14,7 +15,7 @@ export function hashToken(token: string): string {
 /**
  * Path of the exclusive-create lock file that commits a hook's disposal.
  * The `hook_disposed` handler writes this lock BEFORE deleting the token
- * claim and hook entity (and before appending the event to the log), so
+ * constraint and hook entity (and before appending the event to the log), so
  * its existence is the earliest durable evidence that the hook can never
  * be live again.
  */
@@ -53,47 +54,29 @@ export async function isHookDisposalCommitted(
 }
 
 /**
- * Path of the exclusive-create claim file that reserves a hook token.
+ * Path of the file that reserves a hook token.
  */
-export function hookTokenClaimPath(basedir: string, token: string): string {
+export function hookTokenConstraintPath(
+  basedir: string,
+  token: string
+): string {
   return path.join(basedir, 'hooks', 'tokens', `${hashToken(token)}.json`);
 }
 
-/**
- * Release (delete) a token claim only if it still points at the releasing
- * hook's own `(runId, hookId)`.
- *
- * Both in-flight releasers — the `hook_disposed` handler and the
- * terminal-run `deleteAllHooksForRun` cleanup — read the hook entity and
- * then delete the claim file. Deleting unconditionally is unsafe across
- * processes: a releaser that stalls between those two operations can
- * outlive a force-release of its stale claim (see
- * `isHookTokenClaimReleasable`) and then delete the NEXT claimant's live
- * claim, transiently breaking token uniqueness. Re-reading the claim and
- * matching its identity here shrinks that window from "a stall of any
- * length" to the adjacent read/delete file ops.
- *
- * A claim that is missing, unreadable, or owned by someone else is left
- * alone — if it is genuinely stale debris, the claimant-side force-release
- * path reaps it.
- */
-export async function releaseHookTokenClaimIfOwnedBy(
-  basedir: string,
-  token: string,
-  runId: string,
-  hookId: string
-): Promise<void> {
-  const claimPath = hookTokenClaimPath(basedir, token);
-  let claim: { runId?: unknown; hookId?: unknown };
+export async function withHookTokenConstraintLock<T>(
+  constraintPath: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  await fs.mkdir(path.dirname(constraintPath), { recursive: true });
+  const release = await lock(constraintPath, {
+    realpath: false,
+    retries: { forever: true, minTimeout: 10, maxTimeout: 100 },
+  });
   try {
-    claim = JSON.parse(await fs.readFile(claimPath, 'utf8'));
-  } catch {
-    return;
+    return await fn();
+  } finally {
+    await release();
   }
-  if (claim.runId !== runId || claim.hookId !== hookId) {
-    return;
-  }
-  await fs.unlink(claimPath).catch(() => {});
 }
 
 /**
@@ -114,12 +97,10 @@ export function hookRecoveryMarkerPath(
   runId: string,
   hookId: string
 ): string {
-  // Distinct from `hashToken(token)` so a token's claim file and
+  // Distinct from `hashToken(token)` so a token's constraint file and
   // its recovery marker live at different paths AND a different
   // lifetime's recovery marker never collides with this one.
-  const key = createHash('sha256')
-    .update(`${token}\x00${runId}\x00${hookId}`)
-    .digest('hex');
+  const key = hashToken(`${token}\x00${runId}\x00${hookId}`);
   return path.join(basedir, 'hooks', 'tokens', `${key}.recovery.json`);
 }
 

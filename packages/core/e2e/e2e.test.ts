@@ -2047,6 +2047,39 @@ describe('e2e', () => {
     }
   );
 
+  test.skipIf(
+    !isLocalDeployment() ||
+      process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres'
+  )(
+    'hookTokenExpirationWorkflow - terminal Hook cannot resume and its token stays unavailable',
+    { timeout: 60_000 },
+    async () => {
+      const token = `expires-${Math.random().toString(36).slice(2)}`;
+      const owner = await start(await e2e('hookTokenExpirationWorkflow'), [
+        token,
+        60_000,
+      ]);
+
+      expect(await owner.returnValue).toEqual({ role: 'owner' });
+
+      const hook = await getHookByToken(token);
+      expect(hook.runId).toBe(owner.runId);
+      await expect(resumeHook(hook, { duplicate: true })).rejects.toSatisfy(
+        (error: unknown) => HookNotFoundError.is(error)
+      );
+
+      const duplicate = await start(await e2e('hookTokenExpirationWorkflow'), [
+        token,
+        60_000,
+      ]);
+      expect(await duplicate.returnValue).toEqual({
+        role: 'duplicate',
+        conflictRunId: owner.runId,
+        conflictStatus: 'completed',
+      });
+    }
+  );
+
   test(
     'hookAdoptOwnerResultWorkflow - duplicate adopts the owner result via conflict.returnValue',
     { timeout: 120_000 },

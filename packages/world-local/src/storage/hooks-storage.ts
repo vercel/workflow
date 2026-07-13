@@ -14,27 +14,23 @@ import {
   isTerminalWorkflowRunStatus,
   WorkflowRunSchema,
 } from '@workflow/world';
-import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
   assertSafeEntityId,
   deleteJSON,
   jsonReplacer,
-  listJSONFiles,
   paginatedFileSystemQuery,
   readJSON,
   readJSONWithFallback,
   taggedPath,
-  UnsafeEntityIdError,
   writeExclusive,
 } from '../fs.js';
 import { filterHookData } from './filters.js';
 import {
-  hashToken,
   hookRecoveryMarkerPath,
-  hookTokenClaimPath,
+  hookTokenConstraintPath,
   isHookDisposalCommitted,
-  releaseHookTokenClaimIfOwnedBy,
+  withHookTokenConstraintLock,
 } from './helpers.js';
 import {
   deleteHookByRunMarkerFile,
@@ -43,11 +39,20 @@ import {
   listHookByRunMarkers,
   writeHookByRunMarker,
 } from './hook-index.js';
+import {
+  type HookTokenConstraint,
+  hasFutureTokenExpiration,
+  readHookTokenConstraint,
+} from './hook-token-constraint.js';
 
-function getHookCreatedToken(event: Event): string | undefined {
-  if (event.eventType !== 'hook_created') return undefined;
-  const token = (event.eventData as { token?: unknown }).token;
-  return typeof token === 'string' ? token : undefined;
+function isMatchingHookCreatedEvent(
+  event: Event,
+  index: { kind: 'token'; token: string } | { kind: 'id'; hookId: string }
+): event is HookCreatedEvent {
+  if (event.eventType !== 'hook_created') return false;
+  return index.kind === 'token'
+    ? event.eventData.token === index.token
+    : event.correlationId === index.hookId;
 }
 
 function hookFromCreatedEvent(event: HookCreatedEvent): Hook {
@@ -67,18 +72,7 @@ function hookFromCreatedEvent(event: HookCreatedEvent): Hook {
   };
 }
 
-function isMatchingHookCreatedEvent(
-  event: Event,
-  matches: (event: Event) => boolean
-): event is HookCreatedEvent {
-  return (
-    event.eventType === 'hook_created' &&
-    typeof event.correlationId === 'string' &&
-    matches(event)
-  );
-}
-
-async function isTerminalRunCache(
+async function isRunActive(
   basedir: string,
   runId: string,
   tag?: string
@@ -90,7 +84,7 @@ async function isTerminalRunCache(
     WorkflowRunSchema,
     tag
   );
-  return run ? isTerminalWorkflowRunStatus(run.status) : false;
+  return run !== null && !isTerminalWorkflowRunStatus(run.status);
 }
 
 /**
@@ -106,57 +100,51 @@ async function isTerminalRunCache(
 async function findLiveHookCreatedEvent(
   basedir: string,
   index: { kind: 'token'; token: string } | { kind: 'id'; hookId: string },
-  matches: (event: Event) => boolean,
   tag?: string
 ): Promise<HookCreatedEvent | null> {
-  const newest = await findNewestIndexedHookCreatedEvent(
+  const event = await findNewestIndexedHookCreatedEvent(
     basedir,
     index,
-    (event) => isMatchingHookCreatedEvent(event, matches),
+    (candidate) => isMatchingHookCreatedEvent(candidate, index),
     tag
   );
-  if (!newest || !isMatchingHookCreatedEvent(newest, matches)) {
+  if (!event || !isMatchingHookCreatedEvent(event, index)) return null;
+
+  if (!(await isRunActive(basedir, event.runId, tag))) {
     return null;
   }
 
-  if (await isTerminalRunCache(basedir, newest.runId, tag)) {
+  // A committed disposal closes the hook before its event is appended.
+  if (await isHookDisposalCommitted(basedir, event.correlationId, tag)) {
     return null;
   }
 
-  // A committed disposal (dispose lock on disk) closes the hook even when
-  // its `hook_disposed` event has not landed in the log yet — the disposer
-  // writes the lock, releases the token claim and hook entity, and only
-  // then appends the event. Rebuilding the caches from the log in that
-  // window would resurrect a claim for a hook that is being torn down.
-  if (await isHookDisposalCommitted(basedir, newest.correlationId, tag)) {
-    return null;
-  }
+  return event;
+}
 
-  return newest;
+function hookTokenConstraintFromEvent(
+  event: HookCreatedEvent
+): HookTokenConstraint {
+  return {
+    type: 'pinned',
+    token: event.eventData.token,
+    hookId: event.correlationId,
+    runId: event.runId,
+    eventId: event.eventId,
+    tokenExpiresAt: event.eventData.tokenExpiresAt,
+  };
 }
 
 async function restoreHookCachesFromEvent(
   basedir: string,
   event: HookCreatedEvent,
-  tag?: string
+  tag: string | undefined
 ): Promise<Hook> {
-  const hook = hookFromCreatedEvent(event);
-
-  const claimPath = path.join(
-    basedir,
-    'hooks',
-    'tokens',
-    `${hashToken(hook.token)}.json`
-  );
   await writeExclusive(
-    claimPath,
-    JSON.stringify({
-      token: hook.token,
-      hookId: hook.hookId,
-      runId: hook.runId,
-      eventId: event.eventId,
-    })
+    hookTokenConstraintPath(basedir, event.eventData.token),
+    JSON.stringify(hookTokenConstraintFromEvent(event))
   );
+  const hook = hookFromCreatedEvent(event);
   // Marker before entity (see hook-index.ts crash-ordering invariant).
   await writeHookByRunMarker(basedir, hook.runId, hook.hookId, tag);
   await writeExclusive(
@@ -167,6 +155,34 @@ async function restoreHookCachesFromEvent(
   return hook;
 }
 
+export async function rebuildHookTokenConstraintFromEventLog(
+  basedir: string,
+  token: string,
+  tag?: string
+): Promise<HookTokenConstraint | null> {
+  const event = await findNewestIndexedHookCreatedEvent(
+    basedir,
+    { kind: 'token', token },
+    (candidate) =>
+      candidate.eventType === 'hook_created' &&
+      candidate.eventData.token === token,
+    tag
+  );
+  if (!event || event.eventType !== 'hook_created') return null;
+  if (await isHookDisposalCommitted(basedir, event.correlationId, tag)) {
+    return null;
+  }
+
+  if (
+    !(await isRunActive(basedir, event.runId, tag)) &&
+    !hasFutureTokenExpiration(event.eventData)
+  ) {
+    return null;
+  }
+  await restoreHookCachesFromEvent(basedir, event, tag);
+  return hookTokenConstraintFromEvent(event);
+}
+
 export async function rebuildLiveHookByTokenFromEventLog(
   basedir: string,
   token: string,
@@ -175,7 +191,6 @@ export async function rebuildLiveHookByTokenFromEventLog(
   const event = await findLiveHookCreatedEvent(
     basedir,
     { kind: 'token', token },
-    (candidate) => getHookCreatedToken(candidate) === token,
     tag
   );
   return event ? restoreHookCachesFromEvent(basedir, event, tag) : null;
@@ -189,7 +204,6 @@ async function rebuildLiveHookByIdFromEventLog(
   const event = await findLiveHookCreatedEvent(
     basedir,
     { kind: 'id', hookId },
-    (candidate) => candidate.correlationId === hookId,
     tag
   );
   return event ? restoreHookCachesFromEvent(basedir, event, tag) : null;
@@ -203,81 +217,35 @@ export function createHooksStorage(
   basedir: string,
   tag?: string
 ): Storage['hooks'] {
-  const TokenClaimPointerSchema = z.object({
-    hookId: z.string().optional(),
-  });
-
   async function findHookByToken(token: string): Promise<Hook | null> {
-    // Fast path: the token claim file points at the owning hookId.
-    let claim: z.infer<typeof TokenClaimPointerSchema> | null = null;
-    try {
-      claim = await readJSON(
-        hookTokenClaimPath(basedir, token),
-        TokenClaimPointerSchema
-      );
-    } catch (error) {
-      if (!(error instanceof SyntaxError || error instanceof z.ZodError)) {
-        throw error;
-      }
+    const constraint = await readHookTokenConstraint(
+      hookTokenConstraintPath(basedir, token)
+    );
+    if (!constraint) return null;
+    const hook = await readJSONWithFallback(
+      basedir,
+      'hooks',
+      constraint.hookId,
+      HookSchema,
+      tag
+    );
+    if (!hook || hook.token !== token) return null;
+    if (
+      !(await isRunActive(basedir, hook.runId, tag)) &&
+      !hasFutureTokenExpiration(constraint)
+    ) {
+      return null;
     }
-    if (claim?.hookId) {
-      try {
-        const hook = await readJSONWithFallback(
-          basedir,
-          'hooks',
-          claim.hookId,
-          HookSchema,
-          tag
-        );
-        if (hook && hook.token === token) {
-          return { ...hook, isWebhook: hook.isWebhook ?? true };
-        }
-      } catch (error) {
-        if (!UnsafeEntityIdError.is(error)) {
-          throw error;
-        }
-      }
-    }
-
-    // Slow path for legacy states (e.g. a lost claim file while the
-    // entity is still on disk).
-    const hooksDir = path.join(basedir, 'hooks');
-    const files = await listJSONFiles(hooksDir);
-
-    for (const file of files) {
-      const hookPath = path.join(hooksDir, `${file}.json`);
-      const hook = await readJSON(hookPath, HookSchema);
-      if (hook && hook.token === token) {
-        return { ...hook, isWebhook: hook.isWebhook ?? true };
-      }
-    }
-
-    return null;
+    return { ...hook, isWebhook: hook.isWebhook ?? true };
   }
 
   async function get(hookId: string, params?: GetHookParams): Promise<Hook> {
     assertSafeEntityId('hookId', hookId);
-    const hook = await readJSONWithFallback(
-      basedir,
-      'hooks',
-      hookId,
-      HookSchema,
-      tag
-    );
+    const hook =
+      (await readJSONWithFallback(basedir, 'hooks', hookId, HookSchema, tag)) ??
+      (await rebuildLiveHookByIdFromEventLog(basedir, hookId, tag));
     if (!hook) {
-      const rebuilt = await rebuildLiveHookByIdFromEventLog(
-        basedir,
-        hookId,
-        tag
-      );
-      if (!rebuilt) {
-        throw new HookNotFoundError(hookId);
-      }
-      const resolveData = params?.resolveData || DEFAULT_RESOLVE_DATA_OPTION;
-      return filterHookData(
-        { ...rebuilt, isWebhook: rebuilt.isWebhook ?? true },
-        resolveData
-      );
+      throw new HookNotFoundError(hookId);
     }
     const resolveData = params?.resolveData || DEFAULT_RESOLVE_DATA_OPTION;
     return filterHookData(
@@ -290,9 +258,7 @@ export function createHooksStorage(
     const hook =
       (await findHookByToken(token)) ??
       (await rebuildLiveHookByTokenFromEventLog(basedir, token, tag));
-    if (!hook) {
-      throw new HookNotFoundError(token);
-    }
+    if (!hook) throw new HookNotFoundError(token);
     return hook;
   }
 
@@ -348,36 +314,36 @@ export async function deleteAllHooksForRun(
   await ensureHookIndexes(basedir);
 
   for (const marker of await listHookByRunMarkers(basedir, runId)) {
-    if (marker.hookId) {
-      let hook: Hook | null = null;
-      let hookPath: string | null = null;
-      try {
-        hookPath = taggedPath(basedir, 'hooks', marker.hookId, marker.tag);
-        hook = await readJSON(hookPath, HookSchema);
-      } catch (error) {
-        if (
-          !UnsafeEntityIdError.is(error) &&
-          !(error instanceof SyntaxError || error instanceof z.ZodError)
-        ) {
-          throw error;
+    if (!marker.hookId) {
+      await deleteHookByRunMarkerFile(basedir, marker.fileId);
+      continue;
+    }
+    const hookPath = taggedPath(basedir, 'hooks', marker.hookId, marker.tag);
+    const hook = await readJSON(hookPath, HookSchema);
+    if (hook?.runId === runId) {
+      const constraintPath = hookTokenConstraintPath(basedir, hook.token);
+      const keepHook = await withHookTokenConstraintLock(
+        constraintPath,
+        async () => {
+          const constraint = await readHookTokenConstraint(constraintPath);
+          const owned =
+            constraint?.runId === hook.runId &&
+            constraint.hookId === hook.hookId;
+          if (owned && hasFutureTokenExpiration(constraint)) return true;
+          if (owned) await deleteJSON(constraintPath);
+          return false;
         }
-      }
-      if (hook && hookPath && hook.runId === runId) {
-        // Release the claim only if it still points at this hook — a
-        // claimant may already hold a fresh claim for the token (see
-        // `isHookTokenClaimReleasable`).
-        await releaseHookTokenClaimIfOwnedBy(
-          basedir,
-          hook.token,
-          hook.runId,
-          hook.hookId
-        );
+      );
+
+      if (!keepHook) {
         await deleteJSON(
           hookRecoveryMarkerPath(basedir, hook.token, hook.runId, hook.hookId)
         );
         await deleteJSON(hookPath);
+        await deleteHookByRunMarkerFile(basedir, marker.fileId);
       }
+    } else {
+      await deleteHookByRunMarkerFile(basedir, marker.fileId);
     }
-    await deleteHookByRunMarkerFile(basedir, marker.fileId);
   }
 }
