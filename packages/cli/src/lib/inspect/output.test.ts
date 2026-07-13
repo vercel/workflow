@@ -360,6 +360,83 @@ describe('listRuns', () => {
     expect('region' in output.data[0]).toBe(false);
   });
 
+  it('supports async describeRun implementations', async () => {
+    const run = {
+      runId: 'wrun_41KX206BTK10M0C31CMN2AS1JS',
+      status: 'running',
+      deploymentId: 'dep-1',
+      workflowName: 'workflow//./src/workflows/test//myWorkflow',
+      specVersion: 2,
+      attributes: {},
+      createdAt: new Date('2026-06-30T00:00:00.000Z'),
+      updatedAt: new Date('2026-06-30T00:00:00.000Z'),
+      startedAt: new Date('2026-06-30T00:00:01.000Z'),
+      completedAt: null,
+      errorCode: null,
+      workflowCoreVersion: null,
+      workflowEncryptionEnabled: false,
+    } satisfies AnalyticsRun;
+    const world = {
+      describeRun: vi.fn().mockResolvedValue({ region: 'sfo1' }),
+      analytics: {
+        runs: {
+          list: vi.fn().mockResolvedValue({
+            data: [run],
+            cursor: null,
+            hasMore: false,
+          }),
+        },
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listRuns(world, { json: true });
+
+    const output = JSON.parse(String(write.mock.calls[0][0]));
+    expect(output.data[0].region).toBe('sfo1');
+  });
+
+  it('treats a rejecting async describeRun as contributing no fields', async () => {
+    const run = {
+      runId: 'wrun_41KX206BTK10M0C31CMN2AS1JS',
+      status: 'running',
+      deploymentId: 'dep-1',
+      workflowName: 'workflow//./src/workflows/test//myWorkflow',
+      specVersion: 2,
+      attributes: {},
+      createdAt: new Date('2026-06-30T00:00:00.000Z'),
+      updatedAt: new Date('2026-06-30T00:00:00.000Z'),
+      startedAt: new Date('2026-06-30T00:00:01.000Z'),
+      completedAt: null,
+      errorCode: null,
+      workflowCoreVersion: null,
+      workflowEncryptionEnabled: false,
+    } satisfies AnalyticsRun;
+    const world = {
+      describeRun: vi.fn().mockRejectedValue(new Error('async buggy world')),
+      analytics: {
+        runs: {
+          list: vi.fn().mockResolvedValue({
+            data: [run],
+            cursor: null,
+            hasMore: false,
+          }),
+        },
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listRuns(world, { json: true });
+
+    const output = JSON.parse(String(write.mock.calls[0][0]));
+    expect(output.data[0].status).toBe('running');
+    expect('region' in output.data[0]).toBe(false);
+  });
+
   it('adds no world fields when the world lacks describeRun', async () => {
     const run = {
       runId: 'wrun_01KX2M5N3RBNC12RYWYYH4WWQJ',

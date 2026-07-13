@@ -406,8 +406,11 @@ export interface World extends Queue, Streamer, Storage {
    * hook is absent, no extra fields appear at all.
    *
    * The contract:
-   * - **Synchronous and pure** — called once per displayed run, so no
-   *   I/O; derive fields from the entity you are given.
+   * - **Cheap and pure.** Called once per displayed run, so avoid I/O —
+   *   prefer deriving fields from the entity you are given. Returning a
+   *   Promise is allowed for implementations that cannot avoid async
+   *   work, but consumers may evaluate rows concurrently and output
+   *   rendering blocks on the slowest row.
    * - **Read only what you recognise.** The argument is the run entity
    *   as the caller has it (a full storage run, or a leaner analytics
    *   row) — typed loosely for the same reason as {@link createRunId}.
@@ -420,5 +423,8 @@ export interface World extends Queue, Streamer, Storage {
    */
   describeRun?(
     run: Readonly<Record<string, unknown>>
-  ): Record<string, string | null> | null;
+  ):
+    | Record<string, string | null>
+    | null
+    | Promise<Record<string, string | null> | null>;
 }

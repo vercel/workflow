@@ -469,13 +469,15 @@ const showJson = (data: unknown) => {
  * dropped so a world can never overwrite canonical fields (`status`,
  * `runId`, ...) in inspect output.
  */
-const safeWorldFields = (
+const safeWorldFields = async (
   describeRun: NonNullable<World['describeRun']>,
   row: Record<string, unknown>
-): Record<string, string | null> => {
+): Promise<Record<string, string | null>> => {
   let fields: Record<string, string | null> | null;
   try {
-    fields = describeRun(row);
+    // The hook may be sync or async; a rejection is treated the same as
+    // a throw — no fields.
+    fields = await describeRun(row);
   } catch {
     return {};
   }
@@ -684,17 +686,21 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
   // hook being absent entirely.
   const describeRun = world.describeRun?.bind(world);
   const describedKeys: string[] = [];
-  const withWorldFields = (
+  const withWorldFields = async (
     rows: Record<string, unknown>[]
-  ): Record<string, unknown>[] => {
+  ): Promise<Record<string, unknown>[]> => {
     if (!describeRun) return rows;
-    return rows.map((row) => {
-      const fields = safeWorldFields(describeRun, row);
-      for (const key of Object.keys(fields)) {
-        if (!describedKeys.includes(key)) describedKeys.push(key);
-      }
-      return { ...row, ...fields };
-    });
+    // Rows evaluated concurrently so an async implementation costs one
+    // await per page, not per row.
+    return Promise.all(
+      rows.map(async (row) => {
+        const fields = await safeWorldFields(describeRun, row);
+        for (const key of Object.keys(fields)) {
+          if (!describedKeys.includes(key)) describedKeys.push(key);
+        }
+        return { ...row, ...fields };
+      })
+    );
   };
   const propsFor = (baseList: (keyof WorkflowRun)[]): string[] => {
     const list: string[] = [...baseList];
@@ -718,7 +724,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
         pagination,
       });
       return {
-        data: withWorldFields(
+        data: await withWorldFields(
           runs.data as unknown as Record<string, unknown>[]
         ),
         cursor: runs.cursor,
@@ -736,7 +742,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       runs.data.map((r) => hydrateResourceIO(r, resolveKey))
     );
     return {
-      data: withWorldFields(data as unknown as Record<string, unknown>[]),
+      data: await withWorldFields(data as unknown as Record<string, unknown>[]),
       cursor: runs.cursor,
       hasMore: runs.hasMore,
       pageInfo: getPageInfo(runs),
@@ -817,7 +823,7 @@ export const showRun = async (
     // defensively — see safeWorldFields. `null` field values are kept so
     // structured output distinguishes "undeterminable" from "hook absent".
     const worldFields = world.describeRun
-      ? safeWorldFields(
+      ? await safeWorldFields(
           world.describeRun.bind(world),
           run as unknown as Record<string, unknown>
         )
