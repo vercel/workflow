@@ -506,9 +506,7 @@ describe('withPreconditionRetry', () => {
     expect(op).toHaveBeenCalledTimes(1);
   });
 
-  // TEMP(ci-default-on): skipped while the guard is forced on for CI.
-  // REVERT BEFORE MERGE (drop the TEMP commit to restore).
-  it.skip('passes no snapshot to op when the guard is not opted in', async () => {
+  it('passes no snapshot to op when the guard is not opted in', async () => {
     delete process.env.WORKFLOW_PRECONDITION_GUARD;
     const log: MutableEventLog = {
       events: [makeUlidEvent(1_700_000_000_000)],

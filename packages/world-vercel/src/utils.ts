@@ -31,14 +31,8 @@ import { version } from './version.js';
  * Inline workflow-server URL override. Must remain an empty string on
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
- *
- * TEMPORARY: pointed at the workflow-server `peter/event-precondition-guard`
- * preview so this PR's e2e tests exercise the 412 precondition guard against
- * the matching server change. This will be reverted before merge (or once the
- * server side merges) and does NOT need to be raised in PR reviews.
  */
-const WORKFLOW_SERVER_URL_OVERRIDE =
-  'https://workflow-server-git-peter-event-precondition-guard.vercel.sh';
+const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
