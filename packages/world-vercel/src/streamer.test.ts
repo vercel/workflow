@@ -491,9 +491,17 @@ describe('writeMulti over the WebSocket write channel', () => {
     socket.emit('message', {
       data: JSON.stringify({ index: 1, chunkIndex: 1 }),
     });
+
+    // Drained — but not closed yet: the writer sends FIN and waits for the
+    // server's FIN_ACK (confirming final storage accounting) before the
+    // channel closes and the done marker may go out.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(closed).toBe(false);
+    expect(socket.sent.at(-1)).toBe(JSON.stringify({ type: 'fin' }));
+    socket.emit('message', { data: JSON.stringify({ type: 'fin_ack' }) });
     await closePromise;
 
-    // Drained: channel closed cleanly, then the done PUT went out.
+    // Drained + finalized: channel closed cleanly, then the done PUT went out.
     expect(socket.closeCalls).toEqual([
       { code: 1000, reason: 'writer closing' },
     ]);
@@ -517,12 +525,56 @@ describe('writeMulti over the WebSocket write channel', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects writes once the channel fails fatally, and a retry starts a fresh writer', async () => {
+  it('falls back to batched PUT with abandoned-frame redelivery once the channel fails fatally', async () => {
     // No reconnect budget: the first connection failure is fatal.
     vi.stubEnv('WORKFLOW_STREAM_WRITE_MAX_CONSECUTIVE_RECONNECTS', '0');
-    vi.spyOn(globalThis, 'fetch').mockImplementation(
-      async () => new Response('ok')
-    );
+    const bodies: Uint8Array[] = [];
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (_url, init) => {
+        if (init?.body instanceof Uint8Array) bodies.push(init.body);
+        return new Response('ok');
+      });
+
+    const streamer = await getStreamer();
+    await streamer.streams.writeMulti?.('run-9', 'out', ['a'], {
+      retransmitSafe: true,
+    });
+    (await lastSocket()).emit('close', { code: 4401, reason: 'unauthorized' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    // The writer died holding the unconfirmed frame 'a'. The next flush
+    // circuit-breaks to the batched PUT path (v2 stays available when the
+    // WS transport isn't) and redelivers 'a' ahead of the new chunk in one
+    // request — nothing is lost, nothing rejects; read-side dedupe absorbs
+    // the overlap if 'a' did persist before the channel died.
+    await streamer.streams.writeMulti?.('run-9', 'out', ['b'], {
+      retransmitSafe: true,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const url = new URL(fetchSpy.mock.calls[0][0] as string);
+    expect(url.pathname).toBe('/v2/runs/run-9/stream/out');
+    expect(bodies).toHaveLength(1);
+    const decoder = new TextDecoder();
+    // Two length-prefixed chunks: the redelivered 'a', then 'b'.
+    expect(decoder.decode(bodies[0].slice(4, 5))).toBe('a');
+    expect(decoder.decode(bodies[0].slice(9, 10))).toBe('b');
+
+    // While the circuit breaker is open, further retransmit-safe flushes
+    // stay on PUT — no new channel is opened.
+    await streamer.streams.writeMulti?.('run-9', 'out', ['c'], {
+      retransmitSafe: true,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fakeSockets).toHaveLength(1);
+  });
+
+  it('forced websocket transport rejects on fatal failure instead of falling back', async () => {
+    vi.stubEnv('WORKFLOW_STREAM_WRITE_TRANSPORT', 'websocket');
+    vi.stubEnv('WORKFLOW_STREAM_WRITE_MAX_CONSECUTIVE_RECONNECTS', '0');
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response('ok'));
 
     const streamer = await getStreamer();
     await streamer.streams.writeMulti?.('run-9', 'out', ['a'], {
@@ -536,6 +588,7 @@ describe('writeMulti over the WebSocket write channel', () => {
         retransmitSafe: true,
       })
     ).rejects.toThrow(/failed/);
+    expect(fetchSpy).not.toHaveBeenCalled();
 
     // The failed writer was evicted: the next write opens a fresh channel
     // (fresh budgets) instead of rejecting forever. The write resolves on
@@ -544,6 +597,22 @@ describe('writeMulti over the WebSocket write channel', () => {
       retransmitSafe: true,
     });
     await vi.waitFor(() => expect(fakeSockets.length).toBe(2));
+  });
+
+  it('the put kill switch routes retransmit-safe writes over batched PUT', async () => {
+    vi.stubEnv('WORKFLOW_STREAM_WRITE_TRANSPORT', 'put');
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response('ok'));
+
+    const streamer = await getStreamer();
+    await streamer.streams.writeMulti?.('run-9', 'out', ['a'], {
+      retransmitSafe: true,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(fakeSockets).toHaveLength(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it('fails the channel on an unparseable server message', async () => {

@@ -1158,8 +1158,13 @@ function createBatchSink(
       }
       buffer.push(chunk);
       scheduleFlush();
-      // Resolve only when the scheduled flush completes so callers (flushablePipe)
-      // know the data reached the server before decrementing pendingOps.
+      // Resolve only when the scheduled flush's writeMulti resolves, so
+      // callers (flushablePipe) never decrement pendingOps ahead of the
+      // world accepting the batch. What "accepted" means is the world's
+      // writeMulti contract: without retransmitSafe the batch is durable on
+      // the server; with it the world may confirm durability asynchronously
+      // (resend-until-acked), in which case close() below is the durability
+      // barrier and any unrecoverable delivery failure surfaces there.
       await new Promise<void>((resolve, reject) => {
         flushWaiters.push({ resolve, reject });
       });

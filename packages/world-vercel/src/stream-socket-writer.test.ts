@@ -11,19 +11,30 @@ import {
 const frame = (...bytes: number[]) => new Uint8Array(bytes);
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-/** One fake channel; the test drives acks and closes by hand. */
+/** One fake channel; the test drives acks, fin-acks, and closes by hand. */
 class FakeConnection {
   sent: Uint8Array[] = [];
   closedByWriter = false;
+  finSent = false;
   readonly channel: StreamWriteChannel;
   private acked = 0;
 
-  constructor(readonly handlers: StreamWriteChannelHandlers) {
+  constructor(
+    readonly handlers: StreamWriteChannelHandlers,
+    withFin = false
+  ) {
     this.channel = {
       send: (chunk) => this.sent.push(chunk),
       close: () => {
         this.closedByWriter = true;
       },
+      ...(withFin
+        ? {
+            fin: () => {
+              this.finSent = true;
+            },
+          }
+        : {}),
     };
   }
 
@@ -33,6 +44,11 @@ class FakeConnection {
     this.handlers.onAck({ index, chunkIndex: chunkIndex ?? 100 + index });
   }
 
+  /** Confirm finalization (server flushed its final accounting). */
+  finAck() {
+    this.handlers.onFinAck?.();
+  }
+
   /** Unclean end (server bound hit, network cut, deploy). */
   die(reason = 'connection cut') {
     this.handlers.onClose({ code: 1006, reason });
@@ -40,7 +56,10 @@ class FakeConnection {
 }
 
 /** Deterministic harness: manual timers, recorded connections. */
-function makeHarness(config?: Partial<SocketWriterConfig>) {
+function makeHarness(
+  config?: Partial<SocketWriterConfig>,
+  opts?: { fin?: boolean }
+) {
   const connections: FakeConnection[] = [];
   let failNextConnects = 0;
   const timers: { fn: () => void; ms: number }[] = [];
@@ -53,7 +72,7 @@ function makeHarness(config?: Partial<SocketWriterConfig>) {
           failNextConnects--;
           throw new Error('connect refused');
         }
-        const connection = new FakeConnection(handlers);
+        const connection = new FakeConnection(handlers, opts?.fin);
         connections.push(connection);
         return connection.channel;
       },
@@ -79,10 +98,18 @@ function makeHarness(config?: Partial<SocketWriterConfig>) {
     failConnects: (n: number) => {
       failNextConnects = n;
     },
-    /** Fire and remove the oldest pending timer. */
-    fireTimer: () => {
-      const timer = timers.shift();
-      if (!timer) throw new Error('no pending timer');
+    /**
+     * Fire and remove the oldest pending timer — or, given `ms`, the oldest
+     * timer armed with that exact duration (to pick one timer apart from
+     * others pending concurrently).
+     */
+    fireTimer: (ms?: number) => {
+      const index =
+        ms === undefined ? 0 : timers.findIndex((timer) => timer.ms === ms);
+      if (index < 0 || index >= timers.length) {
+        throw new Error('no pending timer');
+      }
+      const [timer] = timers.splice(index, 1);
       timer.fn();
     },
   };
@@ -420,5 +447,116 @@ describe('StreamSocketWriter', () => {
     await h.writer.close();
     expect(h.connections).toHaveLength(0);
     await expect(h.writer.write(frame(1))).rejects.toThrow(/already closed/);
+  });
+
+  it('close() completes the FIN/FIN_ACK exchange before closing the channel', async () => {
+    const h = makeHarness({}, { fin: true });
+
+    await h.writer.write(frame(1));
+    await tick();
+    h.connections[0].ackNext();
+
+    let closed = false;
+    const closePromise = h.writer.close().then(() => {
+      closed = true;
+    });
+    await tick();
+
+    // Drained and FIN sent — but the channel stays open and close() pends
+    // until the server confirms its final accounting with FIN_ACK.
+    expect(h.connections[0].finSent).toBe(true);
+    expect(closed).toBe(false);
+    expect(h.connections[0].closedByWriter).toBe(false);
+
+    h.connections[0].finAck();
+    await closePromise;
+    expect(h.connections[0].closedByWriter).toBe(true);
+  });
+
+  it('close() proceeds after the FIN_ACK deadline when the server never confirms', async () => {
+    const h = makeHarness({ finAckTimeoutMs: 77 }, { fin: true });
+
+    await h.writer.write(frame(1));
+    await tick();
+    h.connections[0].ackNext();
+
+    let closed = false;
+    const closePromise = h.writer.close().then(() => {
+      closed = true;
+    });
+    await tick();
+    expect(h.connections[0].finSent).toBe(true);
+    expect(closed).toBe(false);
+
+    // Every frame is acked (durable); a lost FIN_ACK only affects the
+    // ordering of the server's final accounting, so close() must not hang
+    // on it forever.
+    h.fireTimer(77);
+    await closePromise;
+    expect(h.connections[0].closedByWriter).toBe(true);
+  });
+
+  it('tears down and resends when no ack arrives within the liveness deadline', async () => {
+    const h = makeHarness({ ackDeadlineMs: 5_000 });
+
+    await h.writer.write(frame(1));
+    await tick();
+    expect(h.connections).toHaveLength(1);
+
+    // A half-open connection delivers neither acks nor a close event; the
+    // deadline is the only thing that can unstick the writer.
+    h.fireTimer(5_000); // ack liveness deadline
+    h.fireTimer(); // reconnect backoff
+    await tick();
+
+    expect(h.connections).toHaveLength(2);
+    expect(h.connections[1].sent.map((f) => f[0])).toEqual([1]);
+    h.connections[1].ackNext();
+    await h.writer.close();
+  });
+
+  it('releases a drained channel after the idle timeout; the next write reconnects', async () => {
+    const h = makeHarness({ idleCloseMs: 42 });
+
+    await h.writer.write(frame(1));
+    await tick();
+    h.connections[0].ackNext();
+    await tick();
+
+    // Fully drained: the idle timeout releases the socket instead of
+    // pinning it (and its server-side invocation) until the recycle.
+    h.fireTimer(42);
+    expect(h.connections[0].closedByWriter).toBe(true);
+
+    await h.writer.write(frame(2));
+    await tick();
+    expect(h.connections).toHaveLength(2);
+    expect(h.connections[1].sent.map((f) => f[0])).toEqual([2]);
+    h.connections[1].ackNext();
+    await h.writer.close();
+  });
+
+  it('stashes unconfirmed frames for fallback redelivery on failure, but not on abort', async () => {
+    const h = makeHarness({ maxConsecutiveReconnects: 0 });
+
+    await h.writer.write(frame(1));
+    await h.writer.write(frame(2));
+    await tick();
+    h.connections[0].ackNext(); // frame 1 durable
+    h.connections[0].die();
+    await tick();
+    await expect(h.writer.write(frame(3))).rejects.toThrow(/failed/);
+
+    // Only the unconfirmed frame is handed over; the acked frame is not.
+    // Taking transfers ownership — a second take is empty.
+    expect(h.writer.takeAbandonedFrames().map((f) => f[0])).toEqual([2]);
+    expect(h.writer.takeAbandonedFrames()).toEqual([]);
+
+    // A deliberate abort really abandons frames: nothing to redeliver.
+    const h2 = makeHarness();
+    await h2.writer.write(frame(9));
+    await tick();
+    h2.writer.abort('step failed');
+    expect(h2.writer.takeAbandonedFrames()).toEqual([]);
   });
 });

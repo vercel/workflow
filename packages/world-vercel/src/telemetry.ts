@@ -99,6 +99,22 @@ export async function trace<T>(
 }
 
 /**
+ * Record a retrospective span covering an already-elapsed period: started at
+ * `startEpochMs`, ended now. For summaries whose boundaries aren't a single
+ * awaited call (e.g. one stream-write channel writer's lifetime). No-op when
+ * OpenTelemetry is unavailable.
+ */
+export async function recordElapsedSpan(
+  spanName: string,
+  startEpochMs: number,
+  opts?: SpanOptions
+): Promise<void> {
+  const tracer = await getTracer();
+  if (!tracer) return;
+  tracer.startSpan(spanName, { ...opts, startTime: startEpochMs }).end();
+}
+
+/**
  * Get SpanKind enum value by name.
  * Returns undefined if OpenTelemetry is not available.
  */

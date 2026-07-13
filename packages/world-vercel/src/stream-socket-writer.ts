@@ -22,6 +22,13 @@
 // unacked frame's per-connection ordinal; a mismatch means the two sides
 // disagree about the connection state, and the writer tears the channel down
 // and resends rather than guessing.
+//
+// Liveness: a half-open connection delivers no acks and no close event. The
+// ack deadline bounds how long a sent frame may sit unacked before the writer
+// tears the channel down and resends on a fresh one, so neither producers
+// (blocked on the window) nor `close()` (blocked on the drain) can hang
+// forever on a dead socket. A drained channel is released after a short idle
+// timeout instead of being held for the full recycle interval.
 
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { envNumber } from '@workflow/world';
@@ -47,6 +54,12 @@ export interface StreamWriteChannelHandlers {
    * nothing more will be acked on this channel.
    */
   onClose(event: { code?: number; reason?: string }): void;
+  /**
+   * The server confirmed FIN: every chunk on the connection is persisted
+   * and its storage accounting is flushed. Optional — only the real
+   * transport implements the FIN/FIN_ACK exchange.
+   */
+  onFinAck?(): void;
 }
 
 /** A live write channel (one WebSocket connection). */
@@ -55,6 +68,27 @@ export interface StreamWriteChannel {
   send(chunk: Uint8Array): void;
   /** Close the channel. Chunks already sent may still be acked before onClose. */
   close(): void;
+  /**
+   * Send the FIN control frame asking the server to flush final accounting
+   * and confirm with FIN_ACK. Optional — a channel without it (tests, future
+   * transports) skips the finalization exchange.
+   */
+  fin?(): void;
+}
+
+/** Writer-lifetime aggregates for bounded telemetry (one span/log per writer). */
+export interface SocketWriterStats {
+  /** Frame transmissions, resends included. */
+  framesSent: number;
+  framesAcked: number;
+  bytesAcked: number;
+  /** Unclean channel ends that entered the reconnect path. */
+  reconnects: number;
+  maxQueueDepth: number;
+  maxQueueBytes: number;
+  ackRttCount: number;
+  ackRttSumMs: number;
+  ackRttMaxMs: number;
 }
 
 /** Injected transport + scheduling dependencies (all test-fakeable). */
@@ -69,6 +103,18 @@ export interface SocketWriterDeps {
   /** Injectable timer hooks so tests control recycle/backoff deterministically. */
   setTimer?(fn: () => void, ms: number): unknown;
   clearTimer?(handle: unknown): void;
+  /** Telemetry hooks; both optional and fire-and-forget. */
+  observer?: {
+    /** An unclean channel end that will be retried (fires before the backoff). */
+    onReconnect?(info: {
+      reason?: string;
+      code?: number;
+      consecutive: number;
+      total: number;
+    }): void;
+    /** The writer became permanently unusable. */
+    onFatal?(error: Error): void;
+  };
 }
 
 export interface SocketWriterConfig {
@@ -89,6 +135,26 @@ export interface SocketWriterConfig {
   maxTotalReconnects: number;
   /** Backoff between unclean reconnects (last entry repeats). */
   reconnectBackoffMs: number[];
+  /**
+   * Liveness bound: how long the oldest sent frame may sit unacked before
+   * the channel is presumed half-open and torn down for a resend. Rolling —
+   * any ack rearms it — so it only fires when the server has gone silent.
+   */
+  ackDeadlineMs: number;
+  /**
+   * Release a fully-drained channel after this long instead of holding the
+   * socket for the full recycle interval; the next write reconnects. Keeps
+   * bursty streams from pinning idle connections (and their server-side
+   * function invocations).
+   */
+  idleCloseMs: number;
+  /**
+   * How long `close()` waits for the server's FIN_ACK before proceeding
+   * anyway. By then every frame is acked (durable); only the ordering of the
+   * server's final storage accounting vs the done marker is at stake, and
+   * the server's close handler still flushes it as a fallback.
+   */
+  finAckTimeoutMs: number;
 }
 
 export const DEFAULT_SOCKET_WRITER_CONFIG: SocketWriterConfig = {
@@ -104,6 +170,9 @@ export const DEFAULT_SOCKET_WRITER_CONFIG: SocketWriterConfig = {
   maxConsecutiveReconnects: 5,
   maxTotalReconnects: 64,
   reconnectBackoffMs: [100, 500, 2000],
+  ackDeadlineMs: 15_000,
+  idleCloseMs: 10_000,
+  finAckTimeoutMs: 10_000,
 };
 
 /**
@@ -147,6 +216,21 @@ export function resolveSocketWriterConfig(): SocketWriterConfig {
       { integer: true }
     ),
     reconnectBackoffMs: defaults.reconnectBackoffMs,
+    ackDeadlineMs: envNumber(
+      'WORKFLOW_STREAM_WRITE_ACK_DEADLINE_MS',
+      defaults.ackDeadlineMs,
+      { integer: true, min: 1_000 }
+    ),
+    idleCloseMs: envNumber(
+      'WORKFLOW_STREAM_WRITE_IDLE_CLOSE_MS',
+      defaults.idleCloseMs,
+      { integer: true, min: 250 }
+    ),
+    finAckTimeoutMs: envNumber(
+      'WORKFLOW_STREAM_WRITE_FIN_ACK_TIMEOUT_MS',
+      defaults.finAckTimeoutMs,
+      { integer: true, min: 100 }
+    ),
   };
 }
 
@@ -154,14 +238,20 @@ interface BufferedFrame {
   frame: Uint8Array;
   /** Ordinal this frame was sent under on the current channel, if sent. */
   sentIndex: number | null;
+  /** When this frame was last transmitted (ack-RTT telemetry). */
+  sentAt: number | null;
 }
 
 /**
  * Ack-driven writer over WebSocket write channels. `write` resolves once the
  * frame is accepted into the in-flight window (backpressure), not when it is
- * durable; `close` resolves only after every written frame has been acked.
+ * durable; `close` resolves only after every written frame has been acked
+ * and the server has confirmed finalization (FIN/FIN_ACK).
  */
 export class StreamSocketWriter {
+  /** Construction time — the start of the writer-lifetime telemetry span. */
+  readonly createdAt = Date.now();
+
   private readonly deps: SocketWriterDeps;
   private readonly config: SocketWriterConfig;
 
@@ -179,20 +269,45 @@ export class StreamSocketWriter {
   private waiters: (() => void)[] = [];
   /** close() waiter, resolved when the buffer fully drains. */
   private drainWaiter: (() => void) | null = null;
+  /** close() waiter for the FIN/FIN_ACK exchange. */
+  private finAckWaiter: (() => void) | null = null;
 
   private rotateRequested = false;
   private closedDone = false;
   private fatalError: Error | null = null;
+  private aborted = false;
+  /**
+   * Frames that were admitted (write() resolved) but unconfirmed when the
+   * writer failed. Held so the streamer's PUT fallback can redeliver them —
+   * their framed-v2 markers make the possible overlap with already-persisted
+   * copies safe. A deliberate abort really does abandon them (stays empty).
+   */
+  private abandonedFrames: Uint8Array[] = [];
 
   private consecutiveReconnects = 0;
   private totalReconnects = 0;
   private recycleTimer: unknown = null;
+  private reconnectTimer: unknown = null;
+  private ackDeadlineTimer: unknown = null;
+  private idleTimer: unknown = null;
   private ensureReadyPromise: Promise<void> | null = null;
 
   /** Lifetime counters + waiters backing {@link ackBarrier}. */
   private admitted = 0;
   private acked = 0;
   private ackBarriers: { threshold: number; resolve: () => void }[] = [];
+
+  private readonly stats: SocketWriterStats = {
+    framesSent: 0,
+    framesAcked: 0,
+    bytesAcked: 0,
+    reconnects: 0,
+    maxQueueDepth: 0,
+    maxQueueBytes: 0,
+    ackRttCount: 0,
+    ackRttSumMs: 0,
+    ackRttMaxMs: 0,
+  };
 
   constructor(deps: SocketWriterDeps, config?: Partial<SocketWriterConfig>) {
     this.deps = deps;
@@ -204,6 +319,11 @@ export class StreamSocketWriter {
     return this.buffer.length;
   }
 
+  /** Writer-lifetime telemetry aggregates (bounded; read at close/failure). */
+  statsSnapshot(): SocketWriterStats & { pendingFrames: number } {
+    return { ...this.stats, pendingFrames: this.buffer.length };
+  }
+
   async write(frame: Uint8Array): Promise<void> {
     this.throwIfUnusable();
     while (
@@ -213,9 +333,15 @@ export class StreamSocketWriter {
       await new Promise<void>((resolve) => this.waiters.push(resolve));
       this.throwIfUnusable();
     }
-    this.buffer.push({ frame, sentIndex: null });
+    this.buffer.push({ frame, sentIndex: null, sentAt: null });
     this.bufferedBytes += frame.byteLength;
     this.admitted++;
+    if (this.buffer.length > this.stats.maxQueueDepth) {
+      this.stats.maxQueueDepth = this.buffer.length;
+    }
+    if (this.bufferedBytes > this.stats.maxQueueBytes) {
+      this.stats.maxQueueBytes = this.bufferedBytes;
+    }
     this.pump();
   }
 
@@ -236,7 +362,12 @@ export class StreamSocketWriter {
     });
   }
 
-  /** Resolves once every written frame is durable and the channel is closed. */
+  /**
+   * Resolves once every written frame is durable and the channel is closed.
+   * When the channel supports it, the server's finalization is confirmed via
+   * FIN/FIN_ACK first, so a completion marker sent after `close()` resolves
+   * can never race the server's final accounting.
+   */
   async close(): Promise<void> {
     this.throwIfUnusable();
     if (this.buffer.length > 0) {
@@ -246,12 +377,14 @@ export class StreamSocketWriter {
       });
       this.throwIfUnusable();
     }
+    await this.finalizeChannel();
     this.teardownChannel();
     this.closedDone = true;
   }
 
   /** Drop everything immediately; unacked frames are abandoned. */
   abort(reason?: unknown): void {
+    this.aborted = true;
     this.fail(
       reason instanceof Error
         ? reason
@@ -261,7 +394,34 @@ export class StreamSocketWriter {
     );
   }
 
+  /**
+   * Frames admitted but unconfirmed when the writer failed, in write order.
+   * The caller (the streamer's PUT fallback) takes ownership: redelivering
+   * them over the batched PUT path closes the durability gap a fatal channel
+   * failure would otherwise leave, and their framed-v2 markers deduplicate
+   * any overlap with copies the dead channel did persist. Empty after a
+   * deliberate abort and for a healthy writer.
+   */
+  takeAbandonedFrames(): Uint8Array[] {
+    const frames = this.abandonedFrames;
+    this.abandonedFrames = [];
+    return frames;
+  }
+
   // --- internals ----------------------------------------------------------
+
+  private setT(fn: () => void, ms: number): unknown {
+    const handle = (this.deps.setTimer ?? setTimeout)(fn, ms);
+    // Timers must not hold the process open by themselves: on the platform,
+    // `waitUntil(ackBarrier())` governs the invocation's lifetime, and every
+    // timer here is cleared deterministically on its terminal paths.
+    (handle as { unref?: () => void })?.unref?.();
+    return handle;
+  }
+
+  private clearT(handle: unknown): void {
+    (this.deps.clearTimer ?? clearTimeout)(handle as never);
+  }
 
   private throwIfUnusable(): void {
     if (this.fatalError) throw this.fatalError;
@@ -273,17 +433,29 @@ export class StreamSocketWriter {
   private fail(error: Error): void {
     if (this.fatalError) return;
     this.fatalError = error;
+    // Frames admitted but never acked would otherwise vanish silently after
+    // their write() already resolved — hold them for the PUT fallback.
+    if (!this.aborted) {
+      this.abandonedFrames = this.buffer.map((entry) => entry.frame);
+    }
+    if (this.reconnectTimer !== null) {
+      this.clearT(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.teardownChannel();
     this.buffer = [];
     this.bufferedBytes = 0;
     this.releaseWaiters();
     this.drainWaiter?.();
     this.drainWaiter = null;
+    this.finAckWaiter?.();
+    this.finAckWaiter = null;
     // Ack barriers only extend the function's lifetime; on failure there is
     // nothing left to wait for (the error surfaces through write/close).
     const barriers = this.ackBarriers;
     this.ackBarriers = [];
     for (const { resolve } of barriers) resolve();
+    this.deps.observer?.onFatal?.(error);
   }
 
   private releaseWaiters(): void {
@@ -292,16 +464,33 @@ export class StreamSocketWriter {
     for (const resolve of waiters) resolve();
   }
 
+  /** Clear the timers whose lifetime is bound to the current channel. */
+  private clearChannelTimers(): void {
+    if (this.recycleTimer !== null) {
+      this.clearT(this.recycleTimer);
+      this.recycleTimer = null;
+    }
+    if (this.ackDeadlineTimer !== null) {
+      this.clearT(this.ackDeadlineTimer);
+      this.ackDeadlineTimer = null;
+    }
+    if (this.idleTimer !== null) {
+      this.clearT(this.idleTimer);
+      this.idleTimer = null;
+    }
+  }
+
   /**
    * Close the current channel locally. Bumping the epoch first makes the
    * channel's own late onClose callback a stale no-op, so a local close never
    * takes the unclean-reconnect path.
    */
   private teardownChannel(): void {
-    if (this.recycleTimer !== null) {
-      (this.deps.clearTimer ?? clearTimeout)(this.recycleTimer as never);
-      this.recycleTimer = null;
-    }
+    this.clearChannelTimers();
+    // A teardown during the FIN wait (e.g. the recycle timer firing mid-
+    // exchange) must not strand close(): the exchange can't complete on a
+    // closed channel, so it proceeds as on a FIN_ACK timeout.
+    this.finAckWaiter?.();
     if (this.channel) {
       const channel = this.channel;
       this.channel = null;
@@ -327,7 +516,13 @@ export class StreamSocketWriter {
         this.rotateRequested = false;
         this.teardownChannel();
       }
+      this.syncAckDeadline();
+      this.syncIdleTimer();
       return;
+    }
+    if (this.idleTimer !== null) {
+      this.clearT(this.idleTimer);
+      this.idleTimer = null;
     }
     if (!this.channel) {
       void this.ensureChannel();
@@ -346,8 +541,11 @@ export class StreamSocketWriter {
     for (const entry of this.buffer) {
       if (entry.sentIndex !== null) continue;
       entry.sentIndex = this.sentInEpoch++;
+      entry.sentAt = Date.now();
+      this.stats.framesSent++;
       this.channel.send(entry.frame);
     }
+    this.syncAckDeadline();
   }
 
   private async ensureChannel(): Promise<void> {
@@ -369,6 +567,10 @@ export class StreamSocketWriter {
       const channel = await this.deps.connect({
         onAck: (ack) => this.onAck(epoch, ack.index),
         onClose: (event) => this.onChannelClose(epoch, event),
+        onFinAck: () => {
+          if (epoch !== this.epoch) return;
+          this.finAckWaiter?.();
+        },
       });
       if (epoch !== this.epoch || this.fatalError) {
         // The writer moved on (abort/rotate) while we were connecting.
@@ -389,11 +591,91 @@ export class StreamSocketWriter {
   }
 
   private startRecycleTimer(): void {
-    const setTimer = this.deps.setTimer ?? setTimeout;
-    this.recycleTimer = setTimer(() => {
+    this.recycleTimer = this.setT(() => {
+      this.recycleTimer = null;
       this.rotateRequested = true;
       this.pump();
     }, this.config.recycleMs);
+  }
+
+  /**
+   * Keep the ack-liveness deadline armed exactly while at least one sent
+   * frame awaits its ack on a live channel. Every ack rearms it, so it only
+   * fires after `ackDeadlineMs` of total server silence — the half-open
+   * connection case that neither an error nor a close event would surface.
+   */
+  private syncAckDeadline(): void {
+    const hasSentUnacked =
+      this.channel !== null &&
+      this.buffer.some((entry) => entry.sentIndex !== null);
+    if (hasSentUnacked && this.ackDeadlineTimer === null) {
+      this.ackDeadlineTimer = this.setT(() => {
+        this.ackDeadlineTimer = null;
+        this.forceReconnect(
+          `no ack within ${this.config.ackDeadlineMs}ms (connection presumed half-open)`
+        );
+      }, this.config.ackDeadlineMs);
+    } else if (!hasSentUnacked && this.ackDeadlineTimer !== null) {
+      this.clearT(this.ackDeadlineTimer);
+      this.ackDeadlineTimer = null;
+    }
+  }
+
+  /**
+   * Release a fully-drained channel after a short idle period; the next
+   * write opens a fresh one. Never armed while a close() is finalizing.
+   */
+  private syncIdleTimer(): void {
+    const idle =
+      this.channel !== null &&
+      this.buffer.length === 0 &&
+      this.finAckWaiter === null &&
+      !this.closedDone;
+    if (idle && this.idleTimer === null) {
+      this.idleTimer = this.setT(() => {
+        this.idleTimer = null;
+        this.teardownChannel();
+      }, this.config.idleCloseMs);
+    } else if (!idle && this.idleTimer !== null) {
+      this.clearT(this.idleTimer);
+      this.idleTimer = null;
+    }
+  }
+
+  /**
+   * The FIN/FIN_ACK exchange behind `close()`: ask the server to flush its
+   * final storage accounting and confirm before the caller sends the done
+   * marker. Bounded wait — on timeout or channel loss it proceeds anyway:
+   * every frame is already acked (durable), only the ordering of the
+   * server's final accounting is at stake, and the server's close handler
+   * flushes it as a fallback.
+   */
+  private async finalizeChannel(): Promise<void> {
+    const channel = this.channel;
+    if (!channel?.fin) return;
+    if (this.idleTimer !== null) {
+      // The buffer is empty (drained), so the idle timer may be armed; it
+      // must not tear the channel down mid-exchange.
+      this.clearT(this.idleTimer);
+      this.idleTimer = null;
+    }
+    let timer: unknown = null;
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        if (timer !== null) {
+          this.clearT(timer);
+          timer = null;
+        }
+        resolve();
+      };
+      this.finAckWaiter = settle;
+      timer = this.setT(settle, this.config.finAckTimeoutMs);
+      channel.fin?.();
+    });
+    this.finAckWaiter = null;
   }
 
   private onAck(epoch: number, index: number): void {
@@ -408,6 +690,20 @@ export class StreamSocketWriter {
     this.buffer.shift();
     this.bufferedBytes -= head.frame.byteLength;
     this.acked++;
+    this.stats.framesAcked++;
+    this.stats.bytesAcked += head.frame.byteLength;
+    if (head.sentAt !== null) {
+      const rttMs = Date.now() - head.sentAt;
+      this.stats.ackRttCount++;
+      this.stats.ackRttSumMs += rttMs;
+      if (rttMs > this.stats.ackRttMaxMs) this.stats.ackRttMaxMs = rttMs;
+    }
+    // Rolling liveness deadline: this ack proves the connection is alive, so
+    // the clock restarts for the next oldest unacked frame (if any).
+    if (this.ackDeadlineTimer !== null) {
+      this.clearT(this.ackDeadlineTimer);
+      this.ackDeadlineTimer = null;
+    }
     if (this.ackBarriers.length > 0) {
       const still = this.ackBarriers.filter((barrier) => {
         if (barrier.threshold <= this.acked) {
@@ -435,9 +731,14 @@ export class StreamSocketWriter {
     if (epoch !== this.epoch || this.fatalError) return;
     this.channel = null;
     this.epoch++;
-    if (this.recycleTimer !== null) {
-      (this.deps.clearTimer ?? clearTimeout)(this.recycleTimer as never);
-      this.recycleTimer = null;
+    this.clearChannelTimers();
+
+    if (this.finAckWaiter) {
+      // The server closed while close() awaited FIN_ACK (it closes right
+      // after sending it, so the two can race on the wire). Every frame is
+      // acked — finalization proceeds; there is nothing to resend.
+      this.finAckWaiter();
+      return;
     }
 
     // 1009 (message too big) is deterministic: the server's per-message size
@@ -461,9 +762,13 @@ export class StreamSocketWriter {
 
     // Everything unacked may or may not have persisted: mark it unsent and
     // resend it all on a fresh channel (read-side dedupe absorbs overlap).
-    for (const entry of this.buffer) entry.sentIndex = null;
+    for (const entry of this.buffer) {
+      entry.sentIndex = null;
+      entry.sentAt = null;
+    }
     this.consecutiveReconnects++;
     this.totalReconnects++;
+    this.stats.reconnects++;
     if (this.consecutiveReconnects > this.config.maxConsecutiveReconnects) {
       this.fail(
         new WorkflowRuntimeError(
@@ -483,11 +788,20 @@ export class StreamSocketWriter {
       return;
     }
 
+    this.deps.observer?.onReconnect?.({
+      reason: event.reason,
+      code: event.code,
+      consecutive: this.consecutiveReconnects,
+      total: this.totalReconnects,
+    });
+
     const backoffs = this.config.reconnectBackoffMs;
     const delay =
       backoffs[Math.min(this.consecutiveReconnects - 1, backoffs.length - 1)];
-    const setTimer = this.deps.setTimer ?? setTimeout;
-    setTimer(() => this.pump(), delay);
+    this.reconnectTimer = this.setT(() => {
+      this.reconnectTimer = null;
+      this.pump();
+    }, delay);
   }
 
   private forceReconnect(reason: string): void {

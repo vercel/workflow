@@ -316,6 +316,42 @@ describe('framed-v2 byte framing', () => {
     ]);
   });
 
+  it('keeps interleaved frames from two writers apart (per-writer dedupe)', async () => {
+    // Concurrent writers on one stream are documented behavior — and a
+    // crashed invocation's writer (A) can interleave with its retry's
+    // writer (B). Seq spaces are per-writer: B's seq 0/1 must not collide
+    // with A's, and a replay of A's frame after B started is still deduped.
+    const idA = writerId(0xa1);
+    const idB = writerId(0xb2);
+    const [a0, a1] = await readAll(
+      readableFromChunks([
+        new Uint8Array([10]),
+        new Uint8Array([11]),
+      ]).pipeThrough(getByteFramingStream(idA))
+    );
+    const [b0, b1] = await readAll(
+      readableFromChunks([
+        new Uint8Array([20]),
+        new Uint8Array([21]),
+      ]).pipeThrough(getByteFramingStream(idB))
+    );
+
+    const delivered = await readAll(
+      readableFromChunks([a0, b0, a1, a1, b1]).pipeThrough(
+        getByteUnframingStream('framed-v2')
+      )
+    );
+
+    // Every unique frame from both writers delivered exactly once, in
+    // arrival order; only A's replayed frame is dropped.
+    expect(delivered).toEqual([
+      new Uint8Array([10]),
+      new Uint8Array([20]),
+      new Uint8Array([11]),
+      new Uint8Array([21]),
+    ]);
+  });
+
   it('errors on a framed-v2 frame too small to hold a marker', async () => {
     // A framed-v1-shaped frame (no marker) read as framed-v2 must be rejected
     // rather than silently mis-stripping payload bytes as a marker.

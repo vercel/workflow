@@ -270,7 +270,6 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
  */
 describe('getEventV4 over HTTP', () => {
   it('returns the first frame and stops reading the rest', async () => {
-    const origin = 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -291,7 +290,7 @@ describe('getEventV4 over HTTP', () => {
     ]);
 
     agent
-      .get(origin)
+      .get(ORIGIN)
       .intercept({ path: '/api/v4/runs/wrun_1/events/evnt_1', method: 'GET' })
       .reply(200, frames, {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },

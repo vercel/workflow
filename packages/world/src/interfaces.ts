@@ -78,11 +78,21 @@ export interface Streamer {
      *
      * If not implemented, the caller should fall back to sequential write() calls.
      *
-     * Resolving means every chunk in the batch is accepted for durable,
-     * in-order delivery; sequential calls for the same stream are applied in
-     * call order. How a world delivers the batch is its own concern — with
-     * `options.retransmitSafe` it may use a transport that resends
-     * unconfirmed chunks across reconnects (see {@link StreamWriteOptions}).
+     * Durability contract: resolving means every chunk in the batch is
+     * accepted for durable, in-order delivery — not necessarily that it is
+     * durable yet. Without `options.retransmitSafe` the two coincide (the
+     * batch resolves once the server applied it). With `retransmitSafe` a
+     * world may resolve on admission to a bounded in-flight window and
+     * confirm durability asynchronously (e.g. per-chunk acks on a
+     * long-lived connection that resends unconfirmed chunks across
+     * reconnects — see {@link StreamWriteOptions}). A world that defers
+     * durability this way MUST (a) keep redelivering accepted chunks until
+     * confirmed, across transport failures, and (b) surface a delivery
+     * failure it can no longer recover from on a later `writeMulti` or
+     * `close` call for the same stream — `close` resolving is the caller's
+     * durability barrier for everything previously accepted.
+     *
+     * Sequential calls for the same stream are applied in call order.
      *
      * @param runId - The run ID
      * @param name - The stream name
@@ -96,6 +106,12 @@ export interface Streamer {
       options?: StreamWriteOptions
     ): Promise<void>;
 
+    /**
+     * Complete the stream (append the done marker). Resolves only once
+     * every previously accepted write is durable — for a world that defers
+     * durability on `retransmitSafe` batches, this is where deferred
+     * delivery failures surface to the caller.
+     */
     close(runId: string, name: string): Promise<void>;
 
     /**
