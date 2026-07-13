@@ -22,11 +22,10 @@ keywords:
 
 `world.analytics` is an optional, read-only namespace for observability surfaces — dashboards, CLIs, and admin tools that list large numbers of runs without touching payload data.
 
-It differs from [Storage](/docs/api-reference/workflow-runtime/world/storage) in three ways:
+It differs from [Storage](/docs/api-reference/workflow-runtime/world/storage) in two ways:
 
 - **Metadata only.** Results never include run input/output, step data, or hook tokens. There is no `resolveData` option.
-- **Served from the observability pipeline.** On Vercel, queries hit a ClickHouse-backed analytics store instead of the runtime database, so large listings do not compete with workflow execution. Data is ingested asynchronously and may trail the live state by a few seconds.
-- **Plan-bounded lookback.** Listings only cover the observability retention window for your plan (up to 30 days). Every page includes a `pageInfo` block describing the current window, and requesting an older window fails with an `observability-upgrade-required` error.
+- **Served from the observability pipeline.** On Vercel, queries are served from the Vercel observability data pipeline, so large listings do not compete with workflow execution. Data is ingested asynchronously and may trail the live state by a few seconds.
 
 The namespace is optional — worlds that don't implement it (such as the local development world) leave it `undefined`, so feature-detect before use:
 
@@ -129,10 +128,10 @@ Every paginated response carries `pageInfo` describing the window the query was 
 ```typescript
 {
   currentLookbackDays: 2,     // what your plan allows today
-  maxLookbackDays: 30,        // ceiling with Observability Plus
+  maxLookbackDays: 30,        // ceiling with Observability Plus on Vercel
   currentWindowStart: Date,
   maxWindowStart: Date,
-  upgradeAvailable: true,     // more history exists behind the plan gate
+  upgradeAvailable: true,     // for Vercel deployed workflows
 }
 ```
 
