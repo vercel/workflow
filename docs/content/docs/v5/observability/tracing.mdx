@@ -43,6 +43,7 @@ No workflow-specific configuration is required. As soon as a tracer provider and
 | `http <method>` | client | the SDK calls the workflow backend (event reads/writes) |
 | `workflow.stream.write` | client | a stream chunk (or the stream close) is flushed to the backend |
 | `workflow.stream.flush` | client | a buffered batch of stream writes settles; back-dated to the batch's first `write()`, so its duration is the app-perceived batch latency (buffer dwell + RPC) |
+| `workflow.stream.close` | client | the stream-close RPC; its duration is the close round trip |
 | `workflow.stream.read.connect` | client | a live stream read opens; the span covers dispatch → response headers (network connect) |
 | `workflow.stream.read` | client | a live stream read receives its first chunk; the span's duration is the end-to-end time-to-first-chunk (see `workflow.stream.read.ttfc_ms`) |
 
@@ -61,9 +62,10 @@ Stream spans are emitted by the SDK's world backend on the client that writes or
 | `workflow.queue.overhead_ms` | Time between the message being enqueued and the handler starting — queue dwell plus any cold start. |
 | `workflow.stream.name` | The stream name, on stream write/read spans. |
 | `workflow.stream.operation` | The stream operation: `write`, `write_multi`, `close`, `read`, or `flush`. |
-| `workflow.stream.write.chunk_rtt` | Time between emissions of a chunk to the wire, and receiving the `ack` message for that chunk. |
+| `workflow.stream.write.chunk_rtt` | Time between emissions of a chunk to the wire, and receiving the `ack` message for that chunk. Also stamped on `workflow.stream.flush` (the batch's write RPC duration, network included). |
 | `workflow.stream.flush.buffer_dwell_ms` | On `workflow.stream.flush`: time the batch's first chunk waited in the client-side write buffer (flush timer, run-ready barrier) before the request was dispatched. `workflow.stream.flush.chunks` / `.bytes` carry the batch shape. |
 | `workflow.stream.read.ttfc_ms` | Time between opening a read connection and observing and receiving the first chunk back. |
+| `workflow.stream.read.connect_ms` | On `workflow.stream.read`: the connect portion (read dispatch → stream handle/response headers), network included. |
 
 ## Trace shape: one trace per invocation
 
