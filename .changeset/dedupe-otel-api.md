@@ -3,4 +3,4 @@
 '@workflow/world-vercel': patch
 ---
 
-Emit client-observed stream RPC latencies from core (proven export path): `workflow.stream.write.chunk_rtt` on the flush span, `workflow.stream.read.connect_ms` on the read span, and a new `workflow.stream.close` span. Dedupe `@opentelemetry/api` to a single workspace instance and add DEBUG-gated OTEL diagnostics in world-vercel.
+Move client-observed stream telemetry from world-vercel to core: `workflow.stream.write.chunk_rtt` on the flush span, `workflow.stream.read.connect_ms` on the read span, and new `workflow.stream.close` and `workflow.stream.read.complete` spans. Dedupe `@opentelemetry/api` to one workspace instance and add DEBUG-gated OTEL diagnostics.

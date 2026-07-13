@@ -583,6 +583,34 @@ function recordReadTimeToFirstChunk(
   })();
 }
 
+/**
+ * Emit the client-observed read-completion span when a stream read drains:
+ * back-dated to the read dispatch, so its duration is the total read, with
+ * chunk/byte counts for throughput. Cancelled reads emit nothing. Fire-and-
+ * forget; no-op without OTEL.
+ */
+function recordStreamReadComplete(
+  startEpochMs: number,
+  runId: string,
+  name: string,
+  chunkCount: number,
+  byteCount: number
+): void {
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.read.complete', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.operation': 'read_complete',
+        'workflow.stream.read.total_ms': Date.now() - startEpochMs,
+        'workflow.stream.read.chunks': chunkCount,
+        'workflow.stream.read.bytes': byteCount,
+      },
+    });
+  })();
+}
+
 export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
   #reader?: ReadableStreamDefaultReader<Uint8Array>;
 
@@ -601,6 +629,10 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
     // dispatch -> stream handle / response headers). Stamped on the
     // workflow.stream.read span once the first chunk arrives.
     let connectMs: number | undefined;
+    // Read-completion counters for the workflow.stream.read.complete span
+    // emitted when the stream drains.
+    let chunksDelivered = 0;
+    let bytesDelivered = 0;
     super({
       // @ts-expect-error Not sure why TypeScript is complaining about this
       type: 'bytes',
@@ -623,6 +655,15 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         const result = await reader.read();
         if (result.done) {
           this.#reader = undefined;
+          if (readStart !== undefined) {
+            recordStreamReadComplete(
+              readStart,
+              runId,
+              name,
+              chunksDelivered,
+              bytesDelivered
+            );
+          }
           controller.close();
         } else {
           // The server flushes a leading zero-length chunk (v3+) to commit
@@ -642,6 +683,8 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
               connectMs
             );
           }
+          chunksDelivered += 1;
+          bytesDelivered += result.value.byteLength;
           // Forward raw bytes; encryption/decryption is handled at the
           // framing level by getSerializeStream/getDeserializeStream.
           controller.enqueue(result.value);

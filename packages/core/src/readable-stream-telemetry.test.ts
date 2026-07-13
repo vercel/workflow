@@ -95,4 +95,23 @@ describe('WorkflowServerReadableStream read telemetry', () => {
     expect(connect as number).toBeGreaterThanOrEqual(0);
     expect(connect as number).toBeLessThanOrEqual((ttfc as number) + 1);
   });
+
+  it('emits a workflow.stream.read.complete span with totals when the read drains', async () => {
+    const stream = new WorkflowServerReadableStream('run-123', 'test-stream');
+    const reader = stream.getReader();
+    for (let i = 0; i < 5; i++) {
+      const { done } = await reader.read();
+      if (done) break;
+    }
+
+    const [span] = await waitForSpans('workflow.stream.read.complete', 1);
+    expect(span).toBeDefined();
+    expect(span.kind).toBe(SpanKind.CLIENT);
+    expect(span.attributes['workflow.stream.operation']).toBe('read_complete');
+    expect(span.attributes['workflow.stream.read.chunks']).toBe(1);
+    expect(span.attributes['workflow.stream.read.bytes']).toBe(3);
+    expect(typeof span.attributes['workflow.stream.read.total_ms']).toBe(
+      'number'
+    );
+  });
 });

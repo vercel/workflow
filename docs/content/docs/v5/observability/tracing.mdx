@@ -44,6 +44,7 @@ No workflow-specific configuration is required. As soon as a tracer provider and
 | `workflow.stream.write` | client | a stream chunk (or the stream close) is flushed to the backend |
 | `workflow.stream.flush` | client | a buffered batch of stream writes settles; back-dated to the batch's first `write()`, so its duration is the app-perceived batch latency (buffer dwell + RPC) |
 | `workflow.stream.close` | client | the stream-close RPC; its duration is the close round trip |
+| `workflow.stream.read.complete` | client | a stream read drains; back-dated to the read dispatch, so its duration is the total read (`workflow.stream.read.chunks` / `.bytes` carry throughput counts) |
 | `workflow.stream.read.connect` | client | a live stream read opens; the span covers dispatch → response headers (network connect) |
 | `workflow.stream.read` | client | a live stream read receives its first chunk; the span's duration is the end-to-end time-to-first-chunk (see `workflow.stream.read.ttfc_ms`) |
 
