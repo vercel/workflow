@@ -1,7 +1,7 @@
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { BaseBuilder } from './base-builder.js';
-import { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from './constants.js';
+import { getWorkflowQueueTrigger, STEP_QUEUE_TRIGGER } from './constants.js';
 
 export class VercelBuildOutputAPIBuilder extends BaseBuilder {
   async build(): Promise<void> {
@@ -116,7 +116,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await this.createPackageJson(workflowsFuncDir, 'commonjs');
     await this.createVcConfig(workflowsFuncDir, {
       maxDuration: 'max',
-      experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
+      experimentalTriggers: [getWorkflowQueueTrigger()],
       runtime: this.config.runtime,
     });
 

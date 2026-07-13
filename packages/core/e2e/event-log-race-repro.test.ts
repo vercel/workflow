@@ -417,7 +417,10 @@ async function describeStuckRun(
 // settled yet. `completed` past the poll budget is downgraded to a non-gating
 // SLOW_COMPLETION (slow, not wedged); `failed`/`cancelled` keep their meaning.
 function classifyTerminalRun(
-  runData: { status: string; errorCode?: string },
+  runData: {
+    status: string;
+    error?: { code?: string; message?: string };
+  },
   context: {
     runId: string;
     scenario: Scenario;
@@ -448,10 +451,16 @@ function classifyTerminalRun(
   }
 
   if (runData.status === 'failed') {
+    // A failed WorkflowRun carries its reason in `error: { code, message }`
+    // — the run has no top-level `errorCode`. Reading the structured error
+    // is what lets us classify USER_ERROR/RUNTIME_ERROR/CORRUPTED_EVENT_LOG
+    // (vs. uncategorised `other`) and surface *why* it failed in the summary.
+    const structuredError = runData.error;
     return {
       ...base,
-      outcome: classifyFailure(runData.errorCode),
-      errorCode: runData.errorCode,
+      outcome: classifyFailure(structuredError?.code),
+      errorCode: structuredError?.code,
+      errorMessage: structuredError?.message,
     };
   }
 
@@ -1019,7 +1028,9 @@ describe('event log race repro', () => {
 
   test(
     'event log races do not corrupt, stall, or take stale branches',
-    { timeout: testTimeoutMs },
+    {
+      timeout: testTimeoutMs,
+    },
     async () => {
       const stepBiasedAttempts = Math.ceil(config.stepSleepRaceAttempts / 2);
       const sleepBiasedAttempts = Math.floor(config.stepSleepRaceAttempts / 2);

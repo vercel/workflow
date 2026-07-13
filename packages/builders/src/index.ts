@@ -15,6 +15,8 @@ export {
   createStepQueueTrigger,
   createWorkflowEntrypointOptionsCode,
   createWorkflowQueueTrigger,
+  getWorkflowQueueTrigger,
+  isSequentialReplaysEnabled,
   STEP_QUEUE_TRIGGER,
   WORKFLOW_QUEUE_TRIGGER,
 } from './constants.js';
