@@ -82,9 +82,9 @@ The Local World is the default outside Vercel and is intended for development.
 
 ### `recoverActiveRuns`
 
-- Environment variable: none
+- Environment variable: `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
 - Default: `true`
-- Re-enqueues pending and running local runs when the World starts.
+- Re-enqueues pending and running local runs when the World starts. Set the environment variable to `0` or `false` to skip recovery; the factory option wins when both are set.
 
 ### `tag`
 
