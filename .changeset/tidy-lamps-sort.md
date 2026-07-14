@@ -1,4 +1,5 @@
 ---
+"@workflow/world-testing": patch
 ---
 
-Update vitest to ^4.1.10
+Update vitest peer dependency range to ^4.1.10
