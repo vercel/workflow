@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { getLoaderSourceMapOptions } from './loader.js';
+import { getLoaderSourceMapOptions } from './loader.ts';
 
 describe('getLoaderSourceMapOptions', () => {
   it('emits source maps for app files and uses the upstream source map', () => {
