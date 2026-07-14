@@ -2,6 +2,7 @@
   "title": "Getting Started",
   "pages": [
     "next",
+    "react-router",
     "astro",
     "express",
     "fastify",

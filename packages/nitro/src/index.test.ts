@@ -10,18 +10,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Nitro } from 'nitro/types';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
+import { workflow as viteWorkflow } from './vite.js';
 
 type StubOptions = {
   routing: boolean;
+  dev?: boolean;
   workspaceDir?: string;
   workflow?: { dirs?: string[]; runtime?: string };
 };
 
 function createNitroStub({
   routing,
+  dev = false,
   workspaceDir = '/tmp/project',
   workflow = {},
 }: StubOptions) {
@@ -30,7 +33,7 @@ function createNitroStub({
     options: {
       alias: {},
       buildDir: '/tmp/.nitro',
-      dev: false,
+      dev,
       handlers: [],
       preset: 'node-server',
       rootDir: '/tmp/project',
@@ -68,6 +71,45 @@ describe('@workflow/nitro virtual handlers', () => {
     expect(source).toContain(
       'import { POST } from "/tmp/.nitro/workflow/steps.mjs";'
     );
+  });
+});
+
+describe('@workflow/nitro builder lifecycle', () => {
+  it('closes a development Nitro instance with its Vite plugin container', async () => {
+    const nitro = createNitroStub({ routing: true, dev: true }) as any;
+    nitro.close = vi.fn(async () => {});
+    const plugin = viteWorkflow().find(
+      (candidate) => candidate.name === 'workflow:nitro'
+    ) as any;
+
+    await plugin.nitro.setup(nitro);
+    await plugin.buildEnd?.();
+
+    expect(nitro.close).toHaveBeenCalledOnce();
+  });
+
+  it('disposes temporary build contexts after each build', async () => {
+    const dispose = vi.fn(async () => {});
+    const builder = new LocalBuilder(
+      createNitroStub({ routing: true, dev: true })
+    );
+    Object.assign(builder, {
+      getInputFiles: async () => [],
+      createWorkflowsBundle: async () => ({
+        manifest: { steps: {}, workflows: {}, classes: {} },
+        interimBundleCtx: { dispose },
+      }),
+      createStepsBundle: async () => ({
+        manifest: { steps: {}, workflows: {}, classes: {} },
+        context: { dispose },
+      }),
+      createWebhookBundle: async () => {},
+      createManifest: async () => {},
+    });
+
+    await builder.build();
+
+    expect(dispose).toHaveBeenCalledTimes(2);
   });
 });
 
