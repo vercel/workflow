@@ -28,6 +28,6 @@ Choose the guide that matches your React Router major version:
 
 ## What the bridge does
 
-The setup adds a small `server/ssr.ts` file. It turns React Router's generated server build into a standard Fetch API handler that Nitro can run. The Vite config then points Nitro's server and public output at the same `build` directory React Router uses.
+The setup adds a small `server/ssr.ts` file. It turns React Router's generated server build into a standard Fetch API handler that Nitro can run. A small Vite plugin keeps React Router's client manifest where React Router expects it, while Nitro produces the output required by the selected deployment preset, such as `.output` for a local Node.js server or `.vercel/output` on Vercel.
 
 This is configuration in your application, not a separate React Router adapter. Your React Router routes remain React Router routes, while Nitro owns the HTTP server and Workflow SDK uses Nitro's lifecycle and routing.
