@@ -3675,3 +3675,62 @@ export async function parallelStepsThenWebhookWorkflow(iterations: number) {
   }
   return tokens;
 }
+
+/**
+ * Multi-region e2e probe (see packages/core/e2e/e2e-region.test.ts).
+ *
+ * Returns the `VERCEL_REGION` observed by both the workflow (flow route)
+ * and a step invocation, so the suite can assert that a run started with
+ * `start(..., { region })` was actually EXECUTED in the intended region —
+ * not just tagged with it. Regional execution requires the workbench app
+ * to be deployed to the target regions (workbench/nextjs-turbopack
+ * vercel.json pins iad1+sfo1+fra1) and the world's queue to route the
+ * flow message by the run ID's region tag (@workflow/world-vercel).
+ */
+export async function regionProbeWorkflow(label: string) {
+  'use workflow';
+  const workflowRegion = process.env.VERCEL_REGION ?? null;
+  const stepRegion = await regionProbeStep();
+  return { label, workflowRegion, stepRegion };
+}
+
+async function regionProbeStep(): Promise<string | null> {
+  'use step';
+  return process.env.VERCEL_REGION ?? null;
+}
+
+async function writeCrossRegionStreamChunks(
+  writable: WritableStream,
+  chunkCount: number
+) {
+  'use step';
+  const writer = writable.getWriter();
+  for (let i = 0; i < chunkCount; i++) {
+    await writer.write(new TextEncoder().encode(`chunk-${i}`));
+  }
+  writer.releaseLock();
+}
+
+async function closeCrossRegionStream(writable: WritableStream) {
+  'use step';
+  await writable.close();
+}
+
+/**
+ * Cross-region stream visibility probe (see
+ * packages/core/e2e/e2e-region.test.ts).
+ *
+ * Writes `chunkCount` chunks to the default output stream, then holds the
+ * stream OPEN for 45 seconds before closing. The hold-open window is the
+ * point: completed streams are the easy case, so a cross-region reader
+ * must observe the chunks while the stream is still IN PROGRESS to
+ * actually exercise cross-region visibility.
+ */
+export async function crossRegionStreamWorkflow(chunkCount: number) {
+  'use workflow';
+  const writable = getWritable();
+  await writeCrossRegionStreamChunks(writable, chunkCount);
+  await sleep('45s');
+  await closeCrossRegionStream(writable);
+  return 'done';
+}

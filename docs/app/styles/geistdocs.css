@@ -600,3 +600,13 @@
 :root {
   --color-fd-primary: var(--ds-gray-1000);
 }
+
+/* Sidebar folder rows without an index page render as <button>s (Radix
+   collapsible triggers), which don't stretch to the row width like the <a>
+   folder links do — so their ms-auto chevron hugs the label instead of
+   sitting at the end. Stretch them so every chevron aligns at the end.
+   The [data-icon] child scopes this to fumadocs folder-trigger chevrons. */
+[data-sidebar-placeholder] button[data-state]:has(> [data-icon]),
+[data-slot="sheet-content"] button[data-state]:has(> [data-icon]) {
+  @apply w-full;
+}

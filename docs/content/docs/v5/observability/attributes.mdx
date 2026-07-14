@@ -11,8 +11,7 @@ related:
   - /docs/api-reference/workflow-errors/workflow-world-error
 ---
 
-[`setAttributes`](/docs/api-reference/workflow/set-attributes) attaches plaintext string metadata to the current workflow run. These attributes are displayed in observability CLI/UI.
-In the future, you'll be able to search and filter runs by attributes.
+[`setAttributes`](/docs/api-reference/workflow/set-attributes) attaches plaintext string metadata to the current workflow run. These attributes are displayed in observability CLI/UI, and can be used to search and filter runs through the [Analytics API](/docs/api-reference/workflow-runtime/world/analytics).
 
 You can also seed any attributes directly when starting a run:
 
@@ -72,10 +71,33 @@ Expanding an `attr_set` event — in the run sidebar or the Events tab — shows
 
 ![Expanded attr_set events showing changes and the writer](/screenshots/attributes/run-details-attr-set-events.png)
 
+## Searching and filtering by attributes
+
+The [Analytics API](/docs/api-reference/workflow-runtime/world/analytics) can discover which attribute keys exist and filter run listings by them. The `analytics` namespace is optional on `World` — feature-detect it before use; it is absent on local, Postgres, and other custom Worlds:
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = await getWorld();
+if (!world.analytics) {
+  throw new Error("This World does not support analytics queries"); // [!code highlight]
+}
+
+// Which attribute keys exist, and on how many runs?
+const keys = await world.analytics.attributes.list();
+
+// List runs whose latest attributes match every pair
+const stuck = await world.analytics.runs.list({
+  attributes: { phase: "received" }, // [!code highlight]
+});
+```
+
+Matching is latest-write-wins: once the run above writes `phase: "complete"`, it stops matching `phase: "received"`.
+
 ## Behavior
 
 - Attributes require a World implementing spec version 4 or later.
 - Writes from workflow and step bodies append native `attr_set` events and immediately materialize `run.attributes`.
 - Storage errors surface rather than being silently ignored: transient errors on workflow-body writes are retried, and a write the World rejects as invalid (for example, exceeding the per-run attribute cap across multiple calls) fails the run with the validation error.
 - Step-body storage errors throw from `setAttributes` like any other step-side network write. Catch the error inside the step if the attribute is best-effort.
-- Reading and querying attributes is not available yet. A query API is planned.
+- Reading and querying: each run's current attributes are returned on the run objects from the [Storage](/docs/api-reference/workflow-runtime/world/storage) and [Analytics](/docs/api-reference/workflow-runtime/world/analytics) APIs, and the Analytics API supports discovering attribute keys and filtering run listings by key=value pairs (see [Searching and filtering by attributes](#searching-and-filtering-by-attributes)). On Worlds without the optional `analytics` namespace, attributes are readable on run objects but not searchable.

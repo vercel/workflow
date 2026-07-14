@@ -1,4 +1,4 @@
 {
   "title": "World SDK",
-  "pages": ["storage", "streams", "queue"]
+  "pages": ["storage", "analytics", "streams", "queue"]
 }

@@ -17,7 +17,7 @@ The SDK only depends on the OpenTelemetry **API**, never on an SDK or exporter. 
 
 ## Enabling tracing
 
-Register any OpenTelemetry Node SDK in your application. On Vercel with Next.js, the simplest setup is [`@vercel/otel`](https://vercel.com/docs/observability/otel-overview) in `instrumentation.ts`:
+Register any OpenTelemetry Node SDK in your application. On Vercel with Next.js, the simplest setup is [`@vercel/otel`](https://vercel.com/docs/tracing/instrumentation) in `instrumentation.ts`:
 
 ```typescript title="instrumentation.ts" lineNumbers
 import { registerOTel } from "@vercel/otel"
