@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { stopEsbuildService } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
@@ -123,6 +124,10 @@ export default {
         }
         addManifestHandler(nitro);
       }
+    }
+
+    if (!nitro.options.dev) {
+      nitro.hooks.hook('compiled', stopEsbuildService);
     }
   },
 } satisfies NitroModule;

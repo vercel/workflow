@@ -19,6 +19,7 @@ export {
   WORKFLOW_QUEUE_TRIGGER,
 } from './constants.js';
 export { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
+export { stopEsbuildService } from './esbuild-service.js';
 export {
   clearModuleSpecifierCache,
   getImportPath,

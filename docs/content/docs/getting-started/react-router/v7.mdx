@@ -62,14 +62,14 @@ This integration requires Nitro v3.
 
 ## Enable the Vite Environment API
 
-React Router v7 keeps the Vite Environment API behind a future flag. Enable the required flag and set an explicit build directory:
+React Router v7 keeps the Vite Environment API behind a future flag. Enable the required flag:
 
 ```typescript title="react-router.config.ts" lineNumbers
 import type { Config } from "@react-router/dev/config";
 
 export default {
   ssr: true,
-  buildDirectory: "build", // [!code highlight]
+  buildDirectory: "build",
   future: {
     v8_viteEnvironmentApi: true, // [!code highlight]
   },
@@ -108,6 +108,8 @@ Update `vite.config.ts`:
 ```typescript title="vite.config.ts" lineNumbers
 import { reactRouter } from "@react-router/dev/vite";
 import { nitro } from "nitro/vite";
+import { cp } from "node:fs/promises";
+import { resolve } from "node:path";
 import { defineConfig } from "vite";
 import { workflow } from "workflow/vite";
 import reactRouterConfig from "./react-router.config";
@@ -115,14 +117,18 @@ import reactRouterConfig from "./react-router.config";
 export default defineConfig({
   plugins: [
     reactRouter(),
-    nitro({
-      serverDir: "./server",
-      output: {
-        dir: reactRouterConfig.buildDirectory,
-        serverDir: `${reactRouterConfig.buildDirectory}/server`,
-        publicDir: `${reactRouterConfig.buildDirectory}/client`,
+    nitro({ serverDir: "./server" }),
+    {
+      name: "react-router-nitro-manifest",
+      applyToEnvironment: (environment) => environment.name === "client",
+      async writeBundle(options) {
+        await cp(
+          resolve(options.dir!, ".vite"),
+          resolve(reactRouterConfig.buildDirectory, "client/.vite"),
+          { recursive: true },
+        );
       },
-    }),
+    },
     workflow({ dirs: ["workflows"] }),
   ],
   environments: {
@@ -137,7 +143,7 @@ export default defineConfig({
 });
 ```
 
-Keep `dirs: ["workflows"]` so subsequent builds do not scan generated files under `build`. Place `reactRouter()` before `nitro()` in the plugin array.
+The small `react-router-nitro-manifest` plugin copies React Router's Vite manifest back to `build/client` after Nitro writes the client build to its deployment output. Keep `dirs: ["workflows"]` so Workflow SDK only scans your source workflow directory. Do not set Nitro's `output.dir`; Nitro uses it to produce the output expected by each deployment preset.
 
 </Step>
 
@@ -209,7 +215,7 @@ Build and start the production server:
 
 ```bash
 pnpm vite build
-node ./build/server/index.mjs
+node ./.output/server/index.mjs
 ```
 
 You can inspect local runs with `pnpm workflow web`.
@@ -228,10 +234,6 @@ Set `future.v8_viteEnvironmentApi` to `true` in `react-router.config.ts`.
 
 Check that the `ssr` environment input points to `./server/ssr.ts`.
 
-### A second build tries to compile files under `build/server`
-
-Use `workflow({ dirs: ["workflows"] })`, remove the existing `build` directory once, and rebuild.
-
 ### `vite build` finishes output but does not exit
 
-Use `workflow@5.0.0-beta.33` or later with Nitro v3.
+Use `workflow@4.6.1` or later with Nitro v3.

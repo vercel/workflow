@@ -87,8 +87,7 @@ export class LocalBuilder extends BaseBuilder {
         inputFiles,
       });
 
-    // Close the temporary esbuild/Vite build contexts once bundling is done so
-    // they don't leak (e.g. temporary Vite servers for React Router builds).
+    // Close the temporary esbuild build contexts once bundling is done.
     await Promise.all([stepsContext?.dispose(), interimBundleCtx?.dispose()]);
 
     const webhookRouteFile = join(this.#outDir, 'webhook.mjs');
