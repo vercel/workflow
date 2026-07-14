@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.30
+
+### Patch Changes
+
+- [#2901](https://github.com/vercel/workflow/pull/2901) [`9242ddb`](https://github.com/vercel/workflow/commit/9242ddb02c5df6046bf0d93cc5e520eedcfd7471) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Move client-observed stream telemetry to core: `chunk_rtt` on the flush span, `connect_ms` on the read span, and new `workflow.stream.close` and `workflow.stream.read.complete` spans. Dedupe `@opentelemetry/api` to one workspace instance.
+
 ## 5.0.0-beta.29
 
 ### Minor Changes
