@@ -150,6 +150,25 @@ export interface Storage {
       params?: GetWorkflowRunParams
     ): Promise<WorkflowRun | WorkflowRunWithoutData>;
 
+    /**
+     * Retrieves several runs as one snapshot. The result preserves the input
+     * order and contains `null` for run IDs that do not exist.
+     */
+    getMany?: {
+      (
+        ids: readonly string[],
+        params: GetWorkflowRunParams & { resolveData: 'none' }
+      ): Promise<(WorkflowRunWithoutData | null)[]>;
+      (
+        ids: readonly string[],
+        params?: GetWorkflowRunParams & { resolveData?: 'all' }
+      ): Promise<(WorkflowRun | null)[]>;
+      (
+        ids: readonly string[],
+        params?: GetWorkflowRunParams
+      ): Promise<(WorkflowRun | WorkflowRunWithoutData | null)[]>;
+    };
+
     list(
       params: ListWorkflowRunsParams & { resolveData: 'none' }
     ): Promise<PaginatedResponse<WorkflowRunWithoutData>>;

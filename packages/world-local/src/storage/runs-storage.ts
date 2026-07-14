@@ -38,6 +38,7 @@ export interface LocalListWorkflowRunsParams extends ListWorkflowRunsParams {
 
 export interface LocalRunsStorage {
   get: Storage['runs']['get'];
+  getMany: NonNullable<Storage['runs']['getMany']>;
   list: {
     (
       params: LocalListWorkflowRunsParams & { resolveData: 'none' }
@@ -117,6 +118,32 @@ export function createRunsStorage(
       const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       return filterRunData(run, resolveData);
     }) as Storage['runs']['get'],
+
+    getMany: (async (ids: readonly string[], params?: any) => {
+      const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+      const runsById = new Map<string, WorkflowRun | null>();
+
+      await Promise.all(
+        [...new Set(ids)].map(async (id) => {
+          assertSafeEntityId('runId', id);
+          runsById.set(
+            id,
+            await readJSONWithFallback(
+              basedir,
+              'runs',
+              id,
+              WorkflowRunSchema,
+              tag
+            )
+          );
+        })
+      );
+
+      return ids.map((id) => {
+        const run = runsById.get(id);
+        return run ? filterRunData(run, resolveData) : null;
+      });
+    }) as NonNullable<Storage['runs']['getMany']>,
 
     list: (async (params?: LocalListWorkflowRunsParams) => {
       const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;

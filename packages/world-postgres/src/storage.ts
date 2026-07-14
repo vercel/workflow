@@ -48,7 +48,17 @@ import {
   validateUlidTimestamp,
   WorkflowRunSchema,
 } from '@workflow/world';
-import { and, asc, desc, eq, gt, lt, notInArray, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  lt,
+  notInArray,
+  sql,
+} from 'drizzle-orm';
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
@@ -119,6 +129,32 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
       const resolveData = params?.resolveData ?? 'all';
       return filterRunData(parsed, resolveData);
     }) as Storage['runs']['get'],
+    getMany: (async (ids, params) => {
+      const uniqueIds = [...new Set(ids)];
+      if (uniqueIds.length === 0) {
+        return [];
+      }
+
+      const values = await drizzle
+        .select()
+        .from(runs)
+        .where(inArray(runs.runId, uniqueIds));
+      const resolveData = params?.resolveData ?? 'all';
+      const runsById = new Map(
+        values.map((value) => {
+          value.output ||= value.outputJson;
+          value.input ||= value.inputJson;
+          value.executionContext ||= value.executionContextJson;
+          value.error ||= parseErrorJson(value.errorJson);
+          const parsed = WorkflowRunSchema.parse(
+            deserializeRunError(compact(value))
+          );
+          return [value.runId, filterRunData(parsed, resolveData)] as const;
+        })
+      );
+
+      return ids.map((id) => runsById.get(id) ?? null);
+    }) as NonNullable<Storage['runs']['getMany']>,
     list: (async (params) => {
       const limit = params?.pagination?.limit ?? 20;
       const fromCursor = params?.pagination?.cursor;
