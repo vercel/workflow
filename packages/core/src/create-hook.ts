@@ -137,19 +137,15 @@ export interface HookOptions {
   token?: string;
 
   /**
-   * **Experimental.** Sets when another Hook can use this token after the run
-   * ends.
+   * **Experimental.** Keeps this Hook's token unavailable until both the run
+   * has ended and the configured expiration time has passed.
    *
    * Accepts the same values as `sleep()`: a duration string, a number of
    * milliseconds, or an absolute `Date`. Relative durations start when
    * `createHook()` runs, not when the workflow ends.
    *
-   * The Hook remains active until the workflow ends, even if the configured
-   * time passes first. Another Hook can use the token only after both the run
-   * has ended and the configured time has passed.
-   *
-   * Calling `dispose()` (including through `using`) releases the token
-   * immediately.
+   * This does not dispose an active Hook. Calling `dispose()` (including
+   * through `using`) releases the token immediately.
    *
    * World implementations may ignore this experimental option.
    *
