@@ -2,6 +2,7 @@ import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { describe, expect, it, vi } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
+import { workflow as viteWorkflow } from './vite.js';
 
 type StubOptions = {
   routing: boolean;
@@ -116,6 +117,19 @@ describe('@workflow/nitro virtual handlers', () => {
 });
 
 describe('@workflow/nitro builder lifecycle', () => {
+  it('closes a development Nitro instance with its Vite plugin container', async () => {
+    const nitro = createNitroStub({ routing: true, dev: true });
+    nitro.close = vi.fn(async () => {});
+    const plugin = viteWorkflow().find(
+      (candidate) => candidate.name === 'workflow:nitro'
+    ) as any;
+
+    await plugin.nitro.setup(nitro);
+    await plugin.buildEnd?.();
+
+    expect(nitro.close).toHaveBeenCalledOnce();
+  });
+
   it('disposes temporary build contexts after each build', async () => {
     const dispose = vi.fn(async () => {});
     const builder = new LocalBuilder(

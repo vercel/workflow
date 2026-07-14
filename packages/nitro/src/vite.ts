@@ -17,6 +17,7 @@ import nitroModule from './index.js';
 
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder;
+  let devNitro: Nitro | undefined;
   let workflowBuildDir: string;
   const enqueue = createBuildQueue();
 
@@ -86,10 +87,16 @@ export function workflow(options?: ModuleOptions): Plugin[] {
             _vite: true,
           };
           if (nitro.options.dev) {
+            devNitro = nitro;
             builder = new LocalBuilder(nitro);
           }
           return nitroModule.setup(nitro);
         },
+      },
+      async buildEnd() {
+        const nitro = devNitro;
+        devNitro = undefined;
+        await nitro?.close();
       },
       // NOTE: This is a workaround because Nitro passes the 404 requests to the dev server to handle.
       // For workflow routes, we override to send an empty body to prevent Hono/Vite's SPA fallback.

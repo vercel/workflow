@@ -137,7 +137,7 @@ export default defineConfig({
 });
 ```
 
-Keep `dirs: ["workflows"]` so subsequent builds do not scan generated files under `build`. Preserve the relative order of the three plugins; any other Vite plugins can remain.
+Keep `dirs: ["workflows"]` so subsequent builds do not scan generated files under `build`. Place `reactRouter()` before `nitro()` in the plugin array.
 
 </Step>
 
