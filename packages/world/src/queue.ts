@@ -183,6 +183,18 @@ export interface QueueOptions {
   delaySeconds?: number;
   /** Spec version of the target run. Used to select the queue transport format. */
   specVersion?: number;
+  /**
+   * World-specific routing hint identifying the region the message should
+   * be sent to (e.g. a Vercel compute region code such as `'iad1'`).
+   *
+   * Worlds that don't have a regional dimension ignore this field. For
+   * `@workflow/world-vercel`, this overrides the region the underlying
+   * `@vercel/queue` client uses to route the message; when omitted, the
+   * region is resolved from the payload's tagged run ID, then from the
+   * `VERCEL_REGION` environment variable, and finally defaults to `'iad1'`
+   * (the pre-regional-routing behaviour).
+   */
+  region?: string;
 }
 
 export interface Queue {

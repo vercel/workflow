@@ -7,6 +7,7 @@ import {
   getHttpUrl,
   MAX_BODY_PARSE_RETRIES,
   makeRequest,
+  WORKFLOW_SERVER_URL_OVERRIDE,
 } from './utils.js';
 
 vi.mock('@vercel/oidc', () => ({
@@ -28,7 +29,9 @@ describe('getHttpUrl', () => {
 
   it('uses default workflow-server URL when no config and no env override', () => {
     expect(getHttpUrl()).toEqual({
-      baseUrl: 'https://vercel-workflow.com/api',
+      baseUrl: WORKFLOW_SERVER_URL_OVERRIDE
+        ? `${WORKFLOW_SERVER_URL_OVERRIDE}/api`
+        : 'https://vercel-workflow.com/api',
       usingProxy: false,
     });
   });
@@ -36,7 +39,9 @@ describe('getHttpUrl', () => {
   it('respects VERCEL_WORKFLOW_SERVER_URL when set (no proxy)', () => {
     process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://custom-host.example.com';
     expect(getHttpUrl()).toEqual({
-      baseUrl: 'https://custom-host.example.com/api',
+      baseUrl: WORKFLOW_SERVER_URL_OVERRIDE
+        ? `${WORKFLOW_SERVER_URL_OVERRIDE}/api`
+        : 'https://custom-host.example.com/api',
       usingProxy: false,
     });
   });
@@ -99,14 +104,16 @@ describe('getHeaders', () => {
 
   it('omits x-vercel-workflow-api-url when override is unset', () => {
     const headers = getHeaders(undefined, { usingProxy: true });
-    expect(headers.get('x-vercel-workflow-api-url')).toBeNull();
+    expect(headers.get('x-vercel-workflow-api-url')).toBe(
+      WORKFLOW_SERVER_URL_OVERRIDE || null
+    );
   });
 
   it('sets x-vercel-workflow-api-url when VERCEL_WORKFLOW_SERVER_URL is set and using proxy', () => {
     process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://custom.example.com';
     const headers = getHeaders(undefined, { usingProxy: true });
     expect(headers.get('x-vercel-workflow-api-url')).toBe(
-      'https://custom.example.com'
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://custom.example.com'
     );
   });
 

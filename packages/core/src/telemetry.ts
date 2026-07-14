@@ -175,8 +175,52 @@ const OtelApi = once(async () => {
 const Tracer = once(async () => {
   const api = await OtelApi.value;
   if (!api) return null;
-  return api.trace.getTracer('workflow');
+  const tracer = api.trace.getTracer('workflow');
+  logOtelDiagnosticOnce(api, tracer);
+  return tracer;
 });
+
+/**
+ * One-shot runtime diagnostic (DEBUG=workflow:* only), same shape as the one
+ * world-vercel emits tagged `world-vercel`: prints how this module instance
+ * of `@opentelemetry/api` sees the global registration, so a deployment's
+ * logs show the two packages' views side by side.
+ */
+let otelDiagLogged = false;
+function logOtelDiagnosticOnce(otel: typeof api, tracer: api.Tracer): void {
+  const debugEnabled =
+    typeof process !== 'undefined' &&
+    typeof process.env.DEBUG === 'string' &&
+    (process.env.DEBUG.includes('workflow:') || process.env.DEBUG === '*');
+  if (otelDiagLogged || !debugEnabled) return;
+  otelDiagLogged = true;
+  try {
+    const g = (globalThis as Record<symbol, unknown>)[
+      Symbol.for('opentelemetry.js.api.1')
+    ] as { version?: string } | undefined;
+    const provider = otel.trace.getTracerProvider();
+    const delegate =
+      (provider as { getDelegate?: () => unknown }).getDelegate?.() ?? provider;
+    const probe = tracer.startSpan('workflow.otel.probe.core');
+    console.warn(
+      '[workflow:otel-diag] core',
+      JSON.stringify({
+        globalRegistrationVersion: g?.version ?? null,
+        providerCtor: provider?.constructor?.name ?? null,
+        delegateCtor: (delegate as object | null)?.constructor?.name ?? null,
+        tracerCtor: tracer?.constructor?.name ?? null,
+        probeCtor: probe?.constructor?.name ?? null,
+        probeRecording: probe.isRecording(),
+      })
+    );
+    probe.end();
+  } catch (error) {
+    console.warn(
+      '[workflow:otel-diag] core failed:',
+      error instanceof Error ? error.message : error
+    );
+  }
+}
 
 export async function trace<T>(
   spanName: string,

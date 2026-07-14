@@ -97,3 +97,45 @@ export const OPTIONS = POST;`;
  * Default queue trigger (no namespace). Backward compatible.
  */
 export const WORKFLOW_QUEUE_TRIGGER = createWorkflowQueueTrigger();
+
+/**
+ * Returns the queue trigger configuration for workflow (flow) routes.
+ *
+ * Builds on `createWorkflowQueueTrigger()` — the namespace comes from
+ * `options` or `WORKFLOW_QUEUE_NAMESPACE`, resolved at call time. When
+ * `WORKFLOW_SEQUENTIAL_REPLAYS` is enabled, sets `maxConcurrency: 1` so the
+ * queue processes at most one flow invocation per concrete topic at a time.
+ * Paired with the per-run physical topic naming in `@workflow/world-vercel`
+ * (which appends the run id to the flow topic), this enforces at most one
+ * orchestrator invocation per run. Step routes are intentionally excluded.
+ *
+ * Integrations that write their own flow trigger config instead of calling
+ * this must mirror the conditional `maxConcurrency: 1` themselves — the
+ * runtime half (per-run topics) activates from the env var alone, and without
+ * the trigger half those topics are not serialized.
+ *
+ * Must be read at build time, where the env var gates what is written into
+ * the route's `experimentalTriggers` config.
+ */
+/**
+ * Whether sequential replays are enabled: `WORKFLOW_SEQUENTIAL_REPLAYS=1`,
+ * or `WORKFLOW_SAFE_MODE=1` when `WORKFLOW_SEQUENTIAL_REPLAYS` is not set
+ * explicitly (safe mode fills the default of every safety-over-performance
+ * flag; an explicit per-flag value always wins). Read at call time.
+ */
+export function isSequentialReplaysEnabled(): boolean {
+  const explicit = process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+  if (explicit !== undefined && explicit !== '') {
+    return explicit === '1';
+  }
+  return process.env.WORKFLOW_SAFE_MODE === '1';
+}
+
+export function getWorkflowQueueTrigger(options?: { namespace?: string }) {
+  return {
+    ...createWorkflowQueueTrigger(options),
+    ...(isSequentialReplaysEnabled() && {
+      maxConcurrency: 1,
+    }),
+  };
+}

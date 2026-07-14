@@ -377,6 +377,21 @@ export async function instrumentedFetch(
     spanName ?? `http ${method}`,
     { kind: await getSpanKind('CLIENT') },
     async (span) => {
+      // Diagnostic (DEBUG only): named spans are created and recording here,
+      // yet never found in the backend — log the exact span identity so the
+      // export side can be checked for this specific span id.
+      if (spanName && HTTP_DEBUG_ENABLED && span) {
+        const ctx = span.spanContext();
+        console.warn(
+          '[workflow:otel-diag] span-open',
+          JSON.stringify({
+            spanName,
+            traceId: ctx.traceId,
+            spanId: ctx.spanId,
+            recording: span.isRecording(),
+          })
+        );
+      }
       span?.setAttributes(
         httpClientSpanAttributes({ method, url, peerService })
       );

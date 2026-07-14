@@ -38,6 +38,7 @@
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "@workflow/world": "workspace:*",
+    "typescript": "catalog:",
     "vitest": "catalog:"
   },
   "dependencies": {

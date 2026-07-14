@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-vercel",
-  "version": "5.0.0-beta.28",
+  "version": "5.0.0-beta.30",
   "description": "Vercel platform World implementation for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -39,6 +39,7 @@
     "@workflow/errors": "workspace:*",
     "@workflow/world": "workspace:*",
     "cbor-x": "1.6.0",
+    "ulid": "catalog:",
     "undici": "catalog:",
     "zod": "catalog:"
   },
@@ -58,6 +59,7 @@
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "genversion": "3.2.0",
+    "typescript": "catalog:",
     "vitest": "catalog:"
   }
 }

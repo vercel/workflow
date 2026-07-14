@@ -290,7 +290,15 @@ export async function healthCheck(
   options?: HealthCheckOptions
 ): Promise<HealthCheckResult> {
   const timeout = options?.timeout ?? DEFAULT_HEALTH_CHECK_TIMEOUT;
-  const correlationId = generateId();
+  // Use the world's ID generator when available so the correlationId is a
+  // region-tagged ULID. The health-check response is delivered over a stream
+  // whose name embeds this correlationId; under platform-directed routing the
+  // reader and the responding endpoint can be served from different physical
+  // regions, so the region must be encoded in the ID itself for both sides to
+  // resolve the same (region-pinned) backend. Falls back to a plain ULID for
+  // worlds that don't tag IDs (e.g. local), which resolve to the default
+  // region on both sides.
+  const correlationId = world.createRunId?.() ?? generateId();
   const streamName = getHealthCheckStreamName(correlationId);
 
   const queueName =

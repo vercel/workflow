@@ -89,6 +89,11 @@ describe('WorkflowServerWritableStream write-flush telemetry', () => {
     expect(span.attributes['workflow.stream.flush.chunks']).toBe(1);
     expect(span.attributes['workflow.stream.flush.bytes']).toBe(3);
 
+    // Client-observed World RPC duration (chunk_rtt) rides the flush span.
+    const rtt = span.attributes['workflow.stream.write.chunk_rtt'];
+    expect(typeof rtt).toBe('number');
+    expect(rtt as number).toBeGreaterThanOrEqual(0);
+
     const dwell = span.attributes['workflow.stream.flush.buffer_dwell_ms'];
     expect(typeof dwell).toBe('number');
     expect(dwell as number).toBeGreaterThanOrEqual(0);
@@ -141,6 +146,20 @@ describe('WorkflowServerWritableStream write-flush telemetry', () => {
       'workflow.stream.flush.buffer_dwell_ms'
     ] as number;
     expect(dwell).toBeGreaterThanOrEqual(40);
+  });
+
+  it('emits a workflow.stream.close span with the close RPC duration', async () => {
+    const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+    const writer = stream.getWriter();
+    await writer.write(new Uint8Array([1]));
+    await writer.close();
+
+    const [span] = await waitForSpans('workflow.stream.close', 1);
+    expect(span).toBeDefined();
+    expect(span.kind).toBe(SpanKind.CLIENT);
+    expect(span.attributes['workflow.stream.operation']).toBe('close');
+    const rpc = span.attributes['workflow.stream.close.rpc_ms'];
+    expect(typeof rpc).toBe('number');
   });
 
   it('does not emit spans for an empty close', async () => {
