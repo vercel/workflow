@@ -179,7 +179,7 @@ export async function processOrder(orderId: string) {
 
 `experimental_expires` accepts the same values as [`sleep()`](/docs/api-reference/workflow/sleep): a duration string such as `"30d"`, a number of milliseconds, or an absolute `Date`. Durations start when `createHook()` runs.
 
-`experimental_expires` keeps the token unavailable until both the workflow has ended and the configured expiration time has passed. It does not dispose an active Hook. For example, `"30d"` keeps the token unavailable for 29 more days if the workflow ends after 1 day. A workflow that runs for more than 30 days releases the token when it ends.
+The Hook remains active until the workflow ends, even if the configured expiration time passes first. Another Hook can use the token only after both the workflow has ended and the configured time has passed. For example, `"30d"` keeps the token unavailable for 29 more days if the workflow ends after 1 day. A workflow that runs for more than 30 days releases the token when it ends.
 
 `hook.dispose()` releases the token immediately. Because `using` calls `dispose()`, do not use it when the token should remain unavailable after the run ends.
 

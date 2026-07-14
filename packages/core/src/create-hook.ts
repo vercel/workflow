@@ -144,8 +144,12 @@ export interface HookOptions {
    * milliseconds, or an absolute `Date`. Relative durations start when
    * `createHook()` runs, not when the workflow ends.
    *
-   * This does not dispose an active Hook. Calling `dispose()` (including
-   * through `using`) releases the token immediately.
+   * The Hook remains active until the workflow ends, even if the configured
+   * time passes first. Another Hook can use the token only after both the run
+   * has ended and the configured time has passed.
+   *
+   * Calling `dispose()` (including through `using`) releases the token
+   * immediately.
    *
    * World implementations may ignore this experimental option.
    *
