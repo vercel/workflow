@@ -68,7 +68,6 @@ export function createDevTests(config?: DevTestConfig) {
         path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
       );
     const restoreFiles: Array<{ path: string; content: string }> = [];
-    const restoreDirectories: string[] = [];
 
     const fetchWithTimeout = (pathname: string) => {
       if (!deploymentUrl) {
@@ -181,14 +180,7 @@ export function createDevTests(config?: DevTestConfig) {
           await prewarm();
         }
       }
-      await Promise.all(
-        restoreDirectories.map((dir) =>
-          fs.rm(dir, { recursive: true, force: true })
-        )
-      );
-      await prewarm();
       restoreFiles.length = 0;
-      restoreDirectories.length = 0;
     }, CLEANUP_HOOK_TIMEOUT_MS);
 
     test('should rebuild on workflow change', { timeout: 30_000 }, async () => {
@@ -550,7 +542,9 @@ ${apiFileContent}`
         const apiFileContent = await fs.readFile(apiFile, 'utf8');
 
         await fs.mkdir(packageDir, { recursive: true });
-        restoreDirectories.push(packageDir);
+        // The generated dev output can retain this import until the server
+        // shuts down, including while the full E2E suite runs after this file.
+        // Keep the ignored node_modules fixture available for that lifetime.
         await fs.writeFile(
           path.join(packageDir, 'package.json'),
           JSON.stringify(
