@@ -15,18 +15,18 @@ export default {
     const isVercelDeploy =
       !nitro.options.dev && nitro.options.preset === 'vercel';
 
-    // Pre-built workflow bundles directory - must be excluded from re-transformation
-    const workflowBuildDir = join(nitro.options.buildDir, 'workflow');
+    // Nitro build artifacts have already been transformed; exclude the whole
+    // build directory from re-transformation.
+    const nitroBuildDir = `${nitro.options.buildDir.replace(/[\\/]+$/, '')}/`;
 
     // Add transform plugin at the BEGINNING to run before other transforms
     // (especially before class property transforms that rename classes like _ClassName)
     nitro.hooks.hook('rollup:before', (_nitro: Nitro, config: RollupConfig) => {
       (config.plugins as Array<unknown>).unshift(
         workflowTransformPlugin({
-          // Exclude pre-built workflow bundles from re-transformation
-          // These are already processed and re-processing causes issues like
-          // undefined class references when Nitro's bundler renames variables
-          exclude: [workflowBuildDir],
+          // Nitro build artifacts have already been transformed.
+          // Re-processing them can duplicate class registration.
+          exclude: [nitroBuildDir],
         })
       );
     });
