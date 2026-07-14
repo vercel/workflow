@@ -101,8 +101,11 @@ describe('@workflow/nitro builder lifecycle', () => {
 
   it('releases the esbuild service after Nitro finishes compiling', async () => {
     const nitro = createNitroStub({ routing: true });
+    const plugin = viteWorkflow().find(
+      (candidate) => candidate.name === 'workflow:nitro'
+    ) as any;
 
-    await nitroModule.setup(nitro);
+    await plugin.nitro.setup(nitro);
     expect(stopEsbuildService).not.toHaveBeenCalled();
     const compiledHook = (nitro.hooks.hook as any).mock.calls.find(
       ([name]: [string]) => name === 'compiled'
