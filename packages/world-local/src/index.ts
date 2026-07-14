@@ -62,10 +62,7 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   const mergedConfig = { ...config.value, ...definedArgs };
   const tag = mergedConfig.tag;
   const queue = createQueue(mergedConfig);
-  const { clearCache: clearStorageCache, ...storage } = createStorage(
-    mergedConfig.dataDir,
-    tag
-  );
+  const storage = createStorage(mergedConfig.dataDir, tag);
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   return {
     specVersion: SPEC_VERSION_CURRENT,
