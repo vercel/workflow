@@ -58,6 +58,10 @@ Port resolution priority: `baseUrl` > `port` > `PORT` > auto-detected
 
 Maximum number of concurrent queue workers. Default: `100`
 
+### `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
+
+Whether pending and running runs found in the data directory are re-enqueued when the world starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`
+
 ### Programmatic configuration
 
 {/* @skip-typecheck: incomplete code sample */}
@@ -69,6 +73,7 @@ const world = createLocalWorld({
   port: 5173,
   // baseUrl overrides port if set
   baseUrl: "https://local.example.com:3000",
+  recoverActiveRuns: true, // overrides WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS
 });
 ```
 
