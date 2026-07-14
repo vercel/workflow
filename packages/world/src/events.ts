@@ -268,6 +268,14 @@ const stepLatencyTelemetryFields = {
   // stso.
   stepCount: z.number().int().positive().optional(),
   eventCount: z.number().int().positive().optional(),
+  // Run-started-to-first-step: milliseconds from the `run_started` response
+  // landing (or, under turbo, the local run synthesis instant) until this
+  // step's start POST was issued. A sub-window of ttfs. Only reported
+  // alongside the same eligibility as ttfs.
+  rsfs: z.number().optional(),
+  // Synchronous workflow-function replay duration within the rsfs window,
+  // excluding awaited network I/O. Only present alongside rsfs.
+  replay: z.number().optional(),
   // Names of the runtime's optional startup-latency optimizations that were
   // active for this measurement (e.g. 'turbo', 'lazyStepStart',
   // 'optimisticStart'), so latency metrics can be segmented by them.

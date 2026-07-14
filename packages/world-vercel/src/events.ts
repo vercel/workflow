@@ -147,6 +147,10 @@ interface SplitEventData {
     /** Progress counters taken when the STSO gap began. */
     stepCount?: number;
     eventCount?: number;
+    /** Client-measured run_started-to-first-step ms (step_completed / step_failed). */
+    rsfs?: number;
+    /** Client-measured synchronous replay-compute ms within the rsfs window. */
+    replay?: number;
     /** Runtime optimizations active for the ttfs/stso measurement. */
     optimizations?: string[];
   };
@@ -183,6 +187,8 @@ type MetaSourceField =
   | 'stso'
   | 'stepCount'
   | 'eventCount'
+  | 'rsfs'
+  | 'replay'
   | 'optimizations';
 
 /**
@@ -348,6 +354,12 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
     eventData.eventCount > 0
   ) {
     meta.eventCount = eventData.eventCount;
+  }
+  if (typeof eventData.rsfs === 'number') {
+    meta.rsfs = eventData.rsfs;
+  }
+  if (typeof eventData.replay === 'number') {
+    meta.replay = eventData.replay;
   }
   if (
     Array.isArray(eventData.optimizations) &&

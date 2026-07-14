@@ -1908,6 +1908,14 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
       'optimisticStart',
     ]);
 
+    // RSFS/replay: under turbo, rsfsAnchorMs is stamped at local run
+    // synthesis (well after the backdated run-id timestamp), so unlike ttfs
+    // it stays within the test's own wall-clock budget.
+    expect(first.eventData.rsfs).toBeGreaterThanOrEqual(0);
+    expect(first.eventData.rsfs).toBeLessThanOrEqual(elapsed);
+    expect(first.eventData.replay).toBeGreaterThanOrEqual(0);
+    expect(first.eventData.replay).toBeLessThanOrEqual(elapsed);
+
     // Second step ran back-to-back with the first: STSO only, and far
     // smaller than the TTFS anchor distance (it measures the scheduling
     // gap, not run age).
@@ -1921,6 +1929,9 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
       'lazyStepStart',
       'optimisticStart',
     ]);
+    // STSO-only steps never qualify for RSFS (it shares TTFS eligibility).
+    expect(second.eventData.rsfs).toBeUndefined();
+    expect(second.eventData.replay).toBeUndefined();
   });
 
   it('still reports ttfs without turbo (redelivery), minus turbo-only optimization flags', async () => {
@@ -1934,6 +1945,10 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     const [first] = stepCompleted;
     expect(first.eventData.ttfs).toBeGreaterThanOrEqual(backdateMs);
     expect(first.eventData.optimizations).toEqual(['lazyStepStart']);
+    // Non-turbo: rsfsAnchorMs is stamped right after the real (awaited)
+    // run_started response, so rsfs is a small non-negative duration too.
+    expect(first.eventData.rsfs).toBeGreaterThanOrEqual(0);
+    expect(first.eventData.replay).toBeGreaterThanOrEqual(0);
   });
 
   it('reports nothing when the first step is scheduled alongside a wait', async () => {
@@ -1944,6 +1959,8 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(stepCompleted).toHaveLength(1);
     expect(stepCompleted[0].eventData.ttfs).toBeUndefined();
     expect(stepCompleted[0].eventData.stso).toBeUndefined();
+    expect(stepCompleted[0].eventData.rsfs).toBeUndefined();
+    expect(stepCompleted[0].eventData.replay).toBeUndefined();
     expect(stepCompleted[0].eventData.optimizations).toBeUndefined();
   });
 

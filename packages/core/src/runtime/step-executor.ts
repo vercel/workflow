@@ -393,6 +393,10 @@ export async function executeStep(
           !isOptimisticInlineStartExplicitlyDisabled()));
 
     let step: Step;
+    // `Date.now()` taken immediately before the `step_started` create is
+    // issued (either path below) — anchors RSFS's end point. See
+    // StepLatencyEventData.rsfs and the call sites below.
+    let stepStartPostSentAtMs: number | undefined;
     // Settled outcome of the in-flight optimistic `step_started`. Handlers are
     // attached synchronously (`.then(ok, err)`) so a fast rejection never
     // surfaces as an unhandledRejection while the body runs.
@@ -423,8 +427,12 @@ export async function executeStep(
       // round-trip overlaps the body rather than blocking it. Outside turbo the
       // barrier is undefined and this is a plain create.
       const startedPromise = (params.runReadyBarrier ?? Promise.resolve()).then(
-        () =>
-          world.events.create(workflowRunId, {
+        () => {
+          // Taken right before the create fires, not before the barrier —
+          // RSFS measures the run_started-to-POST stretch, and the barrier
+          // wait IS part of that stretch under turbo.
+          stepStartPostSentAtMs = Date.now();
+          return world.events.create(workflowRunId, {
             eventType: 'step_started',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
@@ -437,7 +445,8 @@ export async function executeStep(
                 ? { ownerMessageId: params.ownerMessageId }
                 : {}),
             },
-          })
+          });
+        }
       );
       optimisticStartSettled = startedPromise.then(
         () => ({ ok: true as const }),
@@ -474,6 +483,7 @@ export async function executeStep(
           params.ownerMessageId !== undefined
             ? { ownerMessageId: params.ownerMessageId }
             : {};
+        stepStartPostSentAtMs = Date.now();
         const startResult = await world.events.create(workflowRunId, {
           eventType: 'step_started',
           specVersion: SPEC_VERSION_CURRENT,
@@ -656,16 +666,23 @@ export async function executeStep(
         attempt,
         lazyStepStart: params.lazyStepInput !== undefined,
         optimisticStart,
+        stepStartPostSentAtMs,
       });
       if (latencyEventData) {
         // Mirror the latency telemetry onto the step span so traces show
-        // TTFS/STSO alongside the flame graph, not just Datadog metrics.
+        // TTFS/STSO/RSFS alongside the flame graph, not just Datadog metrics.
         span?.setAttributes({
           ...(latencyEventData.ttfs !== undefined
             ? Attribute.StepTtfsMs(latencyEventData.ttfs)
             : {}),
           ...(latencyEventData.stso !== undefined
             ? Attribute.StepStsoMs(latencyEventData.stso)
+            : {}),
+          ...(latencyEventData.rsfs !== undefined
+            ? Attribute.StepRsfsMs(latencyEventData.rsfs)
+            : {}),
+          ...(latencyEventData.replay !== undefined
+            ? Attribute.StepReplayMs(latencyEventData.replay)
             : {}),
           ...Attribute.StepLatencyOptimizations(
             latencyEventData.optimizations ?? []

@@ -554,6 +554,14 @@ export function workflowEntrypoint(
                   // cannot be measured wall-clock, so TTFS is not reported.
                   // Set once, on the first iteration's loaded snapshot.
                   let invocationStartedClean: boolean | undefined;
+                  // Epoch ms the `run_started` response was received/parsed
+                  // by the SDK — anchors RSFS (run_started → first step's
+                  // start POST). Set once, in the run_started setup below.
+                  // Under turbo, run_started is backgrounded rather than
+                  // awaited, so this is stamped at the point the run is
+                  // synthesized locally instead of the real response — see
+                  // StepLatencyTracking.rsfsAnchorMs.
+                  let runStartedReceivedAtMs: number | undefined;
                   // Wall-clock ms spent committing hook_created events before
                   // the first step ran, accumulated across suspension passes
                   // and subtracted from TTFS.
@@ -964,6 +972,11 @@ export function workflowEntrypoint(
                         updatedAt: now,
                       };
                       workflowStartedAt = +now;
+                      // See the `runStartedReceivedAtMs` declaration above:
+                      // turbo synthesizes the run before the real
+                      // `run_started` response lands, so anchor RSFS here
+                      // rather than at an actual response instant.
+                      runStartedReceivedAtMs = +now;
                       span?.setAttributes({
                         ...Attribute.WorkflowRunStatus('running'),
                         ...Attribute.WorkflowStartedAt(workflowStartedAt),
@@ -982,6 +995,8 @@ export function workflowEntrypoint(
                           );
                         }
                         workflowRun = result.run;
+                        // Anchors RSFS — see the declaration above.
+                        runStartedReceivedAtMs = Date.now();
 
                         // If the response includes events, use them to skip
                         // the initial events.list call and reduce TTFB.
@@ -1434,10 +1449,16 @@ export function workflowEntrypoint(
                       return;
                     } catch (err) {
                       if (WorkflowSuspension.is(err)) {
+                        // Synchronous `runWorkflow` duration for THIS
+                        // suspension — anchors the `replay` telemetry field
+                        // below (see StepLatencyTracking.replayMs). Captured
+                        // here, before `handleSuspension`'s awaited I/O, so
+                        // it excludes that I/O.
+                        const replayDurationMs = Date.now() - replayStart;
                         runtimeLogger.debug('Workflow suspended', {
                           workflowRunId: runId,
                           loopIteration,
-                          replayMs: Date.now() - replayStart,
+                          replayMs: replayDurationMs,
                           steps: err.stepCount,
                           hooks: err.hookCount,
                           waits: err.waitCount,
@@ -1957,6 +1978,8 @@ export function workflowEntrypoint(
                           runCreatedAtMs:
                             runIdCreatedAt(runId) ??
                             (turbo ? undefined : +workflowRun.createdAt),
+                          runStartedReceivedAtMs,
+                          replayMs: replayDurationMs,
                           preStepBlockingMs,
                           preStepBlockingBeforeAttrMs,
                           // This suspension's own hook/wait writes are not in
