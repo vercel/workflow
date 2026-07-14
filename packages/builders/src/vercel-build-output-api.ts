@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { WORKFLOW_ROUTE_BASE } from '@workflow/utils';
 import { BaseBuilder } from './base-builder.js';
 import { normalizeWorkflowBasePath } from './base-path.js';
-import { WORKFLOW_QUEUE_TRIGGER } from './constants.js';
+import { getWorkflowQueueTrigger } from './constants.js';
 import { escapeRegExp } from './node-module-esbuild-plugin.js';
 
 const WORKFLOW_ROUTE_DIR = WORKFLOW_ROUTE_BASE.slice(1);
@@ -66,7 +66,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       // serves no purpose without maps.
       shouldAddSourcemapSupport: this.sourcemapsEnabled,
       maxDuration: 'max',
-      experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
+      experimentalTriggers: [getWorkflowQueueTrigger()],
       runtime: this.config.runtime,
     });
 

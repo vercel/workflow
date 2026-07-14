@@ -1,5 +1,96 @@
 # workflow
 
+## 5.0.0-beta.34
+
+### Patch Changes
+
+- Updated dependencies [[`9242ddb`](https://github.com/vercel/workflow/commit/9242ddb02c5df6046bf0d93cc5e520eedcfd7471)]:
+  - @workflow/core@5.0.0-beta.34
+  - @workflow/cli@5.0.0-beta.34
+  - @workflow/next@5.0.0-beta.34
+  - @workflow/nitro@5.0.0-beta.34
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.34
+  - @workflow/nest@5.0.0-beta.34
+  - @workflow/nuxt@5.0.0-beta.34
+  - @workflow/rollup@5.0.0-beta.34
+  - @workflow/sveltekit@5.0.0-beta.34
+
+## 5.0.0-beta.33
+
+### Minor Changes
+
+- [#1981](https://github.com/vercel/workflow/pull/1981) [`9da2d76`](https://github.com/vercel/workflow/commit/9da2d762604c2b73eb39f07fc0b069aea643e18d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - `start()` now delegates run ID generation to `world.createRunId(options)` when the world provides it, falling back to a monotonic ULID otherwise. The full options bag is passed through so worlds can read whichever fields they recognise. Adds a new `region` option that worlds may consume — when set, it is also forwarded onto the queue options so the initial workflow message is routed to the matching region.
+
+### Patch Changes
+
+- Updated dependencies [[`9da2d76`](https://github.com/vercel/workflow/commit/9da2d762604c2b73eb39f07fc0b069aea643e18d), [`a4d8de0`](https://github.com/vercel/workflow/commit/a4d8de03e6381d170ccf0c76ed77e05dc5545456), [`c31e30c`](https://github.com/vercel/workflow/commit/c31e30caacab20c0d9c0df38349929ae1e0aebdf)]:
+  - @workflow/core@5.0.0-beta.33
+  - @workflow/next@5.0.0-beta.33
+  - @workflow/sveltekit@5.0.0-beta.33
+  - @workflow/cli@5.0.0-beta.33
+  - @workflow/errors@5.0.0-beta.10
+  - @workflow/nitro@5.0.0-beta.33
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.33
+  - @workflow/nest@5.0.0-beta.33
+  - @workflow/nuxt@5.0.0-beta.33
+  - @workflow/rollup@5.0.0-beta.33
+
+## 5.0.0-beta.32
+
+### Patch Changes
+
+- Updated dependencies [[`4a43e39`](https://github.com/vercel/workflow/commit/4a43e39fec61519a2756f4f5e7bae5ccdac6f662)]:
+  - @workflow/core@5.0.0-beta.32
+  - @workflow/cli@5.0.0-beta.32
+  - @workflow/next@5.0.0-beta.32
+  - @workflow/nitro@5.0.0-beta.32
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.32
+  - @workflow/nest@5.0.0-beta.32
+  - @workflow/nuxt@5.0.0-beta.32
+  - @workflow/rollup@5.0.0-beta.32
+  - @workflow/sveltekit@5.0.0-beta.32
+
+## 5.0.0-beta.31
+
+### Minor Changes
+
+- [#2882](https://github.com/vercel/workflow/pull/2882) [`0b956f6`](https://github.com/vercel/workflow/commit/0b956f65cb0ab30501c72e934fc8d4352c4c3ea2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Rename `experimental_setAttributes` to `setAttributes` — the attributes feature is no longer experimental. The old name remains available as a deprecated alias.
+
+### Patch Changes
+
+- Updated dependencies [[`0b956f6`](https://github.com/vercel/workflow/commit/0b956f65cb0ab30501c72e934fc8d4352c4c3ea2)]:
+  - @workflow/core@5.0.0-beta.31
+  - @workflow/cli@5.0.0-beta.31
+  - @workflow/errors@5.0.0-beta.10
+  - @workflow/next@5.0.0-beta.31
+  - @workflow/nitro@5.0.0-beta.31
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.31
+  - @workflow/nest@5.0.0-beta.31
+  - @workflow/nuxt@5.0.0-beta.31
+  - @workflow/rollup@5.0.0-beta.31
+  - @workflow/sveltekit@5.0.0-beta.31
+
+## 5.0.0-beta.30
+
+### Patch Changes
+
+- Updated dependencies [[`f28150c`](https://github.com/vercel/workflow/commit/f28150c62667f069dbe3c47e83102fef499ab92b), [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9), [`9958424`](https://github.com/vercel/workflow/commit/9958424f22903299e3fe556ab298bd3aaa45c6ac), [`6603628`](https://github.com/vercel/workflow/commit/66036282b5d18c9bef4dea4275782bc977842606), [`48fcc4e`](https://github.com/vercel/workflow/commit/48fcc4efcc7e6c639c51ce4f8971d4d3b1ebdd23), [`25b1509`](https://github.com/vercel/workflow/commit/25b1509e19badb6498927d3fc0d6f23b65329396), [`36c63af`](https://github.com/vercel/workflow/commit/36c63af4a88adc4f404decc54b1f2130d444d264), [`2c6ee61`](https://github.com/vercel/workflow/commit/2c6ee614b50d12ed850e7589cf296150b2143a56)]:
+  - @workflow/core@5.0.0-beta.30
+  - @workflow/cli@5.0.0-beta.30
+  - @workflow/rollup@5.0.0-beta.30
+  - @workflow/astro@5.0.0-beta.30
+  - @workflow/nest@5.0.0-beta.30
+  - @workflow/next@5.0.0-beta.30
+  - @workflow/nitro@5.0.0-beta.30
+  - @workflow/nuxt@5.0.0-beta.30
+  - @workflow/sveltekit@5.0.0-beta.30
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/errors@5.0.0-beta.10
+
 ## 5.0.0-beta.29
 
 ### Patch Changes

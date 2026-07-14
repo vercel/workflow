@@ -41,7 +41,7 @@ export async function getNextBuilderEager(
 
   const {
     BaseBuilder: BaseBuilderClass,
-    WORKFLOW_QUEUE_TRIGGER,
+    getWorkflowQueueTrigger,
     detectWorkflowPatterns,
     parentHasChild,
   } = buildersModule ??
@@ -667,7 +667,7 @@ export async function getNextBuilderEager(
         version: '0',
         workflows: {
           maxDuration: 'max',
-          experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
+          experimentalTriggers: [getWorkflowQueueTrigger()],
         },
       };
 

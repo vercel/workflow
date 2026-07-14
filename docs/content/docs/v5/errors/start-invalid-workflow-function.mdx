@@ -11,6 +11,10 @@ related:
   - /docs/api-reference/workflow-next/with-workflow
 ---
 
+<CopyPrompt
+  text="Fix `start()` receiving an invalid workflow function. Find the function passed to `start()` from `workflow/api`. Ensure the target function is directly imported, exported from its workflow file, and contains the literal `&quot;use workflow&quot;` directive at the top of the function body. Do not pass wrapper callbacks like `start(async () => workflowFn())`; call `start(workflowFn, [args])`. Verify the framework integration is configured (`withWorkflow()` in Next.js, `workflow()`/`workflowPlugin()` in Vite/Astro/SvelteKit, `workflow/nitro`, `workflow/nuxt`, or `@workflow/nest` as appropriate) and that the workflow file is inside a transformed directory. Add a local route/test that calls `start(workflowFn, args)` and confirms a run is created."
+/>
+
 This error occurs when `start()` receives a function that does not have Workflow SDK's generated workflow metadata. In practice, that usually means the function is missing `"use workflow"` or the file was never transformed by your framework integration.
 
 ## Error Message

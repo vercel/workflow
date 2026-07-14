@@ -9,6 +9,10 @@ related:
   - /docs/api-reference/workflow/sleep
 ---
 
+<CopyPrompt
+  text="Fix timer usage inside workflow functions. Search `&quot;use workflow&quot;` functions for `setTimeout`, `setInterval`, `timers/promises`, polling loops, or `AbortSignal.timeout()`. Replace workflow delays with `await sleep(&quot;5s&quot;)`, `await sleep(&quot;24h&quot;)`, or `await sleep(date)` from `workflow`. For polling, use a workflow loop that calls a `&quot;use step&quot;` helper to check external state and then `await sleep(...)` between attempts. If a step itself needs a short in-process delay, keep that timer inside the `&quot;use step&quot;` function only. Verify the workflow can replay and resume after the durable sleep."
+/>
+
 This error occurs when you try to use `setTimeout()`, `setInterval()`, or related timing functions directly inside a workflow function.
 
 ## Error Message

@@ -30,15 +30,24 @@ type Scanned = {
   fallbackUrls: { url: RegExp; meta: UrlMeta }[];
 };
 
+// The geistdocs source bundle erases the collection's frontmatter/runtime
+// typing, so restore the fields the lint relies on structurally.
+type RawDocsPage = ReturnType<typeof source.getPages>[number] & {
+  absolutePath: string;
+  data: ReturnType<typeof source.getPages>[number]['data'] & {
+    getText(kind: 'raw'): Promise<string>;
+  };
+};
+
 type LoadedPage = {
-  page: ReturnType<typeof source.getPages>[number];
+  page: RawDocsPage;
   raw: string;
   hashes: string[];
 };
 
 async function loadPages(src: typeof source): Promise<LoadedPage[]> {
   return Promise.all(
-    src.getPages().map(async (page) => {
+    (src.getPages() as RawDocsPage[]).map(async (page) => {
       const raw = await page.data.getText('raw');
       return { page, raw, hashes: getHeadingsFromMarkdown(raw) };
     })

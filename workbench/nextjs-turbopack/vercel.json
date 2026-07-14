@@ -1,5 +1,88 @@
 {
   "env": {
     "WORKFLOW_PUBLIC_MANIFEST": "1"
+  },
+  "regions": [
+    "iad1",
+    "arn1",
+    "bom1",
+    "cdg1",
+    "cle1",
+    "cpt1",
+    "dub1",
+    "fra1",
+    "gru1",
+    "hkg1",
+    "hnd1",
+    "icn1",
+    "kix1",
+    "lhr1",
+    "pdx1",
+    "sfo1",
+    "sin1",
+    "syd1",
+    "yul1"
+  ],
+  "functions": {
+    "app/api/e2e-region-implicit/iad1/route.ts": {
+      "regions": ["iad1"]
+    },
+    "app/api/e2e-region-implicit/arn1/route.ts": {
+      "regions": ["arn1"]
+    },
+    "app/api/e2e-region-implicit/bom1/route.ts": {
+      "regions": ["bom1"]
+    },
+    "app/api/e2e-region-implicit/cdg1/route.ts": {
+      "regions": ["cdg1"]
+    },
+    "app/api/e2e-region-implicit/cle1/route.ts": {
+      "regions": ["cle1"]
+    },
+    "app/api/e2e-region-implicit/cpt1/route.ts": {
+      "regions": ["cpt1"]
+    },
+    "app/api/e2e-region-implicit/dub1/route.ts": {
+      "regions": ["dub1"]
+    },
+    "app/api/e2e-region-implicit/fra1/route.ts": {
+      "regions": ["fra1"]
+    },
+    "app/api/e2e-region-implicit/gru1/route.ts": {
+      "regions": ["gru1"]
+    },
+    "app/api/e2e-region-implicit/hkg1/route.ts": {
+      "regions": ["hkg1"]
+    },
+    "app/api/e2e-region-implicit/hnd1/route.ts": {
+      "regions": ["hnd1"]
+    },
+    "app/api/e2e-region-implicit/icn1/route.ts": {
+      "regions": ["icn1"]
+    },
+    "app/api/e2e-region-implicit/kix1/route.ts": {
+      "regions": ["kix1"]
+    },
+    "app/api/e2e-region-implicit/lhr1/route.ts": {
+      "regions": ["lhr1"]
+    },
+    "app/api/e2e-region-implicit/pdx1/route.ts": {
+      "regions": ["pdx1"]
+    },
+    "app/api/e2e-region-implicit/sfo1/route.ts": {
+      "regions": ["sfo1"]
+    },
+    "app/api/e2e-region-implicit/sin1/route.ts": {
+      "regions": ["sin1"]
+    },
+    "app/api/e2e-region-implicit/syd1/route.ts": {
+      "regions": ["syd1"]
+    },
+    "app/api/e2e-region-implicit/yul1/route.ts": {
+      "regions": ["yul1"]
+    },
+    "app/api/e2e-stream-read/sfo1/route.ts": {
+      "regions": ["sfo1"]
+    }
   }
 }

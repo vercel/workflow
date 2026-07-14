@@ -6,6 +6,7 @@ import {
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  workflowRunIdSchema,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
@@ -70,6 +71,19 @@ export interface StartOptionsBase {
   specVersion?: number;
 
   /**
+   * Optional region identifier for the new run. Currently consumed only
+   * by `@workflow/world-vercel`, which embeds the region into the tagged
+   * run ID and routes the initial workflow message to the matching
+   * regional queue. When omitted, the world falls back to its own
+   * default (for `world-vercel`: the `VERCEL_REGION` environment
+   * variable, then the server-side default region `iad1` — a concrete,
+   * routable region is always chosen).
+   *
+   * Worlds without a regional dimension ignore this field.
+   */
+  region?: string;
+
+  /**
    * Plaintext attributes to seed on the run as it is created.
    *
    * Available for native-attributes runs (spec version 4 and later).
@@ -86,9 +100,38 @@ export interface StartOptionsBase {
    * Only flip this to `true` if your caller is itself a framework or
    * library that owns a `$`-prefixed sub-namespace and knows the
    * conventions of any other tools writing into it. Same semantics as
-   * the `experimental_setAttributes` option of the same name.
+   * the `setAttributes` option of the same name.
    */
   allowReservedAttributes?: boolean;
+
+  /**
+   * The ID of an existing run this run is being replayed from, if any.
+   *
+   * Recorded on the new run's `executionContext` as `replayedFromRunId` so
+   * tooling (e.g. the dashboard runs list) can show that a run originated as
+   * a replay and link back to its source. Set automatically by
+   * {@link recreateRunFromExisting}; there's usually no reason to pass it
+   * directly.
+   *
+   * Must be a run ID: `wrun_` followed by a 26-char ULID. It's a foreign key
+   * to the source run, so `start()` validates the exact shape and rejects
+   * anything else rather than persist a lineage link that points at garbage.
+   */
+  replayedFromRunId?: string;
+  /**
+   * Queue namespace of the target deployment. Scopes the workflow queue
+   * topic to `__{namespace}_wkf_workflow_*` (e.g. `'eve'`) instead of the
+   * default `__wkf_workflow_*`, and is also used for the cross-deployment
+   * capability probe. Falls back to `WORKFLOW_QUEUE_NAMESPACE` in the
+   * calling process.
+   *
+   * Within a deployment the env fallback is correct. Cross-context callers
+   * (e.g. the observability dashboard replaying a run) must pass the
+   * TARGET deployment's namespace explicitly: the env fallback resolves in
+   * the caller's process, and a run enqueued to a topic the target has no
+   * consumer for is never picked up.
+   */
+  namespace?: string;
 }
 
 export interface StartOptionsWithDeploymentId extends StartOptionsBase {
@@ -260,6 +303,7 @@ export async function start<TArgs extends unknown[], TResult>(
         const probe = await healthCheck(world, 'workflow', {
           deploymentId,
           timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
+          namespace: opts.namespace,
         }).catch(() => undefined);
         const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
         framedByteStreams = capabilities.framedByteStreams;
@@ -271,8 +315,17 @@ export async function start<TArgs extends unknown[], TResult>(
       const ops: Promise<void>[] = [];
 
       // Generate runId client-side so we have it before serialization
-      // (required for future E2E encryption where runId is part of the encryption context)
-      const runId = `wrun_${ulid()}`;
+      // (required for future E2E encryption where runId is part of the
+      // encryption context). When the World provides a `createRunId()`
+      // implementation, use it so worlds can embed implementation-specific
+      // metadata (e.g., region) into the ID, forwarding the full options
+      // bag so worlds can read whichever fields they recognise; otherwise
+      // fall back to a standard monotonic ULID.
+      const runId = `wrun_${
+        world.createRunId
+          ? world.createRunId(opts as Readonly<Record<string, unknown>>)
+          : ulid()
+      }`;
 
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
@@ -319,6 +372,19 @@ export async function start<TArgs extends unknown[], TResult>(
           }
         : {};
 
+      // `replayedFromRunId` is a foreign key to the source run; reject anything
+      // that isn't a real run ID so the lineage link can't point at garbage.
+      if (
+        opts.replayedFromRunId !== undefined &&
+        !workflowRunIdSchema.safeParse(opts.replayedFromRunId).success
+      ) {
+        throw new WorkflowRuntimeError(
+          `replayedFromRunId must be a run ID (wrun_<ulid>); received ${JSON.stringify(
+            String(opts.replayedFromRunId).slice(0, 64)
+          )}.`
+        );
+      }
+
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both
       // key derivation and the run_created event. The World implementation
@@ -356,6 +422,9 @@ export async function start<TArgs extends unknown[], TResult>(
         traceCarrier,
         workflowCoreVersion,
         features: { encryption: !!encryptionKey },
+        ...(opts.replayedFromRunId
+          ? { replayedFromRunId: opts.replayedFromRunId }
+          : {}),
       };
 
       // Call events.create (run_created) and queue in parallel.
@@ -378,7 +447,7 @@ export async function start<TArgs extends unknown[], TResult>(
           { v1Compat }
         ),
         world.queue(
-          getWorkflowQueueName(workflowName),
+          getWorkflowQueueName(workflowName, opts.namespace),
           {
             runId,
             traceCarrier,
@@ -398,6 +467,11 @@ export async function start<TArgs extends unknown[], TResult>(
           {
             deploymentId,
             specVersion,
+            // Forward any caller-supplied region hint so worlds with
+            // per-region queue routing (e.g. world-vercel) can target the
+            // matching queue. Worlds without a regional dimension ignore
+            // this field.
+            ...(opts.region !== undefined ? { region: opts.region } : {}),
           }
         ),
       ]);

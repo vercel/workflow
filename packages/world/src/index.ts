@@ -1,5 +1,6 @@
 export type * from './analytics.js';
 export {
+  AnalyticsAttributeKeySchema,
   AnalyticsEventSchema,
   AnalyticsHookSchema,
   AnalyticsRunSchema,
@@ -28,15 +29,33 @@ export {
 export type * from './events.js';
 export {
   BaseEventSchema,
+  CHILD_ENTITY_CREATION_EVENT_TYPES,
   CreateEventSchema,
+  EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE,
   EVENT_DATA_REF_FIELDS,
   EventSchema,
   EventTypeSchema,
+  getEventDataPayloadField,
+  getEventDataRefFields,
+  HOOK_EVENTS_REQUIRING_EXISTENCE,
+  HOOK_LIFECYCLE_EVENT_TYPES,
   HookCreatedEventSchema,
+  isChildEntityCreationEvent,
+  isChildEntityCreationEventType,
+  isHookEventRequiringExistence,
+  isHookLifecycleEventType,
+  isRunEventType,
+  isStepEventType,
   isTerminalRunEventType,
+  isTerminalStepEventType,
+  isWaitEventType,
+  RUN_EVENT_TYPES,
+  STEP_EVENT_TYPES,
   stripEventDataRefs,
   TERMINAL_RUN_EVENT_TYPES,
+  TERMINAL_STEP_EVENT_TYPES,
   TerminalRunEventTypeSchema,
+  WAIT_EVENT_TYPES,
 } from './events.js';
 export type * from './hooks.js';
 export { HookSchema } from './hooks.js';
@@ -107,6 +126,8 @@ export {
   DEFAULT_TIMESTAMP_THRESHOLD_PAST_MS,
   ulidToDate,
   validateUlidTimestamp,
+  workflowRunIdSchema,
 } from './ulid.js';
+export type { WorkflowRunId } from './ulid.js';
 export type * from './waits.js';
 export { WaitSchema, WaitStatusSchema } from './waits.js';

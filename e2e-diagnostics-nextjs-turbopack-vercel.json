@@ -1,0 +1,8 @@
+[
+  {
+    "testName": "WorkflowNotRegisteredError fails the run when workflow does not exist",
+    "runId": "wrun_41KV8YMWKC00RAQCRH320GSWR4",
+    "timestamp": "2026-06-16T19:31:07.845Z",
+    "dashboardUrl": "https://vercel.com/vercel-labs/example-nextjs-workflow-turbopack/observability/workflows/runs/wrun_41KV8YMWKC00RAQCRH320GSWR4?environment=preview"
+  }
+]

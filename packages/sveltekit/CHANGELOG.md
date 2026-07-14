@@ -1,5 +1,52 @@
 # @workflow/sveltekit
 
+## 5.0.0-beta.34
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.34
+  - @workflow/rollup@5.0.0-beta.34
+  - @workflow/vite@5.0.0-beta.34
+
+## 5.0.0-beta.33
+
+### Patch Changes
+
+- [#2193](https://github.com/vercel/workflow/pull/2193) [`a4d8de0`](https://github.com/vercel/workflow/commit/a4d8de03e6381d170ccf0c76ed77e05dc5545456) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add opt-in `WORKFLOW_SEQUENTIAL_REPLAYS` env var (also enabled by the `WORKFLOW_SAFE_MODE=1` umbrella flag when not set explicitly). When set to `1`, flow (orchestrator) routes are limited to one invocation per run at a time via a per-run queue topic and `maxConcurrency: 1` on the flow trigger. Step routes are unaffected.
+
+- Updated dependencies [[`a4d8de0`](https://github.com/vercel/workflow/commit/a4d8de03e6381d170ccf0c76ed77e05dc5545456)]:
+  - @workflow/builders@5.0.0-beta.33
+  - @workflow/rollup@5.0.0-beta.33
+  - @workflow/vite@5.0.0-beta.33
+
+## 5.0.0-beta.32
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.32
+  - @workflow/rollup@5.0.0-beta.32
+  - @workflow/vite@5.0.0-beta.32
+
+## 5.0.0-beta.31
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.31
+  - @workflow/rollup@5.0.0-beta.31
+  - @workflow/vite@5.0.0-beta.31
+
+## 5.0.0-beta.30
+
+### Patch Changes
+
+- Updated dependencies [[`df7e71d`](https://github.com/vercel/workflow/commit/df7e71de1c8e5407221219235f941c9fb58b6707), [`25b1509`](https://github.com/vercel/workflow/commit/25b1509e19badb6498927d3fc0d6f23b65329396)]:
+  - @workflow/builders@5.0.0-beta.30
+  - @workflow/rollup@5.0.0-beta.30
+  - @workflow/vite@5.0.0-beta.30
+
 ## 5.0.0-beta.29
 
 ### Patch Changes

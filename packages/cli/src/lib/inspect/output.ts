@@ -6,7 +6,14 @@ import {
 } from '@workflow/core/serialization';
 import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, Hook, Step, WorkflowRun, World } from '@workflow/world';
+import {
+  type Event,
+  type Hook,
+  isWaitEventType,
+  type Step,
+  type WorkflowRun,
+  type World,
+} from '@workflow/world';
 import chalk from 'chalk';
 
 import { formatDistance } from 'date-fns';
@@ -452,6 +459,38 @@ const showJson = (data: unknown) => {
   process.stdout.write(`${json}\n`);
 };
 
+/**
+ * Defensively evaluate `World.describeRun` for one run row.
+ *
+ * The interface contract says implementations are pure and must not
+ * throw — but it is an external extension point, so the CLI does not
+ * trust that: a throwing implementation contributes no fields instead
+ * of crashing the command. Keys that already exist on the run row are
+ * dropped so a world can never overwrite canonical fields (`status`,
+ * `runId`, ...) in inspect output.
+ */
+const safeWorldFields = async (
+  describeRun: NonNullable<World['describeRun']>,
+  row: Record<string, unknown>
+): Promise<Record<string, string | null>> => {
+  let fields: Record<string, string | null> | null;
+  try {
+    // The hook may be sync or async; a rejection is treated the same as
+    // a throw — no fields.
+    fields = await describeRun(row);
+  } catch {
+    return {};
+  }
+  if (!fields) return {};
+  const safe: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (!(key in row)) {
+      safe[key] = value;
+    }
+  }
+  return safe;
+};
+
 const showJsonPage = <T>(page: PageData<T>) => {
   showJson({
     data: page.data,
@@ -619,7 +658,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
 
   const useAnalytics = !opts.withData && Boolean(world.analytics);
   const resolveData = opts.withData ? 'all' : 'none';
-  const status = opts.status as WorkflowRun['status'] | undefined;
+  const status = opts.status;
 
   // Resolve --since/--until into an explicit listing window. Only the
   // analytics read path supports one; the runtime storage APIs have no time
@@ -633,11 +672,41 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
   }
 
   // Determine which props to show based on withData flag
-  const props = opts.withData
+  const baseProps = opts.withData
     ? WORKFLOW_RUN_LISTED_PROPS
     : WORKFLOW_RUN_LISTED_PROPS.filter(
         (prop) => !WORKFLOW_RUN_IO_PROPS.includes(prop)
       );
+
+  // World-specific display fields (World.describeRun): each key the
+  // world returns becomes an extra column, inserted before `status`.
+  // Detached call site, so bind explicitly. `null` field values are
+  // preserved (they mean "applicable but undeterminable" per the
+  // interface contract), distinguishing them in JSON output from the
+  // hook being absent entirely.
+  const describeRun = world.describeRun?.bind(world);
+  const describedKeys: string[] = [];
+  const withWorldFields = async (
+    rows: Record<string, unknown>[]
+  ): Promise<Record<string, unknown>[]> => {
+    if (!describeRun) return rows;
+    // Rows evaluated concurrently so an async implementation costs one
+    // await per page, not per row.
+    return Promise.all(
+      rows.map(async (row) => {
+        const fields = await safeWorldFields(describeRun, row);
+        for (const key of Object.keys(fields)) {
+          if (!describedKeys.includes(key)) describedKeys.push(key);
+        }
+        return { ...row, ...fields };
+      })
+    );
+  };
+  const propsFor = (baseList: (keyof WorkflowRun)[]): string[] => {
+    const list: string[] = [...baseList];
+    list.splice(list.indexOf('status'), 0, ...describedKeys);
+    return list;
+  };
 
   const fetchRunsPage = async (
     cursor: string | undefined
@@ -655,7 +724,9 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
         pagination,
       });
       return {
-        data: runs.data as unknown as Record<string, unknown>[],
+        data: await withWorldFields(
+          runs.data as unknown as Record<string, unknown>[]
+        ),
         cursor: runs.cursor,
         hasMore: runs.hasMore,
         pageInfo: getPageInfo(runs),
@@ -671,7 +742,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       runs.data.map((r) => hydrateResourceIO(r, resolveKey))
     );
     return {
-      data: data as unknown as Record<string, unknown>[],
+      data: await withWorldFields(data as unknown as Record<string, unknown>[]),
       cursor: runs.cursor,
       hasMore: runs.hasMore,
       pageInfo: getPageInfo(runs),
@@ -706,7 +777,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       }
     },
     displayPage: async (runs) => {
-      logger.log(showTable(runs, props, opts));
+      logger.log(showTable(runs, propsFor(baseProps), opts));
     },
   });
 };
@@ -747,7 +818,20 @@ export const showRun = async (
   }
   try {
     const run = await world.runs.get(runId, { resolveData: 'all' });
-    const runWithHydratedIO = await hydrateResourceIO(run, resolveKey);
+    const hydrated = await hydrateResourceIO(run, resolveKey);
+    // World-specific display fields (World.describeRun), evaluated
+    // defensively — see safeWorldFields. `null` field values are kept so
+    // structured output distinguishes "undeterminable" from "hook absent".
+    const worldFields = world.describeRun
+      ? await safeWorldFields(
+          world.describeRun.bind(world),
+          run as unknown as Record<string, unknown>
+        )
+      : undefined;
+    const runWithHydratedIO =
+      worldFields && Object.keys(worldFields).length > 0
+        ? { ...hydrated, ...worldFields }
+        : hydrated;
     if (opts.json) {
       showJson(runWithHydratedIO);
       return;
@@ -1371,7 +1455,7 @@ export const listSleeps = async (
     // Group wait events by correlationId
     const waitEventsByCorrelation = new Map<string, Event[]>();
     for (const event of events.data) {
-      if (event.correlationId?.startsWith('wait_')) {
+      if (isWaitEventType(event.eventType) && event.correlationId) {
         const existing = waitEventsByCorrelation.get(event.correlationId) ?? [];
         existing.push(event);
         waitEventsByCorrelation.set(event.correlationId, existing);

@@ -5,6 +5,10 @@ type: guide
 summary: Use defineHook with the tool call ID to suspend an agent for human approval, with an optional timeout.
 ---
 
+<CopyPrompt
+  text="Add a human approval gate to this AI workflow. Define a typed hook with `defineHook()` from `workflow` for approval payloads. At the approval point, create the hook once with a stable token, await it inside the `&quot;use workflow&quot;` function, and branch on approved/rejected input. Add a server route that receives the human decision and calls `resumeHook(token, payload)` from `workflow/api`. If the approval should expire, race the hook against `sleep()` from `workflow`. Update the UI to show the pending approval and call the resume route. Verify approve, reject, timeout, and duplicate resume behavior."
+/>
+
 <Callout type="warn">
 This recipe uses the deprecated `DurableAgent` API. For new agents, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) and follow the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent). The human-in-the-loop pattern here (hooks, `Promise.race`, approval gating) applies to either API.
 </Callout>

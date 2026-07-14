@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "5.0.0-beta.29",
+  "version": "5.0.0-beta.34",
   "description": "Core runtime and engine for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -126,7 +126,8 @@
     "@types/semver": "7.7.1",
     "@workflow/tsconfig": "workspace:*",
     "cross-env": "10.1.0",
-    "genversion": "3.2.0"
+    "genversion": "3.2.0",
+    "typescript": "catalog:"
   },
   "peerDependencies": {
     "@opentelemetry/api": "1"

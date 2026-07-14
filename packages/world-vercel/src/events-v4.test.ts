@@ -10,10 +10,12 @@ import { MockAgent } from 'undici';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowRunEventV4,
+  getEventV4,
   getWorkflowRunEventsV4,
   throwForErrorResponse,
 } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
+import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 /**
  * The v4 client must preserve the typed-error contract of the v3
@@ -114,7 +116,8 @@ describe('throwForErrorResponse', () => {
  */
 describe('getWorkflowRunEventsV4 over HTTP', () => {
   it('parses a frame stream fetched via a custom dispatcher', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -154,7 +157,8 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
   });
 
   it('captures an explicit hasMore from the sentinel, independent of next', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -195,7 +199,8 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
   });
 
   it('leaves hasMore undefined for a legacy sentinel without the flag', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -222,7 +227,8 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
   });
 
   it('throws when the stream ends without the end sentinel (truncated response)', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -258,6 +264,52 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
 });
 
 /**
+ * getEventV4 returns after the first frame. The early return must cancel the
+ * response body (releasing its undici socket) without corrupting the returned
+ * value or hanging — the trailing frame below is never read.
+ */
+describe('getEventV4 over HTTP', () => {
+  it('returns the first frame and stops reading the rest', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    const body = new TextEncoder().encode('event-payload');
+    const frames = Buffer.concat([
+      encodeFrame(
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          eventType: 'run_created',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          eventData: {},
+        },
+        body
+      ),
+      // Trailing bytes the reader must never need.
+      encodeFrame({ eventId: 'evnt_unused' }, new Uint8Array(8)),
+    ]);
+
+    agent
+      .get(origin)
+      .intercept({ path: '/api/v4/runs/wrun_1/events/evnt_1', method: 'GET' })
+      .reply(200, frames, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const { event, body: returnedBody } = await getEventV4('wrun_1', 'evnt_1', {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    expect(event.eventId).toBe('evnt_1');
+    expect(event.eventType).toBe('run_created');
+    expect(new Uint8Array(returnedBody)).toEqual(body);
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+/**
  * Regression: v4 requests must go through the global `fetch`, not undici's
  * `request()`. Vercel's observability log viewer instruments the global
  * `fetch`; calling `undici.request()` directly bypassed it, so outgoing v4
@@ -271,7 +323,8 @@ describe('v4 transport uses global fetch (observability)', () => {
   });
 
   it('routes a v4 LIST through globalThis.fetch', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
     agent
@@ -306,7 +359,8 @@ describe('v4 transport uses global fetch (observability)', () => {
 
 describe('createWorkflowRunEventV4 over HTTP', () => {
   it('POSTs to the /events/:eventType alias and decodes the response', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -345,7 +399,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
   });
 
   it('forwards skipPreload in the run_started frame meta (turbo preload opt-out)', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -405,7 +460,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
   });
 
   it('omits skipPreload from the frame meta when not set (default / old SDK parity)', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 

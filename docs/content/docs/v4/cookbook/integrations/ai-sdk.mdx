@@ -11,6 +11,10 @@ related:
   - /docs/api-reference/workflow-ai/durable-agent
 ---
 
+<CopyPrompt
+  text="Implement the durable AI SDK multi-turn pattern. Use `streamText`, `stepCountIs`, and `createUIMessageStreamResponse` from `ai`; `defineHook`, `getWritable`, and `getWorkflowMetadata` from `workflow`; and `start`/`getRun` from `workflow/api`. Put the model call in a `&quot;use step&quot;` function such as `runTurn(messages)` and pipe `result.toUIMessageStream()` to `getWritable<UIMessageChunk>()` with `{ preventClose: true }`. In the workflow, create one hook with `turnHook.create({ token: workflowRunId })`, loop over turns, and await the hook between user messages. Add an API route that starts a run on first message, stores/returns the run ID in `x-workflow-run-id`, resumes the hook for follow-up messages, reads from `run.getReadable({ startIndex })`, and handles stale run IDs by starting fresh. Wire the client transport to send `runId` with each request and verify first turn, follow-up turn, `/done`, and reconnect behavior."
+/>
+
 [AI SDK](https://ai-sdk.dev/) is Vercel's framework-agnostic TypeScript toolkit for building AI-powered apps and agents — unified provider access, streaming, tool calling, structured output, and UI hooks. Workflow SDK complements it by making the multi-turn loop durable: the conversation state, hooks, and per-turn responses survive restarts and timeouts. Note that in this pattern the durability boundary is the entire turn — individual tool calls inside a turn are **not** durable on their own (see [Pitfalls](#tools-are-not-individually-durable) below).
 
 For the full AI SDK reference (providers, `streamText`, `generateObject`, `useChat`, tool calling, etc.) see the [AI SDK docs](https://ai-sdk.dev/docs). This page covers the Workflow-specific integration points.

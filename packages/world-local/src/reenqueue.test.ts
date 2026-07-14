@@ -1,6 +1,7 @@
 import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { WorkflowInvokePayloadSchema } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorld } from './index.js';
 import { createRun, updateRun } from './test-helpers.js';
@@ -14,10 +15,12 @@ describe('re-enqueue active runs on start', () => {
   let dataDir: string;
 
   beforeEach(() => {
+    vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', undefined);
     dataDir = path.join(os.tmpdir(), `wf-reenqueue-${Date.now()}`);
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await rm(dataDir, { recursive: true, force: true });
   });
 
@@ -82,6 +85,49 @@ describe('re-enqueue active runs on start', () => {
     expect(receivedRunIds).toContain(runningRun.runId);
     expect(receivedRunIds).not.toContain(completedRun.runId);
     expect(receivedRunIds).not.toContain(failedRun.runId);
+
+    await world2.close();
+  });
+
+  it('re-enqueues runs to the active queue namespace', async () => {
+    vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', 'custom');
+
+    const world1 = createWorld({ dataDir });
+    await world1.start();
+
+    const pendingRun = await createRun(world1, {
+      deploymentId: 'dpl_1',
+      workflowName: 'myWorkflow',
+      input: new Uint8Array([1]),
+    });
+
+    await world1.close();
+
+    const world2 = createWorld({ dataDir });
+    const namespacedRunIds: string[] = [];
+    const unnamespacedRunIds: string[] = [];
+    const namespacedHandler = world2.createQueueHandler(
+      '__custom_wkf_workflow_',
+      async (message) => {
+        const body = WorkflowInvokePayloadSchema.parse(message);
+        namespacedRunIds.push(body.runId);
+      }
+    );
+    world2.registerHandler('__custom_wkf_workflow_', namespacedHandler);
+    // Capture an incorrectly reconstructed queue without allowing it to enter
+    // the local queue's retry loop.
+    world2.registerHandler('__wkf_workflow_', async (req) => {
+      const body = await req.json();
+      unnamespacedRunIds.push(body.runId);
+      return Response.json({ ok: true });
+    });
+
+    await world2.start();
+
+    await vi.waitFor(() => {
+      expect(namespacedRunIds).toEqual([pendingRun.runId]);
+    });
+    expect(unnamespacedRunIds).toHaveLength(0);
 
     await world2.close();
   });

@@ -25,8 +25,8 @@ export const VERSIONS: DocsVersion[] = [
   },
 ];
 
-export const LATEST_VERSION = VERSIONS.find((v) => !v.preRelease)!;
-export const PRE_RELEASE_VERSION = VERSIONS.find((v) => v.preRelease)!;
+export const PRE_RELEASE_VERSION: DocsVersion = VERSIONS[0];
+export const LATEST_VERSION: DocsVersion = VERSIONS[1];
 
 /**
  * Derive the active docs version from a pathname. Matches `/v5/...` (or
@@ -48,9 +48,9 @@ export function getVersionFromPathname(pathname: string): DocsVersion {
  * Build a URL for the same page under a different version. Preserves the
  * trailing path after `/docs/` and any locale prefix.
  *
- * Only `/docs/...` paths are version-specific. All other routes (e.g.
- * `/cookbook`, `/worlds`) are shared across versions and are returned
- * unchanged — there is no `/v5/cookbook` to navigate to.
+ * `/docs/...` and `/cookbook/...` paths are version-specific. All other
+ * routes (e.g. `/worlds`) are shared across versions and are returned
+ * unchanged.
  *
  * `usePathname()` can return either `/docs/...` (default locale hidden by
  * the i18n middleware) or `/<locale>/docs/...` (non-default locale shown).
