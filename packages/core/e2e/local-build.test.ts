@@ -127,7 +127,22 @@ describe.each([
       return;
     }
 
-    const result = await runBuildWithRetry(getWorkbenchAppPath(project));
+    const appPath = getWorkbenchAppPath(project);
+
+    if (project === 'sveltekit') {
+      const importResult = await runCommandWithLiveOutput(
+        process.execPath,
+        [
+          '-e',
+          "import('workflow/sveltekit').then(() => console.log('workflow/sveltekit import ok')).catch((error) => { console.error(error); process.exit(1); })",
+        ],
+        appPath
+      );
+
+      expect(importResult.output).toContain('workflow/sveltekit import ok');
+    }
+
+    const result = await runBuildWithRetry(appPath);
 
     expect(result.output).not.toContain('Error:');
 
