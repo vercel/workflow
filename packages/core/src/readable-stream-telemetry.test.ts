@@ -17,7 +17,18 @@ import {
   vi,
 } from 'vitest';
 import { setWorld } from './runtime/world.js';
-import { WorkflowServerReadableStream } from './serialization.js';
+import {
+  createReconnectingFramedStream,
+  WorkflowServerReadableStream,
+} from './serialization.js';
+
+/** 4-byte BE length prefix + payload — the framed-v1 wire layout. */
+function frame(payload: Uint8Array): Uint8Array {
+  const out = new Uint8Array(4 + payload.byteLength);
+  new DataView(out.buffer).setUint32(0, payload.byteLength, false);
+  out.set(payload, 4);
+  return out;
+}
 
 const exporter = new InMemorySpanExporter();
 const provider = new BasicTracerProvider();
@@ -113,5 +124,56 @@ describe('WorkflowServerReadableStream read telemetry', () => {
     expect(typeof span.attributes['workflow.stream.read.total_ms']).toBe(
       'number'
     );
+  });
+});
+
+describe('createReconnectingFramedStream read telemetry', () => {
+  beforeEach(() => {
+    exporter.reset();
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      streams: {
+        get: vi.fn().mockImplementation(
+          async () =>
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(frame(new Uint8Array([1, 2, 3])));
+                controller.enqueue(frame(new Uint8Array([4, 5])));
+                controller.close();
+              },
+            })
+        ),
+      },
+    } as any);
+  });
+
+  afterEach(() => {
+    setWorld(undefined);
+    vi.clearAllMocks();
+  });
+
+  it('emits read and read.complete spans with connect, ttfc, totals, and reconnects', async () => {
+    const stream = createReconnectingFramedStream('run-123', 'test-stream');
+    const reader = stream.getReader();
+    for (let i = 0; i < 10; i++) {
+      const { done } = await reader.read();
+      if (done) break;
+    }
+
+    const [readSpan] = await waitForSpans('workflow.stream.read', 1);
+    expect(readSpan).toBeDefined();
+    expect(typeof readSpan.attributes['workflow.stream.read.ttfc_ms']).toBe(
+      'number'
+    );
+    expect(typeof readSpan.attributes['workflow.stream.read.connect_ms']).toBe(
+      'number'
+    );
+
+    const [doneSpan] = await waitForSpans('workflow.stream.read.complete', 1);
+    expect(doneSpan).toBeDefined();
+    expect(doneSpan.attributes['workflow.stream.read.chunks']).toBe(2);
+    // 2 frames of (4-byte header + payload): (4+3) + (4+2)
+    expect(doneSpan.attributes['workflow.stream.read.bytes']).toBe(13);
+    expect(doneSpan.attributes['workflow.stream.read.reconnects']).toBe(0);
   });
 });

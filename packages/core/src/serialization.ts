@@ -594,7 +594,8 @@ function recordStreamReadComplete(
   runId: string,
   name: string,
   chunkCount: number,
-  byteCount: number
+  byteCount: number,
+  reconnects?: number
 ): void {
   void (async () => {
     await recordElapsedSpan('workflow.stream.read.complete', startEpochMs, {
@@ -606,6 +607,9 @@ function recordStreamReadComplete(
         'workflow.stream.read.total_ms': Date.now() - startEpochMs,
         'workflow.stream.read.chunks': chunkCount,
         'workflow.stream.read.bytes': byteCount,
+        ...(typeof reconnects === 'number'
+          ? { 'workflow.stream.read.reconnects': reconnects }
+          : {}),
       },
     });
   })();
@@ -773,13 +777,22 @@ export function createReconnectingFramedStream(
   let totalReconnectCount = 0;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let buffer = new Uint8Array(0);
+  // Read telemetry (same semantics as WorkflowServerReadableStream):
+  // dispatch time, first-connect duration, first-frame latch, and totals.
+  let readStart: number | undefined;
+  let connectMs: number | undefined;
+  let firstChunkReported = false;
+  let chunksDelivered = 0;
+  let bytesDelivered = 0;
 
   async function connect(): Promise<void> {
     const world = await getWorldLazy();
     const effectiveStartIndex = reconnectSupported
       ? currentStartIndex + consumedFrames
       : startIndex;
+    const connectStart = Date.now();
     const stream = await world.streams.get(runId, name, effectiveStartIndex);
+    if (connectMs === undefined) connectMs = Date.now() - connectStart;
     reader = stream.getReader();
   }
 
@@ -828,6 +841,7 @@ export function createReconnectingFramedStream(
 
   return new ReadableStream<Uint8Array>({
     pull: async (controller) => {
+      if (readStart === undefined) readStart = Date.now();
       // Loop until we emit something, hit EOF, or fatally error. Reads that
       // only extend the in-flight-frame buffer don't enqueue anything — we
       // keep reading rather than returning empty-handed.
@@ -864,6 +878,16 @@ export function createReconnectingFramedStream(
           // bytes (there shouldn't be any; a well-formed stream ends on a
           // frame boundary).
           reader = undefined;
+          if (readStart !== undefined) {
+            recordStreamReadComplete(
+              readStart,
+              runId,
+              name,
+              chunksDelivered,
+              bytesDelivered,
+              totalReconnectCount
+            );
+          }
           controller.close();
           return;
         }
@@ -891,6 +915,18 @@ export function createReconnectingFramedStream(
           controller.enqueue(buffer.slice(0, total));
           buffer = buffer.slice(total);
           consumedFrames++;
+          chunksDelivered++;
+          bytesDelivered += total;
+          if (!firstChunkReported && readStart !== undefined) {
+            firstChunkReported = true;
+            recordReadTimeToFirstChunk(
+              readStart,
+              runId,
+              name,
+              startIndex,
+              connectMs
+            );
+          }
           emitted = true;
         }
 
