@@ -602,10 +602,26 @@ export function createStreamer(config?: APIConfig): Streamer {
         // bounded in-flight window (backpressure); durability of everything
         // written is confirmed when `close` drains the writer.
         const transport = resolveStreamWriteTransport();
+        // The WS→PUT circuit breaker (`wsSuppressedUntil`) is streamer-wide,
+        // but socket writers are per-(runId,name). A stream that already has a
+        // live writer must keep using it: diverting it to PUT mid-stream would
+        // race the writer's still-buffered lower-seq frames (writeMulti
+        // resolves on admission, not durability, so earlier frames stay
+        // buffered-and-unacked in the background) against the higher-seq PUT
+        // chunks. If PUT persists first, the reader's per-writerId dedup drops
+        // the later-arriving WS frames as replays → silent loss/reorder. So
+        // the breaker only suppresses opening a *new* writer; an existing one
+        // keeps carrying its stream and, if it too fails, falls back on its
+        // own in-order path (takeAbandonedFrames + remaining frames).
+        const existingWriter = socketWriters.get(
+          socketWriterKey(resolvedRunId, name)
+        );
         const useChannel =
           options?.retransmitSafe &&
           transport !== 'put' &&
-          (transport === 'websocket' || Date.now() >= wsSuppressedUntil);
+          (transport === 'websocket' ||
+            existingWriter !== undefined ||
+            Date.now() >= wsSuppressedUntil);
         if (useChannel) {
           const writer = getSocketWriter(resolvedRunId, name);
           const encoder = new TextEncoder();
