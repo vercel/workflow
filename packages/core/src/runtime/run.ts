@@ -19,6 +19,7 @@ import {
 import { getWorkflowRunStreamId } from '../util.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import {
+  type CancelRunOptions,
   type StopSleepOptions,
   type StopSleepResult,
   wakeUpRun,
@@ -160,13 +161,20 @@ export class Run<TResult> {
 
   /**
    * Cancels the workflow run.
+   *
+   * @param options - Optional cancellation settings. `cancelReason` records a
+   *   free-text reason (max 512 chars) on the run_cancelled event, surfaced in
+   *   the run detail view.
    */
-  async cancel(): Promise<void> {
+  async cancel(options?: CancelRunOptions): Promise<void> {
     'use step';
     const world = await this.#lazyWorldPromise;
     await world.events.create(this.runId, {
       eventType: 'run_cancelled',
       specVersion: SPEC_VERSION_CURRENT,
+      ...(options?.cancelReason !== undefined
+        ? { eventData: { cancelReason: options.cancelReason } }
+        : {}),
     });
   }
 

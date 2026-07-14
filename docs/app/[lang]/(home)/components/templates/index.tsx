@@ -1,6 +1,6 @@
 import Image from 'next/image';
 import Link from 'next/link';
-import { Button } from '@/components/ui/button';
+import { Button } from '@vercel/geistdocs/components/button';
 import { examplesRepositoryUrl } from '@/geistdocs';
 import { cn } from '@/lib/utils';
 import Flight from './flight-v2.png';

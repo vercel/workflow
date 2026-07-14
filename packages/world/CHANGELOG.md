@@ -1,5 +1,67 @@
 # @workflow/world
 
+## 5.0.0-beta.20
+
+### Minor Changes
+
+- [#2903](https://github.com/vercel/workflow/pull/2903) [`f2be954`](https://github.com/vercel/workflow/commit/f2be954bb7fee078bc4b78118edaa157130fa362) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add `analytics.attributes.list()` for attribute key discovery, and an `attributes` key=value filter to `analytics.runs.list()`.
+
+- [#1981](https://github.com/vercel/workflow/pull/1981) [`9da2d76`](https://github.com/vercel/workflow/commit/9da2d762604c2b73eb39f07fc0b069aea643e18d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add optional `createRunId(options?)` to the `World` interface and `region` to `QueueOptions`. Worlds can now mint custom run IDs (reading whichever start-option fields they recognise) and route messages to a specific region.
+
+### Patch Changes
+
+- [#2899](https://github.com/vercel/workflow/pull/2899) [`ac41e7d`](https://github.com/vercel/workflow/commit/ac41e7d1d77d48d783ca49d01394dc325afd7ea2) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Parse timezone-naive analytics timestamps as UTC so CLI and local web output shows correct times in any timezone.
+
+- [#2896](https://github.com/vercel/workflow/pull/2896) [`c31e30c`](https://github.com/vercel/workflow/commit/c31e30caacab20c0d9c0df38349929ae1e0aebdf) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Show world-specific run fields (e.g. region on Vercel) in `workflow inspect` output via the new optional `World.describeRun` hook.
+
+## 5.0.0-beta.19
+
+### Patch Changes
+
+- [#2888](https://github.com/vercel/workflow/pull/2888) [`7a1ea5a`](https://github.com/vercel/workflow/commit/7a1ea5a45afd07601934a2f3ff1d1044f3bd9db8) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Use the active queue namespace when re-enqueuing workflow runs during world startup recovery.
+
+- [#2882](https://github.com/vercel/workflow/pull/2882) [`0b956f6`](https://github.com/vercel/workflow/commit/0b956f65cb0ab30501c72e934fc8d4352c4c3ea2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Update doc comments to reference `setAttributes` (renamed from `experimental_setAttributes`).
+
+## 5.0.0-beta.18
+
+### Minor Changes
+
+- [#2850](https://github.com/vercel/workflow/pull/2850) [`f28150c`](https://github.com/vercel/workflow/commit/f28150c62667f069dbe3c47e83102fef499ab92b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Report step progress alongside step-to-step overhead latency telemetry.
+
+- [#2790](https://github.com/vercel/workflow/pull/2790) [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Centralize workflow event type classifiers and event-data payload field helpers.
+
+### Patch Changes
+
+- [#2848](https://github.com/vercel/workflow/pull/2848) [`6603628`](https://github.com/vercel/workflow/commit/66036282b5d18c9bef4dea4275782bc977842606) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix duplicate inline step execution when a hook or wait wakes a run while the step is still running (#2780). The lazy `step_started` now records the owning queue message ID, and wake replays schedule a delayed backstop for in-flight inline steps instead of immediately re-dispatching them. Disable with `WORKFLOW_INLINE_OWNERSHIP=0`.
+
+## 5.0.0-beta.17
+
+### Minor Changes
+
+- [#2833](https://github.com/vercel/workflow/pull/2833) [`3f69666`](https://github.com/vercel/workflow/commit/3f696668bcc436cd4b3e29213ee1d9d12e2e5b01) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Report time-to-first-step and step-to-step overhead latency telemetry on step completion events.
+
+### Patch Changes
+
+- [#2840](https://github.com/vercel/workflow/pull/2840) [`712ed61`](https://github.com/vercel/workflow/commit/712ed61f0a37937c3990429508c582f3edbd4576) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optional reason to run cancellation (`run.cancel({ cancelReason })`), recorded on the cancellation event and shown in the run detail view.
+
+## 5.0.0-beta.16
+
+### Patch Changes
+
+- [#2812](https://github.com/vercel/workflow/pull/2812) [`fe327e6`](https://github.com/vercel/workflow/commit/fe327e69e205417f864fc4109f6e8b79e92e141a) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Support `startTime`/`endTime` on `world.analytics.runs.list` to bound the listing window.
+
+## 5.0.0-beta.15
+
+### Minor Changes
+
+- [#2234](https://github.com/vercel/workflow/pull/2234) [`f76377b`](https://github.com/vercel/workflow/commit/f76377bf04239eccd8c85a6db19d0465e7bdb2ee) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add an optional metadata-only `world.analytics` namespace for observability reads (runs, steps, events, hooks, waits). Implemented by `@workflow/world-vercel`; payload-bearing fields remain on the canonical runtime storage APIs.
+
+- [#2718](https://github.com/vercel/workflow/pull/2718) [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Make runtime tuning constants (timeouts, retry counts, stream buffering/reconnect) configurable via `WORKFLOW_*` environment variables, and forward `WORKFLOW_TEST_LIMIT_OVERRIDES` to the backend as a request header so a deployment can tighten server-side limits for testing.
+
+### Patch Changes
+
+- [#2747](https://github.com/vercel/workflow/pull/2747) [`2ab7057`](https://github.com/vercel/workflow/commit/2ab70579542a359db818d771ece5a19cd8fdd399) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Keep local hooks reachable after a crash or restart by rebuilding lost hook cache files from committed hook creation events, preventing active hook tokens from being reused.
+
 ## 5.0.0-beta.14
 
 ### Patch Changes

@@ -1,9 +1,9 @@
 import '../global.css';
+import { Footer } from '@vercel/geistdocs/footer';
+import { Navbar } from '@vercel/geistdocs/navbar';
 import type { Metadata } from 'next';
-import { Footer } from '@/components/geistdocs/footer';
-import { Navbar } from '@/components/geistdocs/navbar';
 import { GeistdocsProvider } from '@/components/geistdocs/provider';
-import { basePath } from '@/geistdocs';
+import { config } from '@/lib/geistdocs/config';
 import { mono, sans } from '@/lib/geistdocs/fonts';
 import { cn } from '@/lib/utils';
 
@@ -33,10 +33,10 @@ const Layout = async ({ children, params }: LayoutProps<'/[lang]'>) => {
       suppressHydrationWarning
     >
       <body>
-        <GeistdocsProvider basePath={basePath} lang={lang}>
-          <Navbar />
+        <GeistdocsProvider basePath={config.basePath} lang={lang}>
+          <Navbar config={config} />
           {children}
-          <Footer />
+          <Footer config={config} />
         </GeistdocsProvider>
       </body>
     </html>

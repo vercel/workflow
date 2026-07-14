@@ -13,7 +13,6 @@ import {
 } from 'react';
 import { cn } from '../../../lib/cn';
 import {
-  formatDuration,
   formatDurationPrecise,
   getHighResInMs,
 } from '../../trace-viewer/util/timing';
@@ -32,6 +31,7 @@ import {
   computeSpanSegments,
   getResourceColor,
   getSpanDurationMs,
+  isSpanErrored,
 } from '../utils';
 import {
   cullCollidingMarkers,
@@ -451,9 +451,7 @@ const TimelineBar = memo(function TimelineBar({
   const hasMarkers =
     markers.length > 0 || offscreen.left !== null || offscreen.right !== null;
 
-  const workflowStatus = (span.attributes.data as Record<string, unknown>)
-    ?.status as string | undefined;
-  const isErrored = span.status.code === 2 || workflowStatus === 'failed';
+  const isErrored = isSpanErrored(span);
   const colors = getResourceColor(span.resource);
   const fallbackBg = isErrored
     ? (colors.errorBg ?? 'var(--ds-red-200)')
@@ -733,7 +731,7 @@ export function Timeline({
               key={gap.rowIndex}
               leftFrac={gap.leftFrac}
               rightFrac={gap.rightFrac}
-              label={formatDuration(gap.gapMs, true)}
+              label={formatDurationPrecise(gap.gapMs)}
               rowIndex={gap.rowIndex}
             />
           ))}

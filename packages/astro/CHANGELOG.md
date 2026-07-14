@@ -1,5 +1,90 @@
 # @workflow/astro
 
+## 5.0.0-beta.34
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.34
+  - @workflow/rollup@5.0.0-beta.34
+  - @workflow/vite@5.0.0-beta.34
+
+## 5.0.0-beta.33
+
+### Patch Changes
+
+- Updated dependencies [[`a4d8de0`](https://github.com/vercel/workflow/commit/a4d8de03e6381d170ccf0c76ed77e05dc5545456)]:
+  - @workflow/builders@5.0.0-beta.33
+  - @workflow/rollup@5.0.0-beta.33
+  - @workflow/vite@5.0.0-beta.33
+
+## 5.0.0-beta.32
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.32
+  - @workflow/rollup@5.0.0-beta.32
+  - @workflow/vite@5.0.0-beta.32
+
+## 5.0.0-beta.31
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.31
+  - @workflow/rollup@5.0.0-beta.31
+  - @workflow/vite@5.0.0-beta.31
+
+## 5.0.0-beta.30
+
+### Patch Changes
+
+- Updated dependencies [[`df7e71d`](https://github.com/vercel/workflow/commit/df7e71de1c8e5407221219235f941c9fb58b6707), [`25b1509`](https://github.com/vercel/workflow/commit/25b1509e19badb6498927d3fc0d6f23b65329396)]:
+  - @workflow/builders@5.0.0-beta.30
+  - @workflow/rollup@5.0.0-beta.30
+  - @workflow/vite@5.0.0-beta.30
+
+## 5.0.0-beta.29
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.29
+  - @workflow/rollup@5.0.0-beta.29
+  - @workflow/vite@5.0.0-beta.29
+
+## 5.0.0-beta.28
+
+### Patch Changes
+
+- [#2752](https://github.com/vercel/workflow/pull/2752) [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d) Thanks [@ijjk](https://github.com/ijjk)! - Statically inject the configured world package into host bundles instead of selecting worlds dynamically at runtime.
+
+- Updated dependencies [[`2ca34ac`](https://github.com/vercel/workflow/commit/2ca34ac69c5c201ef85a61fe3a10cc75ca3c22c4), [`239031a`](https://github.com/vercel/workflow/commit/239031ad9e1d27942f8e30a59fd6fef254544fff), [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d), [`49a50e8`](https://github.com/vercel/workflow/commit/49a50e83d94656e1df123df1f27258fa7f1d3216)]:
+  - @workflow/builders@5.0.0-beta.28
+  - @workflow/rollup@5.0.0-beta.28
+  - @workflow/vite@5.0.0-beta.28
+
+## 5.0.0-beta.27
+
+### Patch Changes
+
+- [#2725](https://github.com/vercel/workflow/pull/2725) [`532b0e1`](https://github.com/vercel/workflow/commit/532b0e10d6c3105aa86dc871a7a206f784d5a22d) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Share framework project root detection across Astro, Next.js, and SvelteKit.
+
+- Updated dependencies [[`532b0e1`](https://github.com/vercel/workflow/commit/532b0e10d6c3105aa86dc871a7a206f784d5a22d), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`7615d99`](https://github.com/vercel/workflow/commit/7615d999f1f72a1d2cbe36ba414155140195d014)]:
+  - @workflow/builders@5.0.0-beta.27
+  - @workflow/rollup@5.0.0-beta.27
+  - @workflow/vite@5.0.0-beta.27
+
+## 5.0.0-beta.26
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.26
+  - @workflow/rollup@5.0.0-beta.26
+  - @workflow/vite@5.0.0-beta.26
+
 ## 5.0.0-beta.25
 
 ### Patch Changes

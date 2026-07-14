@@ -1,6 +1,7 @@
 import { FatalError } from '@workflow/errors';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { experimental_setAttributes } from './set-attributes.js';
+import { experimental_setAttributes, setAttributes } from './set-attributes.js';
 import { contextStorage, type StepContext } from './step/context-storage.js';
 
 const WORLD_CACHE = Symbol.for('@workflow/world//cache');
@@ -32,7 +33,7 @@ async function runInStepContext<T>(
   return contextStorage.run(stepContext(runId), callback);
 }
 
-describe('experimental_setAttributes (host-side)', () => {
+describe('setAttributes (host-side)', () => {
   let originalWorld: unknown;
 
   beforeEach(() => {
@@ -50,10 +51,10 @@ describe('experimental_setAttributes (host-side)', () => {
   });
 
   it('throws FatalError when called from plain host code', async () => {
-    await expect(
-      experimental_setAttributes({ phase: 'init' })
-    ).rejects.toBeInstanceOf(FatalError);
-    await expect(experimental_setAttributes({ phase: 'init' })).rejects.toThrow(
+    await expect(setAttributes({ phase: 'init' })).rejects.toBeInstanceOf(
+      FatalError
+    );
+    await expect(setAttributes({ phase: 'init' })).rejects.toThrow(
       /workflow.*step.*function/i
     );
   });
@@ -61,12 +62,13 @@ describe('experimental_setAttributes (host-side)', () => {
   it('posts normalized changes as a native event when called from a step', async () => {
     const create = vi.fn().mockResolvedValue({});
     globals[WORLD_CACHE] = {
+      specVersion: SPEC_VERSION_CURRENT,
       name: 'test-world',
       events: { create },
     };
 
     await runInStepContext(() =>
-      experimental_setAttributes({ phase: 'ready', stale: undefined })
+      setAttributes({ phase: 'ready', stale: undefined })
     );
 
     expect(create).toHaveBeenCalledWith(
@@ -87,11 +89,12 @@ describe('experimental_setAttributes (host-side)', () => {
   it('forwards allowReservedAttributes for step-side reserved namespace writes', async () => {
     const create = vi.fn().mockResolvedValue({});
     globals[WORLD_CACHE] = {
+      specVersion: SPEC_VERSION_CURRENT,
       events: { create },
     };
 
     await runInStepContext(() =>
-      experimental_setAttributes(
+      setAttributes(
         { '$agent.kind': 'durable-agent' },
         { allowReservedAttributes: true }
       )
@@ -117,6 +120,7 @@ describe('experimental_setAttributes (host-side)', () => {
       return {};
     });
     globals[WORLD_CACHE] = {
+      specVersion: SPEC_VERSION_CURRENT,
       events: { create },
     };
 
@@ -129,7 +133,7 @@ describe('experimental_setAttributes (host-side)', () => {
     });
 
     const call = contextStorage.run({ ...stepContext(), runReadyBarrier }, () =>
-      experimental_setAttributes({ phase: 'ready' })
+      setAttributes({ phase: 'ready' })
     );
 
     // The body ran before run_started is durable: the write must not fire yet.
@@ -146,6 +150,7 @@ describe('experimental_setAttributes (host-side)', () => {
   it('still posts when the runReadyBarrier rejects (write surfaces the real error)', async () => {
     const create = vi.fn().mockResolvedValue({});
     globals[WORLD_CACHE] = {
+      specVersion: SPEC_VERSION_CURRENT,
       events: { create },
     };
 
@@ -154,7 +159,7 @@ describe('experimental_setAttributes (host-side)', () => {
     runReadyBarrier.catch(() => {});
 
     await contextStorage.run({ ...stepContext(), runReadyBarrier }, () =>
-      experimental_setAttributes({ phase: 'ready' })
+      setAttributes({ phase: 'ready' })
     );
 
     // Barrier rejection is swallowed for ordering only — the write still fires
@@ -162,14 +167,19 @@ describe('experimental_setAttributes (host-side)', () => {
     expect(create).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the deprecated experimental_setAttributes alias working', async () => {
+    expect(experimental_setAttributes).toBe(setAttributes);
+  });
+
   it('rejects validation errors before posting from a step', async () => {
     const create = vi.fn();
     globals[WORLD_CACHE] = {
+      specVersion: SPEC_VERSION_CURRENT,
       events: { create },
     };
 
     await expect(
-      runInStepContext(() => experimental_setAttributes({ $sys: 'x' }))
+      runInStepContext(() => setAttributes({ $sys: 'x' }))
     ).rejects.toBeInstanceOf(FatalError);
     expect(create).not.toHaveBeenCalled();
   });

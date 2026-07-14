@@ -14,7 +14,7 @@ import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from '@/components/ui/tooltip';
+} from '@vercel/geistdocs/components/tooltip';
 import type { World } from './types';
 
 interface WorldCardSimpleProps {

@@ -4,7 +4,6 @@ import {
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
-  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
 } from '@workflow/world';
 import {
   afterEach,
@@ -99,10 +98,11 @@ describe('start', () => {
       mockQueue = vi.fn().mockResolvedValue(undefined);
 
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
-      } as any);
+      });
     });
 
     afterEach(() => {
@@ -110,34 +110,28 @@ describe('start', () => {
       vi.clearAllMocks();
     });
 
-    it('should use world.specVersion when available, falling back to SPEC_VERSION_SUPPORTS_EVENT_SOURCING', async () => {
+    it('rejects worlds that do not declare a specVersion', async () => {
       const validWorkflow = Object.assign(() => Promise.resolve('result'), {
         workflowId: 'test-workflow',
       });
 
-      // Mock world without specVersion → falls back to safe baseline (v2)
-      await start(validWorkflow, []);
-
-      expect(mockEventsCreate).toHaveBeenCalledWith(
-        expect.stringMatching(/^wrun_/),
-        expect.objectContaining({
-          eventType: 'run_created',
-          specVersion: SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
-        }),
-        expect.objectContaining({
-          v1Compat: false,
-        })
-      );
-
-      vi.clearAllMocks();
-
-      // Mock world with specVersion 3 → uses it
       setWorld({
-        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
       } as any);
+
+      await expect(start(validWorkflow, [])).rejects.toThrow(
+        'requires a World with matching spec version'
+      );
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+      expect(mockQueue).not.toHaveBeenCalled();
+    });
+
+    it('uses world.specVersion when available', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
 
       await start(validWorkflow, []);
 
@@ -151,6 +145,44 @@ describe('start', () => {
           v1Compat: false,
         })
       );
+    });
+
+    it('rejects worlds whose declared specVersion is older than the runtime', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      setWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await expect(start(validWorkflow, [])).rejects.toThrow(
+        'requires a World with matching spec version'
+      );
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+      expect(mockQueue).not.toHaveBeenCalled();
+    });
+
+    it('rejects worlds whose declared specVersion is newer than the runtime', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT + 1,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await expect(start(validWorkflow, [])).rejects.toThrow(
+        'requires a World with matching spec version'
+      );
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+      expect(mockQueue).not.toHaveBeenCalled();
     });
 
     it('should use provided specVersion when passed in options', async () => {
@@ -196,13 +228,16 @@ describe('start', () => {
         workflowId: 'test-workflow',
       });
       setWorld({
-        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
-      } as any);
+      });
 
-      await start(validWorkflow, [], { attributes: { tenant: 't1' } });
+      await start(validWorkflow, [], {
+        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        attributes: { tenant: 't1' },
+      });
 
       expect(mockEventsCreate).toHaveBeenCalledWith(
         expect.any(String),
@@ -244,11 +279,11 @@ describe('start', () => {
         workflowId: 'test-workflow',
       });
       setWorld({
-        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
-      } as any);
+      });
 
       await expect(
         start(validWorkflow, [], {
@@ -263,11 +298,11 @@ describe('start', () => {
         workflowId: 'test-workflow',
       });
       setWorld({
-        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
-      } as any);
+      });
 
       await expect(
         start(validWorkflow, [], { attributes: { $system: 'x' } })
@@ -280,11 +315,11 @@ describe('start', () => {
         workflowId: 'test-workflow',
       });
       setWorld({
-        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
-      } as any);
+      });
 
       await start(validWorkflow, [], {
         attributes: { $rootRunId: 'wrun_root', tenant: 't1' },
@@ -318,11 +353,11 @@ describe('start', () => {
         workflowId: 'test-workflow',
       });
       setWorld({
-        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
-      } as any);
+      });
 
       await expect(
         start(validWorkflow, [], {
@@ -338,11 +373,11 @@ describe('start', () => {
         workflowId: 'test-workflow',
       });
       setWorld({
-        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
-      } as any);
+      });
 
       await expect(
         start(validWorkflow, [], {
@@ -381,11 +416,12 @@ describe('start', () => {
       mockGetEncryptionKeyForRun = vi.fn().mockResolvedValue(undefined);
 
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_resolved'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
         getEncryptionKeyForRun: mockGetEncryptionKeyForRun,
-      } as any);
+      });
     });
 
     afterEach(() => {
@@ -461,11 +497,12 @@ describe('start', () => {
         .mockResolvedValue('dpl_resolved_abc123');
 
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
         resolveLatestDeploymentId: mockResolveLatest,
-      } as any);
+      });
 
       await start(validWorkflow, [], { deploymentId: 'latest' });
 
@@ -498,12 +535,13 @@ describe('start', () => {
       const mockGetEncryptionKeyForRun = vi.fn();
 
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
         resolveLatestDeploymentId: mockResolveLatest,
         getEncryptionKeyForRun: mockGetEncryptionKeyForRun,
-      } as any);
+      });
 
       await start(validWorkflow, [], { deploymentId: 'latest' });
 
@@ -528,11 +566,12 @@ describe('start', () => {
         .mockImplementation(() => {});
 
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
         // No resolveLatestDeploymentId
-      } as any);
+      });
 
       // Should not throw — 'latest' is a no-op in worlds without atomic
       // deployments.
@@ -569,11 +608,12 @@ describe('start', () => {
         .mockImplementation(() => {});
 
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
         // No resolveLatestDeploymentId
-      } as any);
+      });
 
       // Multiple runs that all hit the no-op path...
       await start(validWorkflow, [], { deploymentId: 'latest' });
@@ -598,11 +638,12 @@ describe('start', () => {
         .mockResolvedValue('dpl_resolved_abc123');
 
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
         resolveLatestDeploymentId: mockResolveLatest,
-      } as any);
+      });
 
       await start(validWorkflow, [], { deploymentId: 'dpl_specific_456' });
 
@@ -626,11 +667,12 @@ describe('start', () => {
         .mockResolvedValue('dpl_resolved_abc123');
 
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('dpl_default_789'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
         resolveLatestDeploymentId: mockResolveLatest,
-      } as any);
+      });
 
       await start(validWorkflow, []);
 
@@ -667,15 +709,16 @@ describe('start', () => {
       const mockEventsCreate = vi.fn().mockRejectedValue(serverError);
 
       setWorld({
-        // World declares specVersion 3 to enable CBOR queue transport + runInput
-        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
-      } as any);
+      });
 
       // start() should NOT throw — the queue was still dispatched
-      const run = await start(validWorkflow, [42]);
+      const run = await start(validWorkflow, [42], {
+        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+      });
       expect(run.runId).toMatch(/^wrun_/);
 
       // Queue should have been called with runInput
@@ -698,10 +741,11 @@ describe('start', () => {
         .mockRejectedValue(new Error('Queue unavailable'));
 
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
-      } as any);
+      });
 
       await expect(start(validWorkflow, [])).rejects.toThrow(
         'Queue unavailable'
@@ -716,12 +760,96 @@ describe('start', () => {
       const mockQueue = vi.fn().mockResolvedValue({ messageId: null });
 
       setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
-      } as any);
+      });
 
       await expect(start(validWorkflow, [])).rejects.toThrow('Bad Request');
+    });
+  });
+
+  describe('replay lineage (executionContext.replayedFromRunId)', () => {
+    let mockEventsCreate: ReturnType<typeof vi.fn>;
+    let mockQueue: ReturnType<typeof vi.fn>;
+
+    const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+      workflowId: 'test-workflow',
+    });
+
+    beforeEach(() => {
+      mockEventsCreate = vi.fn().mockImplementation((runId) => {
+        return Promise.resolve({
+          run: { runId: runId ?? 'wrun_test123', status: 'pending' },
+        });
+      });
+      mockQueue = vi.fn().mockResolvedValue(undefined);
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      });
+    });
+
+    afterEach(() => {
+      setWorld(undefined);
+      vi.clearAllMocks();
+    });
+
+    it('records replayedFromRunId in executionContext when provided', async () => {
+      const sourceRunId = 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+      await start(validWorkflow, [], { replayedFromRunId: sourceRunId });
+
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          eventType: 'run_created',
+          eventData: expect.objectContaining({
+            executionContext: expect.objectContaining({
+              replayedFromRunId: sourceRunId,
+            }),
+          }),
+        }),
+        expect.anything()
+      );
+    });
+
+    it('omits replayedFromRunId from executionContext when not provided', async () => {
+      await start(validWorkflow, []);
+
+      const eventData = mockEventsCreate.mock.calls[0]?.[1]?.eventData;
+      expect(eventData.executionContext).not.toHaveProperty(
+        'replayedFromRunId'
+      );
+    });
+
+    it('rejects a replayedFromRunId without the wrun_ prefix', async () => {
+      await expect(
+        start(validWorkflow, [], { replayedFromRunId: 'not-a-run-id' })
+      ).rejects.toThrow(/replayedFromRunId must be a run ID/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('rejects a wrun_-prefixed value whose body is not a valid ULID', async () => {
+      await expect(
+        start(validWorkflow, [], {
+          replayedFromRunId: `wrun_${'x'.repeat(300)}`,
+        })
+      ).rejects.toThrow(/replayedFromRunId must be a run ID/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-string replayedFromRunId', async () => {
+      await expect(
+        start(validWorkflow, [], {
+          // Types forbid this, but JS callers can still pass it.
+          replayedFromRunId: 12345 as unknown as string,
+        })
+      ).rejects.toThrow(/replayedFromRunId must be a run ID/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
     });
   });
 
@@ -765,6 +893,242 @@ describe('start', () => {
         opts: { deploymentId: string }
       ) => Promise<Run<unknown>>;
       expectTypeOf<DeploymentIdOverload>().toMatchTypeOf<typeof start>();
+    });
+  });
+  describe('createRunId', () => {
+    let mockEventsCreate: ReturnType<typeof vi.fn>;
+    let mockQueue: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      mockEventsCreate = vi.fn().mockImplementation((runId) => {
+        return Promise.resolve({
+          run: { runId: runId ?? 'wrun_test123', status: 'pending' },
+        });
+      });
+      mockQueue = vi.fn().mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      setWorld(undefined);
+      vi.clearAllMocks();
+    });
+
+    it('uses world.createRunId() when provided', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      const customId = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+      const createRunId = vi.fn().mockReturnValue(customId);
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        createRunId,
+      } as any);
+
+      await start(validWorkflow, []);
+
+      expect(createRunId).toHaveBeenCalledTimes(1);
+      // No options were passed, so the world receives an empty object
+      // (the default value used internally).
+      expect(createRunId).toHaveBeenCalledWith({});
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        `wrun_${customId}`,
+        expect.objectContaining({ eventType: 'run_created' }),
+        expect.any(Object)
+      );
+    });
+
+    it('passes the full options bag through to world.createRunId()', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      const customId = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+      const createRunId = vi.fn().mockReturnValue(customId);
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        createRunId,
+      } as any);
+
+      await start(validWorkflow, [], {
+        region: 'fra1',
+        specVersion: 3,
+      });
+
+      expect(createRunId).toHaveBeenCalledWith(
+        expect.objectContaining({ region: 'fra1', specVersion: 3 })
+      );
+    });
+
+    it('threads opts.region onto queue opts', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      const customId = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        createRunId: vi.fn().mockReturnValue(customId),
+      } as any);
+
+      await start(validWorkflow, [], { region: 'fra1' });
+
+      expect(mockQueue).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ runId: `wrun_${customId}` }),
+        expect.objectContaining({ region: 'fra1' })
+      );
+    });
+
+    it('omits region from queue opts when opts.region is undefined', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        createRunId: vi.fn().mockReturnValue('01ARZ3NDEKTSV4RRFFQ69G5FAV'),
+      } as any);
+
+      await start(validWorkflow, []);
+
+      const queueOpts = mockQueue.mock.calls[0][2];
+      expect(queueOpts).not.toHaveProperty('region');
+    });
+
+    it('falls back to a default monotonic ULID when world.createRunId is omitted', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await start(validWorkflow, []);
+
+      // ULIDs are 26 Crockford-Base32 chars; the runId becomes
+      // `wrun_` + 26 chars = 31 chars total.
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_[0-9A-HJKMNP-TV-Z]{26}$/),
+        expect.objectContaining({ eventType: 'run_created' }),
+        expect.any(Object)
+      );
+    });
+  });
+
+  describe('queue namespace', () => {
+    let mockEventsCreate: ReturnType<typeof vi.fn>;
+    let mockQueue: ReturnType<typeof vi.fn>;
+
+    const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+      workflowId: 'test-workflow',
+    });
+
+    beforeEach(() => {
+      mockEventsCreate = vi.fn().mockImplementation((runId) => {
+        return Promise.resolve({
+          run: { runId: runId ?? 'wrun_test123', status: 'pending' },
+        });
+      });
+      mockQueue = vi.fn().mockResolvedValue(undefined);
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      });
+    });
+
+    afterEach(() => {
+      setWorld(undefined);
+      vi.clearAllMocks();
+    });
+
+    it('enqueues to the default topic when no namespace is provided', async () => {
+      await start(validWorkflow, []);
+
+      expect(mockQueue).toHaveBeenCalledWith(
+        '__wkf_workflow_test-workflow',
+        expect.anything(),
+        expect.anything()
+      );
+    });
+
+    it('enqueues to the namespaced topic when a namespace is provided', async () => {
+      await start(validWorkflow, [], { namespace: 'eve' });
+
+      expect(mockQueue).toHaveBeenCalledWith(
+        '__eve_wkf_workflow_test-workflow',
+        expect.anything(),
+        expect.anything()
+      );
+    });
+
+    it('probes the namespaced health-check topic on cross-deployment starts', async () => {
+      // Cross-deployment starts (explicit deploymentId different from the
+      // current one) run a capability probe before enqueueing. The probe
+      // must target the same namespaced topic family as the run itself —
+      // otherwise deployments using a queue namespace never see it.
+      const healthResponse = JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: SPEC_VERSION_CURRENT,
+        workflowCoreVersion: '0.0.0-test',
+      });
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        streams: {
+          get: vi.fn(
+            async () =>
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode(healthResponse));
+                  controller.close();
+                },
+              })
+          ),
+        },
+      });
+
+      await start(validWorkflow, [], {
+        deploymentId: 'dpl_other',
+        namespace: 'eve',
+      });
+
+      expect(mockQueue).toHaveBeenCalledWith(
+        '__eve_wkf_workflow_health_check',
+        expect.objectContaining({ __healthCheck: true }),
+        expect.objectContaining({ deploymentId: 'dpl_other' })
+      );
+      expect(mockQueue).toHaveBeenCalledWith(
+        '__eve_wkf_workflow_test-workflow',
+        expect.anything(),
+        expect.objectContaining({ deploymentId: 'dpl_other' })
+      );
     });
   });
 });

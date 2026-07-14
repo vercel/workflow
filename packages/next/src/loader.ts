@@ -145,6 +145,41 @@ async function resolveWorkflowAliasPath(
   return resolveWorkflowAliasRelativePath(filePath, workingDir);
 }
 
+export async function injectWorkflowTargetWorldImport(
+  source: string,
+  buildersModule?: Pick<
+    typeof import('@workflow/builders'),
+    'ensureWorkflowTargetWorldEnv' | 'WORKFLOW_WORLD_TARGET_MODULE'
+  >
+): Promise<string> {
+  const targetModule =
+    buildersModule?.WORKFLOW_WORLD_TARGET_MODULE ??
+    '@workflow/core/runtime/world-target';
+  if (!source.includes(targetModule)) {
+    return source;
+  }
+
+  const { ensureWorkflowTargetWorldEnv, WORKFLOW_WORLD_TARGET_MODULE } =
+    buildersModule ?? (await getBuildersModule());
+
+  return source.replaceAll(
+    WORKFLOW_WORLD_TARGET_MODULE,
+    ensureWorkflowTargetWorldEnv()
+  );
+}
+
+function parseTransformMap(resultMap: unknown, fallbackMap: any): any {
+  if (typeof resultMap !== 'string') {
+    return resultMap || fallbackMap;
+  }
+
+  try {
+    return JSON.parse(resultMap);
+  } catch {
+    return resultMap;
+  }
+}
+
 async function getRelativeFilenameForSwc(
   filename: string,
   workingDir: string
@@ -196,6 +231,19 @@ async function getRelativeFilenameForSwc(
   return relativeFilename;
 }
 
+function isNodeModulesPath(filename: string): boolean {
+  return /(?:^|[/\\])node_modules(?:[/\\]|$)/.test(filename);
+}
+
+export function getLoaderSourceMapOptions(filename: string, sourceMap: any) {
+  const shouldEmitSourceMaps = !isNodeModulesPath(filename);
+  return {
+    inputSourceMap: shouldEmitSourceMaps ? (sourceMap ?? false) : false,
+    sourceMaps: shouldEmitSourceMaps,
+    inlineSourcesContent: shouldEmitSourceMaps,
+  };
+}
+
 // This loader applies the "use workflow"/"use step" transform.
 // All files use step mode; the SWC plugin decides per-function whether
 // to emit workflow or step bindings based on the source's directives.
@@ -214,19 +262,20 @@ export default function workflowLoader(
   this: WorkflowLoaderContext,
   source: string | Buffer,
   sourceMap: any
-): string | Promise<string> | void {
+): string | Promise<string> | undefined {
   const callback = this.async?.();
   const run = async (): Promise<{ code: string; map: any }> => {
     const filename = this.resourcePath;
     const normalizedSource = source.toString();
     const workingDir = process.cwd();
     const swcPluginPath = registerTransformDependencies(this);
-    const sourceForTransform = normalizedSource;
+    const sourceForTransform =
+      await injectWorkflowTargetWorldImport(normalizedSource);
 
     const isGeneratedWorkflowFile = await checkGeneratedFile(filename);
     // Skip generated workflow route files to avoid re-processing them.
     if (isGeneratedWorkflowFile) {
-      return { code: normalizedSource, map: sourceMap };
+      return { code: sourceForTransform, map: sourceMap };
     }
 
     // Detect workflow patterns in the source code.
@@ -234,7 +283,7 @@ export default function workflowLoader(
 
     // Check if file needs transformation based on patterns and path
     if (!(await checkShouldTransform(filename, patterns))) {
-      return { code: normalizedSource, map: sourceMap };
+      return { code: sourceForTransform, map: sourceMap };
     }
 
     const isTypeScript =
@@ -292,21 +341,10 @@ export default function workflowLoader(
         },
       },
       minify: false,
-      inputSourceMap: sourceMap,
-      sourceMaps: true,
-      inlineSourcesContent: true,
+      ...getLoaderSourceMapOptions(filename, sourceMap),
     });
 
-    let transformedMap = sourceMap;
-    if (typeof result.map === 'string') {
-      try {
-        transformedMap = JSON.parse(result.map);
-      } catch {
-        transformedMap = result.map;
-      }
-    } else if (result.map) {
-      transformedMap = result.map;
-    }
+    const transformedMap = parseTransformMap(result.map, sourceMap);
 
     return { code: result.code, map: transformedMap };
   };

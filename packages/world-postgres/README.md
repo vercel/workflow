@@ -65,7 +65,7 @@ const worldFromPool = createWorld({ pool });
 
 | Option             | Type      | Default                                                                                | Description                                                                                          |
 | ------------------ | --------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `connectionString` | `string`  | `process.env.WORKFLOW_POSTGRES_URL` or `'postgres://world:world@localhost:5432/world'` | Used only when `pool` is omitted, to construct an internal pool                                      |
+| `connectionString` | `string`  | `process.env.WORKFLOW_POSTGRES_URL`, `process.env.DATABASE_URL`, or `'postgres://world:world@localhost:5432/world'` | Used only when `pool` is omitted, to construct an internal pool                                      |
 | `maxPoolSize`      | `number`  | `process.env.WORKFLOW_POSTGRES_MAX_POOL_SIZE` or `pg.Pool` default (`10`)              | Optional. Sets the internal `pg.Pool` max size when `createWorld()` creates the pool                |
 | `pool`             | `pg.Pool` | —                                                                                      | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
 | `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
@@ -76,7 +76,7 @@ const worldFromPool = createWorld({ pool });
 | Variable                               | Description                                                  | Default                                         |
 | -------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------- |
 | `WORKFLOW_TARGET_WORLD`                | Set to `"@workflow/world-postgres"` to use this world | -                                               |
-| `WORKFLOW_POSTGRES_URL`                | PostgreSQL connection string                                 | `'postgres://world:world@localhost:5432/world'` |
+| `WORKFLOW_POSTGRES_URL`                | PostgreSQL connection string                                 | `DATABASE_URL` or `'postgres://world:world@localhost:5432/world'` |
 | `WORKFLOW_POSTGRES_JOB_PREFIX`         | Prefix for queue job names                                   | -                                               |
 | `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers                                 | `50`                                            |
 | `WORKFLOW_POSTGRES_MAX_POOL_SIZE`      | Internal `pg.Pool` max size                                  | `10`                                            |
@@ -111,7 +111,7 @@ yarn dlx --package @workflow/world-postgres bootstrap
 bunx --package @workflow/world-postgres bootstrap
 ```
 
-The CLI automatically loads `.env` files and will use the connection string from:
+The CLI and runtime World automatically load the connection string from:
 1. `WORKFLOW_POSTGRES_URL` environment variable
 2. `DATABASE_URL` environment variable
 3. Default: `postgres://world:world@localhost:5432/world`

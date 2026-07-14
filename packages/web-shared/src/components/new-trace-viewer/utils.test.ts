@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Span, SpanEvent } from './types';
 import {
+  clampViewportToRoot,
   computeOffscreenMarkers,
   computeSpanMarkers,
   computeSpanSegments,
+  computeTimeMarkers,
 } from './utils';
 
 /** Build a high-res timestamp tuple ([seconds, nanoseconds]) for a given ms. */
@@ -178,5 +180,68 @@ describe('computeOffscreenMarkers', () => {
       left: null,
       right: null,
     });
+  });
+});
+
+describe('clampViewportToRoot', () => {
+  const clamp = (next: { start: number; end: number }) =>
+    clampViewportToRoot(next, 100, 1100, 10);
+
+  it('passes through a window already inside the root', () => {
+    expect(clamp({ start: 200, end: 400 })).toEqual({ start: 200, end: 400 });
+  });
+
+  it('shifts a window past the left edge without changing its duration', () => {
+    expect(clamp({ start: 50, end: 250 })).toEqual({ start: 100, end: 300 });
+  });
+
+  it('shifts a window past the right edge without changing its duration', () => {
+    expect(clamp({ start: 1000, end: 1200 })).toEqual({
+      start: 900,
+      end: 1100,
+    });
+  });
+
+  it('clamps a window wider than the root to the full extent', () => {
+    expect(clamp({ start: 0, end: 5000 })).toEqual({ start: 100, end: 1100 });
+  });
+
+  it('enforces the minimum duration', () => {
+    expect(clamp({ start: 500, end: 502 })).toEqual({ start: 500, end: 510 });
+  });
+
+  it('keeps a minimum-duration window inside the root near the right edge', () => {
+    expect(clamp({ start: 1098, end: 1099 })).toEqual({
+      start: 1090,
+      end: 1100,
+    });
+  });
+});
+
+describe('computeTimeMarkers', () => {
+  it('emits distinct, precise labels across a sub-second-step window', () => {
+    // A ~3s window drops the tick step to 500ms. Before the fix this rendered
+    // duplicate "2s, 2s, 3s, 3s" labels; now each tick is distinct.
+    const labels = computeTimeMarkers(3000, 0).map((m) => m.label);
+    expect(labels).toEqual(['0s', '500ms', '1s', '1.5s', '2s', '2.5s', '3s']);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it('keeps clean whole-second labels when the step is >=1s', () => {
+    const labels = computeTimeMarkers(10_000, 0).map((m) => m.label);
+    expect(labels).toEqual(['0s', '2s', '4s', '6s', '8s', '10s']);
+  });
+
+  it('still reads in ms when super zoomed in', () => {
+    const labels = computeTimeMarkers(120, 0).map((m) => m.label);
+    expect(labels).toEqual([
+      '0s',
+      '20ms',
+      '40ms',
+      '60ms',
+      '80ms',
+      '100ms',
+      '120ms',
+    ]);
   });
 });

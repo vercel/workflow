@@ -4,7 +4,6 @@ import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
   createWebhook,
-  experimental_setAttributes,
   FatalError,
   fetch,
   getStepMetadata,
@@ -12,6 +11,7 @@ import {
   getWritable,
   type RequestWithResponse,
   RetryableError,
+  setAttributes,
   sleep,
 } from 'workflow';
 import { getHookByToken, getRun, Run, resumeHook, start } from 'workflow/api';
@@ -907,6 +907,39 @@ export async function hookDisposeTestWorkflow(
     disposed: true,
     hookDisposeTestData: 'workflow_completed',
   };
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * Workflow for testing same-run hook token recreation: each iteration
+ * recreates a hook with the same token after disposing the previous one.
+ *
+ * Regression workflow for issue #2777 — the disposal must be flushed
+ * before the next hook's creation is validated, otherwise the second
+ * round records a spurious conflict against the run's own disposed hook.
+ */
+export async function hookTokenReuseLoopWorkflow(
+  token: string,
+  rounds: number
+) {
+  'use workflow';
+
+  const received: string[] = [];
+  for (let round = 0; round < rounds; round++) {
+    const hook = createHook<{ message: string }>({ token });
+
+    const conflict = await hook.getConflict();
+    if (conflict) {
+      return { received, conflictRound: round };
+    }
+
+    const payload = await hook;
+    received.push(payload.message);
+    hook.dispose();
+  }
+
+  return { received, conflictRound: null };
 }
 
 //////////////////////////////////////////////////////////
@@ -3446,83 +3479,81 @@ export async function writableForwardedFromStepWorkflow(payload: string) {
 // Workflow Attributes - native workflow and step events.
 
 /**
- * Calls `experimental_setAttributes` directly from the workflow body.
+ * Calls `setAttributes` directly from the workflow body.
  * Each call appends a native `attr_set` event. The third call sets a key
  * to `undefined` and the test verifies
  * the key is absent from the final attribute map.
  */
-export async function experimentalSetAttributesWorkflow(input: number) {
+export async function setAttributesWorkflow(input: number) {
   'use workflow';
-  await experimental_setAttributes({ phase: 'init', source: 'workflow-body' });
+  await setAttributes({ phase: 'init', source: 'workflow-body' });
   const tripled = input * 3;
-  await experimental_setAttributes({ phase: 'done' });
-  await experimental_setAttributes({ source: undefined });
+  await setAttributes({ phase: 'done' });
+  await setAttributes({ source: undefined });
   return tripled;
 }
 
 async function setAttributesFromStep(input: number) {
   'use step';
-  await experimental_setAttributes({
+  await setAttributes({
     phase: 'step-started',
     source: 'step-body',
     input: String(input),
   });
-  await experimental_setAttributes({ phase: 'step-done' });
+  await setAttributes({ phase: 'step-done' });
   return input * 4;
 }
 
 /**
- * Calls `experimental_setAttributes` from inside a normal user step. Step
+ * Calls `setAttributes` from inside a normal user step. Step
  * bodies already run in host context, so the helper appends an attributed
  * `attr_set` event without creating a nested internal step.
  */
-export async function experimentalSetAttributesInsideStepWorkflow(
-  input: number
-) {
+export async function setAttributesInsideStepWorkflow(input: number) {
   'use workflow';
   return setAttributesFromStep(input);
 }
 
 /**
- * Fire-and-forget pattern: `void experimental_setAttributes(...)` lets
+ * Fire-and-forget pattern: `void setAttributes(...)` lets
  * the workflow body proceed without blocking on the attribute write.
  * Each `void` call commits a native event on suspension or final drain,
  * including the final write immediately before return.
  */
-export async function experimentalSetAttributesFireAndForgetWorkflow() {
+export async function setAttributesFireAndForgetWorkflow() {
   'use workflow';
-  void experimental_setAttributes({ phase: 'init', mode: 'fire-and-forget' });
+  void setAttributes({ phase: 'init', mode: 'fire-and-forget' });
   await sleep('100ms');
-  void experimental_setAttributes({ phase: 'mid' });
+  void setAttributes({ phase: 'mid' });
   await sleep('100ms');
-  void experimental_setAttributes({ phase: 'done' });
+  void setAttributes({ phase: 'done' });
   return 'completed';
 }
 
 /**
- * `Promise.all` of multiple `experimental_setAttributes` calls writing
+ * `Promise.all` of multiple `setAttributes` calls writing
  * disjoint keys: every key must land. The world-side per-run mutex (or
  * per-row atomic SQL update) serializes the writes; LWW-by-arrival only
  * matters when two calls touch the same key.
  */
-export async function experimentalSetAttributesParallelWorkflow() {
+export async function setAttributesParallelWorkflow() {
   'use workflow';
   await Promise.all([
-    experimental_setAttributes({ a: '1' }),
-    experimental_setAttributes({ b: '2' }),
-    experimental_setAttributes({ c: '3' }),
+    setAttributes({ a: '1' }),
+    setAttributes({ b: '2' }),
+    setAttributes({ c: '3' }),
   ]);
   return 'done';
 }
 
 /**
- * Workflow throws after awaiting `experimental_setAttributes`. The
+ * Workflow throws after awaiting `setAttributes`. The
  * attribute write completes before the throw, so the persisted run row
  * should carry the attribute even though the run ends up `failed`.
  */
-export async function experimentalSetAttributesThrowsAfterWorkflow() {
+export async function setAttributesThrowsAfterWorkflow() {
   'use workflow';
-  await experimental_setAttributes({
+  await setAttributes({
     phase: 'about-to-fail',
     reason: 'intentional',
   });
@@ -3530,14 +3561,14 @@ export async function experimentalSetAttributesThrowsAfterWorkflow() {
 }
 
 /**
- * Validation DX: every invalid `experimental_setAttributes` call must
+ * Validation DX: every invalid `setAttributes` call must
  * throw a catchable `FatalError` in the workflow body — before any event
  * is written — with a message that names the violated rule and the limit.
  * The workflow records each error's name and message, then writes one
  * valid attribute and completes, so the e2e test can assert on error
  * quality without wedging the run.
  */
-export async function experimentalSetAttributesValidationWorkflow() {
+export async function setAttributesValidationWorkflow() {
   'use workflow';
   const outcomes: Record<string, string> = {};
 
@@ -3546,7 +3577,7 @@ export async function experimentalSetAttributesValidationWorkflow() {
     attrs: Record<string, string | undefined>
   ) => {
     try {
-      await experimental_setAttributes(attrs);
+      await setAttributes(attrs);
       outcomes[label] = 'no-error';
     } catch (err) {
       const e = err as Error;
@@ -3566,7 +3597,7 @@ export async function experimentalSetAttributesValidationWorkflow() {
   await attempt('nonObject', 'phase=init' as any);
 
   // The run must remain healthy after every rejected call.
-  await experimental_setAttributes({ phase: 'validated' });
+  await setAttributes({ phase: 'validated' });
   return outcomes;
 }
 
@@ -3643,4 +3674,63 @@ export async function parallelStepsThenWebhookWorkflow(iterations: number) {
     }
   }
   return tokens;
+}
+
+/**
+ * Multi-region e2e probe (see packages/core/e2e/e2e-region.test.ts).
+ *
+ * Returns the `VERCEL_REGION` observed by both the workflow (flow route)
+ * and a step invocation, so the suite can assert that a run started with
+ * `start(..., { region })` was actually EXECUTED in the intended region —
+ * not just tagged with it. Regional execution requires the workbench app
+ * to be deployed to the target regions (workbench/nextjs-turbopack
+ * vercel.json pins iad1+sfo1+fra1) and the world's queue to route the
+ * flow message by the run ID's region tag (@workflow/world-vercel).
+ */
+export async function regionProbeWorkflow(label: string) {
+  'use workflow';
+  const workflowRegion = process.env.VERCEL_REGION ?? null;
+  const stepRegion = await regionProbeStep();
+  return { label, workflowRegion, stepRegion };
+}
+
+async function regionProbeStep(): Promise<string | null> {
+  'use step';
+  return process.env.VERCEL_REGION ?? null;
+}
+
+async function writeCrossRegionStreamChunks(
+  writable: WritableStream,
+  chunkCount: number
+) {
+  'use step';
+  const writer = writable.getWriter();
+  for (let i = 0; i < chunkCount; i++) {
+    await writer.write(new TextEncoder().encode(`chunk-${i}`));
+  }
+  writer.releaseLock();
+}
+
+async function closeCrossRegionStream(writable: WritableStream) {
+  'use step';
+  await writable.close();
+}
+
+/**
+ * Cross-region stream visibility probe (see
+ * packages/core/e2e/e2e-region.test.ts).
+ *
+ * Writes `chunkCount` chunks to the default output stream, then holds the
+ * stream OPEN for 45 seconds before closing. The hold-open window is the
+ * point: completed streams are the easy case, so a cross-region reader
+ * must observe the chunks while the stream is still IN PROGRESS to
+ * actually exercise cross-region visibility.
+ */
+export async function crossRegionStreamWorkflow(chunkCount: number) {
+  'use workflow';
+  const writable = getWritable();
+  await writeCrossRegionStreamChunks(writable, chunkCount);
+  await sleep('45s');
+  await closeCrossRegionStream(writable);
+  return 'done';
 }

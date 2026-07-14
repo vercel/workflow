@@ -405,11 +405,16 @@ Two queue topics are created per deployment:
 | `step.func` | `__wkf_step_*` | Step execution (long-running, `maxDuration: max`) |
 | `flow.func` | `__wkf_workflow_*` | Workflow orchestration (`maxDuration: 60`) |
 
-If you're building a framework integration that targets Vercel, you should write these triggers into the `.vc-config.json` for each generated function. The `STEP_QUEUE_TRIGGER` and `WORKFLOW_QUEUE_TRIGGER` constants are exported from `@workflow/builders` for this purpose:
+If you're building a framework integration that targets Vercel, you should write these triggers into the `.vc-config.json` for each generated function. Use `getWorkflowQueueTrigger()` for flow functions so `WORKFLOW_SEQUENTIAL_REPLAYS=1` is reflected in the generated trigger configuration (it also accepts a `namespace` option, matching `createWorkflowQueueTrigger`); `STEP_QUEUE_TRIGGER` is exported for step functions:
 
 ```typescript
-import { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from "@workflow/builders";
+import { getWorkflowQueueTrigger, STEP_QUEUE_TRIGGER } from "@workflow/builders";
+
+const flowTriggers = [getWorkflowQueueTrigger()];
+const stepTriggers = [STEP_QUEUE_TRIGGER];
 ```
+
+If your integration constructs the flow trigger object itself instead of calling `getWorkflowQueueTrigger()`, it must add `maxConcurrency: 1` to that trigger when sequential replays are enabled at build time (`WORKFLOW_SEQUENTIAL_REPLAYS=1`, or `WORKFLOW_SAFE_MODE=1` when the specific variable is unset — the exported `isSequentialReplaysEnabled()` helper implements this check). The runtime half of the feature (per-run queue topics) activates from the environment variable alone — without the trigger half, those per-run topics are not serialized and the setting only adds queue-topic cardinality.
 
 
 ### Custom implementations

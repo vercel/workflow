@@ -1,5 +1,6 @@
 import type { AnyEventRequest } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
+import { ulid } from 'ulid';
 import { MockAgent } from 'undici';
 import { describe, expect, it } from 'vitest';
 import {
@@ -8,8 +9,10 @@ import {
   splitEventDataForV4,
 } from './events.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
+import { encode as encodeRunId, REGION_IDS } from './run-id/index.js';
+import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
-const ORIGIN = 'https://vercel-workflow.com';
+const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
 
 function mockAgent() {
   const agent = new MockAgent();
@@ -162,8 +165,8 @@ describe('splitEventDataForV4 attribute fields', () => {
     expect(meta.workflowName).toBe('wf');
   });
 
-  it('carries attributes on resilient-start run_started', () => {
-    const { meta } = splitEventDataForV4({
+  it('splits resilient-start run_started input into the payload body', () => {
+    const { payload, meta } = splitEventDataForV4({
       eventType: 'run_started',
       specVersion: 4,
       eventData: {
@@ -174,6 +177,8 @@ describe('splitEventDataForV4 attribute fields', () => {
       },
     } as AnyEventRequest);
 
+    expect(payload).toBeInstanceOf(Uint8Array);
+    expect(meta.input).toBeUndefined();
     expect(meta.attributes).toEqual({ sourceAtStart: 'api' });
   });
 
@@ -225,9 +230,176 @@ describe('splitEventDataForV4 attribute fields', () => {
     expect(started.payload).toBeInstanceOf(Uint8Array);
     expect(started.meta.input).toBeUndefined();
   });
+
+  it('carries the step_started ownerMessageId in the frame meta on the lazy path', () => {
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'step_started',
+      correlationId: 'step_4',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        workflowName: 'wf',
+        input: new TextEncoder().encode('[]'),
+        ownerMessageId: 'msg_owner1',
+      },
+    } as AnyEventRequest);
+    expect(payload).toBeInstanceOf(Uint8Array);
+    expect(meta.ownerMessageId).toBe('msg_owner1');
+  });
+
+  it('carries the ownerMessageId re-stamp on a bare (owned-recovery) step_started', () => {
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'step_started',
+      correlationId: 'step_5',
+      specVersion: 4,
+      eventData: { stepName: 's', ownerMessageId: 'msg_owner1' },
+    } as AnyEventRequest);
+    expect(payload).toBeUndefined();
+    expect(meta.ownerMessageId).toBe('msg_owner1');
+  });
+
+  it('omits ownerMessageId from meta on an unstamped bare step_started', () => {
+    const { meta } = splitEventDataForV4({
+      eventType: 'step_started',
+      correlationId: 'step_6',
+      specVersion: 4,
+      eventData: { stepName: 's' },
+    } as AnyEventRequest);
+    expect(meta.ownerMessageId).toBeUndefined();
+  });
+
+  it('carries the run_cancelled cancelReason in the frame meta, not the payload', () => {
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'run_cancelled',
+      specVersion: 4,
+      eventData: { cancelReason: 'superseded by newer run' },
+    } as AnyEventRequest);
+
+    expect(payload).toBeUndefined();
+    expect(meta.cancelReason).toBe('superseded by newer run');
+  });
+
+  it('omits cancelReason from meta when run_cancelled carries no reason', () => {
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'run_cancelled',
+      specVersion: 4,
+    } as AnyEventRequest);
+
+    expect(payload).toBeUndefined();
+    expect(meta.cancelReason).toBeUndefined();
+  });
+
+  it('carries latency telemetry in the frame meta on step terminal events', () => {
+    const completed = splitEventDataForV4({
+      eventType: 'step_completed',
+      correlationId: 'step_1',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        workflowName: 'wf',
+        result: new TextEncoder().encode('"ok"'),
+        ttfs: 123,
+        optimizations: ['turbo', 'lazyStepStart'],
+      },
+    } as AnyEventRequest);
+    expect(completed.meta.ttfs).toBe(123);
+    expect(completed.meta.stso).toBeUndefined();
+    expect(completed.meta.optimizations).toEqual(['turbo', 'lazyStepStart']);
+
+    const failed = splitEventDataForV4({
+      eventType: 'step_failed',
+      correlationId: 'step_2',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        error: new TextEncoder().encode('"boom"'),
+        stso: 45,
+        stepCount: 7,
+        eventCount: 42,
+        optimizations: [],
+      },
+    } as AnyEventRequest);
+    expect(failed.meta.stso).toBe(45);
+    expect(failed.meta.stepCount).toBe(7);
+    expect(failed.meta.eventCount).toBe(42);
+    expect(failed.meta.ttfs).toBeUndefined();
+    expect(failed.meta.optimizations).toEqual([]);
+
+    // Malformed values (non-number, non-string-array) are dropped, not sent.
+    const malformed = splitEventDataForV4({
+      eventType: 'step_completed',
+      correlationId: 'step_3',
+      specVersion: 4,
+      eventData: {
+        stepName: 's',
+        result: new TextEncoder().encode('"ok"'),
+        ttfs: 'fast',
+        stepCount: 0,
+        eventCount: 2.5,
+        optimizations: [1, 2],
+      },
+    } as unknown as AnyEventRequest);
+    expect(malformed.meta.ttfs).toBeUndefined();
+    expect(malformed.meta.stepCount).toBeUndefined();
+    expect(malformed.meta.eventCount).toBeUndefined();
+    expect(malformed.meta.optimizations).toBeUndefined();
+  });
 });
 
 describe('createWorkflowRunEvent response coercion', () => {
+  it('accepts a current region-tagged run_created runId', async () => {
+    const taggedRunId = `wrun_${encodeRunId(ulid(), REGION_IDS.sfo1)}`;
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/${taggedRunId}/events/run_created`,
+        method: 'POST',
+      })
+      .reply(
+        200,
+        encode({
+          run: {
+            runId: taggedRunId,
+            status: 'running',
+            startedAt: new Date('2026-06-10T00:00:01.000Z'),
+          },
+          event: {
+            eventId: 'evnt_1',
+            runId: taggedRunId,
+            eventType: 'run_created',
+            createdAt: '2026-06-10T00:00:01.000Z',
+            eventData: {},
+          },
+        }),
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': taggedRunId,
+            'x-wf-created-at': '2026-06-10T00:00:01.000Z',
+          },
+        }
+      );
+
+    const result = await createWorkflowRunEvent(
+      taggedRunId,
+      {
+        eventType: 'run_created',
+        specVersion: 4,
+        eventData: {
+          deploymentId: 'dpl_1',
+          workflowName: 'wf',
+          input: new TextEncoder().encode('[]'),
+        },
+      } as AnyEventRequest,
+      undefined,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.event?.runId).toBe(taggedRunId);
+    agent.assertNoPendingInterceptors();
+  });
+
   it('sends occurredAt in the v4 frame meta', async () => {
     const agent = mockAgent();
     const occurredAt = new Date('2026-06-10T00:00:03.000Z');

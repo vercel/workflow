@@ -11,6 +11,7 @@ import {
   type UpdateStepRequest,
 } from '@workflow/world';
 import { z } from 'zod';
+import { normalizeStepData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
@@ -50,6 +51,13 @@ const StepWireWithRefsSchema = StepWireSchema.omit({
  * The `error` field on Step is SerializedData (Uint8Array) from the
  * serialization pipeline — we pass through the wire-format `error` (or
  * the resolved `errorRef`) as-is. Consumers hydrate via `hydrateStepError`.
+ *
+ * Wire→shape only: this does NOT decompress. The runtime write paths
+ * (createStep/updateStep/events.create) re-hydrate step payloads through
+ * `hydrateStepReturnValue`/`hydrateStepError`, which decompress on their
+ * own, so decompressing here would be redundant work and would skew the
+ * runtime's deserialize compression telemetry. Compression normalization
+ * for o11y/display is applied in {@link filterStepData}, the read path.
  */
 export function deserializeStep(wireStep: any): Step {
   const { error, errorRef, ...rest } = wireStep;
@@ -70,21 +78,25 @@ function filterStepData(
 ): Step | StepWithoutData;
 
 // Implementation - when resolveData='none', returns Step with input/output set to undefined
-// to match other World implementations (world-local, world-postgres)
+// to match other World implementations (world-local, world-postgres).
+//
+// This is the read/display entry point, so it decompresses gzip/zstd
+// payload wrappers via `normalizeStepData` (the runtime write paths use
+// `deserializeStep` directly and skip this — see its doc comment).
 function filterStepData(
   step: any,
   resolveData: 'none' | 'all'
 ): Step | StepWithoutData {
   if (resolveData === 'none') {
     const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = step;
-    const deserialized = deserializeStep(rest);
+    const deserialized = normalizeStepData(deserializeStep(rest));
     return {
       ...deserialized,
       input: undefined,
       output: undefined,
     } as StepWithoutData;
   }
-  return deserializeStep(step);
+  return normalizeStepData(deserializeStep(step));
 }
 
 // Functions

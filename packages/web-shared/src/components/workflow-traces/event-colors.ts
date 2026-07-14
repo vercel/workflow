@@ -2,7 +2,7 @@
  * Color utilities for workflow event markers
  */
 
-import type { Event } from '@workflow/world';
+import { type Event, isHookLifecycleEventType } from '@workflow/world';
 
 export interface EventColorPalette {
   /** Color of the diamond/marker itself */
@@ -51,11 +51,7 @@ export function getEventColor(
   }
 
   // Webhook-related - Purple
-  if (
-    eventType === 'hook_created' ||
-    eventType === 'hook_received' ||
-    eventType === 'hook_disposed'
-  ) {
+  if (isHookLifecycleEventType(eventType)) {
     return {
       color: 'var(--ds-purple-600)',
       background: 'var(--ds-purple-100)',
@@ -93,11 +89,7 @@ export function getEventColor(
  */
 export function shouldShowVerticalLine(eventType: Event['eventType']): boolean {
   // Show vertical lines for hook-related events
-  if (
-    eventType === 'hook_created' ||
-    eventType === 'hook_received' ||
-    eventType === 'hook_disposed'
-  ) {
+  if (isHookLifecycleEventType(eventType)) {
     return true;
   }
 

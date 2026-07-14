@@ -49,6 +49,12 @@ export interface DiscoveredEntries {
   discoveredSteps: Set<string>;
   discoveredWorkflows: Set<string>;
   discoveredSerdeFiles: Set<string>;
+  /**
+   * All JS/TS files visited while walking the workflow import graph.
+   * Watch-mode integrations use this to distinguish relevant HMR changes from
+   * unrelated application file edits.
+   */
+  discoveredFiles?: Set<string>;
 }
 
 interface FastDiscoverEntriesOptions {
@@ -256,11 +262,133 @@ function addImportParent(parent: string, child: string): void {
   children.add(normalizedChild);
 }
 
+const REGEX_PREFIX_CHARS = new Set([
+  '(',
+  '{',
+  '[',
+  '=',
+  ':',
+  ',',
+  ';',
+  '!',
+  '?',
+  '&',
+  '|',
+  '+',
+  '-',
+  '*',
+  '~',
+  '^',
+  '<',
+  '>',
+  '%',
+]);
+const REGEX_PREFIX_KEYWORDS =
+  /\b(?:return|throw|case|delete|void|typeof|instanceof|in|yield|await)$/;
+
+const canStartRegexLiteral = (output: string) => {
+  const previous = output.trimEnd();
+  if (previous.length === 0) {
+    return true;
+  }
+  const previousChar = previous[previous.length - 1];
+  return (
+    REGEX_PREFIX_CHARS.has(previousChar) || REGEX_PREFIX_KEYWORDS.test(previous)
+  );
+};
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the string/comment/regex scanner local and allocation-light.
+function stripCommentsFromSource(source: string): string {
+  let output = '';
+  let index = 0;
+  let quote: '"' | "'" | '`' | undefined;
+  let regex = false;
+  let regexCharClass = false;
+  let escaped = false;
+
+  while (index < source.length) {
+    const char = source[index];
+    const next = source[index + 1];
+
+    if (quote || regex) {
+      output += char;
+      index++;
+
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (quote && char === quote) {
+        quote = undefined;
+      } else if (regex && char === '[') {
+        regexCharClass = true;
+      } else if (regex && char === ']') {
+        regexCharClass = false;
+      } else if (regex && char === '/' && !regexCharClass) {
+        regex = false;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      output += char;
+      index++;
+      continue;
+    }
+
+    if (
+      char === '/' &&
+      next !== '/' &&
+      next !== '*' &&
+      canStartRegexLiteral(output)
+    ) {
+      regex = true;
+      output += char;
+      index++;
+      continue;
+    }
+
+    if (char === '/' && next === '/') {
+      output += '  ';
+      index += 2;
+      while (index < source.length && source[index] !== '\n') {
+        output += ' ';
+        index++;
+      }
+      continue;
+    }
+
+    if (char === '/' && next === '*') {
+      output += '  ';
+      index += 2;
+      while (index < source.length) {
+        const blockChar = source[index];
+        const blockNext = source[index + 1];
+        if (blockChar === '*' && blockNext === '/') {
+          output += '  ';
+          index += 2;
+          break;
+        }
+        output += blockChar === '\n' ? '\n' : ' ';
+        index++;
+      }
+      continue;
+    }
+
+    output += char;
+    index++;
+  }
+
+  return output;
+}
+
 function extractImportSpecifiers(source: string): string[] {
+  const sourceWithoutComments = stripCommentsFromSource(source);
   if (
-    !source.includes('import') &&
-    !source.includes('require') &&
-    !source.includes('from')
+    !sourceWithoutComments.includes('import') &&
+    !sourceWithoutComments.includes('require') &&
+    !sourceWithoutComments.includes('from')
   ) {
     return [];
   }
@@ -268,7 +396,7 @@ function extractImportSpecifiers(source: string): string[] {
   const specifiers = new Set<string>();
 
   for (const importPattern of IMPORT_SPECIFIER_PATTERNS) {
-    for (const match of source.matchAll(importPattern)) {
+    for (const match of sourceWithoutComments.matchAll(importPattern)) {
       const specifier = match[1];
       if (specifier) {
         specifiers.add(specifier);
@@ -909,4 +1037,6 @@ export async function fastDiscoverEntries({
     await Promise.race(inFlight);
     scheduleFiles();
   }
+
+  state.discoveredFiles = processedFiles;
 }

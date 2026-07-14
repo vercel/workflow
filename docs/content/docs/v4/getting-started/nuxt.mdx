@@ -9,6 +9,10 @@ related:
   - /docs/foundations/workflows-and-steps
 ---
 
+<CopyPrompt
+  text="In this Nuxt app, run `npm i workflow`. In `nuxt.config.ts`, add `modules: [&quot;workflow/nuxt&quot;]` and keep `compatibilityDate: &quot;latest&quot;`. Create `workflows/user-signup.ts` exporting `handleUserSignup(email)` with `&quot;use workflow&quot;`, `sleep` from `workflow`, and `&quot;use step&quot;` helpers that create a user and send emails. Add `server/api/signup.post.ts` using `defineEventHandler` from `h3` or `nitro/h3` and `start` from `workflow/api` to read `{ email }` and start the workflow. Run `npm run dev`, call `curl -X POST --json '{&quot;email&quot;:&quot;hello@example.com&quot;}' http://localhost:3000/api/signup`, and inspect with `npx workflow web` or `npx workflow inspect runs`."
+/>
+
 <Steps>
 
 <Step>

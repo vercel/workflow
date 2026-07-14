@@ -9,6 +9,10 @@ related:
   - /docs/foundations/workflows-and-steps
 ---
 
+<CopyPrompt
+  text="In this Astro app, run `npm i workflow`. In `astro.config.mjs`, import `workflow` from `workflow/astro` and add `integrations: [workflow()]`. Add the TypeScript plugin `{ &quot;name&quot;: &quot;workflow&quot; }` to `tsconfig.json` if TypeScript is used. Create `src/workflows/user-signup.ts` exporting `handleUserSignup(email)` with `&quot;use workflow&quot;`, `sleep` from `workflow`, and `&quot;use step&quot;` helpers. Add `src/pages/api/signup.ts` exporting `POST: APIRoute` that reads `{ email }`, calls `start(handleUserSignup, [email])` from `workflow/api`, returns `Response.json`, and sets `prerender = false`. Run `npm run dev`, call `curl -X POST --json '{&quot;email&quot;:&quot;hello@example.com&quot;}' http://localhost:4321/api/signup`, and inspect with `npx workflow inspect runs`."
+/>
+
 This guide will walk through setting up your first workflow in an Astro app. Along the way, you'll learn more about the concepts that are fundamental to using the Workflow SDK in your own projects.
 
 ---

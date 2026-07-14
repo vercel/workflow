@@ -5,6 +5,10 @@ type: guide
 summary: Build a distributed abort controller that uses workflow streams and hooks to propagate cancellation signals across process boundaries.
 ---
 
+<CopyPrompt
+  text="Build a distributed AbortController backed by a durable workflow. Define `abortHook` with `defineHook<{ reason?: string }>()` from `workflow` and derive a deterministic token from the user-provided ID (for example `abort:${id}`). In the coordination workflow, create the hook with that token, then race the hook against `sleep(ttl)` from `workflow`; when either fires, write an abort message to the run's stream via `getWritable()` in a &quot;use step&quot; helper. In the client class, make `create()` idempotent by checking `getHookByToken(token)` from `workflow/api` before `start()`; implement `.signal` by reading the run's stream via `getRun(runId).readable` and triggering a local `AbortController`; implement `.abort(reason)` by resuming the hook so every process sharing the ID gets the signal. Add an API route for remote aborts and wire the UI cancel button to it. Verify same-process abort, cross-process abort, TTL expiry, and reconnecting to an existing controller."
+/>
+
 Use this pattern when you need an `AbortController`-like interface that works across distributed systems. The controller uses a durable workflow to coordinate cancellation — calling `.abort()` on one machine triggers the `.signal` on any other machine.
 
 ## When to use this

@@ -36,17 +36,61 @@ That's it. Vercel automatically:
 
 For complete details on pricing, usage limits, and included allotments on Vercel, see the official Vercel documentation:
 
-- **[Vercel Workflow](https://vercel.com/docs/workflow)** — Pricing details, concepts, and observability for Workflow on Vercel
+- **[Vercel Workflow](https://vercel.com/docs/workflows)** — Pricing details, concepts, and observability for Workflow on Vercel
 - **[Vercel limits](https://vercel.com/docs/limits)** — Platform-wide limits including Workflow-specific constraints
 - **[Vercel Hobby plan](https://vercel.com/docs/plans/hobby)** — Free tier included usage for Workflow and other resources
 
 For self-hosted deployments, use the [Postgres World](/worlds/postgres). For local development, use the [Local World](/worlds/local).
 
+## Multi-region
+
+The Vercel World runs in every [Vercel Function region](https://vercel.com/docs/regions). Each workflow run is pinned to a single region at creation time: its stored state, queue dispatch, and streams are all served from that region — no cross-region round trips on the hot path. When your application is deployed in the run's region (the automatic case below), step execution is region-local too.
+
+<Callout type="info">
+  Multi-region requires `workflow` version **5.0.0-beta.33** or later.
+  The 4.x release line does not support region pinning — runs created by
+  4.x always live in `iad1`.
+</Callout>
+
+### Automatic region pinning
+
+No configuration is needed. A run is pinned to the region of the function that creates it:
+
+- Deploy your app to a single region (via [`regions`](https://vercel.com/docs/project-configuration/vercel-json#regions) in `vercel.json` or the project settings), and every run lives there.
+- Deploy to multiple regions for a globally distributed audience, and each run is pinned to the region that served the user who triggered it — workflow data and streaming stay close to that user.
+
+### Explicit region selection
+
+To pin a specific run somewhere else, pass the `region` option to [`start()`](/docs/api-reference/workflow-api/start):
+
+```typescript
+import { start } from "workflow/api";
+import { myWorkflow } from "@/workflows/my-workflow";
+
+const run = await start(myWorkflow, [input], { region: "sfo1" });
+```
+
+<Callout type="warn">
+  The `region` option controls where the run's **data is stored** and where
+  its **queue messages are dispatched from** — it does not deploy your code
+  there. Your workflow and step functions execute in the regions your
+  application is deployed to. For execution to actually happen in the
+  specified region, your app must be deployed there — via
+  [`regions`](https://vercel.com/docs/project-configuration/vercel-json#regions) in
+  `vercel.json` or the Function Regions setting in your project settings.
+  If it isn't, the run's data lives in the requested region but its steps
+  execute in the nearest region your app is deployed to.
+</Callout>
+
+### Good to know
+
+- Reads, hook resumes, and stream consumers can come from anywhere — the platform routes them to the run's region automatically.
+- Runs created by 4.x SDKs (and any runs that existed before you upgraded) live in `iad1` and are unaffected by an upgrade; there is no migration.
+- **Hook tokens are currently stored in `iad1`** for every run, regardless of the run's region: the token-to-run mapping that powers [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) lives there so tokens — which carry no region information — can always be resolved. Hook *payloads* are not affected: a received payload is recorded on the run's event log, which lives in the run's region like all other run data. This token placement may become a project-level setting in the future.
+
 ## Limitations
 
-- **Single-region deployment** - The backend infrastructure is currently deployed only in `iad1`. Applications in other regions will route workflow requests to `iad1`, which may result in higher latency. For best performance, deploy your Vercel apps using Workflow to `iad1`. Global deployment is planned to colocate the backend closer to your applications.
-
-- **Data residency** - The Vercel World is currently deployed in the `iad1` region. This means independently of the deployment location of your application, the data for your workflows will be stored in the `iad1` region.
+- **No run migration** - A run's region is fixed at creation. Existing runs cannot be moved to a different region.
 
 ## Observability
 
@@ -85,48 +129,98 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 ## Testing & Compatibility
 
-<WorldTestingPerformance />
+<WorldTestingPerformance worldId="vercel" />
 
 ## Configuration
 
-The Vercel World requires no configuration when deployed to Vercel. For advanced use cases, you can override settings programmatically via `createVercelWorld()`.
+In a Vercel deployment, you do not configure the Vercel World yourself. The platform injects everything the runtime needs, including `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, per-request OIDC tokens, and `VERCEL_DEPLOYMENT_KEY` for encryption.
+
+Do not set those platform-provided values yourself.
+
+Most users never need to set the `WORKFLOW_VERCEL_*` variables below. They are only overrides for tools running outside Vercel, such as your laptop or CI, when those tools need to inspect or test a remote Vercel Workflow project and cannot infer the project, team, token, or target environment automatically.
+
+For example, you might set them when running `workflow inspect runs --backend vercel` from CI without an interactive `vercel login`, or when running tests against a specific preview deployment. In normal local development, the CLI infers these values from your `.vercel` directory and Vercel CLI login. In a deployed Vercel function, these variables have no effect on runtime configuration, and the runtime warns if they are set there.
 
 ### `WORKFLOW_VERCEL_ENV`
 
-The Vercel environment to use. Options: `production`, `preview`, `development`. Automatically detected.
+The Vercel environment to target. Options: `production`, `preview`. Default: `production`.
 
 ### `WORKFLOW_VERCEL_AUTH_TOKEN`
 
-Authentication token for API requests. Automatically detected.
+Vercel API authentication token (secret — keep it in your environment, not in code). Falls back to `VERCEL_TOKEN`, then to your Vercel CLI login.
 
 ### `WORKFLOW_VERCEL_PROJECT`
 
-Vercel project ID for API requests. Automatically detected.
+Vercel project ID (`prj_...`).
+
+### `WORKFLOW_VERCEL_PROJECT_NAME`
+
+Vercel project name/slug, used for dashboard links.
 
 ### `WORKFLOW_VERCEL_TEAM`
 
-Vercel team ID for API requests. Automatically detected.
+Vercel team ID.
 
 ### `WORKFLOW_VERCEL_BACKEND_URL`
 
-Custom base URL for the Vercel workflow API. Automatically detected.
+Custom base URL for the Vercel workflow API proxy. Default: `https://api.vercel.com/v1/workflow`.
+
+### `VERCEL_WORKFLOW_SERVER_URL`
+
+Custom workflow-server URL for direct runtime requests, or for the proxy to forward to via `WORKFLOW_VERCEL_BACKEND_URL`. Default: unset; normal deployments should not need this.
+
+### `WORKFLOW_SEQUENTIAL_REPLAYS`
+
+Set `WORKFLOW_SEQUENTIAL_REPLAYS=1` to guarantee that **at most one orchestrator (flow) invocation runs at a time per workflow run**. This behavior is off by default; without it, the runtime relies on idempotency and the event log to tolerate concurrent flow invocations of the same run. It is also enabled by `WORKFLOW_SAFE_MODE=1` when `WORKFLOW_SEQUENTIAL_REPLAYS` is not set explicitly.
+
+When enabled, each run's orchestrator messages are given their own queue topic and the flow trigger is configured with `maxConcurrency: 1`, so [Vercel Queues](https://vercel.com/docs/queues) processes replays for a given run strictly one at a time. Step executions (which ride the flow topic in the combined handler model) get a per-step topic, so steps keep full parallelism.
+
+<Callout type="warn">
+  This variable is read at **both build time and runtime**, so it must be set as a project-level environment variable that applies to your build and your deployed functions. Setting it for only one will produce an inconsistent configuration. The same applies to framework integrations that write their own queue trigger configuration instead of using `getWorkflowQueueTrigger()` from `@workflow/builders`: they only get the runtime half (per-run topics) unless they also emit `maxConcurrency: 1` on their flow trigger.
+
+  Enabling sequential replays has a cost. Per [Vercel Queues pricing](https://vercel.com/docs/queues/pricing), push deliveries under `maxConcurrency` are billed at **2x units** for that operation, so every flow-route delivery costs double while this is enabled. It also creates one queue topic per run, which increases the number of distinct queues surfaced in queue observability, and each flow invocation waits for a per-run concurrency slot before delivery, which can add queueing latency. Leave it off unless you specifically need the per-run serialization guarantee.
+
+
+  While a replay holds a run's slot — including time spent executing steps inline — other wake messages for that run (hook resumes, aborts and cancellations, and run-timeout enforcement) wait for the slot. Expect aborts and timeouts to be delayed by up to the duration of the longest single invocation.
+
+  The guarantee covers messages sent by the Workflow SDK itself. External producers that compute a flow topic name directly (rather than enqueueing through the SDK) still deliver, but bypass the per-run serialization slot.
+</Callout>
+
+### `VERCEL_QUEUE_MAX_DELAY_SECONDS`
+
+Maximum delay, in seconds, that Workflow uses for one Vercel Queues continuation message when implementing `sleep()`. If a workflow sleeps longer than this, the runtime schedules another continuation message when the first one fires, repeating until the sleep's target time is reached. Default: `82800` (23 hours).
+
+Vercel Queues can delay messages for up to 7 days, capped by the message TTL. Because the default TTL is 24 hours, Workflow uses a 23-hour continuation hop to stay safely inside that default.
+
+### `WORKFLOW_REQUEST_TIMEOUT_MS`
+
+Per-request timeout, in milliseconds, for Vercel World HTTP calls to workflow-server. Default: `60000`. Minimum: `1`.
+
+### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
+
+Maximum stream chunks written in one Vercel World request. Larger batches are split across multiple requests. Default: `1000`. Minimum: `1`.
 
 ### Programmatic configuration
 
+`createWorld()` accepts explicit API configuration. It does not read `WORKFLOW_VERCEL_*` automatically, so pass the environment values yourself when you want a configured World module:
+
 {/*@skip-typecheck: incomplete code sample*/}
 
-```typescript title="workflow.config.ts" lineNumbers
-import { createVercelWorld } from "@workflow/world-vercel";
+```typescript title="my-world.ts" lineNumbers
+import { createWorld } from "@workflow/world-vercel";
 
-const world = createVercelWorld({
+export default createWorld({
   token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
-  baseUrl: "https://api.vercel.com/v1/workflow",
   projectConfig: {
-    projectId: "my-project",
-    teamId: "my-team",
+    projectId: "prj_...",
+    teamId: "team_...",
     environment: "production",
   },
 });
+```
+
+```bash title=".env"
+WORKFLOW_TARGET_WORLD="./my-world.ts"
 ```
 
 ## Versioning
@@ -178,4 +272,4 @@ The Vercel World uses Vercel's infrastructure for workflow execution:
 - **Queuing** - Steps are distributed across serverless functions via [Vercel Queues](https://vercel.com/docs/queues) with automatic retries and [consumer function security](#consumer-function-security)
 - **Authentication** - OIDC tokens provide secure, automatic authentication
 
-For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflow).
+For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflows).

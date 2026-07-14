@@ -5,6 +5,10 @@ type: guide
 summary: Cancel a running agent cooperatively with AbortController. A stop hook fires controller.abort(), the signal propagates into the agent step to cancel the model stream, and a data-stopped part is emitted to streaming clients before the workflow returns.
 ---
 
+<CopyPrompt
+  text="Add cancellation to this durable AI agent. For hard cancellation, expose a server route that receives `runId` and calls `getRun(runId).cancel()` from `workflow/api`. For graceful stop, define `stopHook` with `defineHook()` from `workflow`, create it with a stable token such as the workflow run ID, and race the agent loop against the stop hook using `Promise.race`. Use `getWritable<UIMessageChunk>()` to emit a final stopped/cancelled message before returning. Wire the UI Stop button to the route that resumes the hook or falls back to `getRun(runId).cancel()`. Verify active model/tool work stops, cleanup runs for graceful stop, and stale run IDs are handled."
+/>
+
 Cancel a running agent from the outside — for example, a "Stop" button in a chat UI, an admin cancellation endpoint, or a timeout fallback.
 
 <Callout type="warn">

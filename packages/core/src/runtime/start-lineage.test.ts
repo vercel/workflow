@@ -1,4 +1,7 @@
-import { SPEC_VERSION_SUPPORTS_ATTRIBUTES } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+} from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { contextStorage } from '../step/context-storage.js';
 import { start } from './start.js';
@@ -23,9 +26,11 @@ describe('start() cross-run lineage', () => {
   let runsGet: ReturnType<typeof vi.fn>;
   let queue: ReturnType<typeof vi.fn>;
 
-  function useWorld(specVersion: number) {
+  // The runtime requires the world to declare the current spec version; the
+  // per-run spec is driven separately via `opts.specVersion` where needed.
+  function useWorld() {
     setWorld({
-      specVersion,
+      specVersion: SPEC_VERSION_CURRENT,
       getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
       events: { create: eventsCreate },
       runs: { get: runsGet },
@@ -41,7 +46,7 @@ describe('start() cross-run lineage', () => {
     );
     runsGet = vi.fn();
     queue = vi.fn().mockResolvedValue(undefined);
-    useWorld(SPEC_VERSION_SUPPORTS_ATTRIBUTES);
+    useWorld();
   });
 
   afterEach(() => {
@@ -138,10 +143,12 @@ describe('start() cross-run lineage', () => {
     expect(queue.mock.calls[0]?.[1]?.runInput?.attributes).toEqual(expected);
   });
 
-  it('records no lineage on a world without attribute support', async () => {
-    useWorld(SPEC_VERSION_SUPPORTS_ATTRIBUTES - 1);
-
-    await insideRun('wrun_parent', () => start(wf('child-workflow'), []));
+  it('records no lineage when the run predates attribute support', async () => {
+    await insideRun('wrun_parent', () =>
+      start(wf('child-workflow'), [], {
+        specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES - 1,
+      })
+    );
 
     expect(seededAttributes()).toBeUndefined();
     expect(runsGet).not.toHaveBeenCalled();

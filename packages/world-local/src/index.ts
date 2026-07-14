@@ -18,6 +18,7 @@ import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue, type DirectHandler } from './queue.js';
 import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
+import { resetHookIndexEnsureCache } from './storage/hook-index.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
@@ -53,7 +54,7 @@ export type LocalWorld = World & {
  * @throws {DataDirAccessError} If the data directory cannot be created or accessed
  * @throws {DataDirVersionError} If the data directory version is incompatible
  */
-export function createLocalWorld(args?: Partial<Config>): LocalWorld {
+export function createWorld(args?: Partial<Config>): LocalWorld {
   const definedArgs = args
     ? Object.fromEntries(
         Object.entries(args).filter(([, value]) => value !== undefined)
@@ -62,7 +63,10 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   const mergedConfig = { ...config.value, ...definedArgs };
   const tag = mergedConfig.tag;
   const queue = createQueue(mergedConfig);
-  const storage = createStorage(mergedConfig.dataDir, tag);
+  const { clearCache: clearStorageCache, ...storage } = createStorage(
+    mergedConfig.dataDir,
+    tag
+  );
   const recoverActiveRuns = mergedConfig.recoverActiveRuns ?? true;
   return {
     specVersion: SPEC_VERSION_CURRENT,
@@ -100,9 +104,11 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
       await reenqueueActiveRuns(recoveryRuns, queue.queue, 'world-local');
     },
     async close() {
+      clearStorageCache();
       await queue.close();
     },
     async clear() {
+      clearStorageCache();
       if (tag) {
         // Selectively delete only files matching this tag
         const basedir = mergedConfig.dataDir;
@@ -144,6 +150,7 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
           'steps',
           'events',
           'hooks',
+          'hooks/by-run',
           'waits',
           'streams/runs',
         ];
@@ -156,28 +163,80 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
             );
           })
         );
+        // Delete tagged hook-index entries (nested per-key directories)
+        for (const indexDir of ['token-index', 'id-index']) {
+          const fullIndexDir = path.join(basedir, 'hooks', indexDir);
+          let keyDirEntries: import('node:fs').Dirent[];
+          try {
+            keyDirEntries = await fs.readdir(fullIndexDir, {
+              withFileTypes: true,
+            });
+          } catch {
+            keyDirEntries = [];
+          }
+          await Promise.all(
+            keyDirEntries
+              .filter((entry) => entry.isDirectory())
+              .map(async (entry) => {
+                const keyDir = path.join(fullIndexDir, entry.name);
+                const taggedEntryFiles = await listTaggedFiles(keyDir, tag);
+                await Promise.all(
+                  taggedEntryFiles.map((f) => deleteJSON(path.join(keyDir, f)))
+                );
+              })
+          );
+        }
         // Clean up lock files used for atomic terminal-state guards
         await fs
           .rm(path.join(basedir, '.locks'), { recursive: true, force: true })
           .catch(() => {});
-        // Delete tagged stream chunks (.{tag}.bin files)
+        // Delete tagged stream chunks (.{tag}.bin files). Chunks are sharded
+        // one directory per stream (streams/chunks/<streamName>/<chunkId>.{tag}.bin),
+        // so iterate each per-stream directory — the top-level chunks dir now
+        // holds only subdirectories, so listing it directly would match nothing
+        // and silently leak tagged chunk files across test sessions.
         const chunksDir = path.join(basedir, 'streams', 'chunks');
-        const taggedBinFiles = await listTaggedFilesByExtension(
-          chunksDir,
-          tag,
-          '.bin'
-        );
+        let streamDirEntries: import('node:fs').Dirent[];
+        try {
+          streamDirEntries = await fs.readdir(chunksDir, {
+            withFileTypes: true,
+          });
+        } catch {
+          streamDirEntries = [];
+        }
         await Promise.all(
-          taggedBinFiles.map((f) =>
-            fs.unlink(path.join(chunksDir, f)).catch(() => {})
-          )
+          streamDirEntries
+            .filter((entry) => entry.isDirectory())
+            .map(async (entry) => {
+              const streamChunkDir = path.join(chunksDir, entry.name);
+              const taggedBinFiles = await listTaggedFilesByExtension(
+                streamChunkDir,
+                tag,
+                '.bin'
+              );
+              await Promise.all(
+                taggedBinFiles.map((f) =>
+                  fs.unlink(path.join(streamChunkDir, f)).catch(() => {})
+                )
+              );
+            })
         );
         // Clear the in-memory write cache so deleted paths are forgotten
         clearCreatedFilesCache();
       } else {
+        // `rm()` removes directories that the write path may have cached.
+        clearCreatedFilesCache();
+        resetHookIndexEnsureCache();
         await rm(mergedConfig.dataDir, { recursive: true, force: true });
         await initDataDir(mergedConfig.dataDir);
       }
     },
   };
+}
+
+/**
+ * @deprecated Use `createWorld()` instead.
+ */
+export function createLocalWorld(args?: Partial<Config>): LocalWorld {
+  return createWorld(args);
 }
