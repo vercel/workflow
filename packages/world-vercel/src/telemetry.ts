@@ -51,11 +51,62 @@ async function getOtelApi(): Promise<typeof api | null> {
 
 let tracerPromise: Promise<api.Tracer | null> | null = null;
 
+function workflowDebugEnabled(): boolean {
+  return (
+    typeof process !== 'undefined' &&
+    typeof process.env.DEBUG === 'string' &&
+    (process.env.DEBUG.includes('workflow:') || process.env.DEBUG === '*')
+  );
+}
+
+let otelDiagLogged = false;
+
+/**
+ * One-shot runtime diagnostic (DEBUG=workflow:* only): prints how THIS module
+ * instance of `@opentelemetry/api` sees the global registration — enough to
+ * tell a noop tracer from a registered provider, and a missing registration
+ * from an incompatible one. @workflow/core emits the same shape tagged
+ * `core`, so a single deployment's logs show both views side by side.
+ */
+function logOtelDiagnosticOnce(otel: typeof api, tracer: api.Tracer): void {
+  if (otelDiagLogged || !workflowDebugEnabled()) return;
+  otelDiagLogged = true;
+  try {
+    const g = (globalThis as Record<symbol, unknown>)[
+      Symbol.for('opentelemetry.js.api.1')
+    ] as { version?: string } | undefined;
+    const provider = otel.trace.getTracerProvider();
+    const delegate =
+      (provider as { getDelegate?: () => unknown }).getDelegate?.() ?? provider;
+    const probe = tracer.startSpan('workflow.otel.probe.world_vercel');
+    console.warn(
+      '[workflow:otel-diag] world-vercel',
+      JSON.stringify({
+        globalRegistrationVersion: g?.version ?? null,
+        providerCtor: provider?.constructor?.name ?? null,
+        delegateCtor: (delegate as object | null)?.constructor?.name ?? null,
+        tracerCtor: tracer?.constructor?.name ?? null,
+        probeCtor: probe?.constructor?.name ?? null,
+        probeRecording: probe.isRecording(),
+      })
+    );
+    probe.end();
+  } catch (error) {
+    console.warn(
+      '[workflow:otel-diag] world-vercel failed:',
+      error instanceof Error ? error.message : error
+    );
+  }
+}
+
 async function getTracer(): Promise<api.Tracer | null> {
   if (!tracerPromise) {
-    tracerPromise = getOtelApi().then((otel) =>
-      otel ? otel.trace.getTracer('workflow') : null
-    );
+    tracerPromise = getOtelApi().then((otel) => {
+      if (!otel) return null;
+      const tracer = otel.trace.getTracer('workflow');
+      logOtelDiagnosticOnce(otel, tracer);
+      return tracer;
+    });
   }
   return tracerPromise;
 }

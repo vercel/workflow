@@ -1,0 +1,33 @@
+---
+title: React Router
+description: Run durable workflows in a React Router framework-mode app using Nitro.
+type: overview
+summary: Choose your React Router version and connect React Router, Nitro, and Workflow SDK.
+related:
+  - /docs/getting-started/nitro
+  - /docs/getting-started/vite
+  - /docs/foundations/workflows-and-steps
+---
+
+React Router framework mode builds the browser application and its server-rendering code, but it still needs a server to receive requests. [Nitro](https://v3.nitro.build) provides that server. Workflow SDK integrates with Nitro to add the durable workflow routes and build artifacts.
+
+The three pieces share one Vite build:
+
+1. **React Router** builds your routes, loaders, actions, and browser assets.
+2. **Nitro** runs the React Router request handler and any routes in `server/routes`.
+3. **Workflow SDK** finds files with `"use workflow"` and `"use step"`, then adds its runtime routes to Nitro.
+
+Choose the guide that matches your React Router major version:
+
+<AutoCards />
+
+<Callout>
+  These guides require **Nitro v3**. Nitro v2 does not provide the Vite
+  environment integration used by this setup.
+</Callout>
+
+## What the bridge does
+
+The setup adds a small `server/ssr.ts` file. It turns React Router's generated server build into a standard Fetch API handler that Nitro can run. The Vite config then points Nitro's server and public output at the same `build` directory React Router uses.
+
+This is configuration in your application, not a separate React Router adapter. Your React Router routes remain React Router routes, while Nitro owns the HTTP server and Workflow SDK uses Nitro's lifecycle and routing.

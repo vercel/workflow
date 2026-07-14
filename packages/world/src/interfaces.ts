@@ -394,4 +394,34 @@ export interface World extends Queue, Streamer, Storage {
    *   tolerate `undefined` for direct callers.
    */
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
+
+  /**
+   * World-specific display fields for a run.
+   *
+   * Tooling — e.g. the `workflow inspect` CLI — calls this to enrich a
+   * run's listing row / detail output with fields only the world can
+   * derive: a region decoded from the run ID, placement read off the
+   * run's `executionContext`, a shard, a billing tier, etc. Consumers
+   * render each returned key as an additional column/property; when the
+   * hook is absent, no extra fields appear at all.
+   *
+   * The contract:
+   * - **Cheap and pure.** Called once per displayed run, so avoid I/O —
+   *   prefer deriving fields from the entity you are given.
+   * - **Read only what you recognise.** The argument is the run entity
+   *   as the caller has it (a full storage run, or a leaner analytics
+   *   row) — typed loosely for the same reason as {@link createRunId}.
+   *   Tolerate missing fields.
+   * - **Must not throw.**
+   * - A `null` field value means "applicable but undeterminable" and is
+   *   preserved as `null` in structured output (vs. the hook being
+   *   absent, where the key does not exist at all). Return `null` or an
+   *   empty object to add nothing for a given run.
+   */
+  describeRun?(
+    run: Readonly<Record<string, unknown>>
+  ):
+    | Record<string, string | null>
+    | null
+    | Promise<Record<string, string | null> | null>;
 }

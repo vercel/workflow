@@ -561,7 +561,8 @@ function recordReadTimeToFirstChunk(
   startEpochMs: number,
   runId: string,
   name: string,
-  startIndex?: number
+  startIndex?: number,
+  connectMs?: number
 ): void {
   void (async () => {
     await recordElapsedSpan('workflow.stream.read', startEpochMs, {
@@ -571,8 +572,43 @@ function recordReadTimeToFirstChunk(
         'workflow.stream.name': name,
         'workflow.stream.operation': 'read',
         'workflow.stream.read.ttfc_ms': Date.now() - startEpochMs,
+        ...(typeof connectMs === 'number'
+          ? { 'workflow.stream.read.connect_ms': connectMs }
+          : {}),
         ...(typeof startIndex === 'number'
           ? { 'workflow.stream.start_index': startIndex }
+          : {}),
+      },
+    });
+  })();
+}
+
+/**
+ * Emit the client-observed read-completion span when a stream read drains:
+ * back-dated to the read dispatch, so its duration is the total read, with
+ * chunk/byte counts for throughput. Cancelled reads emit nothing. Fire-and-
+ * forget; no-op without OTEL.
+ */
+function recordStreamReadComplete(
+  startEpochMs: number,
+  runId: string,
+  name: string,
+  chunkCount: number,
+  byteCount: number,
+  reconnects?: number
+): void {
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.read.complete', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.operation': 'read_complete',
+        'workflow.stream.read.total_ms': Date.now() - startEpochMs,
+        'workflow.stream.read.chunks': chunkCount,
+        'workflow.stream.read.bytes': byteCount,
+        ...(typeof reconnects === 'number'
+          ? { 'workflow.stream.read.reconnects': reconnects }
           : {}),
       },
     });
@@ -593,6 +629,14 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
     // an OpenTelemetry SDK registered.
     let readStart: number | undefined;
     let firstChunkReported = false;
+    // Client-observed connect duration: the world.streams.get await (read
+    // dispatch -> stream handle / response headers). Stamped on the
+    // workflow.stream.read span once the first chunk arrives.
+    let connectMs: number | undefined;
+    // Read-completion counters for the workflow.stream.read.complete span
+    // emitted when the stream drains.
+    let chunksDelivered = 0;
+    let bytesDelivered = 0;
     super({
       // @ts-expect-error Not sure why TypeScript is complaining about this
       type: 'bytes',
@@ -602,7 +646,9 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         if (!reader) {
           if (readStart === undefined) readStart = Date.now();
           const world = await getWorldLazy();
+          const connectStart = Date.now();
           const stream = await world.streams.get(runId, name, startIndex);
+          connectMs = Date.now() - connectStart;
           reader = this.#reader = stream.getReader();
         }
         if (!reader) {
@@ -613,6 +659,15 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         const result = await reader.read();
         if (result.done) {
           this.#reader = undefined;
+          if (readStart !== undefined) {
+            recordStreamReadComplete(
+              readStart,
+              runId,
+              name,
+              chunksDelivered,
+              bytesDelivered
+            );
+          }
           controller.close();
         } else {
           // The server flushes a leading zero-length chunk (v3+) to commit
@@ -624,8 +679,16 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
             readStart !== undefined
           ) {
             firstChunkReported = true;
-            recordReadTimeToFirstChunk(readStart, runId, name, startIndex);
+            recordReadTimeToFirstChunk(
+              readStart,
+              runId,
+              name,
+              startIndex,
+              connectMs
+            );
           }
+          chunksDelivered += 1;
+          bytesDelivered += result.value.byteLength;
           // Forward raw bytes; encryption/decryption is handled at the
           // framing level by getSerializeStream/getDeserializeStream.
           controller.enqueue(result.value);
@@ -714,13 +777,22 @@ export function createReconnectingFramedStream(
   let totalReconnectCount = 0;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let buffer = new Uint8Array(0);
+  // Read telemetry (same semantics as WorkflowServerReadableStream):
+  // dispatch time, first-connect duration, first-frame latch, and totals.
+  let readStart: number | undefined;
+  let connectMs: number | undefined;
+  let firstChunkReported = false;
+  let chunksDelivered = 0;
+  let bytesDelivered = 0;
 
   async function connect(): Promise<void> {
     const world = await getWorldLazy();
     const effectiveStartIndex = reconnectSupported
       ? currentStartIndex + consumedFrames
       : startIndex;
+    const connectStart = Date.now();
     const stream = await world.streams.get(runId, name, effectiveStartIndex);
+    if (connectMs === undefined) connectMs = Date.now() - connectStart;
     reader = stream.getReader();
   }
 
@@ -769,6 +841,7 @@ export function createReconnectingFramedStream(
 
   return new ReadableStream<Uint8Array>({
     pull: async (controller) => {
+      if (readStart === undefined) readStart = Date.now();
       // Loop until we emit something, hit EOF, or fatally error. Reads that
       // only extend the in-flight-frame buffer don't enqueue anything — we
       // keep reading rather than returning empty-handed.
@@ -805,6 +878,16 @@ export function createReconnectingFramedStream(
           // bytes (there shouldn't be any; a well-formed stream ends on a
           // frame boundary).
           reader = undefined;
+          if (readStart !== undefined) {
+            recordStreamReadComplete(
+              readStart,
+              runId,
+              name,
+              chunksDelivered,
+              bytesDelivered,
+              totalReconnectCount
+            );
+          }
           controller.close();
           return;
         }
@@ -832,6 +915,18 @@ export function createReconnectingFramedStream(
           controller.enqueue(buffer.slice(0, total));
           buffer = buffer.slice(total);
           consumedFrames++;
+          chunksDelivered++;
+          bytesDelivered += total;
+          if (!firstChunkReported && readStart !== undefined) {
+            firstChunkReported = true;
+            recordReadTimeToFirstChunk(
+              readStart,
+              runId,
+              name,
+              startIndex,
+              connectMs
+            );
+          }
           emitted = true;
         }
 
@@ -887,7 +982,8 @@ function recordStreamWriteFlush(
   runId: string,
   name: string,
   chunkCount: number,
-  byteCount: number
+  byteCount: number,
+  rpcMs: number
 ): void {
   void (async () => {
     await recordElapsedSpan('workflow.stream.flush', startEpochMs, {
@@ -899,6 +995,33 @@ function recordStreamWriteFlush(
         'workflow.stream.flush.buffer_dwell_ms': dispatchEpochMs - startEpochMs,
         'workflow.stream.flush.chunks': chunkCount,
         'workflow.stream.flush.bytes': byteCount,
+        // Client-observed World write RPC duration (network hop included).
+        // Same key as world-vercel's per-request span attribute so queries
+        // work regardless of which layer emitted it.
+        'workflow.stream.write.chunk_rtt': rpcMs,
+      },
+    });
+  })();
+}
+
+/**
+ * Emit the client-observed span for the stream-close RPC: its duration is the
+ * `world.streams.close` round trip (network hop included). Fire-and-forget;
+ * no-op without OTEL.
+ */
+function recordStreamClose(
+  startEpochMs: number,
+  runId: string,
+  name: string
+): void {
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.close', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.operation': 'close',
+        'workflow.stream.close.rpc_ms': Date.now() - startEpochMs,
       },
     });
   })();
@@ -980,6 +1103,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         resolvedFlushIntervalMs =
           world.streamFlushIntervalMs ?? getStreamFlushIntervalMs();
       }
+      const rpcStartAt = Date.now();
       try {
         // Use writeMulti if available for batch writes
         if (
@@ -1013,7 +1137,8 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
           runId,
           name,
           chunksToFlush.length,
-          chunksToFlush.reduce((sum, c) => sum + c.byteLength, 0)
+          chunksToFlush.reduce((sum, c) => sum + c.byteLength, 0),
+          Date.now() - rpcStartAt
         );
       }
 
@@ -1085,7 +1210,9 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         await ensureRunReady();
 
         const world = await worldPromise;
+        const closeStart = Date.now();
         await world.streams.close(runId, name);
+        recordStreamClose(closeStart, runId, name);
       },
       abort(reason) {
         // Clean up timer to prevent leaks

@@ -1,5 +1,6 @@
 export type * from './analytics.js';
 export {
+  AnalyticsAttributeKeySchema,
   AnalyticsEventSchema,
   AnalyticsHookSchema,
   AnalyticsRunSchema,

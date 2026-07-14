@@ -1,7 +1,8 @@
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
+import { workflow as viteWorkflow } from './vite.js';
 
 type StubOptions = {
   routing: boolean;
@@ -111,6 +112,92 @@ describe('@workflow/nitro virtual handlers', () => {
       expect(source).toContain(
         `import { POST } from "/tmp/.nitro/workflow/${buildPath}";`
       );
+    }
+  });
+});
+
+describe('@workflow/nitro builder lifecycle', () => {
+  it('closes a development Nitro instance with its Vite plugin container', async () => {
+    const nitro = createNitroStub({ routing: true, dev: true });
+    nitro.close = vi.fn(async () => {});
+    const plugin = viteWorkflow().find(
+      (candidate) => candidate.name === 'workflow:nitro'
+    ) as any;
+
+    await plugin.nitro.setup(nitro);
+    await plugin.buildEnd?.();
+
+    expect(nitro.close).toHaveBeenCalledOnce();
+  });
+
+  it('disposes temporary build contexts after each build', async () => {
+    const dispose = vi.fn(async () => {});
+    const builder = new LocalBuilder(
+      createNitroStub({ routing: true, dev: true })
+    );
+    Object.assign(builder, {
+      getInputFiles: async () => [],
+      createCombinedBundle: async () => ({
+        manifest: {},
+        stepsContext: { dispose },
+        interimBundleCtx: { dispose },
+      }),
+      createWebhookBundle: async () => {},
+      createManifest: async () => {},
+    });
+
+    await builder.build();
+
+    expect(dispose).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('@workflow/nitro transform boundaries', () => {
+  it('does not re-transform generated Nitro build artifacts', async () => {
+    const rollupBeforeHooks: Array<(nitro: any, config: any) => void> = [];
+    const nitro = createNitroStub({ routing: true });
+    nitro.hooks.hook = (
+      name: string,
+      hook: (nitro: any, config: any) => void
+    ) => {
+      if (name === 'rollup:before') rollupBeforeHooks.push(hook);
+    };
+
+    const plugins = viteWorkflow();
+    const viteTransform = plugins.find(
+      (plugin) => plugin.name === 'workflow:transform'
+    ) as any;
+    const viteNitro = plugins.find(
+      (plugin) => plugin.name === 'workflow:nitro'
+    ) as any;
+
+    await viteNitro.nitro.setup(nitro);
+
+    const config: { plugins: any[] } = { plugins: [] };
+    for (const hook of rollupBeforeHooks) {
+      hook(nitro, config);
+    }
+    const nitroTransform = config.plugins.find(
+      (plugin: { name?: string }) => plugin.name === 'workflow:transform'
+    );
+
+    const code = `
+      import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
+      export class Serializable {
+        static [WORKFLOW_SERIALIZE](value) { return value; }
+        static [WORKFLOW_DESERIALIZE]() { return new Serializable(); }
+      }
+    `;
+    const generatedId = '/tmp/.nitro/vite/services/ssr/assets/index.js';
+    const siblingId = '/tmp/.nitro-source/index.js';
+
+    for (const transform of [viteTransform, nitroTransform]) {
+      await expect(
+        transform.transform.call({}, code, generatedId)
+      ).resolves.toBeNull();
+      await expect(
+        transform.transform.call({}, code, siblingId)
+      ).resolves.not.toBeNull();
     }
   });
 });
