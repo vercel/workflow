@@ -120,15 +120,12 @@ export async function createHook(
     metadata?: SerializedData;
   }
 ): Promise<Hook> {
+  const { hookId, ...eventData } = data;
   const result = await storage.events.create(runId, {
     eventType: 'hook_created',
     specVersion: SPEC_VERSION_CURRENT,
-    correlationId: data.hookId,
-    eventData: {
-      token: data.token,
-      tokenExpiresAt: data.tokenExpiresAt,
-      metadata: data.metadata,
-    },
+    correlationId: hookId,
+    eventData,
   });
   if (!result.hook) {
     throw new Error('Expected hook to be created');

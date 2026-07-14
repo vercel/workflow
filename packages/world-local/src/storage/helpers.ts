@@ -53,30 +53,38 @@ export async function isHookDisposalCommitted(
   return false;
 }
 
-/**
- * Path of the file that reserves a hook token.
- */
-export function hookTokenConstraintPath(
-  basedir: string,
-  token: string
-): string {
-  return path.join(basedir, 'hooks', 'tokens', `${hashToken(token)}.json`);
-}
-
-export async function withHookTokenConstraintLock<T>(
-  constraintPath: string,
+/** Cross-process lock for Hook token and run-event transactions. */
+export async function withFileLock<T>(
+  filePath: string,
   fn: () => Promise<T>
 ): Promise<T> {
-  await fs.mkdir(path.dirname(constraintPath), { recursive: true });
-  const release = await lock(constraintPath, {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const release = await lock(filePath, {
     realpath: false,
-    retries: { forever: true, minTimeout: 10, maxTimeout: 100 },
+    stale: 30_000,
+    retries: {
+      forever: true,
+      maxRetryTime: 15_000,
+      minTimeout: 10,
+      maxTimeout: 100,
+    },
   });
   try {
     return await fn();
   } finally {
     await release();
   }
+}
+
+export function withRunEventLock<T>(
+  basedir: string,
+  runId: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  return withFileLock(
+    resolveWithinBase(basedir, '.locks', 'runs', `${runId}.events`),
+    fn
+  );
 }
 
 /**

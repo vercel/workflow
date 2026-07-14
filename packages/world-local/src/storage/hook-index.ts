@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { Event } from '@workflow/world';
+import type { Event, HookCreatedEvent } from '@workflow/world';
 import { EventSchema, HookSchema } from '@workflow/world';
 import { z } from 'zod';
 import {
@@ -295,30 +295,47 @@ async function ensureHookIndexesImpl(basedir: string): Promise<void> {
   await writeExclusive(markerPath, '');
 }
 
+// Token reservations are global; Hook ID reads retain normal tag visibility.
+export type HookIndexLookup =
+  | { kind: 'token'; token: string }
+  | { kind: 'id'; hookId: string; tag: string | undefined };
+
 /**
- * Find the newest visible `hook_created` event for a token or hookId.
+ * Find the newest matching `hook_created` event for a token or hookId.
  * Entries are iterated newest-first (eventIds are ULIDs); dangling or
  * non-matching entries are skipped. Liveness is the caller's job.
  */
 export async function findNewestIndexedHookCreatedEvent(
   basedir: string,
-  index: { kind: 'token'; token: string } | { kind: 'id'; hookId: string },
-  matches: (event: Event) => boolean,
-  tag?: string
-): Promise<Event | null> {
+  index: HookIndexLookup
+): Promise<{ event: HookCreatedEvent; tag: string | undefined } | null> {
   await ensureHookIndexes(basedir);
   let dir: string;
-  try {
-    dir =
-      index.kind === 'token'
-        ? tokenIndexDir(basedir, index.token)
-        : idIndexDir(basedir, index.hookId);
-  } catch {
-    return null;
+  let isVisible: (fileId: string) => boolean;
+  let matches: (event: HookCreatedEvent) => boolean;
+  switch (index.kind) {
+    case 'token':
+      dir = tokenIndexDir(basedir, index.token);
+      isVisible = () => true;
+      matches = (event) => event.eventData.token === index.token;
+      break;
+    case 'id':
+      try {
+        dir = idIndexDir(basedir, index.hookId);
+      } catch {
+        return null;
+      }
+      isVisible = (fileId) => isVisibleToTag(fileId, index.tag);
+      matches = (event) => event.correlationId === index.hookId;
+      break;
+    default: {
+      const unknownIndex: never = index;
+      throw new Error(`Unknown Hook index: ${JSON.stringify(unknownIndex)}`);
+    }
   }
 
   const entryIds = (await listJSONFiles(dir))
-    .filter((fileId) => isVisibleToTag(fileId, tag))
+    .filter(isVisible)
     .sort((a, b) => stripTag(b).localeCompare(stripTag(a)));
 
   for (const entryId of entryIds) {
@@ -335,24 +352,22 @@ export async function findNewestIndexedHookCreatedEvent(
     }
     if (!entry) continue;
 
-    const eventId = stripTag(entryId);
+    const tag = tagOf(entryId);
     let eventPath: string;
     try {
       eventPath = taggedPath(
         basedir,
         'events',
-        `${entry.runId}-${eventId}`,
-        tagOf(entryId)
+        `${entry.runId}-${stripTag(entryId)}`,
+        tag
       );
     } catch {
       continue;
     }
     const event = await readEventLenient(eventPath);
-    if (!event) continue;
-    if (event.eventType !== 'hook_created') continue;
-    if (typeof event.correlationId !== 'string') continue;
-    if (!matches(event)) continue;
-    return event;
+    if (event?.eventType === 'hook_created' && matches(event)) {
+      return { event, tag };
+    }
   }
   return null;
 }

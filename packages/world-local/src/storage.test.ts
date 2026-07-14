@@ -6,12 +6,9 @@ import type { Event, Storage } from '@workflow/world';
 import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { deleteJSON, writeJSON } from './fs.js';
-import {
-  hashToken,
-  hookDisposeLockPath,
-  hookTokenConstraintPath,
-} from './storage/helpers.js';
+import { writeJSON } from './fs.js';
+import { hashToken, hookDisposeLockPath } from './storage/helpers.js';
+import { hookTokenConstraintPath } from './storage/hook-token-constraint.js';
 import { createStorage } from './storage.js';
 import {
   completeWait,
@@ -2268,7 +2265,7 @@ describe('Storage', () => {
         expect(hook2.hookId).toBe('hook_2');
       });
 
-      it('keeps a terminal token unavailable until expiration', async () => {
+      it('rebuilds a retained Hook and keeps its token unavailable', async () => {
         const token = 'retained-token';
         await createHook(storage, testRunId, {
           hookId: 'hook_retained_owner',
@@ -2279,12 +2276,12 @@ describe('Storage', () => {
         await updateRun(storage, testRunId, 'run_completed', {
           output: new Uint8Array(),
         });
+        // Simulate cache loss: the retained event must rebuild the reservation.
+        await fs.rm(hookTokenConstraintPath(testDir, token));
         await expect(storage.hooks.getByToken(token)).resolves.toMatchObject({
           runId: testRunId,
           token,
         });
-
-        await deleteJSON(hookTokenConstraintPath(testDir, token));
 
         const duplicate = await createRun(storage, {
           deploymentId: 'deployment-retained-duplicate',
@@ -2297,13 +2294,13 @@ describe('Storage', () => {
           eventData: { token },
         });
 
-        expect(result.event?.eventType).toBe('hook_conflict');
-        expect(
-          result.event?.eventType === 'hook_conflict'
-            ? result.event.eventData.conflictingRunId
-            : undefined
-        ).toBe(testRunId);
-        expect(result.hook).toBeUndefined();
+        expect(result).toMatchObject({
+          event: {
+            eventType: 'hook_conflict',
+            eventData: { conflictingRunId: testRunId },
+          },
+          hook: undefined,
+        });
       });
 
       it('uses expiration only after the owning run is terminal', async () => {
@@ -2320,31 +2317,25 @@ describe('Storage', () => {
           tokenExpiresAt,
         });
 
-        const dateNow = vi
-          .spyOn(Date, 'now')
-          .mockReturnValue(tokenExpiresAt.getTime());
-        try {
-          const conflict = await storage.events.create(replacement.runId, {
-            eventType: 'hook_created',
-            correlationId: 'hook_expiration_boundary_conflict',
-            eventData: { token },
-          });
-          expect(conflict.event.eventType).toBe('hook_conflict');
+        vi.spyOn(Date, 'now').mockReturnValue(tokenExpiresAt.getTime());
+        const conflict = await storage.events.create(replacement.runId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_expiration_boundary_conflict',
+          eventData: { token },
+        });
+        expect(conflict.event.eventType).toBe('hook_conflict');
 
-          await updateRun(storage, testRunId, 'run_completed', {
-            output: new Uint8Array(),
-          });
-          await expect(storage.hooks.getByToken(token)).rejects.toMatchObject({
-            name: 'HookNotFoundError',
-          });
-          const hook = await createHook(storage, replacement.runId, {
-            hookId: 'hook_expiration_boundary_replacement',
-            token,
-          });
-          expect(hook.runId).toBe(replacement.runId);
-        } finally {
-          dateNow.mockRestore();
-        }
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+        await expect(storage.hooks.getByToken(token)).rejects.toMatchObject({
+          name: 'HookNotFoundError',
+        });
+        const hook = await createHook(storage, replacement.runId, {
+          hookId: 'hook_expiration_boundary_replacement',
+          token,
+        });
+        expect(hook.runId).toBe(replacement.runId);
       });
 
       it('admits only one hook when a token expires concurrently', async () => {
@@ -2384,12 +2375,10 @@ describe('Storage', () => {
           }),
         ]);
 
-        expect(
-          results.filter((result) => result.event.eventType === 'hook_created')
-        ).toHaveLength(1);
-        expect(
-          results.filter((result) => result.event.eventType === 'hook_conflict')
-        ).toHaveLength(1);
+        expect(results.map(({ event }) => event.eventType).sort()).toEqual([
+          'hook_conflict',
+          'hook_created',
+        ]);
       });
 
       // Regression test for #2778: a claim whose owning run is terminal can
@@ -3459,48 +3448,35 @@ describe('Storage', () => {
     });
 
     it('should recover an orphaned hook token claim with no matching hook entity', async () => {
-      // Crash-recovery regression: if a prior in-flight `hook_created`
-      // wrote the token-claim file but exited before the hook entity
-      // was written, the same-`(runId, hookId)` retry must not be
-      // treated as a "real duplicate" — that would throw
-      // EntityConflictError, which the runtime's concurrent-replay
-      // catch path would swallow, permanently leaving the run with no
-      // hook and no `hook_created` event in the log.
-      //
-      // The recovery path detects the missing hook entity and
-      // completes the partial write: it (re-)writes the hook entity
-      // and the outer code path emits the `hook_created` event.
+      // Simulate a crash after reserving the token but before persisting the
+      // Hook and event. The same owner must finish creation, not conflict.
       const token = 'orphaned-claim-token';
       const hookId = 'hook_orphan_1';
+      const tokenExpiresAt = new Date('2026-08-01T00:00:00.000Z');
 
-      // Pre-seed an orphaned token claim — same shape as one written
-      // by `events.create` but with no corresponding hook entity on
-      // disk. This simulates a crash between `writeExclusive(claim)`
-      // and the hook entity write.
-      const tokensDir = path.join(testDir, 'hooks', 'tokens');
-      await fs.mkdir(tokensDir, { recursive: true });
-      await fs.writeFile(
-        path.join(tokensDir, `${hashToken(token)}.json`),
-        JSON.stringify({ token, hookId, runId: testRunId, foo: 'bar' })
-      );
+      await writeJSON(hookTokenConstraintPath(testDir, token), {
+        token,
+        hookId,
+        runId: testRunId,
+        tokenExpiresAt,
+      });
 
-      // Sanity: the hook entity is not on disk yet.
       await expect(storage.hooks.get(hookId)).rejects.toThrow(
         /not found|HookNotFoundError/i
       );
 
-      // Retry: must succeed, write the hook entity, and emit a
-      // hook_created event.
-      const hook = await createHook(storage, testRunId, { hookId, token });
+      // The retry cannot extend the expiration stored by the first attempt.
+      const hook = await createHook(storage, testRunId, {
+        hookId,
+        token,
+        tokenExpiresAt: new Date('2026-09-01T00:00:00.000Z'),
+      });
       expect(hook.hookId).toBe(hookId);
       expect(hook.token).toBe(token);
 
-      // The hook entity is now durable.
       const retrieved = await storage.hooks.get(hookId);
       expect(retrieved.hookId).toBe(hookId);
 
-      // The event log contains a hook_created event for this hookId
-      // (and no hook_conflict event).
       const events = await storage.events.list({
         runId: testRunId,
         pagination: {},
@@ -3511,34 +3487,12 @@ describe('Storage', () => {
       const conflicts = events.data.filter(
         (e) => e.eventType === 'hook_conflict'
       );
-      expect(created).toHaveLength(1);
+      expect(created).toEqual([
+        expect.objectContaining({
+          eventData: expect.objectContaining({ tokenExpiresAt }),
+        }),
+      ]);
       expect(conflicts).toHaveLength(0);
-    });
-
-    it('keeps the original expiration during same-Hook recovery', async () => {
-      const token = 'orphaned-retention-constraint-token';
-      const hookId = 'hook_orphaned_retention_constraint';
-      const tokenExpiresAt = new Date('2026-08-01T00:00:00.000Z');
-      await writeJSON(hookTokenConstraintPath(testDir, token), {
-        token,
-        hookId,
-        runId: testRunId,
-        eventId: 'evnt_00000000000000000000000000',
-        tokenExpiresAt,
-      });
-
-      const result = await storage.events.create(testRunId, {
-        eventType: 'hook_created',
-        correlationId: hookId,
-        eventData: {
-          token,
-          tokenExpiresAt: new Date('2026-09-01T00:00:00.000Z'),
-        },
-      });
-      if (result.event.eventType !== 'hook_created') {
-        throw new Error(`Expected hook_created, got ${result.event.eventType}`);
-      }
-      expect(result.event.eventData.tokenExpiresAt).toEqual(tokenExpiresAt);
     });
 
     it('should recover an orphaned hook entity with no matching hook_created event', async () => {
@@ -3780,7 +3734,6 @@ describe('Storage', () => {
         testRunId
       );
 
-      await fs.unlink(hookPath);
       await fs.unlink(tokenClaimPath);
 
       await expect(storage.hooks.get(hookId)).resolves.toMatchObject({
