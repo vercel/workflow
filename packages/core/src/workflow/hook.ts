@@ -180,9 +180,6 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         const queueItem = ctx.invocationsQueue.get(correlationId);
         if (queueItem && queueItem.type === 'hook') {
           queueItem.hasCreatedEvent = true;
-          // The event log is authoritative on replay. In particular, an old
-          // event with no expiration field must not gain one merely because
-          // newly deployed workflow code added the option.
           queueItem.tokenExpiresAt = event.eventData.tokenExpiresAt;
         }
         hasCreated = true;
