@@ -152,6 +152,56 @@ describe('@workflow/nitro builder lifecycle', () => {
   });
 });
 
+describe('@workflow/nitro transform boundaries', () => {
+  it('does not re-transform generated Nitro build artifacts', async () => {
+    const rollupBeforeHooks: Array<(nitro: any, config: any) => void> = [];
+    const nitro = createNitroStub({ routing: true });
+    nitro.hooks.hook = (
+      name: string,
+      hook: (nitro: any, config: any) => void
+    ) => {
+      if (name === 'rollup:before') rollupBeforeHooks.push(hook);
+    };
+
+    const plugins = viteWorkflow();
+    const viteTransform = plugins.find(
+      (plugin) => plugin.name === 'workflow:transform'
+    ) as any;
+    const viteNitro = plugins.find(
+      (plugin) => plugin.name === 'workflow:nitro'
+    ) as any;
+
+    await viteNitro.nitro.setup(nitro);
+
+    const config: { plugins: any[] } = { plugins: [] };
+    for (const hook of rollupBeforeHooks) {
+      hook(nitro, config);
+    }
+    const nitroTransform = config.plugins.find(
+      (plugin: { name?: string }) => plugin.name === 'workflow:transform'
+    );
+
+    const code = `
+      import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
+      export class Serializable {
+        static [WORKFLOW_SERIALIZE](value) { return value; }
+        static [WORKFLOW_DESERIALIZE]() { return new Serializable(); }
+      }
+    `;
+    const generatedId = '/tmp/.nitro/vite/services/ssr/assets/index.js';
+    const siblingId = '/tmp/.nitro-source/index.js';
+
+    for (const transform of [viteTransform, nitroTransform]) {
+      await expect(
+        transform.transform.call({}, code, generatedId)
+      ).resolves.toBeNull();
+      await expect(
+        transform.transform.call({}, code, siblingId)
+      ).resolves.not.toBeNull();
+    }
+  });
+});
+
 describe('@workflow/nitro world target bundling', () => {
   it('forces workflow SDK packages inline in production builds so aliases can resolve', async () => {
     const rollupBeforeHooks: Array<(nitro: any, config: any) => void> = [];
