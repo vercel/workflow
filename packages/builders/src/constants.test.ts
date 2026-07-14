@@ -48,4 +48,13 @@ describe('createWorkflowEntrypointOptionsCode', () => {
       ', { namespace: "custom" }'
     );
   });
+
+  it('inlines basePath alongside namespace options', () => {
+    expect(
+      createWorkflowEntrypointOptionsCode({
+        namespace: 'custom',
+        basePath: '/v2',
+      })
+    ).toBe(', { namespace: "custom", basePath: "/v2" }');
+  });
 });

@@ -40,6 +40,9 @@ interface BaseWorkflowConfig {
   // Optional prefix for debug files (e.g., "_" for Astro to ignore them)
   debugFilePrefix?: string;
 
+  // Optional route prefix for apps deployed below the origin root.
+  basePath?: string;
+
   // Suppress informational logs emitted by createWorkflowsBundle()
   // (e.g. intermediate/final workflow bundle timing logs).
   suppressCreateWorkflowsBundleLogs?: boolean;

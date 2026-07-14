@@ -9,7 +9,7 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { pluralize } from '@workflow/utils';
+import { createWorkflowBaseUrl, pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import {
   getQueueTopicPrefix,
@@ -548,9 +548,11 @@ const stepHandler = createQueueHandler(
                     workflowStartedAt: new Date(+workflowStartedAt),
                     // TODO: there should be a getUrl method on the world interface itself. This
                     // solution only works for vercel + local worlds.
-                    url: isVercel
-                      ? `https://${process.env.VERCEL_URL}`
-                      : `http://localhost:${port ?? 3000}`,
+                    url: createWorkflowBaseUrl(
+                      isVercel
+                        ? `https://${process.env.VERCEL_URL}`
+                        : `http://localhost:${port ?? 3000}`
+                    ),
                   },
                   workflowDeploymentId: process.env.VERCEL_DEPLOYMENT_ID,
                   ops,

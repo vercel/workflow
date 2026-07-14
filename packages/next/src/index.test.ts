@@ -71,7 +71,6 @@ describe('withWorkflow builder config', () => {
     builderConfigs.length = 0;
     getNextBuilderMock.mockClear();
     prewarmWorkflowSwcPluginCacheMock.mockClear();
-
     if (!hadLoaderStub) {
       writeFileSync(loaderStubPath, 'module.exports = {};\n', 'utf-8');
     }
@@ -143,6 +142,21 @@ describe('withWorkflow builder config', () => {
     await config('phase-production-server', { defaultConfig: {} });
 
     expect(prewarmWorkflowSwcPluginCacheMock).not.toHaveBeenCalled();
+  });
+
+  it('passes Next basePath to the workflow builder', async () => {
+    const config = withWorkflow({
+      basePath: '/v2',
+    });
+
+    await config('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(builderConfigs).toHaveLength(1);
+    expect(builderConfigs[0]).toMatchObject({
+      basePath: '/v2',
+    });
   });
 
   it('removes workflow packages from serverExternalPackages for this build', async () => {

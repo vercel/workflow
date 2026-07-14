@@ -192,15 +192,12 @@ export const POST = handleStepRequest;`,
     // Replace the default export with SvelteKit-compatible handler
     workflowsRouteContent = replaceGeneratedRouteExport(
       workflowsRouteContent,
-      /const handler = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);\s*export const HEAD = handler;\s*export const POST = handler;?\s*$/m,
+      /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
       (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
-const handleWorkflowRequest = async ({request}) => {
+export const POST = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
   return workflowEntrypoint(workflowCode${options})(normalRequest);
-};
-
-export const HEAD = handleWorkflowRequest;
-export const POST = handleWorkflowRequest;`,
+};`,
       'Failed to wrap generated SvelteKit workflow route'
     );
     await writeFile(workflowsRouteFile, workflowsRouteContent);

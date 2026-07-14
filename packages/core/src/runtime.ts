@@ -6,6 +6,7 @@ import {
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import { setWorkflowBasePath } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
@@ -133,8 +134,10 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
  */
 export function workflowEntrypoint(
   workflowCode: string,
-  options?: { namespace?: string }
+  options?: { namespace?: string; basePath?: string }
 ): (req: Request) => Promise<Response> {
+  setWorkflowBasePath(options?.basePath);
+
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
 

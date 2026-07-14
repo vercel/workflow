@@ -2,6 +2,11 @@ import { connect } from 'node:net';
 import * as Stream from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
+import {
+  createWorkflowBaseUrl,
+  createWorkflowHealthEndpoint,
+  createWorkflowUrl,
+} from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
   getQueuePrefixKind,
@@ -217,16 +222,18 @@ export function createQueue(
     }
 
     if (typeof port === 'number') {
-      return `http://localhost:${port}`;
+      return createWorkflowBaseUrl(`http://localhost:${port}`);
     }
 
     if (process.env.PORT) {
-      return `http://localhost:${process.env.PORT}`;
+      return createWorkflowBaseUrl(`http://localhost:${process.env.PORT}`);
     }
 
-    const detectedPort = await getWorkflowPort();
+    const detectedPort = await getWorkflowPort({
+      endpoint: createWorkflowHealthEndpoint(),
+    });
     if (typeof detectedPort === 'number') {
-      return `http://localhost:${detectedPort}`;
+      return createWorkflowBaseUrl(`http://localhost:${detectedPort}`);
     }
 
     return undefined;
@@ -360,7 +367,7 @@ export function createQueue(
     const pathname = getQueueRoute(queueName);
 
     const response = await fetch(
-      `${baseUrl}/.well-known/workflow/v1/${pathname}`,
+      createWorkflowUrl(baseUrl, { type: pathname }),
       {
         method: 'POST',
         duplex: 'half',
