@@ -1468,4 +1468,63 @@ describe('executeStep optimistic inline start', () => {
     expect(calls).toContain('step_started');
     expect(calls.indexOf('body')).toBeLessThan(calls.indexOf('step_started'));
   });
+
+  it('still records rsfs on the terminal event when runReadyBarrier resolves AFTER the latency computation', async () => {
+    // Regression: on the optimistic turbo path the step-start POST fires
+    // inside the run-ready barrier's `.then`, so `stepStartPostSentAtMs` (the
+    // RSFS end anchor) is unset when `latencyEventData` is first computed just
+    // before user code. If the barrier is still in flight at that point — the
+    // common slow-`run_started` case RSFS exists to measure — RSFS would be
+    // dropped, biasing percentiles low. The terminal event must carry rsfs
+    // regardless of barrier timing.
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    let release!: () => void;
+    const barrier = new Promise<void>((r) => {
+      release = r;
+    });
+    mockEventsCreate
+      .mockReset()
+      .mockImplementation((_runId: string, _event: { eventType: string }) =>
+        Promise.resolve({ event: {} })
+      );
+    mockStepFn.mockReset().mockResolvedValue('step-result');
+
+    // Anchor RSFS/TTFS in the past so both are computable and non-negative.
+    const anchorMs = Date.now() - 10;
+
+    const world = await getWorld();
+    const resultPromise = executeStep({
+      world: world as never,
+      ...baseParams,
+      forceOptimisticStart: true,
+      runReadyBarrier: barrier,
+      latencyTracking: {
+        ttfsAnchorMs: anchorMs,
+        rsfsAnchorMs: anchorMs,
+        replayMs: 1,
+        turbo: true,
+      },
+    });
+
+    // Let the body run and reach the latency computation while the barrier —
+    // and therefore the step-start POST — is still pending.
+    await vi.waitFor(() => expect(mockStepFn).toHaveBeenCalledTimes(1), {
+      timeout: 15_000,
+    });
+
+    release();
+    const result = await resultPromise;
+    expect(result.type).toBe('completed');
+
+    const completedWrite = mockEventsCreate.mock.calls.find(
+      ([, event]) =>
+        (event as { eventType: string }).eventType === 'step_completed'
+    );
+    expect(completedWrite).toBeDefined();
+    const eventData = (
+      completedWrite![1] as { eventData: { rsfs?: number } }
+    ).eventData;
+    expect(eventData.rsfs).toBeDefined();
+    expect(eventData.rsfs).toBeGreaterThanOrEqual(0);
+  });
 });
