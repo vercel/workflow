@@ -1,4 +1,4 @@
-import { createBuildQueue, stopEsbuildService } from '@workflow/builders';
+import { createBuildQueue } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Nitro } from 'nitro/types';
@@ -44,8 +44,6 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           if (nitro.options.dev) {
             devNitro = nitro;
             builder = new LocalBuilder(nitro);
-          } else {
-            nitro.hooks.hook('compiled', stopEsbuildService);
           }
           return nitroModule.setup(nitro);
         },

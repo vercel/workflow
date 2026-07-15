@@ -1,6 +1,5 @@
 ---
 '@workflow/nitro': patch
-'@workflow/builders': patch
 ---
 
-Clean up Workflow build resources after Nitro production and development builds.
+Clean up temporary Nitro Vite servers and Workflow build contexts after builds.
