@@ -381,11 +381,13 @@ describe('splitEventDataForV4 attribute fields', () => {
         result: new TextEncoder().encode('"ok"'),
         ttfs: 123,
         optimizations: ['turbo', 'lazyStepStart'],
+        sdkVersion: '5.0.0-beta.34',
       },
     } as AnyEventRequest);
     expect(completed.meta.ttfs).toBe(123);
     expect(completed.meta.stso).toBeUndefined();
     expect(completed.meta.optimizations).toEqual(['turbo', 'lazyStepStart']);
+    expect(completed.meta.sdkVersion).toBe('5.0.0-beta.34');
 
     const failed = splitEventDataForV4({
       eventType: 'step_failed',
@@ -418,12 +420,14 @@ describe('splitEventDataForV4 attribute fields', () => {
         stepCount: 0,
         eventCount: 2.5,
         optimizations: [1, 2],
+        sdkVersion: 42,
       },
     } as unknown as AnyEventRequest);
     expect(malformed.meta.ttfs).toBeUndefined();
     expect(malformed.meta.stepCount).toBeUndefined();
     expect(malformed.meta.eventCount).toBeUndefined();
     expect(malformed.meta.optimizations).toBeUndefined();
+    expect(malformed.meta.sdkVersion).toBeUndefined();
   });
 });
 

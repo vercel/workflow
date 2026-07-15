@@ -1,5 +1,6 @@
 import type { Event } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
+import { version as coreVersion } from '../version.js';
 import {
   computeStepLatencyEventData,
   computeStepLatencyTracking,
@@ -267,6 +268,7 @@ describe('computeStepLatencyEventData', () => {
     expect(data).toEqual({
       ttfs: 800,
       optimizations: ['turbo', 'lazyStepStart', 'optimisticStart'],
+      sdkVersion: coreVersion,
     });
   });
 
@@ -287,7 +289,11 @@ describe('computeStepLatencyEventData', () => {
       lazyStepStart: true,
       optimisticStart: false,
     });
-    expect(data).toEqual({ ttfs: 1_960, optimizations: ['lazyStepStart'] });
+    expect(data).toEqual({
+      ttfs: 1_960,
+      optimizations: ['lazyStepStart'],
+      sdkVersion: coreVersion,
+    });
   });
 
   it('computes stso against the previous step terminal timestamp', () => {
@@ -308,6 +314,7 @@ describe('computeStepLatencyEventData', () => {
       stepCount: 7,
       eventCount: 42,
       optimizations: ['lazyStepStart'],
+      sdkVersion: coreVersion,
     });
   });
 
@@ -332,6 +339,51 @@ describe('computeStepLatencyEventData', () => {
       stepCount: 3,
       eventCount: 9,
       optimizations: [],
+      sdkVersion: coreVersion,
+    });
+  });
+
+  it('drops a sample whose anchor is implausibly far in the future (corrupt anchor, not skew)', () => {
+    // e.g. a run-ID timestamp decoded with a metadata tag bit still set
+    // would put the anchor millennia ahead — reporting that as ttfs: 0 on
+    // every run would silently zero the whole distribution.
+    const data = computeStepLatencyEventData({
+      tracking: {
+        ttfsAnchorMs: 2_000 + 2 ** 47,
+        preStepBlockingMs: 0,
+        turbo: true,
+      },
+      stepCodeStartedAtMs: 2_000,
+      attempt: 1,
+      lazyStepStart: false,
+      optimisticStart: false,
+    });
+    expect(data).toBeUndefined();
+  });
+
+  it('drops only the corrupt measurement when the other remains plausible', () => {
+    const data = computeStepLatencyEventData({
+      tracking: {
+        // TTFS anchor beyond the skew tolerance → dropped.
+        ttfsAnchorMs: 100_000,
+        preStepBlockingMs: 0,
+        // STSO anchor within tolerance → kept.
+        prevStepEndMs: 1_500,
+        stepCount: 2,
+        eventCount: 5,
+        turbo: false,
+      },
+      stepCodeStartedAtMs: 2_000,
+      attempt: 1,
+      lazyStepStart: false,
+      optimisticStart: false,
+    });
+    expect(data).toEqual({
+      stso: 500,
+      stepCount: 2,
+      eventCount: 5,
+      optimizations: [],
+      sdkVersion: coreVersion,
     });
   });
 

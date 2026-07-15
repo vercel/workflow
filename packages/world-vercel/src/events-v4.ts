@@ -165,6 +165,11 @@ export interface CreateEventV4Input {
   /** Runtime optimizations active for the ttfs/stso measurement
    *  (e.g. 'turbo', 'lazyStepStart', 'optimisticStart'). */
   optimizations?: string[];
+  /** Version of the SDK core package that computed the ttfs/stso values.
+   *  Consumed server-side as a metric tag; a user-agent cannot supply it
+   *  because it identifies the HTTP client package, which resolves
+   *  independently of core in consumer lockfiles. */
+  sdkVersion?: string;
   /** Opt-in inline-delta request. On a step-terminal write
    *  (step_completed / step_failed) the inline loop passes the cursor it
    *  held before the write so the server can return the authoritative
@@ -264,6 +269,7 @@ function buildPostFrameMeta(
   if (input.optimizations !== undefined) {
     meta.optimizations = input.optimizations;
   }
+  if (input.sdkVersion !== undefined) meta.sdkVersion = input.sdkVersion;
   if (input.sinceCursor !== undefined) meta.sinceCursor = input.sinceCursor;
   if (input.skipPreload !== undefined) meta.skipPreload = input.skipPreload;
   if (input.stateUpdatedAt !== undefined) {
