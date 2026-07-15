@@ -189,20 +189,15 @@ Vercel Queues can delay messages for up to 7 days, capped by the message TTL. Be
 
 ### `WORKFLOW_REQUEST_TIMEOUT_MS`
 
-Per-request timeout, in milliseconds, for Vercel World HTTP calls to workflow-server. Default: `60000`. Minimum: `1`. Requires `workflow` 5.x.
+Per-request timeout, in milliseconds, for Vercel World HTTP calls to workflow-server. Default: `60000`. Minimum: `1`.
 
 ### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
 
-Maximum stream chunks written in one Vercel World request. Larger batches are split across multiple requests. Default: `1000`. Minimum: `1`. Requires `workflow` 5.x.
+Maximum stream chunks written in one Vercel World request. Larger batches are split across multiple requests. Default: `1000`. Minimum: `1`.
 
 ### Programmatic configuration
 
 `createWorld()` accepts explicit API configuration. It does not read `WORKFLOW_VERCEL_*` automatically, so pass the environment values yourself when you want a configured World module:
-
-<Callout type="info">
-  On the 4.x release line, the factory function is `createVercelWorld()` —
-  `createWorld()` is available starting with `workflow` 5.x.
-</Callout>
 
 {/*@skip-typecheck: incomplete code sample*/}
 

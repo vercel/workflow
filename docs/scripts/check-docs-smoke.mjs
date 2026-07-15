@@ -211,6 +211,10 @@ const checks = [
     run: () => assertHtmlMeta('/worlds/building-a-world', '/og/worlds'),
   },
   {
+    name: 'HTML meta - world vercel (v5)',
+    run: () => assertHtmlMeta('/v5/worlds/vercel', '/og/worlds/vercel'),
+  },
+  {
     name: 'OG docs page image',
     run: () => assertPngResponse('/og/foundations/idempotency/image.png'),
   },

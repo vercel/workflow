@@ -4,7 +4,7 @@ import {
   type GeistdocsSourceBundle,
 } from '@vercel/geistdocs/source';
 import type { Node, Root } from 'fumadocs-core/page-tree';
-import { v4docs, v5docs, worldsDocs } from '@/.source/server';
+import { v4docs, v5docs, worldsV4Docs, worldsV5Docs } from '@/.source/server';
 import { config } from './config';
 import { resolveSectionChildren } from './section-children';
 
@@ -13,8 +13,9 @@ type Page = NonNullable<ReturnType<Source['getPage']>>;
 
 const COOKBOOK_DOCS_PREFIX = '/docs/cookbook';
 const DOCS_PREFIX = '/docs';
+const WORLDS_PREFIX = '/worlds';
 const LOCAL_DOCS_LINK_TARGET_RE =
-  /(\]\(|\[[^\]\n]+\]:\s*|(?:href|src)=["'])(\/docs(?:[^\s)"']*)?)/g;
+  /(\]\(|\[[^\]\n]+\]:\s*|(?:href|src)=["'])(\/(?:docs|worlds)(?:[^\s)"']*)?)/g;
 
 const hasPathPrefix = (url: string, prefix: string) =>
   url === prefix ||
@@ -36,6 +37,12 @@ const rewriteLocalDocsUrlForVersion = (url: string, versionPrefix: string) => {
 
   if (versionPrefix && hasPathPrefix(url, DOCS_PREFIX)) {
     return replacePathPrefix(url, DOCS_PREFIX, `${versionPrefix}/docs`);
+  }
+
+  // World docs are versioned like the docs trees (/worlds vs /v5/worlds), so
+  // links authored against the raw /worlds/... space get the same treatment.
+  if (versionPrefix && hasPathPrefix(url, WORLDS_PREFIX)) {
+    return replacePathPrefix(url, WORLDS_PREFIX, `${versionPrefix}/worlds`);
   }
 
   return url;
@@ -268,19 +275,53 @@ export const v5CookbookSource = createCookbookRouteSource(
   }
 );
 
-// Canonical, unversioned World docs served at /worlds/*. These pages are
-// rendered by the worlds app routes (not the docs layout), but the bundle is
-// included in the source lists so they stay covered by search, llms.txt,
-// sitemap(.md), and the markdown export routes.
+// Canonical World docs, versioned like the docs trees: v4 (current) is served
+// at /worlds/*, v5 at /v5/worlds/*. These pages are rendered by the worlds app
+// routes (not the docs layout), but the bundles are included in the source
+// lists so they stay covered by search, llms.txt, sitemap(.md), and the
+// markdown export routes.
 export const worldsSourceBundle = createSource({
   config,
-  docs: worldsDocs,
+  docs: worldsV4Docs,
   baseUrl: '/worlds',
   id: 'worlds',
   label: 'Worlds',
 });
 
+const v5WorldsBundleRaw = createSource({
+  config,
+  docs: worldsV5Docs,
+  baseUrl: '/worlds',
+  id: 'v5-worlds',
+  label: 'v5 Worlds',
+  markdown: {
+    // Match the v5 docs markdown export: links authored against the raw
+    // /docs/... and /worlds/... spaces are rewritten into the /v5 view.
+    transform: (markdown) => rewriteDocsUrlsForVersion(markdown, '/v5'),
+  },
+});
+
+// Route/list surfaces see the v5 worlds pages in their public /v5/worlds/...
+// URL space (the raw loader keeps /worlds/... URLs, mirroring how the v5 docs
+// source is wrapped by createDocsRouteSource).
+export const v5WorldsSourceBundle: GeistdocsSourceBundle = {
+  ...v5WorldsBundleRaw,
+  baseUrl: '/v5/worlds',
+  source: {
+    ...v5WorldsBundleRaw.source,
+    getPage: ((slug?: string[], lang?: string) => {
+      const page = v5WorldsBundleRaw.source.getPage(slug, lang);
+      return page ? withUrl(page, `/v5${page.url}`) : undefined;
+    }) as Source['getPage'],
+    getPages: ((lang?: string) =>
+      v5WorldsBundleRaw.source
+        .getPages(lang)
+        .map((page) => withUrl(page, `/v5${page.url}`))) as Source['getPages'],
+  },
+};
+
 export const worldsSource = worldsSourceBundle.source;
+export const v5WorldsSource = v5WorldsBundleRaw.source;
 
 export const currentSources = [
   geistdocsSource,
@@ -293,6 +334,7 @@ export const allSources = [
   v5GeistdocsSource,
   v5CookbookSource,
   worldsSourceBundle,
+  v5WorldsSourceBundle,
 ];
 
 export const source = versionedSources.current.source;
