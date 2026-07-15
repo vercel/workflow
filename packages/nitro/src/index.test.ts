@@ -47,7 +47,7 @@ function createNitroStub({
       workflow,
     },
     hooks: {
-      hook: vi.fn(),
+      hook() {},
     },
   } as any;
 }
