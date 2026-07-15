@@ -414,7 +414,7 @@ const flowTriggers = [getWorkflowQueueTrigger()];
 const stepTriggers = [STEP_QUEUE_TRIGGER];
 ```
 
-If your integration constructs the flow trigger object itself instead of calling `getWorkflowQueueTrigger()`, it must add `maxConcurrency: 1` to that trigger when sequential replays are enabled at build time (`WORKFLOW_SEQUENTIAL_REPLAYS=1`, or `WORKFLOW_SAFE_MODE=1` when the specific variable is unset — the exported `isSequentialReplaysEnabled()` helper implements this check). The runtime half of the feature (per-run queue topics) activates from the environment variable alone — without the trigger half, those per-run topics are not serialized and the setting only adds queue-topic cardinality.
+If your integration constructs the flow trigger object itself instead of calling `getWorkflowQueueTrigger()`, it must add `maxConcurrency: 1` to that trigger when sequential replays are enabled at build time (`WORKFLOW_SEQUENTIAL_REPLAYS=1` — the exported `isSequentialReplaysEnabled()` helper implements this check). The runtime half of the feature (per-run queue topics) activates from the environment variable alone — without the trigger half, those per-run topics are not serialized and the setting only adds queue-topic cardinality.
 
 
 ### Custom implementations

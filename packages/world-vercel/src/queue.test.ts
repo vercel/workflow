@@ -397,13 +397,10 @@ describe('createQueue', () => {
   describe('strict concurrency (WORKFLOW_SEQUENTIAL_REPLAYS)', () => {
     let originalDeploymentId: string | undefined;
     let originalStrict: string | undefined;
-    let originalSafeMode: string | undefined;
 
     beforeEach(() => {
       originalDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
       originalStrict = process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-      originalSafeMode = process.env.WORKFLOW_SAFE_MODE;
-      delete process.env.WORKFLOW_SAFE_MODE;
       process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
       mockSend.mockResolvedValue({ messageId: 'msg-123' });
     });
@@ -418,11 +415,6 @@ describe('createQueue', () => {
         process.env.WORKFLOW_SEQUENTIAL_REPLAYS = originalStrict;
       } else {
         delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-      }
-      if (originalSafeMode !== undefined) {
-        process.env.WORKFLOW_SAFE_MODE = originalSafeMode;
-      } else {
-        delete process.env.WORKFLOW_SAFE_MODE;
       }
     });
 
@@ -489,26 +481,6 @@ describe('createQueue', () => {
       });
 
       expect(mockSend.mock.calls[0][0]).toBe('__wkf_step_myStep');
-    });
-
-    it('WORKFLOW_SAFE_MODE=1 routes to per-run topics when the specific variable is unset', async () => {
-      delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-      process.env.WORKFLOW_SAFE_MODE = '1';
-
-      const queue = createQueue();
-      await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
-
-      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test_wrun_abc');
-    });
-
-    it('an explicit WORKFLOW_SEQUENTIAL_REPLAYS=0 wins over WORKFLOW_SAFE_MODE', async () => {
-      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '0';
-      process.env.WORKFLOW_SAFE_MODE = '1';
-
-      const queue = createQueue();
-      await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
-
-      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test');
     });
 
     it('gives inline step executions (flow topic + stepId) a per-step topic for full parallelism', async () => {
