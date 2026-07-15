@@ -720,6 +720,34 @@ function DataRender({ field, value, isLast, ctx }: NodeProps) {
       </LeafRow>
     );
   }
+  if (value instanceof Error) {
+    const entries: Entry[] = [
+      ['name', value.name],
+      ['message', value.message],
+    ];
+    if (typeof value.stack === 'string') {
+      entries.push(['stack', value.stack]);
+    }
+    if ('cause' in value) {
+      entries.push(['cause', (value as Error & { cause?: unknown }).cause]);
+    }
+    for (const [key, fieldValue] of Object.entries(value)) {
+      if (!entries.some(([existing]) => existing === key)) {
+        entries.push([key, fieldValue]);
+      }
+    }
+    return (
+      <ExpandableContainer
+        field={field}
+        isLast={isLast}
+        ctx={ctx}
+        open="{"
+        close="}"
+        prefix={value.name || 'Error'}
+        entries={entries}
+      />
+    );
+  }
   if (value instanceof RegExp) {
     return (
       <LeafRow field={field} isLast={isLast}>

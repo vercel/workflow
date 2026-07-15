@@ -34,6 +34,25 @@ const formatEncoder = new TextEncoder();
 const formatDecoder = new TextDecoder();
 
 /**
+ * Coerce binary payloads to a real `Uint8Array`.
+ *
+ * CBOR/transport layers sometimes hand back a `Buffer` or another
+ * `ArrayBufferView`. Those pass `ArrayBuffer.isView` (so the o11y inspector
+ * renders them as `Uint8Array(N) […]`) but can fail `instanceof Uint8Array`
+ * across realms — which previously caused hydration to skip the value and
+ * leave raw bytes in the UI.
+ */
+export function asUint8Array(value: unknown): Uint8Array | null {
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  return null;
+}
+
+/**
  * Encode a payload with a format prefix.
  */
 export function encodeWithFormatPrefix(
@@ -144,10 +163,11 @@ export function isExpiredStub(data: unknown): boolean {
  * Browser-safe — does not depend on the full serialization module.
  */
 export function isEncryptedData(data: unknown): boolean {
-  if (!(data instanceof Uint8Array) || data.length < FORMAT_PREFIX_LENGTH) {
+  const bytes = asUint8Array(data);
+  if (!bytes || bytes.length < FORMAT_PREFIX_LENGTH) {
     return false;
   }
-  const prefix = formatDecoder.decode(data.subarray(0, FORMAT_PREFIX_LENGTH));
+  const prefix = formatDecoder.decode(bytes.subarray(0, FORMAT_PREFIX_LENGTH));
   return prefix === SerializationFormat.ENCRYPTED;
 }
 
@@ -156,10 +176,11 @@ export function isEncryptedData(data: unknown): boolean {
  * Browser-safe — does not depend on the full serialization module.
  */
 export function isCompressedData(data: unknown): boolean {
-  if (!(data instanceof Uint8Array) || data.length < FORMAT_PREFIX_LENGTH) {
+  const bytes = asUint8Array(data);
+  if (!bytes || bytes.length < FORMAT_PREFIX_LENGTH) {
     return false;
   }
-  const prefix = formatDecoder.decode(data.subarray(0, FORMAT_PREFIX_LENGTH));
+  const prefix = formatDecoder.decode(bytes.subarray(0, FORMAT_PREFIX_LENGTH));
   return (
     prefix === SerializationFormat.GZIP || prefix === SerializationFormat.ZSTD
   );
@@ -305,15 +326,16 @@ export type Revivers = Record<string, (value: any) => any>;
  * client-side decryption on demand.
  */
 export function hydrateData(value: unknown, revivers: Revivers): unknown {
-  if (value instanceof Uint8Array) {
+  const bytes = asUint8Array(value);
+  if (bytes) {
     // Encrypted data passes through untouched — o11y layers detect it with
     // isEncryptedData() and handle display (web: named constructor object,
     // CLI: EncryptedDataRef with util.inspect.custom).
-    if (isEncryptedData(value)) {
-      return value;
+    if (isEncryptedData(bytes)) {
+      return bytes;
     }
 
-    const { format, payload } = decodeFormatPrefix(value);
+    const { format, payload } = decodeFormatPrefix(bytes);
     if (format === SerializationFormat.DEVALUE_V1) {
       const str = new TextDecoder().decode(payload);
       return parse(str, revivers);
@@ -329,7 +351,7 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
       // decompresses via DecompressionStream / a registered zstd decoder.
       const inflated = decompressSyncIfAvailable(format, payload);
       if (inflated === undefined) {
-        return value;
+        return bytes;
       }
       // The inflated bytes carry their own format prefix (e.g. 'devl')
       return hydrateData(inflated, revivers);
@@ -361,19 +383,21 @@ export async function hydrateDataWithKey(
   revivers: Revivers,
   key: import('./encryption.js').CryptoKey | undefined
 ): Promise<unknown> {
-  let data = value;
-  if (data instanceof Uint8Array && isEncryptedData(data) && key) {
+  let data: unknown = asUint8Array(value) ?? value;
+  const encryptedBytes = asUint8Array(data);
+  if (encryptedBytes && isEncryptedData(encryptedBytes) && key) {
     // Decrypt: strip 'encr' prefix, AES-GCM decrypt, then hydrate the result
     const { decrypt } = await import('./encryption.js');
-    const { payload } = decodeFormatPrefix(data);
+    const { payload } = decodeFormatPrefix(encryptedBytes);
     data = await decrypt(key, payload);
   }
-  if (data instanceof Uint8Array && isCompressedData(data)) {
+  const compressedBytes = asUint8Array(data);
+  if (compressedBytes && isCompressedData(compressedBytes)) {
     // Decompress: strip the codec prefix and inflate. gzip uses the
     // web-standard DecompressionStream (works in browsers); zstd uses
     // node:zlib on Node or the registered WASM decoder in the browser.
     // The inflated bytes carry their own format prefix (e.g. 'devl').
-    const { format, payload } = decodeFormatPrefix(data);
+    const { format, payload } = decodeFormatPrefix(compressedBytes);
     data = await decompressAsync(format, payload);
   }
   // Delegate the (decrypted/decompressed) result to sync hydrateData

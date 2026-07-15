@@ -13,7 +13,9 @@ import {
   hydrateResourceIOAsync,
   hydrateResourceIOWithKey,
   isEncryptedMarker,
+  toErrorDisplayRecord,
 } from '../src/lib/hydration.js';
+import { formatArrayBufferViewForDisplay } from '../src/lib/stream-display.js';
 
 /**
  * The web reviver set must mirror every key in `SerializableSpecial` (see
@@ -188,8 +190,10 @@ describe('front hydration — encrypted compressed payloads', () => {
     expect(hasEncryptedFields(hydrated)).toBe(true);
 
     const decrypted = await hydrateResourceIOWithKey(hydrated, rawKey);
-    expect(decrypted.error).toBeInstanceOf(Error);
-    expect((decrypted.error as Error).message).toBe(original.message);
+    expect(decrypted.error).not.toBeInstanceOf(Error);
+    expect((decrypted.error as { message: string }).message).toBe(
+      original.message
+    );
   });
 
   it('hydrates unencrypted compressed step errors through the async web path', async () => {
@@ -212,8 +216,10 @@ describe('front hydration — encrypted compressed payloads', () => {
       error: wire,
     });
 
-    expect(hydrated.error).toBeInstanceOf(Error);
-    expect((hydrated.error as Error).message).toBe(original.message);
+    expect(hydrated.error).not.toBeInstanceOf(Error);
+    expect((hydrated.error as { message: string }).message).toBe(
+      original.message
+    );
   });
 
   it('decrypts encrypted compressed v4 step_started input payloads', async () => {
@@ -246,5 +252,55 @@ describe('front hydration — encrypted compressed payloads', () => {
 
     const decrypted = await hydrateResourceIOWithKey(hydrated, rawKey);
     expect(decrypted.eventData.input).toEqual(input);
+  });
+});
+
+describe('toErrorDisplayRecord', () => {
+  it('copies non-enumerable Error fields onto a plain object', () => {
+    const original = new Error('boom');
+    original.name = 'RetryableError';
+    (original as Error & { retryAfter: Date }).retryAfter = new Date(
+      '2025-01-01T00:00:00.000Z'
+    );
+
+    const display = toErrorDisplayRecord(original) as Record<string, unknown>;
+    expect(display).not.toBeInstanceOf(Error);
+    expect(display.name).toBe('RetryableError');
+    expect(display.message).toBe('boom');
+    expect(typeof display.stack).toBe('string');
+    expect(display.retryAfter).toEqual(new Date('2025-01-01T00:00:00.000Z'));
+    expect(Object.keys(display)).toEqual(
+      expect.arrayContaining(['name', 'message', 'stack', 'retryAfter'])
+    );
+  });
+});
+
+describe('hydrateResourceIO — step_retrying error display', () => {
+  it('exposes enumerable message/stack after hydrating a real step error', async () => {
+    const original = new Error('step failed while retrying');
+    const wire = await dehydrateStepError(original, 'run_test', undefined);
+    const hydrated = await hydrateResourceIOAsync({
+      eventId: 'evnt_test',
+      eventType: 'step_retrying',
+      eventData: { error: wire },
+    });
+
+    const error = hydrated.eventData.error as Record<string, unknown>;
+    expect(error).not.toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(Uint8Array);
+    expect(error.message).toBe('step failed while retrying');
+    expect(typeof error.stack).toBe('string');
+    expect(Object.keys(error)).toEqual(
+      expect.arrayContaining(['name', 'message', 'stack'])
+    );
+  });
+});
+
+describe('formatArrayBufferViewForDisplay — workflow payloads', () => {
+  it('labels format-prefixed workflow payloads instead of dumping bytes', () => {
+    const payload = new TextEncoder().encode('devl[["Error",1]]');
+    expect(formatArrayBufferViewForDisplay(payload).text).toBe(
+      `SerializedData(devl, ${payload.byteLength} bytes)`
+    );
   });
 });

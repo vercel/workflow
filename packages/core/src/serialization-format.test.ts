@@ -1,6 +1,7 @@
 import { stringify } from 'devalue';
 import { describe, expect, it } from 'vitest';
 import {
+  asUint8Array,
   ClassInstanceRef,
   decodeFormatPrefix,
   encodeWithFormatPrefix,
@@ -50,6 +51,33 @@ const testRevivers: Revivers = {
   URL: (value) => new URL(value),
   URLSearchParams: (value) => new URLSearchParams(value === '.' ? '' : value),
 };
+
+// ---------------------------------------------------------------------------
+// asUint8Array
+// ---------------------------------------------------------------------------
+
+describe('asUint8Array', () => {
+  it('returns Uint8Array values as-is', () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    expect(asUint8Array(bytes)).toBe(bytes);
+  });
+
+  it('copies other ArrayBufferViews into a Uint8Array', () => {
+    const source = new Uint16Array([0x0201, 0x0403]);
+    const bytes = asUint8Array(source);
+    expect(bytes).toBeInstanceOf(Uint8Array);
+    expect(bytes).not.toBe(source);
+    expect(Array.from(bytes!)).toEqual(
+      Array.from(new Uint8Array(source.buffer))
+    );
+  });
+
+  it('returns null for non-binary values', () => {
+    expect(asUint8Array(null)).toBeNull();
+    expect(asUint8Array({ 0: 1 })).toBeNull();
+    expect(asUint8Array(new DataView(new ArrayBuffer(4)))).toBeNull();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // encodeWithFormatPrefix / decodeFormatPrefix
@@ -301,6 +329,36 @@ describe('hydrateResourceIO', () => {
     expect(hydrated.eventData.error).toEqual({
       message: 'something blew up',
       stack: 'Error: something blew up\n    at foo:1:1',
+    });
+  });
+
+  it('should hydrate step_retrying errors from non-Uint8Array ArrayBufferViews', () => {
+    const errorPayload = makeDevlPayload({
+      message: 'retry me',
+      stack: 'Error: retry me',
+    });
+    // Transport layers can hand back a different TypedArray view over the
+    // same bytes. Those fail `instanceof Uint8Array` but still carry the
+    // devalue payload — hydration must accept them.
+    const aliased = new Int8Array(
+      errorPayload.buffer,
+      errorPayload.byteOffset,
+      errorPayload.byteLength
+    );
+    expect(aliased instanceof Uint8Array).toBe(false);
+
+    const hydrated = hydrateResourceIO(
+      {
+        eventId: 'evt_step_retrying',
+        eventType: 'step_retrying',
+        eventData: { error: aliased },
+      },
+      testRevivers
+    );
+
+    expect(hydrated.eventData.error).toEqual({
+      message: 'retry me',
+      stack: 'Error: retry me',
     });
   });
 

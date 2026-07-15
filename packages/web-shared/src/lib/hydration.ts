@@ -7,6 +7,7 @@
  */
 
 import {
+  asUint8Array,
   extractClassName,
   hydrateResourceIO as hydrateResourceIOGeneric,
   isEncryptedData,
@@ -20,6 +21,7 @@ import { getEventDataRefFields } from '@workflow/world';
 
 // Re-export types and utilities that consumers need
 export {
+  asUint8Array,
   CLASS_INSTANCE_REF_TYPE,
   ClassInstanceRef,
   ENCRYPTED_PLACEHOLDER,
@@ -340,6 +342,70 @@ function getRevivers(): Revivers {
 // ---------------------------------------------------------------------------
 
 /**
+ * Turn a hydrated thrown value into a plain object the o11y UI can render.
+ *
+ * Native `Error` fields (`message`, `stack`, `cause`) are non-enumerable, so
+ * `Object.entries` / `JSON.stringify` / the data inspector hide them. Copying
+ * onto a plain record makes `ErrorStackBlock` and the payload inspector show
+ * the message and stack reliably.
+ */
+export function toErrorDisplayRecord(value: unknown): unknown {
+  if (!(value instanceof Error)) {
+    return value;
+  }
+
+  const record: Record<string, unknown> = {
+    name: value.name,
+    message: value.message,
+  };
+  if (typeof value.stack === 'string') {
+    record.stack = value.stack;
+  }
+  if ('cause' in value) {
+    record.cause = toErrorDisplayRecord(
+      (value as Error & { cause?: unknown }).cause
+    );
+  }
+
+  // Preserve extra enumerable fields from workflow error subclasses
+  // (e.g. RetryableError.retryAfter, HookConflictError.token).
+  for (const [key, fieldValue] of Object.entries(value)) {
+    if (!(key in record)) {
+      record[key] = fieldValue;
+    }
+  }
+
+  return record;
+}
+
+function mapErrorFieldsForDisplay<T>(resource: T): T {
+  if (!resource || typeof resource !== 'object') return resource;
+  const r = resource as Record<string, unknown>;
+  const result = { ...r };
+
+  for (const key of ['error'] as const) {
+    if (key in result) {
+      result[key] = toErrorDisplayRecord(result[key]);
+    }
+  }
+
+  if (result.eventData && typeof result.eventData === 'object') {
+    const eventType =
+      typeof result.eventType === 'string' ? result.eventType : '';
+    const refKeys = getEventDataRefFields(eventType);
+    const ed = { ...(result.eventData as Record<string, unknown>) };
+    for (const key of refKeys) {
+      if (key === 'error' && key in ed) {
+        ed[key] = toErrorDisplayRecord(ed[key]);
+      }
+    }
+    result.eventData = ed;
+  }
+
+  return result as T;
+}
+
+/**
  * Hydrate the serialized data fields of a resource for web display.
  *
  * Uses browser-safe revivers (atob for base64, ClassInstanceRef for
@@ -351,7 +417,9 @@ export function hydrateResourceIO<T>(resource: T): T {
     resource as any,
     getRevivers()
   ) as T;
-  return replaceEncryptedAndExpiredWithMarkers(hydrated);
+  return mapErrorFieldsForDisplay(
+    replaceEncryptedAndExpiredWithMarkers(hydrated)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -423,9 +491,11 @@ export function isExpiredMarker(value: unknown): boolean {
   );
 }
 
-/** Replace a single field value with a display marker if it's encrypted or expired. */
 function toDisplayMarker(value: unknown): unknown {
-  if (isEncryptedData(value)) return createEncryptedMarker(value as Uint8Array);
+  if (isEncryptedData(value)) {
+    const bytes = asUint8Array(value);
+    if (bytes) return createEncryptedMarker(bytes);
+  }
   if (isExpiredStub(value)) return createExpiredMarker();
   return value;
 }
@@ -510,9 +580,12 @@ export async function hydrateResourceIOAsync<T>(
       const raw = (value as any).__encryptedData as Uint8Array;
       return cryptoKey ? hydrateDataWithKey(raw, revivers, cryptoKey) : value;
     }
-    // Raw Uint8Array: may be encrypted, compressed, or plain devalue.
-    if (value instanceof Uint8Array) {
-      return hydrateDataWithKey(value, revivers, cryptoKey);
+    // Raw binary: may be encrypted, compressed, or plain devalue.
+    // Normalize Buffer / cross-realm ArrayBufferView to Uint8Array first —
+    // otherwise `instanceof Uint8Array` misses and the UI keeps raw bytes.
+    const bytes = asUint8Array(value);
+    if (bytes) {
+      return hydrateDataWithKey(bytes, revivers, cryptoKey);
     }
     // Not serialized — return as-is.
     return value;
@@ -542,7 +615,9 @@ export async function hydrateResourceIOAsync<T>(
     result.eventData = eventData;
   }
 
-  return replaceEncryptedAndExpiredWithMarkers(result as T);
+  return mapErrorFieldsForDisplay(
+    replaceEncryptedAndExpiredWithMarkers(result as T)
+  );
 }
 
 /**

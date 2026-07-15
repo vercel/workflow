@@ -56,6 +56,7 @@ export {
   isStreamId,
   isStreamRef,
   STREAM_REF_TYPE,
+  toErrorDisplayRecord,
   truncateId,
 } from './lib/hydration';
 export type { DecodedStreamChunkSource } from './lib/stream-display';
