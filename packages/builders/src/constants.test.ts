@@ -8,12 +8,9 @@ import {
 
 describe('getWorkflowQueueTrigger', () => {
   let originalStrict: string | undefined;
-  let originalSafeMode: string | undefined;
 
   beforeEach(() => {
     originalStrict = process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-    originalSafeMode = process.env.WORKFLOW_SAFE_MODE;
-    delete process.env.WORKFLOW_SAFE_MODE;
   });
 
   afterEach(() => {
@@ -21,11 +18,6 @@ describe('getWorkflowQueueTrigger', () => {
       process.env.WORKFLOW_SEQUENTIAL_REPLAYS = originalStrict;
     } else {
       delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-    }
-    if (originalSafeMode !== undefined) {
-      process.env.WORKFLOW_SAFE_MODE = originalSafeMode;
-    } else {
-      delete process.env.WORKFLOW_SAFE_MODE;
     }
   });
 
@@ -49,18 +41,6 @@ describe('getWorkflowQueueTrigger', () => {
     process.env.WORKFLOW_SEQUENTIAL_REPLAYS = 'true';
     const trigger = getWorkflowQueueTrigger();
     expect('maxConcurrency' in trigger).toBe(false);
-  });
-
-  it('WORKFLOW_SAFE_MODE=1 sets maxConcurrency when the specific variable is unset', () => {
-    delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-    process.env.WORKFLOW_SAFE_MODE = '1';
-    expect(getWorkflowQueueTrigger()).toMatchObject({ maxConcurrency: 1 });
-  });
-
-  it('an explicit WORKFLOW_SEQUENTIAL_REPLAYS=0 wins over WORKFLOW_SAFE_MODE', () => {
-    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '0';
-    process.env.WORKFLOW_SAFE_MODE = '1';
-    expect('maxConcurrency' in getWorkflowQueueTrigger()).toBe(false);
   });
 
   it('composes with an explicit namespace option', () => {

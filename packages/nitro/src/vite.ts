@@ -9,7 +9,6 @@ import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Nitro } from 'nitro/types';
 import type {} from 'nitro/vite';
-import { join } from 'pathe';
 import type { Plugin, TransformResult } from 'vite';
 import { LocalBuilder } from './builders.js';
 import type { ModuleOptions } from './index.js';
@@ -18,10 +17,10 @@ import nitroModule from './index.js';
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder;
   let devNitro: Nitro | undefined;
-  let workflowBuildDir: string;
+  let nitroBuildDir: string;
   const enqueue = createBuildQueue();
 
-  // Create a lazy transform plugin that excludes the workflow build directory
+  // Create a lazy transform plugin that excludes Nitro build artifacts.
   // The exclusion path is set during nitro setup, so we need to defer plugin creation
   const lazyTransformPlugin: Plugin = {
     name: 'workflow:transform',
@@ -57,9 +56,9 @@ export function workflow(options?: ModuleOptions): Plugin[] {
     },
     transform(code, id, options) {
       // Delegate to the actual transform plugin with exclusion
-      // workflowBuildDir is set during nitro setup before transforms run
+      // nitroBuildDir is set during nitro setup before transforms run
       const plugin = workflowTransformPlugin({
-        exclude: workflowBuildDir ? [workflowBuildDir] : [],
+        exclude: nitroBuildDir ? [nitroBuildDir] : [],
       });
       const transform = plugin.transform as
         | ((
@@ -79,8 +78,8 @@ export function workflow(options?: ModuleOptions): Plugin[] {
       name: 'workflow:nitro',
       nitro: {
         setup: (nitro: Nitro) => {
-          // Capture the workflow build directory for exclusion
-          workflowBuildDir = join(nitro.options.buildDir, 'workflow');
+          // Capture the Nitro build directory for exclusion
+          nitroBuildDir = `${nitro.options.buildDir.replace(/[\\/]+$/, '')}/`;
           nitro.options.workflow = {
             ...nitro.options.workflow,
             ...options,

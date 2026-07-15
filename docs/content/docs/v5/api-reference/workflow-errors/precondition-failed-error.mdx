@@ -1,0 +1,62 @@
+---
+title: PreconditionFailedError
+description: Thrown when an event creation is rejected because the client's event-log snapshot is stale.
+type: reference
+summary: Catch PreconditionFailedError when a world rejects an event creation made from a stale event-log snapshot.
+related:
+  - /docs/api-reference/workflow-errors/workflow-world-error
+  - /docs/api-reference/workflow-errors/entity-conflict-error
+---
+
+`PreconditionFailedError` is thrown by world implementations when an event creation is rejected because the client's event-log snapshot is stale — a newer out-of-band event (such as a received hook or a completed step) was recorded after the snapshot the client replayed from. It corresponds to HTTP 412 Precondition Failed semantics.
+
+This only occurs when the optimistic-concurrency guard is enabled via `WORKFLOW_PRECONDITION_GUARD=1` (see [Runtime Tuning](/docs/configuration/runtime-tuning)); event creations that carry no snapshot are never rejected with this error.
+
+<Callout>
+The Workflow runtime handles this error automatically: it reloads the event log and retries, ultimately re-enqueueing the run for a fresh replay if it cannot catch up. You will only encounter it when interacting with world storage APIs directly.
+</Callout>
+
+```typescript lineNumbers
+import { PreconditionFailedError } from "workflow/errors"
+declare const world: { events: { create(...args: any[]): Promise<any> } }; // @setup
+declare const runId: string; // @setup
+declare const event: any; // @setup
+
+try {
+  await world.events.create(runId, event);
+} catch (error) {
+  if (PreconditionFailedError.is(error)) { // [!code highlight]
+    console.log("Snapshot is stale; reload the event log and retry");
+  }
+}
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface PreconditionFailedError {
+  /** Delay in seconds before the operation should be retried. Present when the server sends a Retry-After header. */
+  retryAfter?: number;
+  /** The error message. */
+  message: string;
+}
+export default PreconditionFailedError;`}
+/>
+
+### Static Methods
+
+#### `PreconditionFailedError.is(value)`
+
+Type-safe check for `PreconditionFailedError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+```typescript
+import { PreconditionFailedError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (PreconditionFailedError.is(error)) {
+  // error is typed as PreconditionFailedError
+}
+```

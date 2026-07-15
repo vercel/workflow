@@ -1,4 +1,8 @@
-import { RUN_ERROR_CODES, WorkflowWorldError } from '@workflow/errors';
+import {
+  PreconditionFailedError,
+  RUN_ERROR_CODES,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import type {
   Event,
   HealthCheckPayload,
@@ -12,6 +16,7 @@ import {
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  ulidToDate,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 
@@ -563,6 +568,119 @@ export async function loadWorkflowRunEvents(
       return { events: loadedEvents, cursor };
     }
   );
+}
+
+/**
+ * Maximum number of times a replay-context event creation will reload the
+ * event log and retry after the backend rejects it as stale (412). After this
+ * many failed reloads the precondition error propagates so the run is
+ * re-invoked from the queue with a fresh replay.
+ */
+export const PRECONDITION_MAX_RELOAD_RETRIES = 2;
+
+/**
+ * A mutable view of the runtime's in-memory event log. `withPreconditionRetry`
+ * appends freshly-loaded events to `events` (in place) and advances `cursor`
+ * when it reloads, so the caller's loaded snapshot stays current.
+ */
+export interface MutableEventLog {
+  events: Event[];
+  cursor: string | null;
+}
+
+/**
+ * Whether the optimistic-concurrency guard for event creation is enabled
+ * (`WORKFLOW_PRECONDITION_GUARD=1`, set where the runtime executes). Off by
+ * default: replay-context creates only send a `stateUpdatedAt` snapshot (and
+ * can therefore be rejected with 412 by the backend) when it is enabled.
+ */
+export function isPreconditionGuardEnabled(): boolean {
+  return process.env.WORKFLOW_PRECONDITION_GUARD === '1';
+}
+
+/**
+ * The `stateUpdatedAt` value to send with a replay-context event creation: the
+ * ULID time (epoch ms) of the latest event the runtime has loaded. Events are
+ * stored in ascending order, so the last one is the newest. Returns `undefined`
+ * when there are no events or the latest id is not a decodable ULID.
+ *
+ * Granularity: snapshots are epoch-milliseconds, and the backend allows an
+ * equal-timestamp snapshot (an up-to-date client must not be rejected). Two
+ * out-of-band events landing in the same millisecond where only the first was
+ * loaded therefore pass the guard undetected — the guard is best-effort by
+ * design, and fails open rather than livelocking.
+ */
+export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
+  const last = events[events.length - 1];
+  if (!last) {
+    return undefined;
+  }
+  // Event IDs are prefixed ULIDs (e.g. `evnt_01ARYZ...`); ulidToDate only
+  // decodes the bare 26-char ULID, so strip the prefix first.
+  const eventId = last.eventId;
+  const underscore = eventId.lastIndexOf('_');
+  const rawUlid = underscore === -1 ? eventId : eventId.slice(underscore + 1);
+  return ulidToDate(rawUlid)?.getTime() ?? undefined;
+}
+
+/**
+ * The `stateUpdatedAt` to attach to a replay-context event creation:
+ * the loaded snapshot's ULID time when the precondition guard is enabled,
+ * `undefined` (no guard, backend behaves as before) otherwise.
+ */
+export function stateUpdatedAtForCreate(events: Event[]): number | undefined {
+  return isPreconditionGuardEnabled()
+    ? latestEventStateUpdatedAt(events)
+    : undefined;
+}
+
+/**
+ * Runs a replay-context event creation with the optimistic-concurrency guard.
+ *
+ * `op` receives the current `stateUpdatedAt` (the ULID time of the latest
+ * loaded event) to pass to `world.events.create`. If the backend rejects the
+ * creation as stale (`PreconditionFailedError` / 412), the event log is
+ * reloaded to completion from the last cursor, merged into `log` in place, and
+ * `op` is retried with the now-newer snapshot — up to
+ * `PRECONDITION_MAX_RELOAD_RETRIES` times. If it still fails, the error is
+ * rethrown so the run falls back to a queue re-invocation. Non-precondition
+ * errors are rethrown immediately.
+ */
+export async function withPreconditionRetry<T>(
+  runId: string,
+  log: MutableEventLog,
+  op: (stateUpdatedAt: number | undefined) => Promise<T>
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await op(stateUpdatedAtForCreate(log.events));
+    } catch (error) {
+      if (
+        !PreconditionFailedError.is(error) ||
+        attempt >= PRECONDITION_MAX_RELOAD_RETRIES
+      ) {
+        throw error;
+      }
+      runtimeLogger.info(
+        'Event creation rejected as stale; reloading event log and retrying',
+        {
+          workflowRunId: runId,
+          attempt: attempt + 1,
+          maxRetries: PRECONDITION_MAX_RELOAD_RETRIES,
+        }
+      );
+      const loaded = await loadWorkflowRunEvents(
+        runId,
+        log.cursor ?? undefined
+      );
+      appendUniqueEvents(
+        log.events,
+        new Set(log.events.map((e) => e.eventId)),
+        loaded.events
+      );
+      log.cursor = loaded.cursor ?? log.cursor;
+    }
+  }
 }
 
 /**

@@ -178,6 +178,14 @@ export interface CreateEventV4Input {
    *  skip the list+resolve. Acted on by the server only for run_started;
    *  older servers ignore it and preload as before. */
   skipPreload?: boolean;
+  /**
+   * Epoch ms (the ULID time of the latest event the runtime has loaded
+   * during replay). Sent by replay-context creates so the backend can
+   * reject the event when a newer out-of-band event was recorded after this
+   * snapshot, enabling an optimistic-concurrency guard. Omitted by callers
+   * without a loaded event log; older servers ignore it entirely.
+   */
+  stateUpdatedAt?: number;
 }
 
 export interface CreateEventV4Result {
@@ -258,17 +266,20 @@ function buildPostFrameMeta(
   }
   if (input.sinceCursor !== undefined) meta.sinceCursor = input.sinceCursor;
   if (input.skipPreload !== undefined) meta.skipPreload = input.skipPreload;
+  if (input.stateUpdatedAt !== undefined) {
+    meta.stateUpdatedAt = input.stateUpdatedAt;
+  }
   return meta;
 }
 
 /**
  * Build the typed error for a non-2xx v4 response. Reuses the shared
  * `errorForResponse` status → error-type contract (409→EntityConflictError,
- * 410→RunExpiredError, 425→TooEarlyError, 429→ThrottleError, else
- * →WorkflowWorldError) so v3 and v4 stay in lockstep — only the message
- * *string* is v4-specific (`v4 {opName} failed: HTTP …`, which the runtime and
- * log tooling key on; the hook 404 → HookNotFoundError translation in events.ts
- * keys off status === 404).
+ * 410→RunExpiredError, 412→PreconditionFailedError, 425→TooEarlyError,
+ * 429→ThrottleError, else →WorkflowWorldError) so v3 and v4 stay in lockstep —
+ * only the message *string* is v4-specific (`v4 {opName} failed: HTTP …`,
+ * which the runtime and log tooling key on; the hook 404 →
+ * HookNotFoundError translation in events.ts keys off status === 404).
  */
 function errorFromV4Response(
   statusCode: number,
