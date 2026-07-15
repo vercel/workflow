@@ -1,5 +1,4 @@
 import type { Event } from '@workflow/world';
-import { version as coreVersion } from '../version.js';
 
 /**
  * Client-side latency measurement (TTFS / STSO) threaded from the
@@ -72,14 +71,6 @@ export interface StepLatencyEventData {
   stepCount?: number;
   eventCount?: number;
   optimizations?: string[];
-  /**
-   * This package's version — the code that computed ttfs/stso. Backends
-   * cannot recover it from transport metadata (a user-agent identifies the
-   * HTTP client package, which resolves independently of core in consumer
-   * lockfiles), so it rides with the measurement to let latency metrics be
-   * attributed to the runtime code that produced them.
-   */
-  sdkVersion?: string;
 }
 
 /**
@@ -314,6 +305,5 @@ export function computeStepLatencyEventData(params: {
       ? { eventCount: tracking.eventCount }
       : {}),
     optimizations,
-    sdkVersion: coreVersion,
   };
 }

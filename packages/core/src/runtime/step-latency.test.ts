@@ -1,6 +1,5 @@
 import type { Event } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { version as coreVersion } from '../version.js';
 import {
   computeStepLatencyEventData,
   computeStepLatencyTracking,
@@ -268,7 +267,6 @@ describe('computeStepLatencyEventData', () => {
     expect(data).toEqual({
       ttfs: 800,
       optimizations: ['turbo', 'lazyStepStart', 'optimisticStart'],
-      sdkVersion: coreVersion,
     });
   });
 
@@ -292,7 +290,6 @@ describe('computeStepLatencyEventData', () => {
     expect(data).toEqual({
       ttfs: 1_960,
       optimizations: ['lazyStepStart'],
-      sdkVersion: coreVersion,
     });
   });
 
@@ -314,7 +311,6 @@ describe('computeStepLatencyEventData', () => {
       stepCount: 7,
       eventCount: 42,
       optimizations: ['lazyStepStart'],
-      sdkVersion: coreVersion,
     });
   });
 
@@ -339,7 +335,6 @@ describe('computeStepLatencyEventData', () => {
       stepCount: 3,
       eventCount: 9,
       optimizations: [],
-      sdkVersion: coreVersion,
     });
   });
 
@@ -383,7 +378,6 @@ describe('computeStepLatencyEventData', () => {
       stepCount: 2,
       eventCount: 5,
       optimizations: [],
-      sdkVersion: coreVersion,
     });
   });
 

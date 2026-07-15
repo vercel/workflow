@@ -272,13 +272,6 @@ const stepLatencyTelemetryFields = {
   // active for this measurement (e.g. 'turbo', 'lazyStepStart',
   // 'optimisticStart'), so latency metrics can be segmented by them.
   optimizations: z.array(z.string()).optional(),
-  // Version of the @workflow/core package that computed the ttfs/stso
-  // values. Backends cannot recover this from transport metadata (a
-  // user-agent identifies the HTTP client package, which resolves
-  // independently of core in consumer lockfiles), so it rides with the
-  // measurement to let latency metrics be attributed to the runtime code
-  // that produced them.
-  sdkVersion: z.string().optional(),
 };
 
 const StepCompletedEventSchema = BaseEventSchema.extend({

@@ -149,8 +149,6 @@ interface SplitEventData {
     eventCount?: number;
     /** Runtime optimizations active for the ttfs/stso measurement. */
     optimizations?: string[];
-    /** Version of the SDK core package that computed the ttfs/stso values. */
-    sdkVersion?: string;
   };
 }
 
@@ -185,8 +183,7 @@ type MetaSourceField =
   | 'stso'
   | 'stepCount'
   | 'eventCount'
-  | 'optimizations'
-  | 'sdkVersion';
+  | 'optimizations';
 
 /**
  * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
@@ -357,9 +354,6 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
     eventData.optimizations.every((o) => typeof o === 'string')
   ) {
     meta.optimizations = eventData.optimizations as string[];
-  }
-  if (typeof eventData.sdkVersion === 'string') {
-    meta.sdkVersion = eventData.sdkVersion;
   }
 
   let payload: Uint8Array | undefined;

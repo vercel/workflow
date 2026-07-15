@@ -18,7 +18,6 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from './serialization.js';
-import { version as coreVersion } from './version.js';
 
 // Capture every promise handed to `waitUntil` so tests can assert that
 // progress-critical sends are never registered on a detached, unconsumed
@@ -1920,9 +1919,6 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
       'lazyStepStart',
       'optimisticStart',
     ]);
-    // The measuring code's own version rides with the sample (the transport
-    // user-agent identifies a different package).
-    expect(first.eventData.sdkVersion).toBe(coreVersion);
 
     // Second step ran back-to-back with the first: STSO only, and far
     // smaller than the TTFS anchor distance (it measures the scheduling
