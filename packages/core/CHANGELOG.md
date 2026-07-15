@@ -1,5 +1,25 @@
 # @workflow/core
 
+## 5.0.0-beta.35
+
+### Minor Changes
+
+- [#2266](https://github.com/vercel/workflow/pull/2266) [`a00d169`](https://github.com/vercel/workflow/commit/a00d16947085f8e94cf191c4d8850121cf201a94) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an opt-in optimistic-concurrency guard for event creation (`WORKFLOW_PRECONDITION_GUARD=1`): replay-context event creations send a `stateUpdatedAt` snapshot timestamp, and the runtime reloads the event log and retries (then falls back to a queue re-invocation) when the backend reports a newer out-of-band event with a 412 `PreconditionFailedError`.
+
+- [#2929](https://github.com/vercel/workflow/pull/2929) [`1933e29`](https://github.com/vercel/workflow/commit/1933e294cf938fb2314f45047033f8720ccf442b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Report run-started-to-first-step (rsfs) and final-scheduling-replay (finalSchedulingReplay) latency telemetry on step completion events.
+
+### Patch Changes
+
+- [#2153](https://github.com/vercel/workflow/pull/2153) [`6b8efd5`](https://github.com/vercel/workflow/commit/6b8efd58ce4829648f410e483bf42935dc5dcd1e) Thanks [@rchasman](https://github.com/rchasman)! - Record cross-run lineage when `start()` is called from inside a workflow or step: the new run is tagged with `$parentRunId` (its direct parent) and inherits the parent's `$rootRunId`, so a daisy chain or fan-out of any depth groups under one root id.
+
+- [#2943](https://github.com/vercel/workflow/pull/2943) [`fd107b9`](https://github.com/vercel/workflow/commit/fd107b9c33db397b513ef134f458a1083bde7d98) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fixed TTFS latency telemetry reporting 0 for runs with region-tagged run IDs.
+
+- Updated dependencies [[`f72184d`](https://github.com/vercel/workflow/commit/f72184dc836cb5e04ae689e99802f6fa869f487a), [`a00d169`](https://github.com/vercel/workflow/commit/a00d16947085f8e94cf191c4d8850121cf201a94), [`a00d169`](https://github.com/vercel/workflow/commit/a00d16947085f8e94cf191c4d8850121cf201a94), [`1933e29`](https://github.com/vercel/workflow/commit/1933e294cf938fb2314f45047033f8720ccf442b), [`6b8efd5`](https://github.com/vercel/workflow/commit/6b8efd58ce4829648f410e483bf42935dc5dcd1e)]:
+  - @workflow/world-local@5.0.0-beta.29
+  - @workflow/world-vercel@5.0.0-beta.31
+  - @workflow/world@5.0.0-beta.21
+  - @workflow/errors@5.0.0-beta.11
+
 ## 5.0.0-beta.34
 
 ### Patch Changes
