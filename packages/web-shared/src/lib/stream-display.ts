@@ -1,3 +1,5 @@
+import { peekFormatPrefix } from '@workflow/core/serialization-format';
+
 export interface DecodedStreamChunkSource {
   type: string;
   encoding: 'utf-8';
@@ -23,33 +25,19 @@ export function summarizeArrayBufferView(value: ArrayBufferView): string {
   return `${name}(${ta.length}) [${preview.join(', ')}${suffix}]`;
 }
 
-const WORKFLOW_FORMAT_PREFIXES = new Set(['devl', 'encr', 'gzip', 'zstd']);
-
-function peekAsciiPrefix(value: ArrayBufferView): string | null {
-  if (value.byteLength < 4) return null;
-  const bytes = new Uint8Array(value.buffer, value.byteOffset, 4);
-  let prefix = '';
-  for (const byte of bytes) {
-    if (byte < 0x61 || byte > 0x7a) return null;
-    prefix += String.fromCharCode(byte);
-  }
-  return WORKFLOW_FORMAT_PREFIXES.has(prefix) ? prefix : null;
-}
-
 /**
  * Decode a typed array as UTF-8 text when valid, otherwise return a compact
  * raw-byte summary. Used by `DataInspector`'s `collapseRefs` pipeline so
  * hydrated `Uint8Array` chunks (e.g. AI SDK text deltas) render as readable
  * text while still exposing the underlying byte layout.
  *
- * Workflow serialization payloads (`devl` / `gzip` / `zstd` / `encr`) are
- * never UTF-8 text the user should read raw — leave a clear summary so the
- * caller can tell hydration did not run, instead of dumping binary noise.
+ * Workflow serialization payloads keep their format prefix summary so
+ * un-hydrated `devl`/`gzip`/`zstd`/`encr` blobs are not misread as UTF-8.
  */
 export function formatArrayBufferViewForDisplay(
   value: ArrayBufferView
 ): FormattedStreamChunkDisplay {
-  const formatPrefix = peekAsciiPrefix(value);
+  const formatPrefix = peekFormatPrefix(value);
   if (formatPrefix) {
     return {
       text: `SerializedData(${formatPrefix}, ${value.byteLength} bytes)`,

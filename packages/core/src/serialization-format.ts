@@ -36,11 +36,9 @@ const formatDecoder = new TextDecoder();
 /**
  * Coerce binary payloads to a real `Uint8Array`.
  *
- * CBOR/transport layers sometimes hand back a `Buffer` or another
- * `ArrayBufferView`. Those pass `ArrayBuffer.isView` (so the o11y inspector
- * renders them as `Uint8Array(N) […]`) but can fail `instanceof Uint8Array`
- * across realms — which previously caused hydration to skip the value and
- * leave raw bytes in the UI.
+ * CBOR/transport may return a `Buffer` or other `ArrayBufferView` that fails
+ * `instanceof Uint8Array` across realms while still rendering as typed-array
+ * bytes in the o11y inspector.
  */
 export function asUint8Array(value: unknown): Uint8Array | null {
   if (value instanceof Uint8Array) {
@@ -50,6 +48,25 @@ export function asUint8Array(value: unknown): Uint8Array | null {
     return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
   }
   return null;
+}
+
+/**
+ * Return the 4-byte format prefix when `value` looks like workflow
+ * serialized data (`devl` / `encr` / `gzip` / `zstd`), otherwise `null`.
+ */
+export function peekFormatPrefix(
+  value: unknown
+): SerializationFormatType | null {
+  const bytes = asUint8Array(value);
+  if (!bytes || bytes.length < FORMAT_PREFIX_LENGTH) {
+    return null;
+  }
+  const prefix = formatDecoder.decode(bytes.subarray(0, FORMAT_PREFIX_LENGTH));
+  const known = Object.values(SerializationFormat) as string[];
+  if (!known.includes(prefix)) {
+    return null;
+  }
+  return prefix as SerializationFormatType;
 }
 
 /**
@@ -163,12 +180,7 @@ export function isExpiredStub(data: unknown): boolean {
  * Browser-safe — does not depend on the full serialization module.
  */
 export function isEncryptedData(data: unknown): boolean {
-  const bytes = asUint8Array(data);
-  if (!bytes || bytes.length < FORMAT_PREFIX_LENGTH) {
-    return false;
-  }
-  const prefix = formatDecoder.decode(bytes.subarray(0, FORMAT_PREFIX_LENGTH));
-  return prefix === SerializationFormat.ENCRYPTED;
+  return peekFormatPrefix(data) === SerializationFormat.ENCRYPTED;
 }
 
 /**
@@ -176,11 +188,7 @@ export function isEncryptedData(data: unknown): boolean {
  * Browser-safe — does not depend on the full serialization module.
  */
 export function isCompressedData(data: unknown): boolean {
-  const bytes = asUint8Array(data);
-  if (!bytes || bytes.length < FORMAT_PREFIX_LENGTH) {
-    return false;
-  }
-  const prefix = formatDecoder.decode(bytes.subarray(0, FORMAT_PREFIX_LENGTH));
+  const prefix = peekFormatPrefix(data);
   return (
     prefix === SerializationFormat.GZIP || prefix === SerializationFormat.ZSTD
   );

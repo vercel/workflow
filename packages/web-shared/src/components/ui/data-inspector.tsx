@@ -388,6 +388,26 @@ function BytesDisplayValue({ display }: { display: BytesDisplay }) {
 
 type Entry = [field: string | undefined, value: unknown];
 
+/** Expose non-enumerable Error fields so the inspector can render them. */
+function errorDisplayEntries(error: Error): Entry[] {
+  const entries: Entry[] = [
+    ['name', error.name],
+    ['message', error.message],
+  ];
+  if (typeof error.stack === 'string') {
+    entries.push(['stack', error.stack]);
+  }
+  if ('cause' in error) {
+    entries.push(['cause', (error as Error & { cause?: unknown }).cause]);
+  }
+  for (const [key, fieldValue] of Object.entries(error)) {
+    if (!entries.some(([existing]) => existing === key)) {
+      entries.push([key, fieldValue]);
+    }
+  }
+  return entries;
+}
+
 interface NodeContext {
   level: number;
   shouldExpand: (level: number) => boolean;
@@ -721,21 +741,6 @@ function DataRender({ field, value, isLast, ctx }: NodeProps) {
     );
   }
   if (value instanceof Error) {
-    const entries: Entry[] = [
-      ['name', value.name],
-      ['message', value.message],
-    ];
-    if (typeof value.stack === 'string') {
-      entries.push(['stack', value.stack]);
-    }
-    if ('cause' in value) {
-      entries.push(['cause', (value as Error & { cause?: unknown }).cause]);
-    }
-    for (const [key, fieldValue] of Object.entries(value)) {
-      if (!entries.some(([existing]) => existing === key)) {
-        entries.push([key, fieldValue]);
-      }
-    }
     return (
       <ExpandableContainer
         field={field}
@@ -744,7 +749,7 @@ function DataRender({ field, value, isLast, ctx }: NodeProps) {
         open="{"
         close="}"
         prefix={value.name || 'Error'}
-        entries={entries}
+        entries={errorDisplayEntries(value)}
       />
     );
   }

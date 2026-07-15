@@ -9,12 +9,8 @@ export type StructuredErrorRecord = Record<string, unknown> & {
 };
 
 /**
- * Check whether `value` looks like a structured error object we can render
- * with the error block. Some persisted workflow errors only include a
- * `message`, while runtime errors usually also include `stack`.
- *
- * Native `Error` instances are accepted even though `message`/`stack` are
- * non-enumerable — property access still returns strings.
+ * Check whether `value` looks like a structured error we can render.
+ * Accepts native `Error` instances and plain `{ message }` / `{ stack }` objects.
  */
 export function isStructuredError(
   value: unknown

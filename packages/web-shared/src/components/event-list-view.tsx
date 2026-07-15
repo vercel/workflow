@@ -559,18 +559,7 @@ function extractStructuredError(
   if (data == null || typeof data !== 'object') return null;
   const record = data as Record<string, unknown>;
   // Check the nested `error` field first (the StructuredError)
-  if (isStructuredError(record.error)) {
-    return record.error instanceof Error
-      ? {
-          name: record.error.name,
-          message: record.error.message,
-          ...(typeof record.error.stack === 'string'
-            ? { stack: record.error.stack }
-            : {}),
-          ...Object.fromEntries(Object.entries(record.error)),
-        }
-      : record.error;
-  }
+  if (isStructuredError(record.error)) return record.error;
   // Some error formats put the message/stack at the top level of eventData.
   if (isStructuredError(record)) return record;
   return null;

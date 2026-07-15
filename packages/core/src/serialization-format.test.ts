@@ -15,6 +15,7 @@ import {
   isStreamId,
   isStreamRef,
   observabilityRevivers,
+  peekFormatPrefix,
   type Revivers,
   SerializationFormat,
   STREAM_REF_TYPE,
@@ -76,6 +77,18 @@ describe('asUint8Array', () => {
     expect(asUint8Array(null)).toBeNull();
     expect(asUint8Array({ 0: 1 })).toBeNull();
     expect(asUint8Array(new DataView(new ArrayBuffer(4)))).toBeNull();
+  });
+});
+
+describe('peekFormatPrefix', () => {
+  it('returns known workflow format prefixes', () => {
+    const payload = new TextEncoder().encode('devl[["Error",1]]');
+    expect(peekFormatPrefix(payload)).toBe(SerializationFormat.DEVALUE_V1);
+  });
+
+  it('returns null for non-prefixed data', () => {
+    expect(peekFormatPrefix(new Uint8Array([1, 2, 3, 4]))).toBeNull();
+    expect(peekFormatPrefix('not-bytes')).toBeNull();
   });
 });
 
