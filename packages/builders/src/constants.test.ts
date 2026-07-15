@@ -37,18 +37,8 @@ describe('getWorkflowQueueTrigger', () => {
     });
   });
 
-  it.each([
-    'true',
-    'TRUE',
-    'yes',
-    'on',
-  ])('sets maxConcurrency: 1 for truthy value %s', (value) => {
-    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = value;
-    expect(getWorkflowQueueTrigger()).toMatchObject({ maxConcurrency: 1 });
-  });
-
-  it('does not set maxConcurrency for unrecognized values', () => {
-    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = 'maybe';
+  it('does not set maxConcurrency for non-"1" values', () => {
+    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = 'true';
     const trigger = getWorkflowQueueTrigger();
     expect('maxConcurrency' in trigger).toBe(false);
   });

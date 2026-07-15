@@ -589,33 +589,15 @@ export interface MutableEventLog {
 }
 
 /**
- * Whether an environment variable is set to a recognized falsy value
- * (`0`/`false`/`no`/`off`, case-insensitive). Anything else — including an
- * unset, empty, or unrecognized value — is not disabled.
- */
-export function isEnvFlagDisabled(value: string | undefined): boolean {
-  if (value === undefined) {
-    return false;
-  }
-  const normalized = value.trim().toLowerCase();
-  return (
-    normalized === '0' ||
-    normalized === 'false' ||
-    normalized === 'no' ||
-    normalized === 'off'
-  );
-}
-
-/**
  * Whether the optimistic-concurrency guard for event creation is enabled.
  * **On by default** where the runtime executes: replay-context creates send a
  * `stateUpdatedAt` snapshot (and can be rejected with 412 by a supporting
- * backend) unless `WORKFLOW_PRECONDITION_GUARD` is explicitly set to a falsy
- * value (`0`/`false`/`no`/`off`). Backends without guard support ignore the
- * snapshot, so enabling by default is backward-compatible.
+ * backend) unless `WORKFLOW_PRECONDITION_GUARD` is set to `0`. Backends without
+ * guard support ignore the snapshot, so enabling by default is
+ * backward-compatible.
  */
 export function isPreconditionGuardEnabled(): boolean {
-  return !isEnvFlagDisabled(process.env.WORKFLOW_PRECONDITION_GUARD);
+  return process.env.WORKFLOW_PRECONDITION_GUARD !== '0';
 }
 
 /**

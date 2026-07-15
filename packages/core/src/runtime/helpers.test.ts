@@ -546,27 +546,6 @@ describe('withPreconditionRetry', () => {
     expect(op).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    '0',
-    'false',
-    'FALSE',
-    'no',
-    'off',
-  ])('treats WORKFLOW_PRECONDITION_GUARD=%s as disabled', async (value) => {
-    process.env.WORKFLOW_PRECONDITION_GUARD = value;
-    const op = vi.fn(async (stateUpdatedAt?: number) => {
-      expect(stateUpdatedAt).toBeUndefined();
-      return 'ok';
-    });
-    await expect(
-      withPreconditionRetry(
-        'wrun_test',
-        { events: [makeUlidEvent(1_700_000_000_000)], cursor: 'c0' },
-        op
-      )
-    ).resolves.toBe('ok');
-  });
-
   it('passes the latest snapshot time to op and returns its result without reloading', async () => {
     const time = 1_700_000_000_000;
     const log: MutableEventLog = {

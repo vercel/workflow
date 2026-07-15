@@ -118,20 +118,11 @@ export const WORKFLOW_QUEUE_TRIGGER = createWorkflowQueueTrigger();
  * the route's `experimentalTriggers` config.
  */
 /**
- * Whether sequential replays are enabled: `WORKFLOW_SEQUENTIAL_REPLAYS` set to a
- * recognized truthy value (`1`/`true`/`yes`/`on`, case-insensitive). Off by
- * default. Accepting the common spellings avoids the footgun where `=true` is
- * silently treated as off. Read at call time.
+ * Whether sequential replays are enabled (`WORKFLOW_SEQUENTIAL_REPLAYS=1`). Read
+ * at call time.
  */
 export function isSequentialReplaysEnabled(): boolean {
-  const normalized =
-    process.env.WORKFLOW_SEQUENTIAL_REPLAYS?.trim().toLowerCase();
-  return (
-    normalized === '1' ||
-    normalized === 'true' ||
-    normalized === 'yes' ||
-    normalized === 'on'
-  );
+  return process.env.WORKFLOW_SEQUENTIAL_REPLAYS === '1';
 }
 
 export function getWorkflowQueueTrigger(options?: { namespace?: string }) {
