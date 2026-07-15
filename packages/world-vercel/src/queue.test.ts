@@ -625,18 +625,26 @@ describe('createQueue', () => {
     it('should ask VQS to retry handler errors with bounded backoff', () => {
       mockHandleCallback.mockReturnValue(async () => new Response('ok'));
       const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+      const consoleErrorSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
 
       try {
         const queue = createQueue();
         queue.createQueueHandler('__wkf_workflow_', async () => undefined);
 
         const options = mockHandleCallback.mock.calls[0][1];
+        const handlerError = new Error('workflow server unavailable');
         expect(
-          options.retry(new Error('workflow server unavailable'), {
+          options.retry(handlerError, {
             messageId: 'msg-123',
             deliveryCount: 1,
           })
         ).toEqual({ afterSeconds: 1 });
+        expect(consoleErrorSpy).toHaveBeenLastCalledWith(
+          '[workflow] Queue handler failed for message "msg-123" on delivery attempt 1; retrying in 1s:',
+          handlerError
+        );
         expect(
           options.retry(new Error('workflow server unavailable'), {
             messageId: 'msg-123',
@@ -685,6 +693,7 @@ describe('createQueue', () => {
         ).toEqual({ afterSeconds: 96 });
       } finally {
         randomSpy.mockRestore();
+        consoleErrorSpy.mockRestore();
       }
     });
 
