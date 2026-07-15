@@ -17,6 +17,7 @@ import { workflowEntrypoint } from './runtime.js';
 import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
+  hydrateRunError,
 } from './serialization.js';
 
 // Capture every promise handed to `waitUntil` so tests can assert that
@@ -62,6 +63,7 @@ async function runWorkflowHandlerWithEvents(
      * pin the log's contents keep full control.
      */
     dynamicEventLog?: boolean;
+    currentDeploymentId?: string;
   } = {}
 ) {
   const createdEvents = options.createdEvents ?? [];
@@ -89,6 +91,9 @@ async function runWorkflowHandlerWithEvents(
 
   setWorld({
     specVersion: SPEC_VERSION_CURRENT,
+    getDeploymentId: vi.fn(
+      async () => options.currentDeploymentId ?? workflowRun.deploymentId
+    ),
     createQueueHandler: vi.fn(
       (
         _prefix: string,
@@ -146,6 +151,57 @@ describe('workflowEntrypoint replay guards', () => {
     `;globalThis.__private_workflows = new Map();
     globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${workflowName});`;
 
+  it('fails a run delivered to a different deployment before executing it', async () => {
+    // A run may only execute on the deployment that created it. On delivery
+    // elsewhere the run is failed before any workflow code or step runs, and
+    // the failure is recorded with the DEPLOYMENT_MISMATCH code without
+    // resolving the (possibly-gone) origin deployment's encryption key.
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_wrong_deployment',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_wrong_deployment',
+        undefined,
+        []
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'dpl_origin',
+    };
+
+    const createdEvents = await runWorkflowHandlerWithEvents(
+      `async function workflow() {
+        throw new Error('workflow code must not execute');
+      }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      [],
+      { currentDeploymentId: 'dpl_current' }
+    );
+
+    const failedEvent = createdEvents.find(
+      (event: any) => event.eventType === 'run_failed'
+    ) as any;
+    expect(failedEvent).toBeDefined();
+    expect(failedEvent.eventData.errorCode).toBe(
+      RUN_ERROR_CODES.DEPLOYMENT_MISMATCH
+    );
+    const error = await hydrateRunError(
+      failedEvent.eventData.error,
+      workflowRun.runId,
+      undefined
+    );
+    expect(error).toMatchObject({ name: 'WorkflowDeploymentMismatchError' });
+    expect((error as Error).message).toContain(
+      'belongs to deployment "dpl_origin", but was received by deployment "dpl_current"'
+    );
+    expect(createdEvents).not.toContainEqual(
+      expect.objectContaining({ eventType: 'run_completed' })
+    );
+  });
+
   it('records run_failed when run_started response schema validation fails', async () => {
     const createdEvents: unknown[] = [];
     const schemaError = new WorkflowWorldError(
@@ -173,6 +229,7 @@ describe('workflowEntrypoint replay guards', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      getDeploymentId: vi.fn(async () => 'test-deployment'),
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -271,6 +328,7 @@ describe('workflowEntrypoint replay guards', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      getDeploymentId: vi.fn(async () => 'test-deployment'),
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -368,6 +426,7 @@ describe('workflowEntrypoint replay guards', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -447,6 +506,7 @@ describe('workflowEntrypoint replay guards', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -808,6 +868,7 @@ describe('workflowEntrypoint replay guards', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -917,6 +978,7 @@ describe('workflowEntrypoint replay guards', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -1138,6 +1200,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -1383,6 +1446,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     });
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
           async () => {
@@ -1558,6 +1622,7 @@ describe('workflowEntrypoint turbo mode', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      getDeploymentId: vi.fn(async () => 'test-deployment'),
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
           async () => {
@@ -1826,6 +1891,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      getDeploymentId: vi.fn(async () => 'test-deployment'),
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
           async () => {

@@ -39,6 +39,7 @@ import {
   isInlineOwnershipEnabled,
   isTurboEnabled,
 } from './runtime/constants.js';
+import { failRunIfDeploymentMismatch } from './runtime/deployment-guard.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -702,6 +703,15 @@ export function workflowEntrypoint(
                         );
                         return;
                       }
+                      if (
+                        await failRunIfDeploymentMismatch({
+                          world,
+                          run: bgRun,
+                          requestId,
+                        })
+                      ) {
+                        return;
+                      }
                       const bgStartedAt = bgRun.startedAt
                         ? +bgRun.startedAt
                         : Date.now();
@@ -1064,6 +1074,23 @@ export function workflowEntrypoint(
                       }
                     } // end else (non-turbo run_started)
                   } // end if (!workflowRun)
+
+                  // Stop before replaying (or executing inline steps) if this
+                  // run reached a deployment other than the one that owns it.
+                  // Continuing risks code skew, and any step it dispatches would
+                  // resolve the wrong encryption key. `awaitRunReady` ensures a
+                  // turbo-backgrounded run_started has landed before we record
+                  // the failure.
+                  if (
+                    await failRunIfDeploymentMismatch({
+                      world,
+                      run: workflowRun,
+                      requestId,
+                      beforeFail: awaitRunReady,
+                    })
+                  ) {
+                    return;
+                  }
 
                   // Resolve the encryption key for this run's deployment.
                   // Used eagerly here since both runWorkflow (input

@@ -18,6 +18,8 @@ export const RUN_ERROR_CODES = {
   REPLAY_TIMEOUT: 'REPLAY_TIMEOUT',
   /** World response violated the SDK contract and cannot be retried safely */
   WORLD_CONTRACT_ERROR: 'WORLD_CONTRACT_ERROR',
+  /** Run was delivered to a deployment other than the one that created it */
+  DEPLOYMENT_MISMATCH: 'DEPLOYMENT_MISMATCH',
 } as const;
 
 export type RunErrorCode =
