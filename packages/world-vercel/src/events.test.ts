@@ -300,14 +300,14 @@ describe('splitEventDataForV4 attribute fields', () => {
         result: new TextEncoder().encode('"ok"'),
         ttfs: 123,
         rsfs: 88,
-        firstReplay: 12,
+        finalSchedulingReplay: 12,
         optimizations: ['turbo', 'lazyStepStart'],
       },
     } as AnyEventRequest);
     expect(completed.meta.ttfs).toBe(123);
     expect(completed.meta.stso).toBeUndefined();
     expect(completed.meta.rsfs).toBe(88);
-    expect(completed.meta.firstReplay).toBe(12);
+    expect(completed.meta.finalSchedulingReplay).toBe(12);
     expect(completed.meta.optimizations).toEqual(['turbo', 'lazyStepStart']);
 
     const failed = splitEventDataForV4({
@@ -339,7 +339,7 @@ describe('splitEventDataForV4 attribute fields', () => {
         result: new TextEncoder().encode('"ok"'),
         ttfs: 'fast',
         rsfs: 'fast',
-        firstReplay: 'fast',
+        finalSchedulingReplay: 'fast',
         stepCount: 0,
         eventCount: 2.5,
         optimizations: [1, 2],
@@ -347,7 +347,7 @@ describe('splitEventDataForV4 attribute fields', () => {
     } as unknown as AnyEventRequest);
     expect(malformed.meta.ttfs).toBeUndefined();
     expect(malformed.meta.rsfs).toBeUndefined();
-    expect(malformed.meta.firstReplay).toBeUndefined();
+    expect(malformed.meta.finalSchedulingReplay).toBeUndefined();
     expect(malformed.meta.stepCount).toBeUndefined();
     expect(malformed.meta.eventCount).toBeUndefined();
     expect(malformed.meta.optimizations).toBeUndefined();

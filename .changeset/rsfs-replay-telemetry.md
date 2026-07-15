@@ -4,4 +4,4 @@
 '@workflow/world-vercel': minor
 ---
 
-Report run-started-to-first-step (rsfs) and first-step replay-compute (firstReplay) latency telemetry on step completion events.
+Report run-started-to-first-step (rsfs) and final-scheduling-replay (finalSchedulingReplay) latency telemetry on step completion events.

@@ -1908,13 +1908,13 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
       'optimisticStart',
     ]);
 
-    // RSFS/firstReplay: under turbo, rsfsAnchorMs is stamped at local run
+    // RSFS/finalSchedulingReplay: under turbo, rsfsAnchorMs is stamped at local run
     // synthesis (well after the backdated run-id timestamp), so unlike ttfs
     // it stays within the test's own wall-clock budget.
     expect(first.eventData.rsfs).toBeGreaterThanOrEqual(0);
     expect(first.eventData.rsfs).toBeLessThanOrEqual(elapsed);
-    expect(first.eventData.firstReplay).toBeGreaterThanOrEqual(0);
-    expect(first.eventData.firstReplay).toBeLessThanOrEqual(elapsed);
+    expect(first.eventData.finalSchedulingReplay).toBeGreaterThanOrEqual(0);
+    expect(first.eventData.finalSchedulingReplay).toBeLessThanOrEqual(elapsed);
 
     // Second step ran back-to-back with the first: STSO only, and far
     // smaller than the TTFS anchor distance (it measures the scheduling
@@ -1931,7 +1931,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     ]);
     // STSO-only steps never qualify for RSFS (it shares TTFS eligibility).
     expect(second.eventData.rsfs).toBeUndefined();
-    expect(second.eventData.firstReplay).toBeUndefined();
+    expect(second.eventData.finalSchedulingReplay).toBeUndefined();
   });
 
   it('still reports ttfs without turbo (redelivery), minus turbo-only optimization flags', async () => {
@@ -1948,7 +1948,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     // Non-turbo: rsfsAnchorMs is stamped right after the real (awaited)
     // run_started response, so rsfs is a small non-negative duration too.
     expect(first.eventData.rsfs).toBeGreaterThanOrEqual(0);
-    expect(first.eventData.firstReplay).toBeGreaterThanOrEqual(0);
+    expect(first.eventData.finalSchedulingReplay).toBeGreaterThanOrEqual(0);
   });
 
   it('reports nothing when the first step is scheduled alongside a wait', async () => {
@@ -1960,7 +1960,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(stepCompleted[0].eventData.ttfs).toBeUndefined();
     expect(stepCompleted[0].eventData.stso).toBeUndefined();
     expect(stepCompleted[0].eventData.rsfs).toBeUndefined();
-    expect(stepCompleted[0].eventData.firstReplay).toBeUndefined();
+    expect(stepCompleted[0].eventData.finalSchedulingReplay).toBeUndefined();
     expect(stepCompleted[0].eventData.optimizations).toBeUndefined();
   });
 

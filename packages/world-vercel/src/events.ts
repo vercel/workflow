@@ -149,8 +149,10 @@ interface SplitEventData {
     eventCount?: number;
     /** Client-measured run_started-to-first-step ms (step_completed / step_failed). */
     rsfs?: number;
-    /** Client-measured synchronous replay-compute ms within the rsfs window. */
-    firstReplay?: number;
+    /** Client-measured synchronous replay-compute ms of only the FINAL replay
+     *  pass within the rsfs window — not accumulated across earlier
+     *  pre-first-step passes, so it is not "the replay portion of rsfs". */
+    finalSchedulingReplay?: number;
     /** Runtime optimizations active for the ttfs/stso measurement. */
     optimizations?: string[];
   };
@@ -188,7 +190,7 @@ type MetaSourceField =
   | 'stepCount'
   | 'eventCount'
   | 'rsfs'
-  | 'firstReplay'
+  | 'finalSchedulingReplay'
   | 'optimizations';
 
 /**
@@ -358,8 +360,8 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   if (typeof eventData.rsfs === 'number') {
     meta.rsfs = eventData.rsfs;
   }
-  if (typeof eventData.firstReplay === 'number') {
-    meta.firstReplay = eventData.firstReplay;
+  if (typeof eventData.finalSchedulingReplay === 'number') {
+    meta.finalSchedulingReplay = eventData.finalSchedulingReplay;
   }
   if (
     Array.isArray(eventData.optimizations) &&

@@ -224,12 +224,17 @@ export const StepRsfsMs = SemanticConvention<number>('step.rsfs_ms');
 
 /**
  * Client-measured synchronous workflow-function replay duration in
- * milliseconds within the rsfs window, excluding awaited network I/O. Only
- * present alongside step.rsfs_ms and only for the run's first step
- * (see runtime/step-latency.ts) — hence "first" in the name.
+ * milliseconds, excluding awaited network I/O, of only the FINAL replay pass
+ * within the rsfs window — the pass that reached and scheduled the first
+ * step. Not accumulated across earlier pre-first-step passes (e.g. a
+ * workflow-body `setAttributes()` detour replays more than once, and a
+ * redelivery omits earlier invocations' work entirely), so this must not be
+ * read as "the replay portion of rsfs" — step.rsfs_ms covers the whole
+ * window. Only present alongside step.rsfs_ms and only for the run's first
+ * step (see runtime/step-latency.ts).
  */
-export const StepFirstReplayMs = SemanticConvention<number>(
-  'step.first_replay_ms'
+export const StepFinalSchedulingReplayMs = SemanticConvention<number>(
+  'step.final_scheduling_replay_ms'
 );
 
 /**

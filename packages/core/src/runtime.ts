@@ -1450,18 +1450,30 @@ export function workflowEntrypoint(
                     } catch (err) {
                       if (WorkflowSuspension.is(err)) {
                         // Synchronous `runWorkflow` duration for THIS
-                        // suspension — anchors the `firstReplay` telemetry
-                        // field below (see StepLatencyTracking.replayMs).
+                        // suspension only — anchors the `finalSchedulingReplay`
+                        // telemetry field below (see
+                        // StepLatencyTracking.replayMs). This is the FINAL
+                        // replay pass, the one that reached and scheduled the
+                        // first step: valid rsfs paths can replay more than
+                        // once before the first step (e.g. a workflow-body
+                        // `setAttributes()` detour replays twice), and a
+                        // redelivery omits earlier invocations' replay work
+                        // entirely. This value is NOT accumulated across
+                        // those earlier passes, so it must not be read as
+                        // "the replay portion of rsfs" — rsfs covers the
+                        // whole run_started-to-first-step window;
+                        // finalSchedulingReplay covers only this last pass.
                         // Captured here, before `handleSuspension`'s awaited
                         // I/O, so it excludes that I/O.
                         //
                         // This duplicates what OTEL already captures on the
                         // run/invocation span, but is collected as client
                         // telemetry so the server can emit it as an
-                        // UNSAMPLED metric: workflow-server's server spans
-                        // are heavily sampled in production (~7%), so
-                        // span-derived percentiles are biased and can't
-                        // serve as the dashboard's exact TTFS decomposition.
+                        // UNSAMPLED, full-population metric: workflow-server's
+                        // server spans are heavily sampled in production
+                        // (~7%), and client spans can't be filtered by SDK
+                        // version, so neither can serve as the dashboard's
+                        // exact TTFS decomposition.
                         const replayDurationMs = Date.now() - replayStart;
                         runtimeLogger.debug('Workflow suspended', {
                           workflowRunId: runId,

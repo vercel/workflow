@@ -406,7 +406,7 @@ describe('computeStepLatencyEventData', () => {
     expect(data).toBeUndefined();
   });
 
-  it('computes rsfs and firstReplay alongside ttfs when the tracking and post-sent anchor are both present', () => {
+  it('computes rsfs and finalSchedulingReplay alongside ttfs when the tracking and post-sent anchor are both present', () => {
     const data = computeStepLatencyEventData({
       tracking: {
         ttfsAnchorMs: 1_000,
@@ -424,12 +424,12 @@ describe('computeStepLatencyEventData', () => {
     expect(data).toEqual({
       ttfs: 1_000,
       rsfs: 750,
-      firstReplay: 15,
+      finalSchedulingReplay: 15,
       optimizations: ['lazyStepStart'],
     });
   });
 
-  it('omits rsfs but still reports firstReplay when the post-sent anchor is missing', () => {
+  it('omits rsfs but still reports finalSchedulingReplay when the post-sent anchor is missing', () => {
     const data = computeStepLatencyEventData({
       tracking: {
         ttfsAnchorMs: 1_000,
@@ -446,7 +446,7 @@ describe('computeStepLatencyEventData', () => {
     });
     expect(data).toEqual({
       ttfs: 1_000,
-      firstReplay: 15,
+      finalSchedulingReplay: 15,
       optimizations: ['lazyStepStart'],
     });
   });
@@ -469,7 +469,7 @@ describe('computeStepLatencyEventData', () => {
     expect(data).toEqual({
       ttfs: 1_000,
       rsfs: 0,
-      firstReplay: 10,
+      finalSchedulingReplay: 10,
       optimizations: ['lazyStepStart'],
     });
   });
