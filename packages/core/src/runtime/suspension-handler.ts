@@ -128,6 +128,15 @@ async function createHookEvent({
   hasHookConflict: boolean;
   hasAwaitedHookCreation: boolean;
 }> {
+  if (
+    queueItem.tokenExpiresAt !== undefined &&
+    world.capabilities?.hookTtl?.active !== true
+  ) {
+    throw new FatalError(
+      'The configured World does not support `experimental_expires` for Hooks.'
+    );
+  }
+
   try {
     const result = await world.events.create(runId, hookEvent, {
       requestId,

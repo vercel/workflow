@@ -274,6 +274,13 @@ export interface Storage {
 /**
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
+export interface WorldCapabilities {
+  /** Supports `experimental_expires` for Hooks. */
+  hookTtl?: {
+    active: boolean;
+  };
+}
+
 export interface World extends Queue, Streamer, Storage {
   /**
    * Optional analytics read namespace for observability surfaces.
@@ -292,6 +299,9 @@ export interface World extends Queue, Streamer, Storage {
    * `SPEC_VERSION_CURRENT` before they create or replay runs.
    */
   specVersion: number;
+
+  /** Optional features supported by this World. */
+  capabilities?: WorldCapabilities;
 
   /**
    * Whether calling `process.exit(1)` from a queue handler is observed by

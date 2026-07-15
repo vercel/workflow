@@ -4,4 +4,4 @@
 '@workflow/world-vercel': minor
 ---
 
-Add `experimental_expires` for keeping a Hook token unavailable after its run ends, and forward the absolute expiration time through workflow events.
+Add `experimental_expires` for keeping a Hook token unavailable after its run ends, and require supporting Worlds to advertise the `hookTtl` capability.

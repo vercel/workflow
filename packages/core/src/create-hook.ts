@@ -151,7 +151,8 @@ export interface HookOptions {
    * Calling `dispose()` (including through `using`) releases the token
    * immediately.
    *
-   * World implementations may ignore this experimental option.
+   * The workflow fails when registering the Hook if its World does not support
+   * this experimental option.
    *
    * @example
    *

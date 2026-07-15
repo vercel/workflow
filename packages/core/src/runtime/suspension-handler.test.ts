@@ -20,8 +20,12 @@ const run: WorkflowRun = {
   deploymentId: 'test-deployment',
 };
 
-function createWorld(eventsCreate: ReturnType<typeof vi.fn>): World {
+function createWorld(
+  eventsCreate: ReturnType<typeof vi.fn>,
+  capabilities?: World['capabilities']
+): World {
   return {
+    capabilities,
     events: {
       create: eventsCreate,
     },
@@ -34,7 +38,9 @@ describe('handleSuspension', () => {
     const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
       event,
     }));
-    const world = createWorld(eventsCreate);
+    const world = createWorld(eventsCreate, {
+      hookTtl: { active: true },
+    });
     const tokenExpiresAt = new Date('2026-08-01T00:00:00.000Z');
     const pending = new Map([
       [
@@ -65,6 +71,39 @@ describe('handleSuspension', () => {
       }),
       expect.anything()
     );
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['inactive', { hookTtl: { active: false } }],
+  ] satisfies [
+    string,
+    World['capabilities'],
+  ][])('rejects hook expiration when the capability is %s', async (_state, capabilities) => {
+    const eventsCreate = vi.fn();
+    const world = createWorld(eventsCreate, capabilities);
+    const pending = new Map([
+      [
+        'hook_expiring',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_expiring',
+          token: 'order:123',
+          tokenExpiresAt: new Date('2026-08-01T00:00:00.000Z'),
+        },
+      ],
+    ]);
+
+    await expect(
+      handleSuspension({
+        suspension: new WorkflowSuspension(pending, globalThis),
+        world,
+        run,
+      })
+    ).rejects.toThrow(
+      'The configured World does not support `experimental_expires` for Hooks.'
+    );
+    expect(eventsCreate).not.toHaveBeenCalled();
   });
 
   it('marks hook.getConflict()-awaited creations without converting them into wait timeouts', async () => {
