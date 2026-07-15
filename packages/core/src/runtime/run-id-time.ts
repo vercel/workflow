@@ -1,3 +1,4 @@
+import { decode } from '@workflow/world-vercel/run-id';
 import { decodeTime } from 'ulid';
 
 /**
@@ -13,19 +14,17 @@ import { decodeTime } from 'ulid';
 const RUN_ID_PREFIX = 'wrun_';
 
 /**
- * Metadata tag bit used by run-ID tagging schemes: `World.createRunId()`
- * implementations may mark an ID as carrying metadata in its randomness
- * section by setting the most-significant bit of the ULID's 48-bit timestamp
- * (e.g. `@workflow/world-vercel`'s region-tagged run IDs). A set MSB can
- * never be a real creation time — it would place the timestamp past the year
- * 6400 — so it is unconditionally cleared before the timestamp is used.
- */
-const TIMESTAMP_TAG_BIT = 2 ** 47;
-
-/**
  * Extracts the run's creation timestamp (epoch milliseconds) from a `wrun_`
- * run ID by decoding the embedded ULID time component, clearing the
- * {@link TIMESTAMP_TAG_BIT} when a tagging scheme has set it.
+ * run ID by decoding the embedded ULID time component.
+ *
+ * `@workflow/world-vercel`'s region-tagged run IDs mark an ID as carrying
+ * metadata by setting the most-significant bit of the ULID's 48-bit
+ * timestamp, which would otherwise skew the decoded time past the year 6400.
+ * The tag-bit handling is delegated to the scheme's own codec —
+ * `decode()` returns the ULID with the tag bit cleared — so if the tagged
+ * layout ever evolves (the scheme carries a 5-bit version field for exactly
+ * that), this anchor keeps tracking the codec instead of silently diverging.
+ * For untagged input `decode()` is a passthrough.
  *
  * Returns `undefined` when `runId` is not a decodable `wrun_<ulid>` (e.g. a
  * legacy/non-ULID id, or a test fixture like `wrun_test`); callers fall back to
@@ -36,8 +35,7 @@ export function runIdCreatedAt(runId: string): number | undefined {
     ? runId.slice(RUN_ID_PREFIX.length)
     : runId;
   try {
-    const time = decodeTime(ulidPart);
-    return time >= TIMESTAMP_TAG_BIT ? time - TIMESTAMP_TAG_BIT : time;
+    return decodeTime(decode(ulidPart).ulid);
   } catch {
     return undefined;
   }
