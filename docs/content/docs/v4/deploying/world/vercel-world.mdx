@@ -122,20 +122,15 @@ Custom base URL for the Vercel workflow API. Automatically detected.
 
 ### `WORKFLOW_SEQUENTIAL_REPLAYS`
 
-Set `WORKFLOW_SEQUENTIAL_REPLAYS=1` to guarantee that **at most one orchestrator (flow) invocation runs at a time per workflow run**. This behavior is off by default; without it, the runtime relies on idempotency and the event log to tolerate concurrent flow invocations of the same run. It is also enabled by `WORKFLOW_SAFE_MODE=1` when `WORKFLOW_SEQUENTIAL_REPLAYS` is not set explicitly.
+Set `WORKFLOW_SEQUENTIAL_REPLAYS=1` to guarantee that **at most one orchestrator (flow) invocation runs at a time per workflow run**. This behavior is off by default; without it, the runtime relies on idempotency and the event log to tolerate concurrent flow invocations of the same run.
 
 When enabled, each run is given its own queue topic and the flow route is configured with `maxConcurrency: 1`, so [Vercel Queues](https://vercel.com/docs/queues) processes flow messages for a given run strictly one at a time. Step routes are unaffected and continue to run with full concurrency.
 
 <Callout type="warn">
   This variable is read at **both build time and runtime**, so it must be set as a project-level environment variable that applies to your build and your deployed functions. Setting it for only one will produce an inconsistent configuration. The same applies to framework integrations that write their own queue trigger configuration instead of using `getWorkflowQueueTrigger()` from `@workflow/builders`: they only get the runtime half (per-run topics) unless they also emit `maxConcurrency: 1` on their flow trigger.
-
-  Enabling sequential replays has a cost. Per [Vercel Queues pricing](https://vercel.com/docs/queues/pricing), push deliveries under `maxConcurrency` are billed at **2x units** for that operation, so every flow-route delivery costs double while this is enabled. It also creates one queue topic per run, which increases the number of distinct queues surfaced in queue observability, and each flow invocation waits for a per-run concurrency slot before delivery, which can add queueing latency. Leave it off unless you specifically need the per-run serialization guarantee.
-
-
-  While a replay holds a run's slot — including time spent executing steps inline — other wake messages for that run (hook resumes, aborts and cancellations, and run-timeout enforcement) wait for the slot. Expect aborts and timeouts to be delayed by up to the duration of the longest single invocation.
-
-  The guarantee covers messages sent by the Workflow SDK itself. External producers that compute a flow topic name directly (rather than enqueueing through the SDK) still deliver, but bypass the per-run serialization slot.
 </Callout>
+
+Because it routes each run's flow invocations through a dedicated `maxConcurrency: 1` queue topic, enabling this might lead to higher queue performance overhead.
 
 ### Programmatic configuration
 
