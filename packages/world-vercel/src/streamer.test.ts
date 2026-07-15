@@ -569,6 +569,55 @@ describe('writeMulti over the WebSocket write channel', () => {
     expect(fakeSockets).toHaveLength(1);
   });
 
+  it('a live writer keeps carrying its stream while the breaker suppresses new channels', async () => {
+    vi.stubEnv('WORKFLOW_STREAM_WRITE_MAX_CONSECUTIVE_RECONNECTS', '0');
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response('ok'));
+
+    const streamer = await getStreamer();
+    // Stream "healthy" opens its channel and stays live, holding an
+    // unacked (lower-seq) frame in its in-flight window.
+    await streamer.streams.writeMulti?.('run-9', 'healthy', ['b1'], {
+      retransmitSafe: true,
+    });
+    const socketHealthy = await lastSocket();
+    socketHealthy.emit('open', {});
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(socketHealthy.sent).toHaveLength(1);
+
+    // Stream "failing" opens a second channel and dies fatally; its next
+    // flush circuit-breaks to PUT and opens the streamer-wide cooldown.
+    await streamer.streams.writeMulti?.('run-9', 'failing', ['a1'], {
+      retransmitSafe: true,
+    });
+    (await lastSocket()).emit('close', { code: 4401, reason: 'unauthorized' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await streamer.streams.writeMulti?.('run-9', 'failing', ['a2'], {
+      retransmitSafe: true,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // The healthy stream's next flush must stay on its live channel:
+    // diverting it to PUT would persist higher-seq chunks while the writer
+    // still holds unacked lower-seq frames, and the reader's per-writer
+    // dedupe would then drop those frames as replays (silent loss).
+    await streamer.streams.writeMulti?.('run-9', 'healthy', ['b2'], {
+      retransmitSafe: true,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(socketHealthy.sent).toHaveLength(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // A stream with no live writer is what the breaker exists for: during
+    // the cooldown it goes straight to PUT, no third socket.
+    await streamer.streams.writeMulti?.('run-9', 'fresh', ['c1'], {
+      retransmitSafe: true,
+    });
+    expect(fakeSockets).toHaveLength(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
   it('forced websocket transport rejects on fatal failure instead of falling back', async () => {
     vi.stubEnv('WORKFLOW_STREAM_WRITE_TRANSPORT', 'websocket');
     vi.stubEnv('WORKFLOW_STREAM_WRITE_MAX_CONSECUTIVE_RECONNECTS', '0');
