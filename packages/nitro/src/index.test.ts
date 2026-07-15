@@ -1,13 +1,8 @@
-import { stopEsbuildService, WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import { describe, expect, it, vi } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
 import { workflow as viteWorkflow } from './vite.js';
-
-vi.mock('@workflow/builders', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@workflow/builders')>()),
-  stopEsbuildService: vi.fn(),
-}));
 
 type StubOptions = {
   routing: boolean;
@@ -122,10 +117,6 @@ describe('@workflow/nitro virtual handlers', () => {
 });
 
 describe('@workflow/nitro builder lifecycle', () => {
-  beforeEach(() => {
-    vi.mocked(stopEsbuildService).mockClear();
-  });
-
   it('closes a development Nitro instance with its Vite plugin container', async () => {
     const nitro = createNitroStub({ routing: true, dev: true });
     nitro.close = vi.fn(async () => {});
@@ -137,23 +128,6 @@ describe('@workflow/nitro builder lifecycle', () => {
     await plugin.buildEnd?.();
 
     expect(nitro.close).toHaveBeenCalledOnce();
-    expect(stopEsbuildService).not.toHaveBeenCalled();
-  });
-
-  it('releases the esbuild service after Nitro finishes compiling', async () => {
-    const nitro = createNitroStub({ routing: true });
-    const plugin = viteWorkflow().find(
-      (candidate) => candidate.name === 'workflow:nitro'
-    ) as any;
-
-    await plugin.nitro.setup(nitro);
-    expect(stopEsbuildService).not.toHaveBeenCalled();
-    const compiledHook = nitro.hooks.hook.mock.calls.find(
-      ([name]: [string]) => name === 'compiled'
-    )?.[1];
-    await compiledHook();
-
-    expect(stopEsbuildService).toHaveBeenCalledOnce();
   });
 
   it('disposes temporary build contexts after each build', async () => {

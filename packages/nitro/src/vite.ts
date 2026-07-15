@@ -2,7 +2,6 @@ import {
   createBuildQueue,
   ensureWorkflowTargetWorldEnv,
   resolveWorkflowTargetWorldAlias,
-  stopEsbuildService,
   WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
@@ -90,8 +89,6 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           if (nitro.options.dev) {
             devNitro = nitro;
             builder = new LocalBuilder(nitro);
-          } else {
-            nitro.hooks.hook('compiled', stopEsbuildService);
           }
           return nitroModule.setup(nitro);
         },
