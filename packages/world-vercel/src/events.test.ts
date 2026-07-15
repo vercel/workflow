@@ -803,6 +803,84 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
   });
 });
 
+describe('getWorkflowRunEvents legacy structured-error compatibility', () => {
+  const structuredErrorEventTypes = [
+    'run_failed',
+    'step_failed',
+    'step_retrying',
+  ] as const;
+
+  function listResponse(
+    eventType: (typeof structuredErrorEventTypes)[number],
+    body: Uint8Array
+  ): Buffer {
+    return Buffer.concat([
+      encodeFrame(
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          eventType,
+          ...(eventType === 'run_failed' ? {} : { correlationId: 'step_1' }),
+          createdAt: '2026-06-10T00:00:00.000Z',
+          eventData: {},
+        },
+        body
+      ),
+      encodeFrame({ _end: 1 }, new Uint8Array(0)),
+    ]);
+  }
+
+  async function readError(
+    eventType: (typeof structuredErrorEventTypes)[number],
+    body: Uint8Array
+  ): Promise<unknown> {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: { remoteRefBehavior: 'resolve' },
+      })
+      .reply(200, listResponse(eventType, body), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const result = await getWorkflowRunEvents(
+      { runId: 'wrun_1', resolveData: 'all' },
+      { token: 'test-token', dispatcher: agent }
+    );
+    agent.assertNoPendingInterceptors();
+    return (result.data[0] as { eventData?: Record<string, unknown> }).eventData
+      ?.error;
+  }
+
+  it.each(
+    structuredErrorEventTypes
+  )('decodes a stable-line CBOR error for %s', async (eventType) => {
+    const structuredError = {
+      message: 'boom',
+      stack: 'Error: boom\n    at fn (/app/step.js:10:5)',
+    };
+
+    await expect(
+      readError(eventType, new Uint8Array(encode(structuredError)))
+    ).resolves.toEqual(structuredError);
+  });
+
+  it.each([
+    ['devalue', new TextEncoder().encode('devlserialized-error')],
+    ['encrypted', new TextEncoder().encode('encrciphertext')],
+  ])('preserves current %s error bytes', async (_name, body) => {
+    await expect(readError('step_retrying', body)).resolves.toEqual(body);
+  });
+
+  it('leaves CBOR that is not a StructuredError as bytes', async () => {
+    const body = new Uint8Array(encode({ value: 'not an error' }));
+    await expect(readError('step_retrying', body)).resolves.toEqual(body);
+  });
+});
+
 /**
  * The v4 LIST sentinel carries a trailing `next` cursor even on the final
  * page (it doubles as the incremental-load resume point), so the runtime's
