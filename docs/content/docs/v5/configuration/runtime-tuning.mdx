@@ -40,10 +40,10 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 ### `WORKFLOW_PRECONDITION_GUARD`
 
-- Default: disabled
-- Set `1` to enable an optimistic-concurrency guard for event creation: replay-context event creations send a `stateUpdatedAt` snapshot timestamp, and a backend that supports the guard rejects a creation with 412 ([`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error)) when a newer out-of-band event (a received hook or a completed step) was recorded after that snapshot.
+- Default: enabled
+- An optimistic-concurrency guard for event creation: replay-context event creations send a `stateUpdatedAt` snapshot timestamp, and a backend that supports the guard rejects a creation with 412 ([`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error)) when a newer out-of-band event (a received hook or a completed step) was recorded after that snapshot.
 - On rejection the runtime reloads the event log and retries, falling back to a queue re-invocation with a fresh replay if it cannot catch up.
-- Backends that do not support the guard ignore the snapshot.
+- Set `0` (or `false`/`no`/`off`) to disable. Backends that do not support the guard ignore the snapshot.
 
 ## Inline execution
 

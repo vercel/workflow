@@ -2429,6 +2429,17 @@ export function workflowEntrypoint(
                         // Serialize the original thrown value so its full
                         // type identity and custom properties round-trip
                         // through the event log.
+                        //
+                        // Precondition-guard asymmetry: unlike `run_completed`,
+                        // this terminal `run_failed` sends no `stateUpdatedAt`
+                        // snapshot, so it is never 412-rejected even if a hook
+                        // landed mid-replay and could have changed the path that
+                        // threw. This is intentional and fail-open: a spurious
+                        // failure is recoverable (the run can be re-run from the
+                        // dashboard), whereas a spurious *completion* commits a
+                        // wrong result. Guarding this write symmetrically would
+                        // also need the loaded event log, which is scoped to the
+                        // replay `try` above and not available in this catch.
                         try {
                           // Turbo: order the terminal write after the
                           // backgrounded run_started so the run exists.
