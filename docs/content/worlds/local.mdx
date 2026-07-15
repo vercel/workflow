@@ -6,8 +6,8 @@ summary: Set up the Local World for zero-config workflow development on your mac
 prerequisites:
   - /docs/deploying
 related:
-  - /docs/deploying/world/postgres-world
-  - /docs/deploying/world/vercel-world
+  - /worlds/postgres
+  - /worlds/vercel
 ---
 
 The Local World is bundled with `workflow` and used automatically during local development. No installation or configuration required.
@@ -64,15 +64,20 @@ Maximum number of seconds a local queue message can stay hidden before the handl
 
 ### `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
 
-Whether pending and running runs found in the data directory are re-enqueued when the world starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`
+Whether pending and running runs found in the data directory are re-enqueued when the world starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`. Requires `workflow` 5.x.
 
 ### `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
 
-Flush interval, in milliseconds, for buffered stream writes. Default: `10`.
+Flush interval, in milliseconds, for buffered stream writes. Default: `10`. Requires `workflow` 5.x.
 
 ### Programmatic configuration
 
 Options passed to `createWorld()` take precedence over the environment variables above. Export the configured World from a module and point `WORKFLOW_TARGET_WORLD` at that module:
+
+<Callout type="info">
+  On the 4.x release line, the factory function is `createLocalWorld()` —
+  `createWorld()` is available starting with `workflow` 5.x.
+</Callout>
 
 ```typescript title="my-world.ts" lineNumbers
 import { createWorld } from "@workflow/world-local";

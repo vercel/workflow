@@ -70,6 +70,7 @@ export const config = defineConfig({
       dir: 'content/docs/v5/cookbook',
       route: '/v5/cookbook',
     },
+    { id: 'worlds', label: 'Worlds', dir: 'content/worlds', route: '/worlds' },
   ],
   versions: {
     current: 'v4',

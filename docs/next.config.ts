@@ -54,7 +54,9 @@ const config: NextConfig = {
         destination: '/docs/errors/:slug',
         permanent: true,
       },
-      // Redirect old world docs to new /worlds routes
+      // Redirect old world docs to new /worlds routes. The world pages
+      // (and Building a World) were removed from the versioned docs trees;
+      // content/worlds is the canonical source served at /worlds/*.
       {
         source: '/docs/deploying/world/local-world',
         destination: '/worlds/local',
@@ -68,6 +70,31 @@ const config: NextConfig = {
       {
         source: '/docs/deploying/world/vercel-world',
         destination: '/worlds/vercel',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/deploying/world/local-world',
+        destination: '/worlds/local',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/deploying/world/postgres-world',
+        destination: '/worlds/postgres',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/deploying/world/vercel-world',
+        destination: '/worlds/vercel',
+        permanent: true,
+      },
+      {
+        source: '/docs/deploying/building-a-world',
+        destination: '/worlds/building-a-world',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/deploying/building-a-world',
+        destination: '/worlds/building-a-world',
         permanent: true,
       },
       {

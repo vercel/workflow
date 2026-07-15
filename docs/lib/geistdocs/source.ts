@@ -1,9 +1,10 @@
 import {
+  createSource,
   createVersionedSources,
   type GeistdocsSourceBundle,
 } from '@vercel/geistdocs/source';
 import type { Node, Root } from 'fumadocs-core/page-tree';
-import { v4docs, v5docs } from '@/.source/server';
+import { v4docs, v5docs, worldsDocs } from '@/.source/server';
 import { config } from './config';
 import { resolveSectionChildren } from './section-children';
 
@@ -267,12 +268,31 @@ export const v5CookbookSource = createCookbookRouteSource(
   }
 );
 
-export const currentSources = [geistdocsSource, cookbookSource];
+// Canonical, unversioned World docs served at /worlds/*. These pages are
+// rendered by the worlds app routes (not the docs layout), but the bundle is
+// included in the source lists so they stay covered by search, llms.txt,
+// sitemap(.md), and the markdown export routes.
+export const worldsSourceBundle = createSource({
+  config,
+  docs: worldsDocs,
+  baseUrl: '/worlds',
+  id: 'worlds',
+  label: 'Worlds',
+});
+
+export const worldsSource = worldsSourceBundle.source;
+
+export const currentSources = [
+  geistdocsSource,
+  cookbookSource,
+  worldsSourceBundle,
+];
 export const allSources = [
   geistdocsSource,
   cookbookSource,
   v5GeistdocsSource,
   v5CookbookSource,
+  worldsSourceBundle,
 ];
 
 export const source = versionedSources.current.source;

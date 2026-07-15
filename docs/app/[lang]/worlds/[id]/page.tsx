@@ -13,7 +13,7 @@ import { WorldDetailToc } from '@/components/worlds/WorldDetailToc';
 import { WorldInstructions } from '@/components/worlds/WorldInstructions';
 import { WorldTestingPerformance } from '@/components/worlds/WorldTestingPerformance';
 import { WorldTestingPerformanceMDX } from '@/components/worlds/WorldTestingPerformanceMDX';
-import { source } from '@/lib/geistdocs/source';
+import { worldsSource } from '@/lib/geistdocs/source';
 import { getWorldData, getWorldIds } from '@/lib/worlds-data';
 
 const isPreview = process.env.VERCEL_ENV === 'preview';
@@ -23,11 +23,11 @@ const WorldTestingPerformanceForMDX = (props: Record<string, unknown>) => (
   <WorldTestingPerformanceMDX {...props} showBenchmarks={isPreview} />
 );
 
-// Map world IDs to their MDX doc slugs
+// Official worlds with a page in the content/worlds collection
 const officialWorldMdxSlugs: Record<string, string[]> = {
-  local: ['deploying', 'world', 'local-world'],
-  postgres: ['deploying', 'world', 'postgres-world'],
-  vercel: ['deploying', 'world', 'vercel-world'],
+  local: ['local'],
+  postgres: ['postgres'],
+  vercel: ['vercel'],
 };
 
 interface PageProps {
@@ -77,7 +77,7 @@ export default async function WorldDetailPage({ params }: PageProps) {
 
   if (isOfficial) {
     const slugs = officialWorldMdxSlugs[id];
-    const page = source.getPage(slugs);
+    const page = worldsSource.getPage(slugs);
 
     if (page) {
       const pageData = page.data as typeof page.data & {
@@ -97,7 +97,7 @@ export default async function WorldDetailPage({ params }: PageProps) {
       mdxContent = (
         <MDX
           components={getMDXComponents({
-            a: createRelativeLink(source, page),
+            a: createRelativeLink(worldsSource, page),
             Step,
             Steps,
             Tabs,
