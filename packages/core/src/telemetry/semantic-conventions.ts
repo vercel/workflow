@@ -225,9 +225,12 @@ export const StepRsfsMs = SemanticConvention<number>('step.rsfs_ms');
 /**
  * Client-measured synchronous workflow-function replay duration in
  * milliseconds within the rsfs window, excluding awaited network I/O. Only
- * present alongside step.rsfs_ms.
+ * present alongside step.rsfs_ms and only for the run's first step
+ * (see runtime/step-latency.ts) — hence "first" in the name.
  */
-export const StepReplayMs = SemanticConvention<number>('step.replay_ms');
+export const StepFirstReplayMs = SemanticConvention<number>(
+  'step.first_replay_ms'
+);
 
 /**
  * Runtime startup-latency optimizations active for the ttfs/stso measurement

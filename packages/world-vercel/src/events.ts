@@ -150,7 +150,7 @@ interface SplitEventData {
     /** Client-measured run_started-to-first-step ms (step_completed / step_failed). */
     rsfs?: number;
     /** Client-measured synchronous replay-compute ms within the rsfs window. */
-    replay?: number;
+    firstReplay?: number;
     /** Runtime optimizations active for the ttfs/stso measurement. */
     optimizations?: string[];
   };
@@ -188,7 +188,7 @@ type MetaSourceField =
   | 'stepCount'
   | 'eventCount'
   | 'rsfs'
-  | 'replay'
+  | 'firstReplay'
   | 'optimizations';
 
 /**
@@ -358,8 +358,8 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   if (typeof eventData.rsfs === 'number') {
     meta.rsfs = eventData.rsfs;
   }
-  if (typeof eventData.replay === 'number') {
-    meta.replay = eventData.replay;
+  if (typeof eventData.firstReplay === 'number') {
+    meta.firstReplay = eventData.firstReplay;
   }
   if (
     Array.isArray(eventData.optimizations) &&

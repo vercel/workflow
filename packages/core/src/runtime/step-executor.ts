@@ -681,8 +681,8 @@ export async function executeStep(
           ...(latencyEventData.rsfs !== undefined
             ? Attribute.StepRsfsMs(latencyEventData.rsfs)
             : {}),
-          ...(latencyEventData.replay !== undefined
-            ? Attribute.StepReplayMs(latencyEventData.replay)
+          ...(latencyEventData.firstReplay !== undefined
+            ? Attribute.StepFirstReplayMs(latencyEventData.firstReplay)
             : {}),
           ...Attribute.StepLatencyOptimizations(
             latencyEventData.optimizations ?? []

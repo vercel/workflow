@@ -274,8 +274,9 @@ const stepLatencyTelemetryFields = {
   // alongside the same eligibility as ttfs.
   rsfs: z.number().optional(),
   // Synchronous workflow-function replay duration within the rsfs window,
-  // excluding awaited network I/O. Only present alongside rsfs.
-  replay: z.number().optional(),
+  // excluding awaited network I/O. Only present alongside rsfs, and only for
+  // the run's first step — hence "first" in the name.
+  firstReplay: z.number().optional(),
   // Names of the runtime's optional startup-latency optimizations that were
   // active for this measurement (e.g. 'turbo', 'lazyStepStart',
   // 'optimisticStart'), so latency metrics can be segmented by them.

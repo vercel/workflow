@@ -168,8 +168,9 @@ export interface CreateEventV4Input {
    *  latency metrics. */
   rsfs?: number;
   /** Client-measured synchronous replay-compute ms within the rsfs window,
-   *  excluding awaited network I/O. Only present alongside rsfs. */
-  replay?: number;
+   *  excluding awaited network I/O. Only present alongside rsfs, and only
+   *  for the run's first step. */
+  firstReplay?: number;
   /** Runtime optimizations active for the ttfs/stso measurement
    *  (e.g. 'turbo', 'lazyStepStart', 'optimisticStart'). */
   optimizations?: string[];
@@ -262,7 +263,7 @@ function buildPostFrameMeta(
   if (input.stepCount !== undefined) meta.stepCount = input.stepCount;
   if (input.eventCount !== undefined) meta.eventCount = input.eventCount;
   if (input.rsfs !== undefined) meta.rsfs = input.rsfs;
-  if (input.replay !== undefined) meta.replay = input.replay;
+  if (input.firstReplay !== undefined) meta.firstReplay = input.firstReplay;
   if (input.optimizations !== undefined) {
     meta.optimizations = input.optimizations;
   }

@@ -1450,10 +1450,18 @@ export function workflowEntrypoint(
                     } catch (err) {
                       if (WorkflowSuspension.is(err)) {
                         // Synchronous `runWorkflow` duration for THIS
-                        // suspension — anchors the `replay` telemetry field
-                        // below (see StepLatencyTracking.replayMs). Captured
-                        // here, before `handleSuspension`'s awaited I/O, so
-                        // it excludes that I/O.
+                        // suspension — anchors the `firstReplay` telemetry
+                        // field below (see StepLatencyTracking.replayMs).
+                        // Captured here, before `handleSuspension`'s awaited
+                        // I/O, so it excludes that I/O.
+                        //
+                        // This duplicates what OTEL already captures on the
+                        // run/invocation span, but is collected as client
+                        // telemetry so the server can emit it as an
+                        // UNSAMPLED metric: workflow-server's server spans
+                        // are heavily sampled in production (~7%), so
+                        // span-derived percentiles are biased and can't
+                        // serve as the dashboard's exact TTFS decomposition.
                         const replayDurationMs = Date.now() - replayStart;
                         runtimeLogger.debug('Workflow suspended', {
                           workflowRunId: runId,

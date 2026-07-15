@@ -9,9 +9,9 @@ import type { Event } from '@workflow/world';
  * step's terminal event → the next step's body beginning to execute. RSFS
  * (run-started-to-first-step) measures the `run_started` response landing →
  * the first step's start POST being issued — a sub-window of TTFS that
- * isolates replay overhead from the run-creation queue hop; `replay` further
- * splits out the synchronous workflow-function-execution portion of that
- * window from awaited network I/O. All are attached to the step's terminal
+ * isolates replay overhead from the run-creation queue hop; `firstReplay`
+ * further splits out the synchronous workflow-function-execution portion of
+ * that window from awaited network I/O. All are attached to the step's terminal
  * event so a backend can emit latency metrics from the event write alone,
  * without extra event-log queries.
  *
@@ -89,7 +89,7 @@ export interface StepLatencyEventData {
   /** Client-measured run_started → first step's start POST, ms. */
   rsfs?: number;
   /** Client-measured synchronous replay-compute portion of `rsfs`, ms. */
-  replay?: number;
+  firstReplay?: number;
   optimizations?: string[];
 }
 
@@ -329,15 +329,21 @@ export function computeStepLatencyEventData(params: {
   // RSFS ends at the actual start-POST instant, not at ttfsEndMs — unlike
   // TTFS it is not subject to the pre-step attr-write shortcut, so a
   // pre-step setAttributes detour (rare) makes RSFS include the detour
-  // while TTFS excludes it. `replay` is a direct passthrough: it is already
-  // the synchronous duration of the suspension that scheduled this step, so
-  // no further subtraction applies.
+  // while TTFS excludes it. `firstReplay` is a direct passthrough: it is
+  // already the synchronous duration of the suspension that scheduled this
+  // step, so no further subtraction applies.
+  //
+  // firstReplay duplicates what OTEL already captures on the run/invocation
+  // span, but is deliberately collected as client telemetry so the server
+  // can emit it as an UNSAMPLED metric: workflow-server's server spans are
+  // heavily sampled in production (~7%), so span-derived percentiles are
+  // biased and can't serve as the dashboard's exact TTFS decomposition.
   const rsfs =
     tracking.rsfsAnchorMs !== undefined &&
     params.stepStartPostSentAtMs !== undefined
       ? Math.max(0, params.stepStartPostSentAtMs - tracking.rsfsAnchorMs)
       : undefined;
-  const replay =
+  const firstReplay =
     tracking.replayMs !== undefined
       ? Math.max(0, tracking.replayMs)
       : undefined;
@@ -361,7 +367,7 @@ export function computeStepLatencyEventData(params: {
       ? { eventCount: tracking.eventCount }
       : {}),
     ...(rsfs !== undefined ? { rsfs } : {}),
-    ...(replay !== undefined ? { replay } : {}),
+    ...(firstReplay !== undefined ? { firstReplay } : {}),
     optimizations,
   };
 }
