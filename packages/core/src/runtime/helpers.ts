@@ -589,20 +589,13 @@ export interface MutableEventLog {
 }
 
 /**
- * Whether the optimistic-concurrency guard for event creation is enabled.
- * Off by default: replay-context creates only send a `stateUpdatedAt`
- * snapshot (and can therefore be rejected with 412 by the backend) when
- * `WORKFLOW_PRECONDITION_GUARD=1` is set where the runtime executes — or
- * when `WORKFLOW_SAFE_MODE=1` is set and `WORKFLOW_PRECONDITION_GUARD` is
- * not set explicitly (safe mode fills the default of every
- * safety-over-performance flag; an explicit per-flag value always wins).
+ * Whether the optimistic-concurrency guard for event creation is enabled
+ * (`WORKFLOW_PRECONDITION_GUARD=1`, set where the runtime executes). Off by
+ * default: replay-context creates only send a `stateUpdatedAt` snapshot (and
+ * can therefore be rejected with 412 by the backend) when it is enabled.
  */
 export function isPreconditionGuardEnabled(): boolean {
-  const explicit = process.env.WORKFLOW_PRECONDITION_GUARD;
-  if (explicit !== undefined && explicit !== '') {
-    return explicit === '1';
-  }
-  return process.env.WORKFLOW_SAFE_MODE === '1';
+  return process.env.WORKFLOW_PRECONDITION_GUARD === '1';
 }
 
 /**

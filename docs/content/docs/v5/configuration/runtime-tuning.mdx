@@ -43,8 +43,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Default: disabled
 - Set `1` to enable an optimistic-concurrency guard for event creation: replay-context event creations send a `stateUpdatedAt` snapshot timestamp, and a backend that supports the guard rejects a creation with 412 ([`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error)) when a newer out-of-band event (a received hook or a completed step) was recorded after that snapshot.
 - On rejection the runtime reloads the event log and retries, falling back to a queue re-invocation with a fresh replay if it cannot catch up.
-- Adds a backend-side check to every guarded event creation. Best-effort: backends without guard support ignore the snapshot, and the guard fails open.
-- Also enabled by [`WORKFLOW_SAFE_MODE=1`](/docs/deploying/world/vercel-world#workflow_safe_mode) when not set explicitly.
+- Backends that do not support the guard ignore the snapshot.
 
 ## Inline execution
 
