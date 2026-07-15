@@ -1,3 +1,4 @@
+import { PreconditionFailedError } from '@workflow/errors';
 import { encode } from 'cbor-x';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -274,6 +275,44 @@ describe('makeRequest body-parse retry', () => {
     ).rejects.toMatchObject({ code: 'PARSE_ERROR' });
 
     // A write must not be replayed — exactly one attempt.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  /** A non-2xx CBOR error response with the given status and error code. */
+  function cborErrorResponse(status: number, code: string) {
+    const bytes = encode({ success: false, error: code, code, message: code });
+    return {
+      ok: false,
+      status,
+      statusText: 'ERR',
+      headers: {
+        get: (k: string) =>
+          k.toLowerCase() === 'content-type' ? 'application/cbor' : null,
+      },
+      arrayBuffer: async () =>
+        bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength
+        ),
+    };
+  }
+
+  it('maps a 412 response to PreconditionFailedError', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(cborErrorResponse(412, 'precondition-failed'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'POST' },
+        data: { eventType: 'run_completed' },
+        schema,
+      })
+    ).rejects.toBeInstanceOf(PreconditionFailedError);
+
+    // A 412 is a deterministic rejection — no transport retries.
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

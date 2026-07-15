@@ -1,6 +1,6 @@
 ---
 title: World SDK
-description: Low-level API for inspecting and managing workflow runs, steps, events, hooks, streams, and queues.
+description: Low-level API for inspecting and managing workflow runs, steps, events, hooks, streams, and queues, with an analytics namespace for metadata listings and attribute search.
 type: overview
 summary: Access workflow infrastructure via await getWorld() for building observability dashboards, admin tools, and custom integrations.
 prerequisites:
@@ -14,7 +14,7 @@ keywords:
   - workflow management
 ---
 
-The World SDK provides direct access to workflow infrastructure — runs, steps, events, hooks, streams, and queues. Use it to build observability dashboards, admin panels, debugging tools, and custom workflow management logic.
+The World SDK provides direct access to workflow infrastructure — runs, steps, events, hooks, streams, and queues — plus a metadata-only [Analytics](/docs/api-reference/workflow-runtime/world/analytics) namespace with attribute discovery and filtering. Use it to build observability dashboards, admin panels, debugging tools, and custom workflow management logic.
 
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
@@ -27,6 +27,9 @@ const world = await getWorld(); // [!code highlight]
 <Cards>
     <Card href="/docs/api-reference/workflow-runtime/world/storage" title="Storage">
         Query runs, steps, hooks, and the underlying event log.
+    </Card>
+    <Card href="/docs/api-reference/workflow-runtime/world/analytics" title="Analytics">
+        Metadata-only listings with attribute discovery and filtering, built for observability dashboards.
     </Card>
     <Card href="/docs/api-reference/workflow-runtime/world/streams" title="Streams">
         Read, write, and manage real-time data streams for workflow runs.

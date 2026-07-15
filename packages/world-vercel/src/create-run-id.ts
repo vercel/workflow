@@ -1,6 +1,6 @@
 import { monotonicFactory } from 'ulid';
 import { bytesToUlid, ulidToBytes } from './run-id/codec.js';
-import { encode } from './run-id/index.js';
+import { decode, encode } from './run-id/index.js';
 import {
   DEFAULT_REGION_CODE,
   REGION_IDS,
@@ -117,4 +117,48 @@ export function createRunId(
   }
   lastRunId = candidate;
   return candidate;
+}
+
+/**
+ * Derive the region a run's data lives in from its run ID.
+ *
+ * - Region-tagged IDs (minted by {@link createRunId}) decode to their
+ *   embedded region.
+ * - Untagged legacy IDs — and tagged IDs whose region code is unknown to
+ *   this SDK version — resolve to {@link DEFAULT_REGION_CODE}: all
+ *   pre-tagging data lives there by convention, matching the backend's
+ *   routing.
+ * - Malformed IDs return `null` (never throws).
+ */
+export function regionForRunId(runId: string): string | null {
+  const bare = runId.startsWith('wrun_') ? runId.slice('wrun_'.length) : runId;
+  try {
+    const decoded = decode(bare);
+    return decoded.tagged && decoded.region
+      ? decoded.region
+      : DEFAULT_REGION_CODE;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `World.describeRun` implementation: Vercel-specific display fields
+ * for a run.
+ *
+ * Currently a single field — `region`, decoded from the run ID's
+ * region tag (see {@link regionForRunId}) — but the shape leaves room
+ * for additional fields derived from other run-entity properties
+ * (e.g. `executionContext`) without another interface change. A
+ * `null` region means the run ID was present but undecodable;
+ * a missing/non-string run ID contributes nothing.
+ */
+export function describeRun(
+  run: Readonly<Record<string, unknown>>
+): Record<string, string | null> | null {
+  const runId = run.runId;
+  if (typeof runId !== 'string' || runId.length === 0) {
+    return null;
+  }
+  return { region: regionForRunId(runId) };
 }

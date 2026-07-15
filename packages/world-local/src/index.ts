@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { QueuePrefix, World } from '@workflow/world';
 import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
 import type { Config } from './config.js';
-import { config } from './config.js';
+import { config, resolveRecoverActiveRuns } from './config.js';
 import {
   clearCreatedFilesCache,
   deleteJSON,
@@ -48,7 +48,7 @@ export type LocalWorld = World & {
  * @param args.dataDir - Directory for storing workflow data (default: `.workflow-data/`)
  * @param args.port - Port override for queue transport (default: auto-detected)
  * @param args.baseUrl - Full base URL override for queue transport (default: `http://localhost:{port}`)
- * @param args.recoverActiveRuns - Whether `start()` should re-enqueue pending/running runs from storage (default: `true`)
+ * @param args.recoverActiveRuns - Whether `start()` should re-enqueue pending/running runs from storage (default: `true`; falls back to the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var when unset)
  * @param args.tag - Optional tag to scope files (e.g., `vitest-0`). When set, files are written
  *   as `{id}.{tag}.json` and `clear()` only deletes files matching this tag.
  * @throws {DataDirAccessError} If the data directory cannot be created or accessed
@@ -67,7 +67,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     mergedConfig.dataDir,
     tag
   );
-  const recoverActiveRuns = mergedConfig.recoverActiveRuns ?? true;
+  const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   return {
     specVersion: SPEC_VERSION_CURRENT,
     ...queue,

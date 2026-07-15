@@ -7,6 +7,14 @@ import { z } from 'zod';
  */
 export const RESERVED_ATTRIBUTE_KEY_PREFIX = '$';
 
+/**
+ * Reserved attribute keys recording cross-run lineage. `start()` sets these on
+ * a run created from inside another run: `$rootRunId` is the root of the chain,
+ * `$parentRunId` the direct parent edge.
+ */
+export const ROOT_RUN_ID_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}rootRunId`;
+export const PARENT_RUN_ID_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}parentRunId`;
+
 /** Max length of an attribute key, in characters. */
 export const ATTRIBUTE_KEY_MAX_LENGTH = 256;
 

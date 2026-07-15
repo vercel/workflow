@@ -121,11 +121,19 @@ export const AnalyticsWaitSchema = z.object({
   workflowEncryptionEnabled: NullableBooleanSchema,
 });
 
+export const AnalyticsAttributeKeySchema = z.object({
+  key: z.string(),
+  runCount: z.coerce.number(),
+  firstSeenAt: z.coerce.date(),
+  lastSeenAt: z.coerce.date(),
+});
+
 export type AnalyticsRun = z.infer<typeof AnalyticsRunSchema>;
 export type AnalyticsStep = z.infer<typeof AnalyticsStepSchema>;
 export type AnalyticsEvent = z.infer<typeof AnalyticsEventSchema>;
 export type AnalyticsHook = z.infer<typeof AnalyticsHookSchema>;
 export type AnalyticsWait = z.infer<typeof AnalyticsWaitSchema>;
+export type AnalyticsAttributeKey = z.infer<typeof AnalyticsAttributeKeySchema>;
 
 export interface AnalyticsListRunsParams {
   workflowName?: string;
@@ -136,6 +144,27 @@ export interface AnalyticsListRunsParams {
    * lets the backend prune its scan — the ClickHouse-backed Vercel
    * implementation is significantly faster with one. Requesting a window
    * older than the plan's observability lookback fails with
+   * `observability-upgrade-required`.
+   */
+  startTime?: string;
+  endTime?: string;
+  /**
+   * Restrict the listing to runs whose latest attribute snapshot matches
+   * every provided key=value pair (up to 8 pairs). Matching is
+   * latest-write-wins: a run whose attribute moved from `v1` to `v2` no
+   * longer matches `v1`. Reserved `$`-prefixed keys may be used in filters
+   * even though user writes to that namespace are rejected.
+   */
+  attributes?: Record<string, string>;
+  pagination?: PaginationOptions;
+}
+
+export interface AnalyticsListAttributesParams {
+  workflowName?: string;
+  /**
+   * Bound the listing to attribute writes between `startTime` and `endTime`
+   * (ISO 8601 timestamps). Both must be provided together. Requesting a
+   * window older than the plan's observability lookback fails with
    * `observability-upgrade-required`.
    */
   startTime?: string;
@@ -174,6 +203,16 @@ export interface Analytics {
     list(
       params?: AnalyticsListRunsParams
     ): Promise<PaginatedResponse<AnalyticsRun>>;
+  };
+  attributes: {
+    /**
+     * List the distinct attribute keys observed on runs in the window,
+     * with run counts and first/last seen timestamps. Ordered
+     * alphabetically by key.
+     */
+    list(
+      params?: AnalyticsListAttributesParams
+    ): Promise<PaginatedResponse<AnalyticsAttributeKey>>;
   };
   steps: {
     get(runId: string, stepId: string): Promise<AnalyticsStep>;

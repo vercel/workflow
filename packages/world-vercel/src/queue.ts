@@ -294,19 +294,12 @@ const FLOW_TOPIC_PATTERN = /^__([a-z][a-z0-9]*_)?wkf_workflow_/;
 let loggedSequentialReplays = false;
 
 /**
- * Whether sequential replays are enabled: `WORKFLOW_SEQUENTIAL_REPLAYS=1`,
- * or `WORKFLOW_SAFE_MODE=1` when `WORKFLOW_SEQUENTIAL_REPLAYS` is not set
- * explicitly (safe mode fills the default of every safety-over-performance
- * flag; an explicit per-flag value always wins). Mirrors
- * `isSequentialReplaysEnabled` in `@workflow/builders` — world-vercel must
- * not depend on the build-time package, so the check is duplicated.
+ * Whether sequential replays are enabled (`WORKFLOW_SEQUENTIAL_REPLAYS=1`).
+ * Mirrors `isSequentialReplaysEnabled` in `@workflow/builders` — world-vercel
+ * must not depend on the build-time package, so the check is duplicated.
  */
 function isSequentialReplaysEnabled(): boolean {
-  const explicit = process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-  if (explicit !== undefined && explicit !== '') {
-    return explicit === '1';
-  }
-  return process.env.WORKFLOW_SAFE_MODE === '1';
+  return process.env.WORKFLOW_SEQUENTIAL_REPLAYS === '1';
 }
 
 function getPhysicalQueueName(

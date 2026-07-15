@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createRunId } from './create-run-id.js';
+import { createRunId, describeRun, regionForRunId } from './create-run-id.js';
 import { decode } from './run-id/index.js';
 import { REGION_IDS } from './run-id/regions.js';
 
@@ -177,5 +177,47 @@ describe('createRunId', () => {
       const decoded = decode(createRunId(undefined));
       expect(decoded.region).toBe('iad1');
     });
+  });
+});
+
+describe('regionForRunId', () => {
+  it('decodes the region from tagged run IDs (with or without prefix)', () => {
+    const runId = `wrun_${createRunId({ region: 'sfo1' })}`;
+    expect(regionForRunId(runId)).toBe('sfo1');
+    expect(regionForRunId(runId.slice('wrun_'.length))).toBe('sfo1');
+  });
+
+  it('resolves untagged legacy run IDs to the default region', () => {
+    expect(regionForRunId('wrun_01KX2M5N3RBNC12RYWYYH4WWQJ')).toBe('iad1');
+  });
+
+  it('returns null for malformed run IDs instead of throwing', () => {
+    expect(regionForRunId('wrun_not-a-ulid')).toBeNull();
+    expect(regionForRunId('')).toBeNull();
+  });
+});
+
+describe('describeRun', () => {
+  it('returns a region field derived from the run ID tag', () => {
+    const runId = `wrun_${createRunId({ region: 'sfo1' })}`;
+    expect(describeRun({ runId })).toEqual({ region: 'sfo1' });
+  });
+
+  it('resolves untagged legacy runs to the default region', () => {
+    expect(describeRun({ runId: 'wrun_01KX2M5N3RBNC12RYWYYH4WWQJ' })).toEqual({
+      region: 'iad1',
+    });
+  });
+
+  it('returns a null region for undecodable run IDs (never throws)', () => {
+    expect(describeRun({ runId: 'wrun_not-a-ulid' })).toEqual({
+      region: null,
+    });
+  });
+
+  it('contributes nothing when the entity has no usable runId', () => {
+    expect(describeRun({})).toBeNull();
+    expect(describeRun({ runId: 42 })).toBeNull();
+    expect(describeRun({ runId: '' })).toBeNull();
   });
 });

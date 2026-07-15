@@ -14,6 +14,7 @@
     "workflow-world-error",
     "throttle-error",
     "entity-conflict-error",
+    "precondition-failed-error",
     "run-expired-error",
     "run-not-supported-error",
     "too-early-error"

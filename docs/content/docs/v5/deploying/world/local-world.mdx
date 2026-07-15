@@ -62,6 +62,10 @@ Maximum number of concurrent queue message handlers. Default: `1000`
 
 Maximum number of seconds a local queue message can stay hidden before the handler rechecks the run. Default: unlimited.
 
+### `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
+
+Whether pending and running runs found in the data directory are re-enqueued when the world starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`
+
 ### `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
 
 Flush interval, in milliseconds, for buffered stream writes. Default: `10`.
@@ -78,7 +82,7 @@ export default createWorld({
   port: 5173,
   // baseUrl overrides port if set
   baseUrl: "https://local.example.com:3000",
-  recoverActiveRuns: true,
+  recoverActiveRuns: true, // overrides WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS
   streamFlushIntervalMs: 10, // overrides WORKFLOW_STREAM_FLUSH_INTERVAL_MS
 });
 ```
