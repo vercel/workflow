@@ -287,7 +287,10 @@ describe('computeStepLatencyEventData', () => {
       lazyStepStart: true,
       optimisticStart: false,
     });
-    expect(data).toEqual({ ttfs: 1_960, optimizations: ['lazyStepStart'] });
+    expect(data).toEqual({
+      ttfs: 1_960,
+      optimizations: ['lazyStepStart'],
+    });
   });
 
   it('computes stso against the previous step terminal timestamp', () => {
@@ -331,6 +334,49 @@ describe('computeStepLatencyEventData', () => {
       stso: 0,
       stepCount: 3,
       eventCount: 9,
+      optimizations: [],
+    });
+  });
+
+  it('drops a sample whose anchor is implausibly far in the future (corrupt anchor, not skew)', () => {
+    // e.g. a run-ID timestamp decoded with a metadata tag bit still set
+    // would put the anchor millennia ahead — reporting that as ttfs: 0 on
+    // every run would silently zero the whole distribution.
+    const data = computeStepLatencyEventData({
+      tracking: {
+        ttfsAnchorMs: 2_000 + 2 ** 47,
+        preStepBlockingMs: 0,
+        turbo: true,
+      },
+      stepCodeStartedAtMs: 2_000,
+      attempt: 1,
+      lazyStepStart: false,
+      optimisticStart: false,
+    });
+    expect(data).toBeUndefined();
+  });
+
+  it('drops only the corrupt measurement when the other remains plausible', () => {
+    const data = computeStepLatencyEventData({
+      tracking: {
+        // TTFS anchor beyond the skew tolerance → dropped.
+        ttfsAnchorMs: 100_000,
+        preStepBlockingMs: 0,
+        // STSO anchor within tolerance → kept.
+        prevStepEndMs: 1_500,
+        stepCount: 2,
+        eventCount: 5,
+        turbo: false,
+      },
+      stepCodeStartedAtMs: 2_000,
+      attempt: 1,
+      lazyStepStart: false,
+      optimisticStart: false,
+    });
+    expect(data).toEqual({
+      stso: 500,
+      stepCount: 2,
+      eventCount: 5,
       optimizations: [],
     });
   });

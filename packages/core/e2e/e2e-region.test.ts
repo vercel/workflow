@@ -110,7 +110,7 @@ const EXECUTION_ADJACENCY: Record<string, readonly string[]> = {
   hkg1: ['sin1', 'syd1'],
   hnd1: ['kix1', 'sin1'],
   iad1: ['cle1', 'pdx1'],
-  icn1: ['kix1', 'syd1'],
+  icn1: ['kix1', 'syd1', 'hnd1'],
   kix1: ['hnd1', 'syd1'],
   lhr1: ['cdg1', 'arn1'],
   pdx1: ['sfo1', 'cle1'],

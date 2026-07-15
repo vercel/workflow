@@ -54,6 +54,16 @@ export interface StepLatencyTracking {
   turbo: boolean;
 }
 
+/**
+ * Most negative raw duration still attributed to cross-machine clock skew
+ * (and clamped to 0). Anything more negative means a corrupt anchor — e.g. a
+ * mis-decoded run-ID timestamp — and the sample is dropped instead: a
+ * systematically corrupt anchor would otherwise report an exact-zero latency
+ * on every sample, silently dragging entire percentile distributions to 0
+ * rather than surfacing as missing data.
+ */
+const MAX_CLOCK_SKEW_MS = 60_000;
+
 /** Latency telemetry attached to a step's terminal event's `eventData`. */
 export interface StepLatencyEventData {
   ttfs?: number;
@@ -245,8 +255,11 @@ export function computeStepLatencyEventData(params: {
     return undefined;
   }
 
-  // Clamp at 0: cross-invocation timestamps can come from another machine's
-  // clock, so small skews must not produce negative durations.
+  // Small negative durations clamp to 0: cross-invocation timestamps can
+  // come from another machine's clock, so bounded skew must not produce
+  // negative values. Durations more negative than MAX_CLOCK_SKEW_MS are not
+  // skew but a corrupt anchor, and the sample is dropped (see the constant's
+  // doc comment).
   //
   // A pre-step setAttributes detour ends the measurement at the first attr
   // write instead of the step's code start — the remainder is the duration
@@ -256,16 +269,21 @@ export function computeStepLatencyEventData(params: {
   // BEFORE the attr write — hook writes after the window closed are excluded
   // by computeStepLatencyTracking (see preStepBlockingBeforeAttrMs).
   const ttfsEndMs = tracking.preStepAttrStartMs ?? params.stepCodeStartedAtMs;
-  const ttfs =
+  const rawTtfs =
     tracking.ttfsAnchorMs !== undefined
-      ? Math.max(
-          0,
-          ttfsEndMs - tracking.ttfsAnchorMs - (tracking.preStepBlockingMs ?? 0)
-        )
+      ? ttfsEndMs - tracking.ttfsAnchorMs - (tracking.preStepBlockingMs ?? 0)
+      : undefined;
+  const ttfs =
+    rawTtfs !== undefined && rawTtfs >= -MAX_CLOCK_SKEW_MS
+      ? Math.max(0, rawTtfs)
+      : undefined;
+  const rawStso =
+    tracking.prevStepEndMs !== undefined
+      ? params.stepCodeStartedAtMs - tracking.prevStepEndMs
       : undefined;
   const stso =
-    tracking.prevStepEndMs !== undefined
-      ? Math.max(0, params.stepCodeStartedAtMs - tracking.prevStepEndMs)
+    rawStso !== undefined && rawStso >= -MAX_CLOCK_SKEW_MS
+      ? Math.max(0, rawStso)
       : undefined;
 
   if (ttfs === undefined && stso === undefined) {

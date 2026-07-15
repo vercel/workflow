@@ -1755,6 +1755,18 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     return `wrun_${ulid(Date.now() - backdateMs)}`;
   }
 
+  /**
+   * Same as {@link makeLatencyRunId} but with the run-ID tagging schemes'
+   * metadata tag bit set (the MSB of the ULID's 48-bit timestamp, e.g.
+   * world-vercel's region-tagged IDs). For present-day timestamps the ULID's
+   * leading character is '0', so setting the tag bit turns it into a '4'.
+   */
+  function makeTaggedLatencyRunId(backdateMs: number): string {
+    const plain = ulid(Date.now() - backdateMs);
+    if (plain[0] !== '0') throw new Error('expected untagged leading char');
+    return `wrun_4${plain.slice(1)}`;
+  }
+
   async function driveLatency(opts: {
     runId: string;
     source: string;
@@ -1921,6 +1933,24 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
       'lazyStepStart',
       'optimisticStart',
     ]);
+  });
+
+  it('anchors ttfs correctly for a region-tagged run ID (tag bit cleared, not a future timestamp)', async () => {
+    const backdateMs = 5_000;
+    const before = Date.now();
+    const { stepCompleted } = await driveLatency({
+      runId: makeTaggedLatencyRunId(backdateMs),
+      source: twoStepWorkflow,
+    });
+    const elapsed = Date.now() - before;
+
+    // With the tag bit decoded as part of the timestamp the anchor would sit
+    // millennia in the future and the sample would be dropped (or, worse,
+    // clamp to an exact 0). Instead the tag bit is cleared and TTFS reflects
+    // the real run age.
+    const [first] = stepCompleted;
+    expect(first.eventData.ttfs).toBeGreaterThanOrEqual(backdateMs);
+    expect(first.eventData.ttfs).toBeLessThanOrEqual(backdateMs + elapsed);
   });
 
   it('still reports ttfs without turbo (redelivery), minus turbo-only optimization flags', async () => {
