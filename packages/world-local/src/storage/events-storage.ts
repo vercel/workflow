@@ -636,11 +636,10 @@ export function createEventsStorage(
     rememberStoredEvent(event, eventPath, serializedEvent);
   }
 
-  // Step lifecycle events use an in-process lock. Hook lifecycle and terminal
-  // events share a filesystem run lock, so separate storage instances cannot
-  // create a Hook after cleanup or resume one after its run becomes terminal.
-  // It also keeps same-run Hook retries and resume-vs-dispose ordering atomic.
+  // In-process queues preserve call order. Hook lifecycle and terminal events
+  // also share a filesystem run lock for cross-process atomicity.
   const stepLocks = new Map<string, Promise<unknown>>();
+  const runEventLocks = new Map<string, Promise<unknown>>();
 
   return {
     clearCache,
@@ -677,7 +676,10 @@ export function createEventsStorage(
       // Token locks are acquired inside this lock, keeping the global order
       // run -> token for Hook creation, disposal, and terminal cleanup.
       if (runId && shouldLockRunEvent(data.eventType)) {
-        return withRunEventLock(basedir, runId, () => createImpl());
+        const lockKey = tag ? `${runId}.${tag}` : runId;
+        return withInProcessLock(runEventLocks, lockKey, () =>
+          withRunEventLock(basedir, runId, () => createImpl())
+        );
       }
       return createImpl();
 
