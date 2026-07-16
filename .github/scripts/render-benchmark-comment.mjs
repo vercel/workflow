@@ -28,7 +28,11 @@ const MAX_HISTORY_ENTRIES = 10;
 const MAX_COMMENT_CHARS = 60_000;
 
 const METRIC_LABELS = {
-  ttfs: { name: 'TTFS', description: 'time to first step body execution' },
+  ttfs: {
+    name: 'TTFS',
+    description:
+      'time to first step body (server run_created → step body, Vercel clocks; +80ms est. RTT)',
+  },
   stso: {
     name: 'STSO',
     description: 'step-to-step overhead (gap between consecutive step bodies)',
@@ -36,7 +40,7 @@ const METRIC_LABELS = {
   wo: {
     name: 'WO',
     description:
-      'workflow overhead (time outside step bodies, client start → last step body exit)',
+      'workflow overhead (whole-run time outside step bodies, server-anchored; +80ms est. RTT)',
   },
   sl: {
     name: 'SL',
@@ -318,7 +322,7 @@ function renderFooter(entries) {
         ]
       : []),
     '',
-    '<sub>TTFS/WO compare client vs deployment clocks and SL compares the step runner’s clock vs the client’s (NTP-synced in CI). WO ends at the last step body exit, the closest observable proxy for the final step-completion request.</sub>',
+    '<sub>TTFS/WO are measured from Vercel server timestamps (run creation → step body), so they’re independent of the CI runner’s clock and its network path to api.vercel.com; a flat +80ms is added as an estimate of the client→ingress request overhead (RTT) the server timestamps don’t capture. STSO is measured between step bodies on the deployment. SL is client-observed and includes the api.vercel.com read path.</sub>',
   ].join('\n');
 }
 

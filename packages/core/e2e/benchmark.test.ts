@@ -4,28 +4,40 @@
  *
  * Metrics (all in milliseconds, reported as avg/p75/p90/p99):
  *
- * - TTFS  (time to first step): client-side timestamp taken when `start()` is
- *          called (the run_created request) → first step body execution.
- *          Measured for both the turbo path (no hooks) and the non-turbo path
- *          (a hook was registered before the step).
+ * - TTFS  (time to first step): server-side `run_created` timestamp
+ *          (Vercel-assigned `createdAt`) → first step body execution
+ *          (`steps[0].start`, the deployment's clock). Both endpoints are
+ *          Vercel-provided, so the measurement is independent of the CI
+ *          runner's clock and its network path to api.vercel.com. Because the
+ *          server anchor starts *after* the create request's inbound leg, a
+ *          flat RTT_OVERHEAD_MS is added as an estimate of that client→ingress
+ *          request overhead. Measured for both the turbo path (no hooks) and
+ *          the non-turbo path (a hook was registered before the step).
  * - STSO  (step-to-step overhead): gap between consecutive step body
  *          executions (`steps[i].start - steps[i-1].end`) in a workflow with
- *          many trivial sequential steps. Reported per step-index range
+ *          many trivial sequential steps. Both timestamps come from step
+ *          bodies on the deployment, so STSO is already independent of the CI
+ *          client and the api.vercel.com proxy. Reported per step-index range
  *          (see STSO_BUCKETS) because early steps behave differently from
  *          late ones (first-invocation fast paths, growing event log).
  * - WO    (workflow overhead): total time the run spends outside of step
- *          bodies, from the client-side `start()` timestamp to the end of the
- *          last step body (the moment just before the final step_completed
- *          request is sent): `(lastStep.end - clientStart) - Σ(step durations)`.
+ *          bodies over the whole sequential run, from the server-side
+ *          `run_created` timestamp to the end of the last step body:
+ *          `(lastStep.end - runCreatedServerMs) - Σ(step durations)`, plus the
+ *          flat RTT_OVERHEAD_MS. Measured on the sequential scenario only — on
+ *          a single-step workflow WO reduces algebraically to TTFS.
  * - SL    (stream latency): time between a step writing the first chunk to
  *          the workflow's default output stream and that chunk becoming
- *          visible to a reader attached via `run.getReadable()`.
+ *          visible to a reader attached via `run.getReadable()`. Unlike the
+ *          other metrics this is inherently client-observed: it includes the
+ *          api.vercel.com read path (a server-side measurement would need
+ *          runtime/world changes and is a separate follow-up).
  *
  * Scenarios (defined in workbench/example/workflows/97_bench.ts):
  *
- * 1. benchStreamWorkflow          — 1 streaming step, turbo mode → TTFS + SL + WO
- * 2. benchSequentialStepsWorkflow — 1020 trivial sequential steps → STSO
- * 3. benchHookStreamWorkflow      — hook + 1 streaming step, non-turbo → TTFS + SL + WO
+ * 1. benchStreamWorkflow          — 1 streaming step, turbo mode → TTFS + SL
+ * 2. benchSequentialStepsWorkflow — 1020 trivial sequential steps → STSO + WO
+ * 3. benchHookStreamWorkflow      — hook + 1 streaming step, non-turbo → TTFS + SL
  *
  * Each scenario runs many iterations (env-tunable, see BENCH_* below) so the
  * percentiles are computed from real samples.
@@ -37,15 +49,16 @@
  * in-process streamer does not support — CI currently runs this file against
  * Vercel only.
  *
- * TTFS and WO compare a client-side clock against the deployment's clock, and
- * SL compares the step runner's clock against the client's; both machines are
- * NTP-synced in CI, so skew is small relative to the measured values.
+ * TTFS/WO anchor on the Vercel-assigned `run_created` timestamp (fetched via
+ * the world's event log) and end on the deployment's step-body clock; the only
+ * residual skew is intra-Vercel (workflow-server vs step runner), NTP-bounded
+ * and small. SL still compares the step runner's clock against the client's.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, test } from 'vitest';
-import { start } from '../src/runtime';
+import { getWorld, start } from '../src/runtime';
 import { getWorkflowMetadata, setupWorld } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
@@ -72,6 +85,14 @@ const STREAM_ITERATIONS = envInt('BENCH_STREAM_ITERATIONS', 30);
 const SEQUENTIAL_ITERATIONS = envInt('BENCH_SEQUENTIAL_ITERATIONS', 1);
 const SEQUENTIAL_STEP_COUNT = envInt('BENCH_SEQUENTIAL_STEP_COUNT', 1020);
 const WARMUP_ITERATIONS = envInt('BENCH_WARMUP_ITERATIONS', 2, 0);
+
+// TTFS/WO anchor on the Vercel-assigned `run_created` timestamp, which is
+// stamped only after the client's create request has reached the ingress — so
+// the server anchor excludes that client→api.vercel.com inbound leg. We add
+// this flat estimate of the request overhead (RTT) back in, keeping the metric
+// deterministic (no CI-network variance) while still approximating end-to-end.
+// The observed inbound leg is ~100-200ms; 80ms is a conservative flat default.
+const RTT_OVERHEAD_MS = envInt('BENCH_RTT_OVERHEAD_MS', 80, 0);
 
 // Per-metric latency targets (ms) rendered as 🟢/🔴 marks in the PR comment.
 const TTFS_TARGETS = { p75: 200, p90: 300, p99: 600 };
@@ -112,8 +133,15 @@ interface BenchStreamChunk {
 
 interface StreamIterationResult {
   runId: string;
+  /** Server-anchored TTFS (+ flat RTT estimate); the reported metric. */
   ttfsMs: number;
-  woMs: number;
+  /**
+   * Client wall-clock TTFS (`steps[0].start - clientStart`), kept for
+   * diagnostics only (logged/serialized, not reported as a metric). Comparing
+   * it against `ttfsMs - RTT_OVERHEAD_MS` shows how well the flat 80ms tracks
+   * the real client→ingress overhead.
+   */
+  ttfsWallMs: number;
   slMs: number;
 }
 
@@ -121,6 +149,8 @@ interface SequentialIterationResult {
   runId: string;
   /** stsoMs[i] is the gap between steps i+1 and i+2 (1-indexed). */
   stsoMs: number[];
+  /** Server-anchored whole-run workflow overhead (+ flat RTT estimate). */
+  woMs: number;
 }
 
 const benchWf = (fn: string) =>
@@ -165,14 +195,46 @@ function timingsFromReturnValue(
   return steps;
 }
 
-/** WO: total time outside of step bodies, from client start to last body end. */
+/**
+ * Vercel-assigned run-creation timestamp (epoch ms), read from the world's
+ * event log so TTFS/WO anchor on a server clock rather than the CI runner's.
+ * Prefers the `run_created` event's `createdAt` (server-stamped, distinct from
+ * the client `occurredAt`); falls back to the run snapshot's `createdAt`.
+ * Returns undefined if neither can be read, so callers can degrade to the
+ * client anchor rather than dropping the sample.
+ */
+async function runCreatedServerMs(runId: string): Promise<number | undefined> {
+  try {
+    const world = await getWorld();
+    const { data } = await world.events.list({ runId });
+    const created = data.find((e) => e.eventType === 'run_created');
+    const createdMs = created?.createdAt?.getTime?.();
+    if (typeof createdMs === 'number' && Number.isFinite(createdMs)) {
+      return createdMs;
+    }
+    const run = await world.runs.get(runId);
+    const runCreatedMs = run.createdAt?.getTime?.();
+    return typeof runCreatedMs === 'number' && Number.isFinite(runCreatedMs)
+      ? runCreatedMs
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Raw WO: total time outside of step bodies, from `anchorMs` to the last step
+ * body's exit. The caller supplies the server `run_created` timestamp as the
+ * anchor and adds RTT_OVERHEAD_MS; the value is clamped at 0 to absorb small
+ * intra-Vercel clock skew.
+ */
 function workflowOverheadMs(
-  clientStart: number,
+  anchorMs: number,
   steps: BenchStepTiming[]
 ): number {
   const lastEnd = steps[steps.length - 1].end;
   const inStep = steps.reduce((sum, s) => sum + (s.end - s.start), 0);
-  return lastEnd - clientStart - inStep;
+  return Math.max(0, lastEnd - anchorMs - inStep);
 }
 
 async function runStreamIteration(
@@ -224,10 +286,27 @@ async function runStreamIteration(
     );
     const steps = timingsFromReturnValue(returnValue, run.runId);
 
+    // Anchor TTFS at the Vercel-assigned run-creation time so the metric is
+    // independent of the CI runner's clock and its path to api.vercel.com,
+    // then add the flat RTT estimate for the create request's inbound leg.
+    // If the server timestamp can't be read, degrade to the client anchor
+    // (which already includes the real RTT — no flat estimate is added).
+    const serverAnchor = await runCreatedServerMs(run.runId);
+    const ttfsWallMs = steps[0].start - clientStart;
+    const ttfsMs =
+      serverAnchor !== undefined
+        ? Math.max(0, steps[0].start - serverAnchor) + RTT_OVERHEAD_MS
+        : ttfsWallMs;
+    if (serverAnchor === undefined) {
+      console.warn(
+        `[bench] ${workflowFn} run ${run.runId}: no server run_created timestamp; TTFS degraded to client anchor`
+      );
+    }
+
     return {
       runId: run.runId,
-      ttfsMs: steps[0].start - clientStart,
-      woMs: workflowOverheadMs(clientStart, steps),
+      ttfsMs,
+      ttfsWallMs,
       slMs,
     };
   } catch (error) {
@@ -253,6 +332,7 @@ async function runSequentialIteration(
   stepCount: number
 ): Promise<SequentialIterationResult> {
   const wf = await benchWf('benchSequentialStepsWorkflow');
+  const clientStart = Date.now();
   const run = await start(wf, [stepCount]);
   try {
     const returnValue = await withTimeout(
@@ -272,9 +352,19 @@ async function runSequentialIteration(
       stsoMs.push(steps[i].start - steps[i - 1].end);
     }
 
+    // Server-anchored whole-run WO (+ flat RTT). Degrade to the client start
+    // if the server timestamp is unavailable (then the RTT is already
+    // included, so no flat estimate is added).
+    const serverAnchor = await runCreatedServerMs(run.runId);
+    const woMs =
+      serverAnchor !== undefined
+        ? workflowOverheadMs(serverAnchor, steps) + RTT_OVERHEAD_MS
+        : workflowOverheadMs(clientStart, steps);
+
     return {
       runId: run.runId,
       stsoMs,
+      woMs,
     };
   } catch (error) {
     (error as Error).message += ` (run ${run.runId})`;
@@ -410,6 +500,25 @@ function recordMetric(
   });
 }
 
+/**
+ * Log the client wall-clock TTFS alongside the reported server-anchored TTFS
+ * so the flat RTT_OVERHEAD_MS assumption can be validated from CI logs. Not a
+ * reported metric — diagnostics only. `wall - (server - RTT)` is the residual
+ * between the real client→ingress overhead and our flat estimate.
+ */
+function logTtfsWallDiagnostic(
+  scenario: string,
+  results: StreamIterationResult[]
+) {
+  if (results.length === 0) return;
+  const wall = computeStats(results.map((r) => r.ttfsWallMs));
+  const server = computeStats(results.map((r) => r.ttfsMs));
+  console.log(
+    `[bench] ${scenario} TTFS diagnostic: server+RTT avg ${server.avg}ms, ` +
+      `client wall-clock avg ${wall.avg}ms (RTT flat estimate ${RTT_OVERHEAD_MS}ms)`
+  );
+}
+
 function getBackend(): string {
   if (process.env.WORKFLOW_BENCH_BACKEND) {
     return process.env.WORKFLOW_BENCH_BACKEND;
@@ -439,7 +548,7 @@ const SCENARIO_DESCRIPTIONS = [
   },
   {
     name: SCENARIO_SEQUENTIAL,
-    description: `${SEQUENTIAL_STEP_COUNT} trivial sequential steps; STSO is measured between consecutive steps in the given step ranges`,
+    description: `${SEQUENTIAL_STEP_COUNT} trivial sequential steps; STSO is measured between consecutive steps in the given step ranges, and WO is the whole-run overhead outside step bodies`,
   },
 ];
 
@@ -483,16 +592,12 @@ describe('workflow benchmarks', () => {
         results.map((r) => r.ttfsMs),
         TTFS_TARGETS
       );
+      logTtfsWallDiagnostic(SCENARIO_TURBO_STREAM, results);
       recordMetric(
         'sl',
         SCENARIO_TURBO_STREAM,
         results.map((r) => r.slMs),
         SL_TARGETS
-      );
-      recordMetric(
-        'wo',
-        SCENARIO_TURBO_STREAM,
-        results.map((r) => r.woMs)
       );
     }
   );
@@ -512,16 +617,12 @@ describe('workflow benchmarks', () => {
         results.map((r) => r.ttfsMs),
         TTFS_TARGETS
       );
+      logTtfsWallDiagnostic(SCENARIO_HOOK_STREAM, results);
       recordMetric(
         'sl',
         SCENARIO_HOOK_STREAM,
         results.map((r) => r.slMs),
         SL_TARGETS
-      );
-      recordMetric(
-        'wo',
-        SCENARIO_HOOK_STREAM,
-        results.map((r) => r.woMs)
       );
     }
   );
@@ -553,6 +654,14 @@ describe('workflow benchmarks', () => {
         targets
       );
     }
+    // WO: whole-run overhead outside step bodies (server-anchored + flat RTT).
+    // Measured here rather than on the stream scenarios, where a single step
+    // makes WO algebraically identical to TTFS.
+    recordMetric(
+      'wo',
+      SCENARIO_SEQUENTIAL,
+      results.map((r) => r.woMs)
+    );
   });
 
   afterAll(() => {
