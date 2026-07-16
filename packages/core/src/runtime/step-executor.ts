@@ -81,6 +81,8 @@ export interface StepExecutorParams {
   workflowDeploymentId?: string;
   workflowName: string;
   workflowStartedAt: number;
+  /** Root run id of this run's lineage, carried into the step context. */
+  rootRunId?: string;
   stepId: string;
   stepName: string;
   encryptionKey?: CryptoKey;
@@ -393,6 +395,10 @@ export async function executeStep(
           !isOptimisticInlineStartExplicitlyDisabled()));
 
     let step: Step;
+    // `Date.now()` taken immediately before the `step_started` create is
+    // issued (either path below) — anchors RSFS's end point. See
+    // StepLatencyEventData.rsfs and the call sites below.
+    let stepStartPostSentAtMs: number | undefined;
     // Settled outcome of the in-flight optimistic `step_started`. Handlers are
     // attached synchronously (`.then(ok, err)`) so a fast rejection never
     // surfaces as an unhandledRejection while the body runs.
@@ -423,8 +429,12 @@ export async function executeStep(
       // round-trip overlaps the body rather than blocking it. Outside turbo the
       // barrier is undefined and this is a plain create.
       const startedPromise = (params.runReadyBarrier ?? Promise.resolve()).then(
-        () =>
-          world.events.create(workflowRunId, {
+        () => {
+          // Taken right before the create fires, not before the barrier —
+          // RSFS measures the run_started-to-POST stretch, and the barrier
+          // wait IS part of that stretch under turbo.
+          stepStartPostSentAtMs = Date.now();
+          return world.events.create(workflowRunId, {
             eventType: 'step_started',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
@@ -437,7 +447,8 @@ export async function executeStep(
                 ? { ownerMessageId: params.ownerMessageId }
                 : {}),
             },
-          })
+          });
+        }
       );
       optimisticStartSettled = startedPromise.then(
         () => ({ ok: true as const }),
@@ -474,6 +485,7 @@ export async function executeStep(
           params.ownerMessageId !== undefined
             ? { ownerMessageId: params.ownerMessageId }
             : {};
+        stepStartPostSentAtMs = Date.now();
         const startResult = await world.events.create(workflowRunId, {
           eventType: 'step_started',
           specVersion: SPEC_VERSION_CURRENT,
@@ -596,6 +608,30 @@ export async function executeStep(
     // catch below) can attach it to step_failed too.
     let latencyEventData: StepLatencyEventData | undefined;
 
+    // Backfill RSFS onto the already-computed telemetry once the optimistic
+    // turbo start has settled. On that path the step-start POST fires inside
+    // the run-ready barrier's `.then`, so `stepStartPostSentAtMs` — and
+    // therefore RSFS — is usually still unset when `latencyEventData` is
+    // first computed just before user code (the barrier is still in flight
+    // for any non-trivial `run_started` round-trip, which is exactly the
+    // slow-run_started case RSFS exists to measure). By the time
+    // `reconcileOptimisticStart()` has awaited the barrier the POST timestamp
+    // is known, so we patch RSFS in before the terminal event is written.
+    // Without this, slow-run_started samples are dropped, biasing RSFS
+    // percentiles low (missing-not-at-random). Recomputes only RSFS —
+    // TTFS/STSO stay anchored to `executionStartTime` as computed above.
+    const backfillOptimisticRsfs = (): void => {
+      if (!latencyEventData || latencyEventData.rsfs !== undefined) return;
+      const anchorMs = params.latencyTracking?.rsfsAnchorMs;
+      if (anchorMs === undefined || stepStartPostSentAtMs === undefined) return;
+      latencyEventData.rsfs = Math.max(0, stepStartPostSentAtMs - anchorMs);
+      if (span) {
+        span.setAttributes({
+          ...Attribute.StepRsfsMs(latencyEventData.rsfs),
+        });
+      }
+    };
+
     try {
       const attempt = step.attempt;
 
@@ -656,16 +692,25 @@ export async function executeStep(
         attempt,
         lazyStepStart: params.lazyStepInput !== undefined,
         optimisticStart,
+        stepStartPostSentAtMs,
       });
       if (latencyEventData) {
         // Mirror the latency telemetry onto the step span so traces show
-        // TTFS/STSO alongside the flame graph, not just Datadog metrics.
+        // TTFS/STSO/RSFS alongside the flame graph, not just Datadog metrics.
         span?.setAttributes({
           ...(latencyEventData.ttfs !== undefined
             ? Attribute.StepTtfsMs(latencyEventData.ttfs)
             : {}),
           ...(latencyEventData.stso !== undefined
             ? Attribute.StepStsoMs(latencyEventData.stso)
+            : {}),
+          ...(latencyEventData.rsfs !== undefined
+            ? Attribute.StepRsfsMs(latencyEventData.rsfs)
+            : {}),
+          ...(latencyEventData.finalSchedulingReplay !== undefined
+            ? Attribute.StepFinalSchedulingReplayMs(
+                latencyEventData.finalSchedulingReplay
+              )
             : {}),
           ...Attribute.StepLatencyOptimizations(
             latencyEventData.optimizations ?? []
@@ -690,6 +735,7 @@ export async function executeStep(
                 features: { encryption: !!encryptionKey },
               },
               workflowDeploymentId: params.workflowDeploymentId,
+              rootRunId: params.rootRunId,
               ops,
               preCompletionOps,
               closureVars: hydratedInput.closureVars,
@@ -802,6 +848,9 @@ export async function executeStep(
       if (optimisticStart) {
         const reconcile = await reconcileOptimisticStart();
         if (reconcile) return reconcile;
+        // Barrier resolved — the step-start POST timestamp is now known, so
+        // RSFS can be attached to the step_completed event below.
+        backfillOptimisticRsfs();
       }
 
       // Commit must-be-durable ops (e.g. a step-initiated abort's
@@ -830,6 +879,8 @@ export async function executeStep(
       if (optimisticStart) {
         const reconcile = await reconcileOptimisticStart();
         if (reconcile) return reconcile;
+        // Barrier resolved — attach RSFS to the step_failed event(s) below.
+        backfillOptimisticRsfs();
       }
 
       // Order any must-be-durable ops (e.g. a step-initiated abort's

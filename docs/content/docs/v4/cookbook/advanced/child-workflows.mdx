@@ -117,10 +117,10 @@ async function spawnProcessDocument(
 ): Promise<string> {
   "use step"; // [!code highlight]
 
-  const run = await start(processDocumentWithCompletion, [
+  const run = await start(processDocumentWithCompletion, [ // [!code highlight]
     documentId,
     completionTokenArg,
-  ]); // [!code highlight]
+  ]);
   return run.runId;
 }
 

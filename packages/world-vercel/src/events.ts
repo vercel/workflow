@@ -47,10 +47,12 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   type PaginatedResponse,
+  StructuredErrorSchema,
   stripEventDataRefs,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
+import { decode } from 'cbor-x';
 import { withEventPostRetry } from './event-retry.js';
 import {
   createWorkflowRunEventV4,
@@ -62,6 +64,7 @@ import {
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import {
+  hasSerializedDataFormatPrefix,
   normalizeEventData,
   normalizeSerializedData,
 } from './serialized-data.js';
@@ -108,6 +111,15 @@ const eventsNeedingResolve = new Set<string>([
   'step_started', // runtime reads result.step (checks attempt, state)
 ]);
 
+// Stable runtimes stored these errors as backend-materialized
+// StructuredError objects. Their resolved v4 frame bodies are CBOR rather
+// than the format-prefixed serialized data emitted by current runtimes.
+const legacyStructuredErrorEventTypes = new Set<string>([
+  'run_failed',
+  'step_failed',
+  'step_retrying',
+]);
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -148,6 +160,12 @@ interface SplitEventData {
     /** Progress counters taken when the STSO gap began. */
     stepCount?: number;
     eventCount?: number;
+    /** Client-measured run_started-to-first-step ms (step_completed / step_failed). */
+    rsfs?: number;
+    /** Client-measured synchronous replay-compute ms of only the FINAL replay
+     *  pass within the rsfs window — not accumulated across earlier
+     *  pre-first-step passes, so it is not "the replay portion of rsfs". */
+    finalSchedulingReplay?: number;
     /** Runtime optimizations active for the ttfs/stso measurement. */
     optimizations?: string[];
   };
@@ -185,6 +203,8 @@ type MetaSourceField =
   | 'stso'
   | 'stepCount'
   | 'eventCount'
+  | 'rsfs'
+  | 'finalSchedulingReplay'
   | 'optimizations';
 
 /**
@@ -354,6 +374,12 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   ) {
     meta.eventCount = eventData.eventCount;
   }
+  if (typeof eventData.rsfs === 'number') {
+    meta.rsfs = eventData.rsfs;
+  }
+  if (typeof eventData.finalSchedulingReplay === 'number') {
+    meta.finalSchedulingReplay = eventData.finalSchedulingReplay;
+  }
   if (
     Array.isArray(eventData.optimizations) &&
     eventData.optimizations.every((o) => typeof o === 'string')
@@ -426,6 +452,21 @@ function coerceNormalizedEvent(raw: Record<string, unknown>): Event {
   return coerceEventDates(normalizeEventData(raw));
 }
 
+function decodeLegacyStructuredError(payload: Uint8Array): unknown {
+  if (hasSerializedDataFormatPrefix(payload)) {
+    return payload;
+  }
+
+  try {
+    // cbor-x caches decode state on its input, so decode a copy to keep the
+    // raw-byte fallback byte-for-byte and property-for-property unchanged.
+    const parsed = StructuredErrorSchema.safeParse(decode(payload.slice()));
+    return parsed.success ? parsed.data : payload;
+  } catch {
+    return payload;
+  }
+}
+
 /**
  * Turn a v4 event (frame meta + frame body) into the Event shape the
  * workflow runtime expects.
@@ -435,9 +476,10 @@ function coerceNormalizedEvent(raw: Record<string, unknown>): Event {
  * the resolved payload bytes (possibly empty). This helper splices the
  * body bytes into `eventData[fieldName]`, normalizing any zstd wrapper
  * back to the raw devalue-with-format-prefix Uint8Array the runtime's
- * hydrate helpers (hydrateStepIO, hydrateRunError, …) consume. No CBOR
- * decode here, symmetric with the pass-through write in
- * `splitEventDataForV4`.
+ * hydrate helpers (hydrateStepIO, hydrateRunError, …) consume. Stable-line
+ * structured errors are the exception: the backend stored those as CBOR,
+ * so they are decoded after checking that the payload is not a current
+ * format-prefixed serialized value.
  */
 function buildEventFromV4(
   decoded: DecodedV4Event,
@@ -450,7 +492,11 @@ function buildEventFromV4(
     const payloadField = getEventDataPayloadField(decoded.eventType);
     const normalizedPayload = normalizeSerializedData(payloadBody);
     if (payloadField && normalizedPayload instanceof Uint8Array) {
-      eventData[payloadField] = normalizedPayload;
+      eventData[payloadField] = legacyStructuredErrorEventTypes.has(
+        decoded.eventType
+      )
+        ? decodeLegacyStructuredError(normalizedPayload)
+        : normalizedPayload;
     }
   }
 
@@ -646,6 +692,9 @@ async function createWorkflowRunEventInner(
       specVersion: data.specVersion ?? 2,
       ...(data.correlationId ? { correlationId: data.correlationId } : {}),
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      ...(params?.stateUpdatedAt !== undefined
+        ? { stateUpdatedAt: params.stateUpdatedAt }
+        : {}),
       occurredAt: params?.occurredAt ?? new Date(),
       // Opt-in inline-delta: forward the cursor the runtime held before
       // this write so the server can return the authoritative event-log

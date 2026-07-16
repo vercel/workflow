@@ -268,6 +268,17 @@ const stepLatencyTelemetryFields = {
   // stso.
   stepCount: z.number().int().positive().optional(),
   eventCount: z.number().int().positive().optional(),
+  // Run-started-to-first-step: milliseconds from the `run_started` response
+  // landing (or, under turbo, the local run synthesis instant) until this
+  // step's start POST was issued. A sub-window of ttfs. Only reported
+  // alongside the same eligibility as ttfs.
+  rsfs: z.number().optional(),
+  // Synchronous workflow-function replay duration of only the FINAL replay
+  // pass within the rsfs window (the pass that scheduled the first step),
+  // excluding awaited network I/O — not accumulated across earlier
+  // pre-first-step passes, so it is not "the replay portion of rsfs". Only
+  // present alongside rsfs, and only for the run's first step.
+  finalSchedulingReplay: z.number().optional(),
   // Names of the runtime's optional startup-latency optimizations that were
   // active for this measurement (e.g. 'turbo', 'lazyStepStart',
   // 'optimisticStart'), so latency metrics can be segmented by them.
@@ -681,6 +692,14 @@ export interface CreateEventParams {
   resolveData?: ResolveData;
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
+  /**
+   * Epoch ms (the ULID time of the latest event the runtime has loaded during
+   * replay). Sent by replay-context creates so the backend can reject the event
+   * when a newer out-of-band event was recorded after this snapshot, enabling
+   * an optimistic-concurrency guard. Omitted by callers without a loaded event
+   * log.
+   */
+  stateUpdatedAt?: number;
   /**
    * Timestamp for when the event occurred on the client side. Worlds that
    * support this can persist it separately from `createdAt`, which represents

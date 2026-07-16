@@ -2,9 +2,18 @@ import { WorkflowWorldError } from '@workflow/errors';
 import { getEventDataRefFields } from '@workflow/world';
 
 const FORMAT_PREFIX_LENGTH = 4;
+const DEVALUE_FORMAT_PREFIX = 'devl';
+const ENCRYPTED_FORMAT_PREFIX = 'encr';
 const GZIP_FORMAT_PREFIX = 'gzip';
 const ZSTD_FORMAT_PREFIX = 'zstd';
 const formatDecoder = new TextDecoder();
+
+const SERIALIZED_DATA_FORMAT_PREFIXES = new Set([
+  DEVALUE_FORMAT_PREFIX,
+  ENCRYPTED_FORMAT_PREFIX,
+  GZIP_FORMAT_PREFIX,
+  ZSTD_FORMAT_PREFIX,
+]);
 
 interface NodeZlibDecode {
   gunzipSync?: (data: Uint8Array) => Uint8Array;
@@ -31,6 +40,11 @@ function peekFormatPrefix(value: unknown): string | null {
     return null;
   }
   return formatDecoder.decode(value.subarray(0, FORMAT_PREFIX_LENGTH));
+}
+
+export function hasSerializedDataFormatPrefix(value: unknown): boolean {
+  const format = peekFormatPrefix(value);
+  return format !== null && SERIALIZED_DATA_FORMAT_PREFIXES.has(format);
 }
 
 function decompress(format: string, payload: Uint8Array): Uint8Array {

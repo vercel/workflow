@@ -19,6 +19,7 @@
 import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
+  PreconditionFailedError,
   RunExpiredError,
   ThrottleError,
   TooEarlyError,
@@ -157,6 +158,8 @@ export function parseRetryAfter(
  *
  *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
  *   - 410 → RunExpiredError (runtime exits without retrying)
+ *   - 412 → PreconditionFailedError + retryAfter (stale `stateUpdatedAt`
+ *     snapshot — the optimistic-concurrency guard on event creation)
  *   - 425 → TooEarlyError + retryAfter (step retry pacing — see #1806 for what
  *     happens when a 425 degrades into an untyped error)
  *   - 429 → ThrottleError + retryAfter, EXCEPT a firewall challenge (429 +
@@ -181,6 +184,8 @@ export function errorForResponse(
   const { retryAfter, code, url, mitigated } = opts;
   if (status === 409) return new EntityConflictError(message);
   if (status === 410) return new RunExpiredError(message);
+  if (status === 412)
+    return new PreconditionFailedError(message, { retryAfter });
   if (status === 425) return new TooEarlyError(message, { retryAfter });
   if (status === 429) {
     // A firewall challenge can't be solved by a server-to-server client, so map

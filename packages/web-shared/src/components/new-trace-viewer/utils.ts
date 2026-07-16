@@ -223,9 +223,10 @@ export const RESOURCE_COLORS: Record<
     errorBg: 'var(--ds-red-200)',
     errorBorder: 'var(--ds-red-500)',
   },
+  // Passive spans (hooks) stay gray — matches event-list icons and the minimap.
   hook: {
-    bg: 'var(--ds-amber-200)',
-    border: 'var(--ds-amber-500)',
+    bg: 'var(--ds-gray-200)',
+    border: 'var(--ds-gray-500)',
     errorBg: 'var(--ds-red-200)',
     errorBorder: 'var(--ds-red-500)',
   },

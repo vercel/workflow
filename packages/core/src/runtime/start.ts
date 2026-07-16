@@ -3,6 +3,8 @@ import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
   isLegacySpecVersion,
+  PARENT_RUN_ID_ATTRIBUTE,
+  ROOT_RUN_ID_ATTRIBUTE,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -19,6 +21,7 @@ import {
   dehydrateWorkflowArguments,
   SerializationFormat,
 } from '../serialization.js';
+import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
@@ -41,6 +44,28 @@ const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
 
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
+
+/**
+ * Cross-run lineage for a run being started from inside another run.
+ *
+ * The ambient step context carries the parent run id and the root of its
+ * lineage; the runtime fills both from the run it already has loaded, so this
+ * is a pure context read with no I/O. The new run records `$parentRunId` (the
+ * edge) and inherits the parent's `$rootRunId` (the parent itself when it is a
+ * root), so a daisy chain or fan-out of any depth groups under one root id.
+ * Returns `undefined` for a top-level `start()`, which has no context, so
+ * standalone runs carry no lineage.
+ */
+function resolveLineageAttributes(): Record<string, string> | undefined {
+  const store = contextStorage.getStore();
+  const parentRunId = store?.workflowMetadata?.workflowRunId;
+  if (!parentRunId) return undefined;
+
+  return {
+    [ROOT_RUN_ID_ATTRIBUTE]: store.rootRunId ?? parentRunId,
+    [PARENT_RUN_ID_ATTRIBUTE]: parentRunId,
+  };
+}
 
 // `deploymentId: 'latest'` is a no-op in Worlds without atomic deployments.
 // The warning that explains this only needs to fire once per process: a
@@ -360,13 +385,24 @@ export async function start<TArgs extends unknown[], TResult>(
           changes.map(({ key, value }) => [key, value as string])
         );
       }
-      // Seed payload shared by run_created and the resilient-start queue
-      // input. The flag rides along so server-side validation matches the
-      // client-side check above on both paths.
-      const attributeSeed = attributes
+
+      // Cross-run lineage: the reserved keys ride on the run's existing
+      // attributes, so they add no extra write. Caller attributes are spread
+      // last, so a caller with allowReservedAttributes can deliberately
+      // re-parent.
+      const lineage =
+        specVersion >= SPEC_VERSION_SUPPORTS_ATTRIBUTES
+          ? resolveLineageAttributes()
+          : undefined;
+      const runAttributes = lineage
+        ? { ...lineage, ...attributes }
+        : attributes;
+
+      // Shared by the run_created event and the resilient-start queue input.
+      const attributeSeed = runAttributes
         ? {
-            attributes,
-            ...(allowReservedAttributes
+            attributes: runAttributes,
+            ...(allowReservedAttributes || lineage != null
               ? { allowReservedAttributes: true as const }
               : {}),
           }

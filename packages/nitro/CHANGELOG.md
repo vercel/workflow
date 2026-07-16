@@ -1,5 +1,20 @@
 # @workflow/nitro
 
+## 5.0.0-beta.35
+
+### Patch Changes
+
+- [#2908](https://github.com/vercel/workflow/pull/2908) [`3589958`](https://github.com/vercel/workflow/commit/35899580bd2a1b6eb2817f04583139dcee4ffd2a) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Clean up temporary Nitro Vite servers and Workflow build contexts after builds.
+
+- [#2925](https://github.com/vercel/workflow/pull/2925) [`c44b4f8`](https://github.com/vercel/workflow/commit/c44b4f8586a159e4deb5ec947e1855d80cc2680d) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Skip Workflow transforms for generated Nitro build artifacts.
+
+- Updated dependencies [[`a00d169`](https://github.com/vercel/workflow/commit/a00d16947085f8e94cf191c4d8850121cf201a94), [`a00d169`](https://github.com/vercel/workflow/commit/a00d16947085f8e94cf191c4d8850121cf201a94), [`1933e29`](https://github.com/vercel/workflow/commit/1933e294cf938fb2314f45047033f8720ccf442b), [`6b8efd5`](https://github.com/vercel/workflow/commit/6b8efd58ce4829648f410e483bf42935dc5dcd1e), [`fd107b9`](https://github.com/vercel/workflow/commit/fd107b9c33db397b513ef134f458a1083bde7d98)]:
+  - @workflow/core@5.0.0-beta.35
+  - @workflow/builders@5.0.0-beta.35
+  - @workflow/web@5.0.0-beta.35
+  - @workflow/rollup@5.0.0-beta.35
+  - @workflow/vite@5.0.0-beta.35
+
 ## 5.0.0-beta.34
 
 ### Patch Changes
