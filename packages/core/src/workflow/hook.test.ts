@@ -37,6 +37,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   return {
     runId: 'wrun_test',
     encryptionKey: undefined,
+    worldCapabilities: { hookRetention: { active: true } },
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent: () => {},
@@ -1188,6 +1189,20 @@ describe('createCreateHook', () => {
     } finally {
       dateNow.mockRestore();
     }
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['inactive', { hookRetention: { active: false } }],
+  ])('rejects minimum retention when the capability is %s', (_state, capabilities) => {
+    const ctx = setupWorkflowContext([]);
+    ctx.worldCapabilities = capabilities;
+    const createHook = createCreateHook(ctx);
+
+    expect(() => createHook({ experimental_minRetention: '30d' })).toThrow(
+      'The configured World does not support `experimental_minRetention` for Hooks.'
+    );
+    expect(ctx.invocationsQueue.size).toBe(0);
   });
 
   it.each([

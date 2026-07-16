@@ -5446,6 +5446,12 @@ describe('runWorkflow', () => {
         return 'done';
       }`;
 
+    const FIRE_AND_FORGET_RETAINED_HOOK = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+      async function workflow() {
+        createHook({ token: 'fire-and-forget', experimental_minRetention: '30d' });
+        return 'done';
+      }`;
+
     // `void sleep(...)` is the wait equivalent: it enqueues a wait_created the
     // workflow never awaits, drained the same way as the hook above.
     const FIRE_AND_FORGET_WAIT = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
@@ -5475,6 +5481,22 @@ describe('runWorkflow', () => {
 
     afterEach(() => {
       setWorld(undefined);
+    });
+
+    it('rejects unsupported retained Hooks before the final drain', async () => {
+      await expect(
+        runWorkflow(
+          `${FIRE_AND_FORGET_RETAINED_HOOK}${getWorkflowTransformCode('workflow')}`,
+          await makeRun(),
+          [],
+          noEncryptionKey,
+          undefined,
+          undefined,
+          { hookRetention: { active: false } }
+        )
+      ).rejects.toThrow(
+        'The configured World does not support `experimental_minRetention` for Hooks.'
+      );
     });
 
     it('does not write hook_created until the runReadyBarrier resolves', async () => {

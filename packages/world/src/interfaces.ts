@@ -290,16 +290,20 @@ export interface Storage {
   };
 }
 
-/**
- * The "World" interface represents how Workflows are able to communicate with the outside world.
- */
+/** Optional features a World can explicitly advertise to the runtime. */
 export interface WorldCapabilities {
-  /** Supports `experimental_minRetention` for Hooks. */
+  /**
+   * Supports `experimental_minRetention` for Hooks. Missing or inactive means
+   * the runtime rejects retained Hooks before registration.
+   */
   hookRetention?: {
     active: boolean;
   };
 }
 
+/**
+ * The "World" interface represents how Workflows are able to communicate with the outside world.
+ */
 export interface World extends Queue, Streamer, Storage {
   /**
    * Optional analytics read namespace for observability surfaces.

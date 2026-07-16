@@ -126,7 +126,10 @@ export interface CreateEventV4Input {
    *  the step entity for premature-delivery pacing and observability. */
   retryAfter?: Date;
   hookToken?: string;
-  /** Earliest time another Hook can use the token after the run ends. */
+  /**
+   * Earliest time another Hook can use the token after the owning run ends.
+   * An active run always retains its token beyond this time.
+   */
   hookTokenRetentionUntil?: Date;
   hookIsWebhook?: boolean;
   hookIsSystem?: boolean;

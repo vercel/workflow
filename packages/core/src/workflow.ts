@@ -6,7 +6,7 @@ import {
 } from '@workflow/errors';
 import { createWorkflowBaseUrl, withResolvers } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, WorkflowRun } from '@workflow/world';
+import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
@@ -152,7 +152,12 @@ export async function runWorkflow(
    * committed at workflow completion order after the run's creation. Undefined
    * outside turbo, where `run_started` is awaited up front.
    */
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  /**
+   * Features supported by the World executing this workflow. Missing
+   * capabilities are treated as unsupported.
+   */
+  worldCapabilities?: WorldCapabilities
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
@@ -239,6 +244,7 @@ export async function runWorkflow(
     const workflowContext: WorkflowOrchestratorContext = {
       runId: workflowRun.runId,
       encryptionKey,
+      worldCapabilities,
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
       eventsConsumer,

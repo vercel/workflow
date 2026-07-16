@@ -1,4 +1,8 @@
-import { HookConflictError, ReplayDivergenceError } from '@workflow/errors';
+import {
+  FatalError,
+  HookConflictError,
+  ReplayDivergenceError,
+} from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE } from '@workflow/serde';
 import {
   type PromiseWithResolvers,
@@ -79,6 +83,15 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     ) {
       throw new Error(
         'Webhook hooks do not support `experimental_minRetention`. Use a non-webhook `createHook()` with `resumeHook()`.'
+      );
+    }
+
+    if (
+      options.experimental_minRetention !== undefined &&
+      ctx.worldCapabilities?.hookRetention?.active !== true
+    ) {
+      throw new FatalError(
+        'The configured World does not support `experimental_minRetention` for Hooks.'
       );
     }
 

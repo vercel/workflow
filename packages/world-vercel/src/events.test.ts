@@ -204,15 +204,20 @@ describe('createWorkflowRunEvent stateUpdatedAt wire field', () => {
  * actually reach the frame meta with the right values and renames.
  */
 describe('splitEventDataForV4 attribute fields', () => {
-  it('carries the hook token retention deadline in the frame meta', () => {
-    const tokenRetentionUntil = new Date('2026-07-10T12:00:00.000Z');
+  it.each([
+    new Date('2026-07-10T12:00:00.000Z'),
+    '2026-07-10T12:00:00.000Z',
+  ])('carries a %s Hook retention deadline in the frame meta', (value) => {
+    const tokenRetentionUntil = new Date(
+      typeof value === 'string' ? value : value.getTime()
+    );
     const { payload, meta } = splitEventDataForV4({
       eventType: 'hook_created',
       correlationId: 'hook_1',
       specVersion: 5,
       eventData: {
         token: 'order:123',
-        tokenRetentionUntil,
+        tokenRetentionUntil: value,
       },
     } as AnyEventRequest);
 

@@ -1436,7 +1436,8 @@ export function workflowEntrypoint(
                         // fire-and-forget `*_created` events before the terminal
                         // `awaitRunReady()` below, so gate those writes on the
                         // backgrounded run_started too. Undefined outside turbo.
-                        runReadyBarrier
+                        runReadyBarrier,
+                        world.capabilities
                       );
                       runtimeLogger.debug('Workflow replay completed', {
                         workflowRunId: runId,
