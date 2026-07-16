@@ -6,6 +6,7 @@ import {
 import {
   type Hook,
   isLegacySpecVersion,
+  isTerminalWorkflowRunStatus,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -56,6 +57,9 @@ async function getHookByTokenWithKey(token: string): Promise<{
  * and hydrate the `metadata` property if it was set from within
  * the workflow run.
  *
+ * A Hook kept by minimum retention remains available here after its run ends,
+ * but cannot be resumed.
+ *
  * @param token - The unique token identifying the hook
  */
 export async function getHookByToken(token: string): Promise<Hook> {
@@ -72,7 +76,7 @@ export async function getHookByToken(token: string): Promise<Hook> {
  * @param tokenOrHook - The unique token identifying the hook, or the hook object itself
  * @param payload - The data payload to send to the hook
  * @returns Promise resolving to the hook
- * @throws Error if the hook is not found or if there's an error during the process
+ * @throws {HookNotFoundError} If the Hook does not exist or its run has ended
  *
  * @example
  *
@@ -126,6 +130,10 @@ export async function resumeHook<T = any>(
           ...Attribute.HookId(hook.hookId),
           ...Attribute.WorkflowRunId(hook.runId),
         });
+
+        if (isTerminalWorkflowRunStatus(workflowRun.status)) {
+          throw new HookNotFoundError(hook.token);
+        }
 
         // Check the target run's capabilities to ensure we encode the
         // payload in a format the run's deployment can decode. For example,

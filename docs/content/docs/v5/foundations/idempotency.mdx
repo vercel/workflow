@@ -149,7 +149,7 @@ export async function POST(request: Request) {
 This avoids creating a new run only after the first run has registered its hook. Because `start()` returns before the run body executes and calls `createHook()`, two concurrent requests can both observe "no hook yet" and each call `start()`. The race is resolved inside the workflow body, where the losing run observes `getConflict()` resolving with the active owner and returns without doing duplicate-sensitive work — and the route detects it by comparing the resumed hook's `runId` against the run it just started, without waiting for either run to finish. A native API for atomically starting a run and registering a hook is in the works. Until then, model recovery inside the workflow by checking `hook.getConflict()`.
 </Callout>
 
-This coordinates active runs by default: the token becomes available when its workflow ends. Set `experimental_minRetention` to keep it unavailable to late duplicates. The Hook itself still ends with the workflow and cannot be resumed. See [`createHook()` minimum retention](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) for examples and supported values.
+This coordinates active runs by default: the token becomes available when its workflow ends. Set `experimental_minRetention` to keep it unavailable to late duplicates. After the workflow ends, the Hook can still be found with `getHookByToken()` until retention ends, but it cannot be resumed. See [`createHook()` minimum retention](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) for examples and supported values.
 
 ### Conflict-handling strategies
 

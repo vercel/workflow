@@ -147,6 +147,8 @@ export interface HookOptions {
    * The Hook remains active until the workflow ends, even if the configured
    * time passes first. Another Hook can use the token only after both the run
    * has ended and the configured time has passed.
+   * After the run ends, the Hook can still be found with `getHookByToken()`
+   * until retention ends, but it cannot be resumed.
    *
    * Calling `dispose()` (including through `using`) releases the token
    * immediately.

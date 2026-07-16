@@ -90,6 +90,6 @@ The workflow should create the deterministic hook and check `await hook.getConfl
 - [`"use step"`](/docs/foundations/workflows-and-steps#step-functions) -- declares step functions with full Node.js access
 - [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) -- provides the deterministic `stepId` for idempotency keys
 - [`createHook()`](/docs/api-reference/workflow/create-hook) -- creates a hook with an optional deterministic token
-- [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) -- finds the active hook for a token
+- [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) -- finds the Hook that owns a token
 - [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) -- resumes the active hook when the duplicate request carries data
 - [`start()`](/docs/api-reference/workflow-api/start) -- starts a new workflow run
