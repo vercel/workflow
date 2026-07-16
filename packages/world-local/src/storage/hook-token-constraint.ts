@@ -15,36 +15,28 @@ const HookTokenConstraintFields = {
   token: z.string(),
   runId: z.string(),
   hookId: z.string(),
-  tokenExpiresAt: z.coerce.date().optional(),
+  tokenRetentionUntil: z.coerce.date().optional(),
 };
 
-// Current files include both the canonical event and owner tag. Normalize
-// older shapes at this boundary so callers handle migration states explicitly.
-const HookTokenConstraintSchema = z
-  .union([
-    z.object({
+// Normalize pre-retention constraints so migration states remain explicit.
+const HookTokenConstraintSchema = z.union([
+  z.object({
+    ...HookTokenConstraintFields,
+    type: z.literal('current'),
+    tag: z.string().nullable(),
+    eventId: z.string(),
+  }),
+  z
+    .object({
       ...HookTokenConstraintFields,
-      type: z.enum(['current', 'pinned']),
-      tag: z.string().nullable().optional(),
-      eventId: z.string(),
-    }),
-    z.object({
-      ...HookTokenConstraintFields,
-      type: z.undefined().optional(),
-      tag: z.string().nullable().optional(),
       eventId: z.string().optional(),
-    }),
-  ])
-  .transform((constraint) => {
-    const { eventId, tag, type: _storedType, ...fields } = constraint;
-    if (eventId && tag !== undefined) {
-      return { ...fields, type: 'current' as const, eventId, tag };
-    }
-    if (eventId) {
-      return { ...fields, type: 'legacy-pinned' as const, eventId };
-    }
-    return { ...fields, type: 'legacy' as const };
-  });
+    })
+    .transform(({ eventId, ...constraint }) =>
+      eventId
+        ? { ...constraint, type: 'legacy-pinned' as const, eventId }
+        : { ...constraint, type: 'legacy' as const }
+    ),
+]);
 
 export type HookTokenConstraint = z.infer<typeof HookTokenConstraintSchema>;
 export type CurrentHookTokenConstraint = Extract<
@@ -64,11 +56,11 @@ export async function readHookTokenConstraint(
   }
 }
 
-export function hasFutureTokenExpiration(
-  constraint: Pick<HookTokenConstraint, 'tokenExpiresAt'>
+export function hasRemainingTokenRetention(
+  constraint: Pick<HookTokenConstraint, 'tokenRetentionUntil'>
 ): boolean {
   return (
-    constraint.tokenExpiresAt !== undefined &&
-    Date.now() < constraint.tokenExpiresAt.getTime()
+    constraint.tokenRetentionUntil !== undefined &&
+    Date.now() < constraint.tokenRetentionUntil.getTime()
   );
 }

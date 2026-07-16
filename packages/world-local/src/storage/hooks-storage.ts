@@ -44,7 +44,7 @@ import {
 import {
   type CurrentHookTokenConstraint,
   type HookTokenConstraint,
-  hasFutureTokenExpiration,
+  hasRemainingTokenRetention,
   hookTokenConstraintPath,
   readHookTokenConstraint,
 } from './hook-token-constraint.js';
@@ -101,7 +101,7 @@ async function isHookCreatedEventAvailable(
 ): Promise<boolean> {
   if (
     !(await isRunActive(basedir, event.runId, tag)) &&
-    !hasFutureTokenExpiration(event.eventData)
+    !hasRemainingTokenRetention(event.eventData)
   ) {
     return false;
   }
@@ -131,7 +131,7 @@ function hookTokenConstraintFromEvent(
     runId: event.runId,
     tag: tag ?? null,
     eventId: event.eventId,
-    tokenExpiresAt: event.eventData.tokenExpiresAt,
+    tokenRetentionUntil: event.eventData.tokenRetentionUntil,
   };
 }
 
@@ -255,7 +255,7 @@ export function createHooksStorage(
     if (!hook || hook.token !== token) return { type: 'recover' };
     if (
       !(await isRunActive(basedir, hook.runId, ownerTag)) &&
-      !hasFutureTokenExpiration(constraint)
+      !hasRemainingTokenRetention(constraint)
     ) {
       return { type: 'unavailable' };
     }
@@ -382,7 +382,7 @@ export async function deleteAllHooksForRun(
       const constraint = await readHookTokenConstraint(constraintPath);
       const owned =
         constraint?.runId === hook.runId && constraint.hookId === hook.hookId;
-      if (owned && hasFutureTokenExpiration(constraint)) return true;
+      if (owned && hasRemainingTokenRetention(constraint)) return true;
       if (owned) await deleteJSON(constraintPath);
       return false;
     });

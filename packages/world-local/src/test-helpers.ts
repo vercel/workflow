@@ -116,7 +116,7 @@ export async function createHook(
   data: {
     hookId: string;
     token: string;
-    tokenExpiresAt?: Date;
+    tokenRetentionUntil?: Date;
     metadata?: SerializedData;
   }
 ): Promise<Hook> {

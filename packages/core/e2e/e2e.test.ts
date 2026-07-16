@@ -2051,11 +2051,11 @@ describe('e2e', () => {
     !isLocalDeployment() ||
       process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres'
   )(
-    'hookTokenExpirationWorkflow - terminal Hook cannot resume and its token stays unavailable',
+    'hookMinRetentionWorkflow - terminal Hook cannot resume and its token stays unavailable',
     { timeout: 60_000 },
     async () => {
-      const token = `expires-${Math.random().toString(36).slice(2)}`;
-      const owner = await start(await e2e('hookTokenExpirationWorkflow'), [
+      const token = `retained-${Math.random().toString(36).slice(2)}`;
+      const owner = await start(await e2e('hookMinRetentionWorkflow'), [
         token,
         60_000,
       ]);
@@ -2068,7 +2068,7 @@ describe('e2e', () => {
         (error: unknown) => HookNotFoundError.is(error)
       );
 
-      const duplicate = await start(await e2e('hookTokenExpirationWorkflow'), [
+      const duplicate = await start(await e2e('hookMinRetentionWorkflow'), [
         token,
         60_000,
       ]);

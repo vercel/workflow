@@ -2234,7 +2234,7 @@ describe('Storage', () => {
         const hook1 = await createHook(storage, testRunId, {
           hookId: 'hook_1',
           token,
-          tokenExpiresAt: new Date(Date.now() + 60_000),
+          tokenRetentionUntil: new Date(Date.now() + 60_000),
         });
 
         expect(hook1.token).toBe(token);
@@ -2270,7 +2270,7 @@ describe('Storage', () => {
         await createHook(storage, testRunId, {
           hookId: 'hook_retained_owner',
           token,
-          tokenExpiresAt: new Date(Date.now() + 60_000),
+          tokenRetentionUntil: new Date(Date.now() + 60_000),
         });
 
         await updateRun(storage, testRunId, 'run_completed', {
@@ -2303,24 +2303,24 @@ describe('Storage', () => {
         });
       });
 
-      it('uses expiration only after the owning run is terminal', async () => {
-        const token = 'expiration-boundary-token';
-        const tokenExpiresAt = new Date(Date.now() + 60_000);
+      it('uses retention only after the owning run is terminal', async () => {
+        const token = 'retention-boundary-token';
+        const tokenRetentionUntil = new Date(Date.now() + 60_000);
         const replacement = await createRun(storage, {
-          deploymentId: 'deployment-expiration-boundary',
-          workflowName: 'expiration-boundary',
+          deploymentId: 'deployment-retention-boundary',
+          workflowName: 'retention-boundary',
           input: new Uint8Array(),
         });
         await createHook(storage, testRunId, {
-          hookId: 'hook_expiration_boundary_owner',
+          hookId: 'hook_retention_boundary_owner',
           token,
-          tokenExpiresAt,
+          tokenRetentionUntil,
         });
 
-        vi.spyOn(Date, 'now').mockReturnValue(tokenExpiresAt.getTime());
+        vi.spyOn(Date, 'now').mockReturnValue(tokenRetentionUntil.getTime());
         const conflict = await storage.events.create(replacement.runId, {
           eventType: 'hook_created',
-          correlationId: 'hook_expiration_boundary_conflict',
+          correlationId: 'hook_retention_boundary_conflict',
           eventData: { token },
         });
         expect(conflict.event.eventType).toBe('hook_conflict');
@@ -2332,31 +2332,31 @@ describe('Storage', () => {
           name: 'HookNotFoundError',
         });
         const hook = await createHook(storage, replacement.runId, {
-          hookId: 'hook_expiration_boundary_replacement',
+          hookId: 'hook_retention_boundary_replacement',
           token,
         });
         expect(hook.runId).toBe(replacement.runId);
       });
 
-      it('admits only one hook when a token expires concurrently', async () => {
-        const token = 'concurrent-expiry-token';
-        const tokenExpiresAt = new Date();
+      it('admits one Hook across workers after retention ends', async () => {
+        const token = 'concurrent-retention-token';
+        const tokenRetentionUntil = new Date();
         const workerA = createStorage(testDir);
         const workerB = createStorage(testDir);
         const contenderA = await createRun(workerA, {
-          deploymentId: 'deployment-concurrent-expiry-a',
-          workflowName: 'concurrent-expiry-a',
+          deploymentId: 'deployment-concurrent-retention-a',
+          workflowName: 'concurrent-retention-a',
           input: new Uint8Array(),
         });
         const contenderB = await createRun(workerB, {
-          deploymentId: 'deployment-concurrent-expiry-b',
-          workflowName: 'concurrent-expiry-b',
+          deploymentId: 'deployment-concurrent-retention-b',
+          workflowName: 'concurrent-retention-b',
           input: new Uint8Array(),
         });
         await createHook(workerA, testRunId, {
-          hookId: 'hook_concurrent_expiry_owner',
+          hookId: 'hook_concurrent_retention_owner',
           token,
-          tokenExpiresAt,
+          tokenRetentionUntil,
         });
         await updateRun(workerA, testRunId, 'run_completed', {
           output: new Uint8Array(),
@@ -2365,12 +2365,12 @@ describe('Storage', () => {
         const results = await Promise.all([
           workerA.events.create(contenderA.runId, {
             eventType: 'hook_created',
-            correlationId: 'hook_concurrent_expiry_a',
+            correlationId: 'hook_concurrent_retention_a',
             eventData: { token },
           }),
           workerB.events.create(contenderB.runId, {
             eventType: 'hook_created',
-            correlationId: 'hook_concurrent_expiry_b',
+            correlationId: 'hook_concurrent_retention_b',
             eventData: { token },
           }),
         ]);
@@ -3452,24 +3452,24 @@ describe('Storage', () => {
       // Hook and event. The same owner must finish creation, not conflict.
       const token = 'orphaned-claim-token';
       const hookId = 'hook_orphan_1';
-      const tokenExpiresAt = new Date('2026-08-01T00:00:00.000Z');
+      const tokenRetentionUntil = new Date(Date.now() + 60_000);
 
       await writeJSON(hookTokenConstraintPath(testDir, token), {
         token,
         hookId,
         runId: testRunId,
-        tokenExpiresAt,
+        tokenRetentionUntil,
       });
 
       await expect(storage.hooks.get(hookId)).rejects.toThrow(
         /not found|HookNotFoundError/i
       );
 
-      // The retry cannot extend the expiration stored by the first attempt.
+      // A retry cannot extend the retention stored by the first attempt.
       const hook = await createHook(storage, testRunId, {
         hookId,
         token,
-        tokenExpiresAt: new Date('2026-09-01T00:00:00.000Z'),
+        tokenRetentionUntil: new Date(Date.now() + 120_000),
       });
       expect(hook.hookId).toBe(hookId);
       expect(hook.token).toBe(token);
@@ -3489,7 +3489,7 @@ describe('Storage', () => {
       );
       expect(created).toEqual([
         expect.objectContaining({
-          eventData: expect.objectContaining({ tokenExpiresAt }),
+          eventData: expect.objectContaining({ tokenRetentionUntil }),
         }),
       ]);
       expect(conflicts).toHaveLength(0);

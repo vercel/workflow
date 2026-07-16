@@ -77,7 +77,7 @@ import {
 import {
   type CurrentHookTokenConstraint,
   type HookTokenConstraint,
-  hasFutureTokenExpiration,
+  hasRemainingTokenRetention,
   hookTokenConstraintPath,
   readHookTokenConstraint,
 } from './hook-token-constraint.js';
@@ -419,7 +419,7 @@ async function findRunAcrossTags(
 
 /**
  * A disposed Hook releases its token immediately. Otherwise the token stays
- * reserved while its run is active or its configured expiration is future.
+ * reserved while its run is active or its minimum retention has not elapsed.
  */
 async function getHookTokenRelease(
   basedir: string,
@@ -449,7 +449,7 @@ async function getHookTokenRelease(
   if (await isHookDisposalCommitted(basedir, constraint.hookId, ownerTag)) {
     return { type: 'release', ownerTag };
   }
-  if (hasFutureTokenExpiration(constraint)) return { type: 'retain' };
+  if (hasRemainingTokenRetention(constraint)) return { type: 'retain' };
 
   owningRun ??= await readJSONWithFallback(
     basedir,
@@ -1631,7 +1631,7 @@ export function createEventsStorage(
             runId: effectiveRunId,
             tag: tag ?? null,
             eventId,
-            tokenExpiresAt: hookData.tokenExpiresAt,
+            tokenRetentionUntil: hookData.tokenRetentionUntil,
           };
           const reservation = await reserveHookToken(basedir, nextConstraint);
 
@@ -1714,7 +1714,7 @@ export function createEventsStorage(
                 ...data,
                 eventData: {
                   ...data.eventData,
-                  tokenExpiresAt: constraint.tokenExpiresAt,
+                  tokenRetentionUntil: constraint.tokenRetentionUntil,
                 },
                 runId: effectiveRunId,
                 eventId,

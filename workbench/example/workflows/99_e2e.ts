@@ -748,17 +748,17 @@ export async function hookGetConflictThenStepParallelWorkflow(
 
 /**
  * Keeps its token reserved after this run ends. The Hook is intentionally left
- * undisposed so duplicates continue to receive a conflict until it expires.
+ * undisposed so duplicates continue to receive a conflict during retention.
  */
-export async function hookTokenExpirationWorkflow(
+export async function hookMinRetentionWorkflow(
   token: string,
-  expiresInMs: number
+  minRetentionMs: number
 ) {
   'use workflow';
 
   const hook = createHook({
     token,
-    experimental_expires: expiresInMs,
+    experimental_minRetention: minRetentionMs,
   });
   const conflict = await hook.getConflict();
   if (conflict) {

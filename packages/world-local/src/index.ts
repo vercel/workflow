@@ -70,6 +70,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   return {
     specVersion: SPEC_VERSION_CURRENT,
+    capabilities: { hookRetention: { active: true } },
     ...queue,
     ...storage,
     ...instrumentObject('world.streams', {
