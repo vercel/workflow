@@ -64,7 +64,6 @@ export async function withFileLock<T>(
     stale: 30_000,
     retries: {
       forever: true,
-      maxRetryTime: 15_000,
       minTimeout: 10,
       maxTimeout: 100,
     },
