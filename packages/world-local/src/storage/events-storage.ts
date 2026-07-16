@@ -51,6 +51,7 @@ import {
   listJSONFiles,
   paginatedFileSystemQuery,
   readJSON,
+  readJSONLenient,
   readJSONWithFallback,
   resolveWithinBase,
   stripTag,
@@ -89,18 +90,6 @@ import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
 
 /**
- * Per-step in-process async mutex. Serializes concurrent `events.create` calls
- * that target the same step, so that the "check terminal state, then write step
- * entity + event" sequence is atomic. Without this, two concurrent step_started
- * calls can both pass the not-terminal check and both write step_started events
- * — or a step_started can land in the log after step_completed has already
- * written, producing unconsumed events on replay.
- *
- * Duplicate step_started events for a non-terminal step are still allowed
- * (retries legitimately re-start a step), only writes to an already-terminal
- * step are rejected.
- */
-/**
  * Sidecar recovery marker that pins a canonical `hook_created`
  * eventId for a legacy token claim — one written by a version of
  * this storage that did not yet persist `eventId` inline in the
@@ -132,14 +121,7 @@ type HookTokenRelease =
 async function readHookRecoveryMarker(
   markerPath: string
 ): Promise<z.infer<typeof HookRecoveryMarkerSchema> | null> {
-  try {
-    return await readJSON(markerPath, HookRecoveryMarkerSchema);
-  } catch (error) {
-    if (error instanceof SyntaxError || error instanceof z.ZodError) {
-      return null;
-    }
-    throw error;
-  }
+  return readJSONLenient(markerPath, HookRecoveryMarkerSchema);
 }
 
 /**

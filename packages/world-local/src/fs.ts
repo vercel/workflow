@@ -413,6 +413,20 @@ export async function readJSON<T>(
   }
 }
 
+/** Read JSON, treating malformed persistence data as absent. */
+export async function readJSONLenient<T>(
+  filePath: string,
+  decoder: z.ZodType<T>
+): Promise<T | null> {
+  try {
+    return await readJSON(filePath, decoder);
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError)
+      return null;
+    throw error;
+  }
+}
+
 export async function readBuffer(filePath: string): Promise<Buffer> {
   const content = await fs.readFile(filePath);
   return content;
@@ -507,7 +521,7 @@ interface PaginatedFileSystemQueryConfig<T> {
   cachedItems?: ReadonlyMap<string, T>;
   filePrefix?: string;
   fileIdFilter?: (fileId: string) => boolean;
-  filter?: (item: T) => boolean;
+  filter?: (item: T) => boolean | Promise<boolean>;
   sortOrder?: 'asc' | 'desc';
   limit?: number;
   cursor?: string;
@@ -647,7 +661,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     for (const item of loadedBatch) {
       if (!item) continue;
       // Apply custom filter early if provided
-      if (filter && !filter(item)) continue;
+      if (filter && !(await filter(item))) continue;
 
       // Double-check cursor filtering with actual createdAt from JSON
       // (in case ULID timestamp differs from stored createdAt)

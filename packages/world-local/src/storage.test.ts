@@ -2267,7 +2267,7 @@ describe('Storage', () => {
 
       it('rebuilds a retained Hook and keeps its token unavailable', async () => {
         const token = 'retained-token';
-        const hookId = 'hook_retained_owner';
+        const hookId = 'hook_0_retained_owner';
         const tokenRetentionUntil = new Date(Date.now() + 60_000);
         await createHook(storage, testRunId, {
           hookId,
@@ -2309,6 +2309,11 @@ describe('Storage', () => {
           hook: undefined,
         });
 
+        await createHook(storage, duplicate.runId, {
+          hookId: 'hook_1_live',
+          token: 'live-token',
+        });
+
         vi.spyOn(Date, 'now').mockReturnValue(tokenRetentionUntil.getTime());
         await expect(storage.hooks.getByToken(token)).rejects.toMatchObject({
           name: 'HookNotFoundError',
@@ -2316,8 +2321,11 @@ describe('Storage', () => {
         await expect(storage.hooks.get(hookId)).rejects.toMatchObject({
           name: 'HookNotFoundError',
         });
-        await expect(storage.hooks.list({})).resolves.toMatchObject({
-          data: [],
+        await expect(
+          storage.hooks.list({ pagination: { limit: 1 } })
+        ).resolves.toMatchObject({
+          data: [{ hookId: 'hook_1_live' }],
+          hasMore: false,
         });
         await expect(
           createHook(storage, duplicate.runId, {
@@ -2467,6 +2475,9 @@ describe('Storage', () => {
         const lockPath = hookDisposeLockPath(testDir, 'hook_1');
         await fs.mkdir(path.dirname(lockPath), { recursive: true });
         await fs.writeFile(lockPath, '');
+        await expect(storage.hooks.getByToken(token)).rejects.toMatchObject({
+          name: 'HookNotFoundError',
+        });
 
         const run2 = await createRun(storage, {
           deploymentId: 'deployment-456',
@@ -3471,7 +3482,7 @@ describe('Storage', () => {
       expect(result.hook).toBeUndefined();
     });
 
-    it('should recover an orphaned hook token claim with no matching hook entity', async () => {
+    it('recovers an orphaned Hook constraint without extending retention', async () => {
       // Simulate a crash after reserving the token but before persisting the
       // Hook and event. The same owner must finish creation, not conflict.
       const token = 'orphaned-claim-token';

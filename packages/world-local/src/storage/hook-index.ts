@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { Event, HookCreatedEvent } from '@workflow/world';
+import type { HookCreatedEvent } from '@workflow/world';
 import { EventSchema, HookSchema } from '@workflow/world';
 import { z } from 'zod';
 import {
@@ -10,6 +10,7 @@ import {
   isUntagged,
   listJSONFiles,
   readJSON,
+  readJSONLenient,
   resolveWithinBase,
   stripTag,
   taggedPath,
@@ -74,17 +75,6 @@ export function isVisibleToTag(
   tag: string | undefined
 ): boolean {
   return tag ? isUntagged(fileId) || hasTag(fileId, tag) : isUntagged(fileId);
-}
-
-async function readEventLenient(filePath: string): Promise<Event | null> {
-  try {
-    return await readJSON(filePath, EventSchema);
-  } catch (error) {
-    if (error instanceof SyntaxError || error instanceof z.ZodError) {
-      return null;
-    }
-    throw error;
-  }
 }
 
 /**
@@ -247,8 +237,9 @@ async function ensureHookIndexesImpl(basedir: string): Promise<void> {
     await listJSONFiles(eventsDir),
     32,
     async (fileId) => {
-      const event = await readEventLenient(
-        path.join(eventsDir, `${fileId}.json`)
+      const event = await readJSONLenient(
+        path.join(eventsDir, `${fileId}.json`),
+        EventSchema
       );
       if (!event || event.eventType !== 'hook_created') return;
       if (typeof event.correlationId !== 'string') return;
@@ -364,7 +355,7 @@ export async function findNewestIndexedHookCreatedEvent(
     } catch {
       continue;
     }
-    const event = await readEventLenient(eventPath);
+    const event = await readJSONLenient(eventPath, EventSchema);
     if (event?.eventType === 'hook_created' && matches(event)) {
       return { event, tag };
     }

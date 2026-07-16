@@ -99,15 +99,15 @@ async function isHookCreatedEventAvailable(
   basedir: string,
   { event, tag }: IndexedHookCreatedEvent
 ): Promise<boolean> {
-  if (
-    !(await isRunActive(basedir, event.runId, tag)) &&
-    !hasRemainingTokenRetention(event.eventData)
-  ) {
-    return false;
-  }
   // Disposal is committed before its event, so the lock closes the Hook even
   // when a crash leaves the entity and event-log cleanup incomplete.
-  return !(await isHookDisposalCommitted(basedir, event.correlationId, tag));
+  if (await isHookDisposalCommitted(basedir, event.correlationId, tag)) {
+    return false;
+  }
+  return (
+    hasRemainingTokenRetention(event.eventData) ||
+    (await isRunActive(basedir, event.runId, tag))
+  );
 }
 
 async function findHookCreatedEvent(
@@ -253,9 +253,12 @@ export function createHooksStorage(
       ownerTag
     );
     if (!hook || hook.token !== token) return { type: 'recover' };
+    if (await isHookDisposalCommitted(basedir, hook.hookId, ownerTag)) {
+      return { type: 'unavailable' };
+    }
     if (
-      !(await isRunActive(basedir, hook.runId, ownerTag)) &&
-      !hasRemainingTokenRetention(constraint)
+      !hasRemainingTokenRetention(constraint) &&
+      !(await isRunActive(basedir, hook.runId, ownerTag))
     ) {
       return { type: 'unavailable' };
     }
@@ -322,12 +325,15 @@ export function createHooksStorage(
       limit: params.pagination?.limit,
       cursor: params.pagination?.cursor,
       filePrefix: undefined, // Hooks don't have ULIDs, so we can't optimize by filename
-      filter: (hook) => {
-        // Filter by runId if provided
-        if (params.runId && hook.runId !== params.runId) {
-          return false;
+      filter: async (hook) => {
+        if (params.runId && hook.runId !== params.runId) return false;
+        try {
+          await get(hook.hookId);
+          return true;
+        } catch (error) {
+          if (HookNotFoundError.is(error)) return false;
+          throw error;
         }
-        return true;
       },
       getCreatedAt: () => {
         // Hook files don't have ULID timestamps in filename, so return null
@@ -338,18 +344,9 @@ export function createHooksStorage(
       getId: (hook) => hook.hookId,
     });
 
-    const data: Hook[] = [];
-    for (const hook of result.data) {
-      try {
-        data.push(await get(hook.hookId, { resolveData }));
-      } catch (error) {
-        if (!HookNotFoundError.is(error)) throw error;
-      }
-    }
-
     return {
       ...result,
-      data,
+      data: result.data.map((hook) => filterHookData(hook, resolveData)),
     };
   }
 

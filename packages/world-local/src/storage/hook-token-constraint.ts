@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { z } from 'zod';
-import { readJSON } from '../fs.js';
+import { readJSONLenient } from '../fs.js';
 import { hashToken } from './helpers.js';
 
 /** Path of the file that reserves a Hook token across processes. */
@@ -47,13 +47,7 @@ export type CurrentHookTokenConstraint = Extract<
 export async function readHookTokenConstraint(
   path: string
 ): Promise<HookTokenConstraint | null> {
-  try {
-    return await readJSON(path, HookTokenConstraintSchema);
-  } catch (error) {
-    if (error instanceof SyntaxError || error instanceof z.ZodError)
-      return null;
-    throw error;
-  }
+  return readJSONLenient(path, HookTokenConstraintSchema);
 }
 
 export function hasRemainingTokenRetention(
