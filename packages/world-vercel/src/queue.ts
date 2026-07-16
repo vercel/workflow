@@ -505,9 +505,14 @@ export function createQueue(config?: APIConfig): Queue {
         // with jitter so an outage or poison message cannot hot-loop or
         // redrive in lockstep. Workflow handlers are event-sourced and must
         // remain idempotent because queue retries can happen close together.
-        retry: (_error, { deliveryCount }) => ({
-          afterSeconds: getHandlerErrorRetryAfterSeconds(deliveryCount),
-        }),
+        retry: (error, { messageId, deliveryCount }) => {
+          const afterSeconds = getHandlerErrorRetryAfterSeconds(deliveryCount);
+          console.error(
+            `[workflow] Queue handler failed for message "${messageId}" on delivery attempt ${deliveryCount}; retrying in ${afterSeconds}s:`,
+            error
+          );
+          return { afterSeconds };
+        },
       }
     );
 
