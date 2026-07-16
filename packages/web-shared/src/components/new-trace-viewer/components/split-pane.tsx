@@ -36,8 +36,8 @@ export function SplitPane({
   scrollContainerRef,
 }: SplitPaneProps) {
   const parts = Children.toArray(children);
-  if (parts.length < 2 || parts.length > 3) {
-    throw new Error('SplitPane expects two or three children');
+  if (parts.length !== 3) {
+    throw new Error('SplitPane expects exactly three children');
   }
   const [start, end, endOverlay] = parts;
 
@@ -126,18 +126,16 @@ export function SplitPane({
         </div>
         {end}
       </div>
-      {endOverlay ? (
-        <div
-          className="pointer-events-none absolute inset-x-0 bottom-3 z-[5] grid"
-          style={{ gridTemplateColumns: colTemplate }}
-        >
-          <div />
-          <div />
-          <div className="flex min-w-0 items-center justify-between gap-3 pl-4 pr-3">
-            {endOverlay}
-          </div>
+      <div
+        className="pointer-events-none absolute inset-x-0 bottom-3 z-[5] grid"
+        style={{ gridTemplateColumns: colTemplate }}
+      >
+        <div />
+        <div />
+        <div className="flex min-w-0 items-center justify-between gap-3 pl-4 pr-3">
+          {endOverlay}
         </div>
-      ) : null}
+      </div>
     </div>
   );
 }
