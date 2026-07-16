@@ -30,9 +30,9 @@ related:
 | **AI streaming** | Native **durable, resumable** streaming (survives reconnect, cold start, replay) | Live SSE / WebSocket only — no buffering or replay of missed tokens |
 | **Versioning** | Runs pinned to immutable deployment | Immutable runtime versions + endpoints; in-flight sessions stay on their launch version (deployment/rollback only — no replay) |
 | **Portability** | Apache-2.0; runs anywhere Node runs; World abstraction | AWS-only; agent *code* is portable, the operating platform is not |
-| **Compliance** | Inherits your platform | HIPAA-eligible; SOC/PCI/ISO self-assessed but not third-party certified; not FedRAMP-authorized |
+| **Compliance** | Inherits your platform | HIPAA-eligible; SOC/PCI/ISO not third-party certified; not FedRAMP-authorized |
 | **Pricing** | SDK free; pay your platform | Per-module consumption (vCPU-hr / GB-hr, etc.) + model inference billed via Bedrock; no minimums |
-| **Maturity** | v5 (GA) | GA, including the Harness, Policy, and Evaluations modules |
+| **Maturity** | Built and maintained by Vercel | Backed by AWS |
 
 ## The core distinction: durability
 

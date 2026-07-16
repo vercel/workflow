@@ -24,7 +24,7 @@ related:
 | --- | --- | --- |
 | **Category** | Open-source durable-functions SDK; managed on Vercel or self-hosted | Durable-execution platform; Temporal Cloud or self-hosted cluster |
 | **Durability model** | Event log + deterministic replay (`"use workflow"` orchestrators, `"use step"` functions) | Event-sourced replay (Workflows + Activities). Same model — `"use workflow"` ≈ Workflow, `"use step"` ≈ Activity |
-| **Languages** | TypeScript / JS (Python beta) | Go, Java, TypeScript, Python, .NET, PHP, Ruby (7 GA SDKs) |
+| **Languages** | TypeScript / JS (Python beta) | Go, Java, TypeScript, Python, .NET, PHP, Ruby (7 SDKs) |
 | **Where execution runs** | Orchestration + execution + observability co-located on your platform; private networking and E2E encryption out of the box on Vercel | **You run and scale your own Workers.** Temporal Cloud hosts orchestration only; workers connect outbound over the public internet (PrivateLink optional) |
 | **Versioning** | Runs pinned to their immutable deployment — safe by default; opt-in `deploymentId: 'latest'` to upgrade | Editing workflow code can break in-flight runs (non-determinism errors); evolve safely via patch APIs or Worker Versioning (keep old worker fleets draining) |
 | **AI SDK & agents** | `WorkflowAgent` ships in the AI SDK; durable agent loop; **native resumable streaming** (`getWritable`/`getReadable`, `WorkflowChatTransport`) | First-party `@temporalio/ai-sdk` and "Workflow Streams" — both **Public Preview**; streaming rides on Signals/Updates (batched, history-bound) |
@@ -33,7 +33,7 @@ related:
 | **Portability** | Apache-2.0 SDK; World abstraction swaps storage/queue/streams independently | MIT server; pluggable persistence (Cassandra/Postgres/MySQL), but an opinionated monolithic backend you run or pay for |
 | **Pricing** | SDK free; pay your platform (Vercel: events + data) or just your infra if self-hosted | Self-host = free software; Temporal Cloud bills per Action (from $50/M) + storage |
 | **Limits** | No run/sleep cap; 10K steps, 50 MB payload, 2 GB/run (Vercel World) | No run cap (Continue-As-New for long histories); event history capped at 51,200 events / 50 MB; 2 MB payloads |
-| **Maturity** | v5 (GA) | GA, OSS (a fork of Uber's Cadence); proven at Stripe, Netflix, OpenAI, and others |
+| **Maturity** | Built and maintained by Vercel | Open-source (a fork of Uber's Cadence); proven at Stripe, Netflix, OpenAI, and others |
 
 ## The biggest difference: what you operate
 

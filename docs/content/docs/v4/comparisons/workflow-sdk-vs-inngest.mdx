@@ -25,14 +25,14 @@ related:
 | **Durability model** | Event log + deterministic replay | **Step-result memoization** (each `step.run` runs once; completed steps are skipped) — not whole-function replay |
 | **Trigger model** | Direct `start(workflow, [args])` (import the function) | Event bus (`inngest.send`) + cron; loosely coupled publishers/consumers |
 | **Where execution runs** | Orchestration + execution co-located on your platform | **Your code runs on your infra**; Inngest invokes it per step over HTTP (Serve) or a persistent worker connection (Connect, in public beta) |
-| **Languages** | TypeScript / JS (Python beta) | TypeScript (GA); Python & Go (production, pre-1.0) |
+| **Languages** | TypeScript / JS (Python beta) | TypeScript; Python & Go (production, pre-1.0) |
 | **Versioning** | Runs pinned to immutable deployment | Tracked by step-ID hashes — hot-edit functions, but editing a step's logic under the **same ID** reuses the old memoized result for in-flight runs; rename the ID or route a new function by timestamp for rewrites |
 | **AI & streaming** | `WorkflowAgent` in the AI SDK; native resumable streaming | Native AI SDK via `step.ai.wrap`; **AgentKit** multi-agent framework and durable **Realtime** (`step.realtime.publish`) + `useAgent` hook — both Developer Preview |
 | **Security** | VM-sandboxed code; per-run E2E encryption | Runs on your infra; signed requests; first-party E2E encryption middleware (TS + Python); SOC 2 Type II, HIPAA add-on |
-| **Portability** | Apache-2.0; World abstraction; **self-host supported** | Engine open source (SSPL → Apache 2.0 after 3 yrs); self-host via single Go binary + Postgres, but **self-hosting is community/best-effort** — no support SLA, and the `inngest start` binary is Beta (SaaS is the default) |
+| **Portability** | Apache-2.0; World abstraction; **self-host supported** | Engine open source (SSPL); self-host via single Go binary + Postgres, but **self-hosting is community/best-effort** — no support SLA, and the `inngest start` binary is Beta (SaaS is the default) |
 | **Pricing** | SDK free; pay your platform | Per-execution: billed for the run **plus each step plus retries**; Pro from $99/mo, then ~$50 per 1M executions |
 | **Limits** | 50 MB payload; 2 GB/run; no step cap | 1,000 steps/function; 4 MiB step payload; 32 MiB run state; runs up to 366 days |
-| **Maturity** | v5 (GA) | TS GA; ~$30M+ raised |
+| **Maturity** | Built and maintained by Vercel | Venture-backed (~$30M+ raised) |
 
 ## Topology: co-located vs. invoked-over-HTTP
 
