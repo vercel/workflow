@@ -2267,20 +2267,27 @@ describe('Storage', () => {
 
       it('rebuilds a retained Hook and keeps its token unavailable', async () => {
         const token = 'retained-token';
+        const hookId = 'hook_retained_owner';
+        const tokenRetentionUntil = new Date(Date.now() + 60_000);
         await createHook(storage, testRunId, {
-          hookId: 'hook_retained_owner',
+          hookId,
           token,
-          tokenRetentionUntil: new Date(Date.now() + 60_000),
+          tokenRetentionUntil,
         });
 
-        await updateRun(storage, testRunId, 'run_completed', {
-          output: new Uint8Array(),
-        });
+        await storage.events.create(testRunId, { eventType: 'run_cancelled' });
         // Simulate cache loss: the retained event must rebuild the reservation.
         await fs.rm(hookTokenConstraintPath(testDir, token));
         await expect(storage.hooks.getByToken(token)).resolves.toMatchObject({
           runId: testRunId,
           token,
+        });
+        await expect(storage.hooks.get(hookId)).resolves.toMatchObject({
+          runId: testRunId,
+          token,
+        });
+        await expect(storage.hooks.list({})).resolves.toMatchObject({
+          data: [{ runId: testRunId, token }],
         });
 
         const duplicate = await createRun(storage, {
@@ -2301,6 +2308,23 @@ describe('Storage', () => {
           },
           hook: undefined,
         });
+
+        vi.spyOn(Date, 'now').mockReturnValue(tokenRetentionUntil.getTime());
+        await expect(storage.hooks.getByToken(token)).rejects.toMatchObject({
+          name: 'HookNotFoundError',
+        });
+        await expect(storage.hooks.get(hookId)).rejects.toMatchObject({
+          name: 'HookNotFoundError',
+        });
+        await expect(storage.hooks.list({})).resolves.toMatchObject({
+          data: [],
+        });
+        await expect(
+          createHook(storage, duplicate.runId, {
+            hookId: 'hook_retained_replacement',
+            token,
+          })
+        ).resolves.toMatchObject({ runId: duplicate.runId, token });
       });
 
       it('uses retention only after the owning run is terminal', async () => {

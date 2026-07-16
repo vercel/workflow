@@ -273,11 +273,19 @@ export function createHooksStorage(
     if (!hook) {
       throw new HookNotFoundError(hookId);
     }
+    if (await isHookDisposalCommitted(basedir, hookId, tag)) {
+      throw new HookNotFoundError(hookId);
+    }
     const resolveData = params?.resolveData || DEFAULT_RESOLVE_DATA_OPTION;
-    return filterHookData(
-      { ...hook, isWebhook: hook.isWebhook ?? true },
-      resolveData
-    );
+    if (await isRunActive(basedir, hook.runId, tag)) {
+      return filterHookData(
+        { ...hook, isWebhook: hook.isWebhook ?? true },
+        resolveData
+      );
+    }
+    const retained = await getByToken(hook.token);
+    if (retained.hookId !== hookId) throw new HookNotFoundError(hookId);
+    return filterHookData(retained, resolveData);
   }
 
   async function getByToken(token: string): Promise<Hook> {
@@ -330,10 +338,18 @@ export function createHooksStorage(
       getId: (hook) => hook.hookId,
     });
 
-    // Transform the data after pagination
+    const data: Hook[] = [];
+    for (const hook of result.data) {
+      try {
+        data.push(await get(hook.hookId, { resolveData }));
+      } catch (error) {
+        if (!HookNotFoundError.is(error)) throw error;
+      }
+    }
+
     return {
       ...result,
-      data: result.data.map((hook) => filterHookData(hook, resolveData)),
+      data,
     };
   }
 
