@@ -86,7 +86,7 @@ export function TraceShortcutHelper({
   };
 
   return (
-    <div className="group sticky bottom-3 z-10 ml-4 mb-3 hidden h-8 w-fit items-center gap-1 text-xs leading-none text-gray-900 @min-[480px]:flex">
+    <div className="group pointer-events-auto hidden h-8 w-fit items-center gap-1 text-xs leading-none text-gray-900 @min-[480px]:flex">
       <span
         aria-live="polite"
         aria-atomic="true"
