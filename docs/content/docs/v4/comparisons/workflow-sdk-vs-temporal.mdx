@@ -26,14 +26,14 @@ related:
 | **Durability model** | Event log + deterministic replay (`"use workflow"` orchestrators, `"use step"` functions) | Event-sourced replay (Workflows + Activities). Same model — `"use workflow"` ≈ Workflow, `"use step"` ≈ Activity |
 | **Languages** | TypeScript / JS (Python beta) | Go, Java, TypeScript, Python, .NET, PHP, Ruby (7 GA SDKs) |
 | **Where execution runs** | Orchestration + execution + observability co-located on your platform; private networking and E2E encryption out of the box on Vercel | **You run and scale your own Workers.** Temporal Cloud hosts orchestration only; workers connect outbound over the public internet (PrivateLink optional) |
-| **Versioning** | Runs pinned to their immutable deployment — safe by default; opt-in `deploymentId: 'latest'` to upgrade | Editing workflow code can break in-flight runs (non-determinism errors); evolve safely via patch APIs or Worker Versioning (now GA — keep old worker fleets draining) |
+| **Versioning** | Runs pinned to their immutable deployment — safe by default; opt-in `deploymentId: 'latest'` to upgrade | Editing workflow code can break in-flight runs (non-determinism errors); evolve safely via patch APIs or Worker Versioning (keep old worker fleets draining) |
 | **AI SDK & agents** | `WorkflowAgent` ships in the AI SDK; durable agent loop; **native resumable streaming** (`getWritable`/`getReadable`, `WorkflowChatTransport`) | First-party `@temporalio/ai-sdk` and "Workflow Streams" — both **Public Preview**; streaming rides on Signals/Updates (batched, history-bound) |
 | **Security** | VM-sandboxed workflow code + full-Node steps; per-run AES-256-GCM E2E encryption | Workers run your code on your infra (never enters Temporal's plane); client-side E2E via a Codec Server you operate. Cloud: SOC 2 II, HIPAA, GDPR |
-| **Performance** | No-penalty resume; serverless scale-to-zero (true suspension); up to 100K concurrency on Vercel | Highest *proven* throughput at scale; self-managed workers are long-running (the new Serverless Workers on AWS Lambda scale to zero — pre-release). Cloud namespace default 500 actions/sec (auto-scales) |
+| **Performance** | No-penalty resume; serverless scale-to-zero (true suspension); up to 100K concurrency on Vercel | Highest *proven* throughput at scale; self-managed workers are long-running (Serverless Workers on AWS Lambda scale to zero). Cloud namespace default 500 actions/sec (auto-scales) |
 | **Portability** | Apache-2.0 SDK; World abstraction swaps storage/queue/streams independently | MIT server; pluggable persistence (Cassandra/Postgres/MySQL), but an opinionated monolithic backend you run or pay for |
-| **Pricing** | SDK free; pay your platform (Vercel: events + data) or just your infra if self-hosted | Self-host = free software; Temporal Cloud bills per Action (from $50/M, plan minimums from $100/mo) + storage |
+| **Pricing** | SDK free; pay your platform (Vercel: events + data) or just your infra if self-hosted | Self-host = free software; Temporal Cloud bills per Action (from $50/M) + storage |
 | **Limits** | No run/sleep cap; 10K steps, 50 MB payload, 2 GB/run (Vercel World) | No run cap (Continue-As-New for long histories); event history capped at 51,200 events / 50 MB; 2 MB payloads |
-| **Maturity** | v4 GA / v5 beta | GA, OSS since 2019 (a fork of Uber's Cadence); proven at Stripe, Netflix, OpenAI, and others |
+| **Maturity** | v5 (GA) | GA, OSS (a fork of Uber's Cadence); proven at Stripe, Netflix, OpenAI, and others |
 
 ## The biggest difference: what you operate
 
@@ -45,14 +45,14 @@ With the Workflow SDK on Vercel, orchestration, execution, and observability are
 
 This is where the two differ most in day-to-day risk. Because both replay code against history, *changing* workflow code mid-flight is the hazard.
 
-- **Temporal:** simply editing a workflow can produce a non-determinism error that breaks or stalls open executions. You evolve safely with **patch APIs** (`patched()` / `GetVersion()`, which accumulate branch cruft) or **Worker Versioning** (now GA — Build IDs / Worker Deployments pin workflows to a build and keep the old worker fleet running until it drains). It works, but the burden is on you for every long-running workflow.
+- **Temporal:** simply editing a workflow can produce a non-determinism error that breaks or stalls open executions. You evolve safely with **patch APIs** (`patched()` / `GetVersion()`, which accumulate branch cruft) or **Worker Versioning** (Build IDs / Worker Deployments pin workflows to a build and keep the old worker fleet running until it drains). It works, but the burden is on you for every long-running workflow.
 - **Workflow SDK:** runs are **pinned to the immutable deployment that started them**. Shipping new code never touches in-flight runs — they keep replaying against the exact code they began on. Upgrading a run is explicit and opt-in (start it with `deploymentId: 'latest'`, or self-restart at a checkpoint). Safe by default, no patch branches, no draining worker fleets.
 
 ## AI agents and streaming
 
 Both target AI agents, but the integration depth differs. The Workflow SDK's `WorkflowAgent` is a first-class construct **inside the AI SDK** (`@ai-sdk/workflow`): the agent loop becomes a durable workflow, each tool `execute` marked `"use step"` is an auto-retried durable step, and partial output streams through [durable, resumable streams](/docs/ai/resumable-streams) that survive reconnects and cold starts.
 
-Temporal ships a first-party `@temporalio/ai-sdk` plugin and a "Workflow Streams" library, but both are still **Public Preview** as of July 2026, and streaming is built on Signals/Updates — every chunk is written to history, so it's batched rather than per-token.
+Temporal ships a first-party `@temporalio/ai-sdk` plugin and a "Workflow Streams" library, but both are **Public Preview**, and streaming is built on Signals/Updates — every chunk is written to history, so it's batched rather than per-token.
 
 ## Migrating from Temporal
 
@@ -115,4 +115,4 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 - **Polyglot workers.** The Workflow SDK is TypeScript-first (Python in beta). If you need Go/Java/etc. in the same orchestrator, Temporal remains the better fit.
 
 ---
-*Compiled from public documentation as of July 2026. Verify current Temporal pricing, limits, and preview-feature status against [temporal.io/docs](https://docs.temporal.io). Not based on head-to-head benchmarks.*
+*Compiled from public documentation. Verify current Temporal pricing, limits, and preview-feature status against [temporal.io/docs](https://docs.temporal.io). Not based on head-to-head benchmarks.*

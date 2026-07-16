@@ -30,10 +30,10 @@ related:
 | **Streaming** | Native durable, resumable streaming to clients | No native client streaming |
 | **Versioning** | Runs pinned to immutable deployment | Published versions are immutable; aliases route (≤2 versions) for canary/rollback; **in-flight executions keep their start-time definition** |
 | **Portability** | Apache-2.0; runs anywhere Node runs | Proprietary, AWS-only; ASL is AWS-specific — high lock-in |
-| **Pricing** | SDK free; pay your platform | **Standard:** $0.025 / 1K state transitions (4K/mo free forever). **Express:** $1 / M requests + GB-second duration |
+| **Pricing** | SDK free; pay your platform | **Standard:** $0.025 / 1K state transitions. **Express:** $1 / M requests + GB-second duration |
 | **Limits** | 50 MB payload; 2 GB/run; no duration cap | 256 KB payload between states; Standard 25K history events / 1 year; Express 5 minutes |
 | **AI** | `WorkflowAgent` in the AI SDK; durable streaming | Bedrock integration + a preview AgentCore "InvokeHarness" task; no native client streaming |
-| **Maturity** | v4 GA / v5 beta | GA since 2016 — very mature, heavy AWS adoption |
+| **Maturity** | v5 (GA) | GA; very mature, heavy AWS adoption |
 
 ## Code vs. JSON
 
@@ -103,4 +103,4 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 - **Per-state IAM roles.** Steps share the deployment's credentials; scope secrets at deploy time.
 
 ---
-*Compiled from public documentation as of July 2026. Step Functions pricing/limits are region-specific (figures are us-east-1); verify against [the AWS pricing page](https://aws.amazon.com/step-functions/pricing/). Not based on head-to-head benchmarks.*
+*Compiled from public documentation. Step Functions pricing/limits are region-specific (figures are us-east-1); verify against [the AWS pricing page](https://aws.amazon.com/step-functions/pricing/). Not based on head-to-head benchmarks.*
