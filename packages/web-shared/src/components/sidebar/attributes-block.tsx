@@ -37,7 +37,7 @@ const rowValueVariants = cva(
 );
 
 const rowCopyValueVariants = cva(
-  'flex min-w-0 items-center justify-end gap-1 text-copy-13 text-gray-1000',
+  'flex min-w-0 flex-1 items-center justify-end gap-1 overflow-hidden text-copy-13 text-gray-1000',
   {
     variants: {
       variant: {

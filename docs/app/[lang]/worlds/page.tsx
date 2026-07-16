@@ -157,7 +157,7 @@ export default async function WorldsPage() {
             </p>
             <div className="flex justify-center gap-3 mt-8">
               <Button asChild size="lg">
-                <Link href="/docs/deploying/building-a-world">
+                <Link href="/worlds/building-a-world">
                   World Interface Docs
                 </Link>
               </Button>

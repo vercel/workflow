@@ -57,6 +57,15 @@ export async function cleanupAttributes() {
 
 Attribute keys must be 1-256 characters, values must be strings up to 256 bytes, and each run can have up to 64 attributes. Keys that start with `$` are reserved for framework and library code.
 
+## Reserved keys
+
+When `start()` is called from inside a running workflow or step, the new run is automatically tagged with two reserved attributes:
+
+- `$parentRunId`: the run that started it.
+- `$rootRunId`: the root of the chain. It is inherited, so every run in a daisy chain or fan-out shares one root id.
+
+Top-level runs (started outside any workflow or step) are not tagged.
+
 ## Viewing attributes
 
 The run details panel in the observability UI shows the run's current attributes as key-value rows. Reserved `$`-prefixed keys are marked with a badge and sorted after user keys:

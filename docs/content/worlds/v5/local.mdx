@@ -6,8 +6,8 @@ summary: Set up the Local World for zero-config workflow development on your mac
 prerequisites:
   - /docs/deploying
 related:
-  - /docs/deploying/world/postgres-world
-  - /docs/deploying/world/vercel-world
+  - /worlds/postgres
+  - /worlds/vercel
 ---
 
 The Local World is bundled with `workflow` and used automatically during local development. No installation or configuration required.
@@ -38,7 +38,7 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 ## Configuration
 
-The local world works with zero configuration, but you can customize behavior through environment variables or programmatically via `createLocalWorld()`.
+The local world works with zero configuration, but you can customize behavior through environment variables or programmatically via `createWorld()`.
 
 ### `WORKFLOW_LOCAL_DATA_DIR`
 
@@ -56,21 +56,42 @@ Port resolution priority: `baseUrl` > `port` > `PORT` > auto-detected
 
 ### `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`
 
-Maximum number of concurrent queue workers. Default: `100`
+Maximum number of concurrent queue message handlers. Default: `1000`
+
+### `WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY`
+
+Maximum number of seconds a local queue message can stay hidden before the handler rechecks the run. Default: unlimited.
+
+### `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
+
+Whether pending and running runs found in the data directory are re-enqueued when the world starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`
+
+### `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
+
+Flush interval, in milliseconds, for buffered stream writes. Default: `10`.
 
 ### Programmatic configuration
 
-{/* @skip-typecheck: incomplete code sample */}
-```typescript title="workflow.config.ts" lineNumbers
-import { createLocalWorld } from "@workflow/world-local";
+Options passed to `createWorld()` take precedence over the environment variables above. Export the configured World from a module and point `WORKFLOW_TARGET_WORLD` at that module:
 
-const world = createLocalWorld({
+```typescript title="my-world.ts" lineNumbers
+import { createWorld } from "@workflow/world-local";
+
+export default createWorld({
   dataDir: "./custom-workflow-data",
   port: 5173,
   // baseUrl overrides port if set
   baseUrl: "https://local.example.com:3000",
+  recoverActiveRuns: true, // overrides WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS
+  streamFlushIntervalMs: 10, // overrides WORKFLOW_STREAM_FLUSH_INTERVAL_MS
 });
 ```
+
+```bash title=".env"
+WORKFLOW_TARGET_WORLD="./my-world.ts"
+```
+
+`createWorld()` also accepts `tag`, which scopes local storage files to a suffix. It is mainly used by test harnesses that share one `.workflow-data` directory.
 
 ## Limitations
 

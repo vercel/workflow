@@ -397,13 +397,10 @@ describe('createQueue', () => {
   describe('strict concurrency (WORKFLOW_SEQUENTIAL_REPLAYS)', () => {
     let originalDeploymentId: string | undefined;
     let originalStrict: string | undefined;
-    let originalSafeMode: string | undefined;
 
     beforeEach(() => {
       originalDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
       originalStrict = process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-      originalSafeMode = process.env.WORKFLOW_SAFE_MODE;
-      delete process.env.WORKFLOW_SAFE_MODE;
       process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
       mockSend.mockResolvedValue({ messageId: 'msg-123' });
     });
@@ -418,11 +415,6 @@ describe('createQueue', () => {
         process.env.WORKFLOW_SEQUENTIAL_REPLAYS = originalStrict;
       } else {
         delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-      }
-      if (originalSafeMode !== undefined) {
-        process.env.WORKFLOW_SAFE_MODE = originalSafeMode;
-      } else {
-        delete process.env.WORKFLOW_SAFE_MODE;
       }
     });
 
@@ -489,26 +481,6 @@ describe('createQueue', () => {
       });
 
       expect(mockSend.mock.calls[0][0]).toBe('__wkf_step_myStep');
-    });
-
-    it('WORKFLOW_SAFE_MODE=1 routes to per-run topics when the specific variable is unset', async () => {
-      delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-      process.env.WORKFLOW_SAFE_MODE = '1';
-
-      const queue = createQueue();
-      await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
-
-      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test_wrun_abc');
-    });
-
-    it('an explicit WORKFLOW_SEQUENTIAL_REPLAYS=0 wins over WORKFLOW_SAFE_MODE', async () => {
-      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '0';
-      process.env.WORKFLOW_SAFE_MODE = '1';
-
-      const queue = createQueue();
-      await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
-
-      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test');
     });
 
     it('gives inline step executions (flow topic + stepId) a per-step topic for full parallelism', async () => {
@@ -653,18 +625,26 @@ describe('createQueue', () => {
     it('should ask VQS to retry handler errors with bounded backoff', () => {
       mockHandleCallback.mockReturnValue(async () => new Response('ok'));
       const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+      const consoleErrorSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
 
       try {
         const queue = createQueue();
         queue.createQueueHandler('__wkf_workflow_', async () => undefined);
 
         const options = mockHandleCallback.mock.calls[0][1];
+        const handlerError = new Error('workflow server unavailable');
         expect(
-          options.retry(new Error('workflow server unavailable'), {
+          options.retry(handlerError, {
             messageId: 'msg-123',
             deliveryCount: 1,
           })
         ).toEqual({ afterSeconds: 1 });
+        expect(consoleErrorSpy).toHaveBeenLastCalledWith(
+          '[workflow] Queue handler failed for message "msg-123" on delivery attempt 1; retrying in 1s:',
+          handlerError
+        );
         expect(
           options.retry(new Error('workflow server unavailable'), {
             messageId: 'msg-123',
@@ -713,6 +693,7 @@ describe('createQueue', () => {
         ).toEqual({ afterSeconds: 96 });
       } finally {
         randomSpy.mockRestore();
+        consoleErrorSpy.mockRestore();
       }
     });
 

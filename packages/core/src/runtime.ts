@@ -3,6 +3,7 @@ import {
   CorruptedEventLogError,
   EntityConflictError,
   FatalError,
+  PreconditionFailedError,
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   type RunErrorCode,
@@ -17,6 +18,7 @@ import {
 import {
   type Event,
   getQueueTopicPrefix,
+  ROOT_RUN_ID_ATTRIBUTE,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -43,10 +45,13 @@ import {
   getWorkflowQueueName,
   handleHealthCheckMessage,
   loadWorkflowRunEvents,
+  type MutableEventLog,
   memoizeEncryptionKey,
   parseHealthCheckPayload,
   queueMessage,
+  stateUpdatedAtForCreate,
   withHealthCheck,
+  withPreconditionRetry,
 } from './runtime/helpers.js';
 import {
   handleReplayBudgetExhausted,
@@ -242,6 +247,17 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
     eventId: terminalRunEvent.eventId,
   });
   return true;
+}
+
+/**
+ * The lineage root of a loaded run: its `$rootRunId` attribute, or its own id
+ * when it is itself a root.
+ */
+function rootRunIdFrom(
+  attributes: Record<string, string> | undefined,
+  runId: string
+): string {
+  return attributes?.[ROOT_RUN_ID_ATTRIBUTE] ?? runId;
 }
 
 /**
@@ -591,6 +607,14 @@ export function workflowEntrypoint(
                   // cannot be measured wall-clock, so TTFS is not reported.
                   // Set once, on the first iteration's loaded snapshot.
                   let invocationStartedClean: boolean | undefined;
+                  // Epoch ms the `run_started` response was received/parsed
+                  // by the SDK — anchors RSFS (run_started → first step's
+                  // start POST). Set once, in the run_started setup below.
+                  // Under turbo, run_started is backgrounded rather than
+                  // awaited, so this is stamped at the point the run is
+                  // synthesized locally instead of the real response — see
+                  // StepLatencyTracking.rsfsAnchorMs.
+                  let runStartedReceivedAtMs: number | undefined;
                   // Wall-clock ms spent committing hook_created events before
                   // the first step ran, accumulated across suspension passes
                   // and subtracted from TTFS.
@@ -765,6 +789,7 @@ export function workflowEntrypoint(
                               workflowDeploymentId: bgRun.deploymentId,
                               workflowName,
                               workflowStartedAt: bgStartedAt,
+                              rootRunId: rootRunIdFrom(bgRun.attributes, runId),
                               stepId: incomingStepId,
                               stepName: incomingStepName,
                               runSpecVersion: bgRun.specVersion,
@@ -1001,6 +1026,11 @@ export function workflowEntrypoint(
                         updatedAt: now,
                       };
                       workflowStartedAt = +now;
+                      // See the `runStartedReceivedAtMs` declaration above:
+                      // turbo synthesizes the run before the real
+                      // `run_started` response lands, so anchor RSFS here
+                      // rather than at an actual response instant.
+                      runStartedReceivedAtMs = +now;
                       span?.setAttributes({
                         ...Attribute.WorkflowRunStatus('running'),
                         ...Attribute.WorkflowStartedAt(workflowStartedAt),
@@ -1019,6 +1049,8 @@ export function workflowEntrypoint(
                           );
                         }
                         workflowRun = result.run;
+                        // Anchors RSFS — see the declaration above.
+                        runStartedReceivedAtMs = Date.now();
 
                         // If the response includes events, use them to skip
                         // the initial events.list call and reduce TTFB.
@@ -1305,10 +1337,20 @@ export function workflowEntrypoint(
                         }));
 
                       for (const waitEvent of waitsToComplete) {
+                        const waitLog: MutableEventLog = {
+                          events,
+                          cursor: eventsCursor,
+                        };
                         try {
-                          await world.events.create(runId, waitEvent, {
-                            requestId,
-                          });
+                          await withPreconditionRetry(
+                            runId,
+                            waitLog,
+                            (stateUpdatedAt) =>
+                              world.events.create(runId, waitEvent, {
+                                requestId,
+                                stateUpdatedAt,
+                              })
+                          );
                         } catch (err) {
                           if (EntityConflictError.is(err)) {
                             runtimeLogger.info(
@@ -1321,6 +1363,9 @@ export function workflowEntrypoint(
                             continue;
                           }
                           throw err;
+                        } finally {
+                          // Reloads inside the guard may have advanced the cursor.
+                          eventsCursor = waitLog.cursor;
                         }
                       }
 
@@ -1436,7 +1481,13 @@ export function workflowEntrypoint(
                         replayMs: Date.now() - replayStart,
                       });
 
-                      // Workflow completed
+                      // Workflow completed. Send the snapshot but do NOT
+                      // reload-and-retry the create in place: `result` was
+                      // computed by this replay, so a stale (412) rejection must
+                      // force a *fresh replay* (which may observe the new event
+                      // and produce a different result), not re-commit the stale
+                      // result. The catch below lets PreconditionFailedError
+                      // propagate to the queue for re-invocation.
                       try {
                         // Turbo: a workflow that finishes with no steps reaches
                         // here before the backgrounded run_started; order the
@@ -1449,7 +1500,10 @@ export function workflowEntrypoint(
                             specVersion: SPEC_VERSION_CURRENT,
                             eventData: { output: result },
                           },
-                          { requestId }
+                          {
+                            requestId,
+                            stateUpdatedAt: stateUpdatedAtForCreate(events),
+                          }
                         );
                       } catch (err) {
                         if (
@@ -1471,10 +1525,36 @@ export function workflowEntrypoint(
                       return;
                     } catch (err) {
                       if (WorkflowSuspension.is(err)) {
+                        // Synchronous `runWorkflow` duration for THIS
+                        // suspension only — anchors the `finalSchedulingReplay`
+                        // telemetry field below (see
+                        // StepLatencyTracking.replayMs). This is the FINAL
+                        // replay pass, the one that reached and scheduled the
+                        // first step: valid rsfs paths can replay more than
+                        // once before the first step (e.g. a workflow-body
+                        // `setAttributes()` detour replays twice), and a
+                        // redelivery omits earlier invocations' replay work
+                        // entirely. This value is NOT accumulated across
+                        // those earlier passes, so it must not be read as
+                        // "the replay portion of rsfs" — rsfs covers the
+                        // whole run_started-to-first-step window;
+                        // finalSchedulingReplay covers only this last pass.
+                        // Captured here, before `handleSuspension`'s awaited
+                        // I/O, so it excludes that I/O.
+                        //
+                        // This duplicates what OTEL already captures on the
+                        // run/invocation span, but is collected as client
+                        // telemetry so the server can emit it as an
+                        // UNSAMPLED, full-population metric: workflow-server's
+                        // server spans are heavily sampled in production
+                        // (~7%), and client spans can't be filtered by SDK
+                        // version, so neither can serve as the dashboard's
+                        // exact TTFS decomposition.
+                        const replayDurationMs = Date.now() - replayStart;
                         runtimeLogger.debug('Workflow suspended', {
                           workflowRunId: runId,
                           loopIteration,
-                          replayMs: Date.now() - replayStart,
+                          replayMs: replayDurationMs,
                           steps: err.stepCount,
                           hooks: err.hookCount,
                           waits: err.waitCount,
@@ -1489,8 +1569,28 @@ export function workflowEntrypoint(
                           runtimeLogger.debug(suspensionMessage);
                         }
 
-                        // V2: handle suspension without queuing steps
+                        // V2: handle suspension without queuing steps.
+                        // Each event creation inside handleSuspension carries the
+                        // loaded snapshot's stateUpdatedAt and self-reloads on a
+                        // stale (412) rejection via the shared event log. We
+                        // guard per-create (rather than wrapping the whole call)
+                        // so a retry never re-issues an already-created event.
                         const suspensionStart = Date.now();
+                        // The snapshot refresh above always sets cachedEvents
+                        // before the replay can suspend. Re-narrow it for this
+                        // catch scope instead of defaulting to an empty array:
+                        // that fallback would silently disarm the precondition
+                        // guard (no snapshot sent) and let a mid-suspension
+                        // reload merge into a throwaway array.
+                        if (!cachedEvents) {
+                          throw new Error(
+                            'Invariant violation: workflow suspended before its event log was loaded'
+                          );
+                        }
+                        const suspensionLog: MutableEventLog = {
+                          events: cachedEvents,
+                          cursor: eventsCursor,
+                        };
                         let suspensionResult: Awaited<
                           ReturnType<typeof handleSuspension>
                         >;
@@ -1501,9 +1601,23 @@ export function workflowEntrypoint(
                             run: workflowRun,
                             span,
                             requestId,
+                            eventLog: suspensionLog,
                             runReadyBarrier,
                           });
                         } catch (suspensionError) {
+                          // A suspension create whose stale (412) rejection
+                          // survived the in-guard reload retries: schedule an
+                          // explicit immediate re-invocation (a rethrow relies
+                          // on redelivery of a message the turbo path already
+                          // acked — the run would stall for the queue's ~300s
+                          // default visibility timeout).
+                          if (PreconditionFailedError.is(suspensionError)) {
+                            runtimeLogger.warn(
+                              'Suspension event creation rejected as stale after reload retries; re-invoking run for a fresh replay',
+                              { workflowRunId: runId, loopIteration }
+                            );
+                            return await reinvoke(0);
+                          }
                           if (!FatalError.is(suspensionError)) {
                             // Transient failures propagate to the queue
                             // handler so the message is redelivered.
@@ -1579,6 +1693,7 @@ export function workflowEntrypoint(
                           });
                           return;
                         }
+                        eventsCursor = suspensionLog.cursor;
                         preStepBlockingMs += suspensionResult.hookCreationMs;
                         if (
                           suspensionResult.hasAttributeEvents &&
@@ -1994,6 +2109,8 @@ export function workflowEntrypoint(
                           runCreatedAtMs:
                             runIdCreatedAt(runId) ??
                             (turbo ? undefined : +workflowRun.createdAt),
+                          runStartedReceivedAtMs,
+                          replayMs: replayDurationMs,
                           preStepBlockingMs,
                           preStepBlockingBeforeAttrMs,
                           // This suspension's own hook/wait writes are not in
@@ -2021,6 +2138,10 @@ export function workflowEntrypoint(
                                     workflowRun.deploymentId,
                                   workflowName,
                                   workflowStartedAt,
+                                  rootRunId: rootRunIdFrom(
+                                    workflowRun.attributes,
+                                    runId
+                                  ),
                                   stepId: s.correlationId,
                                   stepName: s.stepName,
                                   runSpecVersion: workflowRun.specVersion,
@@ -2264,6 +2385,24 @@ export function workflowEntrypoint(
                           }
                         }
                       } else {
+                        // Stale-snapshot rejection of a result-bearing create
+                        // (run_completed sends the snapshot but is intentionally
+                        // NOT retried in place), or one that survived the
+                        // in-guard reload retries. Don't fail the run — schedule
+                        // an explicit immediate re-invocation so a fresh replay
+                        // observes the new event. Rethrowing instead would rely
+                        // on redelivery of the CURRENT message, which the turbo
+                        // path has already acked — empirically the run then
+                        // stalls for the queue's ~300s default visibility
+                        // timeout before completing.
+                        if (PreconditionFailedError.is(err)) {
+                          runtimeLogger.warn(
+                            'Event creation rejected as stale; re-invoking run for a fresh replay',
+                            { workflowRunId: runId, loopIteration }
+                          );
+                          return await reinvoke(0);
+                        }
+
                         // Transient infrastructure failures talking to the
                         // world (workflow-server) — an exhausted RetryAgent
                         // (UND_ERR_REQ_RETRY from a sustained 429/503 storm),

@@ -3,6 +3,7 @@ import { errors } from './errors.mjs';
 import { hooks } from './hooks.mjs';
 import { idempotency } from './idempotency.mjs';
 import { inlineExecution } from './inline-execution.mjs';
+import { lineage } from './lineage.mjs';
 import { nullByte } from './null-byte.mjs';
 
 export function createTestSuite(pkgName: string) {
@@ -12,4 +13,5 @@ export function createTestSuite(pkgName: string) {
   nullByte(pkgName);
   errors(pkgName);
   inlineExecution(pkgName);
+  lineage(pkgName);
 }

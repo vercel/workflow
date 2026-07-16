@@ -1,5 +1,17 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.35
+
+### Patch Changes
+
+- [#2950](https://github.com/vercel/workflow/pull/2950) [`0d5305b`](https://github.com/vercel/workflow/commit/0d5305b9df5658abe96c2d7efe07489b319cc77e) Thanks [@mitul-s](https://github.com/mitul-s)! - Use gray instead of amber for hook bars in the trace viewer.
+
+- [#2947](https://github.com/vercel/workflow/pull/2947) [`cbfe13b`](https://github.com/vercel/workflow/commit/cbfe13bb637d39cab9dea903975f52dda040a012) Thanks [@mitul-s](https://github.com/mitul-s)! - Give Metadata Token and Hook ID rows copy buttons with middle truncation.
+
+- Updated dependencies [[`a00d169`](https://github.com/vercel/workflow/commit/a00d16947085f8e94cf191c4d8850121cf201a94), [`1933e29`](https://github.com/vercel/workflow/commit/1933e294cf938fb2314f45047033f8720ccf442b), [`6b8efd5`](https://github.com/vercel/workflow/commit/6b8efd58ce4829648f410e483bf42935dc5dcd1e), [`fd107b9`](https://github.com/vercel/workflow/commit/fd107b9c33db397b513ef134f458a1083bde7d98)]:
+  - @workflow/core@5.0.0-beta.35
+  - @workflow/world@5.0.0-beta.21
+
 ## 5.0.0-beta.34
 
 ### Patch Changes

@@ -218,6 +218,47 @@ export async function getWorkflowRun(
   }
 }
 
+/**
+ * Retrieves a snapshot for each requested run ID. Delegates to
+ * `getWorkflowRun` for each ID and returns null for IDs that do not exist.
+ */
+export async function getWorkflowRuns(
+  ids: readonly string[],
+  params: GetWorkflowRunParams & { resolveData: 'none' },
+  config?: APIConfig
+): Promise<(WorkflowRunWithoutData | null)[]>;
+export async function getWorkflowRuns(
+  ids: readonly string[],
+  params?: GetWorkflowRunParams & { resolveData?: 'all' },
+  config?: APIConfig
+): Promise<(WorkflowRun | null)[]>;
+export async function getWorkflowRuns(
+  ids: readonly string[],
+  params?: GetWorkflowRunParams,
+  config?: APIConfig
+): Promise<(WorkflowRun | WorkflowRunWithoutData | null)[]>;
+export async function getWorkflowRuns(
+  ids: readonly string[],
+  params?: GetWorkflowRunParams,
+  config?: APIConfig
+): Promise<(WorkflowRun | WorkflowRunWithoutData | null)[]> {
+  const uniqueIds = [...new Set(ids)];
+  const runs = await Promise.all(
+    uniqueIds.map(async (id) => {
+      try {
+        return await getWorkflowRun(id, params, config);
+      } catch (error) {
+        if (error instanceof WorkflowRunNotFoundError) {
+          return null;
+        }
+        throw error;
+      }
+    })
+  );
+  const runById = new Map(uniqueIds.map((id, i) => [id, runs[i]]));
+  return ids.map((id) => runById.get(id) ?? null);
+}
+
 export async function cancelWorkflowRunV1(
   id: string,
   params: CancelWorkflowRunParams & { resolveData: 'none' },

@@ -213,6 +213,31 @@ export const StepTtfsMs = SemanticConvention<number>('step.ttfs_ms');
 export const StepStsoMs = SemanticConvention<number>('step.stso_ms');
 
 /**
+ * Client-measured run_started-to-first-step latency in milliseconds: the
+ * `run_started` response landing (or, under turbo, the local run synthesis
+ * instant) → this step's start POST being issued. A sub-window of ttfs that
+ * isolates replay overhead from the run-creation queue hop. Only present on
+ * the run's first step execution when it qualified for measurement (see
+ * runtime/step-latency.ts).
+ */
+export const StepRsfsMs = SemanticConvention<number>('step.rsfs_ms');
+
+/**
+ * Client-measured synchronous workflow-function replay duration in
+ * milliseconds, excluding awaited network I/O, of only the FINAL replay pass
+ * within the rsfs window — the pass that reached and scheduled the first
+ * step. Not accumulated across earlier pre-first-step passes (e.g. a
+ * workflow-body `setAttributes()` detour replays more than once, and a
+ * redelivery omits earlier invocations' work entirely), so this must not be
+ * read as "the replay portion of rsfs" — step.rsfs_ms covers the whole
+ * window. Only present alongside step.rsfs_ms and only for the run's first
+ * step (see runtime/step-latency.ts).
+ */
+export const StepFinalSchedulingReplayMs = SemanticConvention<number>(
+  'step.final_scheduling_replay_ms'
+);
+
+/**
  * Runtime startup-latency optimizations active for the ttfs/stso measurement
  * (e.g. 'turbo', 'lazyStepStart', 'optimisticStart').
  */

@@ -13,6 +13,11 @@ const proxy = createProxy({
       from: '/v5/cookbook/*path',
       to: '/[lang]/llms.mdx/v5/cookbook/*path',
     },
+    { from: '/worlds/*path', to: '/[lang]/llms.mdx/worlds/*path' },
+    {
+      from: '/v5/worlds/*path',
+      to: '/[lang]/llms.mdx/v5/worlds/*path',
+    },
   ],
 });
 

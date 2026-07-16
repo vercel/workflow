@@ -79,6 +79,9 @@ All errors extend [`WorkflowError`](/docs/api-reference/workflow-errors/workflow
     <Card href="/docs/api-reference/workflow-errors/entity-conflict-error" title="EntityConflictError">
         Thrown when a storage operation conflicts with the current entity state.
     </Card>
+    <Card href="/docs/api-reference/workflow-errors/precondition-failed-error" title="PreconditionFailedError">
+        Thrown when an event creation is rejected because the client's event-log snapshot is stale.
+    </Card>
     <Card href="/docs/api-reference/workflow-errors/too-early-error" title="TooEarlyError">
         Thrown when a request is made before the system is ready to process it.
     </Card>
