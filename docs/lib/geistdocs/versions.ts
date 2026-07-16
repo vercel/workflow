@@ -60,19 +60,17 @@ export function buildVersionUrl(
   pathname: string,
   targetVersion: DocsVersion
 ): string {
-  // Shared routes have no versioned equivalent — unchanged.
-  if (
-    !pathname.includes('/docs') &&
-    !pathname.includes('/cookbook') &&
-    !pathname.includes('/worlds')
-  ) {
-    return pathname;
-  }
-
   const segments = pathname.split('/').filter(Boolean);
   // Structural segments are path tokens that are never locale prefixes.
   const isStructural = (s: string | undefined) =>
     s === 'docs' || s === 'v5' || s === 'cookbook' || s === 'worlds';
+
+  // Versioned routes carry a structural token at the root or right after a
+  // locale segment; everything else is shared and returned unchanged.
+  if (!isStructural(segments[0]) && !isStructural(segments[1])) {
+    return pathname;
+  }
+
   const localeSegments =
     segments[0] && !isStructural(segments[0]) ? segments.slice(0, 1) : [];
   let rest = segments.slice(localeSegments.length);

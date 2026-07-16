@@ -1,4 +1,5 @@
 import { rewriteCookbookUrlForVersion } from './cookbook-source';
+import { hasPathPrefix } from './path-prefix';
 
 /**
  * Rewrite an href authored against the raw unversioned URL spaces
@@ -13,7 +14,10 @@ export function rewriteHrefForVersion<T>(href: T, versionPrefix: string): T {
   }
 
   let rewritten = rewriteCookbookUrlForVersion(href, versionPrefix);
-  if (rewritten.startsWith('/docs') || rewritten.startsWith('/worlds')) {
+  if (
+    hasPathPrefix(rewritten, '/docs') ||
+    hasPathPrefix(rewritten, '/worlds')
+  ) {
     rewritten = `${versionPrefix}${rewritten}`;
   }
 

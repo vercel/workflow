@@ -6,6 +6,7 @@ import {
 import type { Node, Root } from 'fumadocs-core/page-tree';
 import { v4docs, v5docs, worldsV4Docs, worldsV5Docs } from '@/.source/server';
 import { config } from './config';
+import { hasPathPrefix, replacePathPrefix } from './path-prefix';
 import { resolveSectionChildren } from './section-children';
 
 type Source = GeistdocsSourceBundle['source'];
@@ -16,15 +17,6 @@ const DOCS_PREFIX = '/docs';
 const WORLDS_PREFIX = '/worlds';
 const LOCAL_DOCS_LINK_TARGET_RE =
   /(\]\(|\[[^\]\n]+\]:\s*|(?:href|src)=["'])(\/(?:docs|worlds)(?:[^\s)"']*)?)/g;
-
-const hasPathPrefix = (url: string, prefix: string) =>
-  url === prefix ||
-  url.startsWith(`${prefix}/`) ||
-  url.startsWith(`${prefix}#`) ||
-  url.startsWith(`${prefix}?`);
-
-const replacePathPrefix = (url: string, prefix: string, replacement: string) =>
-  `${replacement}${url.slice(prefix.length)}`;
 
 const rewriteLocalDocsUrlForVersion = (url: string, versionPrefix: string) => {
   if (hasPathPrefix(url, COOKBOOK_DOCS_PREFIX)) {
