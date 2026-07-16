@@ -309,14 +309,16 @@ export function isInlineOwnershipEnabled(): boolean {
  * suspensions (no hooks/waits/attribute writes); any other suspension, or any
  * divergence between the live VM's consumed prefix and the authoritative log,
  * makes the continuation bail out and the loop falls back to a full replay in
- * a fresh VM. Worst case is therefore identical to today's behavior.
+ * a fresh VM. Worst case is therefore identical to the from-scratch replay path.
  *
- * `WORKFLOW_VM_CONTINUATION=1` (or `true`) opts in. Default OFF.
+ * Default **ON** so CI and benchmarks exercise (and measure) the continuation
+ * path. `WORKFLOW_VM_CONTINUATION=0` (or `false`) is the kill switch that
+ * reverts to rebuilding the VM and replaying from scratch on every pass.
  */
 export function isVmContinuationEnabled(): boolean {
   const raw = process.env.WORKFLOW_VM_CONTINUATION;
-  if (raw === undefined || raw === '') return false;
-  return raw === '1' || raw.toLowerCase() === 'true';
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
 }
 
 /**

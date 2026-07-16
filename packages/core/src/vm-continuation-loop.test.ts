@@ -156,8 +156,8 @@ describe('VM continuation through the inline replay loop', () => {
     vi.clearAllMocks();
   });
 
-  it('rebuilds the VM once per replay when continuation is OFF (baseline)', async () => {
-    delete process.env.WORKFLOW_VM_CONTINUATION;
+  it('rebuilds the VM once per replay under the kill switch (WORKFLOW_VM_CONTINUATION=0)', async () => {
+    process.env.WORKFLOW_VM_CONTINUATION = '0';
     const { vmBuilds, output } = await drive('wrun_cont_off');
     expect(output).toBeInstanceOf(Uint8Array);
     // A 2-step sequential workflow suspends twice then completes → >1 replay,
@@ -165,13 +165,14 @@ describe('VM continuation through the inline replay loop', () => {
     expect(vmBuilds).toBeGreaterThan(1);
   });
 
-  it('builds the VM once and resumes it when continuation is ON', async () => {
-    // Baseline (continuation OFF) to compare the dehydrated result against.
-    delete process.env.WORKFLOW_VM_CONTINUATION;
+  it('builds the VM once and resumes it when continuation is ON (the default)', async () => {
+    // Baseline via the kill switch, to compare the dehydrated result against.
+    process.env.WORKFLOW_VM_CONTINUATION = '0';
     const off = await drive('wrun_cont_on_baseline_off');
     createContextSpy.mockClear();
 
-    process.env.WORKFLOW_VM_CONTINUATION = '1';
+    // Unset → continuation is ON by default.
+    delete process.env.WORKFLOW_VM_CONTINUATION;
     const on = await drive('wrun_cont_on');
 
     expect(on.output).toBeInstanceOf(Uint8Array);
