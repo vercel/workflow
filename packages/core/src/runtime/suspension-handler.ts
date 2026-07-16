@@ -261,11 +261,13 @@ export async function handleSuspension({
   );
 
   if (
-    hooksNeedingCreation.some((item) => item.tokenExpiresAt !== undefined) &&
-    world.capabilities?.hookTtl?.active !== true
+    hooksNeedingCreation.some(
+      (item) => item.tokenRetentionUntil !== undefined
+    ) &&
+    world.capabilities?.hookRetention?.active !== true
   ) {
     throw new FatalError(
-      'The configured World does not support `experimental_expires` for Hooks.'
+      'The configured World does not support `experimental_minRetention` for Hooks.'
     );
   }
 
@@ -378,7 +380,7 @@ export async function handleSuspension({
               correlationId: queueItem.correlationId,
               eventData: {
                 token: queueItem.token,
-                tokenExpiresAt: queueItem.tokenExpiresAt,
+                tokenRetentionUntil: queueItem.tokenRetentionUntil,
                 metadata: hookMetadata,
                 isWebhook: queueItem.isWebhook ?? false,
                 ...(queueItem.isSystem && { isSystem: true }),

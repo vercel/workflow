@@ -33,7 +33,7 @@ A World connects workflows to the infrastructure that powers them. The World int
 {/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
 interface WorldCapabilities {
-  hookTtl?: {
+  hookRetention?: {
     active: boolean;
   };
 }
@@ -47,7 +47,7 @@ interface World extends Storage, Queue, Streamer {
 }
 ```
 
-The optional `capabilities` object advertises additional behavior. Set `hookTtl.active` to `true` only when the World implements Hook token expiration. The optional `start()` method initializes background tasks (for example, queue polling). The optional `close()` method releases resources like connection pools and listeners. The optional `getEncryptionKeyForRun()` method returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
+The optional `capabilities` object advertises additional behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention. The optional `start()` method initializes background tasks (for example, queue polling). The optional `close()` method releases resources like connection pools and listeners. The optional `getEncryptionKeyForRun()` method returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
 
 ## The Event Log Model
 
@@ -102,7 +102,7 @@ interface Storage {
 
 **Hook Tokens:** Hook tokens must be unique. If a `hook_created` event conflicts with an active Hook or a token still reserved after its run ended, return a `hook_conflict` event and include the owner's run ID as `eventData.conflictingRunId`.
 
-**Automatic Hook Cleanup:** When a run ends, remove its live Hooks. Make each token available unless its `tokenExpiresAt` is still in the future. A `hook_disposed` event always makes the token available immediately.
+**Automatic Hook Cleanup:** When a run ends, remove its live Hooks. Make each token available unless its `tokenRetentionUntil` is still in the future. A `hook_disposed` event always makes the token available immediately.
 
 ## Queue Interface
 

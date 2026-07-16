@@ -1173,17 +1173,17 @@ describe('createCreateHook', () => {
     }
   });
 
-  it('evaluates hook token expiration with the same duration parser as sleep', () => {
+  it('evaluates minimum retention with the same duration parser as sleep', () => {
     const ctx = setupWorkflowContext([]);
     const createHook = createCreateHook(ctx);
     const dateNow = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
     try {
-      createHook({ experimental_expires: 1_000 });
+      createHook({ experimental_minRetention: 1_000 });
 
       const queueItem = ctx.invocationsQueue.values().next().value;
       expect(queueItem?.type).toBe('hook');
       if (queueItem?.type === 'hook') {
-        expect(queueItem.tokenExpiresAt).toEqual(new Date(1_001_000));
+        expect(queueItem.tokenRetentionUntil).toEqual(new Date(1_001_000));
       }
     } finally {
       dateNow.mockRestore();
@@ -1192,15 +1192,15 @@ describe('createCreateHook', () => {
 
   it.each([
     {
-      name: 'uses the persisted deadline',
+      name: 'uses the persisted retention deadline',
       eventData: {
         token: 'test-token',
-        tokenExpiresAt: new Date('2026-07-15T00:00:00.000Z'),
+        tokenRetentionUntil: new Date('2026-07-15T00:00:00.000Z'),
       },
       expected: new Date('2026-07-15T00:00:00.000Z'),
     },
     {
-      name: 'keeps an old event without an expiration time unchanged',
+      name: 'keeps an old event without a retention deadline unchanged',
       eventData: { token: 'test-token' },
       expected: undefined,
     },
@@ -1218,7 +1218,7 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook({
       token: 'test-token',
-      experimental_expires: '30d',
+      experimental_minRetention: '30d',
     });
 
     await expect(hook.getConflict()).resolves.toBeNull();
@@ -1226,17 +1226,17 @@ describe('createCreateHook', () => {
     const queueItem = ctx.invocationsQueue.values().next().value;
     expect(queueItem?.type).toBe('hook');
     if (queueItem?.type === 'hook') {
-      expect(queueItem.tokenExpiresAt).toEqual(expected);
+      expect(queueItem.tokenRetentionUntil).toEqual(expected);
     }
   });
 
-  it('rejects token expiration for a webhook hook', () => {
+  it('rejects minimum retention for a webhook hook', () => {
     const ctx = setupWorkflowContext([]);
     const createHook = createCreateHook(ctx);
 
     expect(() =>
-      createHook({ isWebhook: true, experimental_expires: '30d' })
-    ).toThrow('Webhook hooks do not support `experimental_expires`.');
+      createHook({ isWebhook: true, experimental_minRetention: '30d' })
+    ).toThrow('Webhook hooks do not support `experimental_minRetention`.');
     expect(ctx.invocationsQueue.size).toBe(0);
   });
 

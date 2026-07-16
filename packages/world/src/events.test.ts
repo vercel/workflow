@@ -1,21 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { CreateEventSchema, EventSchema } from './events';
 
-describe('hook_created token expiration', () => {
-  it('coerces tokenExpiresAt to a Date', () => {
+describe('hook_created token retention', () => {
+  it('coerces tokenRetentionUntil to a Date', () => {
     const parsed = CreateEventSchema.parse({
       eventType: 'hook_created',
       correlationId: 'hook_1',
       specVersion: 5,
       eventData: {
         token: 'order:123',
-        tokenExpiresAt: '2026-08-01T00:00:00.000Z',
+        tokenRetentionUntil: '2026-08-01T00:00:00.000Z',
       },
     });
 
     expect(parsed.eventType).toBe('hook_created');
     if (parsed.eventType === 'hook_created') {
-      expect(parsed.eventData.tokenExpiresAt).toEqual(
+      expect(parsed.eventData.tokenRetentionUntil).toEqual(
         new Date('2026-08-01T00:00:00.000Z')
       );
     }

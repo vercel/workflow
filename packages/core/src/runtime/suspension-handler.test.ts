@@ -34,22 +34,22 @@ function createWorld(
 }
 
 describe('handleSuspension', () => {
-  it('persists when a hook token becomes reusable on hook_created', async () => {
+  it('persists the token retention deadline on hook_created', async () => {
     const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
       event,
     }));
     const world = createWorld(eventsCreate, {
-      hookTtl: { active: true },
+      hookRetention: { active: true },
     });
-    const tokenExpiresAt = new Date('2026-08-01T00:00:00.000Z');
+    const tokenRetentionUntil = new Date('2026-08-01T00:00:00.000Z');
     const pending = new Map([
       [
-        'hook_retained',
+        'hook_with_retention',
         {
           type: 'hook' as const,
-          correlationId: 'hook_retained',
+          correlationId: 'hook_with_retention',
           token: 'order:123',
-          tokenExpiresAt,
+          tokenRetentionUntil,
         },
       ],
     ]);
@@ -66,7 +66,7 @@ describe('handleSuspension', () => {
         eventType: 'hook_created',
         eventData: expect.objectContaining({
           token: 'order:123',
-          tokenExpiresAt,
+          tokenRetentionUntil,
         }),
       }),
       expect.anything()
@@ -75,21 +75,21 @@ describe('handleSuspension', () => {
 
   it.each([
     ['missing', undefined],
-    ['inactive', { hookTtl: { active: false } }],
+    ['inactive', { hookRetention: { active: false } }],
   ] satisfies [
     string,
     World['capabilities'],
-  ][])('rejects hook expiration when the capability is %s', async (_state, capabilities) => {
+  ][])('rejects hook retention when the capability is %s', async (_state, capabilities) => {
     const eventsCreate = vi.fn();
     const world = createWorld(eventsCreate, capabilities);
     const pending = new Map([
       [
-        'hook_expiring',
+        'hook_with_retention',
         {
           type: 'hook' as const,
-          correlationId: 'hook_expiring',
+          correlationId: 'hook_with_retention',
           token: 'order:123',
-          tokenExpiresAt: new Date('2026-08-01T00:00:00.000Z'),
+          tokenRetentionUntil: new Date('2026-08-01T00:00:00.000Z'),
         },
       ],
     ]);
@@ -101,7 +101,7 @@ describe('handleSuspension', () => {
         run,
       })
     ).rejects.toThrow(
-      'The configured World does not support `experimental_expires` for Hooks.'
+      'The configured World does not support `experimental_minRetention` for Hooks.'
     );
     expect(eventsCreate).not.toHaveBeenCalled();
   });

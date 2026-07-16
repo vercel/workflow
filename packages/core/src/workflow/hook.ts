@@ -75,20 +75,20 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     if (
       options.isWebhook === true &&
-      options.experimental_expires !== undefined
+      options.experimental_minRetention !== undefined
     ) {
       throw new Error(
-        'Webhook hooks do not support `experimental_expires`. Use a non-webhook `createHook()` with `resumeHook()`.'
+        'Webhook hooks do not support `experimental_minRetention`. Use a non-webhook `createHook()` with `resumeHook()`.'
       );
     }
 
     // Generate hook ID and token
     const correlationId = `hook_${ctx.generateUlid()}`;
     const token = options.token ?? ctx.generateNanoid();
-    const tokenExpiresAt =
-      options.experimental_expires === undefined
+    const tokenRetentionUntil =
+      options.experimental_minRetention === undefined
         ? undefined
-        : parseDurationToDate(options.experimental_expires);
+        : parseDurationToDate(options.experimental_minRetention);
 
     // Add hook creation to invocations queue (using Map for O(1) operations)
     const isWebhook = options.isWebhook ?? false;
@@ -97,7 +97,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       type: 'hook',
       correlationId,
       token,
-      tokenExpiresAt,
+      tokenRetentionUntil,
       metadata: options.metadata,
       isWebhook,
     });
@@ -180,7 +180,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         const queueItem = ctx.invocationsQueue.get(correlationId);
         if (queueItem && queueItem.type === 'hook') {
           queueItem.hasCreatedEvent = true;
-          queueItem.tokenExpiresAt = event.eventData.tokenExpiresAt;
+          queueItem.tokenRetentionUntil = event.eventData.tokenRetentionUntil;
         }
         hasCreated = true;
 

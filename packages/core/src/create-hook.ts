@@ -137,8 +137,8 @@ export interface HookOptions {
   token?: string;
 
   /**
-   * **Experimental.** Keeps this Hook's token unavailable until both the run
-   * has ended and the configured expiration time has passed.
+   * **Experimental.** Keeps this Hook's token unavailable for at least the
+   * configured time after `createHook()` runs.
    *
    * Accepts the same values as `sleep()`: a duration string, a number of
    * milliseconds, or an absolute `Date`. Relative durations start when
@@ -159,11 +159,11 @@ export interface HookOptions {
    * ```ts
    * const hook = createHook({
    *   token: `order:${orderId}`,
-   *   experimental_expires: '30d',
+   *   experimental_minRetention: '30d',
    * });
    * ```
    */
-  experimental_expires?: StringValue | Date | number;
+  experimental_minRetention?: StringValue | Date | number;
 
   /**
    * Additional user-defined data to include with the hook payload.
@@ -197,7 +197,10 @@ export interface HookOptions {
 }
 
 export interface WebhookOptions
-  extends Omit<HookOptions, 'token' | 'isWebhook' | 'experimental_expires'> {
+  extends Omit<
+    HookOptions,
+    'token' | 'isWebhook' | 'experimental_minRetention'
+  > {
   /**
    * If set to a `Response` object, the webhook will automatically
    * respond with the specified response.

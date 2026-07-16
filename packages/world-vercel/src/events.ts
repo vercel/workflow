@@ -136,7 +136,7 @@ interface SplitEventData {
     resumeAt?: Date;
     retryAfter?: Date;
     hookToken?: string;
-    hookTokenExpiresAt?: Date;
+    hookTokenRetentionUntil?: Date;
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
     errorCode?: string;
@@ -188,7 +188,7 @@ type MetaSourceField =
   | 'resumeAt'
   | 'retryAfter'
   | 'token'
-  | 'tokenExpiresAt'
+  | 'tokenRetentionUntil'
   | 'isWebhook'
   | 'isSystem'
   | 'errorCode'
@@ -291,8 +291,8 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   if (typeof eventData.token === 'string') {
     meta.hookToken = eventData.token;
   }
-  if (eventData.tokenExpiresAt instanceof Date) {
-    meta.hookTokenExpiresAt = eventData.tokenExpiresAt;
+  if (eventData.tokenRetentionUntil instanceof Date) {
+    meta.hookTokenRetentionUntil = eventData.tokenRetentionUntil;
   }
   if (typeof eventData.isWebhook === 'boolean') {
     meta.hookIsWebhook = eventData.isWebhook;

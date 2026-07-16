@@ -149,7 +149,7 @@ export async function POST(request: Request) {
 This avoids creating a new run only after the first run has registered its hook. Because `start()` returns before the run body executes and calls `createHook()`, two concurrent requests can both observe "no hook yet" and each call `start()`. The race is resolved inside the workflow body, where the losing run observes `getConflict()` resolving with the active owner and returns without doing duplicate-sensitive work — and the route detects it by comparing the resumed hook's `runId` against the run it just started, without waiting for either run to finish. A native API for atomically starting a run and registering a hook is in the works. Until then, model recovery inside the workflow by checking `hook.getConflict()`.
 </Callout>
 
-This coordinates active runs by default: the token becomes available when its workflow ends. Set `experimental_expires` to keep it unavailable to late duplicates. The Hook itself still ends with the workflow and cannot be resumed. See [`createHook()` expiration](/docs/api-reference/workflow/create-hook#set-when-another-hook-can-use-the-token) for examples and supported values.
+This coordinates active runs by default: the token becomes available when its workflow ends. Set `experimental_minRetention` to keep it unavailable to late duplicates. The Hook itself still ends with the workflow and cannot be resumed. See [`createHook()` minimum retention](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) for examples and supported values.
 
 ### Conflict-handling strategies
 
@@ -207,7 +207,7 @@ export async function processOrder(orderId: string) {
 }
 ```
 
-**Signal the owner instead of doing the work.** A conflict can refer to a finished run when `experimental_expires` is set, so check its status before sending data to its Hook:
+**Signal the owner instead of doing the work.** A conflict can refer to a finished run when `experimental_minRetention` is set, so check its status before sending data to its Hook:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -240,7 +240,7 @@ export async function processOrder(orderId: string, confirmed: boolean) {
 }
 ```
 
-**Supersede the owner.** With the default expiration, cancel the active run, then claim the released token. The retry loop covers the window where cancellation cleanup has not propagated yet:
+**Supersede the owner.** Without minimum retention, cancel the active run, then claim the released token. The retry loop covers the window where cancellation cleanup has not propagated yet:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -274,7 +274,7 @@ export async function processOrderNewestWins(orderId: string) {
 ```
 
 <Callout type="warn">
-This pattern does not work with `experimental_expires`: cancelling the old run does not make its token available early.
+This pattern does not work with `experimental_minRetention`: cancelling the old run does not make its token available early.
 </Callout>
 
 If duplicate requests should only reuse the active run without sending data, use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) as an advisory pre-check before calling `start()`. The workflow should still check `hook.getConflict()`, because the lookup and `start()` are not atomic.

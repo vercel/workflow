@@ -126,8 +126,8 @@ export interface CreateEventV4Input {
    *  the step entity for premature-delivery pacing and observability. */
   retryAfter?: Date;
   hookToken?: string;
-  /** Time after which another Hook can use the token. */
-  hookTokenExpiresAt?: Date;
+  /** Earliest time another Hook can use the token after the run ends. */
+  hookTokenRetentionUntil?: Date;
   hookIsWebhook?: boolean;
   hookIsSystem?: boolean;
   errorCode?: string;
@@ -253,8 +253,8 @@ function buildPostFrameMeta(
   if (input.resumeAt !== undefined) meta.resumeAt = input.resumeAt;
   if (input.retryAfter !== undefined) meta.retryAfter = input.retryAfter;
   if (input.hookToken !== undefined) meta.hookToken = input.hookToken;
-  if (input.hookTokenExpiresAt !== undefined) {
-    meta.hookTokenExpiresAt = input.hookTokenExpiresAt;
+  if (input.hookTokenRetentionUntil !== undefined) {
+    meta.hookTokenRetentionUntil = input.hookTokenRetentionUntil;
   }
   if (input.hookIsWebhook !== undefined)
     meta.hookIsWebhook = input.hookIsWebhook;

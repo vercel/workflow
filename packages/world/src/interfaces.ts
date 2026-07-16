@@ -275,8 +275,8 @@ export interface Storage {
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
 export interface WorldCapabilities {
-  /** Supports `experimental_expires` for Hooks. */
-  hookTtl?: {
+  /** Supports `experimental_minRetention` for Hooks. */
+  hookRetention?: {
     active: boolean;
   };
 }
