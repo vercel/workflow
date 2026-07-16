@@ -43,6 +43,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Default: disabled
 - Set `1` to enable an optimistic-concurrency guard for event creation: replay-context event creations send a `stateUpdatedAt` snapshot timestamp, and a backend that supports the guard rejects a creation with 412 ([`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error)) when a newer out-of-band event (a received hook or a completed step) was recorded after that snapshot.
 - On rejection the runtime reloads the event log and retries, falling back to a queue re-invocation with a fresh replay if it cannot catch up.
+- When enabled, the runtime also keeps the per-step event-log delta optimization (consuming the delta returned by a step's terminal write instead of issuing an extra `events.list` per step) active while the run has an open hook; without the guard, an open hook disables it.
 - Backends that do not support the guard ignore the snapshot.
 
 ## Inline execution
@@ -63,6 +64,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: enabled
 - Fast path for a run's first delivery.
+- Stops forcing optimistic inline step start once the run creates a hook or wait — unless `WORKFLOW_SEQUENTIAL_REPLAYS=1` serializes the run's orchestrator invocations (see [Vercel World](/worlds/vercel#workflow_sequential_replays)), in which case it stays active.
 - Set `0` or `false` to disable.
 
 ### `WORKFLOW_OPTIMISTIC_INLINE_START`

@@ -10,6 +10,7 @@ import {
   isInlineOwnershipEnabled,
   isOptimisticInlineStartEnabled,
   isOptimisticInlineStartExplicitlyDisabled,
+  isSequentialReplaysEnabled,
   isTurboEnabled,
   MAX_INLINE_OWNERSHIP_LEASE_SECONDS,
   MAX_INLINE_STEPS,
@@ -286,6 +287,35 @@ describe('isTurboEnabled', () => {
     expect(isTurboEnabled()).toBe(true);
     process.env.WORKFLOW_TURBO = 'yes';
     expect(isTurboEnabled()).toBe(true);
+  });
+});
+
+describe('isSequentialReplaysEnabled', () => {
+  const originalEnv = process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+    } else {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = originalEnv;
+    }
+  });
+
+  it('defaults to disabled when unset', () => {
+    delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+    expect(isSequentialReplaysEnabled()).toBe(false);
+  });
+
+  it('is enabled by exactly "1"', () => {
+    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+    expect(isSequentialReplaysEnabled()).toBe(true);
+  });
+
+  it('stays disabled for other values (mirrors @workflow/builders)', () => {
+    for (const value of ['', '0', 'true', 'yes']) {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = value;
+      expect(isSequentialReplaysEnabled()).toBe(false);
+    }
   });
 });
 

@@ -38,12 +38,14 @@ import {
   getMaxQueueDeliveries,
   getReplayDivergenceMaxRetries,
   isInlineOwnershipEnabled,
+  isSequentialReplaysEnabled,
   isTurboEnabled,
 } from './runtime/constants.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
+  isPreconditionGuardEnabled,
   loadWorkflowRunEvents,
   type MutableEventLog,
   memoizeEncryptionKey,
@@ -259,7 +261,7 @@ function rootRunIdFrom(
 }
 
 /**
- * Whether the run has any hook or wait that an out-of-band writer could
+ * Whether the run has a hook and/or wait that an out-of-band writer could
  * append an event for between an inline step's `step_completed` write and
  * the next replay — namely an open hook (a `hook_created` not yet
  * `hook_disposed`, which a webhook receiver can resolve with
@@ -267,15 +269,14 @@ function rootRunIdFrom(
  * `wait_completed`, which the wait timer can resolve with
  * `wait_completed`).
  *
- * This gates the inline-delta fast path. The delta returned by the
+ * This gates the inline-delta fast path (per kind — see the gate) and the
+ * turbo forced-optimistic-start latch. The delta returned by the
  * step-terminal write is the event log as of that write; it is consumed
  * on the NEXT loop iteration, so any event a concurrent writer appends in
  * that window would be present in a real `events.list` fetch but absent
- * from the stale delta. Missing such an event for one replay can durably
- * commit a scheduling decision (e.g. inline-executing the loser of a
- * `Promise.race([hook, step])`) that the eventual full replay cannot
- * consume — a `ReplayDivergenceError`. When no hook or wait is open, the
- * only out-of-band writer is cancellation, which is benign to observe one
+ * from the stale delta — the replay observes it one iteration later than
+ * the fetch path would. When no hook or wait is open, the only
+ * out-of-band writer is cancellation, which is benign to observe one
  * iteration late (the next entity write is rejected against the terminal
  * run and the run is already terminal), so the fast path is safe.
  *
@@ -283,7 +284,10 @@ function rootRunIdFrom(
  * step's terminal write and are therefore already inside the returned
  * delta.
  */
-function hasOpenHookOrWait(events: Event[]): boolean {
+function openHookAndWaitState(events: Event[]): {
+  openHook: boolean;
+  openWait: boolean;
+} {
   const disposedHookIds = new Set<string | undefined>();
   const completedWaitIds = new Set<string | undefined>();
   for (const e of events) {
@@ -292,21 +296,23 @@ function hasOpenHookOrWait(events: Event[]): boolean {
       completedWaitIds.add(e.correlationId);
     }
   }
+  let openHook = false;
+  let openWait = false;
   for (const e of events) {
     if (
       e.eventType === 'hook_created' &&
       !disposedHookIds.has(e.correlationId)
     ) {
-      return true;
-    }
-    if (
+      openHook = true;
+    } else if (
       e.eventType === 'wait_created' &&
       !completedWaitIds.has(e.correlationId)
     ) {
-      return true;
+      openWait = true;
     }
+    if (openHook && openWait) break;
   }
-  return false;
+  return { openHook, openWait };
 }
 
 /**
@@ -1977,6 +1983,12 @@ export function workflowEntrypoint(
                         // this the replay-budget check at the top of the
                         // next loop iteration would (incorrectly) charge
                         // the step body against the budget.
+                        // Open hooks/waits in the cumulative log, computed
+                        // once for the two gates below.
+                        const openHookWaitState = openHookAndWaitState(
+                          cachedEvents ?? []
+                        );
+
                         // Inline-delta fast path gate. We request the delta —
                         // and on the next iteration consume it in place of the
                         // events.list — only when ALL hold:
@@ -1986,25 +1998,44 @@ export function workflowEntrypoint(
                         //    the initial load).
                         //  - This is the clean single-step sequential case:
                         //    this suspension produced exactly one step and no
-                        //    hooks or waits (`err.{step,hook,wait}Count`), that
-                        //    one step is the lone pending step
-                        //    (`pendingSteps.length === 1`) and the lone inline
-                        //    step (`lazyInlineSteps.length === 1` — no parallel
+                        //    waits (`err.{step,wait}Count`), that one step is
+                        //    the lone pending step (`pendingSteps.length === 1`)
+                        //    and the lone inline step
+                        //    (`lazyInlineSteps.length === 1` — no parallel
                         //    siblings queued to background handlers, and no other
                         //    inline step writing its own events out of band).
-                        //  - No pending wait timer from THIS suspension.
-                        //  - The run has NO pre-existing open hook or wait. This
-                        //    plus the per-suspension counts above is the
-                        //    load-bearing safety check: the delta snapshots the
-                        //    log at the step_completed write but is consumed on
-                        //    the next replay, so an out-of-band hook_received /
-                        //    wait_completed landing in that window would be in a
-                        //    real fetch yet absent from the stale delta —
-                        //    risking a divergent replay. With no hook/wait open
-                        //    (neither carried over nor created this suspension),
-                        //    the only out-of-band writer is cancellation, which
-                        //    is safe to observe one iteration late. See
-                        //    hasOpenHookOrWait.
+                        //  - No pending wait timer from THIS suspension, and no
+                        //    open wait in the cumulative log: a concurrent
+                        //    `wait_completed` landing after the delta snapshot
+                        //    does not bump the outside-event marker, so nothing
+                        //    fences a replay from the stale delta.
+                        //  - No open (or this-suspension-created) hook — UNLESS
+                        //    the precondition guard is enabled. The delta
+                        //    snapshots the log at the step_completed write but
+                        //    is consumed on the next replay, so an out-of-band
+                        //    `hook_received` landing in that window is absent
+                        //    from the delta and observed one iteration later
+                        //    than a real fetch would observe it. That staleness
+                        //    is qualitatively the same read-to-write race the
+                        //    fetch path already has (an event can land right
+                        //    after `events.list` returns and before the
+                        //    suspension's writes); with the guard on it is also
+                        //    fenced: `hook_received` bumps the per-run
+                        //    outside-event marker, so the stale replay's
+                        //    guarded suspension creates are rejected with 412
+                        //    and retried over the reloaded log — or, when
+                        //    reloads cannot surface the event, exhausted into a
+                        //    queue re-invocation whose fresh full replay
+                        //    observes it. Hooks created by THIS suspension are
+                        //    inside the delta (their `hook_created` lands
+                        //    before the step-terminal write), so only their
+                        //    `hook_received` responses are subject to the same
+                        //    fenced window. Without the guard there is no
+                        //    fence, so keep the conservative gate.
+                        //  - With no hook or wait open at all, the only
+                        //    out-of-band writer is cancellation, which is safe
+                        //    to observe one iteration late. See
+                        //    openHookAndWaitState.
                         //
                         // When more than one step runs inline, each writes its
                         // own events and the per-write delta would be partial, so
@@ -2013,13 +2044,15 @@ export function workflowEntrypoint(
                         const requestInlineDelta =
                           typeof preInlineWriteCursor === 'string' &&
                           err.stepCount === 1 &&
-                          err.hookCount === 0 &&
                           err.waitCount === 0 &&
                           pendingSteps.length === 1 &&
                           lazyInlineSteps.length === 1 &&
                           ownedRecoverySteps.length === 0 &&
                           !suspensionResult.waitTimeout &&
-                          !hasOpenHookOrWait(cachedEvents ?? []);
+                          !openHookWaitState.openWait &&
+                          (isPreconditionGuardEnabled() ||
+                            (err.hookCount === 0 &&
+                              !openHookWaitState.openHook));
 
                         // Turbo mode forces optimistic inline start for this
                         // batch — but only while the run is still "clean" (a pure
@@ -2043,15 +2076,37 @@ export function workflowEntrypoint(
                         // step suspensions). Once any hook or wait is open in the
                         // cumulative log, resume/parallel invocations are possible
                         // for the rest of the run, so turbo must latch off
-                        // permanently — checked here via `hasOpenHookOrWait` over
-                        // the cumulative `cachedEvents`.
+                        // permanently — checked here via `openHookAndWaitState`
+                        // over the cumulative `cachedEvents`.
+                        //
+                        // Under sequential replays
+                        // (`WORKFLOW_SEQUENTIAL_REPLAYS=1`, per-run flow topics
+                        // consumed with `maxConcurrency: 1`) the hook/wait
+                        // latch is waived: the resume invocations a hook or
+                        // wait introduces are run-topic messages, which the
+                        // queue does not deliver until this delivery acks — so
+                        // no concurrent orchestrator replay can race the
+                        // optimistic create-claim, and the single-handler
+                        // guarantee holds for the whole delivery. What remains
+                        // concurrent is unchanged from clean turbo today:
+                        // per-step-topic background executions (whose
+                        // last-step-done fall-through replay can race a claim —
+                        // the atomic step_started create still guarantees at
+                        // most one winner writes events) and webhook receivers
+                        // (which only append hook_received, never execute
+                        // steps). The attr check stays: attr suspensions
+                        // resolve via an in-process replay pass that must
+                        // decide races before any step body runs, independent
+                        // of queue serialization.
                         const forceOptimisticStart =
                           turbo &&
-                          !suspensionResult.waitTimeout &&
-                          !suspensionResult.hasHookEvents &&
                           !suspensionResult.hasAttributeEvents &&
-                          !suspensionResult.hasAwaitedHookCreation &&
-                          !hasOpenHookOrWait(cachedEvents ?? []);
+                          (isSequentialReplaysEnabled() ||
+                            (!suspensionResult.waitTimeout &&
+                              !suspensionResult.hasHookEvents &&
+                              !suspensionResult.hasAwaitedHookCreation &&
+                              !openHookWaitState.openHook &&
+                              !openHookWaitState.openWait));
 
                         // Execute the inline steps in parallel. The replay
                         // budget is paused for the whole batch — step duration is

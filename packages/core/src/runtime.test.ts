@@ -1424,13 +1424,16 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
 describe('workflowEntrypoint turbo mode', () => {
   const ORIG_TURBO = process.env.WORKFLOW_TURBO;
   const ORIG_OPT = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+  const ORIG_SEQ = process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
 
-  // Default: turbo ON (unset) and the global optimistic flag OFF (unset). Any
-  // optimistic behavior observed in these tests therefore comes from turbo
-  // forcing it — never from WORKFLOW_OPTIMISTIC_INLINE_START.
+  // Default: turbo ON (unset), the global optimistic flag OFF (unset), and
+  // sequential replays OFF (unset). Any optimistic behavior observed in these
+  // tests therefore comes from turbo forcing it — never from
+  // WORKFLOW_OPTIMISTIC_INLINE_START.
   beforeEach(() => {
     delete process.env.WORKFLOW_TURBO;
     delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
     turboOrder = [];
   });
   afterEach(() => {
@@ -1440,6 +1443,11 @@ describe('workflowEntrypoint turbo mode', () => {
       delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
     } else {
       process.env.WORKFLOW_OPTIMISTIC_INLINE_START = ORIG_OPT;
+    }
+    if (ORIG_SEQ === undefined) {
+      delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+    } else {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = ORIG_SEQ;
     }
     setWorld(undefined);
     vi.clearAllMocks();
@@ -1492,6 +1500,13 @@ describe('workflowEntrypoint turbo mode', () => {
     attempt: number;
     source: string;
     runStartedGate?: Promise<void>;
+    /**
+     * Holds the `step_started` create's resolution until released. Under
+     * await-then-run the step body cannot run while this is held; under
+     * optimistic start the body runs regardless — so a test can prove
+     * optimistic start by observing 'body' while the gate is closed.
+     */
+    stepStartedGate?: Promise<void>;
   }) {
     const { runId, attempt, source } = opts;
     const order = turboOrder;
@@ -1527,6 +1542,7 @@ describe('workflowEntrypoint turbo mode', () => {
       }
       if (data.eventType === 'step_started') {
         order.push('step_started_called');
+        if (opts.stepStartedGate) await opts.stepStartedGate;
         const d = data.eventData as { stepName?: string; input?: unknown };
         if (d?.input !== undefined) {
           rec({
@@ -1713,6 +1729,221 @@ describe('workflowEntrypoint turbo mode', () => {
     expect(order.indexOf('step_started_called')).toBeLessThan(
       order.indexOf('body')
     );
+  });
+
+  it('keeps forced optimistic start on a wait-creating suspension when WORKFLOW_SEQUENTIAL_REPLAYS=1', async () => {
+    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+
+    const { handlerPromise, order } = await driveTurbo({
+      runId: 'wrun_turbo_seq_replays',
+      attempt: 1,
+      source: stepAndSleepWorkflow,
+      stepStartedGate: gate,
+    });
+
+    // Same workflow as the turbo-exit test above — the suspension creates a
+    // wait — but under sequential replays the resume invocations a wait
+    // introduces are serialized behind this delivery, so turbo keeps forcing
+    // optimistic start: the body runs while the step_started create is still
+    // in flight (held by the gate), which the await-then-run path can never do.
+    await vi.waitFor(() => expect(order).toContain('body'), {
+      timeout: 15_000,
+    });
+    expect(order).toContain('wait_created');
+
+    release();
+    const res = await handlerPromise;
+    expect(res.status).toBe(204);
+    expect(order).toContain('step_started_called');
+  });
+});
+
+describe('workflowEntrypoint inline-delta gate with open hooks', () => {
+  const ORIG_GUARD = process.env.WORKFLOW_PRECONDITION_GUARD;
+
+  beforeEach(() => {
+    delete process.env.WORKFLOW_PRECONDITION_GUARD;
+  });
+  afterEach(() => {
+    if (ORIG_GUARD === undefined) {
+      delete process.env.WORKFLOW_PRECONDITION_GUARD;
+    } else {
+      process.env.WORKFLOW_PRECONDITION_GUARD = ORIG_GUARD;
+    }
+    setWorld(undefined);
+    vi.clearAllMocks();
+    waitUntilPromises.length = 0;
+  });
+
+  registerStepFunction('deltaGateStep', async () => undefined);
+
+  // A fire-and-forget hook alongside a single awaited step: the suspension
+  // creates a hook AND schedules one lazy inline step, leaving the hook open
+  // for the rest of the run.
+  const hookAndStepWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+    const s = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("deltaGateStep");
+    async function workflow() {
+      const hook = createHook({ token: 'delta-gate-token' });
+      return await s();
+    };globalThis.__private_workflows = new Map();
+    globalThis.__private_workflows.set("workflow", workflow);`;
+
+  /**
+   * Drives the handler with a continuation message (no runInput, so turbo is
+   * off and the initial events.list — which supplies the cursor the delta
+   * diffs against — runs). Returns the events.create mock so tests can
+   * inspect the step-terminal write's params for `sinceCursor`.
+   */
+  async function driveDeltaGate(runId: string) {
+    const workflowRun: WorkflowRun = {
+      runId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments([], runId, undefined, []),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    let eventSeq = 0;
+    const durableEvents: Event[] = [];
+    const recordEvent = (data: any): Event => {
+      eventSeq += 1;
+      const created = {
+        eventId: `event-${eventSeq}`,
+        runId,
+        createdAt: new Date(),
+        ...data,
+      } as Event;
+      durableEvents.push(created);
+      return created;
+    };
+
+    const eventsCreate = vi.fn(
+      async (_runId: string, data: any, _params?: any) => {
+        if (data.eventType === 'run_started') {
+          return { run: workflowRun, events: [] as Event[] };
+        }
+        if (data.eventType === 'step_started') {
+          const lazy = data.eventData as {
+            stepName?: string;
+            input?: unknown;
+          };
+          if (lazy?.input !== undefined) {
+            recordEvent({
+              eventType: 'step_created',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: data.correlationId,
+              eventData: { stepName: lazy.stepName, input: lazy.input },
+            });
+          }
+          return {
+            event: recordEvent(data),
+            step: {
+              runId,
+              stepId: data.correlationId,
+              stepName: lazy?.stepName,
+              status: 'running' as const,
+              attempt: 1,
+              input: lazy?.input,
+              startedAt: new Date(),
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            },
+            ...(lazy?.input !== undefined ? { stepCreated: true } : {}),
+          };
+        }
+        // The World returns no delta (like a World that doesn't support
+        // sinceCursor), so the next iteration falls back to events.list —
+        // these tests only assert whether the delta was REQUESTED.
+        return { event: recordEvent(data) };
+      }
+    );
+
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler: vi.fn(
+        (
+          _prefix: string,
+          handler: (message: unknown, metadata: unknown) => Promise<unknown>
+        ) => {
+          return async () => {
+            await handler(
+              {
+                runId,
+                requestedAt: new Date('2024-01-01T00:00:00.000Z'),
+              },
+              {
+                requestId: 'req_delta_gate',
+                attempt: 1,
+                queueName: '__wkf_workflow_workflow',
+                messageId: 'msg_delta_gate',
+              }
+            );
+            return new Response(null, { status: 204 });
+          };
+        }
+      ),
+      events: {
+        create: eventsCreate,
+        list: vi.fn(async () => ({
+          data: [...durableEvents],
+          hasMore: false,
+          cursor: 'cursor_delta_gate',
+        })),
+      },
+      runs: { get: vi.fn(async () => workflowRun) },
+      queue: vi.fn(async () => ({ messageId: null })),
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const handler = workflowEntrypoint(hookAndStepWorkflow);
+    const res = (await handler(
+      new Request('https://example.test')
+    )) as Response;
+    return { res, eventsCreate };
+  }
+
+  function stepCompletedParams(eventsCreate: ReturnType<typeof vi.fn>) {
+    const call = eventsCreate.mock.calls.find(
+      (c) => (c[1] as any).eventType === 'step_completed'
+    );
+    expect(call).toBeDefined();
+    return call?.[2] as { sinceCursor?: string } | undefined;
+  }
+
+  it('requests the inline delta despite the open hook when the precondition guard is enabled', async () => {
+    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
+    const { res, eventsCreate } = await driveDeltaGate(
+      'wrun_delta_gate_guard_on'
+    );
+    expect(res.status).toBe(204);
+    // The suspension created a hook (left open) and one lazy inline step —
+    // with the guard on, a hook_received missed by the delta window is fenced
+    // by the outside-event marker, so the fast path stays active.
+    expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBe(
+      'cursor_delta_gate'
+    );
+    expect(eventsCreate.mock.calls).toContainEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ eventType: 'hook_created' }),
+      ])
+    );
+  });
+
+  it('does not request the inline delta with an open hook when the guard is disabled', async () => {
+    const { res, eventsCreate } = await driveDeltaGate(
+      'wrun_delta_gate_guard_off'
+    );
+    expect(res.status).toBe(204);
+    // Without the guard there is no fence for a hook_received landing in the
+    // delta window, so the conservative gate keeps the fetch path.
+    expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBeUndefined();
   });
 });
 
