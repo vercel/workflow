@@ -102,6 +102,8 @@ interface Storage {
 
 **Hook Tokens:** Hook tokens must be unique. If a `hook_created` event conflicts with an active Hook or a token still reserved after its run ended, return a `hook_conflict` event and include the owner's run ID as `eventData.conflictingRunId`.
 
+Keep the owning Run available for at least as long as its token remains unavailable, because conflicts return that Run.
+
 **Automatic Hook Cleanup:** When a run ends, remove its live Hooks. Make each token available unless its `tokenRetentionUntil` is still in the future. A `hook_disposed` event always makes the token available immediately.
 
 ## Queue Interface
