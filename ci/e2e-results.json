@@ -1,15 +1,15 @@
 {
-  "lastUpdated": "2026-07-16T19:52:55.322Z",
-  "commit": "457e671ca9205ef439c1a155cee3b59486c9c067",
+  "lastUpdated": "2026-07-16T21:33:38.456Z",
+  "commit": "774e12c283dbc7704490d456abc01b841e374f7f",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
       "status": "passing",
-      "total": 4437,
-      "passed": 3899,
+      "total": 4284,
+      "passed": 3765,
       "failed": 0,
-      "skipped": 538,
+      "skipped": 519,
       "frameworks": {
         "astro": {
           "total": 306,
@@ -37,8 +37,8 @@
           "failed": 0
         },
         "nextjs-webpack": {
-          "total": 612,
-          "passed": 574,
+          "total": 459,
+          "passed": 440,
           "failed": 0
         },
         "nitro": {
@@ -126,15 +126,15 @@
     },
     "vercel": {
       "status": "partial",
-      "total": 1836,
-      "passed": 1574,
-      "failed": 5,
-      "skipped": 257,
+      "total": 1530,
+      "passed": 1295,
+      "failed": 8,
+      "skipped": 227,
       "frameworks": {
         "astro": {
           "total": 153,
-          "passed": 125,
-          "failed": 1
+          "passed": 126,
+          "failed": 0
         },
         "express": {
           "total": 153,
@@ -143,17 +143,12 @@
         },
         "fastify": {
           "total": 153,
-          "passed": 126,
-          "failed": 0
-        },
-        "hono": {
-          "total": 153,
           "passed": 125,
           "failed": 1
         },
-        "nextjs-turbopack": {
+        "hono": {
           "total": 153,
-          "passed": 150,
+          "passed": 126,
           "failed": 0
         },
         "nextjs-webpack": {
@@ -163,13 +158,8 @@
         },
         "nitro": {
           "total": 153,
-          "passed": 126,
-          "failed": 0
-        },
-        "nuxt": {
-          "total": 153,
-          "passed": 125,
-          "failed": 1
+          "passed": 124,
+          "failed": 2
         },
         "sveltekit": {
           "total": 153,
@@ -178,11 +168,11 @@
         },
         "vite": {
           "total": 153,
-          "passed": 126,
-          "failed": 0
+          "passed": 124,
+          "failed": 2
         }
       },
-      "progress": 86
+      "progress": 85
     }
   }
 }
