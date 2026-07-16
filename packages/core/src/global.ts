@@ -69,6 +69,23 @@ export type QueueItem =
   | AttributeInvocationQueueItem;
 
 /**
+ * Handle attached to a {@link WorkflowSuspension} when in-process VM
+ * continuation is armed (see `isVmContinuationEnabled`). Calling `resume`
+ * feeds newly-appended events into the SAME live workflow VM that produced the
+ * suspension and drives it to its next checkpoint, returning the workflow's
+ * dehydrated result on completion or throwing the next `WorkflowSuspension`
+ * (which itself may carry a fresh `continuation`). It throws
+ * `ReplayDivergenceError` if the live VM's consumed prefix no longer matches
+ * the authoritative log, signalling the caller to fall back to a full replay.
+ *
+ * `events` is the authoritative event array (`@workflow/world` `Event[]`),
+ * typed loosely here to keep `global.ts` free of the world dependency.
+ */
+export interface WorkflowContinuation {
+  resume(events: unknown[]): Promise<Uint8Array | unknown>;
+}
+
+/**
  * An error that is thrown when one or more operations (steps/hooks/etc.) are called but do
  * not yet have corresponding entries in the event log. The workflow
  * dispatcher will catch this error and push the operations
@@ -83,6 +100,14 @@ export class WorkflowSuspension extends Error {
   attributeCount: number;
   hookDisposedCount: number;
   abortCount: number;
+  /**
+   * Set by `runWorkflow` when in-process VM continuation is armed for this
+   * (step-only) suspension. When present, the inline replay loop can resume
+   * the SAME live VM with newly-appended events instead of rebuilding the
+   * context and replaying from scratch. Absent when continuation is disabled
+   * or the suspension is not continuation-eligible.
+   */
+  continuation?: WorkflowContinuation;
 
   constructor(stepsInput: Map<string, QueueItem>, global: typeof globalThis) {
     // Convert Map to array for iteration and storage

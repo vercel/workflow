@@ -32,7 +32,11 @@ import {
   isWorldContractError,
 } from './classify-error.js';
 import { describeError } from './describe-error.js';
-import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
+import {
+  type StepInvocationQueueItem,
+  type WorkflowContinuation,
+  WorkflowSuspension,
+} from './global.js';
 import { runtimeLogger } from './logger.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import {
@@ -40,6 +44,7 @@ import {
   getReplayDivergenceMaxRetries,
   isInlineOwnershipEnabled,
   isTurboEnabled,
+  isVmContinuationEnabled,
 } from './runtime/constants.js';
 import {
   getQueueOverhead,
@@ -546,6 +551,17 @@ export function workflowEntrypoint(
                     events: Event[];
                     cursor: string | null;
                   } | null = null;
+
+                  // In-process VM continuation (experimental, off by default —
+                  // see isVmContinuationEnabled). When a step-only suspension
+                  // arms a continuation, it is stashed here so the NEXT loop
+                  // iteration resumes the SAME live workflow VM with the freshly
+                  // appended events instead of rebuilding the context and
+                  // replaying the whole event log. Cleared whenever a resume
+                  // diverges (falls back to a fresh replay) or the suspension is
+                  // not continuation-eligible.
+                  const vmContinuationEnabled = isVmContinuationEnabled();
+                  let pendingContinuation: WorkflowContinuation | null = null;
 
                   // Shared state: set by either the background step path
                   // or the run_started setup below.
@@ -1429,22 +1445,56 @@ export function workflowEntrypoint(
                       // Start every missing decrypt/decompress operation before
                       // VM setup. Web Crypto work can overlap bundle evaluation;
                       // consumers still deserialize and resolve in event order.
+                      // Also warms the cache for a continuation resume, whose
+                      // step consumers hydrate the newly-appended results.
                       const payloadPrewarm = replayPayloadCache.prewarm(
                         workflowRun,
                         events
                       );
-                      const result = await runWorkflow(
-                        workflowCode,
-                        workflowRun,
-                        events,
-                        encryptionKey,
-                        replayPayloadCache,
-                        // Turbo: the end-of-run drain inside runWorkflow commits
-                        // fire-and-forget `*_created` events before the terminal
-                        // `awaitRunReady()` below, so gate those writes on the
-                        // backgrounded run_started too. Undefined outside turbo.
-                        runReadyBarrier
-                      );
+                      // Fresh replay in a new VM, unless a prior step-only
+                      // suspension armed a continuation — in which case resume
+                      // the SAME live VM with the freshly appended events. Both
+                      // paths obey the same contract: return the dehydrated
+                      // result, or throw a WorkflowSuspension (which may carry a
+                      // fresh continuation). A resume whose consumed prefix has
+                      // diverged from the authoritative log throws
+                      // ReplayDivergenceError; we swallow it here and fall back
+                      // to a full replay in a fresh VM so behavior degrades to
+                      // exactly today's.
+                      const runReplay = () =>
+                        runWorkflow(
+                          workflowCode,
+                          workflowRun,
+                          events,
+                          encryptionKey,
+                          replayPayloadCache,
+                          // Turbo: the end-of-run drain inside runWorkflow commits
+                          // fire-and-forget `*_created` events before the terminal
+                          // `awaitRunReady()` below, so gate those writes on the
+                          // backgrounded run_started too. Undefined outside turbo.
+                          runReadyBarrier,
+                          vmContinuationEnabled
+                        );
+                      let result: Uint8Array | unknown;
+                      if (pendingContinuation) {
+                        const continuation = pendingContinuation;
+                        pendingContinuation = null;
+                        try {
+                          result = await continuation.resume(events);
+                        } catch (resumeErr) {
+                          if (ReplayDivergenceError.is(resumeErr)) {
+                            runtimeLogger.debug(
+                              'VM continuation resume diverged; falling back to full replay',
+                              { workflowRunId: runId, loopIteration }
+                            );
+                            result = await runReplay();
+                          } else {
+                            throw resumeErr;
+                          }
+                        }
+                      } else {
+                        result = await runReplay();
+                      }
                       await payloadPrewarm;
                       runtimeLogger.debug('Workflow replay completed', {
                         workflowRunId: runId,
@@ -1496,6 +1546,14 @@ export function workflowEntrypoint(
                       return;
                     } catch (err) {
                       if (WorkflowSuspension.is(err)) {
+                        // VM continuation: a step-only suspension carries a
+                        // handle that resumes the same live VM next iteration.
+                        // Non-eligible suspensions (hooks/waits/attrs) leave it
+                        // undefined, so we fall back to a fresh replay. The
+                        // handle is process-local and dropped if this invocation
+                        // returns instead of looping.
+                        pendingContinuation = err.continuation ?? null;
+
                         // Synchronous `runWorkflow` duration for THIS
                         // suspension only — anchors the `finalSchedulingReplay`
                         // telemetry field below (see

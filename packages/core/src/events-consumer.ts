@@ -1,3 +1,4 @@
+import { ReplayDivergenceError } from '@workflow/errors';
 import { type Event, envNumber } from '@workflow/world';
 import { eventsLogger } from './logger.js';
 
@@ -69,7 +70,7 @@ export interface EventsConsumerOptions {
 
 export class EventsConsumer {
   eventIndex: number;
-  readonly events: Event[] = [];
+  events: Event[] = [];
   readonly callbacks: EventConsumerCallback[] = [];
   private onConsumedEvent?: (event: Event) => void;
   private onUnconsumedEvent: (event: Event) => void;
@@ -108,6 +109,39 @@ export class EventsConsumer {
         this.pendingUnconsumedTimeout = null;
       }
     }
+    process.nextTick(this.consume);
+  }
+
+  /**
+   * Resume consuming against an updated event log without rebuilding the VM.
+   *
+   * Used by the in-process VM-continuation path (see
+   * `isVmContinuationEnabled`): after new events are appended to the run's log
+   * (e.g. an inline step's `step_completed`), the loop adopts the authoritative
+   * array here and re-drives {@link consume} so the still-registered step
+   * consumers advance the SAME live workflow VM to its next suspension point.
+   *
+   * Safety: the events already consumed by this instance (indices
+   * `0..eventIndex`) MUST be a byte-stable prefix of `events` — the durable log
+   * is the source of truth, and a live VM that consumed a now-diverged prefix
+   * can no longer be trusted. Any mismatch throws {@link ReplayDivergenceError}
+   * so the caller falls back to a full replay in a fresh VM. Matching is by
+   * `eventId`, which is immutable per event across reads.
+   */
+  resume(events: Event[]): void {
+    for (let i = 0; i < this.eventIndex; i++) {
+      const consumed = this.events[i];
+      const incoming = events[i];
+      if (!incoming || consumed?.eventId !== incoming.eventId) {
+        throw new ReplayDivergenceError(
+          `VM continuation prefix diverged at index ${i}: consumed ` +
+            `${consumed?.eventId ?? '<none>'} but the authoritative log has ` +
+            `${incoming?.eventId ?? '<none>'}.`,
+          { eventId: incoming?.eventId ?? consumed?.eventId }
+        );
+      }
+    }
+    this.events = events;
     process.nextTick(this.consume);
   }
 
