@@ -102,47 +102,41 @@ export function createRunsStorage(
   basedir: string,
   tag?: string
 ): LocalRunsStorage {
+  const get = (async (id: string, params?: any) => {
+    assertSafeEntityId('runId', id);
+    const run = await readJSONWithFallback(
+      basedir,
+      'runs',
+      id,
+      WorkflowRunSchema,
+      tag
+    );
+    if (!run) {
+      throw new WorkflowRunNotFoundError(id);
+    }
+    const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+    return filterRunData(run, resolveData);
+  }) as Storage['runs']['get'];
+
   return {
-    get: (async (id: string, params?: any) => {
-      assertSafeEntityId('runId', id);
-      const run = await readJSONWithFallback(
-        basedir,
-        'runs',
-        id,
-        WorkflowRunSchema,
-        tag
-      );
-      if (!run) {
-        throw new WorkflowRunNotFoundError(id);
-      }
-      const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-      return filterRunData(run, resolveData);
-    }) as Storage['runs']['get'],
+    get,
 
     getMany: (async (ids: readonly string[], params?: any) => {
-      const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-      const runsById = new Map<string, WorkflowRun | null>();
-
-      await Promise.all(
-        [...new Set(ids)].map(async (id) => {
-          assertSafeEntityId('runId', id);
-          runsById.set(
-            id,
-            await readJSONWithFallback(
-              basedir,
-              'runs',
-              id,
-              WorkflowRunSchema,
-              tag
-            )
-          );
+      const uniqueIds = [...new Set(ids)];
+      const runs = await Promise.all(
+        uniqueIds.map(async (id) => {
+          try {
+            return await get(id, params);
+          } catch (error) {
+            if (error instanceof WorkflowRunNotFoundError) {
+              return null;
+            }
+            throw error;
+          }
         })
       );
-
-      return ids.map((id) => {
-        const run = runsById.get(id);
-        return run ? filterRunData(run, resolveData) : null;
-      });
+      const runById = new Map(uniqueIds.map((id, i) => [id, runs[i]]));
+      return ids.map((id) => runById.get(id) ?? null);
     }) as NonNullable<Storage['runs']['getMany']>,
 
     list: (async (params?: LocalListWorkflowRunsParams) => {

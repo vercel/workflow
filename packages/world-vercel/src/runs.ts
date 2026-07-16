@@ -219,9 +219,8 @@ export async function getWorkflowRun(
 }
 
 /**
- * Retrieves a snapshot for each requested run ID. The workflow-server batch
- * endpoint returns rows aligned to the unique IDs in the request, using null
- * for IDs that do not exist.
+ * Retrieves a snapshot for each requested run ID. Delegates to
+ * `getWorkflowRun` for each ID and returns null for IDs that do not exist.
  */
 export async function getWorkflowRuns(
   ids: readonly string[],
@@ -244,46 +243,20 @@ export async function getWorkflowRuns(
   config?: APIConfig
 ): Promise<(WorkflowRun | WorkflowRunWithoutData | null)[]> {
   const uniqueIds = [...new Set(ids)];
-  if (uniqueIds.length === 0) {
-    return [];
-  }
-
-  const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
-  const schema = z.object({
-    runs: z.array(
-      z.union([
-        remoteRefBehavior === 'lazy'
-          ? WorkflowRunWireWithRefsSchema
-          : WorkflowRunWireSchema,
-        z.null(),
-      ])
-    ),
-  });
-  const response = await makeRequest({
-    endpoint: '/v2/runs/batch',
-    options: { method: 'POST' },
-    data: { runIds: uniqueIds, remoteRefBehavior },
-    config,
-    schema,
-  });
-
-  if (response.runs.length !== uniqueIds.length) {
-    throw new WorkflowWorldError(
-      `Batch run lookup returned ${response.runs.length} results for ${uniqueIds.length} IDs`
-    );
-  }
-
-  const runsById = new Map(
-    uniqueIds.map((id, index) => {
-      const run = response.runs[index];
-      return [
-        run?.runId ?? id,
-        run ? filterRunData(run, resolveData) : null,
-      ] as const;
+  const runs = await Promise.all(
+    uniqueIds.map(async (id) => {
+      try {
+        return await getWorkflowRun(id, params, config);
+      } catch (error) {
+        if (error instanceof WorkflowRunNotFoundError) {
+          return null;
+        }
+        throw error;
+      }
     })
   );
-  return ids.map((id) => runsById.get(id) ?? null);
+  const runById = new Map(uniqueIds.map((id, i) => [id, runs[i]]));
+  return ids.map((id) => runById.get(id) ?? null);
 }
 
 export async function cancelWorkflowRunV1(
