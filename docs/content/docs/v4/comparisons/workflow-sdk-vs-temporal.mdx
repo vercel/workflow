@@ -107,7 +107,9 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 ```
 </Callout>
 
-### Features without a 1:1 equivalent
+### Temporal features without a direct Workflow SDK equivalent
+
+These are Temporal capabilities that the Workflow SDK does not replicate one-to-one — here's how to cover each on the Workflow SDK side:
 
 - **Search attributes / visibility queries.** Filter runs by status and timestamps via `getRun()` and the observability UI instead.
 - **Per-activity timeouts** (`startToCloseTimeout`, etc.). Enforce deadlines inside a step with `AbortSignal.timeout(ms)`, or wrap a call in `Promise.race(step(), sleep('5m'))`.

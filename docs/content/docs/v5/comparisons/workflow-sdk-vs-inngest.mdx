@@ -87,7 +87,9 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 ```
 </Callout>
 
-### Features without a 1:1 equivalent
+### Inngest features without a direct Workflow SDK equivalent
+
+These are Inngest capabilities that the Workflow SDK does not replicate one-to-one — here's how to cover each on the Workflow SDK side:
 
 - **Flow control** (concurrency, throttling, debounce, rate limiting, batching, priority). These function-level controls have no direct analog; enforce limits inside steps or debounce at the publisher before `start()`.
 - **Cron / scheduled functions.** Trigger from Vercel Cron or a system cron calling `start()`.

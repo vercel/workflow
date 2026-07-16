@@ -95,7 +95,9 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 ```
 </Callout>
 
-### Features without a 1:1 equivalent
+### Step Functions features without a direct Workflow SDK equivalent
+
+These are Step Functions capabilities that the Workflow SDK does not replicate one-to-one — here's how to cover each on the Workflow SDK side:
 
 - **Express workflows.** At-least-once and 5-minute duration fit the durable-replay model poorly; keep them on Step Functions or move to a queue consumer.
 - **Distributed Map** (up to 10,000 concurrent children, S3 item sources). Fan out with step-wrapped `start()` per item, then bound concurrency with `p-limit`.

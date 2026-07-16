@@ -88,7 +88,9 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 ```
 </Callout>
 
-### Features without a 1:1 equivalent
+### trigger.dev features without a direct Workflow SDK equivalent
+
+These are trigger.dev capabilities that the Workflow SDK does not replicate one-to-one — here's how to cover each on the Workflow SDK side:
 
 - **Concurrency keys / queue concurrency limits.** Enforce limits inside steps or debounce at the publisher.
 - **`schedules.task()` / cron.** Trigger from Vercel Cron or a system cron calling `start()`.
