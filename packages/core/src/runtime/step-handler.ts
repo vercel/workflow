@@ -53,6 +53,7 @@ import {
 } from '../types.js';
 
 import { getMaxQueueDeliveries } from './constants.js';
+import { failRunIfDeploymentMismatch } from './deployment-guard.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -212,6 +213,19 @@ function createStepHandler(namespace?: string) {
         const stepName = metadata.queueName.slice(stepPrefix.length);
         const world = await getWorld();
         const isVercel = process.env.VERCEL_URL !== undefined;
+
+        const workflowRun = await world.runs.get(workflowRunId, {
+          resolveData: 'none',
+        });
+        if (
+          await failRunIfDeploymentMismatch({
+            world,
+            run: workflowRun,
+            requestId,
+          })
+        ) {
+          return;
+        }
 
         // Memoized accessor for the per-run AES-256 encryption key. The first
         // caller (typically `hydrateStepArguments` for input deserialization,

@@ -313,6 +313,7 @@ async function runPreconditionScenario(options: {
   const queue = vi.fn().mockResolvedValue({ messageId: 'msg_step' });
   const fakeWorld = {
     specVersion: SPEC_VERSION_CURRENT,
+    getDeploymentId: vi.fn().mockResolvedValue(deploymentId),
     createQueueHandler: vi.fn((_prefix, handler) => {
       capturedHandler = handler;
       return vi.fn();
@@ -488,6 +489,7 @@ async function runCompletedRejectionScenario() {
 
   const fakeWorld = {
     specVersion: SPEC_VERSION_CURRENT,
+    getDeploymentId: vi.fn().mockResolvedValue(deploymentId),
     createQueueHandler: vi.fn((_prefix, handler) => {
       capturedHandler = handler;
       return vi.fn();

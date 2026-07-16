@@ -567,6 +567,35 @@ export class WorkflowNotRegisteredError extends WorkflowRuntimeError {
 }
 
 /**
+ * Thrown when a workflow run is delivered to a deployment other than the one
+ * that created it. Continuing on the receiving deployment is unsafe because
+ * its workflow and step bundles may not match the run's persisted history.
+ */
+export class WorkflowDeploymentMismatchError extends WorkflowRuntimeError {
+  readonly runId: string;
+  readonly expectedDeploymentId: string;
+  readonly actualDeploymentId: string;
+
+  constructor(
+    runId: string,
+    expectedDeploymentId: string,
+    actualDeploymentId: string
+  ) {
+    super(
+      `Workflow run "${runId}" belongs to deployment "${expectedDeploymentId}", but was received by deployment "${actualDeploymentId}". The run was stopped to protect against code-skew errors. Verify that the original deployment is still available and that queue callbacks are routed to it.`
+    );
+    this.name = 'WorkflowDeploymentMismatchError';
+    this.runId = runId;
+    this.expectedDeploymentId = expectedDeploymentId;
+    this.actualDeploymentId = actualDeploymentId;
+  }
+
+  static is(value: unknown): value is WorkflowDeploymentMismatchError {
+    return isError(value) && value.name === 'WorkflowDeploymentMismatchError';
+  }
+}
+
+/**
  * Thrown when performing operations on a workflow run that does not exist.
  *
  * This error occurs when you call methods on a run object (e.g. `run.status`,

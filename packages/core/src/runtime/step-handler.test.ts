@@ -1,6 +1,7 @@
 import {
   EntityConflictError,
   FatalError,
+  RUN_ERROR_CODES,
   RunExpiredError,
   ThrottleError,
   WorkflowWorldError,
@@ -23,6 +24,8 @@ const {
   mockRuntimeLogger,
   mockStepLogger,
   mockQueueMessage,
+  mockRunsGet,
+  mockGetDeploymentId,
   mockStepFn,
 } = vi.hoisted(() => {
   const mockStepFn = Object.assign(vi.fn().mockResolvedValue('step-result'), {
@@ -54,6 +57,12 @@ const {
       error: vi.fn(),
     },
     mockQueueMessage: vi.fn().mockResolvedValue(undefined),
+    mockRunsGet: vi.fn().mockResolvedValue({
+      runId: 'wrun_test123',
+      deploymentId: 'test-deployment',
+      specVersion: 5,
+    }),
+    mockGetDeploymentId: vi.fn().mockResolvedValue('test-deployment'),
     mockStepFn,
   };
 });
@@ -70,7 +79,9 @@ vi.mock('@vercel/functions', () => ({
 vi.mock('./world.js', () => ({
   getWorld: vi.fn(async () => ({
     events: { create: mockEventsCreate },
+    runs: { get: mockRunsGet },
     queue: mockQueue,
+    getDeploymentId: mockGetDeploymentId,
     getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
   })),
   getWorldHandlers: vi.fn(async () => ({
@@ -139,6 +150,7 @@ vi.mock('../serialization.js', () => ({
   dehydrateStepReturnValue: vi
     .fn()
     .mockResolvedValue(new Uint8Array([1, 2, 3])),
+  dehydrateRunError: vi.fn().mockResolvedValue(new Uint8Array([7, 8, 9])),
   cancelAbortReaders: vi.fn(),
   dehydrateStepError: vi.fn().mockResolvedValue(new Uint8Array([4, 5, 6])),
 }));
@@ -197,6 +209,15 @@ import { executeStep } from './step-executor.js';
 // to trigger createQueueHandler and populate capturedHandlerRef
 import { stepEntrypoint } from './step-handler.js';
 import { getWorld } from './world.js';
+
+beforeEach(() => {
+  mockRunsGet.mockResolvedValue({
+    runId: 'wrun_test123',
+    deploymentId: 'test-deployment',
+    specVersion: 5,
+  });
+  mockGetDeploymentId.mockResolvedValue('test-deployment');
+});
 
 function capturedHandler(
   message: unknown,
@@ -260,7 +281,9 @@ describe('step-handler 409 handling', () => {
     // Re-set getWorld mock since clearAllMocks resets it
     vi.mocked(getWorld).mockResolvedValue({
       events: { create: mockEventsCreate },
+      runs: { get: mockRunsGet },
       queue: mockQueue,
+      getDeploymentId: mockGetDeploymentId,
       getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
     } as any);
     // Reset mockEventsCreate fully - mockImplementation persists through clearAllMocks
@@ -275,6 +298,31 @@ describe('step-handler 409 handling', () => {
       event: {},
     });
     mockStepFn.mockResolvedValue('step-result');
+  });
+
+  it('fails the run before executing a step on another deployment', async () => {
+    mockGetDeploymentId.mockResolvedValue('dpl_current');
+    mockRunsGet.mockResolvedValue({
+      runId: 'wrun_test123',
+      deploymentId: 'dpl_origin',
+      specVersion: 5,
+    });
+
+    await capturedHandler(createMessage(), createMetadata('myStep'));
+
+    expect(mockStepFn).not.toHaveBeenCalled();
+    expect(mockEventsCreate).toHaveBeenCalledTimes(1);
+    expect(mockEventsCreate).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.objectContaining({
+        eventType: 'run_failed',
+        eventData: expect.objectContaining({
+          error: new Uint8Array([7, 8, 9]),
+          errorCode: RUN_ERROR_CODES.DEPLOYMENT_MISMATCH,
+        }),
+      }),
+      expect.anything()
+    );
   });
 
   afterEach(() => {
@@ -581,7 +629,9 @@ describe('step-handler max deliveries', () => {
     mockQueueMessage.mockResolvedValue(undefined);
     vi.mocked(getWorld).mockResolvedValue({
       events: { create: mockEventsCreate },
+      runs: { get: mockRunsGet },
       queue: mockQueue,
+      getDeploymentId: mockGetDeploymentId,
       getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
     } as any);
     mockEventsCreate.mockReset().mockResolvedValue({
@@ -664,7 +714,9 @@ describe('step-handler step not found', () => {
     mockQueueMessage.mockResolvedValue(undefined);
     vi.mocked(getWorld).mockResolvedValue({
       events: { create: mockEventsCreate },
+      runs: { get: mockRunsGet },
       queue: mockQueue,
+      getDeploymentId: mockGetDeploymentId,
       getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
     } as any);
     mockEventsCreate.mockReset().mockResolvedValue({
@@ -837,7 +889,9 @@ describe('step-handler fatal vs retryable behavior', () => {
     mockQueueMessage.mockResolvedValue(undefined);
     vi.mocked(getWorld).mockResolvedValue({
       events: { create: mockEventsCreate },
+      runs: { get: mockRunsGet },
       queue: mockQueue,
+      getDeploymentId: mockGetDeploymentId,
       getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
     } as any);
     mockEventsCreate.mockReset().mockResolvedValue({

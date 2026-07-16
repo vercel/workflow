@@ -3,6 +3,7 @@ import {
   RUN_ERROR_CODES,
   SerializationError,
   StepNotRegisteredError,
+  WorkflowDeploymentMismatchError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { describe, expect, test } from 'vitest';
@@ -108,6 +109,17 @@ describe('describeError', () => {
     expect(result.hint).toContain('SDK contract');
   });
 
+  test('WorkflowDeploymentMismatchError is attributed to the SDK with the deployment hint', () => {
+    const result = describeError(
+      new WorkflowDeploymentMismatchError('wrun', 'dpl_a', 'dpl_b')
+    );
+    expect(result.attribution).toBe('sdk');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.DEPLOYMENT_MISMATCH);
+    expect(result.hint).toContain(
+      'deployment other than the one that created it'
+    );
+  });
+
   test('precomputed errorCode wins over classifyRunError when both are provided', () => {
     // A plain Error would classify as USER_ERROR, but passing REPLAY_TIMEOUT
     // explicitly overrides that — useful for callers that know the failure
@@ -199,6 +211,18 @@ describe('describeRunError', () => {
     });
     expect(result.attribution).toBe('sdk');
     expect(result.hint).toContain('SDK contract');
+  });
+
+  test('DEPLOYMENT_MISMATCH errorCode is attributed to the SDK', () => {
+    const result = describeRunError({
+      errorCode: RUN_ERROR_CODES.DEPLOYMENT_MISMATCH,
+      errorName: 'WorkflowDeploymentMismatchError',
+    });
+    expect(result.attribution).toBe('sdk');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.DEPLOYMENT_MISMATCH);
+    expect(result.hint).toContain(
+      'deployment other than the one that created it'
+    );
   });
 
   test('RUNTIME_ERROR code without errorName still lands as SDK', () => {

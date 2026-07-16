@@ -6,6 +6,7 @@ import {
   RuntimeDecryptionError,
   StepNotRegisteredError,
   ThrottleError,
+  WorkflowDeploymentMismatchError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
   WorkflowWorldError,
@@ -114,6 +115,12 @@ export function classifyRunError(err: unknown): RunErrorCode {
 
   if (CorruptedEventLogError.is(err)) {
     return RUN_ERROR_CODES.CORRUPTED_EVENT_LOG;
+  }
+
+  // A run delivered to the wrong deployment gets its own code so dashboards
+  // and the UI can distinguish code-skew misrouting from generic runtime bugs.
+  if (WorkflowDeploymentMismatchError.is(err)) {
+    return RUN_ERROR_CODES.DEPLOYMENT_MISMATCH;
   }
 
   // World-layer faults — both a malformed response (contract violation) and a

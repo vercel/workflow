@@ -85,6 +85,8 @@ const MAX_DELIVERIES_HINT =
   'The workflow queue exceeded its max-delivery budget. This usually indicates a persistent runtime failure — check the most recent stack traces for the underlying cause.';
 const WORLD_CONTRACT_HINT =
   'The workflow backend returned data that violated the SDK contract. This is not retryable; please report it with the stack trace and runId.';
+const DEPLOYMENT_MISMATCH_HINT =
+  'The run was delivered to a deployment other than the one that created it, and was stopped to protect against code-skew errors. This usually happens on preview branches after a new deployment supersedes the one a run started on. Verify that the original deployment is still available and that queue callbacks route to it.';
 
 function normalizeErrorCode(code: string | undefined): RunErrorCode {
   // Values read back from persisted events are `string | undefined` — we
@@ -144,6 +146,9 @@ export function describeRunError(
       hint: WORLD_CONTRACT_HINT,
     };
   }
+  if (errorCode === RUN_ERROR_CODES.DEPLOYMENT_MISMATCH) {
+    return { attribution: 'sdk', errorCode, hint: DEPLOYMENT_MISMATCH_HINT };
+  }
   if (name === 'WorkflowRuntimeError' || name === 'StepNotRegisteredError') {
     return { attribution: 'sdk', errorCode, hint: RUNTIME_ERROR_HINT };
   }
@@ -201,6 +206,16 @@ export function describeError(
       attribution: 'sdk',
       errorCode: effectiveCode,
       hint: CORRUPTED_EVENT_LOG_HINT,
+    };
+  }
+
+  // Check DEPLOYMENT_MISMATCH before the generic WorkflowRuntimeError branch —
+  // WorkflowDeploymentMismatchError subclasses it, but has its own code + hint.
+  if (effectiveCode === RUN_ERROR_CODES.DEPLOYMENT_MISMATCH) {
+    return {
+      attribution: 'sdk',
+      errorCode: effectiveCode,
+      hint: DEPLOYMENT_MISMATCH_HINT,
     };
   }
 
