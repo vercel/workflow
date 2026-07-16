@@ -173,8 +173,8 @@ export async function runWorkflow(
       );
     }
 
-    // Detailed replay timing is only collected for sampled spans. This keeps
-    // the untraced hot path free of per-event/per-step clock reads.
+    // Detailed replay timing is only collected for recording spans. This keeps
+    // unsampled and untraced hot paths free of per-event/per-step clock reads.
     const replayMetrics = span?.isRecording()
       ? createWorkflowReplayMetrics()
       : undefined;
