@@ -293,11 +293,6 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (eventData.tokenRetentionUntil instanceof Date) {
     meta.hookTokenRetentionUntil = eventData.tokenRetentionUntil;
-  } else if (typeof eventData.tokenRetentionUntil === 'string') {
-    const parsed = new Date(eventData.tokenRetentionUntil);
-    if (!Number.isNaN(parsed.getTime())) {
-      meta.hookTokenRetentionUntil = parsed;
-    }
   }
   if (typeof eventData.isWebhook === 'boolean') {
     meta.hookIsWebhook = eventData.isWebhook;

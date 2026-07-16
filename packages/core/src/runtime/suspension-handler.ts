@@ -260,17 +260,6 @@ export async function handleSuspension({
     (item) => !item.hasCreatedEvent
   );
 
-  if (
-    hooksNeedingCreation.some(
-      (item) => item.tokenRetentionUntil !== undefined
-    ) &&
-    world.capabilities?.hookRetention?.active !== true
-  ) {
-    throw new FatalError(
-      'The configured World does not support `experimental_minRetention` for Hooks.'
-    );
-  }
-
   // Group hook items that need work by token, preserving queue-insertion
   // (workflow code) order within each token. Operations on one token must
   // apply in code order: a dispose() of an earlier hook releases the token

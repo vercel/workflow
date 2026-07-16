@@ -40,6 +40,7 @@ describe('resumeHook', () => {
       attributes: {},
     } satisfies WorkflowRun;
     const createEvent = vi.fn();
+    const getEncryptionKeyForRun = vi.fn();
     const queue = vi.fn();
 
     setWorld({
@@ -47,6 +48,7 @@ describe('resumeHook', () => {
       hooks: { getByToken: vi.fn().mockResolvedValue(hook) },
       runs: { get: vi.fn().mockResolvedValue(run) },
       events: { create: createEvent },
+      getEncryptionKeyForRun,
       queue,
     } as unknown as World);
 
@@ -54,6 +56,7 @@ describe('resumeHook', () => {
       HookNotFoundError.is
     );
     expect(createEvent).not.toHaveBeenCalled();
+    expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
     expect(queue).not.toHaveBeenCalled();
   });
 });
