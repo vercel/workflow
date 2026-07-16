@@ -16,6 +16,10 @@ import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import {
+  createWorkflowReplayMetrics,
+  workflowReplayMetricAttributes,
+} from './replay-telemetry.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
@@ -169,6 +173,13 @@ export async function runWorkflow(
       );
     }
 
+    // Detailed replay timing is only collected for sampled spans. This keeps
+    // the untraced hot path free of per-event/per-step clock reads.
+    const replayMetrics = span?.isRecording()
+      ? createWorkflowReplayMetrics()
+      : undefined;
+    const setupStartedAt = replayMetrics ? performance.now() : 0;
+
     // The deterministic RNG seed is derived from identifiers that are all
     // known the instant the queue message arrives — `runId`, `workflowName`,
     // and `deploymentId` — with no timestamp component. `runId` alone already
@@ -204,10 +215,12 @@ export async function runWorkflow(
       context,
       globalThis: vmGlobalThis,
       updateTimestamp,
-    } = createContext({
-      seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
-      fixedTimestamp,
-    });
+    } = await trace('workflow.run.vm.create_context', async () =>
+      createContext({
+        seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
+        fixedTimestamp,
+      })
+    );
 
     const workflowDiscontinuation = withResolvers<void>();
 
@@ -234,6 +247,7 @@ export async function runWorkflow(
         );
       },
       getPromiseQueue: () => promiseQueueHolder.current,
+      replayMetrics,
     });
 
     const workflowContext: WorkflowOrchestratorContext = {
@@ -265,6 +279,7 @@ export async function runWorkflow(
       pendingDeliveries: 0,
       pendingDeliveryBarriers: new Map(),
       stepHydrationCache,
+      replayMetrics,
     };
 
     // Consume run lifecycle events - these are structural events that don't
@@ -823,6 +838,13 @@ export async function runWorkflow(
     const parsedName = parseWorkflowName(workflowRun.workflowName);
     const filename = parsedName?.moduleSpecifier || workflowRun.workflowName;
 
+    if (replayMetrics) {
+      span?.setAttribute(
+        'workflow.run.setup.duration_ms',
+        performance.now() - setupStartedAt
+      );
+    }
+
     // Evaluate the workflow bundle against the fresh context using a
     // process-wide cache of the compiled `vm.Script`. The bundle is the same
     // string for every replay and every invocation in this process, and
@@ -841,11 +863,21 @@ export async function runWorkflow(
     // Script rather than the line just past the end of the bundle. That path
     // is rare (it requires the lookup `?.get(...)` expression to throw) and
     // does not affect the workflow function or replay determinism.
-    runCachedWorkflowScript(workflowCode, filename, context);
-    const workflowFn = runCachedWorkflowScript(
-      `globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
-      filename,
-      context
+    await trace('workflow.run.vm.evaluate_bundle', async (evaluationSpan) =>
+      runCachedWorkflowScript(workflowCode, filename, context, (cacheHit) =>
+        evaluationSpan?.setAttribute('workflow.vm.script_cache.hit', cacheHit)
+      )
+    );
+    const workflowFn = await trace(
+      'workflow.run.vm.lookup_function',
+      async (lookupSpan) =>
+        runCachedWorkflowScript(
+          `globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
+          filename,
+          context,
+          (cacheHit) =>
+            lookupSpan?.setAttribute('workflow.vm.script_cache.hit', cacheHit)
+        )
     );
 
     if (typeof workflowFn !== 'function') {
@@ -859,11 +891,13 @@ export async function runWorkflow(
     let args: unknown[] = [];
     workflowContext.promiseQueue = workflowContext.promiseQueue.then(
       async () => {
-        args = await hydrateWorkflowArguments(
-          workflowRun.input,
-          workflowRun.runId,
-          encryptionKey,
-          vmGlobalThis
+        args = await trace('workflow.run.hydrate_arguments', async () =>
+          hydrateWorkflowArguments(
+            workflowRun.input,
+            workflowRun.runId,
+            encryptionKey,
+            vmGlobalThis
+          )
         );
       }
     );
@@ -875,34 +909,53 @@ export async function runWorkflow(
 
     // Invoke user workflow
     try {
-      const result = await Promise.race([
-        workflowFn(...args),
-        workflowDiscontinuation.promise,
-      ]);
+      const result = await trace(
+        'workflow.run.execute',
+        async (executeSpan) => {
+          try {
+            return await Promise.race([
+              workflowFn(...args),
+              workflowDiscontinuation.promise,
+            ]);
+          } finally {
+            if (replayMetrics) {
+              executeSpan?.setAttributes(
+                workflowReplayMetricAttributes(replayMetrics)
+              );
+            }
+          }
+        }
+      );
 
-      const dehydrated = await dehydrateWorkflowReturnValue(
-        result,
-        workflowRun.runId,
-        encryptionKey,
-        vmGlobalThis,
-        false,
-        // Gate payload compression on the run's specVersion: only runs
-        // marked as possibly containing compressed payloads (spec >= 5)
-        // get gzip data.
-        (workflowRun.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
+      const dehydrated = await trace(
+        'workflow.run.serialize_result',
+        async () =>
+          dehydrateWorkflowReturnValue(
+            result,
+            workflowRun.runId,
+            encryptionKey,
+            vmGlobalThis,
+            false,
+            // Gate payload compression on the run's specVersion: only runs
+            // marked as possibly containing compressed payloads (spec >= 5)
+            // get gzip data.
+            (workflowRun.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
+          )
       );
 
       span?.setAttributes({
         ...Attribute.WorkflowResultType(typeof result),
       });
 
-      await drainPendingQueueItems(
-        workflowRun.runId,
-        workflowContext.invocationsQueue,
-        vmGlobalThis,
-        workflowRun,
-        'completed',
-        runReadyBarrier
+      await trace('workflow.run.drain', async () =>
+        drainPendingQueueItems(
+          workflowRun.runId,
+          workflowContext.invocationsQueue,
+          vmGlobalThis,
+          workflowRun,
+          'completed',
+          runReadyBarrier
+        )
       );
 
       return dehydrated;
@@ -913,13 +966,15 @@ export async function runWorkflow(
         throw err;
       }
 
-      await drainPendingQueueItems(
-        workflowRun.runId,
-        workflowContext.invocationsQueue,
-        vmGlobalThis,
-        workflowRun,
-        'failed',
-        runReadyBarrier
+      await trace('workflow.run.drain', async () =>
+        drainPendingQueueItems(
+          workflowRun.runId,
+          workflowContext.invocationsQueue,
+          vmGlobalThis,
+          workflowRun,
+          'failed',
+          runReadyBarrier
+        )
       );
 
       throw err;

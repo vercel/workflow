@@ -1,5 +1,6 @@
 import { type Event, envNumber } from '@workflow/world';
 import { eventsLogger } from './logger.js';
+import type { WorkflowReplayMetrics } from './replay-telemetry.js';
 
 /**
  * Delay before firing the deferred unconsumed-event check after the promise
@@ -65,6 +66,8 @@ export interface EventsConsumerOptions {
    * deserialization delays the resolve() that triggers the next subscribe().
    */
   getPromiseQueue: () => Promise<void>;
+  /** Aggregate diagnostics for this replay; omitted when tracing is inactive. */
+  replayMetrics?: WorkflowReplayMetrics;
 }
 
 export class EventsConsumer {
@@ -76,7 +79,9 @@ export class EventsConsumer {
   private getPromiseQueue: () => Promise<void>;
   private pendingUnconsumedCheck: Promise<void> | null = null;
   private pendingUnconsumedTimeout: ReturnType<typeof setTimeout> | null = null;
+  private pendingUnconsumedStartedAt: number | null = null;
   private unconsumedCheckVersion = 0;
+  private replayMetrics?: WorkflowReplayMetrics;
 
   constructor(events: Event[], options: EventsConsumerOptions) {
     this.events = events;
@@ -84,6 +89,7 @@ export class EventsConsumer {
     this.onConsumedEvent = options.onConsumedEvent;
     this.onUnconsumedEvent = options.onUnconsumedEvent;
     this.getPromiseQueue = options.getPromiseQueue;
+    this.replayMetrics = options.replayMetrics;
   }
 
   /**
@@ -101,6 +107,12 @@ export class EventsConsumer {
     // Incrementing the version causes any in-flight promise chain check to no-op.
     // Also clear the pending setTimeout if it hasn't fired yet.
     if (this.pendingUnconsumedCheck !== null) {
+      if (this.replayMetrics && this.pendingUnconsumedStartedAt !== null) {
+        this.replayMetrics.subscriptionWaitCount++;
+        this.replayMetrics.subscriptionWaitMs +=
+          performance.now() - this.pendingUnconsumedStartedAt;
+      }
+      this.pendingUnconsumedStartedAt = null;
       this.unconsumedCheckVersion++;
       this.pendingUnconsumedCheck = null;
       if (this.pendingUnconsumedTimeout !== null) {
@@ -160,8 +172,23 @@ export class EventsConsumer {
    * sentinel).
    */
   private consumeOne(currentEvent: Event | null): boolean {
+    const metrics = this.replayMetrics;
+    if (!metrics) return this.consumeOneCallbacks(currentEvent);
+    const startedAt = performance.now();
+    try {
+      return this.consumeOneCallbacks(currentEvent, metrics);
+    } finally {
+      metrics.eventConsumeMs += performance.now() - startedAt;
+    }
+  }
+
+  private consumeOneCallbacks(
+    currentEvent: Event | null,
+    metrics?: WorkflowReplayMetrics
+  ): boolean {
     for (let i = 0; i < this.callbacks.length; i++) {
       const callback = this.callbacks[i];
+      if (metrics) metrics.eventCallbackInvocations++;
       let handled = EventConsumerResult.NotConsumed;
       try {
         handled = callback(currentEvent);
@@ -175,6 +202,7 @@ export class EventsConsumer {
         continue;
       }
       if (currentEvent !== null) {
+        if (metrics) metrics.eventsConsumed++;
         this.notifyConsumedEvent(currentEvent);
       }
       // consumer handled this event, so increase the event index
@@ -199,6 +227,9 @@ export class EventsConsumer {
     // resolve() → user code → subscribe()) completes first. If the event
     // is still unconsumed after the queue drains, it's truly orphaned.
     if (currentEvent !== null) {
+      if (this.replayMetrics) {
+        this.pendingUnconsumedStartedAt = performance.now();
+      }
       const checkVersion = ++this.unconsumedCheckVersion;
       this.pendingUnconsumedCheck = this.getPromiseQueue()
         .then(
@@ -222,6 +253,7 @@ export class EventsConsumer {
             this.pendingUnconsumedTimeout = null;
             if (this.unconsumedCheckVersion === checkVersion) {
               this.pendingUnconsumedCheck = null;
+              this.pendingUnconsumedStartedAt = null;
               this.onUnconsumedEvent(currentEvent);
             }
           }, getDeferredCheckDelayMs());

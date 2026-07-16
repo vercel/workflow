@@ -7,9 +7,59 @@ import {
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from './private.js';
+import {
+  failStepHydrationMeasurement,
+  finishStepDeliveryMeasurement,
+  finishStepHydrationMeasurement,
+  startStepReplayMeasurement,
+} from './replay-telemetry.js';
 import type { Serializable } from './schemas.js';
 import { hydrateStepError, hydrateStepReturnValue } from './serialization.js';
 import { getOrHydrateStepReturnValue } from './step-hydration-cache.js';
+
+async function deliverCompletedStep<Result>(
+  ctx: WorkflowOrchestratorContext,
+  completedEventId: string | undefined,
+  serializedResult: unknown,
+  resolve: (value: Result) => void,
+  reject: (reason?: unknown) => void
+): Promise<void> {
+  const replayMetrics = ctx.replayMetrics;
+  const measurement = replayMetrics
+    ? startStepReplayMeasurement(
+        replayMetrics,
+        ctx.stepHydrationCache,
+        completedEventId
+      )
+    : undefined;
+  try {
+    const hydratedResult = await getOrHydrateStepReturnValue(
+      ctx.stepHydrationCache,
+      completedEventId,
+      () =>
+        hydrateStepReturnValue(
+          serializedResult,
+          ctx.runId,
+          ctx.encryptionKey,
+          ctx.globalThis
+        )
+    );
+    if (measurement) {
+      finishStepHydrationMeasurement(
+        measurement,
+        ctx.stepHydrationCache,
+        completedEventId
+      );
+    }
+    resolve(hydratedResult as Result);
+  } catch (error) {
+    if (measurement) failStepHydrationMeasurement(measurement);
+    reject(error);
+  } finally {
+    if (measurement) finishStepDeliveryMeasurement(measurement);
+    ctx.pendingDeliveries--;
+  }
+}
 
 export function createUseStep(ctx: WorkflowOrchestratorContext) {
   return function useStep<Args extends Serializable[], Result>(
@@ -226,26 +276,15 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           const completedEventId = event.eventId;
           const serializedResult = event.eventData.result;
           ctx.pendingDeliveries++;
-          ctx.promiseQueue = ctx.promiseQueue.then(async () => {
-            try {
-              const hydratedResult = await getOrHydrateStepReturnValue(
-                ctx.stepHydrationCache,
-                completedEventId,
-                () =>
-                  hydrateStepReturnValue(
-                    serializedResult,
-                    ctx.runId,
-                    ctx.encryptionKey,
-                    ctx.globalThis
-                  )
-              );
-              resolve(hydratedResult as Result);
-            } catch (error) {
-              reject(error);
-            } finally {
-              ctx.pendingDeliveries--;
-            }
-          });
+          ctx.promiseQueue = ctx.promiseQueue.then(() =>
+            deliverCompletedStep(
+              ctx,
+              completedEventId,
+              serializedResult,
+              resolve,
+              reject
+            )
+          );
           return EventConsumerResult.Finished;
         }
 

@@ -48,6 +48,27 @@ describe('script-cache', () => {
     expect(a).toBe(b);
   });
 
+  it('reports whether a run compiled or reused its Script', () => {
+    const cacheStatuses: boolean[] = [];
+    const { context: firstContext } = createContext({ seed, fixedTimestamp });
+    const { context: secondContext } = createContext({ seed, fixedTimestamp });
+
+    runCachedWorkflowScript(
+      SAMPLE_BUNDLE,
+      'workflows/a.ts',
+      firstContext,
+      (cacheHit) => cacheStatuses.push(cacheHit)
+    );
+    runCachedWorkflowScript(
+      SAMPLE_BUNDLE,
+      'workflows/a.ts',
+      secondContext,
+      (cacheHit) => cacheStatuses.push(cacheHit)
+    );
+
+    expect(cacheStatuses).toEqual([false, true]);
+  });
+
   it('returns distinct Scripts for the same code under different filenames', () => {
     const a = getCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/a.ts');
     const b = getCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/b.ts');

@@ -6,6 +6,7 @@ import { withResolvers } from '@workflow/utils';
 import type { CryptoKey } from './encryption.js';
 import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
+import type { WorkflowReplayMetrics } from './replay-telemetry.js';
 import type { Serializable } from './schemas.js';
 import type { StepHydrationCache } from './step-hydration-cache.js';
 
@@ -207,6 +208,11 @@ export interface WorkflowOrchestratorContext {
    * gracefully to re-hydrating every replay — identical to previous behavior.
    */
   stepHydrationCache?: StepHydrationCache;
+  /**
+   * Low-overhead aggregate replay diagnostics for the active workflow.run
+   * span. Undefined when tracing is unavailable or the span is not recording.
+   */
+  replayMetrics?: WorkflowReplayMetrics;
 }
 
 /** The kind of branch-deciding delivery a barrier represents. */

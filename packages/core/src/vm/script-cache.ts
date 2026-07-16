@@ -100,7 +100,8 @@ function touchBundle(code: string): Map<string, Script> | undefined {
  */
 export function getCachedWorkflowScript(
   code: string,
-  filename: string
+  filename: string,
+  onCacheStatus?: (cacheHit: boolean) => void
 ): Script {
   let byFilename = touchBundle(code);
   if (byFilename === undefined) {
@@ -117,6 +118,7 @@ export function getCachedWorkflowScript(
     }
   }
   let script = byFilename.get(filename);
+  onCacheStatus?.(script !== undefined);
   if (script === undefined) {
     script = new Script(code, { filename });
     byFilename.set(filename, script);
@@ -131,9 +133,12 @@ export function getCachedWorkflowScript(
 export function runCachedWorkflowScript(
   code: string,
   filename: string,
-  context: Context
+  context: Context,
+  onCacheStatus?: (cacheHit: boolean) => void
 ): unknown {
-  return getCachedWorkflowScript(code, filename).runInContext(context);
+  return getCachedWorkflowScript(code, filename, onCacheStatus).runInContext(
+    context
+  );
 }
 
 /**

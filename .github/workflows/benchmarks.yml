@@ -157,6 +157,10 @@ jobs:
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.target.project-id }}
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.target.project-slug }}
+          # Keep PR benchmarks entirely on preview infrastructure. This is the
+          # same protected workflow-server preview used by the Vercel E2E lane;
+          # main remains pointed at the public production server.
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
           # Report the PR head SHA (not the synthetic merge commit) in results
           GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           # Trusted-sources OIDC token is minted on demand by
