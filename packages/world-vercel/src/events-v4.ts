@@ -21,62 +21,62 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
-import {
-  EntityConflictError,
-  RunExpiredError,
-  ThrottleError,
-  TooEarlyError,
-  WorkflowWorldError,
-} from '@workflow/errors';
 import { decode } from 'cbor-x';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getEventsDispatcher } from './http-client.js';
-import { injectTraceContextIntoHeaders } from './telemetry.js';
+import {
+  errorForResponse,
+  instrumentedFetch,
+  parseRetryAfter,
+} from './http-core.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
 /**
- * Issue a v4 request through the global `fetch` — NOT undici's `request`.
+ * Issue an instrumented v4 request through the global `fetch` — NOT undici's
+ * `request`.
  *
  * Vercel's observability "outgoing requests" view instruments the global
  * `fetch`. Calling `undici.request()` directly bypasses that instrumentation,
  * so v4 event traffic disappeared from the log viewer while queue traffic
- * (which uses `fetch`) kept showing. Routing through `fetch` with the same
- * custom undici dispatcher restores visibility. The dispatcher itself does
- * not affect instrumentation — the v3 `makeRequest` path has always passed
- * one (see utils.ts) and stayed visible.
+ * (which uses `fetch`) kept showing. `instrumentedFetch` routes through the
+ * global `fetch` with the custom dispatcher, restoring visibility while also
+ * opening the OTEL client span, injecting trace context, setting the
+ * cache-bust header (see #618), and emitting `DEBUG` logs — the same envelope
+ * the v3 `makeRequest` path has always had.
  *
  * The events API uses its own HTTP/2-enabled dispatcher
  * (`getEventsDispatcher`): these reads/writes are plain request/response (or a
  * streamed LIST response) and benefit from multiplexing. The default dispatcher
  * stays on HTTP/1.1 because H2 deadlocks the queue's webhook respondWith
  * mechanism — see http-client.ts.
+ *
+ * No per-request timeout: a LIST response streams the full event-log page, which
+ * for a large run can legitimately take a while to drain — a whole-request
+ * deadline would abort it mid-stream.
  */
 async function fetchV4(
   url: string,
   init: { method: string; headers: Headers; body?: Uint8Array },
-  config: APIConfig | undefined
+  config: APIConfig | undefined,
+  opName: string
 ): Promise<Response> {
-  // Set a unique header per request to bypass Next.js fetch memoization /
-  // Data Cache. Routing through the global `fetch` (above) re-exposes these
-  // reads to that caching — without busting it, an identical event read could
-  // be served a stale or truncated cached page and silently drop events,
-  // breaking replay correctness. The v3 `makeRequest` path does the same.
-  // See: https://github.com/vercel/workflow/issues/618
-  init.headers.set('X-Request-Time', Date.now().toString());
-  // Explicitly propagate the active trace context (traceparent / tracestate /
-  // baggage) onto the outgoing request so workflow-server can parent its spans
-  // to this invocation — matching the v3 `makeRequest` path (see utils.ts).
-  // The custom undici dispatcher bypasses ambient auto-instrumentation, so
-  // without this v4 event traffic from the flow route would not propagate
-  // context to workflow-server. No-ops when no OTEL SDK is registered.
-  await injectTraceContextIntoHeaders(init.headers);
-  return fetch(url, {
+  return instrumentedFetch({
     method: init.method,
+    url,
     headers: init.headers,
     body: init.body,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
     dispatcher: getEventsDispatcher(config),
-  } as any);
+    timeoutMs: null,
+    logLabel: opName,
+    buildError: async (response) =>
+      errorFromV4Response(
+        response.status,
+        headersToRecord(response.headers),
+        await response.text(),
+        opName,
+        url
+      ),
+  });
 }
 
 /** Flatten a fetch `Headers` into the record shape throwForErrorResponse
@@ -129,6 +129,13 @@ export interface CreateEventV4Input {
   hookIsWebhook?: boolean;
   hookIsSystem?: boolean;
   errorCode?: string;
+  /** run_cancelled's optional free-text cancellation reason. Small plaintext
+   *  metadata, capped at 512 chars by the @workflow/world schema. */
+  cancelReason?: string;
+  /** step_started's inline-ownership stamp: the queue message ID of the
+   *  invocation running this step's body inline. Persisted on the event row
+   *  so wake replays can observe the active owner. */
+  ownerMessageId?: string;
   /** Arbitrary structured map; rides as a native CBOR object in the
    *  frame meta. Bounded by the server at 2 KB encoded. */
   executionContext?: Record<string, unknown>;
@@ -144,6 +151,31 @@ export interface CreateEventV4Input {
   /** Opt-in for framework-level callers to write `$`-prefixed reserved
    *  attribute keys (attr_set / run_created / run_started). */
   allowReservedAttributes?: boolean;
+  /** Client-measured time-to-first-step ms, riding on the run's first
+   *  step_completed / step_failed. Consumed server-side for latency
+   *  metrics; not read back. */
+  ttfs?: number;
+  /** Client-measured step-to-step overhead ms (previous step's terminal
+   *  event → this step's body starting), riding on step_completed /
+   *  step_failed. Consumed server-side for latency metrics. */
+  stso?: number;
+  /** Progress counters taken when the STSO gap began. */
+  stepCount?: number;
+  eventCount?: number;
+  /** Client-measured run_started-to-first-step ms (the `run_started`
+   *  response landing → this step's start POST being issued), riding on the
+   *  run's first step_completed / step_failed. Consumed server-side for
+   *  latency metrics. */
+  rsfs?: number;
+  /** Client-measured synchronous replay-compute ms of only the FINAL replay
+   *  pass within the rsfs window (the pass that scheduled the first step),
+   *  excluding awaited network I/O — not accumulated across earlier
+   *  pre-first-step passes, so it is not "the replay portion of rsfs".
+   *  Only present alongside rsfs, and only for the run's first step. */
+  finalSchedulingReplay?: number;
+  /** Runtime optimizations active for the ttfs/stso measurement
+   *  (e.g. 'turbo', 'lazyStepStart', 'optimisticStart'). */
+  optimizations?: string[];
   /** Opt-in inline-delta request. On a step-terminal write
    *  (step_completed / step_failed) the inline loop passes the cursor it
    *  held before the write so the server can return the authoritative
@@ -157,6 +189,14 @@ export interface CreateEventV4Input {
    *  skip the list+resolve. Acted on by the server only for run_started;
    *  older servers ignore it and preload as before. */
   skipPreload?: boolean;
+  /**
+   * Epoch ms (the ULID time of the latest event the runtime has loaded
+   * during replay). Sent by replay-context creates so the backend can
+   * reject the event when a newer out-of-band event was recorded after this
+   * snapshot, enabling an optimistic-concurrency guard. Omitted by callers
+   * without a loaded event log; older servers ignore it entirely.
+   */
+  stateUpdatedAt?: number;
 }
 
 export interface CreateEventV4Result {
@@ -215,6 +255,10 @@ function buildPostFrameMeta(
     meta.hookIsWebhook = input.hookIsWebhook;
   if (input.hookIsSystem !== undefined) meta.hookIsSystem = input.hookIsSystem;
   if (input.errorCode !== undefined) meta.errorCode = input.errorCode;
+  if (input.cancelReason !== undefined) meta.cancelReason = input.cancelReason;
+  if (input.ownerMessageId !== undefined) {
+    meta.ownerMessageId = input.ownerMessageId;
+  }
   if (input.executionContext !== undefined) {
     meta.executionContext = input.executionContext;
   }
@@ -224,33 +268,41 @@ function buildPostFrameMeta(
   if (input.allowReservedAttributes !== undefined) {
     meta.allowReservedAttributes = input.allowReservedAttributes;
   }
+  if (input.ttfs !== undefined) meta.ttfs = input.ttfs;
+  if (input.stso !== undefined) meta.stso = input.stso;
+  if (input.stepCount !== undefined) meta.stepCount = input.stepCount;
+  if (input.eventCount !== undefined) meta.eventCount = input.eventCount;
+  if (input.rsfs !== undefined) meta.rsfs = input.rsfs;
+  if (input.finalSchedulingReplay !== undefined) {
+    meta.finalSchedulingReplay = input.finalSchedulingReplay;
+  }
+  if (input.optimizations !== undefined) {
+    meta.optimizations = input.optimizations;
+  }
   if (input.sinceCursor !== undefined) meta.sinceCursor = input.sinceCursor;
   if (input.skipPreload !== undefined) meta.skipPreload = input.skipPreload;
+  if (input.stateUpdatedAt !== undefined) {
+    meta.stateUpdatedAt = input.stateUpdatedAt;
+  }
   return meta;
 }
 
 /**
- * Map a non-2xx response to the same typed-error contract the v3 client's
- * `makeRequest` used. The runtime branches on these types for core control
- * flow, so v4 must preserve every mapping:
- *
- *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
- *   - 410 → RunExpiredError (runtime exits without retrying)
- *   - 425 → TooEarlyError + retryAfter (step retry pacing — see #1806 for
- *     what happens when a 425 degrades into an untyped error)
- *   - 429 → ThrottleError + retryAfter
- *   - anything else → WorkflowWorldError with `status` (the hook 404 →
- *     HookNotFoundError translation in events.ts keys off status === 404)
- *
- * Exported for unit tests.
+ * Build the typed error for a non-2xx v4 response. Reuses the shared
+ * `errorForResponse` status → error-type contract (409→EntityConflictError,
+ * 410→RunExpiredError, 412→PreconditionFailedError, 425→TooEarlyError,
+ * 429→ThrottleError, else →WorkflowWorldError) so v3 and v4 stay in lockstep —
+ * only the message *string* is v4-specific (`v4 {opName} failed: HTTP …`,
+ * which the runtime and log tooling key on; the hook 404 →
+ * HookNotFoundError translation in events.ts keys off status === 404).
  */
-export function throwForErrorResponse(
+function errorFromV4Response(
   statusCode: number,
   responseHeaders: Record<string, string | string[] | undefined>,
   errorBody: string,
   opName: string,
   url: string
-): never {
+): Error {
   let message = `v4 ${opName} failed: HTTP ${statusCode}`;
   let code: string | undefined;
   try {
@@ -262,24 +314,37 @@ export function throwForErrorResponse(
     if (errorBody) message += ` ${errorBody}`;
   }
 
-  // Retry-After response header (seconds). Used by 425 and 429.
-  let retryAfter: number | undefined;
-  const retryAfterHeader = readHeader(responseHeaders, 'retry-after');
-  if (retryAfterHeader) {
-    const parsed = parseInt(retryAfterHeader, 10);
-    if (!Number.isNaN(parsed)) retryAfter = parsed;
-  }
-
-  if (statusCode === 409) throw new EntityConflictError(message);
-  if (statusCode === 410) throw new RunExpiredError(message);
-  if (statusCode === 425) throw new TooEarlyError(message, { retryAfter });
-  if (statusCode === 429) throw new ThrottleError(message, { retryAfter });
-  throw new WorkflowWorldError(message, {
-    status: statusCode,
+  const retryAfter = parseRetryAfter(
+    readHeader(responseHeaders, 'retry-after')
+  );
+  // A firewall-challenge 429 is routed to the retryable transport path (not
+  // ThrottleError) so step_started writes back off + cap rather than looping.
+  return errorForResponse(statusCode, message, {
+    retryAfter,
     code,
     url,
-    retryAfter,
+    mitigated: readHeader(responseHeaders, 'x-vercel-mitigated'),
   });
+}
+
+/**
+ * Throwing wrapper around `errorFromV4Response`. Exported for unit tests; the
+ * request paths throw via `instrumentedFetch`'s `buildError`.
+ */
+export function throwForErrorResponse(
+  statusCode: number,
+  responseHeaders: Record<string, string | string[] | undefined>,
+  errorBody: string,
+  opName: string,
+  url: string
+): never {
+  throw errorFromV4Response(
+    statusCode,
+    responseHeaders,
+    errorBody,
+    opName,
+    url
+  );
 }
 
 /**
@@ -314,18 +379,9 @@ export async function createWorkflowRunEventV4(
   const response = await fetchV4(
     url,
     { method: 'POST', headers, body: frame },
-    config
+    config,
+    'createEvent'
   );
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throwForErrorResponse(
-      response.status,
-      headersToRecord(response.headers),
-      errorBody,
-      'createEvent',
-      url
-    );
-  }
 
   const eventId = response.headers.get(V4_RESPONSE_HEADERS.eventId);
   const runId = response.headers.get(V4_RESPONSE_HEADERS.runId);
@@ -395,17 +451,12 @@ export async function getEventV4(
   const { baseUrl, headers } = await getHttpConfig(config);
 
   const url = `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}`;
-  const response = await fetchV4(url, { method: 'GET', headers }, config);
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throwForErrorResponse(
-      response.status,
-      headersToRecord(response.headers),
-      errorBody,
-      'getEvent',
-      url
-    );
-  }
+  const response = await fetchV4(
+    url,
+    { method: 'GET', headers },
+    config,
+    'getEvent'
+  );
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new Error(
@@ -488,17 +539,12 @@ async function consumeListFrameStream(
   config: APIConfig | undefined,
   opName: string
 ): Promise<ListEventsV4Result> {
-  const response = await fetchV4(url, { method: 'GET', headers }, config);
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throwForErrorResponse(
-      response.status,
-      headersToRecord(response.headers),
-      errorBody,
-      opName,
-      url
-    );
-  }
+  const response = await fetchV4(
+    url,
+    { method: 'GET', headers },
+    config,
+    opName
+  );
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new Error(

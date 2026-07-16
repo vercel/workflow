@@ -1,6 +1,12 @@
 'use client';
 
-import type { Event, Hook, WorkflowRun } from '@workflow/world';
+import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
+import {
+  type Event,
+  type Hook,
+  isTerminalWorkflowRunStatus,
+  type WorkflowRun,
+} from '@workflow/world';
 import clsx from 'clsx';
 import { Send, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -61,6 +67,8 @@ export function EntityDetailPanel({
   onDecrypt,
   isDecrypting = false,
   selectedSpan,
+  showSeparateEventOccurrenceTimestamps = false,
+  getModuleSourceUrl,
 }: {
   run: WorkflowRun;
   /** Callback when a stream reference is clicked */
@@ -74,10 +82,7 @@ export function EntityDetailPanel({
     correlationId: string
   ) => Promise<{ stoppedCount: number }>;
   /** Callback to load event data for a specific event (lazy loading) */
-  onLoadEventData?: (
-    correlationId: string,
-    eventId: string
-  ) => Promise<unknown | null>;
+  onLoadEventData?: (event: Event) => Promise<unknown | null>;
   /** Callback to resolve a hook with a payload. */
   onResolveHook?: (
     hookToken: string,
@@ -92,6 +97,12 @@ export function EntityDetailPanel({
   isDecrypting?: boolean;
   /** Info about the currently selected span from the trace viewer */
   selectedSpan: SelectedSpanInfo | null;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
+  getModuleSourceUrl?: (info: {
+    moduleSpecifier: string;
+    deploymentId: string;
+  }) => string | undefined;
 }): React.JSX.Element | null {
   const toast = useToast();
   const [stoppingSleep, setStoppingSleep] = useState(false);
@@ -124,8 +135,7 @@ export function EntityDetailPanel({
   const canWakeUp = useMemo(() => {
     void rawEventsLength;
     if (resource !== 'sleep' || !rawEvents) return false;
-    const terminalStates = ['completed', 'failed', 'cancelled'];
-    if (terminalStates.includes(run.status)) return false;
+    if (isTerminalWorkflowRunStatus(run.status)) return false;
     const hasWaitCreated = rawEvents.some(
       (e) => e.eventType === 'wait_created'
     );
@@ -144,8 +154,7 @@ export function EntityDetailPanel({
     // Check if we already resolved this hook in this session
     if (resolvedHookIds.has(resourceId)) return false;
 
-    const terminalStates = ['completed', 'failed', 'cancelled'];
-    if (terminalStates.includes(run.status)) return false;
+    if (isTerminalWorkflowRunStatus(run.status)) return false;
     const hasHookDisposed = rawEvents.some(
       (e) => e.eventType === 'hook_disposed'
     );
@@ -274,6 +283,21 @@ export function EntityDetailPanel({
     return undefined;
   }, [displayData, run.workflowName]);
 
+  const moduleSourceUrl = useMemo(() => {
+    if (!getModuleSourceUrl || !moduleSpecifier) return undefined;
+    const parsed =
+      parseStepName(moduleSpecifier) ?? parseWorkflowName(moduleSpecifier);
+    if (!parsed) return undefined;
+    const dataDeploymentId = displayData.deploymentId;
+    return getModuleSourceUrl({
+      moduleSpecifier: parsed.moduleSpecifier,
+      deploymentId:
+        typeof dataDeploymentId === 'string'
+          ? dataDeploymentId
+          : run.deploymentId,
+    });
+  }, [getModuleSourceUrl, moduleSpecifier, displayData, run.deploymentId]);
+
   if (!selectedSpan || !resource || !resourceId) {
     return null;
   }
@@ -357,6 +381,7 @@ export function EntityDetailPanel({
           <AttributePanel
             data={displayData}
             moduleSpecifier={moduleSpecifier}
+            moduleSourceUrl={moduleSourceUrl}
             expiredAt={run.expiredAt}
             isLoading={loading}
             error={error ?? undefined}
@@ -374,6 +399,9 @@ export function EntityDetailPanel({
               onStreamClick={onStreamClick}
               onRunClick={onRunClick}
               encryptionKey={encryptionKey}
+              showSeparateEventOccurrenceTimestamps={
+                showSeparateEventOccurrenceTimestamps
+              }
             />
           )}
         </div>

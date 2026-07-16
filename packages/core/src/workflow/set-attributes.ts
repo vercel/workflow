@@ -4,9 +4,9 @@ import { normalizeAttributeChanges } from '../attribute-changes.js';
 import { WORKFLOW_SET_ATTRIBUTES } from '../symbols.js';
 
 /**
- * Options accepted by `experimental_setAttributes`.
+ * Options accepted by `setAttributes`.
  */
-export interface ExperimentalSetAttributesOptions {
+export interface SetAttributesOptions {
   /**
    * Permit attribute keys that start with the reserved `$` prefix.
    * **Default: `false`.**
@@ -27,12 +27,12 @@ export interface ExperimentalSetAttributesOptions {
 }
 
 /**
+ * @deprecated Use {@link SetAttributesOptions} instead.
+ */
+export type ExperimentalSetAttributesOptions = SetAttributesOptions;
+
+/**
  * Attach plaintext string key/value metadata to the current workflow run.
- *
- * **EXPERIMENTAL.** The `experimental_` prefix is deliberate — the
- * shape, semantics, and dispatch path are likely to change before this
- * is renamed to a stable export. Use only when you can absorb a
- * breaking rename later.
  *
  * Callable only from a workflow body (`'use workflow'`). The call is
  * dispatched as a native `attr_set` event and materialized on the run.
@@ -47,42 +47,42 @@ export interface ExperimentalSetAttributesOptions {
  * trying to write a `$`-prefixed key throws `FatalError`. If you are a
  * framework author and need to set a reserved key, pass
  * `{ allowReservedAttributes: true }` as the second argument — see
- * `ExperimentalSetAttributesOptions` for the trade-offs.
+ * `SetAttributesOptions` for the trade-offs.
  *
- * **WARNING**: While this feature is experimental, calling e.g.
- * `Promise.all([experimental_setAttributes({ a: '1' }), experimental_setAttributes({ a: '2' })])`
+ * **WARNING**: Calling e.g.
+ * `Promise.all([setAttributes({ a: '1' }), setAttributes({ a: '2' })])`
  * is not guaranteed to be ordered consistently, but the equivalent
  * sequential `.then()` chain is.
  *
  * @example
  * ```ts
- * import { experimental_setAttributes } from 'workflow';
+ * import { setAttributes } from 'workflow';
  *
  * export async function myWorkflow() {
  *   'use workflow';
- *   await experimental_setAttributes({ phase: 'init' });
+ *   await setAttributes({ phase: 'init' });
  *   // ... work ...
- *   await experimental_setAttributes({ phase: 'done', orderId: 'ord_123' });
- *   await experimental_setAttributes({ orderId: undefined }); // remove
+ *   await setAttributes({ phase: 'done', orderId: 'ord_123' });
+ *   await setAttributes({ orderId: undefined }); // remove
  * }
  * ```
  *
  * @example Framework / library code writing into the reserved namespace.
  * ```ts
- * await experimental_setAttributes(
+ * await setAttributes(
  *   { '$agent.kind': 'durable-agent' },
  *   { allowReservedAttributes: true }
  * );
  * ```
  */
-export async function experimental_setAttributes(
+export async function setAttributes(
   attrs: Record<string, string | undefined>,
-  options: ExperimentalSetAttributesOptions = {}
+  options: SetAttributesOptions = {}
 ): Promise<void> {
   const changes = normalizeAttributeChanges(attrs, options);
   if (changes.length === 0) return;
   const allowReservedAttributes = options.allowReservedAttributes === true;
-  const setAttributes = (globalThis as Record<symbol, unknown>)[
+  const dispatchSetAttributes = (globalThis as Record<symbol, unknown>)[
     WORKFLOW_SET_ATTRIBUTES
   ] as
     | ((
@@ -90,14 +90,20 @@ export async function experimental_setAttributes(
         options?: { allowReservedAttributes?: boolean }
       ) => Promise<void>)
     | undefined;
-  if (!setAttributes) {
+  if (!dispatchSetAttributes) {
     throw new FatalError(
-      'experimental_setAttributes() called outside a workflow runtime context. ' +
+      'setAttributes() called outside a workflow runtime context. ' +
         'It must be called from within a workflow body (`use workflow`).'
     );
   }
-  await setAttributes(
+  await dispatchSetAttributes(
     changes,
     allowReservedAttributes ? { allowReservedAttributes: true } : {}
   );
 }
+
+/**
+ * @deprecated The feature is no longer experimental — use
+ * {@link setAttributes} instead.
+ */
+export const experimental_setAttributes = setAttributes;

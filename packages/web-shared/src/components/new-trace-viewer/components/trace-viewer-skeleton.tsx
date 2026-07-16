@@ -1,6 +1,9 @@
 import { Skeleton } from '../../ui/skeleton';
+import { DEFAULT_START_PX, paneColTemplate } from './pane-constants';
 
-const COL_TEMPLATE = '340px 1px minmax(50px, 1fr)';
+// Mirrors SplitPane's initial column template so the skeleton lines up with
+// the real viewer's first paint.
+const COL_TEMPLATE = paneColTemplate(DEFAULT_START_PX);
 
 const ROWS: { id: string; name: number; off: number; bar: number }[] = [
   { id: 'r0', name: 62, off: 0, bar: 72 },
@@ -29,6 +32,23 @@ export function TraceViewerSkeleton() {
       className="flex flex-col w-full h-full min-h-0 bg-background-100"
     >
       <span className="sr-only">Loading trace…</span>
+
+      {/* Minimap strip: thin density lines tracing the same shape as the bars */}
+      <div className="relative h-10 min-h-10 shrink-0 border-b border-gray-alpha-400">
+        <div className="absolute inset-x-4 top-[6px]">
+          {ROWS.map((row, index) => (
+            <Skeleton
+              key={row.id}
+              className="absolute h-[3px] rounded-full"
+              style={{
+                left: `${row.off}%`,
+                width: `${row.bar}%`,
+                top: index * 3.5,
+              }}
+            />
+          ))}
+        </div>
+      </div>
 
       {/* Header row: search header | divider | timeline header */}
       <div

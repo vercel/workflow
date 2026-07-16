@@ -6,6 +6,7 @@
  * o11y, CLI o11y). It has NO Node.js dependencies.
  */
 
+import { getEventDataRefFields } from '@workflow/world';
 import { parse, unflatten } from 'devalue';
 
 // ---------------------------------------------------------------------------
@@ -690,66 +691,17 @@ function hydrateWorkflowIO<
 /**
  * Hydrate the eventData fields of an event resource.
  */
-function hydrateEventData<T extends { eventId?: string; eventData?: any }>(
-  resource: T,
-  revivers: Revivers
-): T {
+function hydrateEventData<
+  T extends { eventId?: string; eventType?: string; eventData?: any },
+>(resource: T, revivers: Revivers): T {
   if (!resource.eventData) return resource;
 
   const eventData = { ...resource.eventData };
 
-  // step_completed events have eventData.result (serialized return value)
-  if ('result' in eventData && eventData.result != null) {
+  for (const field of getEventDataRefFields(resource.eventType ?? '')) {
+    if (eventData[field] == null) continue;
     try {
-      eventData.result = hydrateData(eventData.result, revivers);
-    } catch {
-      // Leave un-hydrated
-    }
-  }
-
-  // step_created events have eventData.input (serialized step arguments)
-  if ('input' in eventData && eventData.input != null) {
-    try {
-      eventData.input = hydrateData(eventData.input, revivers);
-    } catch {
-      // Leave un-hydrated
-    }
-  }
-
-  // run_completed events have eventData.output (serialized return value)
-  if ('output' in eventData && eventData.output != null) {
-    try {
-      eventData.output = hydrateData(eventData.output, revivers);
-    } catch {
-      // Leave un-hydrated
-    }
-  }
-
-  // hook_created events may have serialized metadata
-  if ('metadata' in eventData && eventData.metadata != null) {
-    try {
-      eventData.metadata = hydrateData(eventData.metadata, revivers);
-    } catch {
-      // Leave un-hydrated
-    }
-  }
-
-  // hook_received events have eventData.payload (serialized hook payload)
-  if ('payload' in eventData && eventData.payload != null) {
-    try {
-      eventData.payload = hydrateData(eventData.payload, revivers);
-    } catch {
-      // Leave un-hydrated
-    }
-  }
-
-  // step_failed / step_retrying / run_failed events have eventData.error
-  // (the thrown value, serialized via the error pipeline). Without this,
-  // event listings in o11y tooling would surface the raw `Uint8Array`
-  // payload instead of a hydrated `{ name, message, stack, … }` object.
-  if ('error' in eventData && eventData.error != null) {
-    try {
-      eventData.error = hydrateData(eventData.error, revivers);
+      eventData[field] = hydrateData(eventData[field], revivers);
     } catch {
       // Leave un-hydrated
     }
@@ -791,6 +743,7 @@ export function hydrateResourceIO<
     stepId?: string;
     hookId?: string;
     eventId?: string;
+    eventType?: string;
     input?: any;
     output?: any;
     metadata?: any;
@@ -836,15 +789,24 @@ export function hydrateResourceIO<
 /** Extract all stream IDs from a value (recursively traverses objects/arrays) */
 export function extractStreamIds(obj: unknown): string[] {
   const streamIds: string[] = [];
+  // The hydrated o11y data this walks comes from devalue, which supports
+  // circular and repeated references. Track visited containers so a cycle
+  // (e.g. a step result whose object refers back to itself) doesn't recurse
+  // forever and overflow the stack.
+  const seen = new WeakSet<object>();
 
   function traverse(value: unknown): void {
     if (isStreamId(value)) {
       streamIds.push(value as string);
     } else if (Array.isArray(value)) {
+      if (seen.has(value)) return;
+      seen.add(value);
       for (const item of value) {
         traverse(item);
       }
     } else if (value && typeof value === 'object') {
+      if (seen.has(value)) return;
+      seen.add(value);
       for (const val of Object.values(value)) {
         traverse(val);
       }

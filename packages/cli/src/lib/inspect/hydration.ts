@@ -19,6 +19,7 @@ import {
   serializedInstanceToRef,
 } from '@workflow/core/serialization-format';
 import { parseClassName } from '@workflow/utils/parse-name';
+import { getEventDataRefFields } from '@workflow/world';
 import chalk from 'chalk';
 
 /**
@@ -324,6 +325,7 @@ async function maybeDecryptFields<
     input?: any;
     output?: any;
     metadata?: any;
+    eventType?: string;
     eventData?: any;
   },
 >(resource: T, resolver: EncryptionKeyResolver): Promise<T> {
@@ -350,13 +352,7 @@ async function maybeDecryptFields<
     // Decrypt eventData fields (Event)
     if (result.eventData && typeof result.eventData === 'object') {
       const eventData = { ...result.eventData };
-      for (const field of [
-        'result',
-        'input',
-        'output',
-        'metadata',
-        'payload',
-      ]) {
+      for (const field of getEventDataRefFields(result.eventType ?? '')) {
         eventData[field] = await maybeDecrypt(eventData[field], k);
       }
       result.eventData = eventData;
@@ -406,7 +402,9 @@ function replaceEncryptedAndExpiredWithRef<T>(resource: T): T {
 
   if (result.eventData && typeof result.eventData === 'object') {
     const ed = { ...(result.eventData as Record<string, unknown>) };
-    for (const key of ['result', 'input', 'output', 'metadata', 'payload']) {
+    const eventType =
+      typeof result.eventType === 'string' ? result.eventType : '';
+    for (const key of getEventDataRefFields(eventType)) {
       ed[key] = toDisplayRef(ed[key]);
     }
     result.eventData = ed;

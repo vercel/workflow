@@ -183,6 +183,18 @@ export interface QueueOptions {
   delaySeconds?: number;
   /** Spec version of the target run. Used to select the queue transport format. */
   specVersion?: number;
+  /**
+   * World-specific routing hint identifying the region the message should
+   * be sent to (e.g. a Vercel compute region code such as `'iad1'`).
+   *
+   * Worlds that don't have a regional dimension ignore this field. For
+   * `@workflow/world-vercel`, this overrides the region the underlying
+   * `@vercel/queue` client uses to route the message; when omitted, the
+   * region is resolved from the payload's tagged run ID, then from the
+   * `VERCEL_REGION` environment variable, and finally defaults to `'iad1'`
+   * (the pre-regional-routing behaviour).
+   */
+  region?: string;
 }
 
 export interface Queue {
@@ -203,6 +215,16 @@ export interface Queue {
 
   /**
    * Creates an HTTP queue handler for processing messages from a specific queue.
+   *
+   * `meta.messageId` SHOULD be stable across redeliveries of the same message
+   * (one ID per enqueued message, reused on every delivery attempt). The
+   * runtime's inline step ownership uses it as a liveness lease: the lazy
+   * `step_started` records the handling invocation's messageId, and only a
+   * delivery of that same message may re-execute the step before the
+   * ownership lease expires (crash recovery via queue redelivery). A World
+   * whose queue mints a fresh ID per delivery degrades gracefully — owner
+   * redeliveries fall back to the delayed-backstop path instead of executing
+   * immediately, adding recovery latency but never wedging or duplicating.
    */
   createQueueHandler(
     queueNamePrefix: QueuePrefix,

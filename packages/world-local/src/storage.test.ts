@@ -5,9 +5,9 @@ import { WorkflowWorldError } from '@workflow/errors';
 import type { Event, Storage } from '@workflow/world';
 import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeJSON } from './fs.js';
-import { hashToken } from './storage/helpers.js';
+import { hashToken, hookDisposeLockPath } from './storage/helpers.js';
 import { createStorage } from './storage.js';
 import {
   completeWait,
@@ -151,6 +151,7 @@ describe('Storage', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     // Clean up test dir
     await fs.rm(testDir, { recursive: true, force: true });
   });
@@ -231,6 +232,35 @@ describe('Storage', () => {
         await expect(storage.runs.get('wrun_nonexistent')).rejects.toThrow(
           'Workflow run "wrun_nonexistent" not found'
         );
+      });
+    });
+
+    describe('getMany', () => {
+      it('preserves input order, deduplicates reads, and returns null for missing runs', async () => {
+        const first = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'first-workflow',
+          input: new Uint8Array([1]),
+        });
+        const second = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'second-workflow',
+          input: new Uint8Array([2]),
+        });
+
+        const results = await storage.runs.getMany(
+          [first.runId, 'wrun_missing', second.runId, first.runId],
+          { resolveData: 'none' }
+        );
+
+        expect(results.map((run) => run?.runId ?? null)).toEqual([
+          first.runId,
+          null,
+          second.runId,
+          first.runId,
+        ]);
+        expect(results[0]?.input).toBeUndefined();
+        expect(results[2]?.output).toBeUndefined();
       });
     });
 
@@ -1303,24 +1333,24 @@ describe('Storage', () => {
         // never be mistaken for the complete delta.
         await updateRun(storage, testRunId, 'run_started');
 
-        // Open many hooks BEFORE the cursor so they are not part of the delta;
-        // their in-band deliveries (below) are.
-        const HOOK_COUNT = 25; // > paginatedFileSystemQuery default limit (20)
-        for (let i = 0; i < HOOK_COUNT; i++) {
-          await createHook(storage, testRunId, {
-            hookId: `corr_hook_${i}`,
-            token: `tok_${i}`,
-          });
-        }
+        await createHook(storage, testRunId, {
+          hookId: 'corr_delta_page_hook',
+          token: 'tok_delta_page_hook',
+        });
         const sinceCursor = await currentCursor();
 
-        // A burst of in-band hook deliveries lands while the step runs, then
-        // the sequential step itself — together far more than one page.
-        for (let i = 0; i < HOOK_COUNT; i++) {
+        // A burst of in-band hook deliveries lands while the step runs. One
+        // hook is enough here; the assertion is about delta pagination, not
+        // creating many distinct hook tokens.
+        const DELTA_FILLER_EVENT_COUNT = 21; // > default page limit (20)
+        for (let i = 0; i < DELTA_FILLER_EVENT_COUNT; i++) {
           await storage.events.create(testRunId, {
             eventType: 'hook_received' as const,
-            correlationId: `corr_hook_${i}`,
-            eventData: { token: `tok_${i}`, payload: new Uint8Array([i]) },
+            correlationId: 'corr_delta_page_hook',
+            eventData: {
+              token: 'tok_delta_page_hook',
+              payload: new Uint8Array([i]),
+            },
           });
         }
         await createStep(storage, testRunId, {
@@ -1350,7 +1380,9 @@ describe('Storage', () => {
 
         expect(result.hasMore).toBe(true);
         expect(firstPage.hasMore).toBe(true);
-        expect(result.events?.length).toBeLessThan(HOOK_COUNT + 3);
+        expect(result.events?.length).toBeLessThan(
+          DELTA_FILLER_EVENT_COUNT + 3
+        );
         expect(result.events?.map((e) => e.eventId)).toEqual(
           firstPage.data.map((e) => e.eventId)
         );
@@ -1868,6 +1900,189 @@ describe('Storage', () => {
         expect(result.data[3].eventType).toBe('hook_disposed');
       });
     });
+
+    it('reuses locally appended events without exposing cached instances', async () => {
+      const created = await storage.events.create(null, {
+        eventType: 'run_created',
+        eventData: {
+          deploymentId: 'deployment-cache',
+          workflowName: 'cached-event-workflow',
+          input: new Uint8Array([1]),
+        },
+      });
+      const runId = created.event.runId;
+      (created.event as any).eventData.input[0] = 9;
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      const first = await storage.events.list({ runId });
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads).toHaveLength(0);
+      expect((first.data[0] as any).eventData.input).toEqual(
+        new Uint8Array([1])
+      );
+
+      (first.data[0] as { eventType: string }).eventType = 'run_failed';
+      const second = await storage.events.list({ runId });
+      expect(second.data[0]?.eventType).toBe('run_created');
+    });
+
+    it('reuses sequential-step events with a relative data directory', async () => {
+      const relativeStorage = createStorage(
+        path.relative(process.cwd(), testDir)
+      );
+      const run = await createRun(relativeStorage, {
+        deploymentId: 'deployment-relative-cache',
+        workflowName: 'relative-cache-workflow',
+        input: new Uint8Array([1]),
+      });
+      await updateRun(relativeStorage, run.runId, 'run_started');
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      for (let i = 0; i < 5; i++) {
+        const stepId = `relative_step_${i}`;
+        await createStep(relativeStorage, run.runId, {
+          stepId,
+          stepName: `step-${i}`,
+          input: new Uint8Array([i]),
+        });
+        await updateStep(relativeStorage, run.runId, stepId, 'step_started');
+        await updateStep(relativeStorage, run.runId, stepId, 'step_completed', {
+          result: new Uint8Array([i]),
+        });
+
+        const events = await relativeStorage.events.list({ runId: run.runId });
+        expect(events.data).toHaveLength(2 + (i + 1) * 3);
+      }
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads).toHaveLength(0);
+    });
+
+    it('reuses locally appended events for correlation queries', async () => {
+      const stepId = 'cached-correlation-step';
+      await createStep(storage, testRunId, {
+        stepId,
+        stepName: 'cached-correlation-step',
+        input: new Uint8Array([1]),
+      });
+      await updateStep(storage, testRunId, stepId, 'step_started');
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      const events = await storage.events.listByCorrelationId({
+        correlationId: stepId,
+        pagination: {},
+      });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(events.data).toHaveLength(2);
+      expect(eventFileReads).toHaveLength(0);
+    });
+
+    it('reads oversized event payloads from disk instead of retaining them', async () => {
+      const created = await storage.events.create(null, {
+        eventType: 'run_created',
+        eventData: {
+          deploymentId: 'deployment-large',
+          workflowName: 'large-event-workflow',
+          input: new Uint8Array(4 * 1024 * 1024),
+        },
+      });
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      await storage.events.list({ runId: created.event.runId });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads.length).toBeGreaterThan(0);
+    });
+
+    it('evicts old events once the recent-event byte bound is exceeded', async () => {
+      const hookId = 'bounded-cache-hook';
+      await createHook(storage, testRunId, {
+        hookId,
+        token: 'bounded-cache-token',
+      });
+
+      for (let i = 0; i < 4; i++) {
+        await storage.events.create(testRunId, {
+          eventType: 'hook_received',
+          correlationId: hookId,
+          eventData: { payload: new Uint8Array(1024 * 1024) },
+        });
+      }
+
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+      await storage.events.list({ runId: testRunId });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads.length).toBeGreaterThan(0);
+    });
+
+    it('normalizes cached event metadata the same way as disk reads', async () => {
+      const created = await storage.events.create(null, {
+        eventType: 'run_created',
+        eventData: {
+          deploymentId: 'deployment-normalized',
+          workflowName: 'normalized-cache-workflow',
+          input: new Uint8Array([1]),
+          executionContext: {
+            timestamp: new Date('2026-01-01T00:00:00.000Z'),
+          },
+        },
+      });
+
+      const page = await storage.events.list({ runId: created.event.runId });
+
+      expect((page.data[0] as any).eventData.executionContext.timestamp).toBe(
+        '2026-01-01T00:00:00.000Z'
+      );
+    });
+
+    it('allows active-event cache contents to be explicitly released', async () => {
+      const localStorage = createStorage(testDir);
+      const run = await createRun(localStorage, {
+        deploymentId: 'deployment-clear',
+        workflowName: 'cleared-cache-workflow',
+        input: new Uint8Array([1]),
+      });
+      localStorage.clearCache();
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      await localStorage.events.list({ runId: run.runId });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads.length).toBeGreaterThan(0);
+    });
+
+    it('releases locally cached events after a run completes', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-complete',
+        workflowName: 'completed-cache-workflow',
+        input: new Uint8Array([1]),
+      });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([2]),
+      });
+      const readFileSpy = vi.spyOn(fs, 'readFile');
+
+      await storage.events.list({ runId: run.runId });
+
+      const eventFileReads = readFileSpy.mock.calls.filter(([filePath]) =>
+        String(filePath).includes(`${path.sep}events${path.sep}`)
+      );
+      expect(eventFileReads.length).toBeGreaterThan(0);
+    });
   });
 
   describe('hooks', () => {
@@ -1932,18 +2147,27 @@ describe('Storage', () => {
         expect(result.hook).toBeUndefined();
       });
 
-      it('should return hook_conflict event when the token claim cannot provide a run ID', async () => {
-        const token = 'legacy-duplicate-test-token';
+      it('reaps an unparseable claim of a live hook and recovers the real conflict from the event log', async () => {
+        // A corrupt claim file whose hook is still live must not be trusted as
+        // debris and stolen — but it also must not block the token forever.
+        // The claimant loop reaps the unparseable file after a few observations
+        // (nothing else deletes it — the releaser can't determine ownership),
+        // then rebuilds the live hook's claim from the event log, so the
+        // duplicate still conflicts and now carries the real conflicting run.
+        const token = 'corrupt-claim-live-hook-token';
 
         await createHook(storage, testRunId, {
           hookId: 'hook_1',
           token,
         });
 
-        await fs.writeFile(
-          path.join(testDir, 'hooks', 'tokens', `${hashToken(token)}.json`),
-          '{'
+        const claimPath = path.join(
+          testDir,
+          'hooks',
+          'tokens',
+          `${hashToken(token)}.json`
         );
+        await fs.writeFile(claimPath, '{');
 
         const result = await storage.events.create(testRunId, {
           eventType: 'hook_created',
@@ -1953,10 +2177,46 @@ describe('Storage', () => {
 
         expect(result.event.eventType).toBe('hook_conflict');
         expect((result.event as any).eventData.token).toBe(token);
-        expect(
-          (result.event as any).eventData.conflictingRunId
-        ).toBeUndefined();
+        // Recovered from the event log rather than the unreadable claim.
+        expect((result.event as any).eventData.conflictingRunId).toBe(
+          testRunId
+        );
         expect(result.hook).toBeUndefined();
+
+        // The corrupt file was replaced by the live hook's real, parseable claim.
+        const restored = JSON.parse(await fs.readFile(claimPath, 'utf8'));
+        expect(restored).toMatchObject({
+          token,
+          hookId: 'hook_1',
+          runId: testRunId,
+        });
+      });
+
+      it('reaps an unparseable orphan claim so a new hook can reuse the token (#2808)', async () => {
+        // Regression for the "unparseable claim blocks its token indefinitely"
+        // gap: a corrupt claim with no live hook behind it (genuine debris —
+        // e.g. a partial/corrupted write) is never reaped by the releaser
+        // (ownership is undeterminable). The claimant loop must delete it after
+        // N observations so the token becomes claimable again.
+        const token = 'corrupt-orphan-claim-token';
+        const claimPath = path.join(
+          testDir,
+          'hooks',
+          'tokens',
+          `${hashToken(token)}.json`
+        );
+        await fs.mkdir(path.dirname(claimPath), { recursive: true });
+        await fs.writeFile(claimPath, 'not-json{');
+
+        const result = await storage.events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_new',
+          eventData: { token },
+        });
+
+        expect(result.event.eventType).toBe('hook_created');
+        expect(result.hook?.token).toBe(token);
+        expect(result.hook?.hookId).toBe('hook_new');
       });
 
       it('should allow multiple hooks with different tokens for the same run', async () => {
@@ -2009,6 +2269,157 @@ describe('Storage', () => {
 
         expect(hook2.token).toBe(token);
         expect(hook2.hookId).toBe('hook_2');
+      });
+
+      // Regression test for #2778: a claim whose owning run is terminal can
+      // never become live again — a new claimant must treat it as vacant
+      // instead of recording a hook_conflict against a finished run. The
+      // claim file is rewritten manually to simulate the window where the
+      // run-completion cleanup has not deleted it yet (or crashed).
+      it('should treat a token claim owned by a terminal run as vacant', async () => {
+        const token = 'terminal-owner-token';
+
+        await createHook(storage, testRunId, {
+          hookId: 'hook_1',
+          token,
+        });
+        await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+
+        // Simulate the stale claim surviving the terminal-run cleanup
+        await fs.writeFile(
+          path.join(testDir, 'hooks', 'tokens', `${hashToken(token)}.json`),
+          JSON.stringify({
+            token,
+            hookId: 'hook_1',
+            runId: testRunId,
+            eventId: 'evnt_00000000000000000000000000',
+          })
+        );
+
+        const run2 = await createRun(storage, {
+          deploymentId: 'deployment-456',
+          workflowName: 'another-workflow',
+          input: new Uint8Array(),
+        });
+
+        const result = await storage.events.create(run2.runId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_2',
+          eventData: { token },
+        });
+
+        expect(result.event.eventType).toBe('hook_created');
+        expect(result.hook?.runId).toBe(run2.runId);
+      });
+
+      // Regression test for #2778: the hook_disposed handler commits the
+      // disposal (dispose lock) before deleting the token claim, so a new
+      // claimant can observe the claim of a hook whose disposal is already
+      // committed. It must treat that claim as vacant — and the event-log
+      // rebuild must not resurrect the half-torn-down hook.
+      it('should treat a token claim of a dispose-committed hook as vacant', async () => {
+        const token = 'disposed-owner-token';
+
+        await createHook(storage, testRunId, {
+          hookId: 'hook_1',
+          token,
+        });
+
+        // Simulate a disposer that crashed right after committing the
+        // dispose lock, before deleting the claim and hook entity.
+        const lockPath = hookDisposeLockPath(testDir, 'hook_1');
+        await fs.mkdir(path.dirname(lockPath), { recursive: true });
+        await fs.writeFile(lockPath, '');
+
+        const run2 = await createRun(storage, {
+          deploymentId: 'deployment-456',
+          workflowName: 'another-workflow',
+          input: new Uint8Array(),
+        });
+
+        const result = await storage.events.create(run2.runId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_2',
+          eventData: { token },
+        });
+
+        expect(result.event.eventType).toBe('hook_created');
+        expect(result.hook?.runId).toBe(run2.runId);
+      });
+
+      // Regression tests for the #2779 follow-up: a releaser (hook_disposed
+      // handler or terminal-run cleanup) that stalls between reading the
+      // hook entity and deleting the claim can outlive a force-release of
+      // its stale claim — its deferred delete must not destroy the NEXT
+      // claimant's live claim. The claim file is rewritten manually to
+      // simulate the takeover happening during the stall.
+      it('hook_disposed should not release a token claim it no longer owns', async () => {
+        const token = 'stolen-claim-token';
+
+        await createHook(storage, testRunId, {
+          hookId: 'hook_old',
+          token,
+        });
+
+        // Simulate a force-release + re-claim by a new claimant while the
+        // disposer is stalled: the claim now points at (run2, hook_new).
+        const claimPath = path.join(
+          testDir,
+          'hooks',
+          'tokens',
+          `${hashToken(token)}.json`
+        );
+        const newClaim = {
+          token,
+          hookId: 'hook_new',
+          runId: 'wrun_someother_run',
+          eventId: 'evnt_00000000000000000000000001',
+        };
+        await fs.writeFile(claimPath, JSON.stringify(newClaim));
+
+        // The stalled disposer's release lands now — it must skip the
+        // deletion because the claim belongs to someone else.
+        await disposeHook(storage, testRunId, 'hook_old');
+
+        const claimAfter = JSON.parse(await fs.readFile(claimPath, 'utf8'));
+        expect(claimAfter).toEqual(newClaim);
+      });
+
+      it('terminal-run hook cleanup should not release a token claim it no longer owns', async () => {
+        const token = 'stolen-claim-token-terminal';
+
+        await createHook(storage, testRunId, {
+          hookId: 'hook_old',
+          token,
+        });
+
+        const claimPath = path.join(
+          testDir,
+          'hooks',
+          'tokens',
+          `${hashToken(token)}.json`
+        );
+        const newClaim = {
+          token,
+          hookId: 'hook_new',
+          runId: 'wrun_someother_run',
+          eventId: 'evnt_00000000000000000000000001',
+        };
+        await fs.writeFile(claimPath, JSON.stringify(newClaim));
+
+        // Completing the run triggers deleteAllHooksForRun, which reads
+        // hook_old's entity and releases its claim — it must skip the
+        // deletion because the claim belongs to someone else.
+        await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+
+        const claimAfter = JSON.parse(await fs.readFile(claimPath, 'utf8'));
+        expect(claimAfter).toEqual(newClaim);
       });
 
       it('should enforce token uniqueness across different runs within the same project', async () => {
@@ -2612,6 +3023,49 @@ describe('Storage', () => {
       );
       expect(hookDisposedEvents).toHaveLength(1);
     });
+
+    // Regression tests for #2781: a resume racing the hook's disposal must
+    // never be journaled after hook_disposed — once that order is in the
+    // log, every replay of the owning run diverges at the post-disposal
+    // hook_received and the run escalates to CorruptedEventLogError.
+    describe('hook_received vs. hook_disposed ordering (#2781)', () => {
+      it('should reject hook_received once disposal has committed, even while the hook entity still exists', async () => {
+        await createHook(storage, testRunId, {
+          hookId: 'hook_mid_teardown',
+          token: 'mid-teardown-token',
+        });
+
+        // Simulate a disposer mid-teardown (or crashed): the dispose lock
+        // is durably committed but the hook entity has not been deleted
+        // yet. The entity-existence check alone would accept the resume.
+        const lockPath = hookDisposeLockPath(testDir, 'hook_mid_teardown');
+        await fs.mkdir(path.dirname(lockPath), { recursive: true });
+        await fs.writeFile(lockPath, '');
+
+        await expect(
+          storage.events.create(testRunId, {
+            eventType: 'hook_received',
+            correlationId: 'hook_mid_teardown',
+            eventData: { payload: new Uint8Array([1]) },
+          })
+        ).rejects.toMatchObject({ name: 'HookNotFoundError' });
+
+        const events = await storage.events.list({
+          runId: testRunId,
+          pagination: {},
+        });
+        expect(
+          events.data.filter((e) => e.eventType === 'hook_received')
+        ).toHaveLength(0);
+      });
+
+      // NOTE: a 20-round "race resume against disposal" soak test previously
+      // lived here. It was removed as a regression guard: because both
+      // orderings (resume-before-disposal and rejected-resume) are valid, the
+      // loop passed even with the ordering fix reverted, so it was a soak, not
+      // a deterministic guard. The mid-teardown test above (which forces the
+      // committed-dispose-lock state) is the real regression guard for #2781.
+    });
   });
 
   describe('concurrent entity-creation races', () => {
@@ -3137,6 +3591,131 @@ describe('Storage', () => {
             event.eventType === 'hook_created' && event.correlationId === hookId
         )
       ).toHaveLength(1);
+    });
+
+    it('rebuilds missing hook caches from a committed hook_created event', async () => {
+      // Regression for #2339: once hook_created is committed to the event log,
+      // the hook entity and token claim are cache files. If both are missing
+      // after a crash or upgrade, a normal hook read should rebuild them from
+      // the persisted event instead of treating the hook/token as gone.
+      const metadata = new Uint8Array([0xee]);
+      const hookId = 'hook_event_log_rebuild';
+      const token = 'event-log-rebuild-token';
+
+      const created = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token, metadata, isWebhook: true },
+      });
+      expect(created.event.eventType).toBe('hook_created');
+
+      const hookPath = path.join(testDir, 'hooks', `${hookId}.json`);
+      const tokenClaimPath = path.join(
+        testDir,
+        'hooks',
+        'tokens',
+        `${hashToken(token)}.json`
+      );
+      await fs.unlink(hookPath);
+      await fs.unlink(tokenClaimPath);
+      await fs.writeFile(
+        path.join(testDir, 'events', 'wrun_malformed-event.json'),
+        '{'
+      );
+
+      const conflict = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: 'hook_event_log_rebuild_conflict',
+        eventData: { token },
+      });
+      expect(conflict.event.eventType).toBe('hook_conflict');
+      expect((conflict.event as any).eventData.conflictingRunId).toBe(
+        testRunId
+      );
+
+      await fs.unlink(hookPath);
+      await fs.unlink(tokenClaimPath);
+
+      await expect(storage.hooks.get(hookId)).resolves.toMatchObject({
+        runId: testRunId,
+        hookId,
+        token,
+        metadata,
+        isWebhook: true,
+      });
+
+      const claim = JSON.parse(await fs.readFile(tokenClaimPath, 'utf8'));
+      expect(claim).toMatchObject({
+        runId: testRunId,
+        hookId,
+        eventId: created.event.eventId,
+      });
+    });
+
+    it('preserves legacy webhook default when rebuilding a hook without isWebhook', async () => {
+      const metadata = new Uint8Array([0xab]);
+      const hookId = 'hook_legacy_webhook_default';
+      const token = 'legacy-webhook-default-token';
+      const created = await storage.events.create(testRunId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token, metadata },
+      });
+      expect(created.event.eventType).toBe('hook_created');
+
+      await fs.unlink(path.join(testDir, 'hooks', `${hookId}.json`));
+      await fs.unlink(
+        path.join(testDir, 'hooks', 'tokens', `${hashToken(token)}.json`)
+      );
+
+      await expect(storage.hooks.get(hookId)).resolves.toMatchObject({
+        hookId,
+        token,
+        metadata,
+        isWebhook: true,
+      });
+    });
+
+    it('does not rebuild a hook for a run already marked terminal', async () => {
+      const hookId = 'hook_terminal_run_cache';
+      const token = 'terminal-run-cache-token';
+      await createHook(storage, testRunId, { hookId, token });
+
+      const hookPath = path.join(testDir, 'hooks', `${hookId}.json`);
+      const tokenClaimPath = path.join(
+        testDir,
+        'hooks',
+        'tokens',
+        `${hashToken(token)}.json`
+      );
+      await fs.unlink(hookPath);
+      await fs.unlink(tokenClaimPath);
+
+      const run = await storage.runs.get(testRunId);
+      await writeJSON(
+        path.join(testDir, 'runs', `${testRunId}.json`),
+        {
+          ...run,
+          status: 'cancelled',
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        },
+        { overwrite: true }
+      );
+
+      const nextRun = await createRun(storage, {
+        deploymentId: 'deployment-next',
+        workflowName: 'next-workflow',
+        input: new Uint8Array(),
+      });
+
+      const created = await storage.events.create(nextRun.runId, {
+        eventType: 'hook_created',
+        correlationId: 'hook_terminal_run_cache_next',
+        eventData: { token },
+      });
+      expect(created.event.eventType).toBe('hook_created');
+      expect(created.hook?.runId).toBe(nextRun.runId);
     });
 
     it('repairs an event-first orphan via the legacy-claim probe path', async () => {

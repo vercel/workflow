@@ -778,6 +778,7 @@ export const WorkflowTraceViewer = ({
   encryptionKey,
   onDecrypt,
   isDecrypting = false,
+  showSeparateEventOccurrenceTimestamps = false,
 }: {
   run: WorkflowRun;
   events: Event[];
@@ -800,10 +801,7 @@ export const WorkflowTraceViewer = ({
   /** Callback when a run reference is clicked in the detail panel */
   onRunClick?: (runId: string) => void;
   /** Callback to load event data for a specific event (lazy loading in sidebar) */
-  onLoadEventData?: (
-    correlationId: string,
-    eventId: string
-  ) => Promise<unknown | null>;
+  onLoadEventData?: (event: Event) => Promise<unknown | null>;
   /** Load next trace page when vertical scroll reaches bottom. */
   onLoadMoreSpans?: () => void | Promise<void>;
   /** Whether trace pagination has more data to load. */
@@ -816,6 +814,8 @@ export const WorkflowTraceViewer = ({
   onDecrypt?: () => void;
   /** Whether the encryption key is currently being fetched */
   isDecrypting?: boolean;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }) => {
   const toast = useToast();
   const [selectedSpan, setSelectedSpan] = useState<SelectedSpanInfo | null>(
@@ -1153,6 +1153,9 @@ export const WorkflowTraceViewer = ({
                 onDecrypt={onDecrypt}
                 isDecrypting={isDecrypting}
                 selectedSpan={selectedSpan}
+                showSeparateEventOccurrenceTimestamps={
+                  showSeparateEventOccurrenceTimestamps
+                }
               />
             </ErrorBoundary>
           </div>

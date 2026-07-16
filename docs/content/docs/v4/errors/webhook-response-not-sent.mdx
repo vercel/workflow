@@ -9,6 +9,10 @@ related:
   - /docs/api-reference/workflow/create-webhook
 ---
 
+<CopyPrompt
+  text="Fix webhook-response-not-sent errors. Find `createWebhook({ respondWith: &quot;manual&quot; })` usage. In the workflow, await the webhook request and pass the `RequestWithResponse` into a `&quot;use step&quot;` helper for validation and side effects. In every success, validation failure, catch, and early-return branch, call `await request.respondWith(new Response(...))` or `await request.respondWith(Response.json(...))` exactly once before the webhook completes. If manual control is not needed, remove `respondWith: &quot;manual&quot;` or use a static `Response` option. Add tests or local webhook calls for success, invalid input, and thrown-error paths."
+/>
+
 This error occurs when a webhook is configured with `respondWith: "manual"` but the workflow does not send a response using `request.respondWith()` before the webhook execution completes.
 
 ## Error Message

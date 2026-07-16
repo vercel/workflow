@@ -1,8 +1,13 @@
 import { Args, Flags } from '@oclif/core';
 import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
+import { WorkflowRunStatusSchema } from '@workflow/world';
 import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import type { InspectCLIOptions } from '../lib/config/types.js';
+import {
+  getObservabilityUpgradeRequiredMessage,
+  isObservabilityUpgradeRequiredError,
+} from '../lib/inspect/errors.js';
 import { cliFlags, urlFlag } from '../lib/inspect/flags.js';
 import {
   listEvents,
@@ -35,7 +40,9 @@ export default class Inspect extends BaseCommand {
 
   async catch(error: any) {
     // Check if this is a 403 error from the Vercel backend
-    if (error?.status === 403) {
+    if (isObservabilityUpgradeRequiredError(error)) {
+      logger.error(getObservabilityUpgradeRequiredMessage());
+    } else if (error?.status === 403) {
       const message = VERCEL_403_ERROR_MESSAGE;
       logger.error(message);
     } else if (LOGGING_CONFIG.VERBOSE_MODE) {
@@ -119,12 +126,29 @@ export default class Inspect extends BaseCommand {
     status: Flags.string({
       description: 'filter runs by status (only for runs)',
       required: false,
-      options: ['running', 'completed', 'failed', 'cancelled', 'pending'],
+      options: [...WorkflowRunStatusSchema.options],
       helpGroup: 'Filtering',
       helpLabel: '--status',
     }),
+    since: Flags.string({
+      description:
+        'list runs active since a relative duration (30m, 12h, 7d, 2w) or timestamp; defaults to the backend window (only for runs)',
+      required: false,
+      helpGroup: 'Filtering',
+      helpLabel: '--since',
+      helpValue: 'DURATION|TIMESTAMP',
+    }),
+    until: Flags.string({
+      description:
+        'end of the --since listing window, as a relative duration or timestamp; defaults to now (only for runs)',
+      required: false,
+      helpGroup: 'Filtering',
+      helpLabel: '--until',
+      helpValue: 'DURATION|TIMESTAMP',
+    }),
     withData: Flags.boolean({
-      description: 'include full input/output data in list views',
+      description:
+        'include full input/output data in list views (deprecated for list views — use `inspect <resource> <id>` to view payloads)',
       required: false,
       char: 'd',
       default: false,
@@ -274,7 +298,11 @@ function toInspectOptions(flags: any): InspectCLIOptions {
     sort: flags.sort as 'asc' | 'desc' | undefined,
     limit: flags.limit,
     workflowName: flags.workflowName,
-    status: flags.status,
+    status: flags.status
+      ? WorkflowRunStatusSchema.parse(flags.status)
+      : undefined,
+    since: flags.since,
+    until: flags.until,
     withData: flags.withData,
     decrypt: flags.decrypt,
     backend: flags.backend,

@@ -1,5 +1,6 @@
+import { setWorkflowBasePath } from '@workflow/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resolveBaseUrl } from './config';
+import { resolveBaseUrl, resolveRecoverActiveRuns } from './config';
 
 // Mock the getWorkflowPort function from @workflow/utils/get-port
 vi.mock('@workflow/utils/get-port', () => ({
@@ -15,6 +16,7 @@ describe('resolveBaseUrl', () => {
 
   afterEach(() => {
     process.env = originalEnv;
+    setWorkflowBasePath(undefined);
     vi.clearAllMocks();
   });
 
@@ -182,6 +184,20 @@ describe('resolveBaseUrl', () => {
       expect(result).toBe('http://localhost:3000');
     });
 
+    it('should probe and return local URLs under the workflow base path', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(3000);
+      delete process.env.PORT;
+      setWorkflowBasePath('/v2');
+
+      const result = await resolveBaseUrl({});
+
+      expect(result).toBe('http://localhost:3000/v2');
+      expect(getWorkflowPort).toHaveBeenCalledWith({
+        endpoint: '/v2/.well-known/workflow/v1/flow?__health',
+      });
+    });
+
     it('should throw error when auto-detection fails', async () => {
       const { getWorkflowPort } = await import('@workflow/utils/get-port');
       vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
@@ -285,5 +301,59 @@ describe('resolveBaseUrl', () => {
         'Unable to resolve base URL for workflow queue.'
       );
     });
+  });
+});
+
+describe('resolveRecoverActiveRuns', () => {
+  let originalEnv: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    originalEnv = { ...process.env };
+    delete process.env.WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('defaults to true when neither config nor env is set', () => {
+    expect(resolveRecoverActiveRuns({})).toBe(true);
+  });
+
+  it('prioritizes explicit config over the env var', () => {
+    process.env.WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS = '1';
+    expect(resolveRecoverActiveRuns({ recoverActiveRuns: false })).toBe(false);
+
+    process.env.WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS = '0';
+    expect(resolveRecoverActiveRuns({ recoverActiveRuns: true })).toBe(true);
+  });
+
+  it.each([
+    '0',
+    'false',
+    'FALSE',
+    'False',
+  ])('disables recovery for env value %j', (value) => {
+    process.env.WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS = value;
+    expect(resolveRecoverActiveRuns({})).toBe(false);
+  });
+
+  it.each([
+    '1',
+    'true',
+    'TRUE',
+  ])('enables recovery for env value %j', (value) => {
+    process.env.WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS = value;
+    expect(resolveRecoverActiveRuns({})).toBe(true);
+  });
+
+  it.each([
+    '',
+    'yes',
+    'off',
+    'nonsense',
+  ])('falls back to the default for unrecognized env value %j', (value) => {
+    process.env.WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS = value;
+    expect(resolveRecoverActiveRuns({})).toBe(true);
   });
 });

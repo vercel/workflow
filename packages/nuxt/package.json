@@ -1,6 +1,6 @@
 {
   "name": "@workflow/nuxt",
-  "version": "5.0.0-beta.24",
+  "version": "5.0.0-beta.35",
   "description": "Nuxt integration for Workflow SDK",
   "license": "Apache-2.0",
   "type": "module",
@@ -35,14 +35,16 @@
     "clean": "nuxi cleanup && rm -rf dist/"
   },
   "dependencies": {
-    "@nuxt/kit": "4.4.7",
+    "@nuxt/kit": "4.4.8",
+    "@workflow/builders": "workspace:*",
     "@workflow/nitro": "workspace:*"
   },
   "devDependencies": {
     "@nuxt/module-builder": "1.0.2",
-    "@nuxt/schema": "4.4.7",
+    "@nuxt/schema": "4.4.8",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "nuxt": "4.4.7"
+    "nuxt": "4.4.8",
+    "vite": "7.3.6"
   }
 }

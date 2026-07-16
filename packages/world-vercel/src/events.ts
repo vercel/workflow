@@ -37,17 +37,23 @@ import {
   type AnyEventRequest,
   type CreateEventParams,
   type Event,
+  type EventDataPayloadField,
   type EventResult,
   EventSchema,
   EventTypeSchema,
   type GetEventParams,
+  getEventDataPayloadField,
+  isHookEventRequiringExistence,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   type PaginatedResponse,
+  StructuredErrorSchema,
   stripEventDataRefs,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
+import { decode } from 'cbor-x';
+import { withEventPostRetry } from './event-retry.js';
 import {
   createWorkflowRunEventV4,
   type DecodedV4Event,
@@ -55,7 +61,13 @@ import {
   getEventV4,
   getWorkflowRunEventsV4,
 } from './events-v4.js';
+import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
+import {
+  hasSerializedDataFormatPrefix,
+  normalizeEventData,
+  normalizeSerializedData,
+} from './serialized-data.js';
 import { deserializeStep } from './steps.js';
 import {
   type APIConfig,
@@ -64,69 +76,19 @@ import {
   makeRequest,
 } from './utils.js';
 
-/**
- * Per-event-type map of the field within `eventData` that holds the user
- * payload. The backend uses the same convention on the v4 read side.
- *
- * The v4 wire encoding picks this field out of `eventData`, CBOR-encodes
- * its value, and ships it as the frame body. Everything else in
- * `eventData` rides in the frame's CBOR meta block.
- *
- * This map's values, together with `MetaSourceField` below, ARE the wire
- * contract for `eventData` on v4: every field a @workflow/world event
- * schema can put in `eventData` must be routed either to the frame body
- * (a payload field here) or the frame meta (a `MetaSourceField`). Unlike
- * v3 (which serialized the whole object), a field that is neither does not
- * cross the wire. `assertEventDataWireContractExhaustive` turns that into a
- * compile error — the silent drop that bit `step_retrying.retryAfter` is
- * now a build break that names the unrouted field. (The backend's meta
- * parser still has to accept any new meta field independently, so a new
- * field is a two-sided change.)
- */
-const PAYLOAD_FIELD_BY_EVENT_TYPE = {
-  run_created: 'input',
-  // run_started normally has no payload, but on the resilient-start path
-  // the runtime piggybacks `runInput.input` here so the server can
-  // synthesize the missing run_created. Without this entry the v4 split
-  // would silently drop those bytes and the backend's "run_started arrived
-  // before run_created" fallback would have nothing to backfill from.
-  run_started: 'input',
-  run_completed: 'output',
-  run_failed: 'error',
-  step_created: 'input',
-  // step_started normally has no payload, but on the lazy-start path the
-  // runtime piggybacks the step input here so the server can synthesize the
-  // missing step_created (mirrors run_started above). Without this entry the
-  // v4 split would silently drop those bytes and the backend's "step_started
-  // arrived before step_created" fallback would have nothing to create from.
-  step_started: 'input',
-  step_completed: 'result',
-  step_failed: 'error',
-  step_retrying: 'error',
-  hook_created: 'metadata',
-  hook_received: 'payload',
-} as const satisfies Record<string, string>;
-
-/**
- * The payload field names — the values of the map above. These are the
- * fields that become the opaque frame body rather than frame meta.
- */
-type PayloadField =
-  (typeof PAYLOAD_FIELD_BY_EVENT_TYPE)[keyof typeof PAYLOAD_FIELD_BY_EVENT_TYPE];
-
-/**
- * Look up the payload field for an event type, or undefined for the event
- * types that carry no user payload (run_cancelled, attr_set, wait_*,
- * hook_disposed). Note `step_started` carries a payload only on the
- * lazy-start path; legacy starts send an empty body. The map is `as const`
- * so it can drive
- * `PayloadField`; the cast keeps the lookup callable with any event-type
- * string.
- */
-function payloadFieldFor(eventType: string): PayloadField | undefined {
-  return (
-    PAYLOAD_FIELD_BY_EVENT_TYPE as Record<string, PayloadField | undefined>
-  )[eventType];
+function validateWorkflowRunIdTimestamp(id: string): string | null {
+  const raw = id.startsWith('wrun_') ? id.slice('wrun_'.length) : id;
+  try {
+    // world-vercel run IDs may carry region metadata in tagged form; the
+    // shared @workflow/world validator intentionally knows nothing about
+    // that encoding. `decode()` clears the tag bit (the top bit of the
+    // 48-bit timestamp field) so the timestamp validator reads the true
+    // timestamp; the region/version metadata bits remain in the
+    // randomness section, which the validator doesn't inspect.
+    return validateUlidTimestamp(`wrun_${decodeRunId(raw).ulid}`, 'wrun_');
+  } catch {
+    return validateUlidTimestamp(id, 'wrun_');
+  }
 }
 
 /**
@@ -149,11 +111,13 @@ const eventsNeedingResolve = new Set<string>([
   'step_started', // runtime reads result.step (checks attempt, state)
 ]);
 
-// Hook events that 404 when the hook is already disposed or never existed —
-// translate to a typed HookNotFoundError so the runtime can branch on it.
-const hookEventsRequiringExistence = new Set<string>([
-  'hook_disposed',
-  'hook_received',
+// Stable runtimes stored these errors as backend-materialized
+// StructuredError objects. Their resolved v4 frame bodies are CBOR rather
+// than the format-prefixed serialized data emitted by current runtimes.
+const legacyStructuredErrorEventTypes = new Set<string>([
+  'run_failed',
+  'step_failed',
+  'step_retrying',
 ]);
 
 // =============================================================================
@@ -175,6 +139,9 @@ interface SplitEventData {
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
     errorCode?: string;
+    cancelReason?: string;
+    /** Inline-ownership stamp on step_started (owning queue message ID). */
+    ownerMessageId?: string;
     /** Structured executionContext, included verbatim in frame meta. */
     executionContext?: Record<string, unknown>;
     /** Initial run attributes (run_created / resilient-start run_started). */
@@ -185,6 +152,21 @@ interface SplitEventData {
     writer?: Record<string, unknown>;
     /** Reserved-attribute-key opt-in (attr_set / run_created / run_started). */
     allowReservedAttributes?: boolean;
+    /** Client-measured time-to-first-step ms (step_completed / step_failed). */
+    ttfs?: number;
+    /** Client-measured step-to-step overhead ms (step_completed / step_failed). */
+    stso?: number;
+    /** Progress counters taken when the STSO gap began. */
+    stepCount?: number;
+    eventCount?: number;
+    /** Client-measured run_started-to-first-step ms (step_completed / step_failed). */
+    rsfs?: number;
+    /** Client-measured synchronous replay-compute ms of only the FINAL replay
+     *  pass within the rsfs window — not accumulated across earlier
+     *  pre-first-step passes, so it is not "the replay portion of rsfs". */
+    finalSchedulingReplay?: number;
+    /** Runtime optimizations active for the ttfs/stso measurement. */
+    optimizations?: string[];
   };
 }
 
@@ -192,7 +174,7 @@ interface SplitEventData {
  * Source field names in `eventData` that `splitEventDataForV4` lifts into
  * the frame meta (some are renamed on the wire, e.g. `token` → `hookToken`).
  * This is the metadata half of the v4 `eventData` allowlist; the payload
- * half is `PayloadField`. The exhaustiveness guard below keeps this in sync
+ * half is `EventDataPayloadField`. The exhaustiveness guard below keeps this in sync
  * with the @workflow/world schema in both directions; the per-field
  * extraction in `splitEventDataForV4` is bespoke, so it must read each field
  * listed here.
@@ -208,18 +190,27 @@ type MetaSourceField =
   | 'isWebhook'
   | 'isSystem'
   | 'errorCode'
+  | 'cancelReason'
+  | 'ownerMessageId'
   | 'executionContext'
   | 'attributes'
   | 'changes'
   | 'writer'
-  | 'allowReservedAttributes';
+  | 'allowReservedAttributes'
+  | 'ttfs'
+  | 'stso'
+  | 'stepCount'
+  | 'eventCount'
+  | 'rsfs'
+  | 'finalSchedulingReplay'
+  | 'optimizations';
 
 /**
  * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
  * against the @workflow/world event schemas.
  *
  * - `Unhandled`: schema fields routed to neither the payload body
- *   (`PayloadField`) nor the frame meta (`MetaSourceField`).
+ *   (`EventDataPayloadField`) nor the frame meta (`MetaSourceField`).
  * - `Stale`: allowlisted meta fields that no longer exist on any schema.
  *
  * Both must be `never`. Add a field to a @workflow/world event schema
@@ -228,7 +219,10 @@ type MetaSourceField =
  * the constraint '[never, never]'` — the historical "silently dropped"
  * footgun, now a build break that names the field.
  */
-type Unhandled = Exclude<EventDataField, PayloadField | MetaSourceField>;
+type Unhandled = Exclude<
+  EventDataField,
+  EventDataPayloadField | MetaSourceField
+>;
 type Stale = Exclude<MetaSourceField, EventDataField>;
 function assertEventDataWireContractExhaustive<
   _Check extends [never, never],
@@ -243,7 +237,8 @@ assertEventDataWireContractExhaustive<[Unhandled, Stale]>();
  * CBOR-encoded meta block of the same frame.
  *
  * Exported for unit tests (the meta allowlist is the eventData wire
- * contract — see the warning on PAYLOAD_FIELD_BY_EVENT_TYPE).
+ * contract — see the warning on EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE in
+ * @workflow/world).
  */
 export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   // Some event types in the AnyEventRequest discriminated union (e.g.
@@ -252,7 +247,7 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   const eventData = ((
     data as unknown as { eventData?: Record<string, unknown> }
   ).eventData ?? {}) as Record<string, unknown>;
-  const payloadField = payloadFieldFor(data.eventType);
+  const payloadField = getEventDataPayloadField(data.eventType);
   const meta: SplitEventData['meta'] = {};
 
   if (typeof eventData.deploymentId === 'string') {
@@ -303,6 +298,19 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   if (typeof eventData.errorCode === 'string') {
     meta.errorCode = eventData.errorCode;
   }
+  // run_cancelled optionally carries a free-text cancellation reason. Small
+  // plaintext metadata, so it rides in the frame meta like errorCode.
+  if (typeof eventData.cancelReason === 'string') {
+    meta.cancelReason = eventData.cancelReason;
+  }
+  // step_started's inline-ownership stamp: the queue message ID of the
+  // invocation running this step's body inline. The backend persists it on
+  // the step_started event row and re-emits it on event lists so wake
+  // replays can observe the active owner — dropping it here would silently
+  // disable ownership (replays would requeue in-flight inline steps again).
+  if (typeof eventData.ownerMessageId === 'string') {
+    meta.ownerMessageId = eventData.ownerMessageId;
+  }
   if (
     eventData.executionContext !== undefined &&
     eventData.executionContext !== null &&
@@ -338,6 +346,40 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.allowReservedAttributes === 'boolean') {
     meta.allowReservedAttributes = eventData.allowReservedAttributes;
+  }
+  // Client-measured latency telemetry on step terminal events (TTFS / STSO).
+  // The server consumes these for metrics; they are not read back.
+  if (typeof eventData.ttfs === 'number') {
+    meta.ttfs = eventData.ttfs;
+  }
+  if (typeof eventData.stso === 'number') {
+    meta.stso = eventData.stso;
+  }
+  if (
+    typeof eventData.stepCount === 'number' &&
+    Number.isSafeInteger(eventData.stepCount) &&
+    eventData.stepCount > 0
+  ) {
+    meta.stepCount = eventData.stepCount;
+  }
+  if (
+    typeof eventData.eventCount === 'number' &&
+    Number.isSafeInteger(eventData.eventCount) &&
+    eventData.eventCount > 0
+  ) {
+    meta.eventCount = eventData.eventCount;
+  }
+  if (typeof eventData.rsfs === 'number') {
+    meta.rsfs = eventData.rsfs;
+  }
+  if (typeof eventData.finalSchedulingReplay === 'number') {
+    meta.finalSchedulingReplay = eventData.finalSchedulingReplay;
+  }
+  if (
+    Array.isArray(eventData.optimizations) &&
+    eventData.optimizations.every((o) => typeof o === 'string')
+  ) {
+    meta.optimizations = eventData.optimizations as string[];
   }
 
   let payload: Uint8Array | undefined;
@@ -401,6 +443,25 @@ function coerceEventDates(raw: Record<string, unknown>): Event {
   return raw as unknown as Event;
 }
 
+function coerceNormalizedEvent(raw: Record<string, unknown>): Event {
+  return coerceEventDates(normalizeEventData(raw));
+}
+
+function decodeLegacyStructuredError(payload: Uint8Array): unknown {
+  if (hasSerializedDataFormatPrefix(payload)) {
+    return payload;
+  }
+
+  try {
+    // cbor-x caches decode state on its input, so decode a copy to keep the
+    // raw-byte fallback byte-for-byte and property-for-property unchanged.
+    const parsed = StructuredErrorSchema.safeParse(decode(payload.slice()));
+    return parsed.success ? parsed.data : payload;
+  } catch {
+    return payload;
+  }
+}
+
 /**
  * Turn a v4 event (frame meta + frame body) into the Event shape the
  * workflow runtime expects.
@@ -408,10 +469,12 @@ function coerceEventDates(raw: Record<string, unknown>): Event {
  * Both GET single-event and LIST use the same frame format: meta is the
  * full event entity with the payload field as a RefDescriptor, body is
  * the resolved payload bytes (possibly empty). This helper splices the
- * body bytes into `eventData[fieldName]` unchanged — the runtime's
- * hydrate helpers (hydrateStepIO, hydrateRunError, …) consume the raw
- * devalue-with-format-prefix Uint8Array directly. No CBOR decode here,
- * symmetric with the pass-through write in `splitEventDataForV4`.
+ * body bytes into `eventData[fieldName]`, normalizing any zstd wrapper
+ * back to the raw devalue-with-format-prefix Uint8Array the runtime's
+ * hydrate helpers (hydrateStepIO, hydrateRunError, …) consume. Stable-line
+ * structured errors are the exception: the backend stored those as CBOR,
+ * so they are decoded after checking that the payload is not a current
+ * format-prefixed serialized value.
  */
 function buildEventFromV4(
   decoded: DecodedV4Event,
@@ -421,8 +484,15 @@ function buildEventFromV4(
   const eventData = (decoded.eventData ?? {}) as Record<string, unknown>;
 
   if (payloadBody.byteLength > 0) {
-    const payloadField = payloadFieldFor(decoded.eventType);
-    if (payloadField) eventData[payloadField] = payloadBody;
+    const payloadField = getEventDataPayloadField(decoded.eventType);
+    const normalizedPayload = normalizeSerializedData(payloadBody);
+    if (payloadField && normalizedPayload instanceof Uint8Array) {
+      eventData[payloadField] = legacyStructuredErrorEventTypes.has(
+        decoded.eventType
+      )
+        ? decodeLegacyStructuredError(normalizedPayload)
+        : normalizedPayload;
+    }
   }
 
   const raw = {
@@ -448,7 +518,7 @@ function buildEventFromV4(
       : {}),
   };
 
-  const event = coerceEventDates(raw);
+  const event = coerceNormalizedEvent(raw);
 
   // For resolveData='none', strip eventData entirely. Reuse the world-
   // side helper so behavior stays in sync with other backends.
@@ -522,11 +592,22 @@ export async function createWorkflowRunEvent(
   config?: APIConfig
 ): Promise<EventResult> {
   try {
-    return await createWorkflowRunEventInner(id, data, params, config);
+    // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
+    // socket/headers timeouts, transient 5xx) in-process for event types that
+    // are idempotent-on-retry. A write that landed but whose response was lost
+    // re-surfaces as a 409 (or plain success for run_started/attr_set) the
+    // callers already handle, so this avoids a needless step re-execution on
+    // the next queue delivery. Non-retryable
+    // types (step_started, step_retrying, hook_received) run once. See
+    // ./event-retry for the validated per-event classification.
+    return await withEventPostRetry(
+      () => createWorkflowRunEventInner(id, data, params, config),
+      data.eventType
+    );
   } catch (err) {
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
-      hookEventsRequiringExistence.has(data.eventType) &&
+      isHookEventRequiringExistence(data.eventType) &&
       WorkflowWorldError.is(err) &&
       err.status === 404 &&
       data.correlationId
@@ -587,7 +668,7 @@ async function createWorkflowRunEventInner(
   // Defensive check for client-generated run_created IDs that ride too
   // far ahead of wall-clock time — same threshold the v3 path enforced.
   if (data.eventType === 'run_created') {
-    const validationError = validateUlidTimestamp(id, 'wrun_');
+    const validationError = validateWorkflowRunIdTimestamp(id);
     if (validationError) {
       throw new WorkflowWorldError(validationError, { status: 400 });
     }
@@ -606,6 +687,9 @@ async function createWorkflowRunEventInner(
       specVersion: data.specVersion ?? 2,
       ...(data.correlationId ? { correlationId: data.correlationId } : {}),
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      ...(params?.stateUpdatedAt !== undefined
+        ? { stateUpdatedAt: params.stateUpdatedAt }
+        : {}),
       occurredAt: params?.occurredAt ?? new Date(),
       // Opt-in inline-delta: forward the cursor the runtime held before
       // this write so the server can return the authoritative event-log
@@ -627,18 +711,23 @@ async function createWorkflowRunEventInner(
   );
 
   // The server already CBOR-decoded into result.body — just thread the
-  // fields through. Step has a wire-format adapter; runs use the
-  // pass-through deserializeError helper (run/step dates arrive as real
-  // Dates — the server's entity getters convert before CBOR-encoding).
-  // The returned `event` and preloaded `events` go through
-  // coerceEventDates: they can be read back from the backing store
-  // server-side (e.g. the run_started TTFB preload queries the event
-  // log), where nested eventData dates are ISO strings — same coercion
-  // the GET/LIST path applies, and the v3 path applied via its zod wire
-  // schemas.
-  // The returned event honors the caller's resolveData: 'none' strips
-  // payload fields, matching the v3 path's stripEventAndLegacyRefs
-  // behavior and the Storage contract.
+  // fields through. This is the runtime's event-append path (world.events
+  // .create is only ever called from the workflow runtime, never from
+  // o11y), and the runtime re-hydrates every payload it consumes through
+  // the decompress-aware helpers (hydrateStepReturnValue, hydrateRunError,
+  // …). So we deliberately do NOT decompress here: doing so would be
+  // redundant work on the TTFB-sensitive run_started/inline-delta path and
+  // would make the runtime's deserialize compression telemetry report
+  // `codec: none` for payloads that were compressed at rest. gzip/zstd
+  // normalization for o11y/display lives on the read paths (getEvent,
+  // getWorkflowRunEvents, getStep, getRun, getHook).
+  //
+  // `event`/`events` go through coerceEventDates only: they can be read
+  // back from the backing store server-side (e.g. the run_started TTFB
+  // preload queries the event log), where nested eventData dates are ISO
+  // strings — same coercion the GET/LIST path applies. The returned event
+  // honors the caller's resolveData: 'none' strips payload fields,
+  // matching the v3 path's stripEventAndLegacyRefs behavior.
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const body = result.body;
   return {

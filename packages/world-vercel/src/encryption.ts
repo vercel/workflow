@@ -11,10 +11,10 @@
  */
 
 import { webcrypto } from 'node:crypto';
-import { getVercelOidcToken } from '@vercel/oidc';
 import type { WorkflowRun, World } from '@workflow/world';
 import * as z from 'zod';
 import { getDispatcher } from './http-client.js';
+import { instrumentedFetch, resolveVercelApiToken } from './http-core.js';
 
 const KEY_BYTES = 32; // 256 bits = 32 bytes (AES-256)
 
@@ -101,14 +101,7 @@ export async function fetchRunKey(
     dispatcher?: unknown;
   }
 ): Promise<Uint8Array | undefined> {
-  // Authenticate via provided token (CLI/config), VERCEL_TOKEN env var
-  // (external tooling), or OIDC token (runtime) — in that order.
-  // OIDC is last to avoid an unnecessary network call when a token is
-  // already available (e.g. CLI or CI contexts).
-  const token =
-    options?.token ??
-    process.env.VERCEL_TOKEN ??
-    (await getVercelOidcToken().catch(() => null));
+  const token = await resolveVercelApiToken({ token: options?.token });
   if (!token) {
     throw new Error(
       'Cannot fetch run key: no OIDC token or VERCEL_TOKEN available'
@@ -119,30 +112,30 @@ export async function fetchRunKey(
   if (options?.teamId) {
     params.set('teamId', options.teamId);
   }
-  // 429/5xx retries are handled by the shared RetryAgent from getDispatcher()
-  const response = await fetch(
-    `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`,
-    {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      // @ts-expect-error -- undici dispatcher is accepted by Node.js fetch but not in @types/node's RequestInit
-      dispatcher: getDispatcher({ dispatcher: options?.dispatcher }),
-    }
-  );
-
-  if (!response.ok) {
-    let body: string;
-    try {
-      body = await response.text();
-    } catch {
-      body = '<unable to read response body>';
-    }
-    throw new Error(
-      `Failed to fetch run key for ${runId} (deployment ${deploymentId}): HTTP ${response.status} ${response.statusText}${body ? ` — ${body}` : ''}`
-    );
-  }
+  // 429/5xx retries are handled by the shared RetryAgent from getDispatcher().
+  // instrumentedFetch adds the OTEL client span + DEBUG logging the v3/v4
+  // paths have.
+  const response = await instrumentedFetch({
+    method: 'GET',
+    url: `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`,
+    headers: new Headers({ Authorization: `Bearer ${token}` }),
+    dispatcher: getDispatcher({ dispatcher: options?.dispatcher }),
+    peerService: 'vercel-api',
+    // Preserve the prior no-timeout behavior for this Vercel-API call; the
+    // shared RetryAgent still handles transient/5xx retries.
+    timeoutMs: null,
+    buildError: async (res) => {
+      let body: string;
+      try {
+        body = await res.text();
+      } catch {
+        body = '<unable to read response body>';
+      }
+      return new Error(
+        `Failed to fetch run key for ${runId} (deployment ${deploymentId}): HTTP ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`
+      );
+    },
+  });
 
   const data = await response.json();
   const result = z.object({ key: z.string().nullable() }).safeParse(data);

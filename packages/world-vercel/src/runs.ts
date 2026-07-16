@@ -14,6 +14,7 @@ import {
   type WorkflowRunWithoutData,
 } from '@workflow/world';
 import { z } from 'zod';
+import { normalizeWorkflowRunData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
@@ -68,21 +69,29 @@ function filterRunData(
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData;
 
-// Implementation
+// Implementation. This is a read/display entry point (getRun/listRuns),
+// so it decompresses gzip/zstd payload wrappers via
+// `normalizeWorkflowRunData`. The runtime write path (events.create)
+// re-hydrates run errors through `hydrateRunError`, which decompresses
+// on its own, so it deliberately does not route through here.
 function filterRunData(
   run: any,
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData {
   if (resolveData === 'none') {
     const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = run;
-    const deserialized = deserializeError<WorkflowRun>(rest);
+    const deserialized = normalizeWorkflowRunData(
+      deserializeError<WorkflowRun>(rest) as unknown as Record<string, unknown>
+    );
     return {
       ...deserialized,
       input: undefined,
       output: undefined,
     } as WorkflowRunWithoutData;
   }
-  return deserializeError<WorkflowRun>(run);
+  return normalizeWorkflowRunData(
+    deserializeError<WorkflowRun>(run) as unknown as Record<string, unknown>
+  ) as unknown as WorkflowRun;
 }
 
 // Functions
@@ -207,6 +216,47 @@ export async function getWorkflowRun(
     }
     throw error;
   }
+}
+
+/**
+ * Retrieves a snapshot for each requested run ID. Delegates to
+ * `getWorkflowRun` for each ID and returns null for IDs that do not exist.
+ */
+export async function getWorkflowRuns(
+  ids: readonly string[],
+  params: GetWorkflowRunParams & { resolveData: 'none' },
+  config?: APIConfig
+): Promise<(WorkflowRunWithoutData | null)[]>;
+export async function getWorkflowRuns(
+  ids: readonly string[],
+  params?: GetWorkflowRunParams & { resolveData?: 'all' },
+  config?: APIConfig
+): Promise<(WorkflowRun | null)[]>;
+export async function getWorkflowRuns(
+  ids: readonly string[],
+  params?: GetWorkflowRunParams,
+  config?: APIConfig
+): Promise<(WorkflowRun | WorkflowRunWithoutData | null)[]>;
+export async function getWorkflowRuns(
+  ids: readonly string[],
+  params?: GetWorkflowRunParams,
+  config?: APIConfig
+): Promise<(WorkflowRun | WorkflowRunWithoutData | null)[]> {
+  const uniqueIds = [...new Set(ids)];
+  const runs = await Promise.all(
+    uniqueIds.map(async (id) => {
+      try {
+        return await getWorkflowRun(id, params, config);
+      } catch (error) {
+        if (error instanceof WorkflowRunNotFoundError) {
+          return null;
+        }
+        throw error;
+      }
+    })
+  );
+  const runById = new Map(uniqueIds.map((id, i) => [id, runs[i]]));
+  return ids.map((id) => runById.get(id) ?? null);
 }
 
 export async function cancelWorkflowRunV1(

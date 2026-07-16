@@ -1,0 +1,138 @@
+---
+title: Analytics
+description: Metadata-only read APIs for runs, steps, events, hooks, waits, and attributes, backed by the observability pipeline.
+type: reference
+summary: "Interfaces: world.analytics.runs, .attributes, .steps, .events, .hooks, .waits. Metadata-only listings with plan-based lookback windows; filter runs by attribute key=value."
+prerequisites:
+  - /docs/api-reference/workflow-runtime/get-world
+related:
+  - /docs/api-reference/workflow-runtime/world/storage
+  - /docs/observability/attributes
+keywords:
+  - world.analytics
+  - analytics.runs
+  - analytics.attributes
+  - attribute filter
+  - listValues
+  - lookback window
+  - observability-upgrade-required
+  - pageInfo
+  - metadata-only
+---
+
+`world.analytics` is an optional, read-only namespace for observability surfaces — dashboards, CLIs, and admin tools that list large numbers of runs without touching payload data.
+
+It differs from [Storage](/docs/api-reference/workflow-runtime/world/storage) in two ways:
+
+- **Metadata only.** Results never include run input/output, step data, or hook tokens. There is no `resolveData` option.
+- **Served from the observability pipeline.** On Vercel, queries are served from the Vercel observability data pipeline, so large listings do not compete with workflow execution. Data is ingested asynchronously and may trail the live state by a few seconds.
+
+The namespace is optional — worlds that don't implement it (such as the local development world) leave it `undefined`, so feature-detect before use:
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = await getWorld();
+if (world.analytics) { // [!code highlight]
+  const page = await world.analytics.runs.list();
+}
+```
+
+---
+
+## analytics.runs
+
+### runs.list()
+
+List runs with metadata, current status, and attributes. Without an explicit time window, the listing defaults to the trailing 24 hours; pass `startTime`/`endTime` to reach older runs within your plan window.
+
+```typescript lineNumbers
+const page = await world.analytics.runs.list({
+  workflowName: "orderWorkflow",
+  status: "failed",
+  attributes: { source: "checkout" }, // [!code highlight]
+  pagination: { limit: 50, sortOrder: "desc" },
+});
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `params.workflowName` | `string` | Filter to one workflow |
+| `params.status` | `string` | `pending`, `running`, `completed`, `failed`, or `cancelled` |
+| `params.startTime` / `params.endTime` | `string` | ISO 8601 window; must be provided together |
+| `params.attributes` | `Record<string, string>` | Only return runs whose latest attributes match every pair (up to 8) |
+| `params.pagination` | `PaginationOptions` | Cursor pagination |
+
+**Returns:** `PaginatedResponse<AnalyticsRun>` — each run includes `runId`, `status`, `workflowName`, `deploymentId`, `attributes`, and lifecycle timestamps.
+
+Attribute matching is latest-write-wins: a run whose attribute moved from `"v1"` to `"v2"` no longer matches `{ key: "v1" }`. Reserved `$`-prefixed keys may be used in filters even though user code cannot write them.
+
+### runs.get()
+
+Fetch one run by ID. Point lookups search the full plan window, not just the trailing 24 hours.
+
+```typescript lineNumbers
+const run = await world.analytics.runs.get(runId);
+```
+
+---
+
+## analytics.attributes
+
+Discover which [attributes](/docs/observability/attributes) exist on your runs — for example to build filter dropdowns over arbitrary user-defined keys.
+
+### attributes.list()
+
+List the distinct attribute keys observed on runs in the window, ordered alphabetically.
+
+```typescript lineNumbers
+const page = await world.analytics.attributes.list({ // [!code highlight]
+  workflowName: "orderWorkflow",
+});
+for (const { key, runCount, lastSeenAt } of page.data) {
+  console.log(key, runCount, lastSeenAt);
+}
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `params.workflowName` | `string` | Only count runs of one workflow |
+| `params.startTime` / `params.endTime` | `string` | ISO 8601 window; must be provided together |
+| `params.pagination` | `PaginationOptions` | Cursor pagination |
+
+**Returns:** `PaginatedResponse<AnalyticsAttributeKey>` — `{ key, runCount, firstSeenAt, lastSeenAt }`
+
+---
+
+## analytics.steps, analytics.events, analytics.hooks, analytics.waits
+
+Run-scoped listings mirroring their [Storage](/docs/api-reference/workflow-runtime/world/storage) counterparts, minus payload data:
+
+```typescript lineNumbers
+const steps = await world.analytics.steps.list({ runId });
+const events = await world.analytics.events.list({ runId, eventType: "step_failed" });
+const related = await world.analytics.events.listByCorrelationId({ correlationId });
+const hooks = await world.analytics.hooks.list({ runId });
+const waits = await world.analytics.waits.list({ runId, status: "waiting" });
+```
+
+Each namespace also has a `get()` for point lookups (`steps.get(runId, stepId)`, `events.get(runId, eventId)`, `hooks.get(hookId)`, `waits.get(runId, waitId)`). Hook listings never include the hook token — resolve it separately through the runtime APIs if you need to deliver a payload.
+
+---
+
+## Lookback windows and pageInfo
+
+Every paginated response carries `pageInfo` describing the window the query was allowed to scan:
+
+{/* @skip-typecheck: shape illustration, not runnable code */}
+```typescript
+{
+  currentLookbackDays: 2,     // what your plan allows today
+  maxLookbackDays: 30,        // ceiling with Observability Plus on Vercel
+  currentWindowStart: Date,
+  maxWindowStart: Date,
+  upgradeAvailable: true,     // for Vercel deployed workflows
+}
+```
+
+Requests for a window older than `currentWindowStart` fail with an `observability-upgrade-required` error; windows older than `maxWindowStart` return not-found. Use `pageInfo` to size date pickers and to decide whether to surface an upgrade prompt.

@@ -1,6 +1,11 @@
 import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
 import type { ServerActionError } from '~/lib/types';
 
+const OBSERVABILITY_UPGRADE_REQUIRED_CODE = 'observability-upgrade-required';
+const OBSERVABILITY_UPGRADE_REQUIRED_MESSAGE =
+  'This workflow observability data is outside your current plan window. Upgrade Observability Plus to view up to 30 days of workflow data.';
+const OBSERVABILITY_UPGRADE_REQUIRED_TITLE = 'Upgrade Observability Plus';
+
 /**
  *  Error instance for API and server-side errors.
  * `error.message` will be a user-facing error message, to be displayed in UI.
@@ -49,11 +54,33 @@ export function createWorkflowAPIError(
   });
 }
 
+export function isObservabilityUpgradeRequired(error: unknown): boolean {
+  return (
+    error instanceof WorkflowWebAPIError &&
+    error.request?.status === 402 &&
+    error.request?.code === OBSERVABILITY_UPGRADE_REQUIRED_CODE
+  );
+}
+
+export function getErrorTitle(
+  error: Error | WorkflowWebAPIError,
+  fallback: string
+): string {
+  if (isObservabilityUpgradeRequired(error)) {
+    return OBSERVABILITY_UPGRADE_REQUIRED_TITLE;
+  }
+  return fallback;
+}
+
 /**
  * Gets a user-facing error message from an error object.
  * Handles both WorkflowWebAPIError and regular Error instances.
  */
 export const getErrorMessage = (error: Error | WorkflowWebAPIError): string => {
+  if (isObservabilityUpgradeRequired(error)) {
+    return OBSERVABILITY_UPGRADE_REQUIRED_MESSAGE;
+  }
+
   if ('layer' in error && error.layer) {
     if (error instanceof WorkflowWebAPIError) {
       if (error.request?.status === 403) {

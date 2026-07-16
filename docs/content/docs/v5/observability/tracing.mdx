@@ -17,7 +17,7 @@ The SDK only depends on the OpenTelemetry **API**, never on an SDK or exporter. 
 
 ## Enabling tracing
 
-Register any OpenTelemetry Node SDK in your application. On Vercel with Next.js, the simplest setup is [`@vercel/otel`](https://vercel.com/docs/observability/otel-overview) in `instrumentation.ts`:
+Register any OpenTelemetry Node SDK in your application. On Vercel with Next.js, the simplest setup is [`@vercel/otel`](https://vercel.com/docs/tracing/instrumentation) in `instrumentation.ts`:
 
 ```typescript title="instrumentation.ts" lineNumbers
 import { registerOTel } from "@vercel/otel"
@@ -29,6 +29,10 @@ export function register() {
 
 No workflow-specific configuration is required. As soon as a tracer provider and propagator are registered, the SDK's spans, context propagation, and span links activate automatically.
 
+<Callout>
+`@opentelemetry/api` is an **optional peer dependency**. An OpenTelemetry SDK such as `@vercel/otel` normally pulls it in transitively, but installing it directly (`npm i @opentelemetry/api`) guarantees it is present in your build — particularly for bundled or serverless targets where the SDK's tracing is inlined at build time. If it can't be resolved, tracing is a silent no-op.
+</Callout>
+
 ## Spans
 
 | Span name | Kind | Emitted when |
@@ -37,8 +41,16 @@ No workflow-specific configuration is required. As soon as a tracer provider and
 | `workflow.execute <name>` | consumer (root) | a queue delivery invokes the workflow — replay, orchestration, and inline steps run under it |
 | `step.execute <name>` | internal (inline) / consumer + root (queue-delivered) | a step function executes |
 | `http <method>` | client | the SDK calls the workflow backend (event reads/writes) |
+| `workflow.stream.write` | client | a stream chunk (or the stream close) is flushed to the backend |
+| `workflow.stream.flush` | client | a buffered batch of stream writes settles; back-dated to the batch's first `write()`, so its duration is the app-perceived batch latency (buffer dwell + RPC) |
+| `workflow.stream.close` | client | the stream-close RPC; its duration is the close round trip |
+| `workflow.stream.read.complete` | client | a stream read drains; back-dated to the read dispatch, so its duration is the total read (`workflow.stream.read.chunks` / `.bytes` carry throughput counts) |
+| `workflow.stream.read.connect` | client | a live stream read opens; the span covers dispatch → response headers (network connect) |
+| `workflow.stream.read` | client | a live stream read receives its first chunk; the span's duration is the end-to-end time-to-first-chunk (see `workflow.stream.read.ttfc_ms`) |
 
 `<name>` is the short function name (for example `processOrder`); the full machine name, including the source module, is available in the `workflow.name` / `step.name` attributes.
+
+Stream spans are emitted by the SDK's world backend on the client that writes or reads the stream, and (like all SDK spans) are no-ops when no OpenTelemetry SDK is registered. The `workflow.stream.read` span only appears once the first non-empty chunk arrives.
 
 ## Key attributes
 
@@ -49,6 +61,12 @@ No workflow-specific configuration is required. As soon as a tracer provider and
 | `workflow.trace.mode` | The active trace mode (`linked` or `continuous`). |
 | `workflow.trace.propagated` | Whether the invocation received trace context from the queue message. |
 | `workflow.queue.overhead_ms` | Time between the message being enqueued and the handler starting — queue dwell plus any cold start. |
+| `workflow.stream.name` | The stream name, on stream write/read spans. |
+| `workflow.stream.operation` | The stream operation: `write`, `write_multi`, `close`, `read`, or `flush`. |
+| `workflow.stream.write.chunk_rtt` | Time between emissions of a chunk to the wire, and receiving the `ack` message for that chunk. Also stamped on `workflow.stream.flush` (the batch's write RPC duration, network included). |
+| `workflow.stream.flush.buffer_dwell_ms` | On `workflow.stream.flush`: time the batch's first chunk waited in the client-side write buffer (flush timer, run-ready barrier) before the request was dispatched. `workflow.stream.flush.chunks` / `.bytes` carry the batch shape. |
+| `workflow.stream.read.ttfc_ms` | Time between opening a read connection and observing and receiving the first chunk back. |
+| `workflow.stream.read.connect_ms` | On `workflow.stream.read`: the connect portion (read dispatch → stream handle/response headers), network included. |
 
 ## Trace shape: one trace per invocation
 

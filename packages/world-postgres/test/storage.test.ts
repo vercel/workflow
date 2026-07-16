@@ -4,6 +4,7 @@ import type { Hook, Step, WorkflowRun } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { Pool } from 'pg';
+import { decodeTime } from 'ulid';
 import {
   afterAll,
   beforeAll,
@@ -12,6 +13,7 @@ import {
   expect,
   it,
   test,
+  vi,
 } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
 import * as DrizzleSchema from '../src/drizzle/schema.js';
@@ -253,6 +255,48 @@ describe('Storage (Postgres integration)', () => {
         await expect(runs.get('missing')).rejects.toMatchObject({
           name: 'WorkflowRunNotFoundError',
         });
+      });
+    });
+
+    describe('getMany', () => {
+      it('returns requested runs in order and keeps missing IDs as null', async () => {
+        const first = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'first-workflow',
+          input: new Uint8Array([1]),
+        });
+        const second = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'second-workflow',
+          input: new Uint8Array([2]),
+        });
+
+        const result = await runs.getMany(
+          [second.runId, 'wrun_missing', first.runId, second.runId],
+          { resolveData: 'none' }
+        );
+
+        expect(result.map((run) => run?.runId ?? null)).toEqual([
+          second.runId,
+          null,
+          first.runId,
+          second.runId,
+        ]);
+        expect(result[0]?.input).toBeUndefined();
+        expect(result[2]?.output).toBeUndefined();
+      });
+
+      it('uses one query regardless of duplicate requested IDs', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        });
+        const query = vi.spyOn(pool, 'query');
+
+        await runs.getMany([run.runId, 'wrun_missing', run.runId]);
+
+        expect(query).toHaveBeenCalledTimes(1);
       });
     });
 
@@ -700,6 +744,49 @@ describe('Storage (Postgres integration)', () => {
         expect(updated.status).toBe('running');
         expect(updated.startedAt).toBeInstanceOf(Date);
         expect(updated.attempt).toBe(1); // Incremented by step_started
+      });
+
+      it('allocates the step_started event id after the guarded step update', async () => {
+        const stepId = 'step-start-lock';
+        await createStep(events, testRunId, {
+          stepId,
+          stepName: 'test-step',
+          input: new Uint8Array([1]),
+        });
+
+        const lockPool = new Pool({
+          connectionString: container.getConnectionUri(),
+          max: 1,
+        });
+        const client = await lockPool.connect();
+
+        try {
+          await client.query('BEGIN');
+          await client.query(
+            'SELECT 1 FROM workflow.workflow_steps WHERE run_id = $1 AND step_id = $2 FOR UPDATE',
+            [testRunId, stepId]
+          );
+
+          const started = events.create(testRunId, {
+            eventType: 'step_started',
+            correlationId: stepId,
+          });
+
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          const releasedAt = Date.now();
+          await client.query('COMMIT');
+
+          const result = await started;
+          if (!result.event) {
+            throw new Error('Expected step_started event');
+          }
+          expect(
+            decodeTime(result.event.eventId.slice('wevt_'.length))
+          ).toBeGreaterThanOrEqual(releasedAt);
+        } finally {
+          client.release();
+          await lockPool.end();
+        }
       });
 
       it('should update step status to completed via step_completed event', async () => {

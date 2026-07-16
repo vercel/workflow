@@ -1,14 +1,17 @@
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
+import { workflow as viteWorkflow } from './vite.js';
 
 type StubOptions = {
   routing: boolean;
   majorVersion?: number;
   dev?: boolean;
   preset?: string;
-  workflow?: { runtime?: string };
+  rootDir?: string;
+  workspaceDir?: string;
+  workflow?: { dirs?: string[]; runtime?: string };
   externals?: {
     external?: Array<string | RegExp | ((id: string) => boolean)>;
   };
@@ -20,6 +23,8 @@ function createNitroStub({
   majorVersion,
   dev = false,
   preset = 'node-server',
+  rootDir = '/tmp/project',
+  workspaceDir = '/tmp/project',
   workflow = {},
   externals,
   vercel,
@@ -34,10 +39,11 @@ function createNitroStub({
       externals: externals ?? {},
       handlers: [],
       preset,
-      rootDir: '/tmp/project',
+      rootDir,
       typescript: {},
       vercel: vercel ?? {},
       virtual: {},
+      workspaceDir,
       workflow,
     },
     hooks: {
@@ -106,6 +112,211 @@ describe('@workflow/nitro virtual handlers', () => {
       expect(source).toContain(
         `import { POST } from "/tmp/.nitro/workflow/${buildPath}";`
       );
+    }
+  });
+});
+
+describe('@workflow/nitro builder lifecycle', () => {
+  it('closes a development Nitro instance with its Vite plugin container', async () => {
+    const nitro = createNitroStub({ routing: true, dev: true });
+    nitro.close = vi.fn(async () => {});
+    const plugin = viteWorkflow().find(
+      (candidate) => candidate.name === 'workflow:nitro'
+    ) as any;
+
+    await plugin.nitro.setup(nitro);
+    await plugin.buildEnd?.();
+
+    expect(nitro.close).toHaveBeenCalledOnce();
+  });
+
+  it('disposes temporary build contexts after each build', async () => {
+    const dispose = vi.fn(async () => {});
+    const builder = new LocalBuilder(
+      createNitroStub({ routing: true, dev: true })
+    );
+    Object.assign(builder, {
+      getInputFiles: async () => [],
+      createCombinedBundle: async () => ({
+        manifest: {},
+        stepsContext: { dispose },
+        interimBundleCtx: { dispose },
+      }),
+      createWebhookBundle: async () => {},
+      createManifest: async () => {},
+    });
+
+    await builder.build();
+
+    expect(dispose).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('@workflow/nitro transform boundaries', () => {
+  it('does not re-transform generated Nitro build artifacts', async () => {
+    const rollupBeforeHooks: Array<(nitro: any, config: any) => void> = [];
+    const nitro = createNitroStub({ routing: true });
+    nitro.hooks.hook = (
+      name: string,
+      hook: (nitro: any, config: any) => void
+    ) => {
+      if (name === 'rollup:before') rollupBeforeHooks.push(hook);
+    };
+
+    const plugins = viteWorkflow();
+    const viteTransform = plugins.find(
+      (plugin) => plugin.name === 'workflow:transform'
+    ) as any;
+    const viteNitro = plugins.find(
+      (plugin) => plugin.name === 'workflow:nitro'
+    ) as any;
+
+    await viteNitro.nitro.setup(nitro);
+
+    const config: { plugins: any[] } = { plugins: [] };
+    for (const hook of rollupBeforeHooks) {
+      hook(nitro, config);
+    }
+    const nitroTransform = config.plugins.find(
+      (plugin: { name?: string }) => plugin.name === 'workflow:transform'
+    );
+
+    const code = `
+      import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
+      export class Serializable {
+        static [WORKFLOW_SERIALIZE](value) { return value; }
+        static [WORKFLOW_DESERIALIZE]() { return new Serializable(); }
+      }
+    `;
+    const generatedId = '/tmp/.nitro/vite/services/ssr/assets/index.js';
+    const siblingId = '/tmp/.nitro-source/index.js';
+
+    for (const transform of [viteTransform, nitroTransform]) {
+      await expect(
+        transform.transform.call({}, code, generatedId)
+      ).resolves.toBeNull();
+      await expect(
+        transform.transform.call({}, code, siblingId)
+      ).resolves.not.toBeNull();
+    }
+  });
+});
+
+describe('@workflow/nitro world target bundling', () => {
+  it('forces workflow SDK packages inline in production builds so aliases can resolve', async () => {
+    const rollupBeforeHooks: Array<(nitro: any, config: any) => void> = [];
+    const nitro = createNitroStub({ routing: true, dev: false });
+    nitro.hooks.hook = (
+      name: string,
+      fn: (nitro: any, config: any) => void
+    ) => {
+      if (name === 'rollup:before') rollupBeforeHooks.push(fn);
+    };
+
+    await nitroModule.setup(nitro);
+
+    const config: { plugins: any[] } = { plugins: [] };
+    for (const hook of rollupBeforeHooks) {
+      hook(nitro, config);
+    }
+
+    const forceInlinePlugin = config.plugins.find(
+      (plugin: { name?: string }) => plugin.name === 'workflow:force-inline'
+    );
+
+    expect(forceInlinePlugin).toBeDefined();
+    expect(forceInlinePlugin?.resolveId?.order).toBe('pre');
+    await expect(
+      forceInlinePlugin.resolveId.handler.call(
+        {
+          resolve: async (source: string) => ({ id: `/tmp/${source}.js` }),
+        },
+        '@workflow/world-local',
+        '/tmp/importer.js',
+        {}
+      )
+    ).resolves.toEqual({
+      id: '/tmp/@workflow/world-local.js',
+      external: false,
+    });
+    await expect(
+      forceInlinePlugin.resolveId.handler.call(
+        {
+          resolve: async (source: string) => ({ id: `/tmp/${source}.js` }),
+        },
+        '@workflow/world-postgres',
+        '/tmp/importer.js',
+        {}
+      )
+    ).resolves.toBeNull();
+
+    expect(nitro.options.alias['pg-native'].replaceAll('\\', '/')).toMatch(
+      /\/packages\/builders\/(src|dist)\/optional-pg-native\.js$/
+    );
+  });
+
+  it('statically imports and seeds the configured world in dev virtual handlers', async () => {
+    const nitro = createNitroStub({ routing: true, dev: true });
+
+    await nitroModule.setup(nitro);
+
+    const flowSource = nitro.options.virtual['#workflow/workflows.mjs'];
+    expect(flowSource).toContain(
+      'createWorldFromModule as __workflowCreateWorldFromModule,'
+    );
+    expect(flowSource).toContain('setWorld as __workflowSetWorld,');
+    expect(flowSource).toContain('} from "file://');
+    expect(flowSource).toContain('/packages/core/dist/runtime.js";');
+    expect(nitro.options.alias['@workflow/core/runtime']).toBeUndefined();
+    expect(flowSource).toContain('import * as __workflowTargetWorld from');
+    expect(flowSource).toContain('packages/world-local/dist/index.js";');
+    expect(flowSource).toContain('await ensureWorkflowWorld();');
+  });
+
+  it('resolves the configured world target alias from the app root', async () => {
+    const previous = process.env.WORKFLOW_TARGET_WORLD;
+    process.env.WORKFLOW_TARGET_WORLD = '@workflow/world-postgres';
+    try {
+      const rollupBeforeHooks: Array<(nitro: any, config: any) => void> = [];
+      const nitro = createNitroStub({
+        routing: true,
+        rootDir: `${process.cwd()}/workbench/express`,
+      });
+      nitro.hooks.hook = (
+        name: string,
+        fn: (nitro: any, config: any) => void
+      ) => {
+        if (name === 'rollup:before') rollupBeforeHooks.push(fn);
+      };
+
+      await nitroModule.setup(nitro);
+
+      const worldTargetAlias =
+        nitro.options.alias['@workflow/core/runtime/world-target'];
+      expect(worldTargetAlias.replaceAll('\\', '/')).toContain(
+        '/packages/world-postgres/dist/index.js'
+      );
+
+      const config: { plugins: any[] } = { plugins: [] };
+      for (const hook of rollupBeforeHooks) {
+        hook(nitro, config);
+      }
+      const forceInlinePlugin = config.plugins.find(
+        (plugin: { name?: string }) => plugin.name === 'workflow:force-inline'
+      );
+      await expect(
+        forceInlinePlugin.resolveId.handler(
+          '@workflow/core/runtime/world-target',
+          undefined,
+          {}
+        )
+      ).resolves.toEqual({ id: worldTargetAlias, external: false });
+    } finally {
+      if (previous == null) {
+        delete process.env.WORKFLOW_TARGET_WORLD;
+      } else {
+        process.env.WORKFLOW_TARGET_WORLD = previous;
+      }
     }
   });
 });
@@ -318,6 +529,27 @@ describe('@workflow/nitro externals forwarding', () => {
         const nitro = createNitroStub({ routing: true });
         const builder = new Builder(nitro) as any;
         expect(builder.config.externalPackages).toBeUndefined();
+      });
+
+      it('uses nitro workspaceDir as the workflow projectRoot', () => {
+        const nitro = createNitroStub({
+          routing: true,
+          workspaceDir: '/tmp',
+        });
+        const builder = new Builder(nitro) as any;
+        expect(builder.config.projectRoot).toBe('/tmp');
+      });
+
+      it('forwards workflow.dirs to the workflow builder', () => {
+        const nitro = createNitroStub({
+          routing: true,
+          workflow: { dirs: ['server/workflows', 'layers/custom/workflows'] },
+        });
+        const builder = new Builder(nitro) as any;
+        expect(builder.config.dirs).toEqual([
+          'server/workflows',
+          'layers/custom/workflows',
+        ]);
       });
 
       it('forwards string entries from nitro.options.externals.external', () => {

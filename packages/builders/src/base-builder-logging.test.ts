@@ -93,7 +93,7 @@ describe('base builder logging', () => {
     expect(debugSpy).not.toHaveBeenCalled();
   });
 
-  it('emits compact build and rebuild summaries when manifests are created', async () => {
+  it('emits Next-like workflow compile summaries when manifests are created', async () => {
     const workflowBundlePath = join(testRoot, 'workflow.js');
     const manifestDir = join(testRoot, '.well-known/workflow/v1');
     mkdirSync(manifestDir, { recursive: true });
@@ -127,10 +127,10 @@ describe('base builder logging', () => {
 
     expect(logSpy).toHaveBeenCalledTimes(2);
     expect(logSpy.mock.calls[0]?.[0]).toMatch(
-      /^workflows build complete \(2 steps, 1 workflow, time \d+(?:ms|\.\d+s)\)$/
+      /^✓ Compiled workflows in \d+(?:ms|\.\d+s) \(2 steps, 1 workflow\)$/
     );
     expect(logSpy.mock.calls[1]?.[0]).toMatch(
-      /^workflows rebuilt \(2 steps, 1 workflow, time \d+(?:ms|\.\d+s)\)$/
+      /^✓ Compiled workflows in \d+(?:ms|\.\d+s) \(2 steps, 1 workflow\)$/
     );
   });
 });

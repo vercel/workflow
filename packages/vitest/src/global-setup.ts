@@ -8,7 +8,7 @@ import {
 export async function setup(project: TestProject) {
   await buildWorkflowTests(
     readProvidedWorkflowTestOptions(
-      project.config.provide?.[WORKFLOW_VITEST_OPTIONS_KEY]
+      project.getProvidedContext()[WORKFLOW_VITEST_OPTIONS_KEY]
     )
   );
 }

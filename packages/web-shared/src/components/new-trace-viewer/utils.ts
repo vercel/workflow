@@ -1,4 +1,8 @@
-import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
+import {
+  formatDuration,
+  formatDurationPrecise,
+  getHighResInMs,
+} from '../trace-viewer/util/timing';
 import type { Span, SpanEvent } from './types';
 
 // ---------------------------------------------------------------------------
@@ -37,6 +41,64 @@ export function getSpanDurationMs(span: Span): number {
   );
 }
 
+export function isSpanErrored(span: Span): boolean {
+  const workflowStatus = (span.attributes.data as Record<string, unknown>)
+    ?.status as string | undefined;
+  return span.status.code === 2 || workflowStatus === 'failed';
+}
+
+// ---------------------------------------------------------------------------
+// Viewport
+// ---------------------------------------------------------------------------
+
+export interface ViewportRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * Clamp a candidate viewport to the root extent. The requested duration is
+ * preserved where possible (clamped to [minDurationMs, root duration]), then
+ * the window is shifted back inside the root bounds.
+ */
+export function clampViewportToRoot(
+  next: ViewportRange,
+  rootStart: number,
+  rootEnd: number,
+  minDurationMs: number
+): ViewportRange {
+  const rootDuration = Math.max(rootEnd - rootStart, minDurationMs);
+  const duration = Math.min(
+    rootDuration,
+    Math.max(minDurationMs, next.end - next.start)
+  );
+  const maxStart = rootEnd - duration;
+  const start = Math.min(Math.max(next.start, rootStart), maxStart);
+  return { start, end: start + duration };
+}
+
+// ---------------------------------------------------------------------------
+// Wheel gestures — shared between the timeline and the minimap
+// ---------------------------------------------------------------------------
+
+/** Convert a wheel delta to pixel units (line-mode deltas arrive in lines). */
+export function wheelDeltaToPixels(delta: number, deltaMode: number): number {
+  return deltaMode === 1 ? delta * 16 : delta;
+}
+
+/**
+ * Exponential zoom factor for a wheel gesture. Coarse mouse-wheel steps are
+ * damped harder than trackpad pinches so both feel similar.
+ */
+export function wheelZoomScaleFactor(event: {
+  deltaY: number;
+  deltaMode: number;
+}): number {
+  const dy = wheelDeltaToPixels(event.deltaY, event.deltaMode);
+  const isMouseWheel = event.deltaMode === 1 || Math.abs(event.deltaY) >= 50;
+  return 2 ** (dy / (isMouseWheel ? 200 : 60));
+}
+
 // ---------------------------------------------------------------------------
 // Time markers
 // ---------------------------------------------------------------------------
@@ -56,6 +118,8 @@ const NICE_INTERVALS = [
 
 const MAX_MARKERS = 8;
 
+const MS_IN_SECOND = 1000;
+
 function pickInterval(viewDuration: number, maxTicks: number): number {
   for (const interval of NICE_INTERVALS) {
     if (viewDuration / interval <= maxTicks) return interval;
@@ -72,6 +136,13 @@ export function computeTimeMarkers(
   const maxTicks = 6;
   const interval = pickInterval(viewDuration, maxTicks);
 
+  // Sub-second steps need fractional labels, or ticks past 1s collide as
+  // duplicate whole seconds ("…1s, 2s, 2s, 3s"). Scale decimals to the step.
+  const fractionDigits =
+    interval >= MS_IN_SECOND
+      ? 0
+      : Math.ceil(-Math.log10(interval / MS_IN_SECOND));
+
   const firstTick = Math.ceil(offset / interval) * interval;
   const markers: TimeMarker[] = [];
 
@@ -80,7 +151,10 @@ export function computeTimeMarkers(
     if (position < -0.01 || position > 1.01) continue;
     markers.push({
       position: Math.min(Math.max(position, 0), 1),
-      label: formatDuration(Math.abs(t), true),
+      label:
+        fractionDigits === 0
+          ? formatDuration(Math.abs(t), true)
+          : formatDurationPrecise(Math.abs(t), fractionDigits),
       value: t,
     });
     if (markers.length >= MAX_MARKERS) break;
@@ -149,9 +223,10 @@ export const RESOURCE_COLORS: Record<
     errorBg: 'var(--ds-red-200)',
     errorBorder: 'var(--ds-red-500)',
   },
+  // Passive spans (hooks) stay gray — matches event-list icons and the minimap.
   hook: {
-    bg: 'var(--ds-amber-200)',
-    border: 'var(--ds-amber-500)',
+    bg: 'var(--ds-gray-200)',
+    border: 'var(--ds-gray-500)',
     errorBg: 'var(--ds-red-200)',
     errorBorder: 'var(--ds-red-500)',
   },

@@ -150,6 +150,45 @@ export function inlineExecution(world: string) {
     }
   );
 
+  test(
+    'sequential steps carrying an AbortSignal still run in a single flow invocation',
+    { timeout: 30_000 },
+    async () => {
+      // Regression for vercel/workflow#2795: a serialized AbortSignal in step
+      // arguments opens a real-time abort-stream reader for the step's
+      // duration. If that reader isn't torn down before the step's ops-settle
+      // check, its never-resolving read() makes every signal-bearing step
+      // report `hasPendingOps`, forcing a queue continuation per step (N+1
+      // invocations) instead of running inline.
+      const server = await startServer({ world }).then(createFetcher);
+      const count = 5;
+      const result = await server.invoke(
+        'workflows/signal-cost.ts',
+        'signalCostWorkflow',
+        [{ count, withSignal: true }]
+      );
+
+      const run = await vi.waitFor(
+        async () => {
+          const run = await server.getRun(result.runId);
+          expect(run.status).toBe('completed');
+          return run;
+        },
+        { interval: 200, timeout: 29_000 }
+      );
+
+      const output = await hydrateWorkflowReturnValue(
+        run.output!,
+        run.runId,
+        undefined
+      );
+      expect(output).toBe('done');
+
+      const invocations = await server.getFlowInvocationCount(result.runId);
+      expect(invocations).toBe(1);
+    }
+  );
+
   // Hook invocation counting is tested by the existing hooks test suite.
   // The hook pattern requires external resume, which involves complex
   // timing. The invocation count for hooks is 2: create + resume.

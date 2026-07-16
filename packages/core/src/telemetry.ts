@@ -153,6 +153,17 @@ export async function withTraceContext<T>(
 }
 
 const OtelApi = once(async () => {
+  // `@opentelemetry/api` is an optional peer dependency. The static specifier
+  // is intentional: esbuild-bundled targets (the CLI's
+  // `vercel-build-output-api` build, Nitro, Astro) ship a self-contained
+  // bundle with no node_modules, so the package must be *inlined* at build
+  // time for spans to work at runtime — a runtime-built specifier is opaque to
+  // esbuild and would silently disable tracing there. Bundlers that reject an
+  // unresolvable static `import()` when the peer isn't installed (Rollup/Vite,
+  // e.g. SvelteKit) instead externalize `@opentelemetry/api` in the workflow
+  // framework integration, which keeps the build green and still loads real
+  // OTel when the peer is present. Runtime semantics: present → loaded, absent
+  // → caught and tracing disabled.
   try {
     return await import('@opentelemetry/api');
   } catch {
@@ -164,8 +175,52 @@ const OtelApi = once(async () => {
 const Tracer = once(async () => {
   const api = await OtelApi.value;
   if (!api) return null;
-  return api.trace.getTracer('workflow');
+  const tracer = api.trace.getTracer('workflow');
+  logOtelDiagnosticOnce(api, tracer);
+  return tracer;
 });
+
+/**
+ * One-shot runtime diagnostic (DEBUG=workflow:* only), same shape as the one
+ * world-vercel emits tagged `world-vercel`: prints how this module instance
+ * of `@opentelemetry/api` sees the global registration, so a deployment's
+ * logs show the two packages' views side by side.
+ */
+let otelDiagLogged = false;
+function logOtelDiagnosticOnce(otel: typeof api, tracer: api.Tracer): void {
+  const debugEnabled =
+    typeof process !== 'undefined' &&
+    typeof process.env.DEBUG === 'string' &&
+    (process.env.DEBUG.includes('workflow:') || process.env.DEBUG === '*');
+  if (otelDiagLogged || !debugEnabled) return;
+  otelDiagLogged = true;
+  try {
+    const g = (globalThis as Record<symbol, unknown>)[
+      Symbol.for('opentelemetry.js.api.1')
+    ] as { version?: string } | undefined;
+    const provider = otel.trace.getTracerProvider();
+    const delegate =
+      (provider as { getDelegate?: () => unknown }).getDelegate?.() ?? provider;
+    const probe = tracer.startSpan('workflow.otel.probe.core');
+    console.warn(
+      '[workflow:otel-diag] core',
+      JSON.stringify({
+        globalRegistrationVersion: g?.version ?? null,
+        providerCtor: provider?.constructor?.name ?? null,
+        delegateCtor: (delegate as object | null)?.constructor?.name ?? null,
+        tracerCtor: tracer?.constructor?.name ?? null,
+        probeCtor: probe?.constructor?.name ?? null,
+        probeRecording: probe.isRecording(),
+      })
+    );
+    probe.end();
+  } catch (error) {
+    console.warn(
+      '[workflow:otel-diag] core failed:',
+      error instanceof Error ? error.message : error
+    );
+  }
+}
 
 export async function trace<T>(
   spanName: string,
@@ -200,6 +255,23 @@ export async function trace<T>(
       span.end();
     }
   });
+}
+
+/**
+ * Emit a span whose start is back-dated to `startEpochMs` and whose end is now,
+ * so its duration reflects an interval only measurable at its end (e.g.
+ * time-to-first-chunk, known when the first chunk arrives). Unlike `trace()`,
+ * this records an already-elapsed span in one shot rather than wrapping a
+ * callback. No-op when OpenTelemetry is not available.
+ */
+export async function recordElapsedSpan(
+  spanName: string,
+  startEpochMs: number,
+  opts?: SpanOptions
+): Promise<void> {
+  const tracer = await Tracer.value;
+  if (!tracer) return;
+  tracer.startSpan(spanName, { ...opts, startTime: startEpochMs }).end();
 }
 
 /**

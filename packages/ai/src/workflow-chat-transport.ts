@@ -9,6 +9,7 @@ import {
   uiMessageChunkSchema,
 } from 'ai';
 import { getErrorMessage } from './get-error-message.js';
+import { normalizeUIMessageStreamParts } from './normalize-ui-message-stream.js';
 import { iteratorToStream, streamToIterator } from './stream-iterator.js';
 
 /**
@@ -273,9 +274,12 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
   async sendMessages(
     options: SendMessagesOptions<UI_MESSAGE> & ChatRequestOptions
   ): Promise<ReadableStream<UIMessageChunk>> {
-    return iteratorToStream(this.sendMessagesIterator(options), {
-      signal: options.abortSignal,
-    });
+    return iteratorToStream(
+      normalizeUIMessageStreamParts(this.sendMessagesIterator(options)),
+      {
+        signal: options.abortSignal,
+      }
+    );
   }
 
   private async *sendMessagesIterator(
@@ -383,7 +387,9 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
   async reconnectToStream(
     options: ReconnectToStreamOptions & ChatRequestOptions
   ): Promise<ReadableStream<UIMessageChunk> | null> {
-    const it = this.reconnectToStreamIterator(options);
+    const it = normalizeUIMessageStreamParts(
+      this.reconnectToStreamIterator(options)
+    );
     return iteratorToStream(it, { signal: options.abortSignal });
   }
 
