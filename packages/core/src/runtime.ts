@@ -89,6 +89,7 @@ import {
 import { getErrorName, getErrorStack, normalizeUnknownError } from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
 import { runWorkflow } from './workflow.js';
+import { getPlatformMaxDurationSeconds } from './runtime/platform-max-duration.js';
 
 export type { Event, WorkflowRun };
 export { WorkflowSuspension } from './global.js';
@@ -294,6 +295,38 @@ function hasOpenHookOrWait(events: Event[]): boolean {
 }
 
 /**
+ * Gets the maximum duration for inline execution.
+ *
+ * Order of precedence:
+ * 1. `WORKFLOW_V2_TIMEOUT_MS` env var
+ * 2. Platform max duration env var, based on Vercel's tiered max durations
+ * 3. Default to 120 seconds
+ */
+function getMaxInlineDurationMs(): number {
+  if (process.env.WORKFLOW_V2_TIMEOUT_MS !== undefined) {
+    return Number(process.env.WORKFLOW_V2_TIMEOUT_MS);
+  }
+
+  const platformMaxDurationSeconds = getPlatformMaxDurationSeconds();
+  if (platformMaxDurationSeconds !== undefined) {
+    if (platformMaxDurationSeconds >= 1800) {
+      // 10 minutes
+      return 10 * 60 * 1000;
+    }
+
+    if (platformMaxDurationSeconds >= 800) {
+      // 2 minutes
+      return 2 * 60 * 1000;
+    }
+
+    // 1 minute
+    return 60 * 1000;
+  }
+
+  return 120_000;
+}
+
+/**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
  * and queue overhead.
@@ -314,8 +347,7 @@ export function workflowEntrypoint(
 ): (req: Request) => Promise<Response> {
   setWorkflowBasePath(options?.basePath);
 
-  const NO_INLINE_REPLAY_AFTER_MS =
-    Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
+  const NO_INLINE_REPLAY_AFTER_MS = getMaxInlineDurationMs();
 
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
