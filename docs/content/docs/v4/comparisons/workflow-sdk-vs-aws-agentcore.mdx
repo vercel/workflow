@@ -23,16 +23,16 @@ related:
 | --- | --- | --- |
 | **Category** | Open-source durable-functions SDK | AI-agent hosting & operations platform |
 | **Durable execution?** | ✅ Event-log replay; the agent loop resumes from its last checkpoint after a crash | ❌ Not built-in — sessions are ephemeral microVMs; durability is opt-in via Memory or a framework checkpointer |
-| **What it gives you** | Durable orchestration, steps, hooks, streaming, observability | Runtime (microVM hosting), Memory, Gateway (tools/MCP), Identity, Browser, Code Interpreter, Observability |
-| **Languages** | TypeScript / JS (Python beta) | Python and Node.js; framework-agnostic (LangGraph, CrewAI, Strands, etc.) |
+| **What it gives you** | Durable orchestration, steps, hooks, streaming, observability | Runtime (microVM hosting), Harness (managed agent loop), Memory, Gateway (tools/MCP), Identity, Browser, Code Interpreter, Observability, Policy, Evaluations |
+| **Languages** | TypeScript / JS (Python beta) | Python-first for authoring; TypeScript or Python project scaffolding via the `@aws/agentcore` CLI; framework-agnostic (LangGraph, CrewAI, Strands, etc.) |
 | **Isolation** | VM-sandboxed workflow code + full-Node steps | Dedicated Firecracker microVM per session (strong hardware isolation) |
 | **Max duration** | No limit (Vercel World) | 8-hour hard cap per session |
 | **AI streaming** | Native **durable, resumable** streaming (survives reconnect, cold start, replay) | Live SSE / WebSocket only — no buffering or replay of missed tokens |
 | **Versioning** | Runs pinned to immutable deployment | Immutable runtime versions + endpoints; in-flight sessions stay on their launch version (deployment/rollback only — no replay) |
 | **Portability** | Apache-2.0; runs anywhere Node runs; World abstraction | AWS-only; agent *code* is portable, the operating platform is not |
-| **Compliance** | Inherits your platform | HIPAA-eligible, broad AWS compliance (SOC/PCI/ISO/FedRAMP in progress); GovCloud region |
-| **Pricing** | SDK free; pay your platform | Per-module consumption (vCPU/GB-hr, etc.) + model inference billed via Bedrock |
-| **Maturity** | v4 GA / v5 beta | GA since October 2025 (some modules still preview) |
+| **Compliance** | Inherits your platform | HIPAA-eligible; SOC/PCI/ISO and other programs are under internal assessment with third-party audits pending (FedRAMP not yet authorized for AgentCore) |
+| **Pricing** | SDK free; pay your platform | Per-module consumption (vCPU-hr / GB-hr, etc.) + model inference billed via Bedrock; no minimums |
+| **Maturity** | v4 GA / v5 beta | Core platform GA since October 2025; newer modules (Harness, Policy, Evaluations) reached GA in 2026 |
 
 ## The core distinction: durability
 
@@ -51,4 +51,4 @@ AgentCore is purpose-built for operating agents on AWS, and brings things the Wo
 If your priority is running agents inside AWS with managed memory, tools, and identity, AgentCore is a strong fit. If your priority is **durable, resumable, streamable** agent execution that lives in your own TypeScript app and isn't tied to AWS, the Workflow SDK fits better — and the two can be combined (host on AgentCore, orchestrate durably with the Workflow SDK).
 
 ---
-*Compiled from public documentation as of June 2026. AgentCore cold-start figures are community-sourced (no published SLA) and some modules are in preview. Verify against [the AgentCore docs](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html). Not based on head-to-head benchmarks.*
+*Compiled from public documentation as of July 2026. AgentCore cold-start figures are community-sourced (no published SLA), and its module lineup and compliance certifications are evolving. Verify against [the AgentCore docs](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html). Not based on head-to-head benchmarks.*

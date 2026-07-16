@@ -21,7 +21,7 @@ The Workflow SDK overlaps with several categories: durable execution engines, ba
 ## Snapshot
 
 <Callout type="info">
-These comparisons are compiled from each product's public documentation as of June 2026 and are **not** based on head-to-head benchmarks — durable engines differ enough that a single number rarely compares cleanly. Treat them as directional and verify current pricing and limits against each vendor's docs.
+These comparisons are compiled from each product's public documentation as of July 2026 and are **not** based on head-to-head benchmarks — durable engines differ enough that a single number rarely compares cleanly. Treat them as directional and verify current pricing and limits against each vendor's docs.
 </Callout>
 
 | Tool | Category | Durability model | Open source / self-host | Language(s) |
@@ -31,7 +31,7 @@ These comparisons are compiled from each product's public documentation as of Ju
 | [Cloudflare Workflows](/docs/comparisons/workflow-sdk-vs-cloudflare-workflows) | Durable execution engine | Step-result memoization + replay | ❌ Cloudflare-only | TypeScript (Python beta) |
 | [AWS Step Functions](/docs/comparisons/workflow-sdk-vs-aws-step-functions) | Managed state-machine orchestrator | Declarative ASL state machine | ❌ AWS-only | ASL JSON (tasks: any language) |
 | [AWS Bedrock AgentCore](/docs/comparisons/workflow-sdk-vs-aws-agentcore) | AI-agent hosting platform | Not durable execution (ephemeral sessions) | ❌ AWS-only | Python, Node.js |
-| [Inngest](/docs/comparisons/workflow-sdk-vs-inngest) | Durable functions / event platform | Step-result memoization | ◑ SSPL→Apache — self-host (unsupported) or SaaS | TypeScript (Python/Go pre-1.0) |
+| [Inngest](/docs/comparisons/workflow-sdk-vs-inngest) | Durable functions / event platform | Step-result memoization | ◑ SSPL→Apache — self-host (community/best-effort) or SaaS | TypeScript (Python/Go pre-1.0) |
 | [trigger.dev](/docs/comparisons/workflow-sdk-vs-trigger-dev) | Durable task platform | Process checkpoint/restore (CRIU) | ✅ Apache-2.0 — self-host or Cloud | TypeScript only |
 
 ## Deep dives

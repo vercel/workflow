@@ -28,9 +28,9 @@ related:
 | **Versioning** | Runs pinned to their immutable deployment — safe by default | **No version pinning** — running instances resume on the *latest* deployed code; changing step names/order can desync the cached replay. No patching API |
 | **Encryption** | Per-run AES-256-GCM **end-to-end** encryption | **At-rest only** (AES-256, Cloudflare-managed keys) + TLS; no E2E, no customer-managed keys |
 | **AI & streaming** | `WorkflowAgent` in the AI SDK; native resumable streaming | Durable agents via Workflows + the Agents SDK; resumable streaming buffered in SQLite (mid-call eviction needs opt-in `chatRecovery`) |
-| **Performance** | No-penalty resume; scale-to-zero; up to 100K concurrency (Vercel) | **~0 ms isolate cold starts**; 50K concurrent instances; global Anycast (330+ cities) — strongest cold-start and edge story |
+| **Performance** | No-penalty resume; scale-to-zero; up to 100K concurrency (Vercel) | **~0 ms isolate cold starts**; 50K concurrent instances (raised from 4,500 at GA); global Anycast (330+ cities) — strongest cold-start and edge story |
 | **Portability** | Apache-2.0; World abstraction; self-hostable | Engine proprietary; tied to Durable Objects; **highest lock-in** of these tools |
-| **Pricing** | SDK free; pay your platform | Workers Standard: requests + CPU-time + storage (idle/sleep not billed) |
+| **Pricing** | SDK free; pay your platform | Workers Standard: requests + CPU-time + storage (idle/sleep not billed); a per-**step** dimension is being added (500K steps/mo included, then $0.80 / 100K), effective no earlier than Aug 10, 2026 |
 | **Limits** | 50 MB payloads; 2 GB/run; 10K steps | **1 MiB** step result & event payload; 1 GB state/instance; 10K steps (up to 25K) |
 | **Maturity** | v4 GA / v5 beta | GA since April 2025 |
 
@@ -67,4 +67,4 @@ There's no automated migration skill for Cloudflare specifically, but the mappin
 Side effects that lived in `step.do` callbacks move into named `"use step"` functions; the orchestration becomes plain `await` / `if` / `Promise.all` instead of the `WorkflowEntrypoint` class.
 
 ---
-*Compiled from public documentation as of June 2026. Verify current Cloudflare Workflows limits and pricing against [developers.cloudflare.com/workflows](https://developers.cloudflare.com/workflows/). Not based on head-to-head benchmarks.*
+*Compiled from public documentation as of July 2026. Verify current Cloudflare Workflows limits and pricing against [developers.cloudflare.com/workflows](https://developers.cloudflare.com/workflows/). Not based on head-to-head benchmarks.*

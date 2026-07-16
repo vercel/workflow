@@ -24,15 +24,15 @@ related:
 | **Category** | Open-source durable-functions SDK | Durable functions on an event-driven platform |
 | **Durability model** | Event log + deterministic replay | **Step-result memoization** (each `step.run` runs once; completed steps are skipped) — not whole-function replay |
 | **Trigger model** | Direct `start(workflow, [args])` (import the function) | Event bus (`inngest.send`) + cron; loosely coupled publishers/consumers |
-| **Where execution runs** | Orchestration + execution co-located on your platform | **Your code runs on your infra**; Inngest invokes it per step over HTTP (Serve) or a persistent worker connection (Connect) |
+| **Where execution runs** | Orchestration + execution co-located on your platform | **Your code runs on your infra**; Inngest invokes it per step over HTTP (Serve) or a persistent worker connection (Connect, in public beta) |
 | **Languages** | TypeScript / JS (Python beta) | TypeScript (GA); Python & Go (production, pre-1.0) |
 | **Versioning** | Runs pinned to immutable deployment | Tracked by step-ID hashes — hot-edit functions, but editing a step's logic under the **same ID** reuses the old memoized result for in-flight runs; rename the ID or route a new function by timestamp for rewrites |
-| **AI & streaming** | `WorkflowAgent` in the AI SDK; native resumable streaming | Native AI SDK via `step.ai.wrap`; **AgentKit** multi-agent framework; durable resumable **Realtime** (`step.realtime.publish`) + `useAgent` hook |
-| **Security** | VM-sandboxed code; per-run E2E encryption | Runs on your infra; signed requests; first-party E2E encryption middleware (TS); SOC 2 Type II, HIPAA add-on |
-| **Portability** | Apache-2.0; World abstraction; **self-host supported** | Engine open source (SSPL → Apache 2.0 after 3 yrs); self-host via single Go binary + Postgres, but **self-hosting is unsupported** (SaaS is the default) |
-| **Pricing** | SDK free; pay your platform | Per-execution: billed for the run **plus each step plus retries**; Free 50K execs, Pro from $75/mo for 1M |
-| **Limits** | 50 MB payload; 2 GB/run; no step cap | 1,000 steps/function; 4 MiB step payload; 32 MiB run state; runs up to 366 days (by tier) |
-| **Maturity** | v4 GA / v5 beta | TS GA; ~2022 origin; ~$34M raised |
+| **AI & streaming** | `WorkflowAgent` in the AI SDK; native resumable streaming | Native AI SDK via `step.ai.wrap`; **AgentKit** multi-agent framework and durable **Realtime** (`step.realtime.publish`) + `useAgent` hook — both Developer Preview |
+| **Security** | VM-sandboxed code; per-run E2E encryption | Runs on your infra; signed requests; first-party E2E encryption middleware (TS + Python); SOC 2 Type II, HIPAA add-on |
+| **Portability** | Apache-2.0; World abstraction; **self-host supported** | Engine open source (SSPL → Apache 2.0 after 3 yrs); self-host via single Go binary + Postgres, but **self-hosting is community/best-effort** — no support SLA, and the `inngest start` binary is still Beta (SaaS is the default) |
+| **Pricing** | SDK free; pay your platform | Per-execution: billed for the run **plus each step plus retries**; Free 50K execs, Pro from $99/mo for 1M |
+| **Limits** | 50 MB payload; 2 GB/run; no step cap | 1,000 steps/function; 4 MiB step payload; 32 MiB run state; runs up to 366 days on Pro (30 days on Free) |
+| **Maturity** | v4 GA / v5 beta | TS GA; ~2022 origin; ~$30M+ raised |
 
 ## Topology: co-located vs. invoked-over-HTTP
 
@@ -48,7 +48,7 @@ The Workflow SDK pins each run to its immutable deployment, so in-flight runs al
 
 ## AI agents
 
-Both are strong here. Inngest offers `step.ai.wrap()` (wrap Vercel AI SDK calls as durable steps), **AgentKit** (a multi-agent framework with MCP tools), and durable **Realtime** streaming with a `useAgent` React hook. The Workflow SDK offers `WorkflowAgent` directly inside the AI SDK and native [resumable streaming](/docs/ai/resumable-streams). If you're already event-driven and want a batteries-included agent framework, AgentKit is compelling; if you want the agent loop to *be* a durable workflow in your app with streaming built into the runtime, the Workflow SDK fits.
+Both are strong here. Inngest offers `step.ai.wrap()` (wrap Vercel AI SDK calls as durable steps), **AgentKit** (a multi-agent framework with MCP tools), and durable **Realtime** streaming with a `useAgent` React hook — though AgentKit and Realtime are both still Developer Preview as of July 2026. The Workflow SDK offers `WorkflowAgent` directly inside the AI SDK and native [resumable streaming](/docs/ai/resumable-streams). If you're already event-driven and want a batteries-included agent framework, AgentKit is compelling; if you want the agent loop to *be* a durable workflow in your app with streaming built into the runtime, the Workflow SDK fits.
 
 ## Migrating from Inngest
 
@@ -94,4 +94,4 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 - **Event-bus fan-out by name match.** Replace with explicit `start()` calls per target workflow.
 
 ---
-*Compiled from public documentation as of June 2026. Inngest tier names and pricing have shifted across sources; verify against [inngest.com/pricing](https://www.inngest.com/pricing). Not based on head-to-head benchmarks.*
+*Compiled from public documentation as of July 2026. Inngest tier names and pricing have shifted across sources; verify against [inngest.com/pricing](https://www.inngest.com/pricing). Not based on head-to-head benchmarks.*
