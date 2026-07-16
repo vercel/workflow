@@ -142,15 +142,6 @@ async function createHookEvent({
   hasHookConflict: boolean;
   hasAwaitedHookCreation: boolean;
 }> {
-  if (
-    queueItem.tokenExpiresAt !== undefined &&
-    world.capabilities?.hookTtl?.active !== true
-  ) {
-    throw new FatalError(
-      'The configured World does not support `experimental_expires` for Hooks.'
-    );
-  }
-
   try {
     const result = await createEvent(hookEvent, {
       requestId,
@@ -268,6 +259,15 @@ export async function handleSuspension({
   const hooksNeedingCreation = allHookItems.filter(
     (item) => !item.hasCreatedEvent
   );
+
+  if (
+    hooksNeedingCreation.some((item) => item.tokenExpiresAt !== undefined) &&
+    world.capabilities?.hookTtl?.active !== true
+  ) {
+    throw new FatalError(
+      'The configured World does not support `experimental_expires` for Hooks.'
+    );
+  }
 
   // Group hook items that need work by token, preserving queue-insertion
   // (workflow code) order within each token. Operations on one token must
