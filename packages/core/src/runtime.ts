@@ -304,8 +304,15 @@ function hasOpenHookOrWait(events: Event[]): boolean {
  * 3. Default to 120 seconds
  */
 function getMaxInlineDurationMs(): number {
-  if (process.env.WORKFLOW_V2_TIMEOUT_MS !== undefined) {
-    return Number(process.env.WORKFLOW_V2_TIMEOUT_MS);
+  const raw = process.env.WORKFLOW_V2_TIMEOUT_MS;
+  if (raw !== undefined && raw !== '') {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+    // Invalid / non-positive override (e.g. "", "abc", "0", negative): fall
+    // through to the platform/default path rather than disabling the
+    // inline-replay timeout.
   }
 
   const platformMaxDurationSeconds = getPlatformMaxDurationSeconds();
