@@ -11,7 +11,7 @@ related:
   - /docs/foundations/errors-and-retries
   - /docs/foundations/hooks
   - /docs/foundations/streaming
-  - /docs/deploying/world/vercel-world
+  - /worlds/vercel
 ---
 
 <CopyPrompt
@@ -299,7 +299,7 @@ Remove the Worker process, `@temporalio/*` dependencies, and the Temporal Server
 - **Event history archival.** Temporal archives histories to S3/GCS for long-term retention. Workflow SDK event logs are durable, but retention depends on the integration you are using. For example, see [Vercel Workflow Storage Retention](https://vercel.com/docs/workflows/pricing#storage-retention) for Vercel.
 - **Per-activity timeouts (`startToCloseTimeout`, `scheduleToCloseTimeout`, `heartbeatTimeout`).** Implement deadlines inside the step with `AbortSignal.timeout(ms)`, or wrap the call in `Promise.race(step(), sleep(...))` from the workflow.
 - **Rich retry policy (`initialInterval`, `backoffCoefficient`, `maximumInterval`, `nonRetryableErrorTypes`).** Only `maxRetries` is configurable. Classify retryability with `RetryableError`/`FatalError`; control delay between attempts via `new RetryableError(msg, { retryAfter: '5s' })`.
-- **Workers + task queues.** Managed deployments replace workers; self-hosted deployments still need a `World` implementation (see [/docs/deploying/building-a-world](/docs/deploying/building-a-world)).
+- **Workers + task queues.** Managed deployments replace workers; self-hosted deployments still need a `World` implementation (see [/worlds/building-a-world](/worlds/building-a-world)).
 
 ## Quick-start checklist
 

@@ -235,6 +235,35 @@ describe('Storage', () => {
       });
     });
 
+    describe('getMany', () => {
+      it('preserves input order, deduplicates reads, and returns null for missing runs', async () => {
+        const first = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'first-workflow',
+          input: new Uint8Array([1]),
+        });
+        const second = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'second-workflow',
+          input: new Uint8Array([2]),
+        });
+
+        const results = await storage.runs.getMany(
+          [first.runId, 'wrun_missing', second.runId, first.runId],
+          { resolveData: 'none' }
+        );
+
+        expect(results.map((run) => run?.runId ?? null)).toEqual([
+          first.runId,
+          null,
+          second.runId,
+          first.runId,
+        ]);
+        expect(results[0]?.input).toBeUndefined();
+        expect(results[2]?.output).toBeUndefined();
+      });
+    });
+
     describe('update via events', () => {
       it('should update run status to running via run_started event', async () => {
         const created = await createRun(storage, {

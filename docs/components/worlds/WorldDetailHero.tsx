@@ -1,5 +1,11 @@
 'use client';
 
+import { Button } from '@vercel/geistdocs/components/button';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@vercel/geistdocs/components/tooltip';
 import {
   BadgeCheck,
   CheckIcon,
@@ -13,6 +19,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import Link from 'next/link';
+import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import {
@@ -23,21 +30,21 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
-import { Button } from '@vercel/geistdocs/components/button';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@vercel/geistdocs/components/tooltip';
 
 import type { World } from './types';
 
 interface WorldDetailHeroProps {
   id: string;
   world: World;
+  /** Docs version switcher slot, rendered above the quick links. */
+  versionSelect?: ReactNode;
 }
 
-export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
+export function WorldDetailHero({
+  id,
+  world,
+  versionSelect,
+}: WorldDetailHeroProps) {
   const [copied, setCopied] = useState(false);
 
   const installCommand = `npm i ${world.package}`;
@@ -159,6 +166,9 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
 
         {/* Right side - Quick links */}
         <div className="space-y-2 text-sm">
+          {/* Docs version switcher */}
+          {versionSelect ? <div className="mb-4">{versionSelect}</div> : null}
+
           {/* NPM Package */}
           <a
             href={`https://www.npmjs.com/package/${world.package}`}

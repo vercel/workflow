@@ -54,7 +54,10 @@ const config: NextConfig = {
         destination: '/docs/errors/:slug',
         permanent: true,
       },
-      // Redirect old world docs to new /worlds routes
+      // Redirect old world docs to the /worlds routes. The world pages
+      // (and Building a World) were removed from the versioned docs trees;
+      // content/worlds/{v4,v5} is the canonical source, served at /worlds/*
+      // (current) and /v5/worlds/* (pre-release).
       {
         source: '/docs/deploying/world/local-world',
         destination: '/worlds/local',
@@ -69,6 +72,44 @@ const config: NextConfig = {
         source: '/docs/deploying/world/vercel-world',
         destination: '/worlds/vercel',
         permanent: true,
+      },
+      {
+        source: '/v5/docs/deploying/world/local-world',
+        destination: '/v5/worlds/local',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/deploying/world/postgres-world',
+        destination: '/v5/worlds/postgres',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/deploying/world/vercel-world',
+        destination: '/v5/worlds/vercel',
+        permanent: true,
+      },
+      {
+        source: '/docs/deploying/building-a-world',
+        destination: '/worlds/building-a-world',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/deploying/building-a-world',
+        destination: '/v5/worlds/building-a-world',
+        permanent: true,
+      },
+      // The worlds listing and compare pages are unversioned; send the
+      // version-prefixed URLs (reachable via the render-time /v5 link
+      // rewrite on pre-release pages) to the canonical routes.
+      {
+        source: '/v5/worlds',
+        destination: '/worlds',
+        permanent: false,
+      },
+      {
+        source: '/v5/worlds/compare',
+        destination: '/worlds/compare',
+        permanent: false,
       },
       {
         source: '/docs/worlds',

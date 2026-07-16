@@ -7,8 +7,8 @@ prerequisites:
   - /docs/deploying
 related:
   - /docs/how-it-works/encryption
-  - /docs/deploying/world/local-world
-  - /docs/deploying/world/postgres-world
+  - /worlds/local
+  - /worlds/postgres
 ---
 
 The Vercel World is a fully-managed workflow backend for applications deployed on Vercel. It provides scalable storage, distributed queuing, and automatic authentication with zero configuration.
@@ -48,8 +48,8 @@ For self-hosted deployments, use the [Postgres World](/worlds/postgres). For loc
   **Multi-region support is available starting with `workflow` version
   5.0.0-beta.33.** On 5.x, workflow runs are pinned to the region that creates them —
   storage, queuing, and streams are served region-locally instead of routing
-  through `iad1`. See [Multi-region in the v5
-  docs](/v5/docs/deploying/world/vercel-world#multi-region). The limitations
+  through `iad1`. See [Multi-region on the v5 version of this
+  page](/v5/worlds/vercel#multi-region). The limitations
   below apply to the 4.x release line, which will not support multi-region.
 </Callout>
 
