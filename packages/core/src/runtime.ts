@@ -90,6 +90,7 @@ import { getErrorName, getErrorStack, normalizeUnknownError } from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
 import { runWorkflow } from './workflow.js';
 import { getPlatformMaxDurationSeconds } from './runtime/platform-max-duration.js';
+import ms from 'ms';
 
 export type { Event, WorkflowRun };
 export { WorkflowSuspension } from './global.js';
@@ -310,20 +311,17 @@ function getMaxInlineDurationMs(): number {
   const platformMaxDurationSeconds = getPlatformMaxDurationSeconds();
   if (platformMaxDurationSeconds !== undefined) {
     if (platformMaxDurationSeconds >= 1800) {
-      // 10 minutes
-      return 10 * 60 * 1000;
+      return ms('10m');
     }
 
     if (platformMaxDurationSeconds >= 800) {
-      // 2 minutes
-      return 2 * 60 * 1000;
+      return ms('2m');
     }
 
-    // 1 minute
-    return 60 * 1000;
+    return ms('1m');
   }
 
-  return 120_000;
+  return ms('2m');
 }
 
 /**
