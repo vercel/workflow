@@ -1,4 +1,5 @@
 import {
+  PreconditionFailedError,
   RUN_ERROR_CODES,
   ThrottleError,
   WorkflowWorldError,
@@ -1507,6 +1508,11 @@ describe('workflowEntrypoint turbo mode', () => {
      * optimistic start by observing 'body' while the gate is closed.
      */
     stepStartedGate?: Promise<void>;
+    /**
+     * World capabilities to declare on the mock World. Absent by default so
+     * tests must opt in — capability-gated fast paths fail closed otherwise.
+     */
+    capabilities?: { preconditionGuard?: boolean; maxConcurrency?: boolean };
   }) {
     const { runId, attempt, source } = opts;
     const order = turboOrder;
@@ -1574,6 +1580,7 @@ describe('workflowEntrypoint turbo mode', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      capabilities: opts.capabilities,
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
           async () => {
@@ -1731,7 +1738,7 @@ describe('workflowEntrypoint turbo mode', () => {
     );
   });
 
-  it('keeps forced optimistic start on a wait-creating suspension when WORKFLOW_SEQUENTIAL_REPLAYS=1', async () => {
+  it('keeps forced optimistic start on a wait-creating suspension when WORKFLOW_SEQUENTIAL_REPLAYS=1 and the World supports maxConcurrency', async () => {
     process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
     let release!: () => void;
     const gate = new Promise<void>((r) => {
@@ -1743,6 +1750,9 @@ describe('workflowEntrypoint turbo mode', () => {
       attempt: 1,
       source: stepAndSleepWorkflow,
       stepStartedGate: gate,
+      // Sequential replays only serialize on a queue that supports
+      // maxConcurrency-limited consumers — the World must declare it.
+      capabilities: { maxConcurrency: true },
     });
 
     // Same workflow as the turbo-exit test above — the suspension creates a
@@ -1760,6 +1770,26 @@ describe('workflowEntrypoint turbo mode', () => {
     expect(res.status).toBe(204);
     expect(order).toContain('step_started_called');
   });
+
+  it('ignores WORKFLOW_SEQUENTIAL_REPLAYS when the World does not declare maxConcurrency support', async () => {
+    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+
+    // No capabilities declared: the env var alone cannot prove the queue
+    // serializes anything, so the hook/wait latch must stay — same
+    // await-then-run ordering as the turbo-exit test above.
+    const { handlerPromise, order } = await driveTurbo({
+      runId: 'wrun_turbo_seq_replays_nocap',
+      attempt: 1,
+      source: stepAndSleepWorkflow,
+    });
+
+    const res = await handlerPromise;
+    expect(res.status).toBe(204);
+    expect(order).toContain('wait_created');
+    expect(order.indexOf('step_started_called')).toBeLessThan(
+      order.indexOf('body')
+    );
+  });
 });
 
 describe('workflowEntrypoint inline-delta gate with open hooks', () => {
@@ -1767,6 +1797,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
 
   beforeEach(() => {
     delete process.env.WORKFLOW_PRECONDITION_GUARD;
+    deltaGateBodyRuns = [];
   });
   afterEach(() => {
     if (ORIG_GUARD === undefined) {
@@ -1780,6 +1811,11 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
   });
 
   registerStepFunction('deltaGateStep', async () => undefined);
+  let deltaGateBodyRuns: string[] = [];
+  registerStepFunction('deltaGateStepB', async () => {
+    deltaGateBodyRuns.push('B');
+    return undefined;
+  });
 
   // A fire-and-forget hook alongside a single awaited step: the suspension
   // creates a hook AND schedules one lazy inline step, leaving the hook open
@@ -1792,13 +1828,43 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     };globalThis.__private_workflows = new Map();
     globalThis.__private_workflows.set("workflow", workflow);`;
 
+  // Same open hook, but two sequential steps — used to interleave an
+  // out-of-band event between step A's completion and step B's claim.
+  const hookAndTwoStepWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+    const a = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("deltaGateStep");
+    const b = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("deltaGateStepB");
+    async function workflow() {
+      const hook = createHook({ token: 'delta-gate-token' });
+      await a();
+      return await b();
+    };globalThis.__private_workflows = new Map();
+    globalThis.__private_workflows.set("workflow", workflow);`;
+
   /**
    * Drives the handler with a continuation message (no runInput, so turbo is
    * off and the initial events.list — which supplies the cursor the delta
    * diffs against — runs). Returns the events.create mock so tests can
-   * inspect the step-terminal write's params for `sinceCursor`.
+   * inspect the step-terminal write's params for `sinceCursor` and the
+   * step_started claims' params for `stateUpdatedAt`.
    */
-  async function driveDeltaGate(runId: string) {
+  async function driveDeltaGate(
+    runId: string,
+    opts: {
+      /**
+       * World capabilities to declare. Absent by default — capability-gated
+       * fast paths must fail closed without them.
+       */
+      capabilities?: { preconditionGuard?: boolean; maxConcurrency?: boolean };
+      /** Workflow source to run (defaults to hookAndStepWorkflow). */
+      source?: string;
+      /**
+       * Reject the lazy step_started claim for this stepName with the given
+       * error (once), simulating a guard-enforcing backend 412-ing a stale
+       * claim after an out-of-band event bumped the run's marker.
+       */
+      rejectClaimOnce?: { stepName: string; error: Error };
+    } = {}
+  ) {
     const workflowRun: WorkflowRun = {
       runId,
       workflowName: 'workflow',
@@ -1810,12 +1876,12 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
       deploymentId: 'test-deployment',
     };
 
-    let eventSeq = 0;
     const durableEvents: Event[] = [];
     const recordEvent = (data: any): Event => {
-      eventSeq += 1;
+      // ULID-shaped event IDs so the runtime's stateUpdatedAt snapshot
+      // (derived from the latest event id's ULID timestamp) is computable.
       const created = {
-        eventId: `event-${eventSeq}`,
+        eventId: `evnt_${ulid()}`,
         runId,
         createdAt: new Date(),
         ...data,
@@ -1824,6 +1890,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
       return created;
     };
 
+    let claimRejected = false;
     const eventsCreate = vi.fn(
       async (_runId: string, data: any, _params?: any) => {
         if (data.eventType === 'run_started') {
@@ -1834,6 +1901,14 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
             stepName?: string;
             input?: unknown;
           };
+          if (
+            opts.rejectClaimOnce &&
+            !claimRejected &&
+            lazy?.stepName === opts.rejectClaimOnce.stepName
+          ) {
+            claimRejected = true;
+            throw opts.rejectClaimOnce.error;
+          }
           if (lazy?.input !== undefined) {
             recordEvent({
               eventType: 'step_created',
@@ -1865,8 +1940,10 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
       }
     );
 
+    const queueMock = vi.fn(async () => ({ messageId: null }));
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      capabilities: opts.capabilities,
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -1898,15 +1975,15 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
         })),
       },
       runs: { get: vi.fn(async () => workflowRun) },
-      queue: vi.fn(async () => ({ messageId: null })),
+      queue: queueMock,
       getEncryptionKeyForRun: vi.fn(async () => undefined),
     } as any);
 
-    const handler = workflowEntrypoint(hookAndStepWorkflow);
+    const handler = workflowEntrypoint(opts.source ?? hookAndStepWorkflow);
     const res = (await handler(
       new Request('https://example.test')
     )) as Response;
-    return { res, eventsCreate };
+    return { res, eventsCreate, queueMock };
   }
 
   function stepCompletedParams(eventsCreate: ReturnType<typeof vi.fn>) {
@@ -1917,15 +1994,16 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     return call?.[2] as { sinceCursor?: string } | undefined;
   }
 
-  it('requests the inline delta despite the open hook when the precondition guard is enabled', async () => {
+  it('requests the inline delta despite the open hook when the precondition guard is enabled and the World enforces it', async () => {
     process.env.WORKFLOW_PRECONDITION_GUARD = '1';
     const { res, eventsCreate } = await driveDeltaGate(
-      'wrun_delta_gate_guard_on'
+      'wrun_delta_gate_guard_on',
+      { capabilities: { preconditionGuard: true } }
     );
     expect(res.status).toBe(204);
     // The suspension created a hook (left open) and one lazy inline step —
-    // with the guard on, a hook_received missed by the delta window is fenced
-    // by the outside-event marker, so the fast path stays active.
+    // with an enforced guard, a hook_received missed by the delta window is
+    // fenced by the outside-event marker, so the fast path stays active.
     expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBe(
       'cursor_delta_gate'
     );
@@ -1944,6 +2022,72 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     // Without the guard there is no fence for a hook_received landing in the
     // delta window, so the conservative gate keeps the fetch path.
     expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBeUndefined();
+  });
+
+  it('does not request the inline delta when the env flag is set but the World does not enforce the guard', async () => {
+    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
+    // No capabilities declared: the env flag only makes the runtime SEND
+    // snapshots — a World that ignores stateUpdatedAt provides no 412 fence,
+    // so the relaxation must fail closed to the conservative gate.
+    const { res, eventsCreate } = await driveDeltaGate(
+      'wrun_delta_gate_guard_no_capability'
+    );
+    expect(res.status).toBe(204);
+    expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBeUndefined();
+  });
+
+  it('abandons the batch and re-invokes when a stale lazy claim is rejected by the guard (interleaved hook_received)', async () => {
+    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
+    // Simulates the interleaving the fence exists for: after step A's
+    // terminal write, an out-of-band hook_received bumps the run's marker;
+    // the next replay (working from a view that misses it) schedules step B,
+    // whose lazy step_started claim the backend rejects as stale (412).
+    const { res, eventsCreate, queueMock } = await driveDeltaGate(
+      'wrun_delta_gate_stale_claim',
+      {
+        capabilities: { preconditionGuard: true },
+        source: hookAndTwoStepWorkflow,
+        rejectClaimOnce: {
+          stepName: 'deltaGateStepB',
+          error: new PreconditionFailedError(
+            'stale stateUpdatedAt: a newer outside event exists'
+          ),
+        },
+      }
+    );
+    // The handler responds normally: the rejection is mapped to an abandoned
+    // batch + re-invocation (a `{ timeoutSeconds: 0 }` redelivery outside
+    // turbo), never a run_failed.
+    expect(res.status).toBe(204);
+    // Step B's claim was issued from a loaded (non-empty) log, so it carried
+    // the guard snapshot — that is what lets the backend fence it. (The very
+    // first batch of a run loads an empty log and has no snapshot to send;
+    // the guard is best-effort there, matching the suspension creates.)
+    const rejectedClaim = eventsCreate.mock.calls.find(
+      (c) =>
+        (c[1] as any).eventType === 'step_started' &&
+        ((c[1] as any).eventData as { stepName?: string })?.stepName ===
+          'deltaGateStepB'
+    );
+    expect(typeof (rejectedClaim?.[2] as any)?.stateUpdatedAt).toBe('number');
+    // The fenced step never ran its body and never wrote events.
+    expect(deltaGateBodyRuns).toEqual([]);
+    expect(eventsCreate.mock.calls).not.toContainEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventType: 'step_completed',
+          eventData: expect.objectContaining({ stepName: 'deltaGateStepB' }),
+        }),
+      ])
+    );
+    expect(eventsCreate.mock.calls).not.toContainEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ eventType: 'run_failed' }),
+      ])
+    );
+    // Outside turbo the re-invocation is a redelivery of the current message,
+    // not an explicit continuation enqueue.
+    expect(queueMock).not.toHaveBeenCalled();
   });
 });
 

@@ -291,6 +291,39 @@ export interface Storage {
 }
 
 /**
+ * Optional feature capabilities a World implementation declares so the core
+ * runtime can enable optimizations that depend on backend behavior, instead
+ * of inferring support from environment variables alone. Every capability
+ * defaults to "unsupported" when absent — runtime fast paths that rely on
+ * one must fail closed (keep their conservative behavior) unless the World
+ * explicitly declares it.
+ */
+export interface WorldCapabilities {
+  /**
+   * The World enforces the optimistic-concurrency precondition guard: an
+   * event creation carrying a `stateUpdatedAt` snapshot is rejected with a
+   * `PreconditionFailedError` (412) when a newer out-of-band event (e.g. a
+   * received hook) was recorded after that snapshot. Worlds that accept but
+   * ignore `stateUpdatedAt` must leave this unset so runtime optimizations
+   * that rely on the 412 fence (see `WORKFLOW_PRECONDITION_GUARD`) are not
+   * enabled without an actual fence behind them.
+   */
+  preconditionGuard?: boolean;
+
+  /**
+   * The World's queue supports `maxConcurrency`-limited consumption — in
+   * particular the per-run flow topics consumed with `maxConcurrency: 1`
+   * that `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses to serialize a run's
+   * orchestrator invocations. Worlds whose queue has no concurrency-limit
+   * concept must leave this unset so the runtime does not treat the env var
+   * as proof of serialized delivery. Note this declares queue *support*;
+   * deployments must still configure the flag at both build and runtime as
+   * documented for the serialization to actually be in effect.
+   */
+  maxConcurrency?: boolean;
+}
+
+/**
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
 export interface World extends Queue, Streamer, Storage {
@@ -311,6 +344,13 @@ export interface World extends Queue, Streamer, Storage {
    * `SPEC_VERSION_CURRENT` before they create or replay runs.
    */
   specVersion: number;
+
+  /**
+   * Feature capabilities this World implementation supports — see
+   * {@link WorldCapabilities}. Absent (or absent members) means
+   * "unsupported": runtime optimizations gated on a capability fail closed.
+   */
+  capabilities?: WorldCapabilities;
 
   /**
    * Whether calling `process.exit(1)` from a queue handler is observed by

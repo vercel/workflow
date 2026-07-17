@@ -1305,13 +1305,16 @@ describe('executeStep optimistic inline start', () => {
     expect(result.type).toBe('completed');
     expect(mockStepFn).toHaveBeenCalledTimes(1);
     // The lazy step_started carries the input so the world creates the step.
+    // The third argument is the CreateEventParams slot — undefined here
+    // because no precondition-guard snapshot (`stateUpdatedAt`) was passed.
     expect(mockEventsCreate).toHaveBeenCalledWith(
       'wrun_test123',
       expect.objectContaining({
         eventType: 'step_started',
         correlationId: 'step_abc',
         eventData: expect.objectContaining({ stepName: 'myStep', input: [] }),
-      })
+      }),
+      undefined
     );
   });
 
@@ -1521,9 +1524,8 @@ describe('executeStep optimistic inline start', () => {
         (event as { eventType: string }).eventType === 'step_completed'
     );
     expect(completedWrite).toBeDefined();
-    const eventData = (
-      completedWrite![1] as { eventData: { rsfs?: number } }
-    ).eventData;
+    const eventData = (completedWrite![1] as { eventData: { rsfs?: number } })
+      .eventData;
     expect(eventData.rsfs).toBeDefined();
     expect(eventData.rsfs).toBeGreaterThanOrEqual(0);
   });

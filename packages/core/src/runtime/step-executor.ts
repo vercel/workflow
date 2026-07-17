@@ -128,6 +128,21 @@ export interface StepExecutorParams {
    */
   inlineDeltaSinceCursor?: string;
   /**
+   * Precondition-guard snapshot (epoch ms of the latest event the caller's
+   * replay loaded) to attach to this step's `step_started` claim. On the lazy
+   * inline path the claim is the step's FIRST durable write (its
+   * `step_created` is deferred), so without this the claim would bypass the
+   * optimistic-concurrency guard entirely: a replay working from a stale view
+   * could claim — and then commit — a step scheduled without observing an
+   * out-of-band event. A guard-enforcing World rejects a stale claim with
+   * `PreconditionFailedError` (412); executeStep does NOT translate that
+   * rejection (re-claiming in place would still commit the stale schedule),
+   * so it propagates for the caller to abandon the batch and force a fresh
+   * replay. Undefined when the guard is disabled or the caller has no
+   * snapshot; Worlds that don't enforce the guard ignore it.
+   */
+  stateUpdatedAt?: number;
+  /**
    * Force optimistic inline start regardless of
    * `WORKFLOW_OPTIMISTIC_INLINE_START`. Set by turbo mode on the first delivery
    * of the first invocation, where forcing it is safe: there is no concurrent
@@ -434,20 +449,30 @@ export async function executeStep(
           // RSFS measures the run_started-to-POST stretch, and the barrier
           // wait IS part of that stretch under turbo.
           stepStartPostSentAtMs = Date.now();
-          return world.events.create(workflowRunId, {
-            eventType: 'step_started',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: stepId,
-            eventData: {
-              stepName,
-              workflowName,
-              input: params.lazyStepInput,
-              // Inline-ownership stamp — see StepExecutorParams.ownerMessageId.
-              ...(params.ownerMessageId !== undefined
-                ? { ownerMessageId: params.ownerMessageId }
-                : {}),
+          return world.events.create(
+            workflowRunId,
+            {
+              eventType: 'step_started',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: stepId,
+              eventData: {
+                stepName,
+                workflowName,
+                input: params.lazyStepInput,
+                // Inline-ownership stamp — see StepExecutorParams.ownerMessageId.
+                ...(params.ownerMessageId !== undefined
+                  ? { ownerMessageId: params.ownerMessageId }
+                  : {}),
+              },
             },
-          });
+            // Guard the claim — see StepExecutorParams.stateUpdatedAt. A stale
+            // (412) rejection surfaces via reconcileOptimisticStart as a
+            // non-translatable error: the body result is discarded and the
+            // rejection propagates to the caller.
+            params.stateUpdatedAt !== undefined
+              ? { stateUpdatedAt: params.stateUpdatedAt }
+              : undefined
+          );
         }
       );
       optimisticStartSettled = startedPromise.then(
@@ -486,20 +511,30 @@ export async function executeStep(
             ? { ownerMessageId: params.ownerMessageId }
             : {};
         stepStartPostSentAtMs = Date.now();
-        const startResult = await world.events.create(workflowRunId, {
-          eventType: 'step_started',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: stepId,
-          eventData:
-            params.lazyStepInput !== undefined
-              ? {
-                  stepName,
-                  workflowName,
-                  input: params.lazyStepInput,
-                  ...ownershipStamp,
-                }
-              : { stepName, ...ownershipStamp },
-        });
+        const startResult = await world.events.create(
+          workflowRunId,
+          {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData:
+              params.lazyStepInput !== undefined
+                ? {
+                    stepName,
+                    workflowName,
+                    input: params.lazyStepInput,
+                    ...ownershipStamp,
+                  }
+                : { stepName, ...ownershipStamp },
+          },
+          // Guard the claim — see StepExecutorParams.stateUpdatedAt. A stale
+          // (412) rejection is intentionally NOT translated by
+          // startErrorToResult below, so it propagates to the caller for a
+          // fresh replay.
+          params.stateUpdatedAt !== undefined
+            ? { stateUpdatedAt: params.stateUpdatedAt }
+            : undefined
+        );
 
         if (!startResult.step) {
           throw new WorkflowRuntimeError(
