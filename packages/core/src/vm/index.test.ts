@@ -383,3 +383,24 @@ describe('crypto.subtle.digest SharedArrayBuffer rejection', () => {
     ).rejects.toThrow(TypeError);
   });
 });
+
+describe('crypto.subtle.digest view metadata', () => {
+  it('reads view ranges from internal slots, ignoring shadowed properties', async () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    const result = await vm.runInContext(
+      `(() => {
+        const view = new Uint8Array([1, 2, 3, 4]);
+        Object.defineProperty(view, "byteLength", { value: 0 });
+        Object.defineProperty(view, "byteOffset", { value: 2 });
+        return crypto.subtle.digest("SHA-256", view);
+      })()`,
+      context
+    );
+    const expected = await globalThis.crypto.subtle.digest(
+      'SHA-256',
+      new Uint8Array([1, 2, 3, 4])
+    );
+    expect(new Uint8Array(result)).toEqual(new Uint8Array(expected));
+  });
+});

@@ -20,28 +20,59 @@ const DIGEST_ALGORITHMS: Record<string, string> = {
   'SHA-512': 'sha512',
 };
 
-// biome-ignore lint/style/noNonNullAssertion: byteLength always exists on ArrayBuffer.prototype
-const arrayBufferByteLength = Object.getOwnPropertyDescriptor(
+// Intrinsic prototype getters, captured so view metadata is read from
+// internal slots like WebCrypto's BufferSource conversion — own properties
+// shadowing `buffer`/`byteOffset`/`byteLength` on a view must not change
+// which bytes are hashed.
+function intrinsicGetter(prototype: object, name: string) {
+  // biome-ignore lint/style/noNonNullAssertion: intrinsic accessors always exist
+  return Object.getOwnPropertyDescriptor(prototype, name)!.get!;
+}
+const arrayBufferByteLength = intrinsicGetter(
   ArrayBuffer.prototype,
   'byteLength'
-)!.get!;
+);
+const typedArrayPrototype = Object.getPrototypeOf(
+  Uint8Array.prototype
+) as object;
+const viewGetters = {
+  typedArray: {
+    buffer: intrinsicGetter(typedArrayPrototype, 'buffer'),
+    byteOffset: intrinsicGetter(typedArrayPrototype, 'byteOffset'),
+    byteLength: intrinsicGetter(typedArrayPrototype, 'byteLength'),
+  },
+  dataView: {
+    buffer: intrinsicGetter(DataView.prototype, 'buffer'),
+    byteOffset: intrinsicGetter(DataView.prototype, 'byteOffset'),
+    byteLength: intrinsicGetter(DataView.prototype, 'byteLength'),
+  },
+};
 
-// WebCrypto BufferSource conversion: views pass through; anything else must
-// be a real ArrayBuffer (the native byteLength getter is a brand check that
-// works across vm realms) so that e.g. a plain number is rejected with
-// TypeError instead of allocating a Uint8Array of that length.
+// WebCrypto BufferSource conversion: typed-array/DataView views are read via
+// internal slots; anything else must be a real ArrayBuffer (the native
+// byteLength getter is a brand check that works across vm realms) so that
+// e.g. a plain number is rejected with TypeError instead of allocating a
+// Uint8Array of that length.
 function toDigestBytes(data: ArrayBuffer | ArrayBufferView): Uint8Array {
-  if (ArrayBuffer.isView(data)) {
+  if (types.isTypedArray(data) || types.isDataView(data)) {
+    const getters = types.isDataView(data)
+      ? viewGetters.dataView
+      : viewGetters.typedArray;
+    const buffer = getters.buffer.call(data) as ArrayBuffer;
     // WebCrypto's BufferSource excludes SharedArrayBuffer-backed views.
-    if (types.isSharedArrayBuffer(data.buffer)) {
+    if (types.isSharedArrayBuffer(buffer)) {
       throw new TypeError(
         'crypto.subtle.digest does not accept SharedArrayBuffer-backed views'
       );
     }
-    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    return new Uint8Array(
+      buffer,
+      getters.byteOffset.call(data) as number,
+      getters.byteLength.call(data) as number
+    );
   }
   arrayBufferByteLength.call(data);
-  return new Uint8Array(data);
+  return new Uint8Array(data as ArrayBuffer);
 }
 
 /**

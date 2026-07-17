@@ -4,21 +4,6 @@ export type RetainedStepInputPreparation =
   | { readonly retainable: true; readonly value: unknown }
   | { readonly retainable: false };
 
-const typedArrayNames = [
-  'BigInt64Array',
-  'BigUint64Array',
-  'Float16Array',
-  'Float32Array',
-  'Float64Array',
-  'Int8Array',
-  'Int16Array',
-  'Int32Array',
-  'Uint8Array',
-  'Uint8ClampedArray',
-  'Uint16Array',
-  'Uint32Array',
-] as const;
-
 // Own data-property read that never performs a property Get — workflow code
 // can redefine its globals (or their `prototype` slots) with accessors, and
 // validation must not execute workflow-owned code.
@@ -31,15 +16,15 @@ function constructorPrototype(
   realmGlobal: Record<string, any>,
   constructorName: string
 ): object | undefined {
-  const ctor = ownDataProperty(realmGlobal, constructorName);
+  const constructor = ownDataProperty(realmGlobal, constructorName);
   if (
-    (typeof ctor !== 'function' && typeof ctor !== 'object') ||
-    ctor === null ||
-    types.isProxy(ctor)
+    (typeof constructor !== 'function' && typeof constructor !== 'object') ||
+    constructor === null ||
+    types.isProxy(constructor)
   ) {
     return undefined;
   }
-  const prototype = ownDataProperty(ctor, 'prototype');
+  const prototype = ownDataProperty(constructor, 'prototype');
   return typeof prototype === 'object' &&
     prototype !== null &&
     !types.isProxy(prototype)
@@ -59,6 +44,27 @@ function hasAllowedPrototype(
         globalThis as unknown as Record<string, any>,
         constructorName
       ) || prototype === constructorPrototype(workflowGlobal, constructorName)
+  );
+}
+
+// Cloneable exotics (per the structured-clone spec) whose devalue/reducer
+// serialization reads prototype methods, getters, or iterators the workflow
+// realm can mutate — serializing them is not provably passive, so they
+// decline the fast path even when their prototype identity looks intact.
+function isSlotBearingExotic(value: object): boolean {
+  return (
+    types.isMap(value) ||
+    types.isSet(value) ||
+    types.isDate(value) ||
+    types.isRegExp(value) ||
+    types.isArrayBuffer(value) ||
+    types.isSharedArrayBuffer(value) ||
+    types.isDataView(value) ||
+    types.isTypedArray(value) ||
+    types.isBoxedPrimitive(value) ||
+    types.isNativeError(value) ||
+    types.isPromise(value) ||
+    types.isArgumentsObject(value)
   );
 }
 
@@ -107,78 +113,6 @@ function isPassiveArray(
   );
 }
 
-function isPassiveMap(
-  value: Map<unknown, unknown>,
-  workflowGlobal: Record<string, any>,
-  seen: WeakSet<object>
-): boolean {
-  if (!hasAllowedPrototype(value, workflowGlobal, 'Map')) return false;
-  if (Reflect.ownKeys(value).length > 0) return false;
-  let retainable = true;
-  Map.prototype.forEach.call(value, (entryValue: unknown, key: unknown) => {
-    retainable &&=
-      isPassivelyCloneable(key, workflowGlobal, seen) &&
-      isPassivelyCloneable(entryValue, workflowGlobal, seen);
-  });
-  return retainable;
-}
-
-function isPassiveSet(
-  value: Set<unknown>,
-  workflowGlobal: Record<string, any>,
-  seen: WeakSet<object>
-): boolean {
-  if (!hasAllowedPrototype(value, workflowGlobal, 'Set')) return false;
-  if (Reflect.ownKeys(value).length > 0) return false;
-  let retainable = true;
-  Set.prototype.forEach.call(value, (entryValue: unknown) => {
-    retainable &&= isPassivelyCloneable(entryValue, workflowGlobal, seen);
-  });
-  return retainable;
-}
-
-function isPassiveBuiltIn(
-  value: object,
-  workflowGlobal: Record<string, any>
-): boolean | undefined {
-  if (types.isDate(value)) {
-    return (
-      hasAllowedPrototype(value, workflowGlobal, 'Date') &&
-      Reflect.ownKeys(value).length === 0
-    );
-  }
-  if (types.isRegExp(value)) {
-    return (
-      hasAllowedPrototype(value, workflowGlobal, 'RegExp') &&
-      Reflect.ownKeys(value).every((key) => key === 'lastIndex')
-    );
-  }
-  if (types.isArrayBuffer(value)) {
-    return (
-      hasAllowedPrototype(value, workflowGlobal, 'ArrayBuffer') &&
-      Reflect.ownKeys(value).length === 0
-    );
-  }
-  if (types.isSharedArrayBuffer(value)) return false;
-  if (types.isDataView(value)) {
-    return (
-      hasAllowedPrototype(value, workflowGlobal, 'DataView') &&
-      Reflect.ownKeys(value).length === 0
-    );
-  }
-  if (types.isTypedArray(value)) {
-    return (
-      Reflect.ownKeys(value).every(
-        (key) => typeof key === 'string' && isArrayIndex(key)
-      ) &&
-      typedArrayNames.some((name) =>
-        hasAllowedPrototype(value, workflowGlobal, name)
-      )
-    );
-  }
-  return undefined;
-}
-
 function isPassiveObjectProperty(
   object: object,
   key: string | symbol,
@@ -212,14 +146,18 @@ function isPassivePlainObject(
 }
 
 /**
- * Whether structured cloning `value` can avoid executing workflow-owned code.
+ * Whether structured cloning `value` is provably byte-equivalent to the
+ * ordinary VM serialization AND cannot execute workflow-owned code.
  *
  * The retained VM must not observe serialization side effects that a later
- * cold replay cannot reconstruct. Proxy traps, accessors, functions, custom
- * classes, and platform wrappers can all execute workflow code while devalue
- * traverses them, so they deliberately decline the fast path. Plain data and
- * standard in-memory collections are cloned into the host realm before
- * serialization, keeping even mutable VM prototypes out of the write path.
+ * cold replay cannot reconstruct, and the durable bytes must not depend on
+ * `WORKFLOW_RETAINED_VM`. Only primitives, plain objects, and plain arrays
+ * qualify: devalue traverses them exclusively through own-property reads
+ * (`Object.keys`, `Object.hasOwn` + indices), so no workflow-realm prototype
+ * state can influence the output. Everything else — proxies, accessors,
+ * functions, custom classes, and built-ins like Map/Set/Date whose
+ * serialization consults mutable realm prototypes (iterators, getters) —
+ * declines the fast path and serializes through the ordinary VM traversal.
  */
 function isPassivelyCloneable(
   value: unknown,
@@ -243,11 +181,8 @@ function isPassivelyCloneable(
   if (Array.isArray(value)) {
     return isPassiveArray(value, workflowGlobal, seen);
   }
-  if (types.isMap(value)) return isPassiveMap(value, workflowGlobal, seen);
-  if (types.isSet(value)) return isPassiveSet(value, workflowGlobal, seen);
-
-  const builtIn = isPassiveBuiltIn(value, workflowGlobal);
-  return builtIn ?? isPassivePlainObject(value, workflowGlobal, seen);
+  if (isSlotBearingExotic(value)) return false;
+  return isPassivePlainObject(value, workflowGlobal, seen);
 }
 
 export function prepareRetainedStepInput(

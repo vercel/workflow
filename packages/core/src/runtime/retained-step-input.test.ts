@@ -14,14 +14,11 @@ describe('prepareRetainedStepInput', () => {
       fixedTimestamp,
     });
     const value = vm.runInContext(
-      `(() => {
-        const buffer = new ArrayBuffer(8);
-        return {
-          nested: [{ ok: true }],
-          map: new Map([["key", new Set([1, 2])]]),
-          bytes: new Uint8Array(buffer, 2, 4),
-        };
-      })()`,
+      `({
+        nested: [{ ok: true }, "text", 42n],
+        sparse: [1, , 3],
+        flag: false,
+      })`,
       context
     );
 
@@ -30,9 +27,9 @@ describe('prepareRetainedStepInput', () => {
     expect(prepared.retainable).toBe(true);
     if (!prepared.retainable) return;
     expect(prepared.value).toEqual({
-      nested: [{ ok: true }],
-      map: new Map([['key', new Set([1, 2])]]),
-      bytes: new Uint8Array(4),
+      nested: [{ ok: true }, 'text', 42n],
+      sparse: [1, undefined, 3],
+      flag: false,
     });
     expect(Object.getPrototypeOf(prepared.value)).toBe(Object.prototype);
   });
@@ -45,10 +42,9 @@ describe('prepareRetainedStepInput', () => {
     const value = vm.runInContext(
       `({
         nested: [{ ok: true, missing: undefined }],
-        map: new Map([["key", new Set([1, 2])]]),
-        bytes: new Uint8Array([1, 2, 3, 4]),
-        date: new Date(1234),
-        regexp: /workflow/gi,
+        sparse: [1, , 3],
+        big: 42n,
+        text: "workflow",
       })`,
       context
     );
@@ -66,6 +62,29 @@ describe('prepareRetainedStepInput', () => {
     );
 
     expect(cloned).toEqual(original);
+  });
+
+  it('declines built-ins whose serialization consults realm prototypes', () => {
+    const { context, globalThis: workflowGlobal } = createContext({
+      seed,
+      fixedTimestamp,
+    });
+    for (const expression of [
+      'new Map([["k", 1]])',
+      'new Set([1, 2])',
+      'new Date(1234)',
+      '/workflow/gi',
+      'new Uint8Array([1, 2])',
+      'new ArrayBuffer(8)',
+      'new DataView(new ArrayBuffer(8))',
+      'new Error("boom")',
+      'Object.assign(Object.create(Object.prototype), { m: new Map() })',
+    ]) {
+      const value = vm.runInContext(expression, context);
+      expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
+        retainable: false,
+      });
+    }
   });
 
   it('declines accessors without invoking them', () => {
