@@ -2837,6 +2837,97 @@ export async function maybeDecrypt(
   return decrypt(data, key);
 }
 
+/**
+ * Replay hydration has two stages:
+ *
+ * 1. Host-side preparation decrypts and decompresses persisted data. That work
+ *    is independent of a workflow VM and can be cached across replay VMs.
+ * 2. Deserialization revives the prepared representation against the current
+ *    VM's globals. It must run again for every VM to produce fresh object graphs
+ *    and correctly scoped Workflow objects.
+ *
+ * `data` is the boundary between those stages. For current-format payloads it
+ * is still format-prefixed serialized bytes, not a live JavaScript value.
+ */
+export interface PreparedReplayPayload {
+  readonly data: unknown;
+}
+
+/**
+ * Swappable implementation of the host-side preparation stage. Supporting
+ * both direct and promised results lets a future synchronous Node decryptor use
+ * the same cache contract as today's asynchronous Web Crypto implementation.
+ */
+export type ReplayPayloadPreparer = (
+  value: unknown,
+  key: CryptoKey | undefined
+) => PreparedReplayPayload | Promise<PreparedReplayPayload>;
+
+/**
+ * Decrypt and decompress persisted data without parsing it into JavaScript.
+ * Legacy non-binary values pass through unchanged for their consumer to revive.
+ */
+export const prepareReplayPayload: ReplayPayloadPreparer = async (
+  value,
+  key
+) => {
+  const compressionStats: CompressionStats = {};
+  const prepared = await decompress(
+    await decrypt(value, key),
+    compressionStats
+  );
+  await recordCompression(compressionStats, 'deserialize');
+  return { data: prepared };
+};
+
+/**
+ * Parse a prepared workflow argument or successful step/hook payload using the
+ * current workflow VM's globals and revivers. Each call intentionally creates
+ * a fresh object graph so mutations cannot leak across replay iterations.
+ */
+export function deserializePreparedReplayPayload(
+  prepared: PreparedReplayPayload,
+  global: Record<string, any> = globalThis,
+  extraRevivers: Record<string, (value: any) => any> = {}
+): any {
+  return workflowModule.deserialize(prepared.data, {
+    global,
+    extraRevivers: {
+      ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
+      ...extraRevivers,
+    },
+  });
+}
+
+/**
+ * Parse a prepared step error using the current workflow VM's class revivers.
+ * This preserves thrown-value identity without sharing objects between VMs.
+ */
+export function deserializePreparedStepError(
+  prepared: PreparedReplayPayload,
+  global: Record<string, any> = globalThis,
+  extraRevivers: Record<string, (value: any) => any> = {}
+): unknown {
+  const { data } = prepared;
+  if (!(data instanceof Uint8Array)) {
+    return unflatten(data as any[], {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
+  }
+
+  const { format, payload } = decodeFormatPrefix(data);
+  if (format === SerializationFormat.DEVALUE_V1) {
+    const str = new TextDecoder().decode(payload);
+    return parse(str, {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
+  }
+
+  throw new Error(`Unsupported serialization format: ${format}`);
+}
+
 // ============================================================================
 // Dehydrate / Hydrate Functions
 // ============================================================================
@@ -2902,28 +2993,22 @@ export async function dehydrateWorkflowArguments(
 
 /**
  * Called from workflow execution environment to hydrate the workflow
- * arguments from the database at the start of workflow execution.
+ * arguments from the database at the start of workflow execution. A prepared
+ * payload skips host-side decrypt/decompress but always performs VM revival.
  */
 export async function hydrateWorkflowArguments(
   value: Uint8Array | unknown,
   _runId: string,
   key: CryptoKey | undefined,
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  prepared?: PreparedReplayPayload
 ): Promise<any> {
-  const compressionStats: CompressionStats = {};
-  const inflated = await decompress(
-    await maybeDecrypt(value, key),
-    compressionStats
-  );
-  await recordCompression(compressionStats, 'deserialize');
-  return workflowModule.deserialize(inflated, {
+  return deserializePreparedReplayPayload(
+    prepared ?? (await prepareReplayPayload(value, key)),
     global,
-    extraRevivers: {
-      ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
-      ...extraRevivers,
-    },
-  });
+    extraRevivers
+  );
 }
 
 /**
@@ -3184,6 +3269,7 @@ export async function dehydrateStepError(
  * @param key - Encryption key (undefined to skip decryption)
  * @param global - Global object for deserialization context
  * @param extraRevivers - Additional revivers for custom types
+ * @param prepared - Optional cached decrypt/decompress result
  * @returns The hydrated thrown value, ready to reject the step promise
  */
 export async function hydrateStepError(
@@ -3191,42 +3277,14 @@ export async function hydrateStepError(
   _runId: string,
   key: CryptoKey | undefined,
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  prepared?: PreparedReplayPayload
 ): Promise<unknown> {
-  const compressionStats: CompressionStats = {};
-  const decrypted = await decompress(
-    await maybeDecrypt(value, key),
-    compressionStats
+  return deserializePreparedStepError(
+    prepared ?? (await prepareReplayPayload(value, key)),
+    global,
+    extraRevivers
   );
-  await recordCompression(compressionStats, 'deserialize');
-
-  if (!(decrypted instanceof Uint8Array)) {
-    // Treated as a devalue "flattened" array. In production this branch is
-    // exercised by legacy code paths that bypassed `dehydrateStepError`; the
-    // SDK version is pinned per workflow run via skew protection, so a
-    // current-version producer always emits a Uint8Array here. If a
-    // misshapen value reaches us, `unflatten` throws — that's intentional:
-    // the higher-level hydration helpers (`hydrateStepIO`,
-    // `hydrateResourceIO`) already wrap us in a try/catch that leaves the
-    // field un-hydrated for o11y display, and surfacing the throw to logs
-    // is more debuggable than silently masking the unsupported shape.
-    return unflatten(decrypted as any[], {
-      ...getWorkflowRevivers(global),
-      ...extraRevivers,
-    });
-  }
-
-  const { format, payload } = decodeFormatPrefix(decrypted);
-
-  if (format === SerializationFormat.DEVALUE_V1) {
-    const str = new TextDecoder().decode(payload);
-    return parse(str, {
-      ...getWorkflowRevivers(global),
-      ...extraRevivers,
-    });
-  }
-
-  throw new Error(`Unsupported serialization format: ${format}`);
 }
 
 /**
@@ -3296,7 +3354,7 @@ export async function hydrateRunError(
 ): Promise<unknown> {
   const compressionStats: CompressionStats = {};
   const decrypted = await decompress(
-    await maybeDecrypt(value, key),
+    await decrypt(value, key),
     compressionStats
   );
   await recordCompression(compressionStats, 'deserialize');
@@ -3335,6 +3393,7 @@ export async function hydrateRunError(
  * @param key - Encryption key (undefined to skip decryption)
  * @param global - Global object for deserialization context
  * @param extraRevivers - Additional revivers for custom types
+ * @param prepared - Optional cached decrypt/decompress result
  * Called from the workflow handler when replaying the event log
  * of a `step_completed` event.
  */
@@ -3343,21 +3402,14 @@ export async function hydrateStepReturnValue(
   _runId: string,
   key: CryptoKey | undefined,
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  prepared?: PreparedReplayPayload
 ): Promise<any> {
-  const compressionStats: CompressionStats = {};
-  const inflated = await decompress(
-    await maybeDecrypt(value, key),
-    compressionStats
-  );
-  await recordCompression(compressionStats, 'deserialize');
-  return workflowModule.deserialize(inflated, {
+  return deserializePreparedReplayPayload(
+    prepared ?? (await prepareReplayPayload(value, key)),
     global,
-    extraRevivers: {
-      ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
-      ...extraRevivers,
-    },
-  });
+    extraRevivers
+  );
 }
 
 // ---- Helpers to extract stream/Request/Response reducers and revivers ----
