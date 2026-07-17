@@ -94,6 +94,12 @@ export function createContext(options: CreateContextOptions) {
   trackHostAsync(intrinsics.WebAssembly, 'compileStreaming');
   trackHostAsync(intrinsics.WebAssembly, 'instantiateStreaming');
 
+  // GC observation (`WeakRef.deref()`, finalizer callbacks) depends on host
+  // GC timing that neither replay nor a retained VM can reconstruct from the
+  // event log, so the sandbox does not expose it at all.
+  delete intrinsics.WeakRef;
+  delete intrinsics.FinalizationRegistry;
+
   // `crypto.subtle.digest` computes synchronously via node:crypto, so its
   // promise settles on a deterministic microtask instead of host threadpool
   // timing — a digest can never advance a suspended workflow, and

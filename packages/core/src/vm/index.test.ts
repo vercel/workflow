@@ -368,3 +368,17 @@ describe('crypto.subtle.digest', () => {
     ).rejects.toMatchObject({ name: 'NotSupportedError' });
   });
 });
+
+describe('GC observation', () => {
+  it('does not expose WeakRef or FinalizationRegistry', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    expect(vm.runInContext('typeof WeakRef', context)).toBe('undefined');
+    expect(vm.runInContext('typeof FinalizationRegistry', context)).toBe(
+      'undefined'
+    );
+    // WeakMap/WeakSet do not expose GC state and stay available.
+    expect(vm.runInContext('typeof WeakMap', context)).toBe('function');
+    expect(vm.runInContext('typeof WeakSet', context)).toBe('function');
+  });
+});

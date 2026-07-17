@@ -100,3 +100,4 @@ The following are **not available** in workflow functions. Move this logic to [s
 - **Global `fetch`**: Use [`import { fetch } from "workflow"`](/docs/api-reference/workflow/fetch) instead. See [fetch-in-workflow](/docs/errors/fetch-in-workflow).
 - **Timers**: `setTimeout`, `setInterval`, `setImmediate`, and their `clear*` counterparts. Use [`sleep()`](/docs/api-reference/workflow/sleep) instead. See [timeout-in-workflow](/docs/errors/timeout-in-workflow).
 - **`Buffer`**: Node.js-specific API. Use `Uint8Array` with `toBase64()` / `fromBase64()` / `toHex()` / `fromHex()` for binary data encoding, or `atob()` / `btoa()` for string-based base64.
+- **`WeakRef` and `FinalizationRegistry`**: garbage-collection timing is not deterministic, so observing it would make workflow code impossible to replay. (`WeakMap` and `WeakSet` remain available — they do not expose GC state.)
