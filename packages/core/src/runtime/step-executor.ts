@@ -155,6 +155,22 @@ export interface StepExecutorParams {
    */
   suppressOptimisticStart?: boolean;
   /**
+   * Defer the `step_completed` write (opt-in via
+   * `WORKFLOW_ASYNC_STEP_COMPLETED=1`; see the `deferCompletedWrite` gate in
+   * runtime.ts). When set and the step completes cleanly with no pending ops,
+   * the terminal `events.create` is initiated but NOT awaited: the result
+   * carries the in-flight write plus locally-synthesized
+   * `step_created`/`step_started`/`step_completed` events so the caller can
+   * feed the step's outcome into the next replay iteration while the write
+   * settles. The caller owns the ordering invariant: no subsequent durable
+   * write may be issued until the deferred write resolves, and no queue ack
+   * may happen until it settles. Only meaningful together with
+   * `lazyStepInput` (the synthesis needs the step input); ignored otherwise,
+   * and ignored when the step has pending background ops, failed, retried, or
+   * lost its claim — all of those await their writes as usual.
+   */
+  deferCompletedWrite?: boolean;
+  /**
    * Force optimistic inline start regardless of
    * `WORKFLOW_OPTIMISTIC_INLINE_START`. Set by turbo mode on the first delivery
    * of the first invocation, where forcing it is safe: there is no concurrent
@@ -198,6 +214,24 @@ export interface InlineEventDelta {
 }
 
 /**
+ * A deferred `step_completed` write (see
+ * {@link StepExecutorParams.deferCompletedWrite}). `write` settles when the
+ * terminal `events.create` does, resolving to the inline delta the World
+ * returned (or undefined — the caller then reconciles via an incremental
+ * fetch). `synthesizedEvents` are local stand-ins for the canonical
+ * `step_created`/`step_started`/`step_completed` this step will produce:
+ * content-equal to the durable events (same correlationId, stepName, input,
+ * result bytes) but with locally-minted event IDs and timestamps. They are
+ * only valid for feeding ONE subsequent replay pass and must never be
+ * persisted into the durable event cache — the canonical events replace them
+ * at reconcile time.
+ */
+export interface DeferredCompletedWrite {
+  write: Promise<InlineEventDelta | undefined>;
+  synthesizedEvents: Event[];
+}
+
+/**
  * Result of a step execution attempt. The caller decides what to do
  * based on the result type (e.g., queue workflow continuation, replay inline, etc.).
  *
@@ -212,6 +246,12 @@ export type StepExecutionResult =
       type: 'completed';
       hasPendingOps?: boolean;
       inlineDelta?: InlineEventDelta;
+      /**
+       * Present when the caller requested {@link StepExecutorParams.deferCompletedWrite}
+       * and this completion's terminal write was deferred. Mutually exclusive
+       * with `inlineDelta` (the delta, if any, arrives on `deferredCompleted.write`).
+       */
+      deferredCompleted?: DeferredCompletedWrite;
     }
   | { type: 'failed' }
   | { type: 'retry'; timeoutSeconds: number }
@@ -1171,6 +1211,111 @@ export async function executeStep(
       return { type: 'retry', timeoutSeconds };
     }
 
+    const completedEventData = {
+      stepName,
+      workflowName,
+      result: result as Uint8Array,
+      ...latencyEventData,
+    };
+
+    // Deferred terminal write (WORKFLOW_ASYNC_STEP_COMPLETED): initiate the
+    // step_completed create but return before it settles, so the caller can
+    // consume this step's result (via the synthesized events below) and start
+    // the next step's body while the write is in flight. Only on the clean
+    // path: the step completed, its ops flushed, and it was a lazy inline
+    // start (the synthesis needs the input). Failure handling moves to the
+    // caller: an EntityConflict / RunExpired rejection means another writer
+    // owns the outcome, and since the caller has already speculated on OUR
+    // result it must force a fresh replay rather than treat it as the benign
+    // skip the awaited path below maps it to.
+    if (
+      params.deferCompletedWrite &&
+      opsSettled &&
+      params.lazyStepInput !== undefined
+    ) {
+      const deltaRequested = params.inlineDeltaSinceCursor !== undefined;
+      const write = world.events
+        .create(
+          workflowRunId,
+          {
+            eventType: 'step_completed',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData: completedEventData,
+          },
+          deltaRequested
+            ? { sinceCursor: params.inlineDeltaSinceCursor }
+            : undefined
+        )
+        .then((res) => extractInlineDelta(res, deltaRequested));
+      // Keep the platform alive until the write settles even if the handler
+      // exits abnormally. The caller consumes the real rejection (every ack
+      // path settles the deferred write first), so this only logs.
+      safeWaitUntil(write, (err) => {
+        runtimeLogger.warn('Deferred step_completed write failed', {
+          workflowRunId,
+          stepId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+      // Local stand-ins for the canonical events this step produces (the
+      // World's lazy-start synthesizes step_created + step_started from the
+      // started create; step_completed comes from the write above).
+      // Content-equal to the durable events; event IDs and timestamps are
+      // locally minted and only valid for one replay pass — see
+      // DeferredCompletedWrite.
+      const now = new Date();
+      const synthesizedEvents: Event[] = [
+        {
+          eventId: `evnt_local_${stepId}_created`,
+          runId: workflowRunId,
+          createdAt: now,
+          eventType: 'step_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: stepId,
+          eventData: {
+            stepName,
+            workflowName,
+            input: params.lazyStepInput,
+          },
+        },
+        {
+          eventId: `evnt_local_${stepId}_started`,
+          runId: workflowRunId,
+          createdAt: now,
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: stepId,
+          eventData: {
+            stepName,
+            attempt: 1,
+            workflowName,
+            ...(params.ownerMessageId !== undefined
+              ? { ownerMessageId: params.ownerMessageId }
+              : {}),
+          },
+        },
+        {
+          eventId: `evnt_local_${stepId}_completed`,
+          runId: workflowRunId,
+          createdAt: now,
+          eventType: 'step_completed',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: stepId,
+          eventData: completedEventData,
+        },
+      ];
+      span?.setAttributes({
+        ...Attribute.StepStatus('completed'),
+        ...Attribute.StepResultType(typeof result),
+      });
+      return {
+        type: 'completed',
+        hasPendingOps: false,
+        deferredCompleted: { write, synthesizedEvents },
+      };
+    }
+
     // Create step_completed event outside the step execution failure path:
     // persistence failures are infrastructure errors and should redeliver the
     // queue message, not become user step_retrying/step_failed events.
@@ -1182,12 +1327,7 @@ export async function executeStep(
           eventType: 'step_completed',
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
-          eventData: {
-            stepName,
-            workflowName,
-            result: result as Uint8Array,
-            ...latencyEventData,
-          },
+          eventData: completedEventData,
         },
         params.inlineDeltaSinceCursor !== undefined
           ? { sinceCursor: params.inlineDeltaSinceCursor }

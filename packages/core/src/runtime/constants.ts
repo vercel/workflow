@@ -276,6 +276,29 @@ export function isTurboEnabled(): boolean {
 }
 
 /**
+ * Whether `WORKFLOW_ASYNC_STEP_COMPLETED=1` opts the runtime into deferring an
+ * inline step's `step_completed` write: instead of awaiting the write before
+ * the next replay iteration, the runtime continues on locally-synthesized
+ * events (feeding the step's result into the workflow to discover and start
+ * the next step's body) while the write settles in the background. Every
+ * subsequent durable write is chained behind the deferred write, so the event
+ * log can never record downstream events without their upstream terminal.
+ *
+ * Only engages on the single clean sequential inline step shape, with no open
+ * hook or wait, and only on turbo's first delivery — the one case where no
+ * concurrent orchestrator invocation can exist (see the `deferCompletedWrite`
+ * gate in runtime.ts).
+ *
+ * Off by default: a crash while the write is in flight re-executes the step
+ * on redelivery, which can produce a different result than the one the next
+ * step's body already consumed — a stronger idempotency requirement on step
+ * side effects than optimistic inline start alone.
+ */
+export function isAsyncStepCompletedEnabled(): boolean {
+  return process.env.WORKFLOW_ASYNC_STEP_COMPLETED === '1';
+}
+
+/**
  * Whether inline step ownership is enabled (default ON). When on, the lazy
  * `step_started` that creates an inline step records the owning queue
  * message ID, and wake replays that observe an actively-owned step enqueue a

@@ -7,6 +7,7 @@ import {
   getMaxQueueDeliveries,
   getReplayTimeoutMs,
   INLINE_OWNERSHIP_LEASE_SECONDS,
+  isAsyncStepCompletedEnabled,
   isInlineOwnershipEnabled,
   isOptimisticInlineStartEnabled,
   isOptimisticInlineStartExplicitlyDisabled,
@@ -286,6 +287,35 @@ describe('isTurboEnabled', () => {
     expect(isTurboEnabled()).toBe(true);
     process.env.WORKFLOW_TURBO = 'yes';
     expect(isTurboEnabled()).toBe(true);
+  });
+});
+
+describe('isAsyncStepCompletedEnabled', () => {
+  const originalEnv = process.env.WORKFLOW_ASYNC_STEP_COMPLETED;
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.WORKFLOW_ASYNC_STEP_COMPLETED;
+    } else {
+      process.env.WORKFLOW_ASYNC_STEP_COMPLETED = originalEnv;
+    }
+  });
+
+  it('defaults to disabled when unset', () => {
+    delete process.env.WORKFLOW_ASYNC_STEP_COMPLETED;
+    expect(isAsyncStepCompletedEnabled()).toBe(false);
+  });
+
+  it('is enabled by exactly "1"', () => {
+    process.env.WORKFLOW_ASYNC_STEP_COMPLETED = '1';
+    expect(isAsyncStepCompletedEnabled()).toBe(true);
+  });
+
+  it('stays disabled for other values', () => {
+    for (const value of ['', '0', 'true', 'yes']) {
+      process.env.WORKFLOW_ASYNC_STEP_COMPLETED = value;
+      expect(isAsyncStepCompletedEnabled()).toBe(false);
+    }
   });
 });
 

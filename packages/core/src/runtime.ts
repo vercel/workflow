@@ -37,7 +37,9 @@ import { runtimeLogger } from './logger.js';
 import {
   getMaxQueueDeliveries,
   getReplayDivergenceMaxRetries,
+  isAsyncStepCompletedEnabled,
   isInlineOwnershipEnabled,
+  isOptimisticInlineStartEnabled,
   isTurboEnabled,
 } from './runtime/constants.js';
 import {
@@ -560,6 +562,53 @@ export function workflowEntrypoint(
                     cursor: string | null;
                   } | null = null;
 
+                  // Deferred step_completed (WORKFLOW_ASYNC_STEP_COMPLETED,
+                  // opt-in): when the previous iteration's single inline step
+                  // deferred its terminal write, `pendingSynthesizedEvents`
+                  // holds local stand-ins for that step's events — consumed by
+                  // exactly ONE subsequent replay pass (appended transiently to
+                  // the replay's event view, never persisted into
+                  // cachedEvents) — and `deferredCompleted.promise` tracks the
+                  // in-flight write chained with its reconcile step (merge the
+                  // canonical events into cachedEvents, advance the cursor).
+                  // Every subsequent durable write is chained behind that
+                  // promise, and every ack path settles it (fail-closed) so
+                  // the queue message is never acknowledged while the terminal
+                  // write is in flight or failed. At most one deferral is
+                  // pending at a time: a new one's write is transitively
+                  // ordered behind the old one's reconcile via the chained
+                  // step_started create.
+                  let pendingSynthesizedEvents: Event[] | null = null;
+                  let deferredCompleted: {
+                    promise: Promise<void>;
+                  } | null = null;
+                  // Await (fail-closed) the pending deferred write, clearing
+                  // both pieces of state. A rejection propagates: converted
+                  // EntityConflict/RunExpired surface as
+                  // PreconditionFailedError (fresh replay via reinvoke where a
+                  // catch routes it) and everything else rethrows so the
+                  // unacked message redelivers and owned recovery re-runs the
+                  // step. The stale synthesized tail is dropped either way —
+                  // after reconcile the canonical events are (or will be, via
+                  // the next fetch) in cachedEvents.
+                  const settleDeferredCompleted = async (): Promise<void> => {
+                    pendingSynthesizedEvents = null;
+                    const settling = deferredCompleted;
+                    if (!settling) return;
+                    deferredCompleted = null;
+                    await settling.promise;
+                  };
+                  // Compose the turbo run-ready barrier with the deferred
+                  // write for executeStep's pre-write ordering. Rejection of
+                  // either rejects the composition (executeStep's chained
+                  // step_started create then rejects, exactly like a failed
+                  // create on the awaited path).
+                  const composeStepWriteBarrier = (
+                    a?: Promise<unknown>,
+                    b?: Promise<unknown>
+                  ): Promise<unknown> | undefined =>
+                    a && b ? Promise.all([a, b]) : (a ?? b);
+
                   // Shared state: set by either the background step path
                   // or the run_started setup below.
                   let workflowRun: WorkflowRun | undefined;
@@ -697,6 +746,13 @@ export function workflowEntrypoint(
                   const reinvoke = async (
                     delaySeconds: number
                   ): Promise<{ timeoutSeconds: number } | undefined> => {
+                    // Both reinvoke shapes ack the current message (the
+                    // explicit continuation acks it; `{ timeoutSeconds }`
+                    // reschedules it as done-for-now), so a deferred
+                    // step_completed must be durable first — a failure here
+                    // rethrows, leaving the message unacked so redelivery's
+                    // owned recovery re-runs the step.
+                    await settleDeferredCompleted();
                     assertNoInFlightOwnedSteps('reinvoke');
                     if (!turbo) return { timeoutSeconds: delaySeconds };
                     await queueMessage(
@@ -1115,12 +1171,27 @@ export function workflowEntrypoint(
                   while (true) {
                     loopIteration++;
 
+                    // Deferred step_completed: unless this iteration is the
+                    // designated synthesized-tail replay (the one iteration
+                    // allowed to run ahead of the in-flight write), settle the
+                    // deferral before doing anything else — every other load
+                    // path fetches from the server and must observe the
+                    // reconciled (canonical) event log. Fail-closed: a
+                    // rejection propagates out of the handler, the message
+                    // stays unacked, and redelivery recovers the step.
+                    if (deferredCompleted && !pendingSynthesizedEvents) {
+                      await settleDeferredCompleted();
+                    }
+
                     // Replay-budget check: bail out (retry or fail) if
                     // non-step time within this invocation has exceeded
                     // the configured budget. Step bodies are excluded
                     // because replayBudget.pause()/resume() bracket every
                     // `executeStep` call.
                     if (replayBudget.isExhausted()) {
+                      // Bail-out acks or fails the run — the deferred write
+                      // must settle first even on the tail-pending fast path.
+                      await settleDeferredCompleted();
                       await handleReplayBudgetExhausted({
                         runId,
                         workflowName,
@@ -1140,6 +1211,10 @@ export function workflowEntrypoint(
                       Date.now() - invocationStartTime >=
                       NO_INLINE_REPLAY_AFTER_MS
                     ) {
+                      // Queueing the continuation + returning acks this
+                      // message — the deferred write must settle first even
+                      // on the tail-pending fast path.
+                      await settleDeferredCompleted();
                       runtimeLogger.info(
                         'V2 timeout reached, re-scheduling workflow',
                         {
@@ -1171,7 +1246,27 @@ export function workflowEntrypoint(
                       // The server always returns a cursor when there are events (even on the
                       // final page), so we can reliably use it for incremental loading.
                       let events: Event[];
-                      if (pendingInlineDelta && cachedEvents) {
+                      // Deferred step_completed: local stand-ins for the
+                      // previous inline step's events, appended to THIS
+                      // replay's event view only (see replayEvents below) and
+                      // never persisted into cachedEvents — the reconcile step
+                      // chained on the in-flight write merges the canonical
+                      // events there instead.
+                      let transientSynthesizedTail: Event[] | null = null;
+                      if (pendingSynthesizedEvents) {
+                        // Fast path: the previous iteration's inline step
+                        // deferred its terminal write; replay over the
+                        // synthesized events without any fetch. No other
+                        // writer can have appended in the window (the
+                        // deferCompletedWrite gate requires no open hook or
+                        // wait and no concurrent orchestrator invocation), so
+                        // the synthesized tail is the complete delta modulo a
+                        // cancellation, which is observed one iteration late —
+                        // the same tolerance as the inline-delta path below.
+                        transientSynthesizedTail = pendingSynthesizedEvents;
+                        pendingSynthesizedEvents = null;
+                        events = cachedEvents ?? [];
+                      } else if (pendingInlineDelta && cachedEvents) {
                         // Fast path: the previous iteration's inline step
                         // terminal write returned the authoritative event-log
                         // delta since the pre-write cursor, so we consume it
@@ -1398,6 +1493,17 @@ export function workflowEntrypoint(
                       // Update cache reference (may have been set for first time)
                       cachedEvents = events;
 
+                      // Deferred step_completed: this replay's event view is
+                      // the durable cache plus the transient synthesized tail.
+                      // The concat isolates the tail — nothing below persists
+                      // it, and the reconcile step merges the canonical
+                      // events into cachedEvents when the in-flight write
+                      // lands (before any subsequent durable write, which all
+                      // chain behind it).
+                      const replayEvents = transientSynthesizedTail
+                        ? [...events, ...transientSynthesizedTail]
+                        : events;
+
                       // Latency telemetry: judge TTFS eligibility against the
                       // invocation's first snapshot. Waits completed above
                       // would already disqualify via the event-type check, so
@@ -1434,7 +1540,7 @@ export function workflowEntrypoint(
                       const result = await runWorkflow(
                         workflowCode,
                         workflowRun,
-                        events,
+                        replayEvents,
                         encryptionKey,
                         stepHydrationCache,
                         // Turbo: the end-of-run drain inside runWorkflow commits
@@ -1457,6 +1563,14 @@ export function workflowEntrypoint(
                       // result. The catch below lets PreconditionFailedError
                       // propagate to the queue for re-invocation.
                       try {
+                        // A deferred step_completed must be durable — and its
+                        // reconcile must have merged the canonical events, so
+                        // the stateUpdatedAt snapshot below reflects the run's
+                        // own latest terminal event — before the run's
+                        // terminal write. Fail-closed: a rejection routes
+                        // through the catch below (PreconditionFailedError →
+                        // fresh replay; transient → redelivery).
+                        await settleDeferredCompleted();
                         // Turbo: a workflow that finishes with no steps reaches
                         // here before the backgrounded run_started; order the
                         // terminal write after it so the run exists.
@@ -1571,6 +1685,14 @@ export function workflowEntrypoint(
                             requestId,
                             eventLog: suspensionLog,
                             runReadyBarrier,
+                            // Deferred step_completed: order every suspension
+                            // write after the in-flight terminal write and its
+                            // reconcile (fail-closed — see
+                            // SuspensionHandlerParams.preWriteBarrier).
+                            // Undefined when nothing is deferred. The pure
+                            // inline hot path writes nothing here, so the
+                            // barrier does not serialize it.
+                            preWriteBarrier: deferredCompleted?.promise,
                           });
                         } catch (suspensionError) {
                           // A suspension create whose stale (412) rejection
@@ -1972,6 +2094,10 @@ export function workflowEntrypoint(
                           if (suspensionResult.hasAwaitedHookCreation) {
                             return await reinvoke(0);
                           }
+                          // Returning acks this message — settle any deferred
+                          // step_completed first (defensive: the suspension's
+                          // chained writes normally settled it already).
+                          await settleDeferredCompleted();
                           return;
                         }
 
@@ -2057,14 +2183,25 @@ export function workflowEntrypoint(
                           isPreconditionGuardEnabled() &&
                           world.capabilities?.preconditionGuard === true;
 
-                        const requestInlineDelta =
-                          typeof preInlineWriteCursor === 'string' &&
+                        // The clean single-step sequential shape shared by the
+                        // inline-delta and deferred-completed gates: this
+                        // suspension produced exactly one step and no waits,
+                        // that one step is the lone pending step and the lone
+                        // inline step (no parallel siblings queued to
+                        // background handlers, no other inline step writing
+                        // its own events out of band, no owned-recovery
+                        // re-execution), and no wait timer is pending.
+                        const singleCleanInlineStep =
                           err.stepCount === 1 &&
                           err.waitCount === 0 &&
                           pendingSteps.length === 1 &&
                           lazyInlineSteps.length === 1 &&
                           ownedRecoverySteps.length === 0 &&
-                          !suspensionResult.waitTimeout &&
+                          !suspensionResult.waitTimeout;
+
+                        const requestInlineDelta =
+                          typeof preInlineWriteCursor === 'string' &&
+                          singleCleanInlineStep &&
                           !openHookWaitState.openWait &&
                           (guardEnforced ||
                             (err.hookCount === 0 &&
@@ -2139,6 +2276,52 @@ export function workflowEntrypoint(
                           !suspensionResult.hasAwaitedHookCreation &&
                           !openHookWaitState.openHook &&
                           !openHookWaitState.openWait;
+
+                        // Deferred step_completed gate
+                        // (WORKFLOW_ASYNC_STEP_COMPLETED, opt-in). Beyond the
+                        // clean single-step shape, all of these must hold:
+                        //
+                        //  - No hook or wait open anywhere in the run and none
+                        //    created by this suspension — stricter than the
+                        //    delta gate's guard-relaxed arm. An open hook/wait
+                        //    admits out-of-band writers into the deferral
+                        //    window, and the synthesized-tail replay would not
+                        //    see their events even one iteration late (it
+                        //    skips the fetch entirely).
+                        //  - This is turbo's first delivery (no resume or
+                        //    peer invocation exists yet), so no concurrent
+                        //    replay can observe (and act on) the durable log
+                        //    mid-window. A WORKFLOW_SEQUENTIAL_REPLAYS arm
+                        //    could widen this to later deliveries, but the
+                        //    runtime env var cannot prove the built flow
+                        //    trigger is actually serialized — see the NOTE on
+                        //    forceOptimisticStart above; same follow-up.
+                        //  - Optimistic inline start is active (forced by
+                        //    turbo, or via WORKFLOW_OPTIMISTIC_INLINE_START):
+                        //    without it the next step's body waits for its
+                        //    step_started create, which chains behind the
+                        //    deferred write anyway — deferring would buy
+                        //    nothing.
+                        //
+                        // What deferral changes: the next replay iteration
+                        // consumes locally-synthesized events for this step
+                        // (see pendingSynthesizedEvents) and the next step's
+                        // body may run against this step's result before that
+                        // result is durable. A crash inside the window
+                        // re-executes THIS step on redelivery, which can
+                        // produce a different result than the one the next
+                        // body already consumed — step side effects must
+                        // tolerate that (a stronger requirement than
+                        // optimistic start alone, hence the opt-in flag).
+                        const deferCompletedWrite =
+                          isAsyncStepCompletedEnabled() &&
+                          singleCleanInlineStep &&
+                          err.hookCount === 0 &&
+                          !openHookWaitState.openHook &&
+                          !openHookWaitState.openWait &&
+                          turbo &&
+                          (forceOptimisticStart ||
+                            isOptimisticInlineStartEnabled());
 
                         // Execute the inline steps in parallel. The replay
                         // budget is paused for the whole batch — step duration is
@@ -2222,15 +2405,31 @@ export function workflowEntrypoint(
                                 // lazy step_started until the backgrounded
                                 // run_started lands (the body still runs
                                 // immediately). Both are undefined/false
-                                // outside turbo.
+                                // outside turbo. The barrier additionally
+                                // composes any deferred step_completed from
+                                // the previous iteration, so this step's
+                                // writes are ordered after (and fail with)
+                                // that write — the body still starts
+                                // immediately under optimistic start.
                                 forceOptimisticStart,
                                 // Guard-enforced batches with an open hook
                                 // await the claim before running the body, so
                                 // a 412-fenced step never executes user code —
                                 // see suppressOptimisticStart above.
                                 suppressOptimisticStart,
-                                runReadyBarrier,
+                                // The barrier composes any deferred
+                                // step_completed from the previous iteration,
+                                // so this step's writes are ordered after
+                                // (and fail with) that write.
+                                runReadyBarrier: composeStepWriteBarrier(
+                                  runReadyBarrier,
+                                  deferredCompleted?.promise
+                                ),
                                 stateUpdatedAt: inlineClaimStateUpdatedAt,
+                                // Deferred terminal write — see the
+                                // deferCompletedWrite gate above. False for
+                                // multi-step batches by construction.
+                                deferCompletedWrite,
                                 ...(stepIndex === 0 &&
                                 s.lazyStepInput !== undefined &&
                                 latencyTracking
@@ -2467,6 +2666,85 @@ export function workflowEntrypoint(
                         if (inlineExecutions.length === 1) {
                           const only = stepResults[0];
                           if (
+                            only.type === 'completed' &&
+                            only.deferredCompleted
+                          ) {
+                            // Deferred step_completed: stash the synthesized
+                            // events for the next iteration's fetch-free
+                            // replay, and chain the reconcile step on the
+                            // in-flight write: merge the canonical events into
+                            // cachedEvents (via the delta the World returned,
+                            // or an incremental fetch when it didn't) and
+                            // advance the cursor. Every subsequent durable
+                            // write chains behind this promise; every ack path
+                            // settles it. An EntityConflict/RunExpired
+                            // rejection means another writer owns the step's
+                            // outcome — since this invocation already
+                            // speculated on OUR result, convert it to
+                            // PreconditionFailedError so the existing routing
+                            // forces a fresh replay instead of treating it as
+                            // a benign skip.
+                            pendingSynthesizedEvents =
+                              only.deferredCompleted.synthesizedEvents;
+                            const deferredStepId =
+                              inlineExecutions[0].correlationId;
+                            // The step stays "owned in flight" until its
+                            // terminal write settles — see
+                            // assertNoInFlightOwnedSteps.
+                            inFlightOwnedSteps.add(deferredStepId);
+                            const reconciled = only.deferredCompleted.write
+                              .then(async (delta) => {
+                                const cache = cachedEvents;
+                                if (!cache) return;
+                                let deltaEvents: Event[];
+                                if (delta) {
+                                  deltaEvents = delta.events;
+                                  eventsCursor = delta.cursor ?? eventsCursor;
+                                } else {
+                                  const loaded = await loadWorkflowRunEvents(
+                                    runId,
+                                    eventsCursor ?? undefined
+                                  );
+                                  deltaEvents = loaded.events;
+                                  eventsCursor = loaded.cursor ?? eventsCursor;
+                                }
+                                if (deltaEvents.length > 0) {
+                                  const existingIds = new Set(
+                                    cache.map((e) => e.eventId)
+                                  );
+                                  for (const e of deltaEvents) {
+                                    if (!existingIds.has(e.eventId)) {
+                                      existingIds.add(e.eventId);
+                                      cache.push(e);
+                                    }
+                                  }
+                                }
+                              })
+                              .catch((writeErr) => {
+                                if (
+                                  EntityConflictError.is(writeErr) ||
+                                  RunExpiredError.is(writeErr)
+                                ) {
+                                  throw new PreconditionFailedError(
+                                    `Deferred step_completed write for step ${deferredStepId} was superseded (${
+                                      writeErr instanceof Error
+                                        ? writeErr.message
+                                        : String(writeErr)
+                                    }); forcing a fresh replay to observe the durable outcome`
+                                  );
+                                }
+                                throw writeErr;
+                              })
+                              .finally(() => {
+                                inFlightOwnedSteps.delete(deferredStepId);
+                              });
+                            deferredCompleted = { promise: reconciled };
+                            // Rejections are consumed by the chained writes /
+                            // settle sites; this detached catch only prevents
+                            // an unhandledRejection if the process dies before
+                            // any of them attach.
+                            reconciled.catch(() => {});
+                          } else if (
                             only.type === 'completed' &&
                             only.inlineDelta &&
                             !only.inlineDelta.hasMore
