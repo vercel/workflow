@@ -1113,8 +1113,7 @@ function createWorkflowSession({
             const isStrictExtension =
               nextEvents.length > consumedEvents.length &&
               consumedEvents.every(
-                (event, index) =>
-                  event.eventId === nextEvents[index]?.eventId
+                (event, index) => event.eventId === nextEvents[index]?.eventId
               );
             if (!isStrictExtension) {
               return { type: 'replay' };

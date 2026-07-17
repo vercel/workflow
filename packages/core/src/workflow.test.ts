@@ -304,6 +304,14 @@ describe('runWorkflow', () => {
     assert(first.type === 'suspended');
     const firstStep = first.suspension.steps[0];
     assert(firstStep?.type === 'step');
+
+    const unchanged = await executeWorkflow({
+      type: 'resume',
+      session: first.session,
+      events,
+    });
+    expect(unchanged).toEqual({ type: 'replay' });
+
     await appendStepEvents(firstStep.correlationId, 3);
 
     const second = await executeWorkflow({
@@ -315,6 +323,18 @@ describe('runWorkflow', () => {
     expect(second.session).toBe(first.session);
     const secondStep = second.suspension.steps[0];
     assert(secondStep?.type === 'step');
+
+    const rewrittenEvents = [
+      { ...events[0], eventId: 'rewritten-event' } as Event,
+      ...events,
+    ];
+    const rewritten = await executeWorkflow({
+      type: 'resume',
+      session: second.session,
+      events: rewrittenEvents,
+    });
+    expect(rewritten).toEqual({ type: 'replay' });
+
     await appendStepEvents(secondStep.correlationId, 6);
 
     const completed = await executeWorkflow({

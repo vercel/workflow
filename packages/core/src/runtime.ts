@@ -311,6 +311,25 @@ function hasOpenHookOrWait(events: Event[]): boolean {
 }
 
 /**
+ * Retain only pure step boundaries with no out-of-band continuation source.
+ * Attributes require replay; hooks and waits can wake another invocation.
+ */
+function canRetainWorkflowSession(
+  suspension: WorkflowSuspension,
+  events: Event[]
+): boolean {
+  return (
+    suspension.stepCount > 0 &&
+    suspension.hookCount === 0 &&
+    suspension.waitCount === 0 &&
+    suspension.attributeCount === 0 &&
+    suspension.hookDisposedCount === 0 &&
+    suspension.abortCount === 0 &&
+    !hasOpenHookOrWait(events)
+  );
+}
+
+/**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
  * and queue overhead.
@@ -1471,19 +1490,15 @@ export function workflowEntrypoint(
                       }
 
                       if (workflowResult.type === 'suspended') {
-                        workflowExecution =
-                          workflowResult.suspension.stepCount > 0 &&
-                          workflowResult.suspension.hookCount === 0 &&
-                          workflowResult.suspension.waitCount === 0 &&
-                          workflowResult.suspension.attributeCount === 0 &&
-                          workflowResult.suspension.hookDisposedCount === 0 &&
-                          workflowResult.suspension.abortCount === 0 &&
-                          !hasOpenHookOrWait(events)
-                            ? {
-                                type: 'retained',
-                                session: workflowResult.session,
-                              }
-                            : { type: 'replay' };
+                        workflowExecution = canRetainWorkflowSession(
+                          workflowResult.suspension,
+                          events
+                        )
+                          ? {
+                              type: 'retained',
+                              session: workflowResult.session,
+                            }
+                          : { type: 'replay' };
                         throw workflowResult.suspension;
                       }
 

@@ -10,6 +10,7 @@ import {
 } from '@workflow/world';
 import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { runtimeLogger } from './logger.js';
 import { registerStepFunction } from './private.js';
 import { REPLAY_DIVERGENCE_MAX_RETRIES } from './runtime/constants.js';
 import { setWorld } from './runtime/world.js';
@@ -701,6 +702,9 @@ describe('workflowEntrypoint replay guards', () => {
   });
 
   it('replays attribute events before executing a step that loses the same race', async () => {
+    const debug = vi
+      .spyOn(runtimeLogger, 'debug')
+      .mockImplementation(() => undefined);
     const ops: Promise<any>[] = [];
     const workflowRun: WorkflowRun = {
       runId: 'wrun_attribute_step_race',
@@ -759,6 +763,11 @@ describe('workflowEntrypoint replay guards', () => {
     expect(createdEvents).not.toContainEqual(
       expect.objectContaining({ eventType: 'step_started' })
     );
+    const executionModes = debug.mock.calls
+      .filter(([message]) => message === 'Starting workflow execution')
+      .map(([, context]) => context?.executionMode);
+    expect(executionModes).toEqual(['replay', 'replay']);
+    debug.mockRestore();
   });
 
   it('fails the run when the World rejects an attr_set event as invalid', async () => {
