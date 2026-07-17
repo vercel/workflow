@@ -22,10 +22,12 @@ import type {
   OffscreenMarkers,
   Segment,
   SegmentStatus,
+  SpanDelta,
   TimeMarker,
 } from '../utils';
 import {
   computeOffscreenMarkers,
+  computeSpanDelta,
   computeSpanGaps,
   computeSpanMarkers,
   computeSpanSegments,
@@ -223,6 +225,11 @@ function projectSegments(
 // Small render helpers
 // ---------------------------------------------------------------------------
 
+/** Estimated rendered width of a 10px-mono duration label (6px/glyph + padding). */
+function estimateLabelWidthPx(label: string): number {
+  return label.length * 6 + 12;
+}
+
 function DurationLabel({
   label,
   className,
@@ -317,7 +324,7 @@ function SegmentBar({
           const leadInLabel = formatDurationPrecise(seg.fullDurationMs);
           const showLeadInLabel =
             showLabels &&
-            seg.pixelWidth >= Math.max(40, leadInLabel.length * 6 + 12);
+            seg.pixelWidth >= Math.max(40, estimateLabelWidthPx(leadInLabel));
           const isFullWidthQueued = segments.length === 1;
           return (
             <Fragment key={i}>
@@ -341,7 +348,8 @@ function SegmentBar({
         const label = formatDurationPrecise(seg.fullDurationMs);
         // Only render the label when there's enough room for it without clipping.
         const showLabel =
-          showLabels && seg.pixelWidth >= Math.max(40, label.length * 6 + 12);
+          showLabels &&
+          seg.pixelWidth >= Math.max(40, estimateLabelWidthPx(label));
 
         return (
           <div
@@ -462,7 +470,8 @@ const TimelineBar = memo(function TimelineBar({
 
   const totalLabel = formatDurationPrecise(totalDurationMs);
   const showTotalLabel =
-    geometry.visiblePixelWidth >= Math.max(40, totalLabel.length * 6 + 12);
+    geometry.visiblePixelWidth >=
+    Math.max(40, estimateLabelWidthPx(totalLabel));
 
   const handleClick = useCallback(() => {
     onSelect(span.spanId);
@@ -585,6 +594,102 @@ const DeltaIndicator = memo(function DeltaIndicator({
 });
 
 // ---------------------------------------------------------------------------
+// DeltaMeasureLine (Alt+hover measurement between the selected span and the
+// hovered row's span)
+// ---------------------------------------------------------------------------
+
+// Horizontal distance between the anchor bar's measured edge and the vertical
+// guide — also the width of the connector stub bridging the two.
+const MEASURE_GUIDE_OUTSET_PX = 4;
+
+const DeltaMeasureLine = memo(function DeltaMeasureLine({
+  delta,
+  anchorRowIndex,
+  hoveredRowIndex,
+  timelineWidth,
+}: {
+  delta: SpanDelta;
+  anchorRowIndex: number;
+  hoveredRowIndex: number;
+  timelineWidth: number;
+}) {
+  // Both ends of the measurement align with the vertical middle of the bars
+  // (bars are centered in their rows, so bar center == row center).
+  const anchorCenterY = anchorRowIndex * ROW_HEIGHT_PX + ROW_HEIGHT_PX / 2;
+  const lineY = hoveredRowIndex * ROW_HEIGHT_PX + ROW_HEIGHT_PX / 2;
+
+  // Guide connecting the middle of the anchor bar down/up to the line, so
+  // the measurement's origin stays legible when the rows are far apart.
+  // It sits just outside the anchor bar's measured edge (so it doesn't blend
+  // into the bar's border), joined to the bar by a short horizontal stub. The
+  // line runs from the elbow corner (the guide's x) to the hovered span's
+  // measured edge — pulled short of the edge arrow when the hovered span is
+  // fully off-screen.
+  const guideTop = Math.min(anchorCenterY, lineY);
+  const guideBottom = Math.max(anchorCenterY, lineY);
+  const anchorX = delta.anchorFrac * timelineWidth;
+  const guideX =
+    anchorX +
+    (delta.anchorEdge === 'end'
+      ? MEASURE_GUIDE_OUTSET_PX
+      : -MEASURE_GUIDE_OUTSET_PX);
+  const arrowClearance =
+    delta.hoveredOffscreen === 'right'
+      ? -(TINY_BAR_BOX_SIZE_PX + 4)
+      : delta.hoveredOffscreen === 'left'
+        ? TINY_BAR_BOX_SIZE_PX + 4
+        : 0;
+  const hoveredX = delta.hoveredFrac * timelineWidth + arrowClearance;
+  const startX = Math.min(guideX, hoveredX);
+  const endX = Math.max(guideX, hoveredX);
+
+  const label = formatDurationPrecise(delta.deltaMs);
+  const labelWidthPx = estimateLabelWidthPx(label);
+  // Center the label on the line; when the line is too short, place it beside
+  // the right endpoint, flipping left near the viewport's right edge.
+  const labelPlacement =
+    endX - startX >= labelWidthPx
+      ? { left: (startX + endX) / 2, translate: '-translate-x-1/2' }
+      : endX + 4 + labelWidthPx <= timelineWidth
+        ? { left: endX + 4, translate: '' }
+        : { left: startX - 4, translate: '-translate-x-full' };
+
+  return (
+    <>
+      <div
+        className="absolute h-px bg-amber-800"
+        style={{
+          left: Math.min(anchorX, guideX),
+          width: MEASURE_GUIDE_OUTSET_PX,
+          top: anchorCenterY,
+        }}
+      />
+      <div
+        className="absolute w-px bg-amber-800"
+        style={{
+          left: guideX,
+          top: guideTop,
+          height: guideBottom - guideTop,
+        }}
+      />
+      <div
+        className="absolute h-px bg-amber-800"
+        style={{ left: startX, width: Math.max(endX - startX, 1), top: lineY }}
+      />
+      <span
+        className={cn(
+          'absolute -translate-y-1/2 font-mono text-[10px] font-medium leading-none tabular-nums whitespace-nowrap rounded-xs bg-background-100 px-1 py-0.5 text-amber-800',
+          labelPlacement.translate
+        )}
+        style={{ left: labelPlacement.left, top: lineY }}
+      >
+        {label}
+      </span>
+    </>
+  );
+});
+
+// ---------------------------------------------------------------------------
 // TimelineHeader
 // ---------------------------------------------------------------------------
 
@@ -624,6 +729,13 @@ export function TimelineHeader({
 // Timeline
 // ---------------------------------------------------------------------------
 
+export interface TimelineHover {
+  /** Pointer x as a fraction of the timeline's content width, in [0, 1]. */
+  fraction: number;
+  /** Row index under the pointer; may be past the last row — not validated. */
+  rowIndex: number;
+}
+
 export function Timeline({
   spans,
   viewStart,
@@ -633,7 +745,7 @@ export function Timeline({
   searchResult,
   onSelect,
   onRevealTime,
-  hoverFraction,
+  hover,
   altHeld = false,
 }: {
   spans: Span[];
@@ -644,7 +756,7 @@ export function Timeline({
   searchResult: SpanSearchResult;
   onSelect: (spanId: string) => void;
   onRevealTime?: (timeMs: number) => void;
-  hoverFraction?: number | null;
+  hover?: TimelineHover | null;
   altHeld?: boolean;
 }): ReactNode {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -672,6 +784,26 @@ export function Timeline({
     [spans, viewStart, viewEnd]
   );
 
+  // With a span selected, Alt+hover measures selected ↔ hovered instead of
+  // showing the all-sibling-gaps overlay.
+  const anchorIndex = useMemo(
+    () => (selectedId ? spans.findIndex((s) => s.spanId === selectedId) : -1),
+    [spans, selectedId]
+  );
+
+  const measurement = useMemo(() => {
+    if (!altHeld || hover == null || hover.rowIndex === anchorIndex) {
+      return null;
+    }
+    const anchorSpan = spans[anchorIndex];
+    const hoveredSpan = spans[hover.rowIndex];
+    if (!anchorSpan || !hoveredSpan) return null;
+    const delta = computeSpanDelta(anchorSpan, hoveredSpan, viewStart, viewEnd);
+    return delta
+      ? { delta, anchorRowIndex: anchorIndex, hoveredRowIndex: hover.rowIndex }
+      : null;
+  }, [altHeld, anchorIndex, hover, spans, viewStart, viewEnd]);
+
   return (
     <div
       ref={containerRef}
@@ -694,14 +826,14 @@ export function Timeline({
           ) : null
         )}
       </div>
-      {hoverFraction != null && (
+      {hover != null && (
         <div
           className="absolute inset-y-0 pointer-events-none z-10"
           style={TIMELINE_INSET_STYLE}
         >
           <div
             className="absolute top-0 bottom-0 w-px bg-gray-alpha-500"
-            style={{ left: `${hoverFraction * 100}%` }}
+            style={{ left: `${hover.fraction * 100}%` }}
           />
         </div>
       )}
@@ -720,7 +852,7 @@ export function Timeline({
           />
         ))}
       </div>
-      {altHeld && (
+      {altHeld && anchorIndex < 0 && (
         <div
           aria-hidden
           className="absolute inset-y-0 pointer-events-none"
@@ -735,6 +867,15 @@ export function Timeline({
               rowIndex={gap.rowIndex}
             />
           ))}
+        </div>
+      )}
+      {measurement && (
+        <div
+          aria-hidden
+          className="absolute inset-y-0 pointer-events-none z-20"
+          style={TIMELINE_INSET_STYLE}
+        >
+          <DeltaMeasureLine {...measurement} timelineWidth={timelineWidth} />
         </div>
       )}
     </div>
