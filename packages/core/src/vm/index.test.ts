@@ -426,6 +426,18 @@ describe('freezeSerializationIntrinsics', () => {
         context
       )
     ).toThrow(/read only|not extensible/);
+    expect(() =>
+      vm.runInContext(
+        `"use strict"; Object.defineProperty(Uint8Array, Symbol.hasInstance, { value: () => true })`,
+        context
+      )
+    ).toThrow(/not extensible/);
+    expect(() =>
+      vm.runInContext(
+        `"use strict"; Object.defineProperty(Date, Symbol.hasInstance, { value: () => true })`,
+        context
+      )
+    ).toThrow(/not extensible/);
 
     // Bindings cannot be replaced, including intentionally absent ones.
     vm.runInContext(

@@ -131,26 +131,36 @@ const SERIALIZATION_BINDINGS = [
  * construction instead of by validation.
  */
 export function freezeSerializationIntrinsics(g: typeof globalThis): void {
-  const vmIntrinsics = g as unknown as Record<string, unknown>;
-  // VM-realm intrinsic objects: freeze the objects themselves so statics
-  // (e.g. `Map[Symbol.hasInstance]`) and prototype members cannot be added.
-  // Host-realm classes exposed into the sandbox are NOT frozen — only their
-  // bindings are pinned below.
   Object.freeze(g.Object);
   Object.freeze(g.Object.prototype);
   Object.freeze(g.Array);
   Object.freeze(g.Array.prototype);
   Object.freeze(g.Function);
   Object.freeze(g.Function.prototype);
-  for (const name of ['Map', 'Set', 'RegExp', 'ArrayBuffer', 'DataView']) {
-    Object.freeze(vmIntrinsics[name]);
-  }
+  // The typed-array constructors dispatch `instanceof` through their shared
+  // %TypedArray% parent.
+  Object.freeze(Object.getPrototypeOf(g.Uint8Array));
+  const hostGlobal = globalThis as unknown as Record<string, unknown>;
   for (const name of SERIALIZATION_BINDINGS) {
     const descriptor = Object.getOwnPropertyDescriptor(g, name);
+    const value =
+      descriptor && 'value' in descriptor ? descriptor.value : undefined;
+    // Freeze VM-realm and session-local constructor objects so statics like
+    // `Symbol.hasInstance` cannot be added. A binding that references the
+    // shared host intrinsic stays unfrozen: both serialization paths
+    // dispatch through that same object, so a mutation cannot make them
+    // disagree (and freezing it would affect the whole process).
+    if (
+      (typeof value === 'function' ||
+        (typeof value === 'object' && value !== null)) &&
+      value !== hostGlobal[name]
+    ) {
+      Object.freeze(value);
+    }
     Object.defineProperty(g, name, {
       // Absent bindings are pinned to undefined so workflow code cannot
       // define a spoofing global the reducers would then dispatch on.
-      value: descriptor && 'value' in descriptor ? descriptor.value : undefined,
+      value,
       writable: false,
       configurable: false,
       enumerable: descriptor?.enumerable ?? false,
