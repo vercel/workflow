@@ -1,10 +1,14 @@
-import { WorkflowWorldError } from '@workflow/errors';
+import { PreconditionFailedError, WorkflowWorldError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ulid } from 'ulid';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getWorkflowQueueName,
   healthCheck,
+  latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
+  type MutableEventLog,
+  withPreconditionRetry,
 } from './helpers.js';
 
 // Mock the logger to suppress output during tests
@@ -454,5 +458,165 @@ describe('loadWorkflowRunEvents', () => {
       code: 'WORLD_CONTRACT_ERROR',
     });
     expect(eventsListMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+const makeUlidEvent = (time: number): Event =>
+  ({
+    eventId: `evnt_${ulid(time)}`,
+    runId: 'wrun_mockidnumber0001',
+    eventType: 'step_created',
+    correlationId: 'step_mock',
+    createdAt: new Date(time),
+  }) as unknown as Event;
+
+describe('latestEventStateUpdatedAt', () => {
+  it('returns undefined for an empty event list', () => {
+    expect(latestEventStateUpdatedAt([])).toBeUndefined();
+  });
+
+  it('decodes the ULID time of the last (newest) event, stripping the prefix', () => {
+    const time = 1_700_000_000_000;
+    // ULID time resolution is whole milliseconds.
+    expect(
+      latestEventStateUpdatedAt([
+        makeUlidEvent(time - 1000),
+        makeUlidEvent(time),
+      ])
+    ).toBe(time);
+  });
+
+  it('returns undefined when the latest event id is not a decodable ULID', () => {
+    expect(
+      latestEventStateUpdatedAt([makeEvent('evnt_not-a-ulid')])
+    ).toBeUndefined();
+  });
+});
+
+describe('withPreconditionRetry', () => {
+  let originalGuard: string | undefined;
+
+  beforeEach(() => {
+    eventsListMock.mockReset();
+    originalGuard = process.env.WORKFLOW_PRECONDITION_GUARD;
+    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
+  });
+
+  afterEach(() => {
+    if (originalGuard !== undefined) {
+      process.env.WORKFLOW_PRECONDITION_GUARD = originalGuard;
+    } else {
+      delete process.env.WORKFLOW_PRECONDITION_GUARD;
+    }
+  });
+
+  it('passes no snapshot to op when the guard is not opted in', async () => {
+    delete process.env.WORKFLOW_PRECONDITION_GUARD;
+    const log: MutableEventLog = {
+      events: [makeUlidEvent(1_700_000_000_000)],
+      cursor: 'c0',
+    };
+    const op = vi.fn(async (stateUpdatedAt?: number) => {
+      expect(stateUpdatedAt).toBeUndefined();
+      return 'ok';
+    });
+
+    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
+      'ok'
+    );
+    expect(op).toHaveBeenCalledTimes(1);
+    expect(eventsListMock).not.toHaveBeenCalled();
+  });
+
+  it('passes the latest snapshot time to op and returns its result without reloading', async () => {
+    const time = 1_700_000_000_000;
+    const log: MutableEventLog = {
+      events: [makeUlidEvent(time)],
+      cursor: 'c0',
+    };
+    const op = vi.fn(async (stateUpdatedAt?: number) => {
+      expect(stateUpdatedAt).toBe(time);
+      return 'ok';
+    });
+
+    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
+      'ok'
+    );
+    expect(op).toHaveBeenCalledTimes(1);
+    expect(eventsListMock).not.toHaveBeenCalled();
+  });
+
+  it('reloads the event log and retries on a stale (412) rejection, then succeeds', async () => {
+    const log: MutableEventLog = {
+      events: [makeUlidEvent(1_700_000_000_000)],
+      cursor: 'c0',
+    };
+    // Each reload returns one newer event and advances the cursor.
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeUlidEvent(1_700_000_001_000)],
+      cursor: 'c1',
+      hasMore: false,
+    });
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeUlidEvent(1_700_000_002_000)],
+      cursor: 'c2',
+      hasMore: false,
+    });
+
+    let calls = 0;
+    const op = vi.fn(async () => {
+      calls++;
+      if (calls <= 2) {
+        throw new PreconditionFailedError('stale');
+      }
+      return 'done';
+    });
+
+    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
+      'done'
+    );
+    expect(op).toHaveBeenCalledTimes(3);
+    // Two reloads merged their events into the shared log and advanced cursor.
+    expect(log.events).toHaveLength(3);
+    expect(log.cursor).toBe('c2');
+  });
+
+  it('rethrows the precondition error after exhausting reload retries', async () => {
+    const log: MutableEventLog = {
+      events: [makeUlidEvent(1_700_000_000_000)],
+      cursor: 'c0',
+    };
+    eventsListMock.mockResolvedValue({
+      data: [],
+      cursor: 'c1',
+      hasMore: false,
+    });
+
+    const op = vi.fn(async () => {
+      throw new PreconditionFailedError('always stale');
+    });
+
+    await expect(
+      withPreconditionRetry('wrun_test', log, op)
+    ).rejects.toBeInstanceOf(PreconditionFailedError);
+    // attempts 0,1,2 — two reloads between them, then rethrow on the third.
+    expect(op).toHaveBeenCalledTimes(3);
+    expect(eventsListMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('rethrows non-precondition errors immediately without reloading', async () => {
+    const log: MutableEventLog = {
+      events: [makeUlidEvent(1_700_000_000_000)],
+      cursor: 'c0',
+    };
+    const op = vi.fn(async () => {
+      throw new Error('boom');
+    });
+
+    await expect(withPreconditionRetry('wrun_test', log, op)).rejects.toThrow(
+      'boom'
+    );
+    expect(op).toHaveBeenCalledTimes(1);
+    expect(eventsListMock).not.toHaveBeenCalled();
   });
 });

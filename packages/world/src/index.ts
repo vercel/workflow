@@ -1,5 +1,6 @@
 export type * from './analytics.js';
 export {
+  AnalyticsAttributeKeySchema,
   AnalyticsEventSchema,
   AnalyticsHookSchema,
   AnalyticsRunSchema,
@@ -15,7 +16,9 @@ export {
   AttributeChangesSchema,
   AttributeValidationError,
   applyAttributeChanges,
+  PARENT_RUN_ID_ATTRIBUTE,
   RESERVED_ATTRIBUTE_KEY_PREFIX,
+  ROOT_RUN_ID_ATTRIBUTE,
   validateAttributeChanges,
   validateAttributeKey,
   validateAttributeValue,
@@ -125,6 +128,8 @@ export {
   DEFAULT_TIMESTAMP_THRESHOLD_PAST_MS,
   ulidToDate,
   validateUlidTimestamp,
+  workflowRunIdSchema,
 } from './ulid.js';
+export type { WorkflowRunId } from './ulid.js';
 export type * from './waits.js';
 export { WaitSchema, WaitStatusSchema } from './waits.js';

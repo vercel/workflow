@@ -9,6 +9,10 @@ related:
   - /docs/foundations/workflows-and-steps
 ---
 
+<CopyPrompt
+  text="Fix Workflow serialization errors. Find the failing `start()` call, workflow argument, step return value, hook payload, or stream chunk. Replace non-serializable values such as class instances, functions, SDK clients, Response/Request objects, streams, database connections, Dates that need custom handling, Maps/Sets, or circular objects with plain JSON-compatible data, IDs, strings, numbers, booleans, arrays, and objects. Recreate runtime-only clients or objects inside `&quot;use step&quot;` helpers instead of passing them through the workflow log. For external resources, pass a stable ID or URL and load the resource inside the step. Add a test or local route call that serializes the same input/output path successfully."
+/>
+
 This error occurs when you try to pass non-serializable data between execution boundaries in your workflow. All data passed between workflow functions, step functions, and the workflow runtime must be serializable to persist in the event log.
 
 ## Error Message

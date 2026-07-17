@@ -5,6 +5,10 @@ type: guide
 summary: Two patterns for cancelling a running agent — Hard Cancellation via getRun(runId).cancel() for forced termination, or Stop Signal via a hook + Promise.race for a clean exit with cleanup and final stream notification.
 ---
 
+<CopyPrompt
+  text="Add cancellation to this durable AI agent. For hard cancellation, expose a server route that receives `runId` and calls `getRun(runId).cancel()` from `workflow/api`. For graceful stop, define `stopHook` with `defineHook()` from `workflow`, create it with a stable token such as the workflow run ID, and race the agent loop against the stop hook using `Promise.race`. Use `getWritable<UIMessageChunk>()` to emit a final stopped/cancelled message before returning. Wire the UI Stop button to the route that resumes the hook or falls back to `getRun(runId).cancel()`. Verify active model/tool work stops, cleanup runs for graceful stop, and stale run IDs are handled."
+/>
+
 <Callout type="warn">
 This recipe uses the deprecated `DurableAgent` API. For new agents, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) and follow the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent). The cancellation patterns here (`run.cancel()`, stop-signal hook + `Promise.race`) apply to either API.
 </Callout>

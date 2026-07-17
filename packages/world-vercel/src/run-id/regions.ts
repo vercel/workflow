@@ -54,6 +54,16 @@ export type RegionKey = keyof typeof REGION_IDS;
  */
 export type RegionCode = Exclude<RegionKey, 'unknown'>;
 
+/**
+ * Default region for run IDs minted without an explicit or environment-derived
+ * region. Mirrors the server's `DEFAULT_VERCEL_REGION` (iad1): untagged/legacy
+ * data and unknown-region runs both resolve to iad1 server-side, so minting a
+ * concrete `iad1` tag — rather than the `unknown`/0 sentinel — keeps every run
+ * ID self-describing and routable, and avoids the `tagged: true, region: null`
+ * state entirely.
+ */
+export const DEFAULT_REGION_CODE: RegionCode = 'iad1';
+
 export type RegionId = (typeof REGION_IDS)[RegionKey];
 
 /**
@@ -73,6 +83,20 @@ const REGION_CODES_BY_ID: ReadonlyMap<number, RegionCode> = new Map(
  */
 export function lookupRegion(regionId: number): RegionCode | null {
   return REGION_CODES_BY_ID.get(regionId) ?? null;
+}
+
+/**
+ * Runtime guard for arbitrary strings crossing a JS/TS boundary (e.g. an
+ * `opts.region` override or the `VERCEL_REGION` env var). Returns `true` only
+ * for a concrete, routable region code — the `unknown` sentinel and any
+ * unrecognised value both return `false`.
+ */
+export function isKnownRegionCode(
+  code: string | undefined
+): code is RegionCode {
+  return (
+    code !== undefined && code !== 'unknown' && Object.hasOwn(REGION_IDS, code)
+  );
 }
 
 /**

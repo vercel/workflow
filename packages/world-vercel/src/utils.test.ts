@@ -1,3 +1,4 @@
+import { PreconditionFailedError } from '@workflow/errors';
 import { encode } from 'cbor-x';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -7,6 +8,7 @@ import {
   getHttpUrl,
   MAX_BODY_PARSE_RETRIES,
   makeRequest,
+  WORKFLOW_SERVER_URL_OVERRIDE,
 } from './utils.js';
 
 vi.mock('@vercel/oidc', () => ({
@@ -28,7 +30,9 @@ describe('getHttpUrl', () => {
 
   it('uses default workflow-server URL when no config and no env override', () => {
     expect(getHttpUrl()).toEqual({
-      baseUrl: 'https://vercel-workflow.com/api',
+      baseUrl: WORKFLOW_SERVER_URL_OVERRIDE
+        ? `${WORKFLOW_SERVER_URL_OVERRIDE}/api`
+        : 'https://vercel-workflow.com/api',
       usingProxy: false,
     });
   });
@@ -36,7 +40,9 @@ describe('getHttpUrl', () => {
   it('respects VERCEL_WORKFLOW_SERVER_URL when set (no proxy)', () => {
     process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://custom-host.example.com';
     expect(getHttpUrl()).toEqual({
-      baseUrl: 'https://custom-host.example.com/api',
+      baseUrl: WORKFLOW_SERVER_URL_OVERRIDE
+        ? `${WORKFLOW_SERVER_URL_OVERRIDE}/api`
+        : 'https://custom-host.example.com/api',
       usingProxy: false,
     });
   });
@@ -99,14 +105,16 @@ describe('getHeaders', () => {
 
   it('omits x-vercel-workflow-api-url when override is unset', () => {
     const headers = getHeaders(undefined, { usingProxy: true });
-    expect(headers.get('x-vercel-workflow-api-url')).toBeNull();
+    expect(headers.get('x-vercel-workflow-api-url')).toBe(
+      WORKFLOW_SERVER_URL_OVERRIDE || null
+    );
   });
 
   it('sets x-vercel-workflow-api-url when VERCEL_WORKFLOW_SERVER_URL is set and using proxy', () => {
     process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://custom.example.com';
     const headers = getHeaders(undefined, { usingProxy: true });
     expect(headers.get('x-vercel-workflow-api-url')).toBe(
-      'https://custom.example.com'
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://custom.example.com'
     );
   });
 
@@ -267,6 +275,44 @@ describe('makeRequest body-parse retry', () => {
     ).rejects.toMatchObject({ code: 'PARSE_ERROR' });
 
     // A write must not be replayed — exactly one attempt.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  /** A non-2xx CBOR error response with the given status and error code. */
+  function cborErrorResponse(status: number, code: string) {
+    const bytes = encode({ success: false, error: code, code, message: code });
+    return {
+      ok: false,
+      status,
+      statusText: 'ERR',
+      headers: {
+        get: (k: string) =>
+          k.toLowerCase() === 'content-type' ? 'application/cbor' : null,
+      },
+      arrayBuffer: async () =>
+        bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength
+        ),
+    };
+  }
+
+  it('maps a 412 response to PreconditionFailedError', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(cborErrorResponse(412, 'precondition-failed'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'POST' },
+        data: { eventType: 'run_completed' },
+        schema,
+      })
+    ).rejects.toBeInstanceOf(PreconditionFailedError);
+
+    // A 412 is a deterministic rejection — no transport retries.
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

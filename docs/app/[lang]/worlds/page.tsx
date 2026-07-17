@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { PlainGlobe } from '@/app/[lang]/(home)/components/vercel-com-visuals/plain-globe';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Button } from '@vercel/geistdocs/components/button';
 import { WorldsFilteredGrid } from '@/components/worlds/WorldsFilteredGrid';
 import { getWorldsData } from '@/lib/worlds-data';
 
@@ -157,7 +157,7 @@ export default async function WorldsPage() {
             </p>
             <div className="flex justify-center gap-3 mt-8">
               <Button asChild size="lg">
-                <Link href="/docs/deploying/building-a-world">
+                <Link href="/worlds/building-a-world">
                   World Interface Docs
                 </Link>
               </Button>

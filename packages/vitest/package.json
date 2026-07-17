@@ -1,6 +1,6 @@
 {
   "name": "@workflow/vitest",
-  "version": "5.0.0-beta.29",
+  "version": "5.0.0-beta.35",
   "description": "Vitest plugin for testing Workflow SDK workflows",
   "type": "module",
   "main": "./dist/index.js",
@@ -39,6 +39,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
+    "typescript": "catalog:",
     "vite": "7.3.6",
     "vitest": "catalog:"
   },

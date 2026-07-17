@@ -9,6 +9,10 @@ related:
   - /cookbook/common-patterns/scheduling
 ---
 
+<CopyPrompt
+  text="Compose these workflow steps with standard async/await patterns. In the exported &quot;use workflow&quot; function, chain dependent &quot;use step&quot; calls with sequential `await`; run independent steps concurrently by starting them without `await` and awaiting `Promise.all([...])`; and use `Promise.race([...])` to act on whichever promise settles first. These compose with durable primitives — race a step or a webhook from `createWebhook()` against `sleep()` from `workflow` for deadlines. Keep every step input and output serializable, and remember `Promise.race` does not cancel the losing branch — it keeps running — so side-effectful losers need idempotency keys. Verify sequential ordering, parallel execution, and both race outcomes."
+/>
+
 Workflows are written in plain async/await — there's no new control-flow API to learn. Sequential awaits chain steps that depend on each other, `Promise.all` runs independent steps in parallel, and `Promise.race` returns whichever finishes first. These compose with workflow primitives like [`sleep()`](/docs/api-reference/workflow/sleep) and [`createWebhook()`](/docs/api-reference/workflow/create-webhook) since those are also just promises.
 
 ## When to use this

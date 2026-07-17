@@ -7,6 +7,10 @@ related:
   - /docs/api-reference/workflow-api/start
 ---
 
+<CopyPrompt
+  text="Refactor this workflow to use child workflows. Keep the parent as an exported `&quot;use workflow&quot;` function. Move independent units of durable work into separate exported child workflow functions. From the parent, call `start(childWorkflow, [args])` from `workflow/api` or the documented `startAndWait`/hook pattern where completion must resume the parent. Pass only serializable state to children. For fan-out, start children in parallel with `Promise.all` or bounded batches, collect run IDs, handle partial failures with `Promise.allSettled`, and use `getRun(runId)` when status, cancellation, streams, or return values are needed. Verify child start, completion, failure, and parent resume behavior."
+/>
+
 Use child workflows when a single workflow needs to orchestrate many independent units of work. Each child runs as its own workflow with a separate event log, retry boundary, and failure scope -- if one child fails, it doesn't take down the parent or siblings.
 
 ## When to use child workflows

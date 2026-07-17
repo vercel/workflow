@@ -9,6 +9,10 @@ related:
   - /docs/how-it-works/understanding-directives
 ---
 
+<CopyPrompt
+  text="Fix Node.js module usage inside workflow functions. Search workflow files for imports or direct usage of Node-only APIs such as `fs`, `path`, `crypto`, `process`, `http`, or SDK clients. Remove those imports from files/functions that execute under `&quot;use workflow&quot;`. Create helper functions with `&quot;use step&quot;` for filesystem, crypto, environment, network, database, or SDK work, and call those helpers from the workflow. Keep the workflow function limited to deterministic orchestration, serializable values, `sleep`, hooks, and step calls. Verify the workflow starts without node-js-module-in-workflow errors."
+/>
+
 This error occurs when you try to import or use Node.js core modules (like `fs`, `http`, `crypto`, `path`, etc.) directly inside a workflow function.
 
 ## Error Message

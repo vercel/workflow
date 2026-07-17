@@ -17,49 +17,6 @@ const config: NextConfig = {
     '/worlds/\\[id\\]/opengraph-image': ['./lib/og/assets/**/*'],
   },
 
-  async rewrites() {
-    const markdownAcceptHeader =
-      '(?=.*(?:text/plain|text/markdown))(?!.*text/html.*(?:text/plain|text/markdown)).*';
-
-    return {
-      beforeFiles: [
-        {
-          source: '/docs/:path*',
-          destination: '/llms.mdx/:path*',
-          has: [
-            {
-              type: 'header',
-              key: 'Accept',
-              value: markdownAcceptHeader,
-            },
-          ],
-        },
-        {
-          source: '/cookbook',
-          destination: '/llms.mdx/cookbook',
-          has: [
-            {
-              type: 'header',
-              key: 'Accept',
-              value: markdownAcceptHeader,
-            },
-          ],
-        },
-        {
-          source: '/cookbook/:path*',
-          destination: '/llms.mdx/cookbook/:path*',
-          has: [
-            {
-              type: 'header',
-              key: 'Accept',
-              value: markdownAcceptHeader,
-            },
-          ],
-        },
-      ],
-    };
-  },
-
   async redirects() {
     return [
       {
@@ -97,7 +54,10 @@ const config: NextConfig = {
         destination: '/docs/errors/:slug',
         permanent: true,
       },
-      // Redirect old world docs to new /worlds routes
+      // Redirect old world docs to the /worlds routes. The world pages
+      // (and Building a World) were removed from the versioned docs trees;
+      // content/worlds/{v4,v5} is the canonical source, served at /worlds/*
+      // (current) and /v5/worlds/* (pre-release).
       {
         source: '/docs/deploying/world/local-world',
         destination: '/worlds/local',
@@ -112,6 +72,44 @@ const config: NextConfig = {
         source: '/docs/deploying/world/vercel-world',
         destination: '/worlds/vercel',
         permanent: true,
+      },
+      {
+        source: '/v5/docs/deploying/world/local-world',
+        destination: '/v5/worlds/local',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/deploying/world/postgres-world',
+        destination: '/v5/worlds/postgres',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/deploying/world/vercel-world',
+        destination: '/v5/worlds/vercel',
+        permanent: true,
+      },
+      {
+        source: '/docs/deploying/building-a-world',
+        destination: '/worlds/building-a-world',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/deploying/building-a-world',
+        destination: '/v5/worlds/building-a-world',
+        permanent: true,
+      },
+      // The worlds listing and compare pages are unversioned; send the
+      // version-prefixed URLs (reachable via the render-time /v5 link
+      // rewrite on pre-release pages) to the canonical routes.
+      {
+        source: '/v5/worlds',
+        destination: '/worlds',
+        permanent: false,
+      },
+      {
+        source: '/v5/worlds/compare',
+        destination: '/worlds/compare',
+        permanent: false,
       },
       {
         source: '/docs/worlds',
@@ -159,6 +157,19 @@ const config: NextConfig = {
       {
         source: '/cookbook/agent-patterns/agent-stop-signal',
         destination: '/cookbook/agent-patterns/agent-cancellation',
+        permanent: true,
+      },
+      // setAttributes graduated from experimental_setAttributes; the API
+      // reference page moved with it. Cover both the versioned (v5) path and
+      // the unversioned path so links keep working once v5 becomes default.
+      {
+        source: '/v5/docs/api-reference/workflow/experimental-set-attributes',
+        destination: '/v5/docs/api-reference/workflow/set-attributes',
+        permanent: true,
+      },
+      {
+        source: '/docs/api-reference/workflow/experimental-set-attributes',
+        destination: '/docs/api-reference/workflow/set-attributes',
         permanent: true,
       },
       {

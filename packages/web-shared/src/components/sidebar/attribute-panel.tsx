@@ -679,6 +679,7 @@ const copyableBasicAttributes = new Set<AttributeKey>([
   'eventId',
   'deploymentId',
   'moduleSpecifier',
+  'token',
 ]);
 
 const loadingSectionLabels: Partial<Record<AttributeKey, string>> = {

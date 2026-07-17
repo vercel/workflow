@@ -5,6 +5,10 @@ type: guide
 summary: When an external API returns 429, throw RetryableError with the Retry-After value so the workflow runtime automatically reschedules the step after the specified delay.
 ---
 
+<CopyPrompt
+  text="Add durable rate-limit handling to external API steps. Import `RetryableError`, `FatalError`, `getStepMetadata`, and `sleep` from `workflow` as needed. In each HTTP-calling &quot;use step&quot; helper, if the response status is 429, read the `Retry-After` header and throw `new RetryableError(&quot;Rate limited&quot;, { retryAfter })`. For transient 5xx/network failures, throw `RetryableError` with an exponential delay based on `getStepMetadata().attempt`. For permanent 4xx failures, throw `FatalError`. If the dependency is completely down, add a workflow-level circuit breaker that `await sleep(&quot;30s&quot;)` before probing again. Make requests idempotent with stable keys, and verify 429, 5xx, fatal 4xx, and circuit-breaker behavior."
+/>
+
 Use this pattern when calling external APIs that enforce rate limits. Instead of writing manual retry loops, throw `RetryableError` with a `retryAfter` value and let the workflow runtime handle rescheduling.
 
 ## When to use this
