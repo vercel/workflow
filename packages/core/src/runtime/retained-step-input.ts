@@ -177,12 +177,13 @@ function isPassiveArrayProperty(
   if (key === 'length') return true;
   const descriptor = Object.getOwnPropertyDescriptor(array, key);
   if (!descriptor) return false;
-  // `then` and `constructor` are read by serialization dispatch even when
-  // non-enumerable (thenable assimilation, the class reducer).
-  if (key === 'then' || key === 'constructor' || key === Symbol.toStringTag) {
+  // Symbol properties can be serialization dispatch tags (e.g. the workflow
+  // abort-signal markers) that the clone would drop; `then` and
+  // `constructor` are read by dispatch even when non-enumerable.
+  if (typeof key === 'symbol' || key === 'then' || key === 'constructor') {
     return false;
   }
-  if (typeof key !== 'string' || !isArrayIndex(key)) {
+  if (!isArrayIndex(key)) {
     return !descriptor.enumerable;
   }
   // Non-enumerable indices are dropped by structuredClone but persisted by
@@ -215,9 +216,9 @@ function isPassiveObjectProperty(
 ): boolean {
   const descriptor = Object.getOwnPropertyDescriptor(object, key);
   if (!descriptor) return false;
-  if (typeof key === 'symbol') {
-    return key !== Symbol.toStringTag && !descriptor.enumerable;
-  }
+  // Symbol properties can be serialization dispatch tags (e.g. the workflow
+  // abort-signal markers) that the clone would drop.
+  if (typeof key === 'symbol') return false;
   if (!descriptor.enumerable) {
     return key !== 'constructor' && key !== 'then';
   }

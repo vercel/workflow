@@ -287,3 +287,27 @@ describe('host dispatch pristineness', () => {
     );
   });
 });
+
+describe('symbol-tagged inputs', () => {
+  it('declines objects carrying symbol properties (serialization dispatch tags)', () => {
+    const { context, globalThis: workflowGlobal } = createContext({
+      seed,
+      fixedTimestamp,
+    });
+    const value = vm.runInContext(
+      `(() => {
+        const signal = { aborted: false };
+        Object.defineProperty(signal, Symbol.for("WORKFLOW_ABORT_STREAM_NAME"), {
+          value: "abort-stream",
+          enumerable: false,
+        });
+        return { signal };
+      })()`,
+      context
+    );
+
+    expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
+      retainable: false,
+    });
+  });
+});
