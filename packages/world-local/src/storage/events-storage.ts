@@ -2150,42 +2150,46 @@ export function createEventsStorage(
           throw new HookNotFoundError(data.correlationId);
         }
 
-        // Last-instant terminal-run re-check for `hook_received`, at the
-        // same linearization point as the check above. The `currentRun`
-        // fetched earlier (before the hookLocks acquisition further up
-        // covers this whole call) can go stale: a run_completed /
-        // run_failed / run_cancelled event is not serialized against this
-        // hook's lock key, so it can commit concurrently between that
-        // early read and this write. Re-reading here, immediately before
-        // the event publish, narrows that window to nothing — matching
-        // the terminal-run guard every other event type gets earlier in
-        // this function (hook_received has no branch there because it
-        // doesn't transition the run or create an entity).
-        if (data.eventType === 'hook_received') {
-          const runAtPublish = await readJSONWithFallback(
-            basedir,
-            'runs',
-            effectiveRunId,
-            WorkflowRunSchema,
-            tag
-          );
-          if (
-            runAtPublish &&
-            isTerminalWorkflowRunStatus(runAtPublish.status)
-          ) {
-            throw new RunExpiredError(
-              `Workflow run "${effectiveRunId}" is already in terminal state "${runAtPublish.status}"`
-            );
-          }
-        }
-
         const compositeKey = `${effectiveRunId}-${eventId}`;
         const eventPath = taggedPath(basedir, 'events', compositeKey, tag);
         // Capture the serialized payload before the write's `await` so the
         // cached snapshot can't observe a later mutation (see
         // rememberStoredEvent).
         const serializedEvent = JSON.stringify(event, jsonReplacer, 2);
-        const eventPublished = await writeExclusive(eventPath, serializedEvent);
+
+        // `hook_received` publishes its event under the same per-run
+        // `withRunFileLock` that run_completed / run_failed / run_cancelled
+        // use for their own terminal-transition write (see
+        // `writeRunUnderLifecycleLock` above). A re-read of run status taken
+        // outside that lock does not close the race: a concurrent terminal
+        // transition can still acquire the lock and commit between the
+        // unlocked re-read and this event's publish. Taking the lock here
+        // instead means hook_received either waits behind an in-flight
+        // terminal transition and observes the committed status, or
+        // completes its own check-then-publish before a terminal
+        // transition's critical section can begin — there is no
+        // interleaving where both proceed.
+        const eventPublished =
+          data.eventType === 'hook_received'
+            ? await withRunFileLock(effectiveRunId, async () => {
+                const runAtPublish = await readJSONWithFallback(
+                  basedir,
+                  'runs',
+                  effectiveRunId,
+                  WorkflowRunSchema,
+                  tag
+                );
+                if (
+                  runAtPublish &&
+                  isTerminalWorkflowRunStatus(runAtPublish.status)
+                ) {
+                  throw new RunExpiredError(
+                    `Workflow run "${effectiveRunId}" is already in terminal state "${runAtPublish.status}"`
+                  );
+                }
+                return writeExclusive(eventPath, serializedEvent);
+              })
+            : await writeExclusive(eventPath, serializedEvent);
         if (!eventPublished) {
           // For `hook_created`, losing the event publish means the
           // event was already committed at this exact (canonical)

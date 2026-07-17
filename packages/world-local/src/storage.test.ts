@@ -8,6 +8,7 @@ import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeJSON } from './fs.js';
 import { hashToken, hookDisposeLockPath } from './storage/helpers.js';
+import { withRunFileLock } from './storage/runs-storage.js';
 import { createStorage } from './storage.js';
 import {
   completeWait,
@@ -4594,6 +4595,119 @@ describe('Storage', () => {
           eventData: { payload: {} },
         })
       ).rejects.toMatchObject({ name: 'RunExpiredError' });
+    });
+
+    it('should serialize hook_received behind an in-flight terminal transition on the same run-file lock', async () => {
+      // The previous test proves the re-check's *logic*, but a status
+      // re-read taken outside the lock that run_completed / run_failed /
+      // run_cancelled use for their own write does not actually close the
+      // race: a concurrent terminal transition can still commit between an
+      // unlocked re-read and the event publish. This test proves
+      // hook_received's publish genuinely participates in that same
+      // `withRunFileLock` queue — not just that it happens to observe a
+      // status set before it started — by manually occupying the lock and
+      // asserting hook_received cannot settle until the hold is released.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(storage, run.runId, {
+        hookId: 'hook_lock_order',
+        token: 'token-lock-order',
+      });
+
+      let releaseHold: () => void = () => {};
+      const holdGate = new Promise<void>((resolve) => {
+        releaseHold = resolve;
+      });
+
+      // Occupy the run's file lock, then — while still holding it — write
+      // the terminal transition directly, mirroring exactly what
+      // run_completed's own critical section does under this same lock
+      // (see `writeRunUnderLifecycleLock`).
+      const heldLock = withRunFileLock(run.runId, async () => {
+        await holdGate;
+        const runPath = path.join(testDir, 'runs', `${run.runId}.json`);
+        await writeJSON(
+          runPath,
+          { ...run, status: 'completed', completedAt: new Date() },
+          { overwrite: true }
+        );
+      });
+
+      const hookReceivedPromise = storage.events.create(run.runId, {
+        eventType: 'hook_received',
+        correlationId: hook.hookId,
+        eventData: { payload: {} },
+      });
+
+      let settled = false;
+      hookReceivedPromise.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        }
+      );
+
+      // Generous real-time wait: if hook_received's check-then-publish were
+      // not behind the shared lock, it would settle well within this
+      // window regardless of how many unlocked steps precede it.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(settled).toBe(false);
+
+      releaseHold();
+      await heldLock;
+
+      await expect(hookReceivedPromise).rejects.toMatchObject({
+        name: 'RunExpiredError',
+      });
+    });
+
+    it('should race hook_received against a concurrent run_completed without corrupting state', async () => {
+      // Unlike the manually-ordered test above, this lets real concurrent
+      // calls interleave however the event loop schedules them, fuzzing
+      // both lock orderings across runs. Whichever side wins the lock, the
+      // outcome must be internally consistent.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(storage, run.runId, {
+        hookId: 'hook_race_concurrent',
+        token: 'token-race-concurrent',
+      });
+
+      const [hookOutcome, runOutcome] = await Promise.allSettled([
+        storage.events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: {} },
+        }),
+        updateRun(storage, run.runId, 'run_completed', {
+          output: new Uint8Array([1]),
+        }),
+      ]);
+
+      // run_completed does not depend on hook_received, so it must always
+      // succeed regardless of ordering.
+      expect(runOutcome.status).toBe('fulfilled');
+
+      if (hookOutcome.status === 'fulfilled') {
+        // hook_received's publish won the lock and completed while the run
+        // was still running.
+        expect(hookOutcome.value.event?.eventType).toBe('hook_received');
+      } else {
+        // hook_received queued behind run_completed's lock (or lost the
+        // hook-existence race to its cleanup) and correctly rejected
+        // instead of appending an event past the run's terminal state.
+        expect(['RunExpiredError', 'HookNotFoundError']).toContain(
+          (hookOutcome.reason as { name?: string }).name
+        );
+      }
     });
   });
 
