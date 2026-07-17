@@ -1,9 +1,6 @@
 {
   "env": {
-    "DEBUG": "",
-    "WORKFLOW_PUBLIC_MANIFEST": "1",
-    "WORKFLOW_TRACE_MODE": "linked",
-    "WORKFLOW_TURBO": "0"
+    "WORKFLOW_PUBLIC_MANIFEST": "1"
   },
   "regions": [
     "iad1",
