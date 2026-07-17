@@ -706,7 +706,9 @@ export function workflowEntrypoint(
                   // will pick up the replay.
                   if (incomingStepId && incomingStepName) {
                     try {
-                      const bgRun = await world.runs.get(runId);
+                      const bgRun = await world.runs.get(runId, {
+                        resolveData: 'none',
+                      });
                       if (bgRun.status !== 'running') {
                         runtimeLogger.debug(
                           'Run already finished, skipping background step',
@@ -850,7 +852,13 @@ export function workflowEntrypoint(
                           'All parallel steps done, replaying inline after background step',
                           { workflowRunId: runId }
                         );
-                        workflowRun = bgRun;
+                        workflowRun = {
+                          ...bgRun,
+                          status: 'running',
+                          output: undefined,
+                          error: undefined,
+                          completedAt: undefined,
+                        };
                         workflowStartedAt = bgStartedAt;
                         // cachedEvents and eventsCursor already set from load above
                       } else {
