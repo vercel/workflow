@@ -10,14 +10,23 @@
  * metrics below depend on the CI runner's clock or its network path to the
  * proxy; they are computed purely from Vercel-side timestamps.
  *
- * Metrics (all in milliseconds, reported as avg/p75/p90/p99):
+ * Metrics (all in milliseconds, reported as avg/p10/p75/p90/p99):
+ *
+ * p10 is reported alongside the upper percentiles so warm-start latency (the
+ * fast floor) is visible next to the cold-start tail: the workbench deployment
+ * cold-starts the `/flow` invocation for a large fraction of runs (bursty,
+ * low-traffic), which inflates p75+. Cold starts are kept in the numbers on
+ * purpose — they are part of real bursty-workload latency — and p10 shows what
+ * a warm trigger looks like.
  *
  * - TTFS  (time to first step): `steps[0].start` (first step body execution,
  *          deployment clock) minus the in-deployment `clientStart` returned by
  *          the trigger route. Because `start()` runs inside the deployment, the
- *          turbo path (no hooks) exercises the runtime's in-process fast path
- *          (optimisticStart); the non-turbo path (a hook registered before the
- *          step) exercises the dispatch path. Both are proxy-independent.
+ *          turbo path (no hooks) can exercise the runtime's in-process fast
+ *          path; the non-turbo path (a hook registered before the step)
+ *          exercises the dispatch path. Both are proxy-independent. TTFS
+ *          includes the VQS dispatch hop and any `/flow` cold start (see p10
+ *          note above).
  * - STSO  (step-to-step overhead): gap between consecutive step body
  *          executions (`steps[i].start - steps[i-1].end`) in a workflow with
  *          many trivial sequential steps. Both timestamps come from step
@@ -40,10 +49,11 @@
  *
  * Scenarios (defined in workbench/example/workflows/97_bench.ts):
  *
- * 1. benchStreamWorkflow          — 1 step, turbo mode → TTFS (turbo)
- * 2. benchHookStreamWorkflow      — hook + 1 step, non-turbo → TTFS (non-turbo)
- * 3. benchSequentialStepsWorkflow — 1020 trivial sequential steps → STSO + WO
- * 4. benchSlWorkflow              — parallel reader/writer steps → SL
+ * 1. benchStepWorkflow            — 1 no-op step, turbo mode → TTFS (turbo)
+ * 2. benchStreamWorkflow          — 1 streaming step, turbo mode → TTFS (turbo)
+ * 3. benchHookStreamWorkflow      — hook + 1 step, non-turbo → TTFS (non-turbo)
+ * 4. benchSequentialStepsWorkflow — 1020 trivial sequential steps → STSO + WO
+ * 5. benchSlWorkflow              — parallel reader/writer steps → SL
  *
  * Each scenario runs many iterations (env-tunable, see BENCH_* below) so the
  * percentiles are computed from real samples.
@@ -399,6 +409,8 @@ async function runScenario<T>(
 
 interface MetricStats {
   avg: number;
+  /** 10th percentile — surfaces the warm-start floor vs the cold-start tail. */
+  p10: number;
   p75: number;
   p90: number;
   p99: number;
@@ -425,6 +437,7 @@ function computeStats(samples: number[]): MetricStats {
   const round = (v: number) => Math.round(v * 10) / 10;
   return {
     avg: round(sorted.reduce((sum, v) => sum + v, 0) / sorted.length),
+    p10: round(percentile(10)),
     p75: round(percentile(75)),
     p90: round(percentile(90)),
     p99: round(percentile(99)),
@@ -475,15 +488,21 @@ function getBackend(): string {
 
 // Short scenario labels for the results table; the descriptions are rendered
 // as a legend at the bottom of the PR comment.
+const SCENARIO_STEP = 'step';
 const SCENARIO_TURBO_STREAM = 'stream';
 const SCENARIO_HOOK_STREAM = 'hook + stream';
 const SCENARIO_SEQUENTIAL = `${SEQUENTIAL_STEP_COUNT} steps`;
 const SCENARIO_STREAM_LATENCY = 'stream latency';
 const SCENARIO_DESCRIPTIONS = [
   {
+    name: SCENARIO_STEP,
+    description:
+      'one trivial no-op step, no stream; no hooks, so the run stays in turbo mode (in-process fast path)',
+  },
+  {
     name: SCENARIO_TURBO_STREAM,
     description:
-      'one step; no hooks, so the run stays in turbo mode (in-process fast path)',
+      'one streaming step; no hooks, so the run stays in turbo mode (in-process fast path)',
   },
   {
     name: SCENARIO_HOOK_STREAM,
@@ -528,19 +547,35 @@ describe('workflow benchmarks', () => {
     }
   }, PREFLIGHT_TIMEOUT_MS + 60_000);
 
-  test('scenario: 1 step (turbo)', { timeout: 30 * 60_000 }, async () => {
-    const results = await runScenario(
-      SCENARIO_TURBO_STREAM,
-      STREAM_ITERATIONS,
-      () => runStreamIteration('benchStreamWorkflow')
+  test('scenario: 1 no-op step (turbo)', { timeout: 30 * 60_000 }, async () => {
+    const results = await runScenario(SCENARIO_STEP, STREAM_ITERATIONS, () =>
+      runStreamIteration('benchStepWorkflow')
     );
     recordMetric(
       'ttfs',
-      SCENARIO_TURBO_STREAM,
+      SCENARIO_STEP,
       results.map((r) => r.ttfsMs),
       TTFS_TARGETS
     );
   });
+
+  test(
+    'scenario: 1 streaming step (turbo)',
+    { timeout: 30 * 60_000 },
+    async () => {
+      const results = await runScenario(
+        SCENARIO_TURBO_STREAM,
+        STREAM_ITERATIONS,
+        () => runStreamIteration('benchStreamWorkflow')
+      );
+      recordMetric(
+        'ttfs',
+        SCENARIO_TURBO_STREAM,
+        results.map((r) => r.ttfsMs),
+        TTFS_TARGETS
+      );
+    }
+  );
 
   test(
     'scenario: hook + 1 step (non-turbo)',
@@ -642,15 +677,18 @@ describe('workflow benchmarks', () => {
     fs.writeFileSync(outputPath, JSON.stringify(results, null, 2));
     console.log(`[bench] Results written to ${outputPath}`);
     console.table(
-      metricRows.map(({ metric, scenario, avg, p75, p90, p99, samples }) => ({
-        metric,
-        scenario,
-        avg,
-        p75,
-        p90,
-        p99,
-        samples,
-      }))
+      metricRows.map(
+        ({ metric, scenario, avg, p10, p75, p90, p99, samples }) => ({
+          metric,
+          scenario,
+          avg,
+          p10,
+          p75,
+          p90,
+          p99,
+          samples,
+        })
+      )
     );
   });
 });

@@ -224,8 +224,8 @@ function metricSortKey(row) {
 
 function renderResultTable(result) {
   const lines = [
-    '| Metric | Scenario | Avg (ms) | P75 (ms) | P90 (ms) | P99 (ms) | Samples |',
-    '|--------|----------|---------:|---------:|---------:|---------:|--------:|',
+    '| Metric | Scenario | Avg (ms) | P10 (ms) | P75 (ms) | P90 (ms) | P99 (ms) | Samples |',
+    '|--------|----------|---------:|---------:|---------:|---------:|---------:|--------:|',
   ];
   const rows = [...result.metrics].sort(
     (a, b) => metricSortKey(a) - metricSortKey(b)
@@ -236,7 +236,7 @@ function renderResultTable(result) {
     const name = label ? `**${label.name}**` : row.metric;
     const targets = row.targets ?? {};
     lines.push(
-      `| ${name} | ${row.scenario} | ${formatMs(row.avg)}${formatDelta(row.avg, row.baselineAvg)} | ${formatCell(row.p75, targets.p75)} | ${formatCell(row.p90, targets.p90)} | ${formatCell(row.p99, targets.p99)} | ${row.samples} |`
+      `| ${name} | ${row.scenario} | ${formatMs(row.avg)}${formatDelta(row.avg, row.baselineAvg)} | ${formatMs(row.p10)} | ${formatCell(row.p75, targets.p75)} | ${formatCell(row.p90, targets.p90)} | ${formatCell(row.p99, targets.p99)} | ${row.samples} |`
     );
   }
   return lines.join('\n');
@@ -323,7 +323,9 @@ function renderFooter(entries) {
         ]
       : []),
     '',
-    '<sub>All metrics are measured from deployment-side timestamps only. Runs are triggered by an in-deployment route that stamps the anchor (`clientStart`) right before `start()`, so the CI runner’s request and its path through api.vercel.com sit outside every measured window. TTFS = in-deployment `start()` → first step body (turbo uses the in-process fast path, non-turbo the dispatch path). STSO/WO are measured between step bodies on the deployment. SL is measured inside the workflow (parallel reader/writer steps), so it no longer includes the api.vercel.com read path.</sub>',
+    '<sub>All metrics are measured from deployment-side timestamps only. Runs are triggered by an in-deployment route that stamps the anchor (`clientStart`) right before `start()`, so the CI runner’s request and its path through api.vercel.com sit outside every measured window. TTFS = in-deployment `start()` → first step body (turbo uses the in-process fast path, non-turbo the dispatch path), and includes the VQS dispatch hop plus any `/flow` cold start. STSO/WO are measured between step bodies on the deployment. SL is measured inside the workflow (parallel reader/writer steps), so it no longer includes the api.vercel.com read path.</sub>',
+    '',
+    '<sub>Cold starts are kept in the numbers on purpose — they are part of real bursty-workload latency. The workbench deployment cold-starts the `/flow` invocation for a large fraction of runs, inflating P75+; the **P10** column shows the warm-start floor for comparison.</sub>',
   ].join('\n');
 }
 

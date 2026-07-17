@@ -74,10 +74,21 @@ async function timedStreamingStep(chunks: number): Promise<BenchStepTiming> {
 }
 
 /**
- * Scenario 1: one step that streams data back to a reader.
- *
- * No hooks are created, so the first invocation runs in turbo mode. Used to
- * measure TTFS (turbo) and SL (turbo).
+ * Scenario 1a: one trivial no-op step — no stream, no hooks (turbo mode). The
+ * cleanest TTFS measurement, with no stream machinery in the step body.
+ */
+export async function benchStepWorkflow(): Promise<{
+  steps: BenchStepTiming[];
+}> {
+  'use workflow';
+  const step = await timedNoopStep(0);
+  return { steps: [step] };
+}
+
+/**
+ * Scenario 1b: one step that streams data back. No hooks, so the first
+ * invocation runs in turbo mode. Used to measure TTFS (turbo) with a streaming
+ * step body (contrast with {@link benchStepWorkflow}).
  */
 export async function benchStreamWorkflow(): Promise<{
   steps: BenchStepTiming[];
