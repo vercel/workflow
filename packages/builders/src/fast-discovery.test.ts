@@ -213,6 +213,75 @@ export const allWorkflows = { workflow };
     );
   });
 
+  it('discovers dotted files reached through tsconfig path aliases', async () => {
+    const entryFile = join(testRoot, 'src', 'entry.ts');
+    const registryFile = join(testRoot, 'src', 'workflows', 'hello.index.ts');
+    const workflowFile = join(testRoot, 'src', 'workflows', 'hello.ts');
+    const tsconfigFile = join(testRoot, 'tsconfig.json');
+
+    writeFile(
+      tsconfigFile,
+      JSON.stringify({
+        compilerOptions: {
+          paths: {
+            '@/*': ['./src/*'],
+          },
+        },
+      })
+    );
+    writeFile(
+      entryFile,
+      `import { helloWorkflow } from '@/workflows/hello.index';\n`
+    );
+    writeFile(registryFile, `export { helloWorkflow } from './hello';\n`);
+    writeFile(
+      workflowFile,
+      `export async function helloWorkflow() {
+  'use workflow';
+  return 'ok';
+}
+`
+    );
+
+    const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+      [entryFile],
+      join(testRoot, 'out'),
+      tsconfigFile
+    );
+
+    expect(discovered.discoveredWorkflows).toEqual(
+      new Set([normalize(workflowFile)])
+    );
+  });
+
+  it('ignores non-source files reached through tsconfig path aliases', async () => {
+    const entryFile = join(testRoot, 'src', 'entry.ts');
+    const assetFile = join(testRoot, 'src', 'styles', 'app.css');
+    const tsconfigFile = join(testRoot, 'tsconfig.json');
+
+    writeFile(
+      tsconfigFile,
+      JSON.stringify({
+        compilerOptions: {
+          paths: {
+            '@/*': ['./src/*'],
+          },
+        },
+      })
+    );
+    writeFile(entryFile, `import '@/styles/app.css';\n`);
+    writeFile(assetFile, `'use workflow';\n`);
+
+    const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+      [entryFile],
+      join(testRoot, 'out'),
+      tsconfigFile
+    );
+
+    expect(discovered.discoveredWorkflows).toEqual(new Set());
+    expect(discovered.discoveredFiles).toEqual(new Set([normalize(entryFile)]));
+  });
+
   it('discovers path aliases inherited through tsconfig extends', async () => {
     const entryFile = join(testRoot, 'src', 'entry.ts');
     const workflowFile = join(testRoot, 'src', 'workflows', 'workflow.ts');
