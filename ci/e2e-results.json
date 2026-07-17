@@ -1,14 +1,14 @@
 {
-  "lastUpdated": "2026-07-17T21:21:08.278Z",
-  "commit": "bb773e950786b15100a8058407cbfcba23a44ebc",
+  "lastUpdated": "2026-07-17T22:09:35.479Z",
+  "commit": "d53b055a2b1aadf54afe59fd122cb1d960043bcb",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
-      "status": "passing",
+      "status": "partial",
       "total": 4437,
-      "passed": 3899,
-      "failed": 0,
+      "passed": 3898,
+      "failed": 1,
       "skipped": 538,
       "frameworks": {
         "astro": {
@@ -48,8 +48,8 @@
         },
         "nuxt": {
           "total": 306,
-          "passed": 256,
-          "failed": 0
+          "passed": 255,
+          "failed": 1
         },
         "sveltekit": {
           "total": 306,
@@ -127,29 +127,29 @@
     "vercel": {
       "status": "partial",
       "total": 1836,
-      "passed": 1569,
-      "failed": 10,
+      "passed": 1572,
+      "failed": 7,
       "skipped": 257,
       "frameworks": {
         "astro": {
           "total": 153,
-          "passed": 126,
-          "failed": 0
-        },
-        "express": {
-          "total": 153,
-          "passed": 124,
-          "failed": 2
-        },
-        "fastify": {
-          "total": 153,
           "passed": 125,
           "failed": 1
         },
+        "express": {
+          "total": 153,
+          "passed": 126,
+          "failed": 0
+        },
+        "fastify": {
+          "total": 153,
+          "passed": 126,
+          "failed": 0
+        },
         "hono": {
           "total": 153,
-          "passed": 124,
-          "failed": 2
+          "passed": 125,
+          "failed": 1
         },
         "nextjs-turbopack": {
           "total": 153,
@@ -158,13 +158,13 @@
         },
         "nextjs-webpack": {
           "total": 153,
-          "passed": 150,
-          "failed": 0
+          "passed": 149,
+          "failed": 1
         },
         "nitro": {
           "total": 153,
-          "passed": 124,
-          "failed": 2
+          "passed": 125,
+          "failed": 1
         },
         "nuxt": {
           "total": 153,
@@ -182,7 +182,7 @@
           "failed": 1
         }
       },
-      "progress": 85
+      "progress": 86
     }
   }
 }
