@@ -49,7 +49,7 @@ export interface NestVercelBuilderOptions {
 
 /**
  * Emits a complete Vercel Build Output API directory (`.vercel/output`) for a
- * NestJS app that uses the Workflow DevKit.
+ * NestJS app that uses the Workflow SDK.
  *
  * The workflow side (the combined `flow.func` consumer registered with
  * `experimentalTriggers`, the `webhook/[token].func`, the public manifest and

@@ -366,7 +366,7 @@ npx workflow inspect runs
 
 ## Deploy to Vercel
 
-Because NestJS is not a Vercel-native framework, the Workflow DevKit produces a
+Because NestJS is not a Vercel-native framework, the Workflow SDK produces a
 [Build Output API](https://vercel.com/docs/build-output-api) directory for you. This emits the
 workflow queue-consumer function (registered with `experimentalTriggers` so Vercel's queue can
 discover it) alongside your NestJS app as a catch-all function. Without it, workflow runs stay
