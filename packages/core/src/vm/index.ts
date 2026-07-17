@@ -19,6 +19,24 @@ const DIGEST_ALGORITHMS: Record<string, string> = {
   'SHA-512': 'sha512',
 };
 
+// biome-ignore lint/style/noNonNullAssertion: byteLength always exists on ArrayBuffer.prototype
+const arrayBufferByteLength = Object.getOwnPropertyDescriptor(
+  ArrayBuffer.prototype,
+  'byteLength'
+)!.get!;
+
+// WebCrypto BufferSource conversion: views pass through; anything else must
+// be a real ArrayBuffer (the native byteLength getter is a brand check that
+// works across vm realms) so that e.g. a plain number is rejected with
+// TypeError instead of allocating a Uint8Array of that length.
+function toDigestBytes(data: ArrayBuffer | ArrayBufferView): Uint8Array {
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  arrayBufferByteLength.call(data);
+  return new Uint8Array(data);
+}
+
 /**
  * Creates a Node.js `vm.Context` configured to be usable for
  * executing workflow logic in a deterministic environment.
@@ -117,10 +135,7 @@ export function createContext(options: CreateContextOptions) {
           'NotSupportedError'
         );
       }
-      const bytes = ArrayBuffer.isView(data)
-        ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-        : new Uint8Array(data);
-      const hash = createHash(ossl).update(bytes).digest();
+      const hash = createHash(ossl).update(toDigestBytes(data)).digest();
       // Copy out: small Buffers share the internal pool allocation.
       const out = new ArrayBuffer(hash.byteLength);
       new Uint8Array(out).set(hash);

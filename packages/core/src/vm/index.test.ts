@@ -382,3 +382,18 @@ describe('GC observation', () => {
     expect(vm.runInContext('typeof WeakSet', context)).toBe('function');
   });
 });
+
+describe('crypto.subtle.digest input validation', () => {
+  it.each([
+    ['a number', '2000000000'],
+    ['a plain object', '({})'],
+    ['a string', '"data"'],
+    ['null', 'null'],
+  ])('rejects %s with TypeError', async (_label, expression) => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    await expect(
+      vm.runInContext(`crypto.subtle.digest("SHA-256", ${expression})`, context)
+    ).rejects.toThrow(TypeError);
+  });
+});
