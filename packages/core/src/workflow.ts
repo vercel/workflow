@@ -40,7 +40,7 @@ import {
   WORKFLOW_USE_STEP,
 } from './symbols.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
-import { trace } from './telemetry.js';
+import { applyWorkflowSuspensionToSpan, trace } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
 import { runCachedWorkflowScript } from './vm/script-cache.js';
@@ -238,6 +238,7 @@ export async function executeWorkflow(
       return { type: 'completed', output: completed.output };
     } catch (error) {
       if (WorkflowSuspension.is(error)) {
+        if (span) applyWorkflowSuspensionToSpan(error, span);
         return { type: 'suspended', suspension: error, session };
       }
       throw error;
@@ -1128,8 +1129,9 @@ function createWorkflowSession({
           }
           case 'failed':
             throw state.error;
-          case 'running':
           case 'completed':
+            return { type: 'resumed', execution: workflowExecution };
+          case 'running':
             throw new WorkflowRuntimeError(
               `Cannot resume ${state.type} workflow "${workflowRun.runId}"`
             );

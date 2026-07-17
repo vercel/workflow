@@ -360,6 +360,74 @@ describe('runWorkflow', () => {
     log.mockRestore();
   });
 
+  it('returns a workflow that completes while its retained session is suspended', async () => {
+    const ops: Promise<any>[] = [];
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_retained_async_completion',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_retained_async_completion',
+        noEncryptionKey,
+        ops
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    const workflowCode = `
+      const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step");
+      async function digestRepeatedly() {
+        const bytes = new Uint8Array(8 * 1024 * 1024);
+        for (let index = 0; index < 8; index++) {
+          await crypto.subtle.digest("SHA-256", bytes);
+        }
+      }
+      async function workflow() {
+        await Promise.race([step(), digestRepeatedly()]);
+        return "digest completed";
+      }
+      ${getWorkflowTransformCode('workflow')}`;
+    const events: Event[] = [];
+
+    const suspended = await executeWorkflow({
+      type: 'replay',
+      workflowCode,
+      workflowRun,
+      events,
+      encryptionKey: noEncryptionKey,
+      replayPayloadCache: new ReplayPayloadCache(noEncryptionKey),
+    });
+    assert(suspended.type === 'suspended');
+
+    let completed: Awaited<ReturnType<typeof executeWorkflow>> | undefined;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const result = await executeWorkflow({
+        type: 'resume',
+        session: suspended.session,
+        events,
+      });
+      if (result.type === 'completed') {
+        completed = result;
+        break;
+      }
+      assert(result.type === 'replay');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    assert(completed?.type === 'completed');
+    expect(
+      await hydrateWorkflowReturnValue(
+        completed.output as any,
+        workflowRun.runId,
+        noEncryptionKey,
+        ops
+      )
+    ).toBe('digest completed');
+  });
+
   it('regenerates step correlation IDs independent of startedAt (turbo replay-stability)', async () => {
     // Turbo's first delivery synthesizes `startedAt` from the local clock,
     // while later (non-turbo) deliveries load the server-canonical `startedAt`.
