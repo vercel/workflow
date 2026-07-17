@@ -6,6 +6,7 @@ import { monotonicFactory } from 'ulid';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 import { DEFERRED_CHECK_DELAY_MS } from './events-consumer.js';
 import type { WorkflowSuspension } from './global.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { setWorld } from './runtime/world.js';
 import {
   dehydrateStepReturnValue,
@@ -13,7 +14,7 @@ import {
   hydrateWorkflowReturnValue,
 } from './serialization.js';
 import { createContext } from './vm/index.js';
-import { runWorkflow } from './workflow.js';
+import { executeWorkflow, runWorkflow } from './workflow.js';
 
 // No encryption key = encryption disabled
 const noEncryptionKey = undefined;
@@ -219,6 +220,124 @@ describe('runWorkflow', () => {
         ops
       )
     ).toEqual(3);
+  });
+
+  it('should retain workflow execution across sequential step suspensions', async () => {
+    const ops: Promise<any>[] = [];
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_retained',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_retained',
+        noEncryptionKey,
+        ops
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    const workflowCode = `
+      const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+      async function workflow() {
+        console.log("retained:entered");
+        const first = await add(1, 2);
+        console.log("retained:continued");
+        const second = await add(first, 3);
+        return second;
+      }
+      ${getWorkflowTransformCode('workflow')}`;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const events: Event[] = [];
+    let eventNumber = 0;
+    const appendStepEvents = async (
+      correlationId: string,
+      result: number
+    ): Promise<void> => {
+      const createdAt = new Date(`2024-01-01T00:00:0${eventNumber + 1}.000Z`);
+      events.push(
+        {
+          eventId: `event-${eventNumber++}`,
+          runId: workflowRun.runId,
+          eventType: 'step_created',
+          correlationId,
+          eventData: { stepName: 'add' },
+          createdAt,
+        },
+        {
+          eventId: `event-${eventNumber++}`,
+          runId: workflowRun.runId,
+          eventType: 'step_started',
+          correlationId,
+          eventData: { stepName: 'add' },
+          createdAt,
+        },
+        {
+          eventId: `event-${eventNumber++}`,
+          runId: workflowRun.runId,
+          eventType: 'step_completed',
+          correlationId,
+          eventData: {
+            stepName: 'add',
+            result: await dehydrateStepReturnValue(
+              result,
+              workflowRun.runId,
+              noEncryptionKey,
+              ops
+            ),
+          },
+          createdAt,
+        }
+      );
+    };
+
+    const first = await executeWorkflow({
+      type: 'replay',
+      workflowCode,
+      workflowRun,
+      events,
+      encryptionKey: noEncryptionKey,
+      replayPayloadCache: new ReplayPayloadCache(noEncryptionKey),
+    });
+    assert(first.type === 'suspended');
+    const firstStep = first.suspension.steps[0];
+    assert(firstStep?.type === 'step');
+    await appendStepEvents(firstStep.correlationId, 3);
+
+    const second = await executeWorkflow({
+      type: 'resume',
+      session: first.session,
+      events,
+    });
+    assert(second.type === 'suspended');
+    expect(second.session).toBe(first.session);
+    const secondStep = second.suspension.steps[0];
+    assert(secondStep?.type === 'step');
+    await appendStepEvents(secondStep.correlationId, 6);
+
+    const completed = await executeWorkflow({
+      type: 'resume',
+      session: second.session,
+      events,
+    });
+    assert(completed.type === 'completed');
+
+    expect(
+      await hydrateWorkflowReturnValue(
+        completed.output as any,
+        workflowRun.runId,
+        noEncryptionKey,
+        ops
+      )
+    ).toBe(6);
+    expect(
+      log.mock.calls
+        .map(([message]) => message)
+        .filter((message) => String(message).startsWith('retained:'))
+    ).toEqual(['retained:entered', 'retained:continued']);
+    log.mockRestore();
   });
 
   it('regenerates step correlation IDs independent of startedAt (turbo replay-stability)', async () => {

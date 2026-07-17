@@ -4,7 +4,11 @@ import {
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { createWorkflowBaseUrl, withResolvers } from '@workflow/utils';
+import {
+  createWorkflowBaseUrl,
+  type PromiseWithResolvers,
+  withResolvers,
+} from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
@@ -133,6 +137,114 @@ async function drainPendingQueueItems(
   }
 }
 
+interface WorkflowCompletion {
+  readonly output: unknown;
+  readonly resultType: string;
+}
+
+type WorkflowSessionState =
+  | {
+      readonly type: 'running';
+      readonly interruption: PromiseWithResolvers<never>;
+    }
+  | { readonly type: 'suspended'; readonly suspension: WorkflowSuspension }
+  | { readonly type: 'failed'; readonly error: Error }
+  | { readonly type: 'completed' };
+
+export interface WorkflowSession {
+  readonly workflowRun: WorkflowRun;
+  readonly argumentCount: number;
+  resume(events: Event[]): WorkflowSessionResumeResult;
+}
+
+type WorkflowSessionResumeResult =
+  | {
+      readonly type: 'resumed';
+      readonly execution: Promise<WorkflowCompletion>;
+    }
+  | { readonly type: 'replay' };
+
+interface WorkflowSessionOptions {
+  readonly workflowCode: string;
+  readonly workflowRun: WorkflowRun;
+  readonly events: Event[];
+  readonly encryptionKey: CryptoKey | undefined;
+  readonly replayPayloadCache: ReplayPayloadCache;
+  readonly runReadyBarrier?: Promise<unknown>;
+}
+
+type WorkflowExecutionRequest =
+  | ({ readonly type: 'replay' } & WorkflowSessionOptions)
+  | {
+      readonly type: 'resume';
+      readonly session: WorkflowSession;
+      readonly events: Event[];
+    };
+
+export type WorkflowExecutionResult =
+  | { readonly type: 'replay' }
+  | { readonly type: 'completed'; readonly output: unknown }
+  | {
+      readonly type: 'suspended';
+      readonly suspension: WorkflowSuspension;
+      readonly session: WorkflowSession;
+    };
+
+export async function executeWorkflow(
+  request: WorkflowExecutionRequest
+): Promise<WorkflowExecutionResult> {
+  const workflowRun =
+    request.type === 'replay'
+      ? request.workflowRun
+      : request.session.workflowRun;
+  const mode = request.type === 'replay' ? 'replay' : 'retained';
+
+  return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
+    span?.setAttributes({
+      ...Attribute.WorkflowName(workflowRun.workflowName),
+      ...Attribute.WorkflowRunId(workflowRun.runId),
+      ...Attribute.WorkflowRunStatus(workflowRun.status),
+      ...Attribute.WorkflowEventsCount(request.events.length),
+      ...Attribute.WorkflowExecutionMode(mode),
+    });
+
+    let session: WorkflowSession;
+    let execution: Promise<WorkflowCompletion>;
+    switch (request.type) {
+      case 'replay': {
+        const started = await createWorkflowSession(request);
+        session = started.session;
+        execution = started.execution;
+        break;
+      }
+      case 'resume': {
+        session = request.session;
+        const resumed = session.resume(request.events);
+        if (resumed.type === 'replay') return resumed;
+        execution = resumed.execution;
+        break;
+      }
+    }
+
+    span?.setAttributes({
+      ...Attribute.WorkflowArgumentsCount(session.argumentCount),
+    });
+
+    try {
+      const completed = await execution;
+      span?.setAttributes({
+        ...Attribute.WorkflowResultType(completed.resultType),
+      });
+      return { type: 'completed', output: completed.output };
+    } catch (error) {
+      if (WorkflowSuspension.is(error)) {
+        return { type: 'suspended', suspension: error, session };
+      }
+      throw error;
+    }
+  });
+}
+
 export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
@@ -140,8 +252,7 @@ export async function runWorkflow(
   encryptionKey: CryptoKey | undefined,
   /**
    * Optional per-run cache for replay payload preparation and immutable final
-   * values. Owned by the inline replay loop so it survives fresh VM contexts
-   * created by successive iterations of this invocation.
+   * values. Owned by the inline execution loop for this invocation.
    */
   replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache(
     encryptionKey
@@ -154,14 +265,36 @@ export async function runWorkflow(
    */
   runReadyBarrier?: Promise<unknown>
 ): Promise<Uint8Array | unknown> {
-  return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
-    span?.setAttributes({
-      ...Attribute.WorkflowName(workflowRun.workflowName),
-      ...Attribute.WorkflowRunId(workflowRun.runId),
-      ...Attribute.WorkflowRunStatus(workflowRun.status),
-      ...Attribute.WorkflowEventsCount(events.length),
-    });
+  const result = await executeWorkflow({
+    type: 'replay',
+    workflowCode,
+    workflowRun,
+    events,
+    encryptionKey,
+    replayPayloadCache,
+    runReadyBarrier,
+  });
+  if (result.type === 'replay') {
+    throw new WorkflowRuntimeError(
+      `Fresh workflow "${workflowRun.runId}" unexpectedly requested replay`
+    );
+  }
+  if (result.type === 'suspended') throw result.suspension;
+  return result.output;
+}
 
+function createWorkflowSession({
+  workflowCode,
+  workflowRun,
+  events,
+  encryptionKey,
+  replayPayloadCache,
+  runReadyBarrier,
+}: WorkflowSessionOptions): Promise<{
+  session: WorkflowSession;
+  execution: Promise<WorkflowCompletion>;
+}> {
+  return (async () => {
     const startedAt = workflowRun.startedAt;
     if (!startedAt) {
       throw new WorkflowRuntimeError(
@@ -209,7 +342,33 @@ export async function runWorkflow(
       fixedTimestamp,
     });
 
-    const workflowDiscontinuation = withResolvers<void>();
+    const initialInterruption = withResolvers<never>();
+    let state: WorkflowSessionState = {
+      type: 'running',
+      interruption: initialInterruption,
+    };
+
+    const onWorkflowError = (error: Error): void => {
+      switch (state.type) {
+        case 'running': {
+          const { interruption } = state;
+          state = WorkflowSuspension.is(error)
+            ? { type: 'suspended', suspension: error }
+            : { type: 'failed', error };
+          interruption.reject(error);
+          return;
+        }
+        case 'suspended':
+          if (!WorkflowSuspension.is(error)) {
+            state = { type: 'failed', error };
+          }
+          return;
+        case 'failed':
+        case 'completed':
+          return;
+      }
+      state satisfies never;
+    };
 
     const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
     const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
@@ -226,7 +385,7 @@ export async function runWorkflow(
         updateTimestamp(+event.createdAt);
       },
       onUnconsumedEvent: (event) => {
-        workflowDiscontinuation.reject(
+        onWorkflowError(
           new ReplayDivergenceError(
             `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}.`,
             { eventId: event.eventId }
@@ -240,7 +399,7 @@ export async function runWorkflow(
       runId: workflowRun.runId,
       encryptionKey,
       globalThis: vmGlobalThis,
-      onWorkflowError: workflowDiscontinuation.reject,
+      onWorkflowError,
       eventsConsumer,
       // Correlation IDs (step_/wait_/hook_) are derived from `generateUlid`, so
       // the time prefix fed to `ulid()` MUST be replay-stable across every
@@ -873,60 +1032,116 @@ export async function runWorkflow(
     );
     await workflowContext.promiseQueue;
 
-    span?.setAttributes({
-      ...Attribute.WorkflowArgumentsCount(args.length),
-    });
+    const workflowExecution = (async (): Promise<WorkflowCompletion> => {
+      try {
+        const result = await workflowFn(...args);
+        state = { type: 'completed' };
+        const output = await dehydrateWorkflowReturnValue(
+          result,
+          workflowRun.runId,
+          encryptionKey,
+          vmGlobalThis,
+          false,
+          // Gate payload compression on the run's specVersion: only runs
+          // marked as possibly containing compressed payloads (spec >= 5)
+          // get gzip data.
+          (workflowRun.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
+        );
 
-    // Invoke user workflow
-    try {
-      const result = await Promise.race([
-        workflowFn(...args),
-        workflowDiscontinuation.promise,
-      ]);
+        await drainPendingQueueItems(
+          workflowRun.runId,
+          workflowContext.invocationsQueue,
+          vmGlobalThis,
+          workflowRun,
+          'completed',
+          runReadyBarrier
+        );
 
-      const dehydrated = await dehydrateWorkflowReturnValue(
-        result,
-        workflowRun.runId,
-        encryptionKey,
-        vmGlobalThis,
-        false,
-        // Gate payload compression on the run's specVersion: only runs
-        // marked as possibly containing compressed payloads (spec >= 5)
-        // get gzip data.
-        (workflowRun.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
-      );
+        return { output, resultType: typeof result };
+      } catch (error) {
+        if (state.type === 'running') {
+          state = { type: 'completed' };
+        }
+        // Control-flow signals are handled by the runtime and do not mean the
+        // workflow has terminally failed.
+        if (WorkflowSuspension.is(error) || ReplayDivergenceError.is(error)) {
+          throw error;
+        }
 
-      span?.setAttributes({
-        ...Attribute.WorkflowResultType(typeof result),
-      });
+        await drainPendingQueueItems(
+          workflowRun.runId,
+          workflowContext.invocationsQueue,
+          vmGlobalThis,
+          workflowRun,
+          'failed',
+          runReadyBarrier
+        );
 
-      await drainPendingQueueItems(
-        workflowRun.runId,
-        workflowContext.invocationsQueue,
-        vmGlobalThis,
-        workflowRun,
-        'completed',
-        runReadyBarrier
-      );
-
-      return dehydrated;
-    } catch (err) {
-      // Control-flow signals are handled by the runtime and do not mean the
-      // workflow has terminally failed.
-      if (WorkflowSuspension.is(err) || ReplayDivergenceError.is(err)) {
-        throw err;
+        throw error;
       }
+    })();
 
-      await drainPendingQueueItems(
-        workflowRun.runId,
-        workflowContext.invocationsQueue,
-        vmGlobalThis,
-        workflowRun,
-        'failed',
-        runReadyBarrier
-      );
+    const waitForExecution = async (
+      interruption: PromiseWithResolvers<never>
+    ): Promise<WorkflowCompletion> => {
+      try {
+        const completed = await Promise.race([
+          workflowExecution,
+          interruption.promise,
+        ]);
+        state = { type: 'completed' };
+        return completed;
+      } catch (error) {
+        if (
+          (state.type === 'suspended' && error === state.suspension) ||
+          (state.type === 'failed' && error === state.error)
+        ) {
+          throw error;
+        }
+        state = { type: 'completed' };
+        throw error;
+      }
+    };
 
-      throw err;
-    }
-  });
+    const session: WorkflowSession = {
+      workflowRun,
+      argumentCount: args.length,
+      resume(nextEvents) {
+        switch (state.type) {
+          case 'suspended': {
+            const consumedEvents = eventsConsumer.events;
+            const isStrictExtension =
+              nextEvents.length > consumedEvents.length &&
+              consumedEvents.every(
+                (event, index) =>
+                  event.eventId === nextEvents[index]?.eventId
+              );
+            if (!isStrictExtension) {
+              return { type: 'replay' };
+            }
+            const interruption = withResolvers<never>();
+            state = { type: 'running', interruption };
+            eventsConsumer.append(nextEvents.slice(consumedEvents.length));
+            return {
+              type: 'resumed',
+              execution: waitForExecution(interruption),
+            };
+          }
+          case 'failed':
+            throw state.error;
+          case 'running':
+          case 'completed':
+            throw new WorkflowRuntimeError(
+              `Cannot resume ${state.type} workflow "${workflowRun.runId}"`
+            );
+        }
+        state satisfies never;
+      },
+    };
+
+    return {
+      session,
+      execution: waitForExecution(initialInterruption),
+    };
+  })();
 }
