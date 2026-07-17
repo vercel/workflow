@@ -257,3 +257,33 @@ describe('prepareRetainedStepInput review-hardening', () => {
     expect(vm.runInContext('globalThis.__retainedTestCalls', context)).toBe(0);
   });
 });
+
+describe('host dispatch pristineness', () => {
+  it('declines retention while a host dispatch constructor is spoofed', () => {
+    const { context, globalThis: workflowGlobal } = createContext({
+      seed,
+      fixedTimestamp,
+    });
+    const value = vm.runInContext('({ plain: true })', context);
+
+    expect(prepareRetainedStepInput(value, workflowGlobal).retainable).toBe(
+      true
+    );
+
+    Object.defineProperty(Headers, Symbol.hasInstance, {
+      value: () => false,
+      configurable: true,
+    });
+    try {
+      expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
+        retainable: false,
+      });
+    } finally {
+      delete (Headers as any)[Symbol.hasInstance];
+    }
+
+    expect(prepareRetainedStepInput(value, workflowGlobal).retainable).toBe(
+      true
+    );
+  });
+});

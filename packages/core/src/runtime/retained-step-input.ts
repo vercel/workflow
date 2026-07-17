@@ -1,5 +1,6 @@
 import { types } from 'node:util';
 import { runInContext, createContext as vmCreateContext } from 'node:vm';
+import { WORKFLOW_SERIALIZE } from '@workflow/serde';
 
 export type RetainedStepInputPreparation =
   | { readonly retainable: true; readonly value: unknown }
@@ -14,6 +15,84 @@ const pristineRealm = runInContext(
   '({ Object, Array })',
   vmCreateContext()
 ) as { Object: ObjectConstructor; Array: ArrayConstructor };
+
+// Host constructors that serialization dispatches on when the clone is
+// serialized under the host global — plus Object/Array, whose statics and
+// prototypes the class reducer and devalue's tag lookup read for
+// host-prototype originals (hydrated step results are host-realm objects).
+// The workflow VM's own intrinsics are frozen (see vm/index.ts), but host
+// intrinsics are shared with the whole process and cannot be frozen, so
+// dispatch-pristineness is verified instead. Any dirt declines retention
+// BEFORE a clone exists, so a spoofed predicate can never observe (or
+// capture) a pristine-realm object.
+const HOST_DISPATCH_CONSTRUCTORS = [
+  'Object',
+  'Array',
+  'Function',
+  'Map',
+  'Set',
+  'Date',
+  'RegExp',
+  'ArrayBuffer',
+  'SharedArrayBuffer',
+  'DataView',
+  'Int8Array',
+  'Uint8Array',
+  'Uint8ClampedArray',
+  'Int16Array',
+  'Uint16Array',
+  'Int32Array',
+  'Uint32Array',
+  'Float16Array',
+  'Float32Array',
+  'Float64Array',
+  'BigInt64Array',
+  'BigUint64Array',
+  'Headers',
+  'URL',
+  'URLSearchParams',
+  'DOMException',
+  'AbortController',
+  'AbortSignal',
+  'Request',
+  'Response',
+  'ReadableStream',
+  'WritableStream',
+  'TransformStream',
+] as const;
+
+function hasOwn(target: object, key: string | symbol): boolean {
+  return Object.getOwnPropertyDescriptor(target, key) !== undefined;
+}
+
+function isHostDispatchPristine(): boolean {
+  const hostGlobal = globalThis as unknown as Record<string, unknown>;
+  for (const name of HOST_DISPATCH_CONSTRUCTORS) {
+    const constructor = hostGlobal[name];
+    if (constructor === undefined) continue;
+    if (hasOwn(constructor as object, Symbol.hasInstance)) return false;
+  }
+  for (const constructor of [Object, Array]) {
+    if (
+      hasOwn(constructor, WORKFLOW_SERIALIZE) ||
+      hasOwn(constructor, 'classId')
+    ) {
+      return false;
+    }
+  }
+  for (const [prototype, constructor] of [
+    [Object.prototype, Object],
+    [Array.prototype, Array],
+  ] as const) {
+    if (
+      hasOwn(prototype, Symbol.toStringTag) ||
+      ownDataProperty(prototype, 'constructor') !== constructor
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 // Own data-property read that never performs a property Get — workflow code
 // can redefine its globals (or their `prototype` slots) with accessors, and
@@ -240,7 +319,10 @@ export function prepareRetainedStepInput(
   value: unknown,
   workflowGlobal: Record<string, any>
 ): RetainedStepInputPreparation {
-  if (!isPassivelyCloneable(value, workflowGlobal, new WeakSet())) {
+  if (
+    !isHostDispatchPristine() ||
+    !isPassivelyCloneable(value, workflowGlobal, new WeakSet())
+  ) {
     return { retainable: false };
   }
   return {
