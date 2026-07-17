@@ -31,7 +31,11 @@ describe('prepareRetainedStepInput', () => {
       sparse: [1, undefined, 3],
       flag: false,
     });
-    expect(Object.getPrototypeOf(prepared.value)).toBe(Object.prototype);
+    // The clone's prototype chain lives in a pristine realm: not the
+    // workflow realm, not the host realm.
+    const cloneProto = Object.getPrototypeOf(prepared.value);
+    expect(cloneProto).not.toBe(Object.prototype);
+    expect(Object.getPrototypeOf(cloneProto)).toBe(null);
   });
 
   it('produces the same serialized bytes as ordinary VM traversal', async () => {
@@ -62,6 +66,28 @@ describe('prepareRetainedStepInput', () => {
     );
 
     expect(cloned).toEqual(original);
+  });
+
+  it('declines arrays with an own constructor property', () => {
+    const { context, globalThis: workflowGlobal } = createContext({
+      seed,
+      fixedTimestamp,
+    });
+    const value = vm.runInContext(
+      `(() => {
+        const arr = [1];
+        Object.defineProperty(arr, "constructor", {
+          value: class Fake { static classId = "fake"; },
+          enumerable: false,
+        });
+        return arr;
+      })()`,
+      context
+    );
+
+    expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
+      retainable: false,
+    });
   });
 
   it('declines built-ins whose serialization consults realm prototypes', () => {

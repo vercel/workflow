@@ -1,8 +1,19 @@
 import { types } from 'node:util';
+import { runInContext, createContext as vmCreateContext } from 'node:vm';
 
 export type RetainedStepInputPreparation =
   | { readonly retainable: true; readonly value: unknown }
   | { readonly retainable: false };
+
+// A pristine realm nothing else can reach: clones are built from its Object
+// and Array so their entire prototype chain is immune to intrinsic mutation
+// in both the workflow realm and the host realm (workflow code can obtain
+// host-realm objects through APIs like `structuredClone` and vandalize their
+// prototypes).
+const pristineRealm = runInContext(
+  '({ Object, Array })',
+  vmCreateContext()
+) as { Object: ObjectConstructor; Array: ArrayConstructor };
 
 // Own data-property read that never performs a property Get — workflow code
 // can redefine its globals (or their `prototype` slots) with accessors, and
@@ -87,7 +98,11 @@ function isPassiveArrayProperty(
   if (key === 'length') return true;
   const descriptor = Object.getOwnPropertyDescriptor(array, key);
   if (!descriptor) return false;
-  if (key === 'then' || key === Symbol.toStringTag) return false;
+  // `then` and `constructor` are read by serialization dispatch even when
+  // non-enumerable (thenable assimilation, the class reducer).
+  if (key === 'then' || key === 'constructor' || key === Symbol.toStringTag) {
+    return false;
+  }
   if (typeof key !== 'string' || !isArrayIndex(key)) {
     return !descriptor.enumerable;
   }
@@ -185,6 +200,42 @@ function isPassivelyCloneable(
   return isPassivePlainObject(value, workflowGlobal, seen);
 }
 
+// Deep-copy walker-validated plain data into the pristine realm, copying
+// exactly what devalue serializes: dense/sparse own indices for arrays and
+// own enumerable string properties for objects. All reads are data-property
+// reads — the walker already rejected everything else.
+function cloneIntoPristineRealm(
+  value: unknown,
+  copies: WeakMap<object, unknown>
+): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  const existing = copies.get(value);
+  if (existing !== undefined) return existing;
+
+  if (Array.isArray(value)) {
+    const copy = new pristineRealm.Array(value.length) as unknown[];
+    copies.set(value, copy);
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== 'string' || !isArrayIndex(key)) continue;
+      copy[Number(key)] = cloneIntoPristineRealm(
+        (value as unknown as Record<string, unknown>)[key],
+        copies
+      );
+    }
+    return copy;
+  }
+
+  const copy = new pristineRealm.Object() as Record<string, unknown>;
+  copies.set(value, copy);
+  for (const key of Object.keys(value)) {
+    copy[key] = cloneIntoPristineRealm(
+      (value as Record<string, unknown>)[key],
+      copies
+    );
+  }
+  return copy;
+}
+
 export function prepareRetainedStepInput(
   value: unknown,
   workflowGlobal: Record<string, any>
@@ -192,9 +243,8 @@ export function prepareRetainedStepInput(
   if (!isPassivelyCloneable(value, workflowGlobal, new WeakSet())) {
     return { retainable: false };
   }
-  try {
-    return { retainable: true, value: structuredClone(value) };
-  } catch {
-    return { retainable: false };
-  }
+  return {
+    retainable: true,
+    value: cloneIntoPristineRealm(value, new WeakMap()),
+  };
 }
