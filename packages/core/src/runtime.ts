@@ -1140,6 +1140,7 @@ export function workflowEntrypoint(
                     | {
                         readonly type: 'retained';
                         readonly session: WorkflowSession;
+                        readonly drawCountAtSuspension: number;
                       } = { type: 'replay' };
 
                   // Main replay loop
@@ -1508,6 +1509,8 @@ export function workflowEntrypoint(
                           ? {
                               type: 'retained',
                               session: workflowResult.session,
+                              drawCountAtSuspension:
+                                workflowResult.session.randomDrawCount(),
                             }
                           : { type: 'replay' };
                         throw workflowResult.suspension;
@@ -1644,6 +1647,18 @@ export function workflowEntrypoint(
                             eventLog: suspensionLog,
                             runReadyBarrier,
                           });
+                          // Argument serialization above can execute user code
+                          // (getters, WORKFLOW_SERIALIZE hooks) in the live VM.
+                          // Any randomness it drew would desync future
+                          // correlation IDs from a fresh replay's, so demote
+                          // the session to ordinary replay.
+                          if (
+                            workflowExecution.type === 'retained' &&
+                            workflowExecution.session.randomDrawCount() !==
+                              workflowExecution.drawCountAtSuspension
+                          ) {
+                            workflowExecution = { type: 'replay' };
+                          }
                         } catch (suspensionError) {
                           // A suspension create whose stale (412) rejection
                           // survived the in-guard reload retries: schedule an

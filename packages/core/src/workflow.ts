@@ -184,6 +184,14 @@ export interface WorkflowSession {
    * reconstructs — it must not be retained.
    */
   usedHostAsync(): boolean;
+  /**
+   * Draws from the VM's seeded random stream so far. The runtime compares
+   * this across the suspension boundary: if post-suspension argument
+   * serialization (getters, `WORKFLOW_SERIALIZE` hooks) drew randomness, the
+   * retained VM's future correlation IDs would desync from what a fresh
+   * replay regenerates, so the session must not be retained.
+   */
+  randomDrawCount(): number;
   resume(events: Event[]): WorkflowSessionResumeResult;
 }
 
@@ -375,6 +383,7 @@ function createWorkflowSession({
       globalThis: vmGlobalThis,
       updateTimestamp,
       usedHostAsync,
+      randomDrawCount,
     } = createContext({
       seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
       fixedTimestamp,
@@ -1144,6 +1153,7 @@ function createWorkflowSession({
       workflowRun,
       argumentCount: args.length,
       usedHostAsync,
+      randomDrawCount,
       resume(nextEvents) {
         switch (state.type) {
           case 'suspended': {

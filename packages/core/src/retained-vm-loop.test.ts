@@ -52,6 +52,18 @@ const hostAsyncWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
+// Serializing this step's arguments executes the getter, which draws from
+// the VM's seeded random stream after the suspension — the loop must demote
+// the session so future correlation IDs stay replayable.
+const impureArgsWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
+  async function workflow() {
+    const a = await s1({ get x() { Math.random(); return 1; } });
+    const b = await s2();
+    return a + b;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
 // `crypto.subtle.digest` computes synchronously via node:crypto, so a
 // digest-using VM stays quiescent at suspension and remains retainable.
 const digestWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
@@ -206,6 +218,15 @@ describe('retained VM through the inline replay loop', () => {
     expect(output).toBeInstanceOf(Uint8Array);
     // Atomics.waitAsync marks the VM as non-quiescent, so every iteration
     // replays in a fresh VM even though retention is on by default.
+    expect(vmBuilds).toBeGreaterThan(1);
+  });
+
+  it('demotes retention when argument serialization draws randomness', async () => {
+    const { vmBuilds, output } = await drive(
+      'wrun_retained_impure_args',
+      impureArgsWorkflow
+    );
+    expect(output).toBeInstanceOf(Uint8Array);
     expect(vmBuilds).toBeGreaterThan(1);
   });
 

@@ -47,7 +47,17 @@ function toDigestBytes(data: ArrayBuffer | ArrayBufferView): Uint8Array {
 export function createContext(options: CreateContextOptions) {
   let { fixedTimestamp } = options;
   const { seed } = options;
-  const rng = seedrandom(seed);
+  // Count every draw from the seeded stream (Math.random, getRandomValues,
+  // randomUUID, and the ULIDs/nanoids derived from them all flow through this
+  // one closure). The runtime compares the count across the suspension
+  // boundary to detect serialization side effects (see
+  // `canRetainWorkflowSession`).
+  const baseRng = seedrandom(seed);
+  let randomDrawCount = 0;
+  const rng = () => {
+    randomDrawCount++;
+    return baseRng();
+  };
   const context = vmCreateContext();
 
   const g: typeof globalThis = runInContext('globalThis', context);
@@ -208,5 +218,6 @@ export function createContext(options: CreateContextOptions) {
       fixedTimestamp = timestamp;
     },
     usedHostAsync: () => usedHostAsync,
+    randomDrawCount: () => randomDrawCount,
   };
 }
