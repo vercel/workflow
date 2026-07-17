@@ -131,17 +131,6 @@ export interface SuspensionHandlerResult {
   retainedStepInputsSafe: boolean;
 }
 
-function getStepInput(
-  inputs: Map<string, { value: unknown; global: Record<string, any> }>,
-  correlationId: string
-): { value: unknown; global: Record<string, any> } {
-  const input = inputs.get(correlationId);
-  if (!input) {
-    throw new Error(`Missing prepared input for step ${correlationId}`);
-  }
-  return input;
-}
-
 async function createHookEvent({
   runId,
   hookEvent,
@@ -508,33 +497,31 @@ export async function handleSuspension({
   // racing with concurrent handlers on step execution.
   const createdStepCorrelationIds = new Set<string>();
 
+  // All-or-nothing: clones are only used when EVERY new step input in the
+  // batch is passive. A mixed batch would let an unsafe sibling's
+  // serialization (which can run getters) mutate objects a clone already
+  // snapshotted, changing what the other step durably receives relative to
+  // the ordinary in-order VM traversal.
   let retainedStepInputsSafe = true;
-  const inputsByCorrelationId = new Map<
-    string,
-    { value: unknown; global: Record<string, any> }
-  >();
-  for (const queueItem of stepItems) {
-    if (!stepsNeedingCreation.has(queueItem.correlationId)) continue;
-    const value = {
-      args: queueItem.args,
-      closureVars: queueItem.closureVars,
-      thisVal: queueItem.thisVal,
-    };
-    if (prepareForRetention) {
-      const prepared = prepareRetainedStepInput(value, suspension.globalThis);
-      if (prepared.retainable) {
-        inputsByCorrelationId.set(queueItem.correlationId, {
-          value: prepared.value,
-          global: globalThis,
-        });
-        continue;
+  const clonesByCorrelationId = new Map<string, unknown>();
+  if (prepareForRetention) {
+    for (const queueItem of stepItems) {
+      if (!stepsNeedingCreation.has(queueItem.correlationId)) continue;
+      const prepared = prepareRetainedStepInput(
+        {
+          args: queueItem.args,
+          closureVars: queueItem.closureVars,
+          thisVal: queueItem.thisVal,
+        },
+        suspension.globalThis
+      );
+      if (!prepared.retainable) {
+        retainedStepInputsSafe = false;
+        clonesByCorrelationId.clear();
+        break;
       }
-      retainedStepInputsSafe = false;
+      clonesByCorrelationId.set(queueItem.correlationId, prepared.value);
     }
-    inputsByCorrelationId.set(queueItem.correlationId, {
-      value,
-      global: suspension.globalThis,
-    });
   }
 
   // Lazy inline start: defer the step_created write for up to
@@ -570,15 +557,16 @@ export async function handleSuspension({
     if (stepsNeedingCreation.has(queueItem.correlationId)) {
       ops.push(
         (async () => {
-          const input = getStepInput(
-            inputsByCorrelationId,
-            queueItem.correlationId
-          );
+          const clone = clonesByCorrelationId.get(queueItem.correlationId);
           const dehydratedInput = await dehydrateStepArguments(
-            input.value,
+            clone ?? {
+              args: queueItem.args,
+              closureVars: queueItem.closureVars,
+              thisVal: queueItem.thisVal,
+            },
             runId,
             encryptionKey,
-            input.global,
+            clone ? globalThis : suspension.globalThis,
             false,
             compression
           );

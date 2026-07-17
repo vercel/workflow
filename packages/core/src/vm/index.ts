@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { types } from 'node:util';
 import { runInContext, createContext as vmCreateContext } from 'node:vm';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import seedrandom from 'seedrandom';
@@ -31,6 +32,12 @@ const arrayBufferByteLength = Object.getOwnPropertyDescriptor(
 // TypeError instead of allocating a Uint8Array of that length.
 function toDigestBytes(data: ArrayBuffer | ArrayBufferView): Uint8Array {
   if (ArrayBuffer.isView(data)) {
+    // WebCrypto's BufferSource excludes SharedArrayBuffer-backed views.
+    if (types.isSharedArrayBuffer(data.buffer)) {
+      throw new TypeError(
+        'crypto.subtle.digest does not accept SharedArrayBuffer-backed views'
+      );
+    }
     return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   }
   arrayBufferByteLength.call(data);

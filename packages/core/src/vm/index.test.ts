@@ -370,3 +370,16 @@ describe('crypto.subtle.digest input validation', () => {
     ).rejects.toThrow(TypeError);
   });
 });
+
+describe('crypto.subtle.digest SharedArrayBuffer rejection', () => {
+  it('rejects SharedArrayBuffer-backed views like WebCrypto does', async () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    await expect(
+      vm.runInContext(
+        'crypto.subtle.digest("SHA-256", new Uint8Array(new SharedArrayBuffer(4)))',
+        context
+      )
+    ).rejects.toThrow(TypeError);
+  });
+});

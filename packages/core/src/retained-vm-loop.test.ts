@@ -87,6 +87,19 @@ registerSerializationClass(
   RetainedSerializerValue
 );
 
+// A parallel batch where one sibling's input is unsafe must serialize the
+// WHOLE batch through the ordinary VM path (all-or-nothing) and demote.
+const mixedBatchWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
+  async function workflow() {
+    const [a, b] = await Promise.all([
+      s1({ get x() { return 1; } }),
+      s2({ plain: true }),
+    ]);
+    return a + b;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
 // `crypto.subtle.digest` computes synchronously via node:crypto, so a
 // digest-using VM stays quiescent at suspension and remains retainable.
 const digestWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
@@ -295,6 +308,15 @@ describe('retained VM through the inline replay loop', () => {
         []
       )
     ).toBe(0);
+  });
+
+  it('demotes retention when any input in a parallel batch is unsafe', async () => {
+    const { vmBuilds, output } = await drive(
+      'wrun_retained_mixed_batch',
+      mixedBatchWorkflow
+    );
+    expect(output).toBeInstanceOf(Uint8Array);
+    expect(vmBuilds).toBeGreaterThan(1);
   });
 
   it('retains a VM that used the synchronous crypto.subtle.digest', async () => {
