@@ -1165,100 +1165,131 @@ export function workflowEntrypoint(
                       // Load events — use cached events with incremental fetch on subsequent iterations.
                       // The server always returns a cursor when there are events (even on the
                       // final page), so we can reliably use it for incremental loading.
-                      let events: Event[];
-                      if (pendingInlineDelta && cachedEvents) {
-                        // Fast path: the previous iteration's inline step
-                        // terminal write returned the authoritative event-log
-                        // delta since the pre-write cursor, so we consume it
-                        // here instead of issuing an incremental events.list.
-                        // The delta is byte-for-byte what events.list(cursor)
-                        // would have returned at write time — it includes this
-                        // handler's own step events, any attr_set the step body
-                        // wrote, and any in-band events (e.g. hook_received,
-                        // wait_completed) another writer appended since the
-                        // cursor — so skipping the fetch cannot drop events or
-                        // skew the prefix from the server's log.
-                        const delta = pendingInlineDelta;
-                        pendingInlineDelta = null;
-                        if (delta.events.length > 0) {
-                          const existingIds = new Set(
-                            cachedEvents.map((e) => e.eventId)
-                          );
-                          for (const e of delta.events) {
-                            if (!existingIds.has(e.eventId)) {
-                              existingIds.add(e.eventId);
-                              cachedEvents.push(e);
+                      let events = await trace(
+                        'workflow.events.refresh',
+                        // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: preserves the existing event-source fallback order inside one measured interval
+                        async (refreshSpan) => {
+                          const cachedBefore = cachedEvents?.length ?? 0;
+                          let deltaCount = 0;
+                          let source = 'unknown';
+                          let refreshedEvents: Event[];
+
+                          if (pendingInlineDelta && cachedEvents) {
+                            // Fast path: the previous iteration's inline step
+                            // terminal write returned the authoritative event-log
+                            // delta since the pre-write cursor, so we consume it
+                            // here instead of issuing an incremental events.list.
+                            // The delta is byte-for-byte what events.list(cursor)
+                            // would have returned at write time — it includes this
+                            // handler's own step events, any attr_set the step body
+                            // wrote, and any in-band events (e.g. hook_received,
+                            // wait_completed) another writer appended since the
+                            // cursor — so skipping the fetch cannot drop events or
+                            // skew the prefix from the server's log.
+                            source = 'inline_delta';
+                            const delta = pendingInlineDelta;
+                            pendingInlineDelta = null;
+                            deltaCount = delta.events.length;
+                            if (delta.events.length > 0) {
+                              const existingIds = new Set(
+                                cachedEvents.map((e) => e.eventId)
+                              );
+                              for (const e of delta.events) {
+                                if (!existingIds.has(e.eventId)) {
+                                  existingIds.add(e.eventId);
+                                  cachedEvents.push(e);
+                                }
+                              }
                             }
-                          }
-                        }
-                        eventsCursor = delta.cursor ?? eventsCursor;
-                        events = cachedEvents;
-                      } else if (cachedEvents === null) {
-                        // First iteration: use preloaded events if available,
-                        // otherwise do a full load with cursor.
-                        if (preloadedEvents) {
-                          events = preloadedEvents;
-                          eventsCursor = preloadedEventsCursor ?? null;
-                        } else {
-                          const loaded = await loadWorkflowRunEvents(runId);
-                          events = loaded.events;
-                          eventsCursor = loaded.cursor;
-                        }
-                      } else if (eventsCursor) {
-                        // Subsequent iteration: fetch only new events since last cursor
-                        const loaded = await loadWorkflowRunEvents(
-                          runId,
-                          eventsCursor
-                        );
-                        // Dedupe by eventId: a previous iteration may have
-                        // appended a refreshed wait-completion delta before
-                        // the next loop observes the advanced cursor, so an
-                        // incremental fetch can return events we already have
-                        // locally.
-                        if (loaded.events.length > 0) {
-                          const existingIds = new Set(
-                            cachedEvents.map((e) => e.eventId)
-                          );
-                          for (const e of loaded.events) {
-                            if (!existingIds.has(e.eventId)) {
-                              existingIds.add(e.eventId);
-                              cachedEvents.push(e);
+                            eventsCursor = delta.cursor ?? eventsCursor;
+                            refreshedEvents = cachedEvents;
+                          } else if (cachedEvents === null) {
+                            // First iteration: use preloaded events if available,
+                            // otherwise do a full load with cursor.
+                            if (preloadedEvents) {
+                              source = 'preloaded';
+                              refreshedEvents = preloadedEvents;
+                              eventsCursor = preloadedEventsCursor ?? null;
+                            } else {
+                              source = 'full_load';
+                              const loaded = await loadWorkflowRunEvents(runId);
+                              deltaCount = loaded.events.length;
+                              refreshedEvents = loaded.events;
+                              eventsCursor = loaded.cursor;
                             }
+                          } else if (eventsCursor) {
+                            source = 'incremental_load';
+                            // Subsequent iteration: fetch only new events since last cursor
+                            const loaded = await loadWorkflowRunEvents(
+                              runId,
+                              eventsCursor
+                            );
+                            deltaCount = loaded.events.length;
+                            // Dedupe by eventId: a previous iteration may have
+                            // appended a refreshed wait-completion delta before
+                            // the next loop observes the advanced cursor, so an
+                            // incremental fetch can return events we already have
+                            // locally.
+                            if (loaded.events.length > 0) {
+                              const existingIds = new Set(
+                                cachedEvents.map((e) => e.eventId)
+                              );
+                              for (const e of loaded.events) {
+                                if (!existingIds.has(e.eventId)) {
+                                  existingIds.add(e.eventId);
+                                  cachedEvents.push(e);
+                                }
+                              }
+                            }
+                            eventsCursor = loaded.cursor ?? eventsCursor;
+                            refreshedEvents = cachedEvents;
+                          } else if (preloadedEvents) {
+                            source = 'preloaded_reload';
+                            // Iteration 2 after iteration 1 used preloaded events
+                            // (which don't carry a cursor). Do a full load now to
+                            // pick up any events written since the preloaded set
+                            // and obtain a cursor for subsequent incremental
+                            // loads. This is the expected path, not a bug.
+                            runtimeLogger.debug(
+                              'No cursor after preloaded-events first iteration; doing full reload to pick up cursor.',
+                              { workflowRunId: runId }
+                            );
+                            const loaded = await loadWorkflowRunEvents(runId);
+                            deltaCount = loaded.events.length;
+                            cachedEvents = loaded.events;
+                            eventsCursor = loaded.cursor;
+                            refreshedEvents = cachedEvents;
+                          } else {
+                            source = 'cursor_recovery_reload';
+                            // No cursor available despite having cached events
+                            // and no preloaded-events explanation. All World
+                            // implementations are required to return a cursor
+                            // when there are events, so this signals a bug in
+                            // the World. Fall back to a full reload to avoid
+                            // stale data.
+                            runtimeLogger.warn(
+                              'Event cursor missing after initial load — falling back to full reload. ' +
+                                'This indicates a bug in the World implementation.',
+                              { workflowRunId: runId }
+                            );
+                            const loaded = await loadWorkflowRunEvents(runId);
+                            deltaCount = loaded.events.length;
+                            cachedEvents = loaded.events;
+                            eventsCursor = loaded.cursor;
+                            refreshedEvents = cachedEvents;
                           }
+
+                          refreshSpan?.setAttributes({
+                            'workflow.events.refresh.source': source,
+                            'workflow.events.refresh.cached_before':
+                              cachedBefore,
+                            'workflow.events.refresh.delta_count': deltaCount,
+                            'workflow.events.refresh.total':
+                              refreshedEvents.length,
+                          });
+                          return refreshedEvents;
                         }
-                        eventsCursor = loaded.cursor ?? eventsCursor;
-                        events = cachedEvents;
-                      } else if (preloadedEvents) {
-                        // Iteration 2 after iteration 1 used preloaded events
-                        // (which don't carry a cursor). Do a full load now to
-                        // pick up any events written since the preloaded set
-                        // and obtain a cursor for subsequent incremental
-                        // loads. This is the expected path, not a bug.
-                        runtimeLogger.debug(
-                          'No cursor after preloaded-events first iteration; doing full reload to pick up cursor.',
-                          { workflowRunId: runId }
-                        );
-                        const loaded = await loadWorkflowRunEvents(runId);
-                        cachedEvents = loaded.events;
-                        eventsCursor = loaded.cursor;
-                        events = cachedEvents;
-                      } else {
-                        // No cursor available despite having cached events
-                        // and no preloaded-events explanation. All World
-                        // implementations are required to return a cursor
-                        // when there are events, so this signals a bug in
-                        // the World. Fall back to a full reload to avoid
-                        // stale data.
-                        runtimeLogger.warn(
-                          'Event cursor missing after initial load — falling back to full reload. ' +
-                            'This indicates a bug in the World implementation.',
-                          { workflowRunId: runId }
-                        );
-                        const loaded = await loadWorkflowRunEvents(runId);
-                        cachedEvents = loaded.events;
-                        eventsCursor = loaded.cursor;
-                        events = cachedEvents;
-                      }
+                      );
 
                       // Detect concurrent completion via the event log: if
                       // any other handler wrote a terminal run event, exit
