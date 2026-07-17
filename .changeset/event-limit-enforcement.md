@@ -1,6 +1,8 @@
 ---
 "@workflow/errors": patch
 "@workflow/core": patch
+"@workflow/world": patch
+"@workflow/world-vercel": patch
 ---
 
-Enforce 25K events per run limit
+Enforce a server-supplied per-run event limit (default 25K)
