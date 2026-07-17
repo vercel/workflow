@@ -149,7 +149,34 @@ type WorkflowSessionState =
     }
   | { readonly type: 'suspended'; readonly suspension: WorkflowSuspension }
   | { readonly type: 'failed'; readonly error: Error }
+  | { readonly type: 'replay' }
   | { readonly type: 'completed' };
+
+function isSameSuspensionBoundary(
+  previous: WorkflowSuspension,
+  next: WorkflowSuspension
+): boolean {
+  return (
+    previous.stepCount === next.stepCount &&
+    previous.hookCount === next.hookCount &&
+    previous.waitCount === next.waitCount &&
+    previous.attributeCount === next.attributeCount &&
+    previous.hookDisposedCount === next.hookDisposedCount &&
+    previous.abortCount === next.abortCount &&
+    previous.steps.length === next.steps.length &&
+    previous.steps.every((item, index) => item === next.steps[index])
+  );
+}
+
+function updateSuspendedSession(
+  suspension: WorkflowSuspension,
+  error: Error
+): WorkflowSessionState {
+  if (!WorkflowSuspension.is(error)) return { type: 'failed', error };
+  return isSameSuspensionBoundary(suspension, error)
+    ? { type: 'suspended', suspension }
+    : { type: 'replay' };
+}
 
 export interface WorkflowSession {
   readonly workflowRun: WorkflowRun;
@@ -360,11 +387,10 @@ function createWorkflowSession({
           return;
         }
         case 'suspended':
-          if (!WorkflowSuspension.is(error)) {
-            state = { type: 'failed', error };
-          }
+          state = updateSuspendedSession(state.suspension, error);
           return;
         case 'failed':
+        case 'replay':
         case 'completed':
           return;
       }
@@ -1033,10 +1059,35 @@ function createWorkflowSession({
     );
     await workflowContext.promiseQueue;
 
-    const workflowExecution = (async (): Promise<WorkflowCompletion> => {
+    const workflowExecution = (async (): Promise<unknown> => {
+      return await workflowFn(...args);
+    })();
+
+    const failWorkflow = async (error: unknown): Promise<never> => {
+      state = { type: 'completed' };
+      // Control-flow signals are handled by the runtime and do not mean the
+      // workflow has terminally failed.
+      if (WorkflowSuspension.is(error) || ReplayDivergenceError.is(error)) {
+        throw error;
+      }
+
+      await drainPendingQueueItems(
+        workflowRun.runId,
+        workflowContext.invocationsQueue,
+        vmGlobalThis,
+        workflowRun,
+        'failed',
+        runReadyBarrier
+      );
+
+      throw error;
+    };
+
+    const completeWorkflow = async (
+      result: unknown
+    ): Promise<WorkflowCompletion> => {
+      state = { type: 'completed' };
       try {
-        const result = await workflowFn(...args);
-        state = { type: 'completed' };
         const output = await dehydrateWorkflowReturnValue(
           result,
           workflowRun.runId,
@@ -1060,48 +1111,23 @@ function createWorkflowSession({
 
         return { output, resultType: typeof result };
       } catch (error) {
-        if (state.type === 'running') {
-          state = { type: 'completed' };
-        }
-        // Control-flow signals are handled by the runtime and do not mean the
-        // workflow has terminally failed.
-        if (WorkflowSuspension.is(error) || ReplayDivergenceError.is(error)) {
-          throw error;
-        }
-
-        await drainPendingQueueItems(
-          workflowRun.runId,
-          workflowContext.invocationsQueue,
-          vmGlobalThis,
-          workflowRun,
-          'failed',
-          runReadyBarrier
-        );
-
-        throw error;
+        return failWorkflow(error);
       }
-    })();
+    };
 
     const waitForExecution = async (
       interruption: PromiseWithResolvers<never>
     ): Promise<WorkflowCompletion> => {
+      let result: unknown;
       try {
-        const completed = await Promise.race([
-          workflowExecution,
-          interruption.promise,
-        ]);
-        state = { type: 'completed' };
-        return completed;
+        result = await Promise.race([workflowExecution, interruption.promise]);
       } catch (error) {
-        if (
-          (state.type === 'suspended' && error === state.suspension) ||
-          (state.type === 'failed' && error === state.error)
-        ) {
+        if (state.type === 'suspended' && error === state.suspension) {
           throw error;
         }
-        state = { type: 'completed' };
-        throw error;
+        return failWorkflow(error);
       }
+      return completeWorkflow(result);
     };
 
     const session: WorkflowSession = {
@@ -1117,6 +1143,7 @@ function createWorkflowSession({
                 (event, index) => event.eventId === nextEvents[index]?.eventId
               );
             if (!isStrictExtension) {
+              state = { type: 'replay' };
               return { type: 'replay' };
             }
             const interruption = withResolvers<never>();
@@ -1128,9 +1155,10 @@ function createWorkflowSession({
             };
           }
           case 'failed':
-            throw state.error;
+            return { type: 'resumed', execution: failWorkflow(state.error) };
+          case 'replay':
+            return { type: 'replay' };
           case 'completed':
-            return { type: 'resumed', execution: workflowExecution };
           case 'running':
             throw new WorkflowRuntimeError(
               `Cannot resume ${state.type} workflow "${workflowRun.runId}"`
