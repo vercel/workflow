@@ -152,17 +152,13 @@ type WorkflowSessionState =
   | { readonly type: 'replay' }
   | { readonly type: 'completed' };
 
+// The suspension counts are all derived from `steps` in the WorkflowSuspension
+// constructor, so identical items mean an identical boundary.
 function isSameSuspensionBoundary(
   previous: WorkflowSuspension,
   next: WorkflowSuspension
 ): boolean {
   return (
-    previous.stepCount === next.stepCount &&
-    previous.hookCount === next.hookCount &&
-    previous.waitCount === next.waitCount &&
-    previous.attributeCount === next.attributeCount &&
-    previous.hookDisposedCount === next.hookDisposedCount &&
-    previous.abortCount === next.abortCount &&
     previous.steps.length === next.steps.length &&
     previous.steps.every((item, index) => item === next.steps[index])
   );
@@ -208,8 +204,7 @@ type WorkflowExecutionRequest =
       readonly events: Event[];
     };
 
-export type WorkflowExecutionResult =
-  | { readonly type: 'replay' }
+type WorkflowReplayResult =
   | { readonly type: 'completed'; readonly output: unknown }
   | {
       readonly type: 'suspended';
@@ -217,6 +212,18 @@ export type WorkflowExecutionResult =
       readonly session: WorkflowSession;
     };
 
+export type WorkflowExecutionResult =
+  | { readonly type: 'replay' }
+  | WorkflowReplayResult;
+
+// A fresh replay always completes or suspends; only resuming a session can
+// request another replay (stale session or diverged event prefix).
+export async function executeWorkflow(
+  request: { readonly type: 'replay' } & WorkflowSessionOptions
+): Promise<WorkflowReplayResult>;
+export async function executeWorkflow(
+  request: WorkflowExecutionRequest
+): Promise<WorkflowExecutionResult>;
 export async function executeWorkflow(
   request: WorkflowExecutionRequest
 ): Promise<WorkflowExecutionResult> {
@@ -302,11 +309,6 @@ export async function runWorkflow(
     replayPayloadCache,
     runReadyBarrier,
   });
-  if (result.type === 'replay') {
-    throw new WorkflowRuntimeError(
-      `Fresh workflow "${workflowRun.runId}" unexpectedly requested replay`
-    );
-  }
   if (result.type === 'suspended') throw result.suspension;
   return result.output;
 }

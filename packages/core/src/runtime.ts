@@ -1460,16 +1460,14 @@ export function workflowEntrypoint(
                         executionMode,
                       });
                       replayStart = Date.now();
-                      let workflowResult: WorkflowExecutionResult = {
-                        type: 'replay',
-                      };
-                      if (workflowExecution.type === 'retained') {
-                        workflowResult = await executeWorkflow({
-                          type: 'resume',
-                          session: workflowExecution.session,
-                          events,
-                        });
-                      }
+                      let workflowResult: WorkflowExecutionResult =
+                        workflowExecution.type === 'retained'
+                          ? await executeWorkflow({
+                              type: 'resume',
+                              session: workflowExecution.session,
+                              events,
+                            })
+                          : { type: 'replay' };
 
                       if (workflowResult.type === 'replay') {
                         executionMode = 'replay';
@@ -1508,12 +1506,6 @@ export function workflowEntrypoint(
                             }
                           : { type: 'replay' };
                         throw workflowResult.suspension;
-                      }
-
-                      if (workflowResult.type === 'replay') {
-                        throw new Error(
-                          'Invariant violation: fresh workflow execution requested another replay'
-                        );
                       }
 
                       const result = workflowResult.output;
