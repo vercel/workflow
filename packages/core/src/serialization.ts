@@ -2863,7 +2863,7 @@ export const prepareReplayPayload: ReplayPayloadPreparer = async (
 ) => {
   const compressionStats: CompressionStats = {};
   const prepared = await decompress(
-    await maybeDecrypt(value, key),
+    await decrypt(value, key),
     compressionStats
   );
   await recordCompression(compressionStats, 'deserialize');
@@ -3339,7 +3339,7 @@ export async function hydrateRunError(
 ): Promise<unknown> {
   const compressionStats: CompressionStats = {};
   const decrypted = await decompress(
-    await maybeDecrypt(value, key),
+    await decrypt(value, key),
     compressionStats
   );
   await recordCompression(compressionStats, 'deserialize');
