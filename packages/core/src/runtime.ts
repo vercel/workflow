@@ -2802,6 +2802,38 @@ export function workflowEntrypoint(
                           throw err;
                         }
 
+                        // Deferred step_completed
+                        // (WORKFLOW_ASYNC_STEP_COMPLETED, opt-in): every path
+                        // below acks the queue message (the ReplayDivergence
+                        // recovery re-queue and the run_failed terminal write
+                        // both return after acknowledging). Per the invariant
+                        // (see the deferredCompleted declaration) the message
+                        // must never be acked while the deferred write is in
+                        // flight or failed, so settle it fail-closed FIRST. A
+                        // settle rejection takes precedence over the current
+                        // error: a PreconditionFailedError (the deferred write
+                        // was superseded) forces a fresh replay instead of
+                        // failing the run on speculative, already-superseded
+                        // state (mirrors the PreconditionFailedError branch
+                        // above and run_completed's settle-then-catch), while
+                        // anything else (transient) rethrows so the message
+                        // stays unacked and redelivery re-runs the step. A
+                        // no-op outside the opt-in (deferredCompleted null).
+                        if (deferredCompleted) {
+                          try {
+                            await settleDeferredCompleted();
+                          } catch (settleErr) {
+                            if (PreconditionFailedError.is(settleErr)) {
+                              runtimeLogger.warn(
+                                'Deferred step_completed superseded during failure handling; re-invoking run for a fresh replay instead of failing',
+                                { workflowRunId: runId, loopIteration }
+                              );
+                              return await reinvoke(0);
+                            }
+                            throw settleErr;
+                          }
+                        }
+
                         let terminalError = err;
                         if (ReplayDivergenceError.is(err)) {
                           const divergenceCount =
