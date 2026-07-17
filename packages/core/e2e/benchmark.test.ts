@@ -103,6 +103,14 @@ const SEQUENTIAL_ITERATIONS = envInt('BENCH_SEQUENTIAL_ITERATIONS', 1);
 const SEQUENTIAL_STEP_COUNT = envInt('BENCH_SEQUENTIAL_STEP_COUNT', 1020);
 const WARMUP_ITERATIONS = envInt('BENCH_WARMUP_ITERATIONS', 2, 0);
 
+// Methodology version — bump whenever the measurement window changes in a way
+// that makes numbers incomparable across runs (e.g. the switch from a
+// CI/proxy-inclusive clock to the in-deployment trigger). The PR-comment
+// renderer keys baseline deltas on this, so old-methodology baselines on `main`
+// are not diffed against new-methodology runs (deltas stay blank until `main`
+// has produced a same-version baseline). v2 = in-deployment trigger.
+const BENCH_METHODOLOGY_VERSION = 2;
+
 // Per-metric latency targets (ms) rendered as 🟢/🔴 marks in the PR comment.
 // Provisional: now that the proxy leg is out of every window, these will be
 // re-tightened once a few in-deployment baselines land.
@@ -660,6 +668,9 @@ describe('workflow benchmarks', () => {
     );
     const results = {
       version: 1,
+      // Measurement-methodology version; baseline deltas only compare runs
+      // with the same value (see annotateWithBaseline in the renderer).
+      methodologyVersion: BENCH_METHODOLOGY_VERSION,
       app: appName,
       backend,
       generatedAt: new Date().toISOString(),

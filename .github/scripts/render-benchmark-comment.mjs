@@ -161,17 +161,23 @@ function formatMs(value) {
 
 /**
  * Annotates each metric row with the matching baseline average (from the most
- * recent main-branch run), keyed by backend/app/metric/scenario. The
- * annotation is stored on the entry so history re-renders keep showing the
- * delta each run was originally compared against.
+ * recent main-branch run), keyed by
+ * methodologyVersion/backend/app/metric/scenario. The methodology version is
+ * part of the key so a change to the measurement window (e.g. the switch to
+ * the in-deployment trigger) does not diff incomparable numbers: an old
+ * baseline won't match the new run, and the delta stays blank until `main` has
+ * produced a same-methodology baseline. The annotation is stored on the entry
+ * so history re-renders keep showing the delta each run was originally
+ * compared against.
  */
 export function annotateWithBaseline(results, baseline) {
   if (!baseline || baseline.length === 0) return results;
+  const methodology = (result) => result.methodologyVersion ?? 'legacy';
   const baselineAvgs = new Map();
   for (const result of baseline) {
     for (const row of result.metrics ?? []) {
       baselineAvgs.set(
-        `${result.backend}/${result.app}/${row.metric}/${row.scenario}`,
+        `${methodology(result)}/${result.backend}/${result.app}/${row.metric}/${row.scenario}`,
         row.avg
       );
     }
@@ -180,7 +186,7 @@ export function annotateWithBaseline(results, baseline) {
     ...result,
     metrics: (result.metrics ?? []).map((row) => {
       const baselineAvg = baselineAvgs.get(
-        `${result.backend}/${result.app}/${row.metric}/${row.scenario}`
+        `${methodology(result)}/${result.backend}/${result.app}/${row.metric}/${row.scenario}`
       );
       return typeof baselineAvg === 'number' ? { ...row, baselineAvg } : row;
     }),

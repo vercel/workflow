@@ -13,6 +13,7 @@ const loadModule = () => import('./render-benchmark-comment.mjs');
 function sampleResult(overrides = {}) {
   return {
     version: 1,
+    methodologyVersion: 2,
     app: 'nextjs-turbopack',
     backend: 'vercel',
     generatedAt: '2026-07-08T12:00:00.000Z',
@@ -33,6 +34,7 @@ function sampleResult(overrides = {}) {
         scenario: 'stream',
         unit: 'ms',
         avg: 412.3,
+        p10: 357,
         p75: 398,
         p90: 512,
         p99: 634,
@@ -46,6 +48,7 @@ function sampleResult(overrides = {}) {
         scenario: 'stream',
         unit: 'ms',
         avg: 55.1,
+        p10: 41,
         p75: 48,
         p90: 55,
         p99: 120,
@@ -59,6 +62,7 @@ function sampleResult(overrides = {}) {
         scenario: '1020 steps (101-120)',
         unit: 'ms',
         avg: 91,
+        p10: 72,
         p75: 85,
         p90: 120,
         p99: 200,
@@ -72,6 +76,7 @@ function sampleResult(overrides = {}) {
         scenario: 'stream',
         unit: 'ms',
         avg: 1200,
+        p10: 1000,
         p75: 1100,
         p90: 1500,
         p99: 1900,
@@ -103,15 +108,14 @@ test('renders a completed run with a table and embedded history', async () => {
   // "ms" lives in the column headers, not in the cells
   assert.match(
     body,
-    /\| Avg \(ms\) \| P75 \(ms\) \| P90 \(ms\) \| P99 \(ms\) \|/
+    /\| Avg \(ms\) \| P10 \(ms\) \| P75 \(ms\) \| P90 \(ms\) \| P99 \(ms\) \|/
   );
   assert.doesNotMatch(body, /\d ms \|/);
+  // P10 cell renders between Avg and P75 (warm-start floor for TTFS)
+  assert.match(body, /\| 412 \| 357 \| 398 🔴 \|/);
   // Metric definitions live in the footer, not in the table rows
   assert.doesNotMatch(body, /\| \*\*TTFS\*\* <sub>/);
-  assert.match(
-    body,
-    /<sub>Metrics — \*\*TTFS\*\*: time to first step body execution/
-  );
+  assert.match(body, /<sub>Metrics — \*\*TTFS\*\*: time to first step body/);
   assert.match(body, /\*\*SL\*\*: stream latency/);
   // Scenario legend from the runner-provided descriptions
   assert.match(
@@ -175,6 +179,27 @@ test('renders avg deltas against a baseline and embeds them in history', async (
     commit: 'ffffff1234567890',
   });
   assert.match(rerendered, /\| 412 \(\+3\.1%\) \|/);
+});
+
+test('suppresses deltas when the baseline methodology version differs', async () => {
+  const { renderComment } = await loadModule();
+  // Old-methodology baseline (e.g. proxy-inclusive TTFS) must not be diffed
+  // against a new-methodology run, even though backend/app/metric/scenario
+  // match — the numbers are not comparable.
+  const baseline = sampleResult({
+    methodologyVersion: 1,
+    metrics: sampleResult().metrics.map((row) => ({ ...row, avg: 400 })),
+  });
+  const body = renderComment({
+    status: 'completed',
+    results: [sampleResult()], // methodologyVersion: 2
+    baseline: [baseline],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+  // No percentage deltas, and the "compare against main" note is absent.
+  assert.doesNotMatch(body, /%\)/);
+  assert.doesNotMatch(body, /Avg deltas/);
 });
 
 test('renders no deltas without a baseline', async () => {

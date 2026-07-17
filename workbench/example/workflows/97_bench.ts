@@ -43,12 +43,13 @@ export interface BenchStreamLatency {
 // Dedicated stream for the SL scenario, kept off the default output stream so
 // it never interacts with the default-stream lifecycle.
 const SL_STREAM_NAMESPACE = 'bench-sl';
-// The writer waits this long before writing its first chunk so the parallel
-// reader step is guaranteed to be attached and blocked on the stream first.
-// SL then reflects live write->read propagation (pub/sub wake + delivery),
-// not a warm read of an already-written chunk. The wait happens before
-// `writtenAt` is stamped, so it never enters the SL measurement.
-const SL_WRITE_DELAY_MS = 750;
+// A second stream used as a reader-ready barrier: the reader initiates its
+// read on the SL stream, then writes a marker here; the writer blocks on this
+// marker before writing to the SL stream. This guarantees the SL chunk is
+// delivered to an already-attached reader (live write->read propagation)
+// rather than being retained for a reader that started late — which a fixed
+// sleep could not guarantee under scheduler delay or load.
+const SL_READY_NAMESPACE = 'bench-sl-ready';
 
 async function timedNoopStep(index: number): Promise<BenchStepTiming> {
   'use step';
@@ -131,19 +132,32 @@ export async function benchHookStreamWorkflow(): Promise<{
   return { steps: [step], hookToken: hook.token };
 }
 
-/** Reader half of the SL scenario: attaches to the dedicated stream and blocks
- * on the first chunk, stamping `readAt` the instant it arrives. Reads via
- * `getRun(runId).getReadable()` — the same in-deployment path a co-located
- * consumer uses, so the api.vercel.com read path is never involved. */
+/** Reader half of the SL scenario. Reads via `getRun(runId).getReadable()` —
+ * the same in-deployment path a co-located consumer uses, so the
+ * api.vercel.com read path is never involved. Initiates the SL read (which
+ * establishes the server-side stream connection), signals readiness on the
+ * ready stream, then awaits the first chunk and stamps `readAt`. */
 async function slReaderStep(): Promise<BenchStreamLatency> {
   'use step';
   const { workflowRunId } = getWorkflowMetadata();
-  const run = getRun<BenchStreamChunk>(workflowRunId);
-  const reader = run
+  const reader = getRun<BenchStreamChunk>(workflowRunId)
     .getReadable<BenchStreamChunk>({ namespace: SL_STREAM_NAMESPACE })
     .getReader();
   try {
-    const { value } = await reader.read();
+    // Initiate the read BEFORE signalling ready so the stream GET is in flight;
+    // the writer only writes after observing the signal (plus its own
+    // round-trip), by which point this reader is attached and blocked.
+    const readPromise = reader.read();
+
+    const ready = getWritable<{ ready: true }>({
+      namespace: SL_READY_NAMESPACE,
+    });
+    const readyWriter = ready.getWriter();
+    await readyWriter.write({ ready: true });
+    readyWriter.releaseLock();
+    await ready.close();
+
+    const { value } = await readPromise;
     const readAt = Date.now();
     if (!value || typeof value.writtenAt !== 'number') {
       throw new Error(
@@ -157,15 +171,26 @@ async function slReaderStep(): Promise<BenchStreamLatency> {
   }
 }
 
-/** Writer half of the SL scenario: waits so the reader is attached first, then
- * writes a single chunk stamped with `writtenAt` and closes the stream. */
+/** Writer half of the SL scenario: blocks on the reader-ready marker, then
+ * writes a single chunk stamped with `writtenAt` and closes the stream. The
+ * barrier read only needs to observe the marker (a retained chunk is fine), so
+ * its own attach timing doesn't matter — it just gates the SL write. */
 async function slWriterStep(): Promise<void> {
   'use step';
+  const { workflowRunId } = getWorkflowMetadata();
+  const readyReader = getRun<{ ready: true }>(workflowRunId)
+    .getReadable<{ ready: true }>({ namespace: SL_READY_NAMESPACE })
+    .getReader();
+  try {
+    await readyReader.read();
+  } finally {
+    readyReader.cancel().catch(() => {});
+  }
+
   const writable = getWritable<BenchStreamChunk>({
     namespace: SL_STREAM_NAMESPACE,
   });
   const writer = writable.getWriter();
-  await new Promise((resolve) => setTimeout(resolve, SL_WRITE_DELAY_MS));
   await writer.write({ seq: 0, writtenAt: Date.now() });
   writer.releaseLock();
   await writable.close();
@@ -175,10 +200,12 @@ async function slWriterStep(): Promise<void> {
  * Scenario 4: stream latency (SL), measured entirely on the deployment.
  *
  * The reader and writer steps run in parallel on a dedicated namespaced
- * stream. The reader attaches and blocks; the writer waits {@link
- * SL_WRITE_DELAY_MS} (guaranteeing the reader is blocked first) and then
- * writes. Both `writtenAt` and `readAt` are step-body `Date.now()` values on
- * the deployment, so the returned SL is independent of the CI client and the
+ * stream, coordinated by an explicit reader-ready barrier (a second stream):
+ * the writer writes its `writtenAt` chunk only after the reader has initiated
+ * its read and signalled readiness, so SL reflects live write->read
+ * propagation rather than a late reader catching up on a retained chunk. Both
+ * `writtenAt` and `readAt` are step-body `Date.now()` values on the
+ * deployment, so the returned SL is independent of the CI client and the
  * api.vercel.com read path.
  */
 export async function benchSlWorkflow(): Promise<{ sl: BenchStreamLatency }> {
