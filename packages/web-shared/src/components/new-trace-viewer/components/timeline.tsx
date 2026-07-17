@@ -551,51 +551,9 @@ const TimelineBar = memo(function TimelineBar({
 export { TimelineBar };
 
 // ---------------------------------------------------------------------------
-// DeltaIndicator (Alt-key gap overlay)
-// ---------------------------------------------------------------------------
-
-const DELTA_CAP_HEIGHT_PX = 8;
-// Vertical offset to sit the indicator inside the gap between row N and N+1,
-// aligned with where the bar starts in the next row (rows center a 24px bar
-// inside 40px, so bars start ~8px from the top of the row).
-const DELTA_ROW_OFFSET_PX = 8;
-
-const DeltaIndicator = memo(function DeltaIndicator({
-  leftFrac,
-  rightFrac,
-  label,
-  rowIndex,
-}: {
-  leftFrac: number;
-  rightFrac: number;
-  label: string;
-  rowIndex: number;
-}) {
-  const centerY = DELTA_ROW_OFFSET_PX + (rowIndex + 1) * ROW_HEIGHT_PX;
-
-  return (
-    <div
-      className="absolute pointer-events-none"
-      style={{
-        left: `${leftFrac * 100}%`,
-        width: `${(rightFrac - leftFrac) * 100}%`,
-        top: centerY - DELTA_CAP_HEIGHT_PX / 2,
-        height: DELTA_CAP_HEIGHT_PX,
-      }}
-    >
-      <div className="absolute left-0 top-0 w-px h-full bg-amber-800" />
-      <div className="absolute left-0 right-0 top-1/2 h-px bg-amber-800" />
-      <div className="absolute right-0 top-0 w-px h-full bg-amber-800" />
-      <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-label-12 leading-none whitespace-nowrap rounded-xs px-1 py-0.5 text-gray-100 bg-amber-800">
-        {label}
-      </span>
-    </div>
-  );
-});
-
-// ---------------------------------------------------------------------------
-// DeltaMeasureLine (Alt+hover measurement between the selected span and the
-// hovered row's span)
+// DeltaMeasureLine (Alt-key measurement overlays: the selected ↔ hovered
+// measurement, and the ambient consecutive-gap indicators shown without a
+// selection)
 // ---------------------------------------------------------------------------
 
 // Horizontal distance between the anchor bar's measured edge and the vertical
@@ -779,8 +737,22 @@ export function Timeline({
     return () => ro.disconnect();
   }, []);
 
-  const gaps = useMemo(
-    () => computeSpanGaps(spans, viewStart, viewEnd),
+  // Each consecutive gap renders as a measurement from the earlier span's end
+  // edge to the next span's start, in the same visual language as the
+  // selected ↔ hovered measurement.
+  const gapMeasurements = useMemo(
+    () =>
+      computeSpanGaps(spans, viewStart, viewEnd).map((gap) => ({
+        delta: {
+          deltaMs: gap.gapMs,
+          anchorFrac: gap.leftFrac,
+          hoveredFrac: gap.rightFrac,
+          anchorEdge: 'end',
+          hoveredOffscreen: null,
+        } satisfies SpanDelta,
+        anchorRowIndex: gap.rowIndex,
+        hoveredRowIndex: gap.rowIndex + 1,
+      })),
     [spans, viewStart, viewEnd]
   );
 
@@ -858,13 +830,11 @@ export function Timeline({
           className="absolute inset-y-0 pointer-events-none"
           style={TIMELINE_INSET_STYLE}
         >
-          {gaps.map((gap) => (
-            <DeltaIndicator
-              key={gap.rowIndex}
-              leftFrac={gap.leftFrac}
-              rightFrac={gap.rightFrac}
-              label={formatDurationPrecise(gap.gapMs)}
-              rowIndex={gap.rowIndex}
+          {gapMeasurements.map((gap) => (
+            <DeltaMeasureLine
+              key={gap.anchorRowIndex}
+              {...gap}
+              timelineWidth={timelineWidth}
             />
           ))}
         </div>
