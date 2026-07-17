@@ -31,6 +31,12 @@ import { getWorldLazy } from './get-world-lazy.js';
 const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
 
 /**
+ * Requested replay page size. The world may return fewer events when its
+ * storage or transport imposes a lower byte-based page limit.
+ */
+const REPLAY_EVENT_PAGE_LIMIT = 500;
+
+/**
  * Pattern for safe workflow names. Only allows alphanumeric characters,
  * underscores, hyphens, dots, forward slashes (for namespaced workflows),
  * and at signs (for scoped packages).
@@ -496,6 +502,7 @@ export async function loadWorkflowRunEvents(
           response = await world.events.list({
             runId,
             pagination: {
+              limit: REPLAY_EVENT_PAGE_LIMIT,
               sortOrder: 'asc',
               cursor: requestedCursor ?? undefined,
             },

@@ -365,6 +365,18 @@ describe('loadWorkflowRunEvents', () => {
       'evnt_c',
     ]);
     expect(result.cursor).toBe('eid:evnt_c');
+    expect(eventsListMock).toHaveBeenNthCalledWith(1, {
+      runId: 'wrun_test',
+      pagination: { limit: 500, sortOrder: 'asc', cursor: undefined },
+    });
+    expect(eventsListMock).toHaveBeenNthCalledWith(2, {
+      runId: 'wrun_test',
+      pagination: { limit: 500, sortOrder: 'asc', cursor: 'eid:evnt_a' },
+    });
+    expect(eventsListMock).toHaveBeenNthCalledWith(3, {
+      runId: 'wrun_test',
+      pagination: { limit: 500, sortOrder: 'asc', cursor: 'eid:evnt_b' },
+    });
   });
 
   it('falls back to the afterCursor when an incremental load returns no events', async () => {
@@ -421,11 +433,15 @@ describe('loadWorkflowRunEvents', () => {
     ]);
     expect(eventsListMock).toHaveBeenNthCalledWith(1, {
       runId: 'wrun_test',
-      pagination: { sortOrder: 'asc', cursor: 'opaque-cursor' },
+      pagination: {
+        limit: 500,
+        sortOrder: 'asc',
+        cursor: 'opaque-cursor',
+      },
     });
     expect(eventsListMock).toHaveBeenNthCalledWith(2, {
       runId: 'wrun_test',
-      pagination: { sortOrder: 'asc', cursor: undefined },
+      pagination: { limit: 500, sortOrder: 'asc', cursor: undefined },
     });
   });
 
