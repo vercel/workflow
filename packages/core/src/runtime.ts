@@ -38,7 +38,6 @@ import {
   getMaxQueueDeliveries,
   getReplayDivergenceMaxRetries,
   isInlineOwnershipEnabled,
-  isSequentialReplaysEnabled,
   isTurboEnabled,
 } from './runtime/constants.js';
 import {
@@ -2050,6 +2049,14 @@ export function workflowEntrypoint(
                         // own events and the per-write delta would be partial, so
                         // the delta is not requested (the gate below is false for
                         // multi-step) and the next iteration does a normal fetch.
+                        // Whether the precondition guard is actually in force:
+                        // enabled by env AND enforced by the World. The env
+                        // flag alone only makes the runtime send snapshots,
+                        // which an unsupporting backend ignores (no fence).
+                        const guardEnforced =
+                          isPreconditionGuardEnabled() &&
+                          world.capabilities?.preconditionGuard === true;
+
                         const requestInlineDelta =
                           typeof preInlineWriteCursor === 'string' &&
                           err.stepCount === 1 &&
@@ -2059,10 +2066,31 @@ export function workflowEntrypoint(
                           ownedRecoverySteps.length === 0 &&
                           !suspensionResult.waitTimeout &&
                           !openHookWaitState.openWait &&
-                          ((isPreconditionGuardEnabled() &&
-                            world.capabilities?.preconditionGuard === true) ||
+                          (guardEnforced ||
                             (err.hookCount === 0 &&
                               !openHookWaitState.openHook));
+
+                        // Stale-sensitive batch: a hook is open in the run (or
+                        // was created by this suspension, so its hook_received
+                        // can land any moment) — an out-of-band event can make
+                        // the view this batch was scheduled from stale. With
+                        // the guard in force, the fence rejects a stale
+                        // claim's durable writes — but it cannot un-run a step
+                        // BODY that optimistic start began before the claim
+                        // settled. Suppress optimistic start for these batches
+                        // (take await-then-run) so a 412-fenced step never
+                        // executes user code at all: the fence then covers
+                        // side effects, not just the event log. Costs one
+                        // claim round-trip per step while a hook is open, only
+                        // on guard-enforcing deployments. Without the guard
+                        // nothing 412s, so suppression would buy nothing —
+                        // stale-view exposure there is the pre-existing
+                        // optimistic-start contract (idempotent side effects).
+                        const suppressOptimisticStart =
+                          guardEnforced &&
+                          (openHookWaitState.openHook ||
+                            err.hookCount > 0 ||
+                            suspensionResult.hasHookEvents);
 
                         // Turbo mode forces optimistic inline start for this
                         // batch — but only while the run is still "clean" (a pure
@@ -2089,45 +2117,28 @@ export function workflowEntrypoint(
                         // permanently — checked here via `openHookAndWaitState`
                         // over the cumulative `cachedEvents`.
                         //
-                        // Under sequential replays
-                        // (`WORKFLOW_SEQUENTIAL_REPLAYS=1`, per-run flow topics
-                        // consumed with `maxConcurrency: 1`) the hook/wait
-                        // latch is waived: the resume invocations a hook or
-                        // wait introduces are run-topic messages, which the
-                        // queue does not deliver until this delivery acks — so
-                        // no concurrent orchestrator replay can race the
-                        // optimistic create-claim, and the single-handler
-                        // guarantee holds for the whole delivery. The waiver
-                        // additionally requires the World to declare
-                        // `capabilities.maxConcurrency`: the env var is a
-                        // runtime-process setting and cannot by itself prove
-                        // the queue serializes anything — on a World whose
-                        // queue has no concurrency-limit concept the flag
-                        // would be an empty promise, so it is ignored and the
-                        // conservative latch kept. (Even on a supporting
-                        // World the flag must be configured at build AND
-                        // runtime, as documented — the capability confines
-                        // the waiver to queues where that contract can hold.)
-                        // What remains concurrent is unchanged from clean
-                        // turbo today: per-step-topic background executions
-                        // (whose last-step-done fall-through replay can race a
-                        // claim — the atomic step_started create still
-                        // guarantees at most one winner writes events) and
-                        // webhook receivers (which only append hook_received,
-                        // never execute steps). The attr check stays: attr
-                        // suspensions resolve via an in-process replay pass
-                        // that must decide races before any step body runs,
-                        // independent of queue serialization.
+                        // NOTE: `WORKFLOW_SEQUENTIAL_REPLAYS=1` (per-run flow
+                        // topics consumed with `maxConcurrency: 1`) would in
+                        // principle waive this latch — serialized orchestrator
+                        // invocations restore the single-handler guarantee for
+                        // the whole delivery. The waiver is intentionally NOT
+                        // taken: the env var is a runtime-process setting that
+                        // cannot prove the BUILT flow trigger actually carries
+                        // `maxConcurrency: 1` (it must be set at build time
+                        // too, and some integrations write their own trigger
+                        // config), and `capabilities.maxConcurrency` only
+                        // declares queue support, not deployed configuration.
+                        // Until the build emits a verifiable signal that the
+                        // deployed trigger is serialized, the conservative
+                        // latch stays.
                         const forceOptimisticStart =
                           turbo &&
                           !suspensionResult.hasAttributeEvents &&
-                          ((isSequentialReplaysEnabled() &&
-                            world.capabilities?.maxConcurrency === true) ||
-                            (!suspensionResult.waitTimeout &&
-                              !suspensionResult.hasHookEvents &&
-                              !suspensionResult.hasAwaitedHookCreation &&
-                              !openHookWaitState.openHook &&
-                              !openHookWaitState.openWait));
+                          !suspensionResult.waitTimeout &&
+                          !suspensionResult.hasHookEvents &&
+                          !suspensionResult.hasAwaitedHookCreation &&
+                          !openHookWaitState.openHook &&
+                          !openHookWaitState.openWait;
 
                         // Execute the inline steps in parallel. The replay
                         // budget is paused for the whole batch — step duration is
@@ -2213,6 +2224,11 @@ export function workflowEntrypoint(
                                 // immediately). Both are undefined/false
                                 // outside turbo.
                                 forceOptimisticStart,
+                                // Guard-enforced batches with an open hook
+                                // await the claim before running the body, so
+                                // a 412-fenced step never executes user code —
+                                // see suppressOptimisticStart above.
+                                suppressOptimisticStart,
                                 runReadyBarrier,
                                 stateUpdatedAt: inlineClaimStateUpdatedAt,
                                 ...(stepIndex === 0 &&

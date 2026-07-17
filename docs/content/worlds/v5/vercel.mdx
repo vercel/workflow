@@ -175,8 +175,6 @@ Set `WORKFLOW_SEQUENTIAL_REPLAYS=1` to guarantee that **at most one orchestrator
 
 When enabled, each run's orchestrator messages are given their own queue topic and the flow trigger is configured with `maxConcurrency: 1`, so [Vercel Queues](https://vercel.com/docs/queues) processes replays for a given run strictly one at a time. Step executions (which ride the flow topic in the combined handler model) get a per-step topic, so steps keep full parallelism.
 
-Serializing a run's orchestrator invocations also lets the first-delivery fast path (`WORKFLOW_TURBO`) keep optimistic inline step start active after the run creates a hook or wait; without it, the fast path stops forcing optimistic start at that point because hook and wait resume invocations could otherwise run concurrently.
-
 <Callout type="warn">
   This variable is read at **both build time and runtime**, so it must be set as a project-level environment variable that applies to your build and your deployed functions. Setting it for only one will produce an inconsistent configuration. The same applies to framework integrations that write their own queue trigger configuration instead of using `getWorkflowQueueTrigger()` from `@workflow/builders`: they only get the runtime half (per-run topics) unless they also emit `maxConcurrency: 1` on their flow trigger.
 </Callout>

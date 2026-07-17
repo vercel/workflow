@@ -1425,16 +1425,13 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
 describe('workflowEntrypoint turbo mode', () => {
   const ORIG_TURBO = process.env.WORKFLOW_TURBO;
   const ORIG_OPT = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
-  const ORIG_SEQ = process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
 
-  // Default: turbo ON (unset), the global optimistic flag OFF (unset), and
-  // sequential replays OFF (unset). Any optimistic behavior observed in these
-  // tests therefore comes from turbo forcing it — never from
-  // WORKFLOW_OPTIMISTIC_INLINE_START.
+  // Default: turbo ON (unset) and the global optimistic flag OFF (unset).
+  // Any optimistic behavior observed in these tests therefore comes from
+  // turbo forcing it — never from WORKFLOW_OPTIMISTIC_INLINE_START.
   beforeEach(() => {
     delete process.env.WORKFLOW_TURBO;
     delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
-    delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
     turboOrder = [];
   });
   afterEach(() => {
@@ -1444,11 +1441,6 @@ describe('workflowEntrypoint turbo mode', () => {
       delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
     } else {
       process.env.WORKFLOW_OPTIMISTIC_INLINE_START = ORIG_OPT;
-    }
-    if (ORIG_SEQ === undefined) {
-      delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-    } else {
-      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = ORIG_SEQ;
     }
     setWorld(undefined);
     vi.clearAllMocks();
@@ -1501,18 +1493,6 @@ describe('workflowEntrypoint turbo mode', () => {
     attempt: number;
     source: string;
     runStartedGate?: Promise<void>;
-    /**
-     * Holds the `step_started` create's resolution until released. Under
-     * await-then-run the step body cannot run while this is held; under
-     * optimistic start the body runs regardless — so a test can prove
-     * optimistic start by observing 'body' while the gate is closed.
-     */
-    stepStartedGate?: Promise<void>;
-    /**
-     * World capabilities to declare on the mock World. Absent by default so
-     * tests must opt in — capability-gated fast paths fail closed otherwise.
-     */
-    capabilities?: { preconditionGuard?: boolean; maxConcurrency?: boolean };
   }) {
     const { runId, attempt, source } = opts;
     const order = turboOrder;
@@ -1548,7 +1528,6 @@ describe('workflowEntrypoint turbo mode', () => {
       }
       if (data.eventType === 'step_started') {
         order.push('step_started_called');
-        if (opts.stepStartedGate) await opts.stepStartedGate;
         const d = data.eventData as { stepName?: string; input?: unknown };
         if (d?.input !== undefined) {
           rec({
@@ -1580,7 +1559,6 @@ describe('workflowEntrypoint turbo mode', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
-      capabilities: opts.capabilities,
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
           async () => {
@@ -1737,66 +1715,15 @@ describe('workflowEntrypoint turbo mode', () => {
       order.indexOf('body')
     );
   });
-
-  it('keeps forced optimistic start on a wait-creating suspension when WORKFLOW_SEQUENTIAL_REPLAYS=1 and the World supports maxConcurrency', async () => {
-    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
-    });
-
-    const { handlerPromise, order } = await driveTurbo({
-      runId: 'wrun_turbo_seq_replays',
-      attempt: 1,
-      source: stepAndSleepWorkflow,
-      stepStartedGate: gate,
-      // Sequential replays only serialize on a queue that supports
-      // maxConcurrency-limited consumers — the World must declare it.
-      capabilities: { maxConcurrency: true },
-    });
-
-    // Same workflow as the turbo-exit test above — the suspension creates a
-    // wait — but under sequential replays the resume invocations a wait
-    // introduces are serialized behind this delivery, so turbo keeps forcing
-    // optimistic start: the body runs while the step_started create is still
-    // in flight (held by the gate), which the await-then-run path can never do.
-    await vi.waitFor(() => expect(order).toContain('body'), {
-      timeout: 15_000,
-    });
-    expect(order).toContain('wait_created');
-
-    release();
-    const res = await handlerPromise;
-    expect(res.status).toBe(204);
-    expect(order).toContain('step_started_called');
-  });
-
-  it('ignores WORKFLOW_SEQUENTIAL_REPLAYS when the World does not declare maxConcurrency support', async () => {
-    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
-
-    // No capabilities declared: the env var alone cannot prove the queue
-    // serializes anything, so the hook/wait latch must stay — same
-    // await-then-run ordering as the turbo-exit test above.
-    const { handlerPromise, order } = await driveTurbo({
-      runId: 'wrun_turbo_seq_replays_nocap',
-      attempt: 1,
-      source: stepAndSleepWorkflow,
-    });
-
-    const res = await handlerPromise;
-    expect(res.status).toBe(204);
-    expect(order).toContain('wait_created');
-    expect(order.indexOf('step_started_called')).toBeLessThan(
-      order.indexOf('body')
-    );
-  });
 });
 
 describe('workflowEntrypoint inline-delta gate with open hooks', () => {
   const ORIG_GUARD = process.env.WORKFLOW_PRECONDITION_GUARD;
+  const ORIG_OPT = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
 
   beforeEach(() => {
     delete process.env.WORKFLOW_PRECONDITION_GUARD;
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
     deltaGateBodyRuns = [];
   });
   afterEach(() => {
@@ -1804,6 +1731,11 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
       delete process.env.WORKFLOW_PRECONDITION_GUARD;
     } else {
       process.env.WORKFLOW_PRECONDITION_GUARD = ORIG_GUARD;
+    }
+    if (ORIG_OPT === undefined) {
+      delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    } else {
+      process.env.WORKFLOW_OPTIMISTIC_INLINE_START = ORIG_OPT;
     }
     setWorld(undefined);
     vi.clearAllMocks();
@@ -2088,6 +2020,38 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     // Outside turbo the re-invocation is a redelivery of the current message,
     // not an explicit continuation enqueue.
     expect(queueMock).not.toHaveBeenCalled();
+  });
+
+  it('suppresses optimistic start on guarded stale-sensitive batches: a 412-fenced step never runs its body even with WORKFLOW_OPTIMISTIC_INLINE_START=1', async () => {
+    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '1';
+    // Same interleaving as above, but with optimistic start enabled globally.
+    // Without suppression, executeStep would begin step B's body immediately
+    // (before the claim settles) and only discard the result after the 412 —
+    // the side effects would already have run. With an open hook and the
+    // guard in force, the runtime takes the await-then-run path instead, so
+    // the fence covers user code: the rejected claim means the body never
+    // begins.
+    const { res, eventsCreate } = await driveDeltaGate(
+      'wrun_delta_gate_stale_claim_optimistic',
+      {
+        capabilities: { preconditionGuard: true },
+        source: hookAndTwoStepWorkflow,
+        rejectClaimOnce: {
+          stepName: 'deltaGateStepB',
+          error: new PreconditionFailedError(
+            'stale stateUpdatedAt: a newer outside event exists'
+          ),
+        },
+      }
+    );
+    expect(res.status).toBe(204);
+    expect(deltaGateBodyRuns).toEqual([]);
+    expect(eventsCreate.mock.calls).not.toContainEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ eventType: 'run_failed' }),
+      ])
+    );
   });
 });
 

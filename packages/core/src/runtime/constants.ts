@@ -264,8 +264,7 @@ export function isOptimisticInlineStartExplicitlyDisabled(): boolean {
  * concurrent peer handler to race the step create-claim, so a step body runs
  * exactly once. That single-handler guarantee ends as soon as the run creates a
  * hook or wait (which introduce resume/parallel invocations), so the runtime
- * exits turbo at that point — unless sequential replays serialize those
- * resume invocations (see {@link isSequentialReplaysEnabled}).
+ * exits turbo at that point.
  *
  * Reads `process.env.WORKFLOW_TURBO` lazily. Default **ON**; disabled only by an
  * explicit `'0'` / `'false'` (case-insensitive).
@@ -274,33 +273,6 @@ export function isTurboEnabled(): boolean {
   const raw = process.env.WORKFLOW_TURBO;
   if (raw === undefined || raw === '') return true;
   return !(raw === '0' || raw.toLowerCase() === 'false');
-}
-
-/**
- * Whether sequential replays are enabled (`WORKFLOW_SEQUENTIAL_REPLAYS=1`).
- *
- * When enabled, the world routes orchestrator (run-topic) messages for a run
- * through a per-run queue topic consumed with `maxConcurrency: 1`, so hook
- * wakes, wait continuations, and plain continuations for one run are delivered
- * at most one at a time — a later message is not handed to a handler until the
- * current one is acked. Step-execution messages keep per-step topics and full
- * parallelism.
- *
- * The runtime uses this to keep turbo's forced optimistic inline start active
- * after a hook or wait is created: the resume invocations those introduce are
- * serialized behind the current delivery, restoring the single-handler
- * guarantee optimistic start relies on. Note the flag is only honored by
- * worlds that implement per-run topics AND requires the matching build-time
- * queue-trigger config (`maxConcurrency`-bearing flow trigger emitted by
- * `@workflow/builders`) — setting the env var alone on a world without that
- * routing does not serialize anything.
- *
- * Mirrors `isSequentialReplaysEnabled` in `@workflow/builders` and the copy in
- * `@workflow/world-vercel` — the runtime must not depend on either package, so
- * the check is duplicated. Reads the env var lazily; strictly `'1'` enables.
- */
-export function isSequentialReplaysEnabled(): boolean {
-  return process.env.WORKFLOW_SEQUENTIAL_REPLAYS === '1';
 }
 
 /**

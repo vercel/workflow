@@ -143,6 +143,18 @@ export interface StepExecutorParams {
    */
   stateUpdatedAt?: number;
   /**
+   * Suppress optimistic inline start for this step regardless of
+   * `WORKFLOW_OPTIMISTIC_INLINE_START` / `forceOptimisticStart`: take the
+   * await-then-run path so the body only runs after the `step_started` claim
+   * succeeds. Set by the runtime for guard-enforced batches that are
+   * stale-sensitive (an open hook means an out-of-band event can make the
+   * scheduling view stale): the guard's 412 fence can reject a stale claim's
+   * durable writes, but it cannot un-run a body that optimistic start began
+   * before the claim settled — awaiting the claim extends the fence to user
+   * code. Wins over `forceOptimisticStart` and the env flag.
+   */
+  suppressOptimisticStart?: boolean;
+  /**
    * Force optimistic inline start regardless of
    * `WORKFLOW_OPTIMISTIC_INLINE_START`. Set by turbo mode on the first delivery
    * of the first invocation, where forcing it is safe: there is no concurrent
@@ -405,6 +417,10 @@ export async function executeStep(
     // flag, so an explicit opt-out wins over turbo's force.
     const optimisticStart =
       params.lazyStepInput !== undefined &&
+      // Stale-sensitive guarded batches await the claim so the 412 fence
+      // covers the body, not just durable writes — see
+      // StepExecutorParams.suppressOptimisticStart.
+      params.suppressOptimisticStart !== true &&
       (isOptimisticInlineStartEnabled() ||
         (params.forceOptimisticStart === true &&
           !isOptimisticInlineStartExplicitlyDisabled()));

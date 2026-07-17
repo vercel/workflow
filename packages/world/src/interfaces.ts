@@ -315,10 +315,14 @@ export interface WorldCapabilities {
    * particular the per-run flow topics consumed with `maxConcurrency: 1`
    * that `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses to serialize a run's
    * orchestrator invocations. Worlds whose queue has no concurrency-limit
-   * concept must leave this unset so the runtime does not treat the env var
-   * as proof of serialized delivery. Note this declares queue *support*;
-   * deployments must still configure the flag at both build and runtime as
-   * documented for the serialization to actually be in effect.
+   * concept must leave this unset.
+   *
+   * Note this declares queue *support*, not deployed configuration: the
+   * serialization also requires the build-time half (a flow trigger emitted
+   * with `maxConcurrency: 1`), which a runtime process cannot verify today.
+   * The core runtime therefore does not yet take any fast path from this
+   * capability alone — it exists so a future build-verified signal can be
+   * combined with it (and so Worlds document the contract explicitly).
    */
   maxConcurrency?: boolean;
 }
