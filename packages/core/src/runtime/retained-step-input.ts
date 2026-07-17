@@ -27,20 +27,39 @@ function ownDataProperty(target: object, key: string): unknown {
   return descriptor && 'value' in descriptor ? descriptor.value : undefined;
 }
 
+function constructorPrototype(
+  realmGlobal: Record<string, any>,
+  constructorName: string
+): object | undefined {
+  const ctor = ownDataProperty(realmGlobal, constructorName);
+  if (
+    (typeof ctor !== 'function' && typeof ctor !== 'object') ||
+    ctor === null ||
+    types.isProxy(ctor)
+  ) {
+    return undefined;
+  }
+  const prototype = ownDataProperty(ctor, 'prototype');
+  return typeof prototype === 'object' &&
+    prototype !== null &&
+    !types.isProxy(prototype)
+    ? prototype
+    : undefined;
+}
+
 function hasAllowedPrototype(
   value: object,
   workflowGlobal: Record<string, any>,
   constructorName: string
 ): boolean {
   const prototype = Object.getPrototypeOf(value);
-  const hostConstructor = globalThis[
-    constructorName as keyof typeof globalThis
-  ] as { prototype?: object } | undefined;
-  if (hostConstructor !== undefined && prototype === hostConstructor.prototype)
-    return true;
-  const vmConstructor = ownDataProperty(workflowGlobal, constructorName);
-  if (typeof vmConstructor !== 'function') return false;
-  return prototype === ownDataProperty(vmConstructor, 'prototype');
+  return (
+    prototype ===
+      constructorPrototype(
+        globalThis as unknown as Record<string, any>,
+        constructorName
+      ) || prototype === constructorPrototype(workflowGlobal, constructorName)
+  );
 }
 
 function isArrayIndex(key: string): boolean {

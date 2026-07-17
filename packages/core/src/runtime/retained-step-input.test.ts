@@ -185,4 +185,30 @@ describe('prepareRetainedStepInput review-hardening', () => {
     });
     expect(vm.runInContext('globalThis.__retainedTestCalls', context)).toBe(0);
   });
+
+  it('never inspects a proxied workflow constructor', () => {
+    const { context, globalThis: workflowGlobal } = createContext({
+      seed,
+      fixedTimestamp,
+    });
+    const value = vm.runInContext(
+      `(() => {
+        const arr = [1];
+        globalThis.__retainedTestCalls = 0;
+        globalThis.Array = new Proxy(function Array() {}, {
+          getOwnPropertyDescriptor(target, key) {
+            globalThis.__retainedTestCalls++;
+            return Reflect.getOwnPropertyDescriptor(target, key);
+          },
+        });
+        return arr;
+      })()`,
+      context
+    );
+
+    expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
+      retainable: false,
+    });
+    expect(vm.runInContext('globalThis.__retainedTestCalls', context)).toBe(0);
+  });
 });
