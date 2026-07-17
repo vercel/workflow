@@ -75,6 +75,89 @@ function toDigestBytes(data: ArrayBuffer | ArrayBufferView): Uint8Array {
   return new Uint8Array(data as ArrayBuffer);
 }
 
+// Global bindings the serialization reducers dispatch on (`value instanceof
+// global.X`) plus the intrinsics devalue's own traversal consults. Frozen so
+// workflow code cannot make serialization classify a value differently
+// between the retained-input fast path (host-realm clone) and the ordinary
+// VM traversal — e.g. via a spoofed `Map[Symbol.hasInstance]` or a replaced
+// global binding.
+const SERIALIZATION_BINDINGS = [
+  'Object',
+  'Array',
+  'Function',
+  'Map',
+  'Set',
+  'Date',
+  'RegExp',
+  'ArrayBuffer',
+  'SharedArrayBuffer',
+  'DataView',
+  'Int8Array',
+  'Uint8Array',
+  'Uint8ClampedArray',
+  'Int16Array',
+  'Uint16Array',
+  'Int32Array',
+  'Uint32Array',
+  'Float16Array',
+  'Float32Array',
+  'Float64Array',
+  'BigInt64Array',
+  'BigUint64Array',
+  'Headers',
+  'URL',
+  'URLSearchParams',
+  'DOMException',
+  'AbortController',
+  'AbortSignal',
+  'Request',
+  'Response',
+  'ReadableStream',
+  'WritableStream',
+  'TransformStream',
+] as const;
+
+/**
+ * Freeze the sandbox intrinsics that serialization consults. Called after
+ * ALL SDK globals are installed, immediately before the workflow bundle
+ * evaluates.
+ *
+ * `instanceof` dispatch resolves `Symbol.hasInstance` through the value's
+ * constructor, `Function.prototype`, and `Object.prototype`; the class
+ * reducer walks `value.constructor`; devalue reads `Object`/`Array`
+ * prototypes. Freezing these (and pinning every reducer-referenced global
+ * binding, including ones that are intentionally absent) makes the
+ * retained-input equivalence check in `retained-step-input.ts` hold by
+ * construction instead of by validation.
+ */
+export function freezeSerializationIntrinsics(g: typeof globalThis): void {
+  const vmIntrinsics = g as unknown as Record<string, unknown>;
+  // VM-realm intrinsic objects: freeze the objects themselves so statics
+  // (e.g. `Map[Symbol.hasInstance]`) and prototype members cannot be added.
+  // Host-realm classes exposed into the sandbox are NOT frozen — only their
+  // bindings are pinned below.
+  Object.freeze(g.Object);
+  Object.freeze(g.Object.prototype);
+  Object.freeze(g.Array);
+  Object.freeze(g.Array.prototype);
+  Object.freeze(g.Function);
+  Object.freeze(g.Function.prototype);
+  for (const name of ['Map', 'Set', 'RegExp', 'ArrayBuffer', 'DataView']) {
+    Object.freeze(vmIntrinsics[name]);
+  }
+  for (const name of SERIALIZATION_BINDINGS) {
+    const descriptor = Object.getOwnPropertyDescriptor(g, name);
+    Object.defineProperty(g, name, {
+      // Absent bindings are pinned to undefined so workflow code cannot
+      // define a spoofing global the reducers would then dispatch on.
+      value: descriptor && 'value' in descriptor ? descriptor.value : undefined,
+      writable: false,
+      configurable: false,
+      enumerable: descriptor?.enumerable ?? false,
+    });
+  }
+}
+
 /**
  * Creates a Node.js `vm.Context` configured to be usable for
  * executing workflow logic in a deterministic environment.

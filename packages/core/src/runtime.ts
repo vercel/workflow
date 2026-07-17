@@ -320,6 +320,12 @@ function openHookAndWaitState(events: Event[]): {
  * Retain only pure step boundaries with no out-of-band continuation source.
  * Attributes require replay; hooks and waits can wake another invocation.
  * `WORKFLOW_RETAINED_VM=0` disables retention entirely.
+ *
+ * Quiescence assumes workflow code stays inside the sandbox's determinism
+ * contract. Escaping to the host realm (e.g. recovering the host `Function`
+ * constructor from an exposed host class to schedule real timers) makes a
+ * workflow nondeterministic under ordinary replay too, and is not defended
+ * here.
  */
 function canRetainWorkflowSession(
   suspension: WorkflowSuspension,

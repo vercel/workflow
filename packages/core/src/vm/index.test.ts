@@ -1,6 +1,6 @@
 import * as vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
-import { createContext } from './index.js';
+import { createContext, freezeSerializationIntrinsics } from './index.js';
 
 const seed = 'entropy seed';
 const fixedTimestamp = 1234567890000;
@@ -402,5 +402,52 @@ describe('crypto.subtle.digest view metadata', () => {
       new Uint8Array([1, 2, 3, 4])
     );
     expect(new Uint8Array(result)).toEqual(new Uint8Array(expected));
+  });
+});
+
+describe('freezeSerializationIntrinsics', () => {
+  it('pins serialization-consulted intrinsics against workflow mutation', () => {
+    const { context, globalThis: g } = createContext({ seed, fixedTimestamp });
+    freezeSerializationIntrinsics(g);
+
+    // Statics and prototypes reject strict-mode definition attempts.
+    expect(() =>
+      vm.runInContext(
+        `"use strict"; Object.defineProperty(Map, Symbol.hasInstance, { value: () => true })`,
+        context
+      )
+    ).toThrow(/not extensible/);
+    expect(() =>
+      vm.runInContext(`"use strict"; Object.prototype.polluted = 1`, context)
+    ).toThrow(/not extensible/);
+    expect(() =>
+      vm.runInContext(
+        `"use strict"; Function.prototype[Symbol.hasInstance] = () => true`,
+        context
+      )
+    ).toThrow(/read only|not extensible/);
+
+    // Bindings cannot be replaced, including intentionally absent ones.
+    vm.runInContext(
+      'try { globalThis.Map = function () {} } catch {}',
+      context
+    );
+    expect(vm.runInContext('typeof Map.prototype.get', context)).toBe(
+      'function'
+    );
+    vm.runInContext(
+      'try { globalThis.Request = function () {} } catch {}',
+      context
+    );
+    expect(vm.runInContext('typeof Request', context)).toBe('undefined');
+  });
+
+  it('leaves ordinary workflow globals writable', () => {
+    const { context, globalThis: g } = createContext({ seed, fixedTimestamp });
+    freezeSerializationIntrinsics(g);
+
+    expect(
+      vm.runInContext('globalThis.myState = { ok: true }; myState.ok', context)
+    ).toBe(true);
   });
 });
