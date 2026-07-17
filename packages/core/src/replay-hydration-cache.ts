@@ -14,7 +14,9 @@ type ReplayPayloadField = 'result' | 'error' | 'payload';
 /**
  * Invocation-scoped replay cache. Prepared serialized bytes can be shared
  * across fresh workflow VMs, while final values are shared only when they are
- * immutable primitives.
+ * immutable primitives. Prepared plaintext is intentionally retained for the
+ * invocation lifetime to avoid replay-length-dependent preparation work; its
+ * memory cost is the sum of the decrypted and decompressed payload sizes.
  */
 export interface ReplayHydrationCache {
   readonly preparedPayloads: Map<string, Promise<PreparedReplayPayload>>;
@@ -39,11 +41,39 @@ export function eventPayloadKey(
   return `event:${eventId}:${field}`;
 }
 
+function runReplayPayloadPreparer(
+  value: unknown,
+  encryptionKey: CryptoKey | undefined,
+  preparer: ReplayPayloadPreparer
+): Promise<PreparedReplayPayload> {
+  try {
+    return Promise.resolve(preparer(value, encryptionKey));
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
+function getOrStartCachedPreparation(
+  cache: ReplayHydrationCache,
+  cacheKey: string,
+  value: Uint8Array,
+  encryptionKey: CryptoKey | undefined,
+  preparer: ReplayPayloadPreparer
+): Promise<PreparedReplayPayload> {
+  const cached = cache.preparedPayloads.get(cacheKey);
+  if (cached) return cached;
+
+  const preparation = runReplayPayloadPreparer(value, encryptionKey, preparer);
+  cache.preparedPayloads.set(cacheKey, preparation);
+  return preparation;
+}
+
 /**
- * Return the shared preparation promise for a replay payload. Failed
- * preparations are evicted so speculative prewarming cannot permanently cache
- * a rejected promise. Legacy non-binary values bypass the cache because
- * devalue's unflatten operation may mutate its parsed input representation.
+ * Return the shared preparation promise for a replay payload. A failed
+ * speculative preparation stays cached until this ordered consumer observes
+ * it, then is evicted so a later replay can retry. Legacy non-binary values
+ * bypass the cache because devalue's unflatten operation may mutate its parsed
+ * input representation.
  */
 export function getOrPrepareReplayPayload(
   cache: ReplayHydrationCache | undefined,
@@ -53,20 +83,16 @@ export function getOrPrepareReplayPayload(
   preparer: ReplayPayloadPreparer = prepareReplayPayload
 ): Promise<PreparedReplayPayload> {
   if (!cache || !(value instanceof Uint8Array)) {
-    return Promise.resolve(preparer(value, encryptionKey));
+    return runReplayPayloadPreparer(value, encryptionKey, preparer);
   }
 
-  const cached = cache.preparedPayloads.get(cacheKey);
-  if (cached) return cached;
-
-  let preparation: Promise<PreparedReplayPayload>;
-  try {
-    preparation = Promise.resolve(preparer(value, encryptionKey));
-  } catch (error) {
-    preparation = Promise.reject(error);
-  }
-
-  cache.preparedPayloads.set(cacheKey, preparation);
+  const preparation = getOrStartCachedPreparation(
+    cache,
+    cacheKey,
+    value,
+    encryptionKey,
+    preparer
+  );
   void preparation.catch(() => {
     if (cache.preparedPayloads.get(cacheKey) === preparation) {
       cache.preparedPayloads.delete(cacheKey);
@@ -89,49 +115,40 @@ export async function prewarmReplayPayloads(
 ): Promise<void> {
   if (!cache) return;
 
-  const preparations: Promise<PreparedReplayPayload>[] = [
-    getOrPrepareReplayPayload(
-      cache,
-      workflowInputPayloadKey(workflowRun.runId),
-      workflowRun.input,
-      encryptionKey,
-      preparer
-    ),
-  ];
+  const preparations: Promise<PreparedReplayPayload>[] = [];
+  const prewarm = (cacheKey: string, value: unknown): void => {
+    if (!(value instanceof Uint8Array)) return;
+    preparations.push(
+      getOrStartCachedPreparation(
+        cache,
+        cacheKey,
+        value,
+        encryptionKey,
+        preparer
+      )
+    );
+  };
+
+  prewarm(workflowInputPayloadKey(workflowRun.runId), workflowRun.input);
 
   for (const event of events) {
     switch (event.eventType) {
       case 'step_completed':
-        preparations.push(
-          getOrPrepareReplayPayload(
-            cache,
-            eventPayloadKey(event.eventId, 'result'),
-            event.eventData.result,
-            encryptionKey,
-            preparer
-          )
+        prewarm(
+          eventPayloadKey(event.eventId, 'result'),
+          event.eventData?.result
         );
         break;
       case 'step_failed':
-        preparations.push(
-          getOrPrepareReplayPayload(
-            cache,
-            eventPayloadKey(event.eventId, 'error'),
-            event.eventData.error,
-            encryptionKey,
-            preparer
-          )
+        prewarm(
+          eventPayloadKey(event.eventId, 'error'),
+          event.eventData?.error
         );
         break;
       case 'hook_received':
-        preparations.push(
-          getOrPrepareReplayPayload(
-            cache,
-            eventPayloadKey(event.eventId, 'payload'),
-            event.eventData.payload,
-            encryptionKey,
-            preparer
-          )
+        prewarm(
+          eventPayloadKey(event.eventId, 'payload'),
+          event.eventData?.payload
         );
         break;
     }

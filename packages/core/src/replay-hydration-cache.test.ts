@@ -15,7 +15,7 @@ import {
   type ReplayPayloadPreparer,
 } from './serialization.js';
 
-function makeRun(input: Uint8Array): WorkflowRun {
+function makeRun(input: unknown): WorkflowRun {
   const now = new Date();
   return {
     runId: 'wrun_cache_test',
@@ -30,7 +30,7 @@ function makeRun(input: Uint8Array): WorkflowRun {
   };
 }
 
-function makeReplayEvents(payloads: Uint8Array[]): Event[] {
+function makeReplayEvents(payloads: unknown[]): Event[] {
   const createdAt = new Date();
   return [
     {
@@ -112,6 +112,36 @@ describe('replay payload preparation cache', () => {
         undefined,
         preparer
       )
+    ).resolves.toEqual({ data: payload });
+    expect(preparer).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains a failed prewarm until the ordered consumer observes it', async () => {
+    const cache = createReplayHydrationCache();
+    const payload = new Uint8Array([1]);
+    const cacheKey = workflowInputPayloadKey('wrun_cache_test');
+    const preparer = vi
+      .fn<ReplayPayloadPreparer>()
+      .mockRejectedValueOnce(new Error('decrypt failed'))
+      .mockReturnValueOnce({ data: payload });
+
+    await prewarmReplayPayloads(
+      cache,
+      makeRun(payload),
+      [],
+      undefined,
+      preparer
+    );
+
+    expect(preparer).toHaveBeenCalledTimes(1);
+    expect(cache.preparedPayloads.has(cacheKey)).toBe(true);
+    await expect(
+      getOrPrepareReplayPayload(cache, cacheKey, payload, undefined, preparer)
+    ).rejects.toThrow('decrypt failed');
+    expect(cache.preparedPayloads.has(cacheKey)).toBe(false);
+
+    await expect(
+      getOrPrepareReplayPayload(cache, cacheKey, payload, undefined, preparer)
     ).resolves.toEqual({ data: payload });
     expect(preparer).toHaveBeenCalledTimes(2);
   });
@@ -233,6 +263,25 @@ describe('replay payload preparation cache', () => {
     );
 
     expect(preparer).toHaveBeenCalledTimes(2);
+    expect(cache.preparedPayloads.size).toBe(0);
+  });
+
+  it('does not prewarm legacy values or events with missing data', async () => {
+    const cache = createReplayHydrationCache();
+    const legacy = [0, { value: 1 }];
+    const events = makeReplayEvents([legacy, legacy, legacy]);
+    events[2] = { ...events[2], eventData: undefined } as unknown as Event;
+    const preparer = vi.fn<ReplayPayloadPreparer>((value) => ({ data: value }));
+
+    await prewarmReplayPayloads(
+      cache,
+      makeRun(legacy),
+      events,
+      undefined,
+      preparer
+    );
+
+    expect(preparer).not.toHaveBeenCalled();
     expect(cache.preparedPayloads.size).toBe(0);
   });
 });
