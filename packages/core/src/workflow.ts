@@ -177,6 +177,12 @@ function updateSuspendedSession(
 export interface WorkflowSession {
   readonly workflowRun: WorkflowRun;
   readonly argumentCount: number;
+  /**
+   * Whether the VM ran host-timed async work (`crypto.subtle.digest`). Such a
+   * VM can advance while suspended, so its live state may diverge from what a
+   * replay of the durable event log reconstructs — it must not be retained.
+   */
+  usedHostAsync(): boolean;
   resume(events: Event[]): WorkflowSessionResumeResult;
 }
 
@@ -367,6 +373,7 @@ function createWorkflowSession({
       context,
       globalThis: vmGlobalThis,
       updateTimestamp,
+      usedHostAsync,
     } = createContext({
       seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
       fixedTimestamp,
@@ -1135,6 +1142,7 @@ function createWorkflowSession({
     const session: WorkflowSession = {
       workflowRun,
       argumentCount: args.length,
+      usedHostAsync,
       resume(nextEvents) {
         switch (state.type) {
           case 'suspended': {

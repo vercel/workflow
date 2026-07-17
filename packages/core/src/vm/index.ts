@@ -58,7 +58,17 @@ export function createContext(options: CreateContextOptions) {
 
   const randomUUID = createRandomUUID(rng);
 
+  // `crypto.subtle.digest` is the only API in the sandbox whose promise
+  // resolves on host timing rather than from the event log, so it is the only
+  // way a suspended workflow can make progress the event log cannot replay.
+  // Record its use so the runtime falls back to ordinary replay (see
+  // `canRetainWorkflowSession`).
+  let usedHostAsync = false;
   const boundDigest = originalSubtle.digest.bind(originalSubtle);
+  const digest: typeof boundDigest = (...args) => {
+    usedHostAsync = true;
+    return boundDigest(...args);
+  };
 
   g.crypto = new Proxy(originalCrypto, {
     get(target, prop) {
@@ -78,7 +88,7 @@ export function createContext(options: CreateContextOptions) {
                 );
               };
             } else if (prop === 'digest') {
-              return boundDigest;
+              return digest;
             }
             return target[prop as keyof typeof originalSubtle];
           },
@@ -122,5 +132,6 @@ export function createContext(options: CreateContextOptions) {
     updateTimestamp: (timestamp: number) => {
       fixedTimestamp = timestamp;
     },
+    usedHostAsync: () => usedHostAsync,
   };
 }

@@ -40,13 +40,25 @@ const twoStepWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")](
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
+// `crypto.subtle.digest` resolves on host timing, not from the event log, so
+// this VM can advance while suspended — the loop must decline retention.
+const hostAsyncWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
+  async function workflow() {
+    await crypto.subtle.digest("SHA-256", new Uint8Array(8));
+    const a = await s1();
+    const b = await s2();
+    return a + b;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
 registerStepFunction('r_s1', async () => 10);
 registerStepFunction('r_s2', async () => 20);
 
 // Drive the full workflow handler over a stateful (dynamic) event log so the
 // inline loop makes real progress across its own writes, exactly like a World.
 // Non-turbo (no runInput, attempt 2) to keep the path simple and deterministic.
-async function drive(runId: string) {
+async function drive(runId: string, workflowCode = twoStepWorkflow) {
   const run: WorkflowRun = {
     runId,
     workflowName: 'workflow',
@@ -126,9 +138,7 @@ async function drive(runId: string) {
     getEncryptionKeyForRun: vi.fn(async () => undefined),
   } as any);
 
-  await workflowEntrypoint(twoStepWorkflow)(
-    new Request('https://example.test')
-  );
+  await workflowEntrypoint(workflowCode)(new Request('https://example.test'));
 
   const runCompleted = createdEvents.find(
     (e) => e.eventType === 'run_completed'
@@ -174,5 +184,16 @@ describe('retained VM through the inline replay loop', () => {
     expect(on.vmBuilds).toBe(1);
     // And it produces the identical dehydrated result as the replay path.
     expect(on.output).toEqual(off.output);
+  });
+
+  it('declines retention for a VM that ran host-timed async work', async () => {
+    const { vmBuilds, output } = await drive(
+      'wrun_retained_host_async',
+      hostAsyncWorkflow
+    );
+    expect(output).toBeInstanceOf(Uint8Array);
+    // The digest marks the VM as non-quiescent, so every iteration replays
+    // in a fresh VM even though retention is on by default.
+    expect(vmBuilds).toBeGreaterThan(1);
   });
 });
