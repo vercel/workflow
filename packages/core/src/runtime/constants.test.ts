@@ -3,6 +3,7 @@ import { runtimeLogger } from '../logger.js';
 import {
   _resetReplayTimeoutWarnCacheForTests,
   getInlineOwnershipLeaseSeconds,
+  getMaxEventsPerRun,
   getMaxInlineSteps,
   getMaxQueueDeliveries,
   getReplayTimeoutMs,
@@ -11,6 +12,7 @@ import {
   isOptimisticInlineStartEnabled,
   isOptimisticInlineStartExplicitlyDisabled,
   isTurboEnabled,
+  MAX_EVENTS_PER_RUN,
   MAX_INLINE_OWNERSHIP_LEASE_SECONDS,
   MAX_INLINE_STEPS,
   MAX_MAX_INLINE_STEPS,
@@ -391,5 +393,39 @@ describe('getInlineOwnershipLeaseSeconds', () => {
   it('clamps a non-positive override up to 1', () => {
     process.env[ENV] = '0';
     expect(getInlineOwnershipLeaseSeconds()).toBe(1);
+  });
+});
+
+describe('getMaxEventsPerRun', () => {
+  const ENV = 'WORKFLOW_MAX_EVENTS';
+  const original = process.env[ENV];
+
+  beforeEach(() => {
+    delete process.env[ENV];
+  });
+
+  afterEach(() => {
+    if (original === undefined) delete process.env[ENV];
+    else process.env[ENV] = original;
+  });
+
+  it('defaults to the published per-run event limit (25,000)', () => {
+    expect(getMaxEventsPerRun()).toBe(25_000);
+    expect(MAX_EVENTS_PER_RUN).toBe(25_000);
+  });
+
+  it('returns the default when the env var is empty', () => {
+    process.env[ENV] = '';
+    expect(getMaxEventsPerRun()).toBe(MAX_EVENTS_PER_RUN);
+  });
+
+  it('allows a lower override (used by tests to exercise the limit)', () => {
+    process.env[ENV] = '5';
+    expect(getMaxEventsPerRun()).toBe(5);
+  });
+
+  it('falls back to the default on a non-numeric override', () => {
+    process.env[ENV] = 'not-a-number';
+    expect(getMaxEventsPerRun()).toBe(MAX_EVENTS_PER_RUN);
   });
 });

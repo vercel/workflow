@@ -38,6 +38,24 @@ export function getMaxQueueDeliveries(): number {
 }
 
 /**
+ * Published "Events per run" limit (https://vercel.com/docs/workflows/pricing).
+ * Past this (+ MAX_EVENTS_BUFFER) the runtime fails the run with
+ * RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED — a client-side guardrail for runaway
+ * workflow code, not a security boundary.
+ */
+export const MAX_EVENTS_PER_RUN = 25_000;
+
+export const MAX_EVENTS_BUFFER = 100;
+
+/** Effective max events per run. Override via `WORKFLOW_MAX_EVENTS` (tests). */
+export function getMaxEventsPerRun(): number {
+  return envNumber('WORKFLOW_MAX_EVENTS', MAX_EVENTS_PER_RUN, {
+    integer: true,
+    min: 1,
+  });
+}
+
+/**
  * Default maximum time allowed for the *replay* portion of a single workflow
  * handler invocation (in ms). This budget only covers deterministic-replay
  * and workflow-VM execution between step boundaries — inline step bodies

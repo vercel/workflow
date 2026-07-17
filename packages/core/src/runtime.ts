@@ -37,11 +37,14 @@ import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import {
+  getMaxEventsPerRun,
   getMaxQueueDeliveries,
   getReplayDivergenceMaxRetries,
   isInlineOwnershipEnabled,
   isTurboEnabled,
+  MAX_EVENTS_BUFFER,
 } from './runtime/constants.js';
+import { handleEventLimitExceeded } from './runtime/event-limit.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -1419,6 +1422,22 @@ export function workflowEntrypoint(
                       // replay. Once the event log records that outcome, this
                       // delivery is done.
                       if (hasRecordedTerminalRunEvent(events, runId)) {
+                        return;
+                      }
+
+                      // Event-limit guard: fail a runaway run once its log
+                      // grows past the quota (+ buffer). Checked after the log
+                      // is loaded and before replay schedules more work.
+                      const maxEvents =
+                        getMaxEventsPerRun() + MAX_EVENTS_BUFFER;
+                      if (events.length >= maxEvents) {
+                        await handleEventLimitExceeded({
+                          runId,
+                          workflowName,
+                          requestId,
+                          eventCount: events.length,
+                          limit: getMaxEventsPerRun(),
+                        });
                         return;
                       }
 
