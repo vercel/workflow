@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { runInContext, createContext as vmCreateContext } from 'node:vm';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import seedrandom from 'seedrandom';
@@ -9,6 +10,14 @@ export interface CreateContextOptions {
   // Fixed timestamp for deterministic Date operations
   fixedTimestamp: number;
 }
+
+// WebCrypto digest algorithm names → node:crypto (OpenSSL) names.
+const DIGEST_ALGORITHMS: Record<string, string> = {
+  'SHA-1': 'sha1',
+  'SHA-256': 'sha256',
+  'SHA-384': 'sha384',
+  'SHA-512': 'sha512',
+};
 
 /**
  * Creates a Node.js `vm.Context` configured to be usable for
@@ -59,13 +68,13 @@ export function createContext(options: CreateContextOptions) {
   const randomUUID = createRandomUUID(rng);
 
   // Track every sandbox API whose promise resolves on host timing rather
-  // than from the event log: `crypto.subtle.digest`, `Atomics.waitAsync`
-  // (a wall-clock timer via SharedArrayBuffer), and the async `WebAssembly`
-  // compilation entry points. These are the only ways a suspended workflow
-  // can make progress the event log cannot replay, so the runtime declines
-  // to retain a VM that used any of them (see `canRetainWorkflowSession`).
-  // Dynamic `import()` settles within a microtask (rejected: no
-  // `importModuleDynamically`), so it cannot advance a suspended VM.
+  // than from the event log: `Atomics.waitAsync` (a wall-clock timer via
+  // SharedArrayBuffer) and the async `WebAssembly` compilation entry points.
+  // These are the only ways a suspended workflow can make progress the event
+  // log cannot replay, so the runtime declines to retain a VM that used any
+  // of them (see `canRetainWorkflowSession`). Dynamic `import()` settles
+  // within a microtask (rejected: no `importModuleDynamically`), so it
+  // cannot advance a suspended VM.
   let usedHostAsync = false;
   const trackHostAsync = (
     target: Record<string, unknown>,
@@ -85,10 +94,34 @@ export function createContext(options: CreateContextOptions) {
   trackHostAsync(intrinsics.WebAssembly, 'compileStreaming');
   trackHostAsync(intrinsics.WebAssembly, 'instantiateStreaming');
 
-  const boundDigest = originalSubtle.digest.bind(originalSubtle);
-  const digest: typeof boundDigest = (...args) => {
-    usedHostAsync = true;
-    return boundDigest(...args);
+  // `crypto.subtle.digest` computes synchronously via node:crypto, so its
+  // promise settles on a deterministic microtask instead of host threadpool
+  // timing — a digest can never advance a suspended workflow, and
+  // digest-using VMs stay retainable. Values are byte-identical to WebCrypto.
+  const digest = (
+    algorithm: string | { name: string },
+    data: ArrayBuffer | ArrayBufferView
+  ): Promise<ArrayBuffer> => {
+    try {
+      const name = typeof algorithm === 'string' ? algorithm : algorithm.name;
+      const ossl = DIGEST_ALGORITHMS[name.toUpperCase()];
+      if (!ossl) {
+        throw new DOMException(
+          `Unrecognized algorithm name: ${name}`,
+          'NotSupportedError'
+        );
+      }
+      const bytes = ArrayBuffer.isView(data)
+        ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+        : new Uint8Array(data);
+      const hash = createHash(ossl).update(bytes).digest();
+      // Copy out: small Buffers share the internal pool allocation.
+      const out = new ArrayBuffer(hash.byteLength);
+      new Uint8Array(out).set(hash);
+      return Promise.resolve(out);
+    } catch (error) {
+      return Promise.reject(error);
+    }
   };
 
   g.crypto = new Proxy(originalCrypto, {

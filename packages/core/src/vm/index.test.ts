@@ -269,14 +269,14 @@ describe('usedHostAsync', () => {
     expect(usedHostAsync()).toBe(false);
   });
 
-  it('flips on crypto.subtle.digest', async () => {
+  it('does not flip on the synchronous crypto.subtle.digest', async () => {
     const { context, usedHostAsync } = createContext({ seed, fixedTimestamp });
 
     await vm.runInContext(
       'crypto.subtle.digest("SHA-256", new Uint8Array(1))',
       context
     );
-    expect(usedHostAsync()).toBe(true);
+    expect(usedHostAsync()).toBe(false);
   });
 
   it('flips on Atomics.waitAsync', () => {
@@ -308,5 +308,63 @@ describe('usedHostAsync', () => {
       context
     );
     expect(usedHostAsync()).toBe(true);
+  });
+});
+
+describe('crypto.subtle.digest', () => {
+  it.each([
+    'SHA-1',
+    'SHA-256',
+    'SHA-384',
+    'SHA-512',
+  ])('matches WebCrypto for %s', async (algorithm) => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    const result = await vm.runInContext(
+      `crypto.subtle.digest(${JSON.stringify(algorithm)}, new Uint8Array([1,2,3,4,5,255,0,128]))`,
+      context
+    );
+    const expected = await globalThis.crypto.subtle.digest(
+      algorithm,
+      new Uint8Array([1, 2, 3, 4, 5, 255, 0, 128])
+    );
+    expect(result).toBeInstanceOf(ArrayBuffer);
+    expect(new Uint8Array(result)).toEqual(new Uint8Array(expected));
+  });
+
+  it('accepts the { name } algorithm form and ArrayBuffer input', async () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    const result = await vm.runInContext(
+      'crypto.subtle.digest({ name: "sha-256" }, new ArrayBuffer(4))',
+      context
+    );
+    const expected = await globalThis.crypto.subtle.digest(
+      'SHA-256',
+      new ArrayBuffer(4)
+    );
+    expect(new Uint8Array(result)).toEqual(new Uint8Array(expected));
+  });
+
+  it('respects typed-array subviews', async () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    const result = await vm.runInContext(
+      'const bytes = new Uint8Array([9, 1, 2, 9]); crypto.subtle.digest("SHA-256", bytes.subarray(1, 3))',
+      context
+    );
+    const expected = await globalThis.crypto.subtle.digest(
+      'SHA-256',
+      new Uint8Array([1, 2])
+    );
+    expect(new Uint8Array(result)).toEqual(new Uint8Array(expected));
+  });
+
+  it('rejects unsupported algorithms like WebCrypto does', async () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    await expect(
+      vm.runInContext('crypto.subtle.digest("MD5", new Uint8Array(1))', context)
+    ).rejects.toMatchObject({ name: 'NotSupportedError' });
   });
 });

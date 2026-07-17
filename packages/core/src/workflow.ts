@@ -178,10 +178,10 @@ export interface WorkflowSession {
   readonly workflowRun: WorkflowRun;
   readonly argumentCount: number;
   /**
-   * Whether the VM ran host-timed async work (`crypto.subtle.digest`,
-   * `Atomics.waitAsync`, async `WebAssembly` compilation). Such a VM can
-   * advance while suspended, so its live state may diverge from what a replay
-   * of the durable event log reconstructs — it must not be retained.
+   * Whether the VM ran host-timed async work (`Atomics.waitAsync`, async
+   * `WebAssembly` compilation). Such a VM can advance while suspended, so its
+   * live state may diverge from what a replay of the durable event log
+   * reconstructs — it must not be retained.
    */
   usedHostAsync(): boolean;
   resume(events: Event[]): WorkflowSessionResumeResult;

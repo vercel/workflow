@@ -26,7 +26,7 @@ These APIs are available but are **seeded or fixed** to ensure deterministic beh
 | [`Date`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date) / `Date.now()` / `new Date()` | Returns a fixed timestamp that advances with the workflow's logical clock |
 | [`crypto.getRandomValues()`](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/getRandomValues) | Seeded — produces deterministic output for a given workflow run |
 | [`crypto.randomUUID()`](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/randomUUID) | Seeded — produces deterministic UUIDs for a given workflow run |
-| [`crypto.subtle.digest()`](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/digest) | Passes through to the real implementation (SHA-256, etc. are deterministic by nature) |
+| [`crypto.subtle.digest()`](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/digest) | Computed synchronously via `node:crypto` (values are byte-identical to WebCrypto), so the promise settles at a deterministic point during replay |
 
 <Callout type="info">
 You can safely use `Math.random()`, `Date.now()`, and `crypto.randomUUID()` in workflow functions. The framework ensures these return the same values across replays.

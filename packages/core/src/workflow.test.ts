@@ -361,16 +361,16 @@ describe('runWorkflow', () => {
     };
     const workflowCode = `
       const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step");
-      async function digestRepeatedly() {
-        const bytes = new Uint8Array(8 * 1024 * 1024);
-        for (let index = 0; index < 8; index++) {
-          await crypto.subtle.digest("SHA-256", bytes);
+      async function waitRepeatedly() {
+        const shared = new Int32Array(new SharedArrayBuffer(4));
+        for (let index = 0; index < 20; index++) {
+          await Atomics.waitAsync(shared, 0, 0, 25).value;
         }
       }
       async function workflow() {
-        await Promise.race([step(), digestRepeatedly()]);
-        console.log("retained:digest-completed");
-        return "digest completed";
+        await Promise.race([step(), waitRepeatedly()]);
+        console.log("retained:background-completed");
+        return "background completed";
       }
       ${getWorkflowTransformCode('workflow')}`;
     const events: Event[] = [
@@ -479,7 +479,7 @@ describe('runWorkflow', () => {
         noEncryptionKey,
         ops
       )
-    ).toBe('digest completed');
+    ).toBe('background completed');
     log.mockRestore();
   });
 
@@ -503,14 +503,14 @@ describe('runWorkflow', () => {
     const workflowCode = `
       const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step");
       const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
-      async function digestRepeatedly() {
-        const bytes = new Uint8Array(8 * 1024 * 1024);
-        for (let index = 0; index < 8; index++) {
-          await crypto.subtle.digest("SHA-256", bytes);
+      async function waitRepeatedly() {
+        const shared = new Int32Array(new SharedArrayBuffer(4));
+        for (let index = 0; index < 20; index++) {
+          await Atomics.waitAsync(shared, 0, 0, 25).value;
         }
       }
       async function workflow() {
-        await Promise.race([step(), digestRepeatedly()]);
+        await Promise.race([step(), waitRepeatedly()]);
         void setAttributes([{ key: "stale", value: true }]);
         console.log("retained:discarded-completed");
         return "discarded";

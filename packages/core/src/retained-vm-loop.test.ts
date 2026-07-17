@@ -40,9 +40,21 @@ const twoStepWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")](
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
-// `crypto.subtle.digest` resolves on host timing, not from the event log, so
+// `Atomics.waitAsync` resolves on host timing, not from the event log, so
 // this VM can advance while suspended — the loop must decline retention.
 const hostAsyncWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
+  async function workflow() {
+    await Atomics.waitAsync(new Int32Array(new SharedArrayBuffer(4)), 0, 1).value;
+    const a = await s1();
+    const b = await s2();
+    return a + b;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
+// `crypto.subtle.digest` computes synchronously via node:crypto, so a
+// digest-using VM stays quiescent at suspension and remains retainable.
+const digestWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
   async function workflow() {
     await crypto.subtle.digest("SHA-256", new Uint8Array(8));
@@ -192,8 +204,17 @@ describe('retained VM through the inline replay loop', () => {
       hostAsyncWorkflow
     );
     expect(output).toBeInstanceOf(Uint8Array);
-    // The digest marks the VM as non-quiescent, so every iteration replays
-    // in a fresh VM even though retention is on by default.
+    // Atomics.waitAsync marks the VM as non-quiescent, so every iteration
+    // replays in a fresh VM even though retention is on by default.
     expect(vmBuilds).toBeGreaterThan(1);
+  });
+
+  it('retains a VM that used the synchronous crypto.subtle.digest', async () => {
+    const { vmBuilds, output } = await drive(
+      'wrun_retained_digest',
+      digestWorkflow
+    );
+    expect(output).toBeInstanceOf(Uint8Array);
+    expect(vmBuilds).toBe(1);
   });
 });
