@@ -2838,25 +2838,35 @@ export async function maybeDecrypt(
 }
 
 /**
- * Host-side result of replay payload preparation. The data is still serialized
- * and therefore safe to reuse across fresh workflow VMs; VM-specific object
- * graphs are created only by the deserialize helpers below.
+ * Replay hydration has two stages:
+ *
+ * 1. Host-side preparation decrypts and decompresses persisted data. That work
+ *    is independent of a workflow VM and can be cached across replay VMs.
+ * 2. Deserialization revives the prepared representation against the current
+ *    VM's globals. It must run again for every VM to produce fresh object graphs
+ *    and correctly scoped Workflow objects.
+ *
+ * `data` is the boundary between those stages. For current-format payloads it
+ * is still format-prefixed serialized bytes, not a live JavaScript value.
  */
 export interface PreparedReplayPayload {
   readonly data: unknown;
 }
 
 /**
- * Swappable host-side preparation boundary. The current implementation uses
- * async Web Crypto, while a Node-specific synchronous decryptor can implement
- * the same contract later without changing replay caching or VM revival.
+ * Swappable implementation of the host-side preparation stage. Supporting
+ * both direct and promised results lets a future synchronous Node decryptor use
+ * the same cache contract as today's asynchronous Web Crypto implementation.
  */
 export type ReplayPayloadPreparer = (
   value: unknown,
   key: CryptoKey | undefined
 ) => PreparedReplayPayload | Promise<PreparedReplayPayload>;
 
-/** Decrypt and decompress a serialized replay payload without reviving it. */
+/**
+ * Decrypt and decompress persisted data without parsing it into JavaScript.
+ * Legacy non-binary values pass through unchanged for their consumer to revive.
+ */
 export const prepareReplayPayload: ReplayPayloadPreparer = async (
   value,
   key
@@ -2871,9 +2881,9 @@ export const prepareReplayPayload: ReplayPayloadPreparer = async (
 };
 
 /**
- * Revive a prepared workflow argument or successful step/hook payload inside
- * the current workflow VM. Each call intentionally creates a fresh object
- * graph so mutations cannot leak across replay iterations.
+ * Parse a prepared workflow argument or successful step/hook payload using the
+ * current workflow VM's globals and revivers. Each call intentionally creates
+ * a fresh object graph so mutations cannot leak across replay iterations.
  */
 export function deserializePreparedReplayPayload(
   prepared: PreparedReplayPayload,
@@ -2889,7 +2899,10 @@ export function deserializePreparedReplayPayload(
   });
 }
 
-/** Revive a prepared step error inside the current workflow VM. */
+/**
+ * Parse a prepared step error using the current workflow VM's class revivers.
+ * This preserves thrown-value identity without sharing objects between VMs.
+ */
 export function deserializePreparedStepError(
   prepared: PreparedReplayPayload,
   global: Record<string, any> = globalThis,
@@ -2980,7 +2993,8 @@ export async function dehydrateWorkflowArguments(
 
 /**
  * Called from workflow execution environment to hydrate the workflow
- * arguments from the database at the start of workflow execution.
+ * arguments from the database at the start of workflow execution. A prepared
+ * payload skips host-side decrypt/decompress but always performs VM revival.
  */
 export async function hydrateWorkflowArguments(
   value: Uint8Array | unknown,
@@ -3255,6 +3269,7 @@ export async function dehydrateStepError(
  * @param key - Encryption key (undefined to skip decryption)
  * @param global - Global object for deserialization context
  * @param extraRevivers - Additional revivers for custom types
+ * @param prepared - Optional cached decrypt/decompress result
  * @returns The hydrated thrown value, ready to reject the step promise
  */
 export async function hydrateStepError(
@@ -3378,6 +3393,7 @@ export async function hydrateRunError(
  * @param key - Encryption key (undefined to skip decryption)
  * @param global - Global object for deserialization context
  * @param extraRevivers - Additional revivers for custom types
+ * @param prepared - Optional cached decrypt/decompress result
  * Called from the workflow handler when replaying the event log
  * of a `step_completed` event.
  */

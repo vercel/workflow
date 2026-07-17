@@ -1,10 +1,6 @@
 import { ReplayDivergenceError } from '@workflow/errors';
 import { EventConsumerResult } from '../events-consumer.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
-import {
-  eventPayloadKey,
-  getOrPrepareReplayPayload,
-} from '../replay-hydration-cache.js';
 import { hydrateStepReturnValue } from '../serialization.js';
 import { ABORT_HOOK_TOKEN, ABORT_STREAM_NAME } from '../symbols.js';
 import { getAbortStreamId } from '../util.js';
@@ -199,12 +195,12 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
             try {
               if (rawPayload !== undefined) {
                 try {
-                  const prepared = await getOrPrepareReplayPayload(
-                    ctx.replayHydrationCache,
-                    eventPayloadKey(event.eventId, 'payload'),
-                    rawPayload,
-                    ctx.encryptionKey
-                  );
+                  const prepared =
+                    await ctx.replayPayloadCache.prepareEventPayload(
+                      event.eventId,
+                      'payload',
+                      rawPayload
+                    );
                   const hydrated = (await hydrateStepReturnValue(
                     rawPayload,
                     ctx.runId,

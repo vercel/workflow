@@ -16,11 +16,7 @@ import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
-import {
-  getOrPrepareReplayPayload,
-  type ReplayHydrationCache,
-  workflowInputPayloadKey,
-} from './replay-hydration-cache.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
@@ -147,7 +143,9 @@ export async function runWorkflow(
    * values. Owned by the inline replay loop so it survives fresh VM contexts
    * created by successive iterations of this invocation.
    */
-  replayHydrationCache?: ReplayHydrationCache,
+  replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache(
+    encryptionKey
+  ),
   /**
    * Turbo mode only: resolves once the backgrounded `run_started` has landed.
    * Threaded into the end-of-run drain so fire-and-forget `*_created` writes
@@ -266,7 +264,7 @@ export async function runWorkflow(
       },
       pendingDeliveries: 0,
       pendingDeliveryBarriers: new Map(),
-      replayHydrationCache,
+      replayPayloadCache,
     };
 
     // Consume run lifecycle events - these are structural events that don't
@@ -861,12 +859,8 @@ export async function runWorkflow(
     let args: unknown[] = [];
     workflowContext.promiseQueue = workflowContext.promiseQueue.then(
       async () => {
-        const prepared = await getOrPrepareReplayPayload(
-          replayHydrationCache,
-          workflowInputPayloadKey(workflowRun.runId),
-          workflowRun.input,
-          encryptionKey
-        );
+        const prepared =
+          await replayPayloadCache.prepareWorkflowInput(workflowRun);
         args = await hydrateWorkflowArguments(
           workflowRun.input,
           workflowRun.runId,

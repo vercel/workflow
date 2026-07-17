@@ -34,11 +34,7 @@ import {
 import { describeError } from './describe-error.js';
 import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
-import {
-  createReplayHydrationCache,
-  prewarmReplayPayloads,
-  type ReplayHydrationCache,
-} from './replay-hydration-cache.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
 import {
   getMaxQueueDeliveries,
   getReplayDivergenceMaxRetries,
@@ -532,13 +528,6 @@ export function workflowEntrypoint(
                   // we fetch only events created after the last known cursor.
                   let cachedEvents: Event[] | null = null;
                   let eventsCursor: string | null = null;
-
-                  // Invocation-scoped cache of VM-independent prepared payloads
-                  // and immutable final values. It survives the fresh workflow
-                  // VM created by each inline replay, but never crosses runs or
-                  // queue deliveries.
-                  const replayHydrationCache: ReplayHydrationCache =
-                    createReplayHydrationCache();
 
                   // Inline-delta optimization: when an inline step's terminal
                   // write returns the event-log delta since the pre-write
@@ -1103,6 +1092,14 @@ export function workflowEntrypoint(
                   );
                   const encryptionKey = await getEncryptionKey();
 
+                  // Invocation-scoped cache of VM-independent prepared payloads
+                  // and immutable final values. It survives the fresh workflow
+                  // VM created by each inline replay, but never crosses runs or
+                  // queue deliveries.
+                  const replayPayloadCache = new ReplayPayloadCache(
+                    encryptionKey
+                  );
+
                   // Main replay loop
                   // biome-ignore lint/correctness/noConstantCondition: intentional loop
                   while (true) {
@@ -1427,18 +1424,16 @@ export function workflowEntrypoint(
                       // Start every missing decrypt/decompress operation before
                       // VM setup. Web Crypto work can overlap bundle evaluation;
                       // consumers still deserialize and resolve in event order.
-                      const payloadPrewarm = prewarmReplayPayloads(
-                        replayHydrationCache,
+                      const payloadPrewarm = replayPayloadCache.prewarm(
                         workflowRun,
-                        events,
-                        encryptionKey
+                        events
                       );
                       const result = await runWorkflow(
                         workflowCode,
                         workflowRun,
                         events,
                         encryptionKey,
-                        replayHydrationCache,
+                        replayPayloadCache,
                         // Turbo: the end-of-run drain inside runWorkflow commits
                         // fire-and-forget `*_created` events before the terminal
                         // `awaitRunReady()` below, so gate those writes on the

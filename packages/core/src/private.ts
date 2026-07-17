@@ -6,7 +6,7 @@ import { withResolvers } from '@workflow/utils';
 import type { CryptoKey } from './encryption.js';
 import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
-import type { ReplayHydrationCache } from './replay-hydration-cache.js';
+import type { ReplayPayloadCache } from './replay-payload-cache.js';
 import type { Serializable } from './schemas.js';
 
 export type StepFunction<
@@ -193,7 +193,7 @@ export interface WorkflowOrchestratorContext {
    * Invocation-scoped cache of prepared serialized payloads and immutable final
    * values. Prepared bytes survive fresh replay VMs; object graphs do not.
    */
-  replayHydrationCache?: ReplayHydrationCache;
+  replayPayloadCache: ReplayPayloadCache;
 }
 
 /** The kind of branch-deciding delivery a barrier represents. */

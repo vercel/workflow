@@ -7,11 +7,6 @@ import {
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from './private.js';
-import {
-  eventPayloadKey,
-  getOrHydrateStepReturnValue,
-  getOrPrepareReplayPayload,
-} from './replay-hydration-cache.js';
 import type { Serializable } from './schemas.js';
 import { hydrateStepError, hydrateStepReturnValue } from './serialization.js';
 
@@ -172,11 +167,10 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // original type identity and custom properties are preserved.
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
-              const prepared = await getOrPrepareReplayPayload(
-                ctx.replayHydrationCache,
-                eventPayloadKey(event.eventId, 'error'),
-                event.eventData.error,
-                ctx.encryptionKey
+              const prepared = await ctx.replayPayloadCache.prepareEventPayload(
+                event.eventId,
+                'error',
+                event.eventData.error
               );
               const hydrated = await hydrateStepError(
                 event.eventData.error,
@@ -231,16 +225,15 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
-              const hydratedResult = await getOrHydrateStepReturnValue(
-                ctx.replayHydrationCache,
+              const hydratedResult = await ctx.replayPayloadCache.getStepResult(
                 completedEventId,
                 async () => {
-                  const prepared = await getOrPrepareReplayPayload(
-                    ctx.replayHydrationCache,
-                    eventPayloadKey(completedEventId, 'result'),
-                    serializedResult,
-                    ctx.encryptionKey
-                  );
+                  const prepared =
+                    await ctx.replayPayloadCache.prepareEventPayload(
+                      completedEventId,
+                      'result',
+                      serializedResult
+                    );
                   return await hydrateStepReturnValue(
                     serializedResult,
                     ctx.runId,

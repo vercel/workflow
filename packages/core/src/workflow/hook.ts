@@ -13,10 +13,6 @@ import {
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from '../private.js';
-import {
-  eventPayloadKey,
-  getOrPrepareReplayPayload,
-} from '../replay-hydration-cache.js';
 import type { Run } from '../runtime/run.js';
 import { hydrateStepReturnValue } from '../serialization.js';
 
@@ -256,12 +252,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
               | { ok: false; error: unknown };
             ctx.promiseQueue = ctx.promiseQueue.then(async () => {
               try {
-                const prepared = await getOrPrepareReplayPayload(
-                  ctx.replayHydrationCache,
-                  eventPayloadKey(event.eventId, 'payload'),
-                  event.eventData.payload,
-                  ctx.encryptionKey
-                );
+                const prepared =
+                  await ctx.replayPayloadCache.prepareEventPayload(
+                    event.eventId,
+                    'payload',
+                    event.eventData.payload
+                  );
                 const payload = await hydrateStepReturnValue(
                   event.eventData.payload,
                   ctx.runId,
@@ -317,11 +313,10 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
-              const prepared = await getOrPrepareReplayPayload(
-                ctx.replayHydrationCache,
-                eventPayloadKey(event.eventId, 'payload'),
-                event.eventData.payload,
-                ctx.encryptionKey
+              const prepared = await ctx.replayPayloadCache.prepareEventPayload(
+                event.eventId,
+                'payload',
+                event.eventData.payload
               );
               const payload = await hydrateStepReturnValue(
                 event.eventData.payload,
