@@ -819,9 +819,17 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           })
           .onConflictDoNothing()
           .returning();
-        if (runValue) {
-          run = deserializeRunError(compact(runValue));
+        // No row back means the run already exists: the resilient start path
+        // (run_started on a non-existent run) won a TOCTOU race and created
+        // it. Surface the conflict rather than returning `{ run: undefined }`
+        // — start() already treats EntityConflictError as benign, and falling
+        // through would append a duplicate run_created event to the log.
+        if (!runValue) {
+          throw new EntityConflictError(
+            `Workflow run "${effectiveRunId}" already exists`
+          );
         }
+        run = deserializeRunError(compact(runValue));
       }
 
       // Handle run_started event: update run status
