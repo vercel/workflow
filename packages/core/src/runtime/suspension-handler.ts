@@ -131,6 +131,17 @@ export interface SuspensionHandlerResult {
   retainedStepInputsSafe: boolean;
 }
 
+function getStepInput(
+  inputs: Map<string, { value: unknown; global: Record<string, any> }>,
+  correlationId: string
+): { value: unknown; global: Record<string, any> } {
+  const input = inputs.get(correlationId);
+  if (!input) {
+    throw new Error(`Missing prepared input for step ${correlationId}`);
+  }
+  return input;
+}
+
 async function createHookEvent({
   runId,
   hookEvent,
@@ -559,12 +570,10 @@ export async function handleSuspension({
     if (stepsNeedingCreation.has(queueItem.correlationId)) {
       ops.push(
         (async () => {
-          const input = inputsByCorrelationId.get(queueItem.correlationId);
-          if (!input) {
-            throw new Error(
-              `Missing prepared input for step ${queueItem.correlationId}`
-            );
-          }
+          const input = getStepInput(
+            inputsByCorrelationId,
+            queueItem.correlationId
+          );
           const dehydratedInput = await dehydrateStepArguments(
             input.value,
             runId,

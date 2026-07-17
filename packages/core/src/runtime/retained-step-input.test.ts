@@ -138,3 +138,51 @@ describe('prepareRetainedStepInput', () => {
     expect(vm.runInContext('globalThis.__retainedTestCalls', context)).toBe(0);
   });
 });
+
+describe('prepareRetainedStepInput review-hardening', () => {
+  it('declines non-enumerable array indices (structuredClone would drop them)', () => {
+    const { context, globalThis: workflowGlobal } = createContext({
+      seed,
+      fixedTimestamp,
+    });
+    const value = vm.runInContext(
+      `(() => {
+        const arr = [1, 2];
+        Object.defineProperty(arr, "0", { value: 7, enumerable: false });
+        return arr;
+      })()`,
+      context
+    );
+
+    expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
+      retainable: false,
+    });
+  });
+
+  it('never performs a property Get on redefined workflow globals', () => {
+    const { context, globalThis: workflowGlobal } = createContext({
+      seed,
+      fixedTimestamp,
+    });
+    const value = vm.runInContext(
+      `(() => {
+        globalThis.__retainedTestCalls = 0;
+        const arr = [1];
+        for (const name of ["Array", "Object"]) {
+          Object.defineProperty(globalThis, name, {
+            get() { globalThis.__retainedTestCalls++; throw new Error("boom"); },
+          });
+        }
+        return { arr };
+      })()`,
+      context
+    );
+
+    // The vandalized globals make the VM-realm prototypes unverifiable, so
+    // validation declines — without throwing or invoking the getters.
+    expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
+      retainable: false,
+    });
+    expect(vm.runInContext('globalThis.__retainedTestCalls', context)).toBe(0);
+  });
+});

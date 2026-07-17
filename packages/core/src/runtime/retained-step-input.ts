@@ -19,17 +19,28 @@ const typedArrayNames = [
   'Uint32Array',
 ] as const;
 
+// Own data-property read that never performs a property Get — workflow code
+// can redefine its globals (or their `prototype` slots) with accessors, and
+// validation must not execute workflow-owned code.
+function ownDataProperty(target: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+}
+
 function hasAllowedPrototype(
   value: object,
   workflowGlobal: Record<string, any>,
   constructorName: string
 ): boolean {
   const prototype = Object.getPrototypeOf(value);
-  return (
-    prototype ===
-      globalThis[constructorName as keyof typeof globalThis]?.prototype ||
-    prototype === workflowGlobal[constructorName]?.prototype
-  );
+  const hostConstructor = globalThis[
+    constructorName as keyof typeof globalThis
+  ] as { prototype?: object } | undefined;
+  if (hostConstructor !== undefined && prototype === hostConstructor.prototype)
+    return true;
+  const vmConstructor = ownDataProperty(workflowGlobal, constructorName);
+  if (typeof vmConstructor !== 'function') return false;
+  return prototype === ownDataProperty(vmConstructor, 'prototype');
 }
 
 function isArrayIndex(key: string): boolean {
@@ -39,6 +50,145 @@ function isArrayIndex(key: string): boolean {
     index >= 0 &&
     index < 2 ** 32 - 1 &&
     String(index) === key
+  );
+}
+
+function isPassiveArrayProperty(
+  array: unknown[],
+  key: string | symbol,
+  workflowGlobal: Record<string, any>,
+  seen: WeakSet<object>
+): boolean {
+  if (key === 'length') return true;
+  const descriptor = Object.getOwnPropertyDescriptor(array, key);
+  if (!descriptor) return false;
+  if (key === 'then' || key === Symbol.toStringTag) return false;
+  if (typeof key !== 'string' || !isArrayIndex(key)) {
+    return !descriptor.enumerable;
+  }
+  // Non-enumerable indices are dropped by structuredClone but persisted by
+  // devalue, so they must decline the fast path.
+  return (
+    descriptor.enumerable === true &&
+    'value' in descriptor &&
+    isPassivelyCloneable(descriptor.value, workflowGlobal, seen)
+  );
+}
+
+function isPassiveArray(
+  value: unknown[],
+  workflowGlobal: Record<string, any>,
+  seen: WeakSet<object>
+): boolean {
+  return (
+    hasAllowedPrototype(value, workflowGlobal, 'Array') &&
+    Reflect.ownKeys(value).every((key) =>
+      isPassiveArrayProperty(value, key, workflowGlobal, seen)
+    )
+  );
+}
+
+function isPassiveMap(
+  value: Map<unknown, unknown>,
+  workflowGlobal: Record<string, any>,
+  seen: WeakSet<object>
+): boolean {
+  if (!hasAllowedPrototype(value, workflowGlobal, 'Map')) return false;
+  if (Reflect.ownKeys(value).length > 0) return false;
+  let retainable = true;
+  Map.prototype.forEach.call(value, (entryValue: unknown, key: unknown) => {
+    retainable &&=
+      isPassivelyCloneable(key, workflowGlobal, seen) &&
+      isPassivelyCloneable(entryValue, workflowGlobal, seen);
+  });
+  return retainable;
+}
+
+function isPassiveSet(
+  value: Set<unknown>,
+  workflowGlobal: Record<string, any>,
+  seen: WeakSet<object>
+): boolean {
+  if (!hasAllowedPrototype(value, workflowGlobal, 'Set')) return false;
+  if (Reflect.ownKeys(value).length > 0) return false;
+  let retainable = true;
+  Set.prototype.forEach.call(value, (entryValue: unknown) => {
+    retainable &&= isPassivelyCloneable(entryValue, workflowGlobal, seen);
+  });
+  return retainable;
+}
+
+function isPassiveBuiltIn(
+  value: object,
+  workflowGlobal: Record<string, any>
+): boolean | undefined {
+  if (types.isDate(value)) {
+    return (
+      hasAllowedPrototype(value, workflowGlobal, 'Date') &&
+      Reflect.ownKeys(value).length === 0
+    );
+  }
+  if (types.isRegExp(value)) {
+    return (
+      hasAllowedPrototype(value, workflowGlobal, 'RegExp') &&
+      Reflect.ownKeys(value).every((key) => key === 'lastIndex')
+    );
+  }
+  if (types.isArrayBuffer(value)) {
+    return (
+      hasAllowedPrototype(value, workflowGlobal, 'ArrayBuffer') &&
+      Reflect.ownKeys(value).length === 0
+    );
+  }
+  if (types.isSharedArrayBuffer(value)) return false;
+  if (types.isDataView(value)) {
+    return (
+      hasAllowedPrototype(value, workflowGlobal, 'DataView') &&
+      Reflect.ownKeys(value).length === 0
+    );
+  }
+  if (types.isTypedArray(value)) {
+    return (
+      Reflect.ownKeys(value).every(
+        (key) => typeof key === 'string' && isArrayIndex(key)
+      ) &&
+      typedArrayNames.some((name) =>
+        hasAllowedPrototype(value, workflowGlobal, name)
+      )
+    );
+  }
+  return undefined;
+}
+
+function isPassiveObjectProperty(
+  object: object,
+  key: string | symbol,
+  workflowGlobal: Record<string, any>,
+  seen: WeakSet<object>
+): boolean {
+  const descriptor = Object.getOwnPropertyDescriptor(object, key);
+  if (!descriptor) return false;
+  if (typeof key === 'symbol') {
+    return key !== Symbol.toStringTag && !descriptor.enumerable;
+  }
+  if (!descriptor.enumerable) {
+    return key !== 'constructor' && key !== 'then';
+  }
+  return (
+    key !== '__proto__' &&
+    'value' in descriptor &&
+    isPassivelyCloneable(descriptor.value, workflowGlobal, seen)
+  );
+}
+
+function isPassivePlainObject(
+  value: object,
+  workflowGlobal: Record<string, any>,
+  seen: WeakSet<object>
+): boolean {
+  if (!hasAllowedPrototype(value, workflowGlobal, 'Object')) return false;
+  return Reflect.ownKeys(value).every((key) =>
+    isPassiveObjectProperty(value, key, workflowGlobal, seen)
   );
 }
 
@@ -72,110 +222,13 @@ function isPassivelyCloneable(
   seen.add(value);
 
   if (Array.isArray(value)) {
-    if (!hasAllowedPrototype(value, workflowGlobal, 'Array')) return false;
-    for (const key of Reflect.ownKeys(value)) {
-      if (key === 'length') continue;
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (!descriptor) return false;
-      if (key === 'then' || key === Symbol.toStringTag) return false;
-      if (typeof key !== 'string' || !isArrayIndex(key)) {
-        if (descriptor.enumerable) return false;
-        continue;
-      }
-      if (!('value' in descriptor)) return false;
-      if (!isPassivelyCloneable(descriptor.value, workflowGlobal, seen)) {
-        return false;
-      }
-    }
-    return true;
+    return isPassiveArray(value, workflowGlobal, seen);
   }
+  if (types.isMap(value)) return isPassiveMap(value, workflowGlobal, seen);
+  if (types.isSet(value)) return isPassiveSet(value, workflowGlobal, seen);
 
-  if (types.isMap(value)) {
-    if (!hasAllowedPrototype(value, workflowGlobal, 'Map')) return false;
-    if (Reflect.ownKeys(value).length > 0) return false;
-    let retainable = true;
-    Map.prototype.forEach.call(value, (entryValue: unknown, key: unknown) => {
-      retainable &&=
-        isPassivelyCloneable(key, workflowGlobal, seen) &&
-        isPassivelyCloneable(entryValue, workflowGlobal, seen);
-    });
-    return retainable;
-  }
-
-  if (types.isSet(value)) {
-    if (!hasAllowedPrototype(value, workflowGlobal, 'Set')) return false;
-    if (Reflect.ownKeys(value).length > 0) return false;
-    let retainable = true;
-    Set.prototype.forEach.call(value, (entryValue: unknown) => {
-      retainable &&= isPassivelyCloneable(entryValue, workflowGlobal, seen);
-    });
-    return retainable;
-  }
-
-  if (types.isDate(value)) {
-    return (
-      hasAllowedPrototype(value, workflowGlobal, 'Date') &&
-      Reflect.ownKeys(value).length === 0
-    );
-  }
-  if (types.isRegExp(value)) {
-    return (
-      hasAllowedPrototype(value, workflowGlobal, 'RegExp') &&
-      Reflect.ownKeys(value).every((key) => key === 'lastIndex')
-    );
-  }
-  if (types.isArrayBuffer(value)) {
-    return (
-      hasAllowedPrototype(value, workflowGlobal, 'ArrayBuffer') &&
-      Reflect.ownKeys(value).length === 0
-    );
-  }
-  if (types.isSharedArrayBuffer(value)) return false;
-  if (types.isDataView(value)) {
-    return (
-      hasAllowedPrototype(value, workflowGlobal, 'DataView') &&
-      Reflect.ownKeys(value).length === 0
-    );
-  }
-  if (types.isTypedArray(value)) {
-    return (
-      Reflect.ownKeys(value).every(
-        (key) => typeof key === 'string' && isArrayIndex(key)
-      ) &&
-      typedArrayNames.some(
-        (name) =>
-          workflowGlobal[name] !== undefined &&
-          hasAllowedPrototype(value, workflowGlobal, name)
-      )
-    );
-  }
-
-  const prototype = Object.getPrototypeOf(value);
-  if (
-    prototype !== Object.prototype &&
-    prototype !== workflowGlobal.Object?.prototype
-  ) {
-    return false;
-  }
-
-  for (const key of Reflect.ownKeys(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor) return false;
-    if (typeof key === 'symbol') {
-      if (key === Symbol.toStringTag) return false;
-      if (descriptor.enumerable) return false;
-      continue;
-    }
-    if (!descriptor.enumerable) {
-      if (key === 'constructor' || key === 'then') return false;
-      continue;
-    }
-    if (key === '__proto__' || !('value' in descriptor)) return false;
-    if (!isPassivelyCloneable(descriptor.value, workflowGlobal, seen)) {
-      return false;
-    }
-  }
-  return true;
+  const builtIn = isPassiveBuiltIn(value, workflowGlobal);
+  return builtIn ?? isPassivePlainObject(value, workflowGlobal, seen);
 }
 
 export function prepareRetainedStepInput(
