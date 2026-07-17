@@ -31,7 +31,7 @@ const METRIC_LABELS = {
   ttfs: {
     name: 'TTFS',
     description:
-      'time to first step body (server run_created → step body, Vercel clocks; +80ms est. RTT)',
+      'time to first step body (in-deployment start() → first step body, deployment clocks)',
   },
   stso: {
     name: 'STSO',
@@ -40,11 +40,12 @@ const METRIC_LABELS = {
   wo: {
     name: 'WO',
     description:
-      'workflow overhead (whole-run time outside step bodies, server-anchored; +80ms est. RTT)',
+      'workflow overhead (whole-run time outside step bodies, in-deployment anchored)',
   },
   sl: {
     name: 'SL',
-    description: 'stream latency (first chunk write → visible to the reader)',
+    description:
+      'stream latency (in-deployment write → read propagation, readAt - writtenAt)',
   },
 };
 const METRIC_ORDER = ['ttfs', 'stso', 'wo', 'sl'];
@@ -322,7 +323,7 @@ function renderFooter(entries) {
         ]
       : []),
     '',
-    '<sub>TTFS/WO are measured from Vercel server timestamps (run creation → step body), so they’re independent of the CI runner’s clock and its network path to api.vercel.com; a flat +80ms is added as an estimate of the client→ingress request overhead (RTT) the server timestamps don’t capture. STSO is measured between step bodies on the deployment. SL is client-observed and includes the api.vercel.com read path.</sub>',
+    '<sub>All metrics are measured from deployment-side timestamps only. Runs are triggered by an in-deployment route that stamps the anchor (`clientStart`) right before `start()`, so the CI runner’s request and its path through api.vercel.com sit outside every measured window. TTFS = in-deployment `start()` → first step body (turbo uses the in-process fast path, non-turbo the dispatch path). STSO/WO are measured between step bodies on the deployment. SL is measured inside the workflow (parallel reader/writer steps), so it no longer includes the api.vercel.com read path.</sub>',
   ].join('\n');
 }
 

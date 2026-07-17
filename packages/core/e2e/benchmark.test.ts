@@ -2,64 +2,70 @@
  * Benchmark runner measuring the workflow runtime's core latency metrics
  * against a deployed workbench app.
  *
+ * Every run is triggered through an in-deployment route (`POST /api/bench` on
+ * the workbench app) rather than by calling `start()` from this CI process. The
+ * route stamps `clientStart` with the deployment's own clock immediately before
+ * `start()`, so the CI runner's request — and its entire path through
+ * api.vercel.com — sits OUTSIDE every measured window. As a result none of the
+ * metrics below depend on the CI runner's clock or its network path to the
+ * proxy; they are computed purely from Vercel-side timestamps.
+ *
  * Metrics (all in milliseconds, reported as avg/p75/p90/p99):
  *
- * - TTFS  (time to first step): server-side `run_created` timestamp
- *          (Vercel-assigned `createdAt`) → first step body execution
- *          (`steps[0].start`, the deployment's clock). Both endpoints are
- *          Vercel-provided, so the measurement is independent of the CI
- *          runner's clock and its network path to api.vercel.com. Because the
- *          server anchor starts *after* the create request's inbound leg, a
- *          flat RTT_OVERHEAD_MS is added as an estimate of that client→ingress
- *          request overhead. Measured for both the turbo path (no hooks) and
- *          the non-turbo path (a hook was registered before the step).
+ * - TTFS  (time to first step): `steps[0].start` (first step body execution,
+ *          deployment clock) minus the in-deployment `clientStart` returned by
+ *          the trigger route. Because `start()` runs inside the deployment, the
+ *          turbo path (no hooks) exercises the runtime's in-process fast path
+ *          (optimisticStart); the non-turbo path (a hook registered before the
+ *          step) exercises the dispatch path. Both are proxy-independent.
  * - STSO  (step-to-step overhead): gap between consecutive step body
  *          executions (`steps[i].start - steps[i-1].end`) in a workflow with
  *          many trivial sequential steps. Both timestamps come from step
- *          bodies on the deployment, so STSO is already independent of the CI
- *          client and the api.vercel.com proxy. Reported per step-index range
- *          (see STSO_BUCKETS) because early steps behave differently from
- *          late ones (first-invocation fast paths, growing event log).
+ *          bodies on the deployment. Reported per step-index range (see
+ *          STSO_BUCKETS) because early steps behave differently from late ones
+ *          (first-invocation fast paths, growing event log).
  * - WO    (workflow overhead): total time the run spends outside of step
- *          bodies over the whole sequential run, from the server-side
- *          `run_created` timestamp to the end of the last step body:
- *          `(lastStep.end - runCreatedServerMs) - Σ(step durations)`, plus the
- *          flat RTT_OVERHEAD_MS. Measured on the sequential scenario only — on
- *          a single-step workflow WO reduces algebraically to TTFS.
- * - SL    (stream latency): time between a step writing the first chunk to
- *          the workflow's default output stream and that chunk becoming
- *          visible to a reader attached via `run.getReadable()`. Unlike the
- *          other metrics this is inherently client-observed: it includes the
- *          api.vercel.com read path (a server-side measurement would need
- *          runtime/world changes and is a separate follow-up).
+ *          bodies over the whole sequential run, from the in-deployment
+ *          `clientStart` to the end of the last step body:
+ *          `(lastStep.end - clientStart) - Σ(step durations)`. Measured on the
+ *          sequential scenario only — on a single-step workflow WO reduces
+ *          algebraically to TTFS.
+ * - SL    (stream latency): live write->read propagation for the default
+ *          output stream, measured entirely on the deployment by
+ *          `benchSlWorkflow`: a reader step and a writer step run in parallel,
+ *          the reader blocks on the first chunk, and the workflow returns both
+ *          the writer's `writtenAt` and the reader's `readAt`. SL is
+ *          `readAt - writtenAt`, so it excludes the api.vercel.com read path
+ *          the old client-observed metric included.
  *
  * Scenarios (defined in workbench/example/workflows/97_bench.ts):
  *
- * 1. benchStreamWorkflow          — 1 streaming step, turbo mode → TTFS + SL
- * 2. benchSequentialStepsWorkflow — 1020 trivial sequential steps → STSO + WO
- * 3. benchHookStreamWorkflow      — hook + 1 streaming step, non-turbo → TTFS + SL
+ * 1. benchStreamWorkflow          — 1 step, turbo mode → TTFS (turbo)
+ * 2. benchHookStreamWorkflow      — hook + 1 step, non-turbo → TTFS (non-turbo)
+ * 3. benchSequentialStepsWorkflow — 1020 trivial sequential steps → STSO + WO
+ * 4. benchSlWorkflow              — parallel reader/writer steps → SL
  *
  * Each scenario runs many iterations (env-tunable, see BENCH_* below) so the
  * percentiles are computed from real samples.
  *
  * The backend is selected exactly like the e2e tests (setupWorld): Vercel when
  * WORKFLOW_VERCEL_ENV is set, Postgres when WORKFLOW_TARGET_WORLD is
- * @workflow/world-postgres, local filesystem otherwise. Note that SL requires
- * `run.getReadable()` to work from a separate process, which the local world's
- * in-process streamer does not support — CI currently runs this file against
- * Vercel only.
+ * @workflow/world-postgres, local filesystem otherwise. Because SL is now
+ * measured inside the workflow (not by a reader in this process), it no longer
+ * depends on `run.getReadable()` working across processes; CI still runs this
+ * file against Vercel only.
  *
- * TTFS/WO anchor on the Vercel-assigned `run_created` timestamp (fetched via
- * the world's event log) and end on the deployment's step-body clock; the only
- * residual skew is intra-Vercel (workflow-server vs step runner), NTP-bounded
- * and small. SL still compares the step runner's clock against the client's.
+ * All timestamps are deployment-side, so the only residual skew is intra-Vercel
+ * (between step-runner instances in the same region), NTP-bounded and small
+ * relative to the measured values.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, test } from 'vitest';
-import { getWorld, start } from '../src/runtime';
-import { getWorkflowMetadata, setupWorld } from './utils';
+import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
+import { getRun } from '../src/runtime';
+import { setupWorld } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {
@@ -78,23 +84,18 @@ const envInt = (name: string, fallback: number, min = 1): number => {
   return value;
 };
 
-// Iteration counts. Stream scenarios yield one TTFS/SL/WO sample per
+// Iteration counts. The stream/hook/SL scenarios yield one sample per
 // iteration; the sequential scenario yields (stepCount - 1) STSO samples per
 // iteration, so a single long run already provides solid percentiles.
 const STREAM_ITERATIONS = envInt('BENCH_STREAM_ITERATIONS', 30);
+const SL_ITERATIONS = envInt('BENCH_SL_ITERATIONS', STREAM_ITERATIONS);
 const SEQUENTIAL_ITERATIONS = envInt('BENCH_SEQUENTIAL_ITERATIONS', 1);
 const SEQUENTIAL_STEP_COUNT = envInt('BENCH_SEQUENTIAL_STEP_COUNT', 1020);
 const WARMUP_ITERATIONS = envInt('BENCH_WARMUP_ITERATIONS', 2, 0);
 
-// TTFS/WO anchor on the Vercel-assigned `run_created` timestamp, which is
-// stamped only after the client's create request has reached the ingress — so
-// the server anchor excludes that client→api.vercel.com inbound leg. We add
-// this flat estimate of the request overhead (RTT) back in, keeping the metric
-// deterministic (no CI-network variance) while still approximating end-to-end.
-// The observed inbound leg is ~100-200ms; 80ms is a conservative flat default.
-const RTT_OVERHEAD_MS = envInt('BENCH_RTT_OVERHEAD_MS', 80, 0);
-
 // Per-metric latency targets (ms) rendered as 🟢/🔴 marks in the PR comment.
+// Provisional: now that the proxy leg is out of every window, these will be
+// re-tightened once a few in-deployment baselines land.
 const TTFS_TARGETS = { p75: 200, p90: 300, p99: 600 };
 const SL_TARGETS = { p75: 50, p90: 60, p99: 125 };
 
@@ -126,35 +127,37 @@ interface BenchStepTiming {
   end: number;
 }
 
-interface BenchStreamChunk {
-  seq: number;
+interface BenchStreamLatency {
   writtenAt: number;
+  readAt: number;
 }
 
 interface StreamIterationResult {
   runId: string;
-  /** Server-anchored TTFS (+ flat RTT estimate); the reported metric. */
+  /** `steps[0].start - clientStart`, both deployment-side clocks. */
   ttfsMs: number;
-  /**
-   * Client wall-clock TTFS (`steps[0].start - clientStart`), kept for
-   * diagnostics only (logged/serialized, not reported as a metric). Comparing
-   * it against `ttfsMs - RTT_OVERHEAD_MS` shows how well the flat 80ms tracks
-   * the real client→ingress overhead.
-   */
-  ttfsWallMs: number;
-  slMs: number;
 }
 
 interface SequentialIterationResult {
   runId: string;
   /** stsoMs[i] is the gap between steps i+1 and i+2 (1-indexed). */
   stsoMs: number[];
-  /** Server-anchored whole-run workflow overhead (+ flat RTT estimate). */
+  /** Whole-run workflow overhead, anchored on the in-deployment clientStart. */
   woMs: number;
 }
 
-const benchWf = (fn: string) =>
-  getWorkflowMetadata(deploymentUrl, 'workflows/97_bench.ts', fn);
+interface SlIterationResult {
+  runId: string;
+  /** `readAt - writtenAt`, both deployment-side step-body clocks. */
+  slMs: number;
+}
+
+/** Response shape of the in-deployment `POST /api/bench` trigger route. */
+interface BenchTriggerResponse {
+  runId: string;
+  /** Date.now() stamped in the route immediately before start(). */
+  clientStart: number;
+}
 
 function withTimeout<T>(
   promise: Promise<T>,
@@ -173,6 +176,45 @@ function withTimeout<T>(
       timer.unref?.();
     }),
   ]);
+}
+
+/**
+ * Trigger a benchmark workflow via the in-deployment route so `clientStart` is
+ * stamped by the deployment's clock (excluding the CI->ingress request path).
+ * Returns the created run id and that anchor.
+ */
+async function triggerBenchRun(
+  workflowFn: string,
+  args: unknown[] = []
+): Promise<BenchTriggerResponse> {
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    ...(await getTrustedSourcesHeaders()),
+  };
+  const response = await fetch(`${deploymentUrl}/api/bench`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ workflowFn, args }),
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(
+      `bench trigger for ${workflowFn} failed: ${response.status} ${body.slice(0, 300)}`
+    );
+  }
+  const data = (await response.json()) as Partial<BenchTriggerResponse>;
+  if (typeof data.runId !== 'string' || typeof data.clientStart !== 'number') {
+    throw new Error(
+      `bench trigger for ${workflowFn} returned malformed body: ${JSON.stringify(data)?.slice(0, 200)}`
+    );
+  }
+  return { runId: data.runId, clientStart: data.clientStart };
+}
+
+/** Poll a run's return value to completion (the handle polls internally). */
+async function getReturnValue(runId: string): Promise<unknown> {
+  const run = await getRun(runId);
+  return run.returnValue;
 }
 
 function timingsFromReturnValue(
@@ -196,36 +238,8 @@ function timingsFromReturnValue(
 }
 
 /**
- * Vercel-assigned run-creation timestamp (epoch ms), read from the world's
- * event log so TTFS/WO anchor on a server clock rather than the CI runner's.
- * Prefers the `run_created` event's `createdAt` (server-stamped, distinct from
- * the client `occurredAt`); falls back to the run snapshot's `createdAt`.
- * Returns undefined if neither can be read, so callers can degrade to the
- * client anchor rather than dropping the sample.
- */
-async function runCreatedServerMs(runId: string): Promise<number | undefined> {
-  try {
-    const world = await getWorld();
-    const { data } = await world.events.list({ runId });
-    const created = data.find((e) => e.eventType === 'run_created');
-    const createdMs = created?.createdAt?.getTime?.();
-    if (typeof createdMs === 'number' && Number.isFinite(createdMs)) {
-      return createdMs;
-    }
-    const run = await world.runs.get(runId);
-    const runCreatedMs = run.createdAt?.getTime?.();
-    return typeof runCreatedMs === 'number' && Number.isFinite(runCreatedMs)
-      ? runCreatedMs
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Raw WO: total time outside of step bodies, from `anchorMs` to the last step
- * body's exit. The caller supplies the server `run_created` timestamp as the
- * anchor and adds RTT_OVERHEAD_MS; the value is clamped at 0 to absorb small
+ * WO: total time outside of step bodies, from `anchorMs` (the in-deployment
+ * clientStart) to the last step body's exit. Clamped at 0 to absorb small
  * intra-Vercel clock skew.
  */
 function workflowOverheadMs(
@@ -240,90 +254,21 @@ function workflowOverheadMs(
 async function runStreamIteration(
   workflowFn: string
 ): Promise<StreamIterationResult> {
-  const wf = await benchWf(workflowFn);
-  const clientStart = Date.now();
-  const run = await start(wf, []);
+  const { runId, clientStart } = await triggerBenchRun(workflowFn);
   try {
-    // Attach the reader right away — before the step executes — so first-chunk
-    // visibility is bounded by the streaming pipeline, not by when we read.
-    const reader = run
-      .getReadable<BenchStreamChunk>()
-      .getReader() as ReadableStreamDefaultReader<BenchStreamChunk>;
-
-    let slMs: number | undefined;
-    let chunksSeen = 0;
-    // Drain the whole stream (the step closes it); the first chunk yields the
-    // SL sample. Intentionally no reader.cancel() — leave the reader behind on
-    // timeout instead (cancellation of in-flight world streams can hang).
-    await withTimeout(
-      (async () => {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const readAt = Date.now();
-          if (chunksSeen === 0) {
-            if (typeof value?.writtenAt !== 'number') {
-              throw new Error(
-                `Malformed stream chunk: ${JSON.stringify(value)?.slice(0, 200)}`
-              );
-            }
-            slMs = readAt - value.writtenAt;
-          }
-          chunksSeen++;
-        }
-      })(),
-      RUN_TIMEOUT_MS,
-      `${workflowFn} stream read (run ${run.runId})`
-    );
-    if (slMs === undefined) {
-      throw new Error(`Run ${run.runId} produced no stream chunks`);
-    }
-
     const returnValue = await withTimeout(
-      run.returnValue,
+      getReturnValue(runId),
       RUN_TIMEOUT_MS,
-      `${workflowFn} returnValue (run ${run.runId})`
+      `${workflowFn} returnValue (run ${runId})`
     );
-    const steps = timingsFromReturnValue(returnValue, run.runId);
-
-    // Anchor TTFS at the Vercel-assigned run-creation time so the metric is
-    // independent of the CI runner's clock and its path to api.vercel.com,
-    // then add the flat RTT estimate for the create request's inbound leg.
-    // If the server timestamp can't be read, degrade to the client anchor
-    // (which already includes the real RTT — no flat estimate is added).
-    const serverAnchor = await runCreatedServerMs(run.runId);
-    const ttfsWallMs = steps[0].start - clientStart;
-    const ttfsMs =
-      serverAnchor !== undefined
-        ? Math.max(0, steps[0].start - serverAnchor) + RTT_OVERHEAD_MS
-        : ttfsWallMs;
-    if (serverAnchor === undefined) {
-      console.warn(
-        `[bench] ${workflowFn} run ${run.runId}: no server run_created timestamp; TTFS degraded to client anchor`
-      );
-    }
-
+    const steps = timingsFromReturnValue(returnValue, runId);
     return {
-      runId: run.runId,
-      ttfsMs,
-      ttfsWallMs,
-      slMs,
+      runId,
+      // Both timestamps are deployment-side; clamp to absorb tiny skew.
+      ttfsMs: Math.max(0, steps[0].start - clientStart),
     };
   } catch (error) {
-    // A stream-read timeout alone can't distinguish "the run never executed"
-    // (queue not delivering to this deployment) from "the read path is
-    // broken" (run finished but chunks never became visible). Probe the run
-    // state so the failure log answers that question.
-    let runState = 'unknown';
-    try {
-      await withTimeout(run.returnValue, 5_000, 'run state probe');
-      runState = 'run completed';
-    } catch (probe) {
-      runState = (probe as Error).message.startsWith('Timed out')
-        ? 'run still not finished'
-        : `run failed: ${(probe as Error).message}`;
-    }
-    (error as Error).message += ` (run ${run.runId}; ${runState})`;
+    (error as Error).message += ` (run ${runId})`;
     throw error;
   }
 }
@@ -331,19 +276,20 @@ async function runStreamIteration(
 async function runSequentialIteration(
   stepCount: number
 ): Promise<SequentialIterationResult> {
-  const wf = await benchWf('benchSequentialStepsWorkflow');
-  const clientStart = Date.now();
-  const run = await start(wf, [stepCount]);
+  const { runId, clientStart } = await triggerBenchRun(
+    'benchSequentialStepsWorkflow',
+    [stepCount]
+  );
   try {
     const returnValue = await withTimeout(
-      run.returnValue,
+      getReturnValue(runId),
       RUN_TIMEOUT_MS + stepCount * 2_000,
-      `benchSequentialStepsWorkflow returnValue (run ${run.runId})`
+      `benchSequentialStepsWorkflow returnValue (run ${runId})`
     );
-    const steps = timingsFromReturnValue(returnValue, run.runId);
+    const steps = timingsFromReturnValue(returnValue, runId);
     if (steps.length !== stepCount) {
       throw new Error(
-        `Run ${run.runId} returned ${steps.length} step timings, expected ${stepCount}`
+        `Run ${runId} returned ${steps.length} step timings, expected ${stepCount}`
       );
     }
 
@@ -352,22 +298,38 @@ async function runSequentialIteration(
       stsoMs.push(steps[i].start - steps[i - 1].end);
     }
 
-    // Server-anchored whole-run WO (+ flat RTT). Degrade to the client start
-    // if the server timestamp is unavailable (then the RTT is already
-    // included, so no flat estimate is added).
-    const serverAnchor = await runCreatedServerMs(run.runId);
-    const woMs =
-      serverAnchor !== undefined
-        ? workflowOverheadMs(serverAnchor, steps) + RTT_OVERHEAD_MS
-        : workflowOverheadMs(clientStart, steps);
-
     return {
-      runId: run.runId,
+      runId,
       stsoMs,
-      woMs,
+      woMs: workflowOverheadMs(clientStart, steps),
     };
   } catch (error) {
-    (error as Error).message += ` (run ${run.runId})`;
+    (error as Error).message += ` (run ${runId})`;
+    throw error;
+  }
+}
+
+async function runSlIteration(): Promise<SlIterationResult> {
+  const { runId } = await triggerBenchRun('benchSlWorkflow');
+  try {
+    const returnValue = await withTimeout(
+      getReturnValue(runId),
+      RUN_TIMEOUT_MS,
+      `benchSlWorkflow returnValue (run ${runId})`
+    );
+    const sl = (returnValue as { sl?: BenchStreamLatency } | undefined)?.sl;
+    if (
+      !sl ||
+      typeof sl.writtenAt !== 'number' ||
+      typeof sl.readAt !== 'number'
+    ) {
+      throw new Error(
+        `Run ${runId} returned no stream-latency sample: ${JSON.stringify(returnValue)?.slice(0, 200)}`
+      );
+    }
+    return { runId, slMs: Math.max(0, sl.readAt - sl.writtenAt) };
+  } catch (error) {
+    (error as Error).message += ` (run ${runId})`;
     throw error;
   }
 }
@@ -500,25 +462,6 @@ function recordMetric(
   });
 }
 
-/**
- * Log the client wall-clock TTFS alongside the reported server-anchored TTFS
- * so the flat RTT_OVERHEAD_MS assumption can be validated from CI logs. Not a
- * reported metric — diagnostics only. `wall - (server - RTT)` is the residual
- * between the real client→ingress overhead and our flat estimate.
- */
-function logTtfsWallDiagnostic(
-  scenario: string,
-  results: StreamIterationResult[]
-) {
-  if (results.length === 0) return;
-  const wall = computeStats(results.map((r) => r.ttfsWallMs));
-  const server = computeStats(results.map((r) => r.ttfsMs));
-  console.log(
-    `[bench] ${scenario} TTFS diagnostic: server+RTT avg ${server.avg}ms, ` +
-      `client wall-clock avg ${wall.avg}ms (RTT flat estimate ${RTT_OVERHEAD_MS}ms)`
-  );
-}
-
 function getBackend(): string {
   if (process.env.WORKFLOW_BENCH_BACKEND) {
     return process.env.WORKFLOW_BENCH_BACKEND;
@@ -535,41 +478,49 @@ function getBackend(): string {
 const SCENARIO_TURBO_STREAM = 'stream';
 const SCENARIO_HOOK_STREAM = 'hook + stream';
 const SCENARIO_SEQUENTIAL = `${SEQUENTIAL_STEP_COUNT} steps`;
+const SCENARIO_STREAM_LATENCY = 'stream latency';
 const SCENARIO_DESCRIPTIONS = [
   {
     name: SCENARIO_TURBO_STREAM,
     description:
-      'one step that streams chunks back to the client; no hooks, so the run stays in turbo mode',
+      'one step; no hooks, so the run stays in turbo mode (in-process fast path)',
   },
   {
     name: SCENARIO_HOOK_STREAM,
     description:
-      'registers a hook before the same streaming step, which exits turbo mode',
+      'registers a hook before one step, which exits turbo mode (dispatch path)',
   },
   {
     name: SCENARIO_SEQUENTIAL,
     description: `${SEQUENTIAL_STEP_COUNT} trivial sequential steps; STSO is measured between consecutive steps in the given step ranges, and WO is the whole-run overhead outside step bodies`,
   },
+  {
+    name: SCENARIO_STREAM_LATENCY,
+    description:
+      'parallel reader/writer steps on a dedicated stream; SL is the in-deployment write->read propagation (readAt - writtenAt)',
+  },
 ];
 
 describe('workflow benchmarks', () => {
-  // Preflight: prove the deployment executes workflows at all before any
-  // scenario spends its attempt budget. Without this, a target that accepts
-  // run creation but never executes runs (e.g. queue not delivering to the
-  // deployment) makes every iteration of every scenario wait out
-  // RUN_TIMEOUT_MS, and the job dies at its time limit without a useful
+  // Preflight: prove the deployment executes workflows (and the trigger route
+  // works) before any scenario spends its attempt budget. Without this, a
+  // target that accepts run creation but never executes runs (e.g. queue not
+  // delivering to the deployment) makes every iteration of every scenario wait
+  // out RUN_TIMEOUT_MS, and the job dies at its time limit without a useful
   // error.
   beforeAll(async () => {
-    const wf = await benchWf('benchSequentialStepsWorkflow');
-    const run = await start(wf, [1]);
+    const { runId } = await triggerBenchRun(
+      'benchSequentialStepsWorkflow',
+      [1]
+    );
     try {
       const returnValue = await withTimeout(
-        run.returnValue,
+        getReturnValue(runId),
         PREFLIGHT_TIMEOUT_MS,
-        `preflight run (run ${run.runId})`
+        `preflight run (run ${runId})`
       );
-      timingsFromReturnValue(returnValue, run.runId);
-      console.log(`[bench] preflight ok (run ${run.runId})`);
+      timingsFromReturnValue(returnValue, runId);
+      console.log(`[bench] preflight ok (run ${runId})`);
     } catch (error) {
       throw new Error(
         `Benchmark preflight failed — the deployment accepted the run but did not execute it to completion; aborting all scenarios. ${(error as Error).message}`
@@ -577,33 +528,22 @@ describe('workflow benchmarks', () => {
     }
   }, PREFLIGHT_TIMEOUT_MS + 60_000);
 
-  test(
-    'scenario: 1 step + stream (turbo)',
-    { timeout: 30 * 60_000 },
-    async () => {
-      const results = await runScenario(
-        SCENARIO_TURBO_STREAM,
-        STREAM_ITERATIONS,
-        () => runStreamIteration('benchStreamWorkflow')
-      );
-      recordMetric(
-        'ttfs',
-        SCENARIO_TURBO_STREAM,
-        results.map((r) => r.ttfsMs),
-        TTFS_TARGETS
-      );
-      logTtfsWallDiagnostic(SCENARIO_TURBO_STREAM, results);
-      recordMetric(
-        'sl',
-        SCENARIO_TURBO_STREAM,
-        results.map((r) => r.slMs),
-        SL_TARGETS
-      );
-    }
-  );
+  test('scenario: 1 step (turbo)', { timeout: 30 * 60_000 }, async () => {
+    const results = await runScenario(
+      SCENARIO_TURBO_STREAM,
+      STREAM_ITERATIONS,
+      () => runStreamIteration('benchStreamWorkflow')
+    );
+    recordMetric(
+      'ttfs',
+      SCENARIO_TURBO_STREAM,
+      results.map((r) => r.ttfsMs),
+      TTFS_TARGETS
+    );
+  });
 
   test(
-    'scenario: hook + 1 step + stream (non-turbo)',
+    'scenario: hook + 1 step (non-turbo)',
     { timeout: 30 * 60_000 },
     async () => {
       const results = await runScenario(
@@ -617,15 +557,22 @@ describe('workflow benchmarks', () => {
         results.map((r) => r.ttfsMs),
         TTFS_TARGETS
       );
-      logTtfsWallDiagnostic(SCENARIO_HOOK_STREAM, results);
-      recordMetric(
-        'sl',
-        SCENARIO_HOOK_STREAM,
-        results.map((r) => r.slMs),
-        SL_TARGETS
-      );
     }
   );
+
+  test('scenario: stream latency', { timeout: 30 * 60_000 }, async () => {
+    const results = await runScenario(
+      SCENARIO_STREAM_LATENCY,
+      SL_ITERATIONS,
+      () => runSlIteration()
+    );
+    recordMetric(
+      'sl',
+      SCENARIO_STREAM_LATENCY,
+      results.map((r) => r.slMs),
+      SL_TARGETS
+    );
+  });
 
   test('scenario: sequential steps', { timeout: 60 * 60_000 }, async () => {
     const results = await runScenario(
@@ -634,7 +581,7 @@ describe('workflow benchmarks', () => {
       () => runSequentialIteration(SEQUENTIAL_STEP_COUNT),
       {
         // No warmup: STSO gaps are measured entirely on the deployment (the
-        // stream scenarios already warmed the client + world), and a warmup
+        // other scenarios already warmed the client + world), and a warmup
         // run of this scenario would cost as much as a recorded one.
         warmupIterations: 0,
         // A long run occasionally fails outright (e.g. replay divergence
@@ -654,9 +601,9 @@ describe('workflow benchmarks', () => {
         targets
       );
     }
-    // WO: whole-run overhead outside step bodies (server-anchored + flat RTT).
-    // Measured here rather than on the stream scenarios, where a single step
-    // makes WO algebraically identical to TTFS.
+    // WO: whole-run overhead outside step bodies, anchored on the in-deployment
+    // clientStart. Measured here rather than on the stream scenarios, where a
+    // single step makes WO algebraically identical to TTFS.
     recordMetric(
       'wo',
       SCENARIO_SEQUENTIAL,
@@ -684,6 +631,7 @@ describe('workflow benchmarks', () => {
       commit: process.env.GITHUB_SHA || undefined,
       config: {
         streamIterations: STREAM_ITERATIONS,
+        slIterations: SL_ITERATIONS,
         sequentialIterations: SEQUENTIAL_ITERATIONS,
         sequentialStepCount: SEQUENTIAL_STEP_COUNT,
         warmupIterations: WARMUP_ITERATIONS,
