@@ -79,7 +79,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: disabled
 - Set `1` to let the runtime defer an inline step's `step_completed` write: the next replay iteration runs on locally-synthesized events (and, with optimistic start active, the next step's body starts) while the write settles in the background. Every subsequent durable write is chained behind the deferred write, and the queue message is only acknowledged after it settles.
-- Only engages for a single sequential inline step with no open hook or wait, and only when concurrent orchestrator invocations are ruled out — on turbo's first delivery, or under [`WORKFLOW_SEQUENTIAL_REPLAYS=1`](/worlds/vercel#workflow_sequential_replays) on a World whose queue declares `maxConcurrency` support (the Vercel World does).
+- Only engages for a single sequential inline step with no open hook or wait, and only on turbo's first delivery — the one case where no concurrent orchestrator invocation can exist.
 - Requires idempotent step side effects, more strongly than `WORKFLOW_OPTIMISTIC_INLINE_START`: a crash while the write is in flight re-executes the step on redelivery, which can produce a different result than the one the next step's body already consumed.
 
 ### `WORKFLOW_INLINE_OWNERSHIP`
