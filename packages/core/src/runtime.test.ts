@@ -1,4 +1,5 @@
 import {
+  EntityConflictError,
   PreconditionFailedError,
   RUN_ERROR_CODES,
   ThrottleError,
@@ -1714,6 +1715,314 @@ describe('workflowEntrypoint turbo mode', () => {
     expect(order.indexOf('step_started_called')).toBeLessThan(
       order.indexOf('body')
     );
+  });
+});
+
+describe('workflowEntrypoint deferred step_completed (WORKFLOW_ASYNC_STEP_COMPLETED)', () => {
+  const ORIG_TURBO = process.env.WORKFLOW_TURBO;
+  const ORIG_OPT = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+  const ORIG_ASYNC = process.env.WORKFLOW_ASYNC_STEP_COMPLETED;
+
+  // Default: turbo ON (unset), everything else OFF (unset). Individual tests
+  // opt into WORKFLOW_ASYNC_STEP_COMPLETED.
+  beforeEach(() => {
+    delete process.env.WORKFLOW_TURBO;
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    delete process.env.WORKFLOW_ASYNC_STEP_COMPLETED;
+    asyncOrder = [];
+  });
+  afterEach(() => {
+    if (ORIG_TURBO === undefined) delete process.env.WORKFLOW_TURBO;
+    else process.env.WORKFLOW_TURBO = ORIG_TURBO;
+    if (ORIG_OPT === undefined) {
+      delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    } else {
+      process.env.WORKFLOW_OPTIMISTIC_INLINE_START = ORIG_OPT;
+    }
+    if (ORIG_ASYNC === undefined) {
+      delete process.env.WORKFLOW_ASYNC_STEP_COMPLETED;
+    } else {
+      process.env.WORKFLOW_ASYNC_STEP_COMPLETED = ORIG_ASYNC;
+    }
+    setWorld(undefined);
+    vi.clearAllMocks();
+    waitUntilPromises.length = 0;
+  });
+
+  let asyncOrder: string[] = [];
+  registerStepFunction('asyncStepA', async () => {
+    asyncOrder.push('bodyA');
+    return 'a';
+  });
+  registerStepFunction('asyncStepB', async () => {
+    asyncOrder.push('bodyB');
+    return 'b';
+  });
+
+  // Two sequential steps: B's input work depends on A having resolved in the
+  // workflow, so B's body running while A's step_completed create is still
+  // in flight proves the deferred-completed overlap.
+  const twoStepWorkflow = `const a = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("asyncStepA");
+    const b = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("asyncStepB");
+    async function workflow() { await a(); await b(); return 'done'; }
+    ;globalThis.__private_workflows = new Map();
+    globalThis.__private_workflows.set("workflow", workflow);`;
+
+  /**
+   * Drives the handler with a first-invocation message at the given delivery
+   * attempt. `completedGates` holds the resolution of a step's step_completed
+   * create until released (keyed by stepName); `completedRejects` makes the
+   * create reject instead. The mock returns no inline delta on terminal
+   * writes, so the deferred path exercises its reconcile-by-fetch fallback.
+   */
+  async function driveAsyncCompleted(opts: {
+    runId: string;
+    attempt?: number;
+    completedGates?: Record<string, Promise<void>>;
+    completedRejects?: Record<string, Error>;
+    /** World capabilities to declare (absent by default — fail closed). */
+    capabilities?: { preconditionGuard?: boolean; maxConcurrency?: boolean };
+    /** Workflow source to run (defaults to twoStepWorkflow). */
+    source?: string;
+  }) {
+    const { runId } = opts;
+    const attempt = opts.attempt ?? 1;
+    const order = asyncOrder;
+    const durable: Event[] = [];
+    let seq = 0;
+    const rec = (data: any): Event => {
+      seq += 1;
+      const e = {
+        eventId: `e-${seq}`,
+        runId,
+        createdAt: new Date(),
+        ...data,
+      } as Event;
+      durable.push(e);
+      return e;
+    };
+    const runEntity: WorkflowRun = {
+      runId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments([], runId, undefined, []),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    const queueMock = vi.fn(async () => ({ messageId: null }));
+    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+      if (data.eventType === 'run_started') {
+        return { run: runEntity, events: [] as Event[] };
+      }
+      if (data.eventType === 'step_started') {
+        const d = data.eventData as { stepName?: string; input?: unknown };
+        order.push(`step_started:${d?.stepName}`);
+        if (d?.input !== undefined) {
+          rec({
+            eventType: 'step_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: data.correlationId,
+            eventData: { stepName: d.stepName, input: d.input },
+          });
+        }
+        return {
+          event: rec(data),
+          step: {
+            runId,
+            stepId: data.correlationId,
+            stepName: d?.stepName,
+            status: 'running' as const,
+            attempt: 1,
+            input: d?.input,
+            startedAt: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          ...(d?.input !== undefined ? { stepCreated: true } : {}),
+        };
+      }
+      if (data.eventType === 'step_completed') {
+        const stepName = (data.eventData as { stepName?: string })?.stepName;
+        order.push(`step_completed_called:${stepName}`);
+        const reject = stepName ? opts.completedRejects?.[stepName] : undefined;
+        if (reject) throw reject;
+        const gate = stepName ? opts.completedGates?.[stepName] : undefined;
+        if (gate) await gate;
+        order.push(`step_completed_resolved:${stepName}`);
+        return { event: rec(data) };
+      }
+      if (data.eventType === 'run_completed') {
+        order.push('run_completed');
+        return { event: rec(data) };
+      }
+      if (data.eventType === 'run_failed') {
+        order.push('run_failed');
+        return { event: rec(data) };
+      }
+      return { event: rec(data) };
+    });
+
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler: vi.fn(
+        (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
+          async () => {
+            await handler(
+              {
+                runId,
+                requestedAt: new Date('2024-01-01T00:00:00.000Z'),
+                runInput: {
+                  input: await dehydrateWorkflowArguments(
+                    [],
+                    runId,
+                    undefined,
+                    []
+                  ),
+                  deploymentId: 'test-deployment',
+                  workflowName: 'workflow',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  executionContext: {},
+                },
+              },
+              {
+                requestId: 'req_async_completed',
+                attempt,
+                queueName: '__wkf_workflow_workflow',
+                messageId: 'msg_async_completed',
+              }
+            );
+            return new Response(null, { status: 204 });
+          }
+      ),
+      events: {
+        create: eventsCreate,
+        list: vi.fn(async () => ({
+          data: [...durable],
+          hasMore: false,
+          cursor: 'cursor_async_completed',
+        })),
+      },
+      runs: { get: vi.fn(async () => runEntity) },
+      queue: queueMock,
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const handlerPromise = workflowEntrypoint(opts.source ?? twoStepWorkflow)(
+      new Request('https://example.test')
+    ) as Promise<Response>;
+    return { handlerPromise, order, eventsCreate, queueMock };
+  }
+
+  it('runs the next step body while the previous step_completed create is in flight, and orders the next step_started behind it', async () => {
+    process.env.WORKFLOW_ASYNC_STEP_COMPLETED = '1';
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+
+    const { handlerPromise, order } = await driveAsyncCompleted({
+      runId: 'wrun_async_completed_overlap',
+      completedGates: { asyncStepA: gate },
+    });
+
+    // Step B's body runs while step A's terminal write is still held open —
+    // impossible when the loop awaits the write before replaying.
+    await vi.waitFor(() => expect(order).toContain('bodyB'), {
+      timeout: 15_000,
+    });
+    expect(order).not.toContain('step_completed_resolved:asyncStepA');
+    // ...but B's own durable write is chained behind A's terminal write, so
+    // the event log can never record B's start without A's completion.
+    expect(order).not.toContain('step_started:asyncStepB');
+
+    release();
+    const res = await handlerPromise;
+    expect(res.status).toBe(204);
+    expect(order).toContain('run_completed');
+    expect(order.indexOf('step_completed_resolved:asyncStepA')).toBeLessThan(
+      order.indexOf('step_started:asyncStepB')
+    );
+  });
+
+  it('awaits the step_completed write before the next replay when the flag is off (default)', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+
+    const { handlerPromise, order } = await driveAsyncCompleted({
+      runId: 'wrun_async_completed_default',
+      completedGates: { asyncStepA: gate },
+    });
+
+    await vi.waitFor(
+      () => expect(order).toContain('step_completed_called:asyncStepA'),
+      { timeout: 15_000 }
+    );
+    // Give the loop a real chance to (incorrectly) run ahead.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(order).not.toContain('bodyB');
+
+    release();
+    const res = await handlerPromise;
+    expect(res.status).toBe(204);
+    expect(order.indexOf('step_completed_resolved:asyncStepA')).toBeLessThan(
+      order.indexOf('bodyB')
+    );
+  });
+
+  it('fails closed when the deferred write is superseded: no ack, no run_completed, no run_failed', async () => {
+    process.env.WORKFLOW_ASYNC_STEP_COMPLETED = '1';
+
+    const { handlerPromise, order } = await driveAsyncCompleted({
+      runId: 'wrun_async_completed_conflict',
+      completedRejects: {
+        asyncStepA: new EntityConflictError('step already in a terminal state'),
+      },
+    });
+
+    // The conflict is converted to a PreconditionFailedError (this invocation
+    // speculated on a result another writer superseded) and propagates out of
+    // the handler, leaving the message unacked so redelivery recovers the
+    // step. It must not be treated as a benign skip, and it must never
+    // surface as run_failed (transient concurrency, not a workflow error).
+    await expect(handlerPromise).rejects.toThrow(/superseded/);
+    expect(order).not.toContain('run_completed');
+    expect(order).not.toContain('run_failed');
+  });
+
+  it('settles a superseded deferred write before the run_failed path: the run re-invokes instead of failing on speculative state', async () => {
+    process.env.WORKFLOW_ASYNC_STEP_COMPLETED = '1';
+
+    // The workflow consumes step A's (speculative) result and then throws.
+    // The failure handling path acks the message (recovery re-queue or
+    // run_failed write), so it must settle the deferred write first: here the
+    // write was superseded (EntityConflict → PreconditionFailedError), which
+    // must force a fresh replay — NOT permanently fail the run on a result
+    // another writer already superseded.
+    const throwingWorkflow = `const a = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("asyncStepA");
+      async function workflow() { await a(); throw new Error('boom'); }
+      ;globalThis.__private_workflows = new Map();
+      globalThis.__private_workflows.set("workflow", workflow);`;
+
+    const { handlerPromise, order, queueMock } = await driveAsyncCompleted({
+      runId: 'wrun_async_completed_fail_path',
+      source: throwingWorkflow,
+      completedRejects: {
+        asyncStepA: new EntityConflictError('step already in a terminal state'),
+      },
+    });
+
+    const res = await handlerPromise;
+    expect(res.status).toBe(204);
+    // Re-invoked for a fresh replay (turbo reinvoke enqueues an explicit
+    // continuation) instead of writing run_failed on speculative state.
+    expect(order).not.toContain('run_failed');
+    expect(order).not.toContain('run_completed');
+    expect(queueMock).toHaveBeenCalled();
   });
 });
 

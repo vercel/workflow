@@ -56,6 +56,22 @@ export interface SuspensionHandlerParams {
    * where `run_started` was already awaited up front.
    */
   runReadyBarrier?: Promise<unknown>;
+  /**
+   * Fail-closed ordering barrier for a deferred `step_completed` write
+   * (`WORKFLOW_ASYNC_STEP_COMPLETED`): when present, every event creation this
+   * suspension performs awaits it first and — unlike `runReadyBarrier`, whose
+   * rejection is swallowed — REJECTS if it rejects. A rejected barrier means
+   * the previous step's terminal write never became durable, so committing any
+   * downstream event (a hook/wait created after consuming that step's result)
+   * would record effects of a result the log doesn't contain. The rejection
+   * propagates out of handleSuspension; the runtime maps it to a fresh replay
+   * or a queue redelivery. The barrier also carries the reconcile step that
+   * merges the deferred write's canonical events into `eventLog`, so awaiting
+   * it guarantees the `stateUpdatedAt` snapshot sent with each create reflects
+   * the run's own latest terminal event (no self-inflicted 412 under the
+   * precondition guard).
+   */
+  preWriteBarrier?: Promise<unknown>;
 }
 
 /**
@@ -205,6 +221,7 @@ export async function handleSuspension({
   requestId,
   eventLog,
   runReadyBarrier,
+  preWriteBarrier,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -231,10 +248,16 @@ export async function handleSuspension({
   // a replay snapshot, e.g. tests). The guard reloads + retries on a stale
   // (412) rejection, keeping `eventLog` current in place. All suspension events
   // are non-run_created events on this run's `runId`.
-  const createGuarded = (
+  const createGuarded = async (
     data: CreateEventRequest,
     params?: CreateEventParams
   ): Promise<EventResult> => {
+    // Fail-closed: a rejected preWriteBarrier (the previous step's deferred
+    // step_completed write failed) must abort this write, not be swallowed
+    // like the run-ready barrier — see SuspensionHandlerParams.preWriteBarrier.
+    if (preWriteBarrier) {
+      await preWriteBarrier;
+    }
     if (!eventLog) {
       return world.events.create(runId, data, params);
     }
@@ -614,6 +637,12 @@ export async function handleSuspension({
       (async () => {
         try {
           await ensureRunReady();
+          // Same fail-closed ordering as createGuarded: never commit an
+          // attr_set downstream of a deferred step_completed that has not
+          // become durable (see SuspensionHandlerParams.preWriteBarrier).
+          if (preWriteBarrier) {
+            await preWriteBarrier;
+          }
           await world.events.create(
             runId,
             {
