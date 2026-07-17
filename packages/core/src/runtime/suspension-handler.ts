@@ -31,6 +31,7 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import { getMaxInlineSteps } from './constants.js';
 import { type MutableEventLog, withPreconditionRetry } from './helpers.js';
+import { prepareRetainedStepInput } from './retained-step-input.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -56,6 +57,11 @@ export interface SuspensionHandlerParams {
    * where `run_started` was already awaited up front.
    */
   runReadyBarrier?: Promise<unknown>;
+  /**
+   * Prepare new step inputs without traversing workflow-owned objects during
+   * serialization. Enabled only while the caller is holding a retained VM.
+   */
+  prepareForRetention?: boolean;
 }
 
 /**
@@ -121,6 +127,8 @@ export interface SuspensionHandlerResult {
    * durably creating the user's hooks doesn't count as runtime overhead.
    */
   hookCreationMs: number;
+  /** Whether every newly serialized step input was passive retained-VM data. */
+  retainedStepInputsSafe: boolean;
 }
 
 async function createHookEvent({
@@ -205,6 +213,7 @@ export async function handleSuspension({
   requestId,
   eventLog,
   runReadyBarrier,
+  prepareForRetention = false,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -488,6 +497,35 @@ export async function handleSuspension({
   // racing with concurrent handlers on step execution.
   const createdStepCorrelationIds = new Set<string>();
 
+  let retainedStepInputsSafe = true;
+  const inputsByCorrelationId = new Map<
+    string,
+    { value: unknown; global: Record<string, any> }
+  >();
+  for (const queueItem of stepItems) {
+    if (!stepsNeedingCreation.has(queueItem.correlationId)) continue;
+    const value = {
+      args: queueItem.args,
+      closureVars: queueItem.closureVars,
+      thisVal: queueItem.thisVal,
+    };
+    if (prepareForRetention) {
+      const prepared = prepareRetainedStepInput(value, suspension.globalThis);
+      if (prepared.retainable) {
+        inputsByCorrelationId.set(queueItem.correlationId, {
+          value: prepared.value,
+          global: globalThis,
+        });
+        continue;
+      }
+      retainedStepInputsSafe = false;
+    }
+    inputsByCorrelationId.set(queueItem.correlationId, {
+      value,
+      global: suspension.globalThis,
+    });
+  }
+
   // Lazy inline start: defer the step_created write for up to
   // `getMaxInlineSteps()` steps the caller will run inline (in parallel). Each
   // step is created on the fly by the lazy `step_started` executeStep sends
@@ -521,15 +559,17 @@ export async function handleSuspension({
     if (stepsNeedingCreation.has(queueItem.correlationId)) {
       ops.push(
         (async () => {
+          const input = inputsByCorrelationId.get(queueItem.correlationId);
+          if (!input) {
+            throw new Error(
+              `Missing prepared input for step ${queueItem.correlationId}`
+            );
+          }
           const dehydratedInput = await dehydrateStepArguments(
-            {
-              args: queueItem.args,
-              closureVars: queueItem.closureVars,
-              thisVal: queueItem.thisVal,
-            },
+            input.value,
             runId,
             encryptionKey,
-            suspension.globalThis,
+            input.global,
             false,
             compression
           );
@@ -716,6 +756,7 @@ export async function handleSuspension({
     hasAttributeEvents: attributeItems.length > 0,
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,
+    retainedStepInputsSafe,
   };
 }
 

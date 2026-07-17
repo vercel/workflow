@@ -284,21 +284,6 @@ describe('host-timed async', () => {
   });
 });
 
-describe('randomDrawCount', () => {
-  it('counts every draw from the seeded stream', () => {
-    const { context, randomDrawCount } = createContext({
-      seed,
-      fixedTimestamp,
-    });
-
-    expect(randomDrawCount()).toBe(0);
-    vm.runInContext('Math.random()', context);
-    expect(randomDrawCount()).toBe(1);
-    vm.runInContext('crypto.getRandomValues(new Uint8Array(4))', context);
-    expect(randomDrawCount()).toBe(5);
-  });
-});
-
 describe('crypto.subtle.digest', () => {
   it.each([
     'SHA-1',

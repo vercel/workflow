@@ -80,6 +80,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Default: enabled
 - Keeps the suspended workflow VM alive across inline steps within one invocation, so each iteration of the inline loop appends only the newly written events instead of replaying the whole event log in a fresh VM.
 - Suspensions involving hooks, waits, or attributes — and any replay divergence — always fall back to a full replay.
+- Step inputs containing accessors, proxies, functions, custom class serializers, or other values whose serialization could execute workflow code also fall back to replay. Plain data and standard in-memory collections remain retainable.
 - Set `0` or `false` to replay from scratch in a fresh VM on every iteration.
 
 ### `WORKFLOW_INLINE_OWNERSHIP`

@@ -15,10 +15,13 @@ vi.mock('./vm/index.js', async (importActual) => {
 });
 
 const { createContext } = await import('./vm/index.js');
+const { registerSerializationClass } = await import('./class-serialization.js');
 const { registerStepFunction } = await import('./private.js');
 const { setWorld } = await import('./runtime/world.js');
 const { workflowEntrypoint } = await import('./runtime.js');
-const { dehydrateWorkflowArguments } = await import('./serialization.js');
+const { dehydrateWorkflowArguments, hydrateWorkflowReturnValue } = await import(
+  './serialization.js'
+);
 
 vi.mock('@vercel/functions', () => ({
   waitUntil: vi.fn((p: Promise<unknown>) => {
@@ -40,17 +43,49 @@ const twoStepWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")](
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
-// Serializing this step's arguments executes the getter, which draws from
-// the VM's seeded random stream after the suspension — the loop must demote
-// the session so future correlation IDs stay replayable.
+// Serializing this step's arguments executes the getter after suspension. Its
+// state mutation is not reconstructed by a cold replay, so this boundary must
+// demote even though it does not draw randomness.
 const impureArgsWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
-  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
+  const echo = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_echo");
   async function workflow() {
-    const a = await s1({ get x() { Math.random(); return 1; } });
-    const b = await s2();
-    return a + b;
+    let counter = 0;
+    await s1({ get x() { counter++; return 1; } });
+    return await echo(counter);
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
+const impureSerializerWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const echo = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_echo");
+  class Value {
+    static classId = "test/RetainedSerializerValue";
+    static [Symbol.for("workflow-serialize")](instance) {
+      instance.onSerialize();
+      return { value: instance.value };
+    }
+    constructor(value, onSerialize) {
+      this.value = value;
+      this.onSerialize = onSerialize;
+    }
+  }
+  async function workflow() {
+    let counter = 0;
+    await s1(new Value(1, () => counter++));
+    return await echo(counter);
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
+class RetainedSerializerValue {
+  constructor(readonly value: number) {}
+
+  static [Symbol.for('workflow-deserialize')](data: { value: number }) {
+    return new RetainedSerializerValue(data.value);
+  }
+}
+registerSerializationClass(
+  'test/RetainedSerializerValue',
+  RetainedSerializerValue
+);
 
 // `crypto.subtle.digest` computes synchronously via node:crypto, so a
 // digest-using VM stays quiescent at suspension and remains retainable.
@@ -66,6 +101,7 @@ const digestWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("
 
 registerStepFunction('r_s1', async () => 10);
 registerStepFunction('r_s2', async () => 20);
+registerStepFunction('r_echo', async (value) => value);
 
 // Drive the full workflow handler over a stateful (dynamic) event log so the
 // inline loop makes real progress across its own writes, exactly like a World.
@@ -198,13 +234,67 @@ describe('retained VM through the inline replay loop', () => {
     expect(on.output).toEqual(off.output);
   });
 
-  it('demotes retention when argument serialization draws randomness', async () => {
-    const { vmBuilds, output } = await drive(
-      'wrun_retained_impure_args',
+  it('matches cold replay when argument serialization mutates workflow state', async () => {
+    process.env.WORKFLOW_RETAINED_VM = '0';
+    const off = await drive(
+      'wrun_retained_impure_args_off',
       impureArgsWorkflow
     );
-    expect(output).toBeInstanceOf(Uint8Array);
-    expect(vmBuilds).toBeGreaterThan(1);
+    createContextSpy.mockClear();
+
+    delete process.env.WORKFLOW_RETAINED_VM;
+    const on = await drive('wrun_retained_impure_args_on', impureArgsWorkflow);
+
+    expect(on.vmBuilds).toBeGreaterThan(1);
+    expect(
+      await hydrateWorkflowReturnValue(
+        off.output,
+        'wrun_retained_impure_args_off',
+        undefined,
+        []
+      )
+    ).toBe(0);
+    expect(
+      await hydrateWorkflowReturnValue(
+        on.output,
+        'wrun_retained_impure_args_on',
+        undefined,
+        []
+      )
+    ).toBe(0);
+  });
+
+  it('matches cold replay when a custom serializer mutates workflow state', async () => {
+    process.env.WORKFLOW_RETAINED_VM = '0';
+    const off = await drive(
+      'wrun_retained_impure_serializer_off',
+      impureSerializerWorkflow
+    );
+    createContextSpy.mockClear();
+
+    delete process.env.WORKFLOW_RETAINED_VM;
+    const on = await drive(
+      'wrun_retained_impure_serializer_on',
+      impureSerializerWorkflow
+    );
+
+    expect(on.vmBuilds).toBeGreaterThan(1);
+    expect(
+      await hydrateWorkflowReturnValue(
+        off.output,
+        'wrun_retained_impure_serializer_off',
+        undefined,
+        []
+      )
+    ).toBe(0);
+    expect(
+      await hydrateWorkflowReturnValue(
+        on.output,
+        'wrun_retained_impure_serializer_on',
+        undefined,
+        []
+      )
+    ).toBe(0);
   });
 
   it('retains a VM that used the synchronous crypto.subtle.digest', async () => {
