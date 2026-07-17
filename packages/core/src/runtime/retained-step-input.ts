@@ -91,6 +91,10 @@ function isHostDispatchPristine(): boolean {
       return false;
     }
   }
+  // Constructor prototype chains end at host Object.prototype, where an
+  // added @@hasInstance would be found by dispatch lookup. (Host
+  // Function.prototype's @@hasInstance is spec non-configurable.)
+  if (hasOwn(Object.prototype, Symbol.hasInstance)) return false;
   return true;
 }
 

@@ -438,6 +438,14 @@ describe('freezeSerializationIntrinsics', () => {
         context
       )
     ).toThrow(/not extensible/);
+    // @@hasInstance lookup walks the wrapper's prototype chain to the
+    // original VM Date, which must be frozen too.
+    expect(() =>
+      vm.runInContext(
+        `"use strict"; Object.defineProperty(Object.getPrototypeOf(Date), Symbol.hasInstance, { value: () => true })`,
+        context
+      )
+    ).toThrow(/not extensible/);
 
     // Bindings cannot be replaced, including intentionally absent ones.
     vm.runInContext(

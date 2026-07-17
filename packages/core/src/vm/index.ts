@@ -145,17 +145,30 @@ export function freezeSerializationIntrinsics(g: typeof globalThis): void {
     const descriptor = Object.getOwnPropertyDescriptor(g, name);
     const value =
       descriptor && 'value' in descriptor ? descriptor.value : undefined;
-    // Freeze VM-realm and session-local constructor objects so statics like
-    // `Symbol.hasInstance` cannot be added. A binding that references the
-    // shared host intrinsic stays unfrozen: both serialization paths
-    // dispatch through that same object, so a mutation cannot make them
-    // disagree (and freezing it would affect the whole process).
+    // Freeze VM-realm and session-local constructor objects — including
+    // their prototype chains, which `Symbol.hasInstance` lookup walks (the
+    // Date wrapper delegates statics to the unfrozen original VM Date via
+    // setPrototypeOf). A binding that references the shared host intrinsic
+    // stays unfrozen: both serialization paths dispatch through that same
+    // object, so a mutation cannot make them disagree (and freezing it
+    // would affect the whole process). Host Function.prototype's
+    // @@hasInstance is spec-immutable; host Object.prototype is verified
+    // separately (see isHostDispatchPristine).
     if (
       (typeof value === 'function' ||
         (typeof value === 'object' && value !== null)) &&
       value !== hostGlobal[name]
     ) {
-      Object.freeze(value);
+      let chain: object | null = value as object;
+      while (
+        chain !== null &&
+        chain !== Function.prototype &&
+        chain !== Object.prototype &&
+        !Object.isFrozen(chain)
+      ) {
+        Object.freeze(chain);
+        chain = Object.getPrototypeOf(chain);
+      }
     }
     Object.defineProperty(g, name, {
       // Absent bindings are pinned to undefined so workflow code cannot
