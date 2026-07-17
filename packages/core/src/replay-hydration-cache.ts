@@ -48,7 +48,7 @@ export function eventPayloadKey(
 export function getOrPrepareReplayPayload(
   cache: ReplayHydrationCache | undefined,
   cacheKey: string,
-  value: Uint8Array | unknown,
+  value: unknown,
   encryptionKey: CryptoKey | undefined,
   preparer: ReplayPayloadPreparer = prepareReplayPayload
 ): Promise<PreparedReplayPayload> {

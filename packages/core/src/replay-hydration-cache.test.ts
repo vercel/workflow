@@ -123,7 +123,7 @@ describe('replay payload preparation cache', () => {
       new Uint8Array([2]),
       new Uint8Array([3]),
     ];
-    const resolvers: Array<(value: { data: unknown }) => void> = [];
+    const resolvers: Array<() => void> = [];
     const preparer = vi.fn<ReplayPayloadPreparer>(
       (value) =>
         new Promise((resolve) => {
@@ -142,7 +142,7 @@ describe('replay payload preparation cache', () => {
 
     // Every preparer was invoked before any one of them resolved.
     expect(preparer).toHaveBeenCalledTimes(4);
-    for (const resolve of resolvers.reverse()) resolve({ data: undefined });
+    for (const resolve of resolvers.reverse()) resolve();
     await warming;
 
     expect(

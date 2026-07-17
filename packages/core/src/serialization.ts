@@ -2852,7 +2852,7 @@ export interface PreparedReplayPayload {
  * the same contract later without changing replay caching or VM revival.
  */
 export type ReplayPayloadPreparer = (
-  value: Uint8Array | unknown,
+  value: unknown,
   key: CryptoKey | undefined
 ) => PreparedReplayPayload | Promise<PreparedReplayPayload>;
 
