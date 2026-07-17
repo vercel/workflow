@@ -58,12 +58,33 @@ export function createContext(options: CreateContextOptions) {
 
   const randomUUID = createRandomUUID(rng);
 
-  // `crypto.subtle.digest` is the only API in the sandbox whose promise
-  // resolves on host timing rather than from the event log, so it is the only
-  // way a suspended workflow can make progress the event log cannot replay.
-  // Record its use so the runtime falls back to ordinary replay (see
-  // `canRetainWorkflowSession`).
+  // Track every sandbox API whose promise resolves on host timing rather
+  // than from the event log: `crypto.subtle.digest`, `Atomics.waitAsync`
+  // (a wall-clock timer via SharedArrayBuffer), and the async `WebAssembly`
+  // compilation entry points. These are the only ways a suspended workflow
+  // can make progress the event log cannot replay, so the runtime declines
+  // to retain a VM that used any of them (see `canRetainWorkflowSession`).
+  // Dynamic `import()` settles within a microtask (rejected: no
+  // `importModuleDynamically`), so it cannot advance a suspended VM.
   let usedHostAsync = false;
+  const trackHostAsync = (
+    target: Record<string, unknown>,
+    method: string
+  ): void => {
+    const original = target[method];
+    if (typeof original !== 'function') return;
+    target[method] = (...args: unknown[]) => {
+      usedHostAsync = true;
+      return Reflect.apply(original, target, args);
+    };
+  };
+  const intrinsics = g as unknown as Record<string, Record<string, unknown>>;
+  trackHostAsync(intrinsics.Atomics, 'waitAsync');
+  trackHostAsync(intrinsics.WebAssembly, 'compile');
+  trackHostAsync(intrinsics.WebAssembly, 'instantiate');
+  trackHostAsync(intrinsics.WebAssembly, 'compileStreaming');
+  trackHostAsync(intrinsics.WebAssembly, 'instantiateStreaming');
+
   const boundDigest = originalSubtle.digest.bind(originalSubtle);
   const digest: typeof boundDigest = (...args) => {
     usedHostAsync = true;

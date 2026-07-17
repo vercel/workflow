@@ -257,3 +257,56 @@ describe('createContext', () => {
     expect(result).toBe('undefined');
   });
 });
+
+describe('usedHostAsync', () => {
+  it('starts false and ignores log-driven and deterministic APIs', () => {
+    const { context, usedHostAsync } = createContext({ seed, fixedTimestamp });
+
+    vm.runInContext(
+      'Math.random(); Date.now(); crypto.randomUUID(); crypto.getRandomValues(new Uint8Array(4))',
+      context
+    );
+    expect(usedHostAsync()).toBe(false);
+  });
+
+  it('flips on crypto.subtle.digest', async () => {
+    const { context, usedHostAsync } = createContext({ seed, fixedTimestamp });
+
+    await vm.runInContext(
+      'crypto.subtle.digest("SHA-256", new Uint8Array(1))',
+      context
+    );
+    expect(usedHostAsync()).toBe(true);
+  });
+
+  it('flips on Atomics.waitAsync', () => {
+    const { context, usedHostAsync } = createContext({ seed, fixedTimestamp });
+
+    vm.runInContext(
+      'Atomics.waitAsync(new Int32Array(new SharedArrayBuffer(4)), 0, 1)',
+      context
+    );
+    expect(usedHostAsync()).toBe(true);
+  });
+
+  it('flips on WebAssembly.compile', async () => {
+    const { context, usedHostAsync } = createContext({ seed, fixedTimestamp });
+
+    // Minimal valid empty module: magic + version.
+    await vm.runInContext(
+      'WebAssembly.compile(new Uint8Array([0,97,115,109,1,0,0,0]))',
+      context
+    );
+    expect(usedHostAsync()).toBe(true);
+  });
+
+  it('flips on WebAssembly.instantiate', async () => {
+    const { context, usedHostAsync } = createContext({ seed, fixedTimestamp });
+
+    await vm.runInContext(
+      'WebAssembly.instantiate(new Uint8Array([0,97,115,109,1,0,0,0]))',
+      context
+    );
+    expect(usedHostAsync()).toBe(true);
+  });
+});
