@@ -4527,6 +4527,74 @@ describe('Storage', () => {
         })
       ).rejects.toThrow(/terminal/i);
     });
+
+    it('should reject hook_received on a completed run', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(storage, run.runId, {
+        hookId: 'hook_before_complete',
+        token: 'token-before-complete',
+      });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([3]),
+      });
+
+      // run_completed's deleteAllHooksForRun cleanup runs before hook_received
+      // is attempted here, so this sequential case surfaces as the hook no
+      // longer existing rather than the terminal-run guard below (which
+      // covers the case where hook_received's write is still in flight when
+      // the run terminates concurrently, see the next test).
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'HookNotFoundError' });
+    });
+
+    it("should reject hook_received with RunExpiredError when the run terminates after hook_received's earlier checks (linearization guard)", async () => {
+      // Reproduces the race the guard added at the event-write linearization
+      // point defends against: hook_received's early currentRun/hook-exists
+      // checks pass while the run is still running, then the run reaches a
+      // terminal state before hook_received's event write commits. Writing
+      // the terminal status directly to disk (bypassing updateRun's
+      // deleteAllHooksForRun cleanup) reproduces exactly that ordering
+      // without deleting the hook, isolating the assertion to the
+      // re-check immediately before the event publish.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(storage, run.runId, {
+        hookId: 'hook_race_terminal',
+        token: 'token-race-terminal',
+      });
+
+      const runPath = path.join(testDir, 'runs', `${run.runId}.json`);
+      await writeJSON(
+        runPath,
+        {
+          ...run,
+          status: 'completed',
+          completedAt: new Date(),
+          output: new Uint8Array([1]),
+        },
+        { overwrite: true }
+      );
+
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
+    });
   });
 
   describe('idempotent operations', () => {

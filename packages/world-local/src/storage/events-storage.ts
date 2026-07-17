@@ -2150,6 +2150,35 @@ export function createEventsStorage(
           throw new HookNotFoundError(data.correlationId);
         }
 
+        // Last-instant terminal-run re-check for `hook_received`, at the
+        // same linearization point as the check above. The `currentRun`
+        // fetched earlier (before the hookLocks acquisition further up
+        // covers this whole call) can go stale: a run_completed /
+        // run_failed / run_cancelled event is not serialized against this
+        // hook's lock key, so it can commit concurrently between that
+        // early read and this write. Re-reading here, immediately before
+        // the event publish, narrows that window to nothing — matching
+        // the terminal-run guard every other event type gets earlier in
+        // this function (hook_received has no branch there because it
+        // doesn't transition the run or create an entity).
+        if (data.eventType === 'hook_received') {
+          const runAtPublish = await readJSONWithFallback(
+            basedir,
+            'runs',
+            effectiveRunId,
+            WorkflowRunSchema,
+            tag
+          );
+          if (
+            runAtPublish &&
+            isTerminalWorkflowRunStatus(runAtPublish.status)
+          ) {
+            throw new RunExpiredError(
+              `Workflow run "${effectiveRunId}" is already in terminal state "${runAtPublish.status}"`
+            );
+          }
+        }
+
         const compositeKey = `${effectiveRunId}-${eventId}`;
         const eventPath = taggedPath(basedir, 'events', compositeKey, tag);
         // Capture the serialized payload before the write's `await` so the

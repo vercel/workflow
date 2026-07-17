@@ -1563,6 +1563,63 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         }
       }
 
+      // Handle hook_received event: append the event only if the run has
+      // not reached a terminal state. hook_received has no branch in the
+      // terminal-run guard above (it doesn't transition the run or create
+      // an entity), so without this, the generic INSERT further below
+      // could append a hook_received event after a concurrent
+      // run_completed / run_failed / run_cancelled has already committed.
+      // `FOR UPDATE` takes the run row lock inside this transaction: it
+      // blocks until any in-flight terminal transition — whose own
+      // conditional UPDATE takes the same row lock — commits, then
+      // observes the post-commit status. That linearizes this insert
+      // against the run's terminal transition the same way step_started's
+      // guarded UPDATE linearizes against a concurrent terminal step
+      // event.
+      if (data.eventType === 'hook_received') {
+        value = await drizzle.transaction(async (tx) => {
+          const [runRow] = await tx
+            .select({ status: Schema.runs.status })
+            .from(Schema.runs)
+            .where(eq(Schema.runs.runId, effectiveRunId))
+            .for('update')
+            .limit(1);
+          if (!runRow) {
+            throw new WorkflowRunNotFoundError(effectiveRunId);
+          }
+          if (isTerminalWorkflowRunStatus(runRow.status)) {
+            throw new RunExpiredError(
+              `Workflow run "${effectiveRunId}" is already in terminal state "${runRow.status}"`
+            );
+          }
+
+          // Allocate the ULID only after the row lock is acquired,
+          // matching step_started's ordering guarantee: a writer blocked
+          // on the run row must not carry an older event id into a later
+          // insert.
+          const hookReceivedEventId = `wevt_${ulid()}`;
+          eventId = hookReceivedEventId;
+          const [eventValue] = await tx
+            .insert(events)
+            .values({
+              runId: effectiveRunId,
+              eventId: hookReceivedEventId,
+              correlationId: data.correlationId,
+              eventType: data.eventType,
+              eventData: storedEventData,
+              specVersion: effectiveSpecVersion,
+            })
+            .returning({ createdAt: events.createdAt });
+
+          if (!eventValue) {
+            throw new EntityConflictError(
+              `Event ${hookReceivedEventId} could not be created`
+            );
+          }
+          return eventValue;
+        });
+      }
+
       // Handle wait_created event: create wait entity
       if (data.eventType === 'wait_created') {
         const eventData = (data as any).eventData as {
