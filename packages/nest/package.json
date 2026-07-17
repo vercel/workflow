@@ -17,6 +17,11 @@
       "types": "./dist/builder.d.ts",
       "import": "./dist/builder.js",
       "default": "./dist/builder.js"
+    },
+    "./vercel-builder": {
+      "types": "./dist/vercel-builder.d.ts",
+      "import": "./dist/vercel-builder.js",
+      "default": "./dist/vercel-builder.js"
     }
   },
   "files": [
@@ -35,6 +40,7 @@
     "@swc/core": "catalog:",
     "@workflow/builders": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
+    "esbuild": "catalog:",
     "pathe": "2.0.3"
   },
   "peerDependencies": {

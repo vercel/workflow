@@ -701,6 +701,9 @@ importers:
       '@workflow/swc-plugin':
         specifier: workspace:*
         version: link:../swc-plugin-workflow
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.28.1
       pathe:
         specifier: 2.0.3
         version: 2.0.3
