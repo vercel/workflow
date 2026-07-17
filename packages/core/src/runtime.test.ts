@@ -1782,6 +1782,8 @@ describe('workflowEntrypoint deferred step_completed (WORKFLOW_ASYNC_STEP_COMPLE
     completedRejects?: Record<string, Error>;
     /** World capabilities to declare (absent by default — fail closed). */
     capabilities?: { preconditionGuard?: boolean; maxConcurrency?: boolean };
+    /** Workflow source to run (defaults to twoStepWorkflow). */
+    source?: string;
   }) {
     const { runId } = opts;
     const attempt = opts.attempt ?? 1;
@@ -1810,6 +1812,7 @@ describe('workflowEntrypoint deferred step_completed (WORKFLOW_ASYNC_STEP_COMPLE
       deploymentId: 'test-deployment',
     };
 
+    const queueMock = vi.fn(async () => ({ messageId: null }));
     const eventsCreate = vi.fn(async (_runId: string, data: any) => {
       if (data.eventType === 'run_started') {
         return { run: runEntity, events: [] as Event[] };
@@ -1903,14 +1906,14 @@ describe('workflowEntrypoint deferred step_completed (WORKFLOW_ASYNC_STEP_COMPLE
         })),
       },
       runs: { get: vi.fn(async () => runEntity) },
-      queue: vi.fn(async () => ({ messageId: null })),
+      queue: queueMock,
       getEncryptionKeyForRun: vi.fn(async () => undefined),
     } as any);
 
-    const handlerPromise = workflowEntrypoint(twoStepWorkflow)(
+    const handlerPromise = workflowEntrypoint(opts.source ?? twoStepWorkflow)(
       new Request('https://example.test')
     ) as Promise<Response>;
-    return { handlerPromise, order, eventsCreate };
+    return { handlerPromise, order, eventsCreate, queueMock };
   }
 
   it('runs the next step body while the previous step_completed create is in flight, and orders the next step_started behind it', async () => {
@@ -1989,6 +1992,37 @@ describe('workflowEntrypoint deferred step_completed (WORKFLOW_ASYNC_STEP_COMPLE
     await expect(handlerPromise).rejects.toThrow(/superseded/);
     expect(order).not.toContain('run_completed');
     expect(order).not.toContain('run_failed');
+  });
+
+  it('settles a superseded deferred write before the run_failed path: the run re-invokes instead of failing on speculative state', async () => {
+    process.env.WORKFLOW_ASYNC_STEP_COMPLETED = '1';
+
+    // The workflow consumes step A's (speculative) result and then throws.
+    // The failure handling path acks the message (recovery re-queue or
+    // run_failed write), so it must settle the deferred write first: here the
+    // write was superseded (EntityConflict → PreconditionFailedError), which
+    // must force a fresh replay — NOT permanently fail the run on a result
+    // another writer already superseded.
+    const throwingWorkflow = `const a = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("asyncStepA");
+      async function workflow() { await a(); throw new Error('boom'); }
+      ;globalThis.__private_workflows = new Map();
+      globalThis.__private_workflows.set("workflow", workflow);`;
+
+    const { handlerPromise, order, queueMock } = await driveAsyncCompleted({
+      runId: 'wrun_async_completed_fail_path',
+      source: throwingWorkflow,
+      completedRejects: {
+        asyncStepA: new EntityConflictError('step already in a terminal state'),
+      },
+    });
+
+    const res = await handlerPromise;
+    expect(res.status).toBe(204);
+    // Re-invoked for a fresh replay (turbo reinvoke enqueues an explicit
+    // continuation) instead of writing run_failed on speculative state.
+    expect(order).not.toContain('run_failed');
+    expect(order).not.toContain('run_completed');
+    expect(queueMock).toHaveBeenCalled();
   });
 });
 
