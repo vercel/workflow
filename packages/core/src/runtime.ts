@@ -35,6 +35,11 @@ import { describeError } from './describe-error.js';
 import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
+  createReplayHydrationCache,
+  prewarmReplayPayloads,
+  type ReplayHydrationCache,
+} from './replay-hydration-cache.js';
+import {
   getMaxQueueDeliveries,
   getReplayDivergenceMaxRetries,
   isInlineOwnershipEnabled,
@@ -76,10 +81,6 @@ import {
 } from './runtime/world.js';
 import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
-import {
-  createStepHydrationCache,
-  type StepHydrationCache,
-} from './step-hydration-cache.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
   buildInvocationSpanLinks,
@@ -532,15 +533,12 @@ export function workflowEntrypoint(
                   let cachedEvents: Event[] | null = null;
                   let eventsCursor: string | null = null;
 
-                  // Per-run cache of hydrated step return values, shared across
-                  // every replay iteration of THIS invocation. Each iteration
-                  // builds a fresh workflow context, so the cache is owned here
-                  // (outside that context) and threaded into runWorkflow. It
-                  // turns the otherwise O(N²) re-decrypt + re-parse of completed
-                  // step results across N replays into O(N). Scoped to this run
-                  // only — never reused across runs. See step-hydration-cache.ts.
-                  const stepHydrationCache: StepHydrationCache =
-                    createStepHydrationCache();
+                  // Invocation-scoped cache of VM-independent prepared payloads
+                  // and immutable final values. It survives the fresh workflow
+                  // VM created by each inline replay, but never crosses runs or
+                  // queue deliveries.
+                  const replayHydrationCache: ReplayHydrationCache =
+                    createReplayHydrationCache();
 
                   // Inline-delta optimization: when an inline step's terminal
                   // write returns the event-log delta since the pre-write
@@ -1426,18 +1424,28 @@ export function workflowEntrypoint(
                         eventCount: events.length,
                       });
                       replayStart = Date.now();
+                      // Start every missing decrypt/decompress operation before
+                      // VM setup. Web Crypto work can overlap bundle evaluation;
+                      // consumers still deserialize and resolve in event order.
+                      const payloadPrewarm = prewarmReplayPayloads(
+                        replayHydrationCache,
+                        workflowRun,
+                        events,
+                        encryptionKey
+                      );
                       const result = await runWorkflow(
                         workflowCode,
                         workflowRun,
                         events,
                         encryptionKey,
-                        stepHydrationCache,
+                        replayHydrationCache,
                         // Turbo: the end-of-run drain inside runWorkflow commits
                         // fire-and-forget `*_created` events before the terminal
                         // `awaitRunReady()` below, so gate those writes on the
                         // backgrounded run_started too. Undefined outside turbo.
                         runReadyBarrier
                       );
+                      await payloadPrewarm;
                       runtimeLogger.debug('Workflow replay completed', {
                         workflowRunId: runId,
                         loopIteration,

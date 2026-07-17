@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  createStepHydrationCache,
+  createReplayHydrationCache,
   getOrHydrateStepReturnValue,
   isMemoizablePrimitive,
   MAX_MEMOIZED_PRIMITIVE_LENGTH,
-} from './step-hydration-cache.js';
+} from './replay-hydration-cache.js';
 
 describe('isMemoizablePrimitive', () => {
   it('returns true for primitives', () => {
@@ -46,7 +46,7 @@ describe('isMemoizablePrimitive', () => {
 
 describe('getOrHydrateStepReturnValue', () => {
   it('hydrates on a miss and returns the value', async () => {
-    const cache = createStepHydrationCache();
+    const cache = createReplayHydrationCache();
     const hydrate = vi.fn().mockResolvedValue('result');
     const value = await getOrHydrateStepReturnValue(cache, 'evnt_0', hydrate);
     expect(value).toBe('result');
@@ -54,7 +54,7 @@ describe('getOrHydrateStepReturnValue', () => {
   });
 
   it('memoizes a primitive: second call with same eventId does not re-hydrate', async () => {
-    const cache = createStepHydrationCache();
+    const cache = createReplayHydrationCache();
     const hydrate = vi.fn().mockResolvedValue('result');
 
     const first = await getOrHydrateStepReturnValue(cache, 'evnt_0', hydrate);
@@ -68,7 +68,7 @@ describe('getOrHydrateStepReturnValue', () => {
 
   it('memoizes falsy primitives (0, false, "", null, undefined) as hits', async () => {
     for (const sample of [0, false, '', null, undefined]) {
-      const cache = createStepHydrationCache();
+      const cache = createReplayHydrationCache();
       const hydrate = vi.fn().mockResolvedValue(sample);
       const first = await getOrHydrateStepReturnValue(cache, 'evnt', hydrate);
       const second = await getOrHydrateStepReturnValue(cache, 'evnt', hydrate);
@@ -79,7 +79,7 @@ describe('getOrHydrateStepReturnValue', () => {
   });
 
   it('does NOT memoize non-primitives: re-hydrates a fresh object each replay', async () => {
-    const cache = createStepHydrationCache();
+    const cache = createReplayHydrationCache();
     // Return a fresh object every call so we can assert distinct references.
     const hydrate = vi.fn().mockImplementation(async () => ({ count: 0 }));
 
@@ -105,7 +105,7 @@ describe('getOrHydrateStepReturnValue', () => {
   });
 
   it('memoizes a string at the length bound (cache hit on replay)', async () => {
-    const cache = createStepHydrationCache();
+    const cache = createReplayHydrationCache();
     const atBound = 'x'.repeat(MAX_MEMOIZED_PRIMITIVE_LENGTH);
     const hydrate = vi.fn().mockResolvedValue(atBound);
 
@@ -115,11 +115,11 @@ describe('getOrHydrateStepReturnValue', () => {
     expect(first).toBe(atBound);
     expect(second).toBe(atBound);
     expect(hydrate).toHaveBeenCalledTimes(1);
-    expect(cache.size).toBe(1);
+    expect(cache.primitiveValues.size).toBe(1);
   });
 
   it('does NOT memoize an oversized string: re-hydrates every replay and stays unbounded-free', async () => {
-    const cache = createStepHydrationCache();
+    const cache = createReplayHydrationCache();
     const big = 'x'.repeat(MAX_MEMOIZED_PRIMITIVE_LENGTH + 1);
     const hydrate = vi.fn().mockResolvedValue(big);
 
@@ -131,11 +131,11 @@ describe('getOrHydrateStepReturnValue', () => {
     expect(first).toBe(big);
     expect(second).toBe(big);
     expect(hydrate).toHaveBeenCalledTimes(2);
-    expect(cache.size).toBe(0);
+    expect(cache.primitiveValues.size).toBe(0);
   });
 
   it('keys by eventId: different events hydrate independently', async () => {
-    const cache = createStepHydrationCache();
+    const cache = createReplayHydrationCache();
     const hydrate = vi
       .fn()
       .mockResolvedValueOnce('a')
@@ -157,16 +157,16 @@ describe('getOrHydrateStepReturnValue', () => {
   });
 
   it('does not cache when eventId is undefined', async () => {
-    const cache = createStepHydrationCache();
+    const cache = createReplayHydrationCache();
     const hydrate = vi.fn().mockResolvedValue('result');
     await getOrHydrateStepReturnValue(cache, undefined, hydrate);
     await getOrHydrateStepReturnValue(cache, undefined, hydrate);
     expect(hydrate).toHaveBeenCalledTimes(2);
-    expect(cache.size).toBe(0);
+    expect(cache.primitiveValues.size).toBe(0);
   });
 
   it('does not cache rejected hydrations: re-attempts on the next call', async () => {
-    const cache = createStepHydrationCache();
+    const cache = createReplayHydrationCache();
     const hydrate = vi
       .fn()
       .mockRejectedValueOnce(new Error('boom'))
