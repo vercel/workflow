@@ -28,7 +28,11 @@ const MAX_HISTORY_ENTRIES = 10;
 const MAX_COMMENT_CHARS = 60_000;
 
 const METRIC_LABELS = {
-  ttfs: { name: 'TTFS', description: 'time to first step body execution' },
+  ttfs: {
+    name: 'TTFS',
+    description:
+      'time to first step body (in-deployment start() → first step body, deployment clocks)',
+  },
   stso: {
     name: 'STSO',
     description: 'step-to-step overhead (gap between consecutive step bodies)',
@@ -36,11 +40,12 @@ const METRIC_LABELS = {
   wo: {
     name: 'WO',
     description:
-      'workflow overhead (time outside step bodies, client start → last step body exit)',
+      'workflow overhead (whole-run time outside step bodies, in-deployment anchored)',
   },
   sl: {
     name: 'SL',
-    description: 'stream latency (first chunk write → visible to the reader)',
+    description:
+      'stream latency (in-deployment write → read propagation, readAt - writtenAt)',
   },
 };
 const METRIC_ORDER = ['ttfs', 'stso', 'wo', 'sl'];
@@ -156,17 +161,23 @@ function formatMs(value) {
 
 /**
  * Annotates each metric row with the matching baseline average (from the most
- * recent main-branch run), keyed by backend/app/metric/scenario. The
- * annotation is stored on the entry so history re-renders keep showing the
- * delta each run was originally compared against.
+ * recent main-branch run), keyed by
+ * methodologyVersion/backend/app/metric/scenario. The methodology version is
+ * part of the key so a change to the measurement window (e.g. the switch to
+ * the in-deployment trigger) does not diff incomparable numbers: an old
+ * baseline won't match the new run, and the delta stays blank until `main` has
+ * produced a same-methodology baseline. The annotation is stored on the entry
+ * so history re-renders keep showing the delta each run was originally
+ * compared against.
  */
 export function annotateWithBaseline(results, baseline) {
   if (!baseline || baseline.length === 0) return results;
+  const methodology = (result) => result.methodologyVersion ?? 'legacy';
   const baselineAvgs = new Map();
   for (const result of baseline) {
     for (const row of result.metrics ?? []) {
       baselineAvgs.set(
-        `${result.backend}/${result.app}/${row.metric}/${row.scenario}`,
+        `${methodology(result)}/${result.backend}/${result.app}/${row.metric}/${row.scenario}`,
         row.avg
       );
     }
@@ -175,7 +186,7 @@ export function annotateWithBaseline(results, baseline) {
     ...result,
     metrics: (result.metrics ?? []).map((row) => {
       const baselineAvg = baselineAvgs.get(
-        `${result.backend}/${result.app}/${row.metric}/${row.scenario}`
+        `${methodology(result)}/${result.backend}/${result.app}/${row.metric}/${row.scenario}`
       );
       return typeof baselineAvg === 'number' ? { ...row, baselineAvg } : row;
     }),
@@ -219,8 +230,8 @@ function metricSortKey(row) {
 
 function renderResultTable(result) {
   const lines = [
-    '| Metric | Scenario | Avg (ms) | P75 (ms) | P90 (ms) | P99 (ms) | Samples |',
-    '|--------|----------|---------:|---------:|---------:|---------:|--------:|',
+    '| Metric | Scenario | Avg (ms) | P10 (ms) | P75 (ms) | P90 (ms) | P99 (ms) | Samples |',
+    '|--------|----------|---------:|---------:|---------:|---------:|---------:|--------:|',
   ];
   const rows = [...result.metrics].sort(
     (a, b) => metricSortKey(a) - metricSortKey(b)
@@ -231,7 +242,7 @@ function renderResultTable(result) {
     const name = label ? `**${label.name}**` : row.metric;
     const targets = row.targets ?? {};
     lines.push(
-      `| ${name} | ${row.scenario} | ${formatMs(row.avg)}${formatDelta(row.avg, row.baselineAvg)} | ${formatCell(row.p75, targets.p75)} | ${formatCell(row.p90, targets.p90)} | ${formatCell(row.p99, targets.p99)} | ${row.samples} |`
+      `| ${name} | ${row.scenario} | ${formatMs(row.avg)}${formatDelta(row.avg, row.baselineAvg)} | ${formatMs(row.p10)} | ${formatCell(row.p75, targets.p75)} | ${formatCell(row.p90, targets.p90)} | ${formatCell(row.p99, targets.p99)} | ${row.samples} |`
     );
   }
   return lines.join('\n');
@@ -318,7 +329,9 @@ function renderFooter(entries) {
         ]
       : []),
     '',
-    '<sub>TTFS/WO compare client vs deployment clocks and SL compares the step runner’s clock vs the client’s (NTP-synced in CI). WO ends at the last step body exit, the closest observable proxy for the final step-completion request.</sub>',
+    '<sub>All metrics are measured from deployment-side timestamps only. Runs are triggered by an in-deployment route that stamps the anchor (`clientStart`) right before `start()`, so the CI runner’s request and its path through api.vercel.com sit outside every measured window. TTFS = in-deployment `start()` → first step body (turbo uses the in-process fast path, non-turbo the dispatch path), and includes the VQS dispatch hop plus any `/flow` cold start. STSO/WO are measured between step bodies on the deployment. SL is measured inside the workflow (parallel reader/writer steps), so it no longer includes the api.vercel.com read path.</sub>',
+    '',
+    '<sub>Cold starts are kept in the numbers on purpose — they are part of real bursty-workload latency. The workbench deployment cold-starts the `/flow` invocation for a large fraction of runs, inflating P75+; the **P10** column shows the warm-start floor for comparison.</sub>',
   ].join('\n');
 }
 
