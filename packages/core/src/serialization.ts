@@ -207,6 +207,14 @@ async function recordCompression(
   }
 }
 
+/** Aggregate timings for the host-side phases of step-result hydration. */
+export interface StepHydrationPhaseTimings {
+  decryptMs: number;
+  decompressMs: number;
+  telemetryMs: number;
+  deserializeMs: number;
+}
+
 export function getSerializeStream(
   reducers: Partial<Reducers>,
   cryptoKey: EncryptionKeyParam
@@ -3343,21 +3351,40 @@ export async function hydrateStepReturnValue(
   _runId: string,
   key: CryptoKey | undefined,
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  phaseTimings?: StepHydrationPhaseTimings
 ): Promise<any> {
   const compressionStats: CompressionStats = {};
-  const inflated = await decompress(
-    await maybeDecrypt(value, key),
-    compressionStats
-  );
+  let startedAt = phaseTimings ? performance.now() : 0;
+  const decrypted = await maybeDecrypt(value, key);
+  if (phaseTimings) {
+    phaseTimings.decryptMs += performance.now() - startedAt;
+    startedAt = performance.now();
+  }
+
+  const inflated = await decompress(decrypted, compressionStats);
+  if (phaseTimings) {
+    phaseTimings.decompressMs += performance.now() - startedAt;
+    startedAt = performance.now();
+  }
+
   await recordCompression(compressionStats, 'deserialize');
-  return workflowModule.deserialize(inflated, {
+  if (phaseTimings) {
+    phaseTimings.telemetryMs += performance.now() - startedAt;
+    startedAt = performance.now();
+  }
+
+  const result = workflowModule.deserialize(inflated, {
     global,
     extraRevivers: {
       ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
       ...extraRevivers,
     },
   });
+  if (phaseTimings) {
+    phaseTimings.deserializeMs += performance.now() - startedAt;
+  }
+  return result;
 }
 
 // ---- Helpers to extract stream/Request/Response reducers and revivers ----

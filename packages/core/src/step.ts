@@ -41,7 +41,9 @@ async function deliverCompletedStep<Result>(
           serializedResult,
           ctx.runId,
           ctx.encryptionKey,
-          ctx.globalThis
+          ctx.globalThis,
+          {},
+          replayMetrics?.stepHydrationPhases
         )
     );
     if (measurement) {

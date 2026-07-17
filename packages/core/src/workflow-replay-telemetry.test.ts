@@ -178,6 +178,26 @@ describe('workflow replay telemetry', () => {
     expect(
       execute?.attributes['workflow.replay.steps.hydration_ms'] as number
     ).toBeGreaterThanOrEqual(0);
+    expect(
+      execute?.attributes[
+        'workflow.replay.steps.hydration.decrypt_ms'
+      ] as number
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      execute?.attributes[
+        'workflow.replay.steps.hydration.decompress_ms'
+      ] as number
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      execute?.attributes[
+        'workflow.replay.steps.hydration.telemetry_ms'
+      ] as number
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      execute?.attributes[
+        'workflow.replay.steps.hydration.deserialize_ms'
+      ] as number
+    ).toBeGreaterThanOrEqual(0);
 
     expect(spans.map((span) => span.name)).toEqual(
       expect.arrayContaining([

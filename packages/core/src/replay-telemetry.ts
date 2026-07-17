@@ -1,4 +1,5 @@
 import type { StepHydrationCache } from './step-hydration-cache.js';
+import type { StepHydrationPhaseTimings } from './serialization.js';
 
 /**
  * Aggregate diagnostics for one deterministic workflow replay.
@@ -23,6 +24,7 @@ export interface WorkflowReplayMetrics {
   stepDeliveryMs: number;
   /** Awaited cache lookup or deserialize/decrypt time for completed results. */
   stepHydrationMs: number;
+  stepHydrationPhases: StepHydrationPhaseTimings;
   stepHydrationCacheHits: number;
   stepHydrationCacheMisses: number;
   stepHydrationCacheUnavailable: number;
@@ -96,6 +98,12 @@ export function createWorkflowReplayMetrics(): WorkflowReplayMetrics {
     completedSteps: 0,
     stepDeliveryMs: 0,
     stepHydrationMs: 0,
+    stepHydrationPhases: {
+      decryptMs: 0,
+      decompressMs: 0,
+      telemetryMs: 0,
+      deserializeMs: 0,
+    },
     stepHydrationCacheHits: 0,
     stepHydrationCacheMisses: 0,
     stepHydrationCacheUnavailable: 0,
@@ -117,6 +125,14 @@ export function workflowReplayMetricAttributes(
     'workflow.replay.steps.completed': metrics.completedSteps,
     'workflow.replay.steps.delivery_ms': metrics.stepDeliveryMs,
     'workflow.replay.steps.hydration_ms': metrics.stepHydrationMs,
+    'workflow.replay.steps.hydration.decrypt_ms':
+      metrics.stepHydrationPhases.decryptMs,
+    'workflow.replay.steps.hydration.decompress_ms':
+      metrics.stepHydrationPhases.decompressMs,
+    'workflow.replay.steps.hydration.telemetry_ms':
+      metrics.stepHydrationPhases.telemetryMs,
+    'workflow.replay.steps.hydration.deserialize_ms':
+      metrics.stepHydrationPhases.deserializeMs,
     'workflow.replay.steps.hydration.cache_hits':
       metrics.stepHydrationCacheHits,
     'workflow.replay.steps.hydration.cache_misses':
