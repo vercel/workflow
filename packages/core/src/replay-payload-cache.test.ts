@@ -107,8 +107,11 @@ describe('ReplayPayloadCache', () => {
     for (const resolve of resolvers.reverse()) resolve();
     await warming;
 
+    const allSettled = vi.spyOn(Promise, 'allSettled');
     await cache.prewarm(run, events);
     expect(preparer).toHaveBeenCalledTimes(4);
+    expect(allSettled).toHaveBeenLastCalledWith([]);
+    allSettled.mockRestore();
   });
 
   it('caches real decrypt/decompress output but revives fresh objects', async () => {

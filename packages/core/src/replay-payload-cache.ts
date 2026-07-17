@@ -57,6 +57,11 @@ export class ReplayPayloadCache {
       // Legacy flattened values may be mutated by devalue's unflatten and are
       // therefore prepared only by their eventual consumer, never cached.
       if (!(value instanceof Uint8Array)) return;
+
+      // Each replay scans the full event log, so awaiting cached promises here
+      // would add O(N^2) promise reactions over an N-step invocation. Only wait
+      // for preparations first discovered by this prewarm pass.
+      if (this.preparedPayloads.has(cacheKey)) return;
       preparations.push(this.ensurePreparation(cacheKey, value));
     };
 
