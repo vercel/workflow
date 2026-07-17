@@ -148,7 +148,6 @@ type WorkflowSessionState =
       readonly interruption: PromiseWithResolvers<never>;
     }
   | { readonly type: 'suspended'; readonly suspension: WorkflowSuspension }
-  | { readonly type: 'failed'; readonly error: Error }
   | { readonly type: 'replay' }
   | { readonly type: 'completed' };
 
@@ -164,12 +163,15 @@ function isSameSuspensionBoundary(
   );
 }
 
+// A suspended VM is quiescent, but each parked step consumer signals its own
+// (identical) suspension via scheduleWhenIdle — absorb those duplicates and
+// treat anything else as unretainable.
 function updateSuspendedSession(
   suspension: WorkflowSuspension,
   error: Error
 ): WorkflowSessionState {
-  if (!WorkflowSuspension.is(error)) return { type: 'failed', error };
-  return isSameSuspensionBoundary(suspension, error)
+  return WorkflowSuspension.is(error) &&
+    isSameSuspensionBoundary(suspension, error)
     ? { type: 'suspended', suspension }
     : { type: 'replay' };
 }
@@ -177,13 +179,6 @@ function updateSuspendedSession(
 export interface WorkflowSession {
   readonly workflowRun: WorkflowRun;
   readonly argumentCount: number;
-  /**
-   * Whether the VM ran host-timed async work (`Atomics.waitAsync`, async
-   * `WebAssembly` compilation). Such a VM can advance while suspended, so its
-   * live state may diverge from what a replay of the durable event log
-   * reconstructs — it must not be retained.
-   */
-  usedHostAsync(): boolean;
   /**
    * Draws from the VM's seeded random stream so far. The runtime compares
    * this across the suspension boundary: if post-suspension argument
@@ -382,7 +377,6 @@ function createWorkflowSession({
       context,
       globalThis: vmGlobalThis,
       updateTimestamp,
-      usedHostAsync,
       randomDrawCount,
     } = createContext({
       seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
@@ -401,14 +395,13 @@ function createWorkflowSession({
           const { interruption } = state;
           state = WorkflowSuspension.is(error)
             ? { type: 'suspended', suspension: error }
-            : { type: 'failed', error };
+            : { type: 'replay' };
           interruption.reject(error);
           return;
         }
         case 'suspended':
           state = updateSuspendedSession(state.suspension, error);
           return;
-        case 'failed':
         case 'replay':
         case 'completed':
           return;
@@ -1152,7 +1145,6 @@ function createWorkflowSession({
     const session: WorkflowSession = {
       workflowRun,
       argumentCount: args.length,
-      usedHostAsync,
       randomDrawCount,
       resume(nextEvents) {
         switch (state.type) {
@@ -1175,8 +1167,6 @@ function createWorkflowSession({
               execution: waitForExecution(interruption),
             };
           }
-          case 'failed':
-            return { type: 'resumed', execution: failWorkflow(state.error) };
           case 'replay':
             return { type: 'replay' };
           case 'completed':

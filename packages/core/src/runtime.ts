@@ -318,14 +318,11 @@ function openHookAndWaitState(events: Event[]): {
 
 /**
  * Retain only pure step boundaries with no out-of-band continuation source.
- * Attributes require replay; hooks and waits can wake another invocation; a
- * VM that ran host-timed async work can advance while suspended, so its live
- * state may not match what a replay of the event log reconstructs.
+ * Attributes require replay; hooks and waits can wake another invocation.
  * `WORKFLOW_RETAINED_VM=0` disables retention entirely.
  */
 function canRetainWorkflowSession(
   suspension: WorkflowSuspension,
-  session: WorkflowSession,
   events: Event[]
 ): boolean {
   return (
@@ -336,7 +333,6 @@ function canRetainWorkflowSession(
     suspension.attributeCount === 0 &&
     suspension.hookDisposedCount === 0 &&
     suspension.abortCount === 0 &&
-    !session.usedHostAsync() &&
     !hasOpenHookOrWait(events)
   );
 }
@@ -1503,7 +1499,6 @@ export function workflowEntrypoint(
                       if (workflowResult.type === 'suspended') {
                         workflowExecution = canRetainWorkflowSession(
                           workflowResult.suspension,
-                          workflowResult.session,
                           events
                         )
                           ? {

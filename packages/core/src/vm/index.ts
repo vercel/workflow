@@ -95,36 +95,24 @@ export function createContext(options: CreateContextOptions) {
 
   const randomUUID = createRandomUUID(rng);
 
-  // Track every sandbox API whose promise resolves on host timing rather
-  // than from the event log: `Atomics.waitAsync` (a wall-clock timer via
-  // SharedArrayBuffer) and the async `WebAssembly` compilation entry points.
-  // These are the only ways a suspended workflow can make progress the event
-  // log cannot replay, so the runtime declines to retain a VM that used any
-  // of them (see `canRetainWorkflowSession`). Dynamic `import()` settles
-  // within a microtask (rejected: no `importModuleDynamically`), so it
-  // cannot advance a suspended VM.
-  let usedHostAsync = false;
-  const trackHostAsync = (
-    target: Record<string, unknown>,
-    method: string
-  ): void => {
-    const original = target[method];
-    if (typeof original !== 'function') return;
-    target[method] = (...args: unknown[]) => {
-      usedHostAsync = true;
-      return Reflect.apply(original, target, args);
-    };
-  };
+  // The sandbox must not expose any way for workflow code to observe host
+  // timing or host state: after this block, every promise a workflow can
+  // create settles either from the event log or within its own microtask
+  // cascade, so a suspended VM is fully quiescent and can be retained across
+  // inline steps (see `canRetainWorkflowSession`).
+  //
+  // - `Atomics.waitAsync` is a wall-clock timer (via SharedArrayBuffer).
+  // - The async `WebAssembly` entry points resolve on compile-thread timing;
+  //   the synchronous `new WebAssembly.Module()` / `Instance()` remain.
+  // - `WeakRef.deref()` and finalizer callbacks observe GC timing.
+  // - Dynamic `import()` settles within a microtask (rejected: no
+  //   `importModuleDynamically`), so it needs no handling.
   const intrinsics = g as unknown as Record<string, Record<string, unknown>>;
-  trackHostAsync(intrinsics.Atomics, 'waitAsync');
-  trackHostAsync(intrinsics.WebAssembly, 'compile');
-  trackHostAsync(intrinsics.WebAssembly, 'instantiate');
-  trackHostAsync(intrinsics.WebAssembly, 'compileStreaming');
-  trackHostAsync(intrinsics.WebAssembly, 'instantiateStreaming');
-
-  // GC observation (`WeakRef.deref()`, finalizer callbacks) depends on host
-  // GC timing that neither replay nor a retained VM can reconstruct from the
-  // event log, so the sandbox does not expose it at all.
+  delete intrinsics.Atomics.waitAsync;
+  delete intrinsics.WebAssembly.compile;
+  delete intrinsics.WebAssembly.instantiate;
+  delete intrinsics.WebAssembly.compileStreaming;
+  delete intrinsics.WebAssembly.instantiateStreaming;
   delete intrinsics.WeakRef;
   delete intrinsics.FinalizationRegistry;
 
@@ -217,7 +205,6 @@ export function createContext(options: CreateContextOptions) {
     updateTimestamp: (timestamp: number) => {
       fixedTimestamp = timestamp;
     },
-    usedHostAsync: () => usedHostAsync,
     randomDrawCount: () => randomDrawCount,
   };
 }

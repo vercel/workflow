@@ -258,56 +258,44 @@ describe('createContext', () => {
   });
 });
 
-describe('usedHostAsync', () => {
-  it('starts false and ignores log-driven and deterministic APIs', () => {
-    const { context, usedHostAsync } = createContext({ seed, fixedTimestamp });
+describe('host-timed async', () => {
+  it('does not expose any API that settles on host timing', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
 
-    vm.runInContext(
-      'Math.random(); Date.now(); crypto.randomUUID(); crypto.getRandomValues(new Uint8Array(4))',
-      context
+    expect(vm.runInContext('typeof Atomics.waitAsync', context)).toBe(
+      'undefined'
     );
-    expect(usedHostAsync()).toBe(false);
+    expect(vm.runInContext('typeof WebAssembly.compile', context)).toBe(
+      'undefined'
+    );
+    expect(vm.runInContext('typeof WebAssembly.instantiate', context)).toBe(
+      'undefined'
+    );
+    expect(
+      vm.runInContext('typeof WebAssembly.compileStreaming', context)
+    ).toBe('undefined');
+    expect(
+      vm.runInContext('typeof WebAssembly.instantiateStreaming', context)
+    ).toBe('undefined');
+    // Deterministic synchronous WebAssembly stays available.
+    expect(vm.runInContext('typeof WebAssembly.Module', context)).toBe(
+      'function'
+    );
   });
+});
 
-  it('does not flip on the synchronous crypto.subtle.digest', async () => {
-    const { context, usedHostAsync } = createContext({ seed, fixedTimestamp });
+describe('randomDrawCount', () => {
+  it('counts every draw from the seeded stream', () => {
+    const { context, randomDrawCount } = createContext({
+      seed,
+      fixedTimestamp,
+    });
 
-    await vm.runInContext(
-      'crypto.subtle.digest("SHA-256", new Uint8Array(1))',
-      context
-    );
-    expect(usedHostAsync()).toBe(false);
-  });
-
-  it('flips on Atomics.waitAsync', () => {
-    const { context, usedHostAsync } = createContext({ seed, fixedTimestamp });
-
-    vm.runInContext(
-      'Atomics.waitAsync(new Int32Array(new SharedArrayBuffer(4)), 0, 1)',
-      context
-    );
-    expect(usedHostAsync()).toBe(true);
-  });
-
-  it('flips on WebAssembly.compile', async () => {
-    const { context, usedHostAsync } = createContext({ seed, fixedTimestamp });
-
-    // Minimal valid empty module: magic + version.
-    await vm.runInContext(
-      'WebAssembly.compile(new Uint8Array([0,97,115,109,1,0,0,0]))',
-      context
-    );
-    expect(usedHostAsync()).toBe(true);
-  });
-
-  it('flips on WebAssembly.instantiate', async () => {
-    const { context, usedHostAsync } = createContext({ seed, fixedTimestamp });
-
-    await vm.runInContext(
-      'WebAssembly.instantiate(new Uint8Array([0,97,115,109,1,0,0,0]))',
-      context
-    );
-    expect(usedHostAsync()).toBe(true);
+    expect(randomDrawCount()).toBe(0);
+    vm.runInContext('Math.random()', context);
+    expect(randomDrawCount()).toBe(1);
+    vm.runInContext('crypto.getRandomValues(new Uint8Array(4))', context);
+    expect(randomDrawCount()).toBe(5);
   });
 });
 
