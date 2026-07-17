@@ -325,16 +325,19 @@ function canRetainWorkflowSession(
   suspension: WorkflowSuspension,
   events: Event[]
 ): boolean {
-  return (
-    isVmRetentionEnabled() &&
-    suspension.stepCount > 0 &&
-    suspension.hookCount === 0 &&
-    suspension.waitCount === 0 &&
-    suspension.attributeCount === 0 &&
-    suspension.hookDisposedCount === 0 &&
-    suspension.abortCount === 0 &&
-    !hasOpenHookOrWait(events)
-  );
+  if (
+    !isVmRetentionEnabled() ||
+    suspension.stepCount === 0 ||
+    suspension.hookCount > 0 ||
+    suspension.waitCount > 0 ||
+    suspension.attributeCount > 0 ||
+    suspension.hookDisposedCount > 0 ||
+    suspension.abortCount > 0
+  ) {
+    return false;
+  }
+  const { openHook, openWait } = openHookAndWaitState(events);
+  return !openHook && !openWait;
 }
 
 /**
