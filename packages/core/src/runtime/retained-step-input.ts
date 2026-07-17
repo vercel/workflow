@@ -177,18 +177,13 @@ function isPassiveArrayProperty(
   if (key === 'length') return true;
   const descriptor = Object.getOwnPropertyDescriptor(array, key);
   if (!descriptor) return false;
-  // Symbol properties can be serialization dispatch tags (e.g. the workflow
-  // abort-signal markers) that the clone would drop; `then` and
-  // `constructor` are read by dispatch even when non-enumerable.
-  if (typeof key === 'symbol' || key === 'then' || key === 'constructor') {
-    return false;
-  }
-  if (!isArrayIndex(key)) {
-    return !descriptor.enumerable;
-  }
-  // Non-enumerable indices are dropped by structuredClone but persisted by
-  // devalue, so they must decline the fast path.
+  // Only own enumerable data indices are passive. Anything hidden — symbol
+  // tags, non-enumerable properties, accessors — can be observed by
+  // serialization dispatch (reducer probes, thenable checks, the class
+  // reducer) while being dropped by the clone.
   return (
+    typeof key === 'string' &&
+    isArrayIndex(key) &&
     descriptor.enumerable === true &&
     'value' in descriptor &&
     isPassivelyCloneable(descriptor.value, workflowGlobal, seen)
@@ -216,14 +211,14 @@ function isPassiveObjectProperty(
 ): boolean {
   const descriptor = Object.getOwnPropertyDescriptor(object, key);
   if (!descriptor) return false;
-  // Symbol properties can be serialization dispatch tags (e.g. the workflow
-  // abort-signal markers) that the clone would drop.
-  if (typeof key === 'symbol') return false;
-  if (!descriptor.enumerable) {
-    return key !== 'constructor' && key !== 'then';
-  }
+  // Only own enumerable string-keyed data properties are passive. Anything
+  // hidden — symbol tags, non-enumerable properties, accessors — can be
+  // observed by serialization dispatch (reducer probes like `.signal`,
+  // thenable checks, the class reducer) while being dropped by the clone.
   return (
+    typeof key === 'string' &&
     key !== '__proto__' &&
+    descriptor.enumerable === true &&
     'value' in descriptor &&
     isPassivelyCloneable(descriptor.value, workflowGlobal, seen)
   );

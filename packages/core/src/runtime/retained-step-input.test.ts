@@ -311,3 +311,27 @@ describe('symbol-tagged inputs', () => {
     });
   });
 });
+
+describe('hidden properties', () => {
+  it('declines objects with non-enumerable properties (reducer probes read them)', () => {
+    const { context, globalThis: workflowGlobal } = createContext({
+      seed,
+      fixedTimestamp,
+    });
+    const value = vm.runInContext(
+      `(() => {
+        const controllerish = { plain: true };
+        Object.defineProperty(controllerish, "signal", {
+          get() { return { aborted: false }; },
+          enumerable: false,
+        });
+        return controllerish;
+      })()`,
+      context
+    );
+
+    expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
+      retainable: false,
+    });
+  });
+});
