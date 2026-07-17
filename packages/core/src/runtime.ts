@@ -37,12 +37,10 @@ import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import {
-  getMaxEventsPerRun,
   getMaxQueueDeliveries,
   getReplayDivergenceMaxRetries,
   isInlineOwnershipEnabled,
   isTurboEnabled,
-  MAX_EVENTS_BUFFER,
 } from './runtime/constants.js';
 import { handleEventLimitExceeded } from './runtime/event-limit.js';
 import {
@@ -554,6 +552,10 @@ export function workflowEntrypoint(
                   // Shared state: set by either the background step path
                   // or the run_started setup below.
                   let workflowRun: WorkflowRun | undefined;
+                  // Server-owned per-run event ceiling, read off the
+                  // run_started response. Undefined ⇒ no enforcement (older
+                  // servers, or the turbo path which backgrounds run_started).
+                  let maxEventsLimit: number | undefined;
                   let workflowStartedAt = -1;
                   let preloadedEvents: Event[] | undefined;
                   let preloadedEventsCursor: string | null | undefined;
@@ -1039,6 +1041,7 @@ export function workflowEntrypoint(
                           );
                         }
                         workflowRun = result.run;
+                        maxEventsLimit = result.maxEvents;
                         // Anchors RSFS — see the declaration above.
                         runStartedReceivedAtMs = Date.now();
 
@@ -1426,17 +1429,21 @@ export function workflowEntrypoint(
                       }
 
                       // Event-limit guard: fail a runaway run once its log
-                      // grows past the quota (+ buffer). Checked after the log
-                      // is loaded and before replay schedules more work.
-                      const maxEvents =
-                        getMaxEventsPerRun() + MAX_EVENTS_BUFFER;
-                      if (events.length >= maxEvents) {
+                      // reaches the server-owned ceiling returned on the
+                      // run_started response. Undefined ⇒ no enforcement
+                      // (older servers, or the turbo path which backgrounds
+                      // run_started). Checked after the log is loaded and
+                      // before replay schedules more work.
+                      if (
+                        maxEventsLimit !== undefined &&
+                        events.length >= maxEventsLimit
+                      ) {
                         await handleEventLimitExceeded({
                           runId,
                           workflowName,
                           requestId,
                           eventCount: events.length,
-                          limit: getMaxEventsPerRun(),
+                          limit: maxEventsLimit,
                         });
                         return;
                       }

@@ -230,6 +230,11 @@ export interface CreateEventV4Result {
      * creator). Threaded into EventResult.stepCreated by the events adapter.
      */
     stepCreated?: boolean;
+    /**
+     * Server-owned per-run event ceiling, returned on run-lifecycle responses.
+     * Absent from older servers. Threaded into EventResult.maxEvents.
+     */
+    maxEvents?: number;
   };
 }
 
