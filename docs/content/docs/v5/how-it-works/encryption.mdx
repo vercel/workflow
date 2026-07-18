@@ -7,7 +7,7 @@ prerequisites:
   - /docs/how-it-works/event-sourcing
 related:
   - /docs/observability
-  - /docs/deploying/world/vercel-world
+  - /worlds/vercel
 ---
 
 <Callout>
@@ -38,7 +38,7 @@ Metadata such as workflow names, step names, entity IDs, timestamps, and lifecyc
 
 Each workflow run is encrypted with its own unique key, provided by the `World` implementation via `getEncryptionKeyForRun()`. How the key is generated and stored is up to the `World`.
 
-For example, the [Vercel World](/docs/deploying/world/vercel-world) provides unique keys per run and execution environment, ensuring that a given run can only decrypt data from that run itself.
+For example, the [Vercel World](/worlds/vercel) provides unique keys per run and execution environment, ensuring that a given run can only decrypt data from that run itself.
 
 ### Encryption Algorithm
 
@@ -127,4 +127,4 @@ async function lookupRunKey(
 }
 ```
 
-The [Vercel World](/docs/deploying/world/vercel-world) implementation uses HKDF derivation from a deployment-scoped key, but any consistent key management scheme will work.
+The [Vercel World](/worlds/vercel) implementation uses HKDF derivation from a deployment-scoped key, but any consistent key management scheme will work.

@@ -84,6 +84,9 @@ export function createDevTests(config?: DevTestConfig) {
         : 70_000;
     const multiPhaseHmrTestTimeoutMs =
       hmrTestTimeoutMs + hmrRediscoveryTimeoutMs;
+    const flowRouteHmrRediscoveryTimeoutMs = finalConfig.canary
+      ? 240_000
+      : hmrRediscoveryTimeoutMs;
     const flowRouteHmrFuzzTimeoutMs = finalConfig.canary ? 480_000 : 240_000;
     const readManifestStepFunctionNames = async (): Promise<string[]> => {
       const manifestJson = await fs.readFile(workflowManifestPath, 'utf8');
@@ -983,7 +986,7 @@ ${apiFileContent}`
 
         await pollUntil({
           description: 'HMR fuzz fixture to appear in the Next manifest',
-          timeoutMs: hmrRediscoveryTimeoutMs,
+          timeoutMs: flowRouteHmrRediscoveryTimeoutMs,
           check: async () => {
             await prewarm();
             expect(await readManifestStepFunctionNames()).toContain(
@@ -1252,7 +1255,7 @@ export async function hmrFuzzAddedStep() {
             assert: async () => {
               await pollUntil({
                 description: 'added step definition to appear in manifest',
-                timeoutMs: hmrRediscoveryTimeoutMs,
+                timeoutMs: flowRouteHmrRediscoveryTimeoutMs,
                 intervalMs: 500,
                 check: async () => {
                   await prewarm();
@@ -1293,7 +1296,7 @@ export async function hmrFuzzAddedWorkflow() {
             assert: async () => {
               await pollUntil({
                 description: 'added workflow definition to appear in manifest',
-                timeoutMs: hmrRediscoveryTimeoutMs,
+                timeoutMs: flowRouteHmrRediscoveryTimeoutMs,
                 intervalMs: 500,
                 check: async () => {
                   await prewarm();
@@ -1326,7 +1329,7 @@ ${apiFileContent}`
             assert: async () => {
               await pollUntil({
                 description: 'added workflow file to appear in manifest',
-                timeoutMs: hmrRediscoveryTimeoutMs,
+                timeoutMs: flowRouteHmrRediscoveryTimeoutMs,
                 intervalMs: 500,
                 check: async () => {
                   await prewarm();
@@ -1352,7 +1355,7 @@ ${apiFileContent}`
             assert: async () => {
               await pollUntil({
                 description: 'removed workflow file to disappear from manifest',
-                timeoutMs: hmrRediscoveryTimeoutMs,
+                timeoutMs: flowRouteHmrRediscoveryTimeoutMs,
                 intervalMs: 500,
                 check: async () => {
                   await prewarm();

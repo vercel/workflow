@@ -85,7 +85,11 @@ describe('streamer', () => {
   });
 
   describe('createStreamer', () => {
-    async function setupStreamer() {
+    async function setupStreamer({
+      cleanupTimeout,
+    }: {
+      cleanupTimeout?: number;
+    } = {}) {
       const testDir = await fs.mkdtemp(
         path.join(os.tmpdir(), 'streamer-test-')
       );
@@ -140,7 +144,7 @@ describe('streamer', () => {
             chunks
           );
         }
-      });
+      }, cleanupTimeout);
 
       return {
         testDir,
@@ -656,7 +660,11 @@ describe('streamer', () => {
       });
 
       it('scopes chunk listing to the stream, not the whole world', async () => {
-        const { testDir, streamer } = await setupStreamer();
+        const { testDir, streamer } = await setupStreamer({
+          // Removing the 2,000-file fixture can exceed Vitest's default hook
+          // timeout on Windows runners.
+          cleanupTimeout: 30_000,
+        });
 
         // One real chunk on the stream under test.
         await streamer.streams.write(TEST_RUN_ID, 'target', 'hi');

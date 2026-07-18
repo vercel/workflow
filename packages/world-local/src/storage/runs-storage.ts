@@ -38,6 +38,7 @@ export interface LocalListWorkflowRunsParams extends ListWorkflowRunsParams {
 
 export interface LocalRunsStorage {
   get: Storage['runs']['get'];
+  getMany: NonNullable<Storage['runs']['getMany']>;
   list: {
     (
       params: LocalListWorkflowRunsParams & { resolveData: 'none' }
@@ -101,22 +102,42 @@ export function createRunsStorage(
   basedir: string,
   tag?: string
 ): LocalRunsStorage {
+  const get = (async (id: string, params?: any) => {
+    assertSafeEntityId('runId', id);
+    const run = await readJSONWithFallback(
+      basedir,
+      'runs',
+      id,
+      WorkflowRunSchema,
+      tag
+    );
+    if (!run) {
+      throw new WorkflowRunNotFoundError(id);
+    }
+    const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+    return filterRunData(run, resolveData);
+  }) as Storage['runs']['get'];
+
   return {
-    get: (async (id: string, params?: any) => {
-      assertSafeEntityId('runId', id);
-      const run = await readJSONWithFallback(
-        basedir,
-        'runs',
-        id,
-        WorkflowRunSchema,
-        tag
+    get,
+
+    getMany: (async (ids: readonly string[], params?: any) => {
+      const uniqueIds = [...new Set(ids)];
+      const runs = await Promise.all(
+        uniqueIds.map(async (id) => {
+          try {
+            return await get(id, params);
+          } catch (error) {
+            if (error instanceof WorkflowRunNotFoundError) {
+              return null;
+            }
+            throw error;
+          }
+        })
       );
-      if (!run) {
-        throw new WorkflowRunNotFoundError(id);
-      }
-      const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-      return filterRunData(run, resolveData);
-    }) as Storage['runs']['get'],
+      const runById = new Map(uniqueIds.map((id, i) => [id, runs[i]]));
+      return ids.map((id) => runById.get(id) ?? null);
+    }) as NonNullable<Storage['runs']['getMany']>,
 
     list: (async (params?: LocalListWorkflowRunsParams) => {
       const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;

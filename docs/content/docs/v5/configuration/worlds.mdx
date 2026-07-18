@@ -4,9 +4,9 @@ description: Configure the Workflow backend that stores runs and delivers queue 
 type: reference
 summary: Select and configure Local, Postgres, Vercel, or custom Worlds.
 related:
-  - /docs/deploying/world/local-world
-  - /docs/deploying/world/postgres-world
-  - /docs/deploying/world/vercel-world
+  - /worlds/local
+  - /worlds/postgres
+  - /worlds/vercel
 ---
 
 A [World](/docs/deploying) stores workflow state and delivers queue messages.
@@ -201,7 +201,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Default: disabled
 - Set `1` to serialize orchestrator (flow) invocations per run: each run's replays get their own queue topic and the flow trigger is generated with `maxConcurrency: 1`. Inline step executions get per-step topics and keep full parallelism.
 - Read at **both build time and runtime** — set it as a project-level environment variable so the generated trigger and the runtime queue routing agree.
-- Routing each run through a dedicated `maxConcurrency: 1` topic might lead to higher queue performance overhead. See [Vercel World](/docs/deploying/world/vercel-world#workflow_sequential_replays) for details.
+- Routing each run through a dedicated `maxConcurrency: 1` topic might lead to higher queue performance overhead. See [Vercel World](/worlds/vercel#workflow_sequential_replays) for details.
 
 ### `VERCEL_WORKFLOW_SERVER_URL`
 

@@ -162,6 +162,17 @@ export interface CreateEventV4Input {
   /** Progress counters taken when the STSO gap began. */
   stepCount?: number;
   eventCount?: number;
+  /** Client-measured run_started-to-first-step ms (the `run_started`
+   *  response landing → this step's start POST being issued), riding on the
+   *  run's first step_completed / step_failed. Consumed server-side for
+   *  latency metrics. */
+  rsfs?: number;
+  /** Client-measured synchronous replay-compute ms of only the FINAL replay
+   *  pass within the rsfs window (the pass that scheduled the first step),
+   *  excluding awaited network I/O — not accumulated across earlier
+   *  pre-first-step passes, so it is not "the replay portion of rsfs".
+   *  Only present alongside rsfs, and only for the run's first step. */
+  finalSchedulingReplay?: number;
   /** Runtime optimizations active for the ttfs/stso measurement
    *  (e.g. 'turbo', 'lazyStepStart', 'optimisticStart'). */
   optimizations?: string[];
@@ -261,6 +272,10 @@ function buildPostFrameMeta(
   if (input.stso !== undefined) meta.stso = input.stso;
   if (input.stepCount !== undefined) meta.stepCount = input.stepCount;
   if (input.eventCount !== undefined) meta.eventCount = input.eventCount;
+  if (input.rsfs !== undefined) meta.rsfs = input.rsfs;
+  if (input.finalSchedulingReplay !== undefined) {
+    meta.finalSchedulingReplay = input.finalSchedulingReplay;
+  }
   if (input.optimizations !== undefined) {
     meta.optimizations = input.optimizations;
   }

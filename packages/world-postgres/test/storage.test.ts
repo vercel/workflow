@@ -4,7 +4,7 @@ import type { Hook, Step, WorkflowRun } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { Pool } from 'pg';
-import { decodeTime } from 'ulid';
+import { decodeTime, ulid } from 'ulid';
 import {
   afterAll,
   beforeAll,
@@ -13,6 +13,7 @@ import {
   expect,
   it,
   test,
+  vi,
 } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
 import * as DrizzleSchema from '../src/drizzle/schema.js';
@@ -234,6 +235,60 @@ describe('Storage (Postgres integration)', () => {
 
         expect(run.attributes).toEqual({ [key]: 'literal' });
       });
+
+      it('rejects a duplicate run_created with EntityConflictError', async () => {
+        const runId = `wrun_${ulid()}`;
+        const runData = {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array([1, 2]),
+        };
+        await events.create(runId, {
+          eventType: 'run_created',
+          eventData: runData,
+        });
+
+        await expect(
+          events.create(runId, {
+            eventType: 'run_created',
+            eventData: runData,
+          })
+        ).rejects.toMatchObject({ name: 'EntityConflictError' });
+      });
+
+      it('rejects run_created when resilient start already created the run', async () => {
+        // start() races events.create(run_created) against world.queue(). When
+        // the worker dequeues first, run_started on the not-yet-existent run
+        // takes the resilient start path and creates the run itself. The late
+        // run_created must lose loudly: start() treats EntityConflictError as
+        // benign, while a silent no-op both fails its `run` assertion and
+        // appends a duplicate run_created to the log.
+        const runId = `wrun_${ulid()}`;
+        const runData = {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array([1, 2]),
+        };
+        await events.create(runId, {
+          eventType: 'run_started',
+          eventData: runData,
+        });
+
+        await expect(
+          events.create(runId, {
+            eventType: 'run_created',
+            eventData: runData,
+          })
+        ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+        const result = await events.list({
+          runId,
+          pagination: { sortOrder: 'asc' },
+        });
+        expect(
+          result.data.filter((e) => e.eventType === 'run_created')
+        ).toHaveLength(1);
+      });
     });
 
     describe('get', () => {
@@ -254,6 +309,48 @@ describe('Storage (Postgres integration)', () => {
         await expect(runs.get('missing')).rejects.toMatchObject({
           name: 'WorkflowRunNotFoundError',
         });
+      });
+    });
+
+    describe('getMany', () => {
+      it('returns requested runs in order and keeps missing IDs as null', async () => {
+        const first = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'first-workflow',
+          input: new Uint8Array([1]),
+        });
+        const second = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'second-workflow',
+          input: new Uint8Array([2]),
+        });
+
+        const result = await runs.getMany(
+          [second.runId, 'wrun_missing', first.runId, second.runId],
+          { resolveData: 'none' }
+        );
+
+        expect(result.map((run) => run?.runId ?? null)).toEqual([
+          second.runId,
+          null,
+          first.runId,
+          second.runId,
+        ]);
+        expect(result[0]?.input).toBeUndefined();
+        expect(result[2]?.output).toBeUndefined();
+      });
+
+      it('uses one query regardless of duplicate requested IDs', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        });
+        const query = vi.spyOn(pool, 'query');
+
+        await runs.getMany([run.runId, 'wrun_missing', run.runId]);
+
+        expect(query).toHaveBeenCalledTimes(1);
       });
     });
 

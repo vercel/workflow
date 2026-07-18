@@ -1,14 +1,22 @@
 import type { Event } from '@workflow/world';
 
 /**
- * Client-side latency measurement (TTFS / STSO) threaded from the
+ * Client-side latency measurement (TTFS / STSO / RSFS) threaded from the
  * orchestrator's inline execution path into `executeStep`.
  *
  * TTFS (time-to-first-step) measures run creation → the first step's body
  * beginning to execute. STSO (step-to-step overhead) measures the previous
- * step's terminal event → the next step's body beginning to execute. Both are
- * attached to the step's terminal event so a backend can emit latency metrics
- * from the event write alone, without extra event-log queries.
+ * step's terminal event → the next step's body beginning to execute. RSFS
+ * (run-started-to-first-step) measures the `run_started` response landing →
+ * the first step's start POST being issued — a sub-window of TTFS that
+ * isolates replay overhead from the run-creation queue hop; `finalSchedulingReplay`
+ * is the synchronous workflow-function-execution duration of only the FINAL
+ * replay pass within that window (the pass that reached and scheduled the
+ * first step) — it is NOT accumulated across earlier pre-first-step passes
+ * (see {@link StepLatencyTracking.replayMs}), so it must not be read as "the
+ * replay portion of RSFS". All are attached to the step's terminal
+ * event so a backend can emit latency metrics from the event write alone,
+ * without extra event-log queries.
  *
  * Eligibility is decided by the orchestrator (which owns the event log) via
  * {@link computeStepLatencyTracking}; the final values are computed by
@@ -50,6 +58,36 @@ export interface StepLatencyTracking {
   stepCount?: number;
   /** Number of events already in the event log. */
   eventCount?: number;
+  /**
+   * Epoch ms the `run_started` response was received/parsed by the SDK.
+   * Present only when the step qualifies for RSFS — the same eligibility as
+   * TTFS (see {@link computeStepLatencyTracking}), plus a recoverable
+   * anchor. In turbo mode, `run_started` is backgrounded rather than
+   * awaited, so this is stamped at the point the runtime synthesizes the
+   * run locally and begins replay instead of at the real response; the
+   * first step's start POST is still chained on the real `run_started`
+   * promise (see step-executor.ts), so RSFS still ends up measuring the
+   * genuine run_started-to-first-step-POST stretch even though the two
+   * halves overlap under turbo.
+   */
+  rsfsAnchorMs?: number;
+  /**
+   * Wall-clock ms this invocation's synchronous workflow-function replay
+   * took: from calling `runWorkflow` to it throwing the suspension that
+   * scheduled this batch. Excludes awaited network I/O (the suspension's
+   * event commits, the step's own start POST). Present only alongside
+   * `rsfsAnchorMs`.
+   *
+   * This is the FINAL replay pass only — the invocation that reached and
+   * scheduled the first step. Valid RSFS paths can replay more than once
+   * before the first step (e.g. a workflow-body `setAttributes()` detour
+   * replays twice), and a redelivery omits earlier invocations' replay work
+   * entirely; this value is not accumulated across those earlier passes.
+   * Do not read it as "the replay portion of RSFS" — RSFS
+   * ({@link rsfsAnchorMs}) covers the whole run_started-to-first-step
+   * window, this covers only the last pass.
+   */
+  replayMs?: number;
   /** Whether turbo mode is active for this invocation. */
   turbo: boolean;
 }
@@ -70,6 +108,15 @@ export interface StepLatencyEventData {
   stso?: number;
   stepCount?: number;
   eventCount?: number;
+  /** Client-measured run_started → first step's start POST, ms. */
+  rsfs?: number;
+  /**
+   * Client-measured wall-clock ms of the FINAL replay pass that scheduled
+   * the first step (see {@link StepLatencyTracking.replayMs}) — not
+   * accumulated across earlier pre-first-step passes, so it must not be
+   * read as "the replay portion of `rsfs`".
+   */
+  finalSchedulingReplay?: number;
   optimizations?: string[];
 }
 
@@ -127,6 +174,19 @@ export function computeStepLatencyTracking(params: {
   invocationStartedClean: boolean;
   /** Epoch ms of run creation, if recoverable. Absent disqualifies TTFS. */
   runCreatedAtMs: number | undefined;
+  /**
+   * Epoch ms the `run_started` response was received/parsed by the SDK (or,
+   * under turbo, the instant the run was synthesized locally — see
+   * {@link StepLatencyTracking.rsfsAnchorMs}). Absent disqualifies RSFS.
+   */
+  runStartedReceivedAtMs: number | undefined;
+  /**
+   * Wall-clock ms this suspension's `runWorkflow` call spent executing
+   * synchronously before throwing — the FINAL replay pass only, not
+   * accumulated across earlier passes. See
+   * {@link StepLatencyTracking.replayMs}.
+   */
+  replayMs: number;
   /** See {@link StepLatencyTracking.preStepBlockingMs}. */
   preStepBlockingMs: number;
   /**
@@ -209,6 +269,11 @@ export function computeStepLatencyTracking(params: {
     eventCount = events.length;
   }
 
+  // RSFS shares TTFS's eligibility exactly (same event-log/wait checks),
+  // plus its own anchor being recoverable.
+  const rsfsEligible =
+    ttfsEligible && params.runStartedReceivedAtMs !== undefined;
+
   if (!ttfsEligible && prevStepEndMs === undefined) {
     return undefined;
   }
@@ -224,6 +289,12 @@ export function computeStepLatencyTracking(params: {
               ? (params.preStepBlockingBeforeAttrMs ?? 0)
               : params.preStepBlockingMs,
           ...(preStepAttrStartMs !== undefined ? { preStepAttrStartMs } : {}),
+        }
+      : {}),
+    ...(rsfsEligible
+      ? {
+          rsfsAnchorMs: params.runStartedReceivedAtMs,
+          replayMs: params.replayMs,
         }
       : {}),
     ...(prevStepEndMs !== undefined
@@ -244,6 +315,12 @@ export function computeStepLatencyEventData(params: {
   tracking: StepLatencyTracking | undefined;
   /** `Date.now()` taken immediately before user step code began executing. */
   stepCodeStartedAtMs: number;
+  /**
+   * `Date.now()` taken immediately before the first step's start POST
+   * (`step_started`) was issued. Present only for the lazy inline steps RSFS
+   * cares about; see the call sites in step-executor.ts.
+   */
+  stepStartPostSentAtMs: number | undefined;
   attempt: number;
   /** Whether this step was started lazily (no separate step_created write). */
   lazyStepStart: boolean;
@@ -285,6 +362,31 @@ export function computeStepLatencyEventData(params: {
     rawStso !== undefined && rawStso >= -MAX_CLOCK_SKEW_MS
       ? Math.max(0, rawStso)
       : undefined;
+  // RSFS ends at the actual start-POST instant, not at ttfsEndMs — unlike
+  // TTFS it is not subject to the pre-step attr-write shortcut, so a
+  // pre-step setAttributes detour (rare) makes RSFS include the detour
+  // while TTFS excludes it. `finalSchedulingReplay` is a direct passthrough
+  // of `tracking.replayMs` — the FINAL replay pass only (see
+  // StepLatencyTracking.replayMs) — so no further subtraction applies, but
+  // it also means it is NOT accumulated across any earlier pre-first-step
+  // passes (e.g. a setAttributes detour) and must not be read as "the
+  // replay portion of rsfs"; rsfs covers the whole window.
+  //
+  // finalSchedulingReplay duplicates what OTEL already captures on the run/invocation
+  // span, but is deliberately collected as client telemetry so the server
+  // can emit it as an UNSAMPLED, full-population metric: workflow-server's
+  // server spans are heavily sampled in production (~7%), and client spans
+  // can't be filtered by SDK version, so neither can serve as the
+  // dashboard's exact TTFS decomposition.
+  const rsfs =
+    tracking.rsfsAnchorMs !== undefined &&
+    params.stepStartPostSentAtMs !== undefined
+      ? Math.max(0, params.stepStartPostSentAtMs - tracking.rsfsAnchorMs)
+      : undefined;
+  const finalSchedulingReplay =
+    tracking.replayMs !== undefined
+      ? Math.max(0, tracking.replayMs)
+      : undefined;
 
   if (ttfs === undefined && stso === undefined) {
     return undefined;
@@ -304,6 +406,8 @@ export function computeStepLatencyEventData(params: {
     ...(stso !== undefined && tracking.eventCount !== undefined
       ? { eventCount: tracking.eventCount }
       : {}),
+    ...(rsfs !== undefined ? { rsfs } : {}),
+    ...(finalSchedulingReplay !== undefined ? { finalSchedulingReplay } : {}),
     optimizations,
   };
 }

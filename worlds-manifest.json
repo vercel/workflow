@@ -6,7 +6,7 @@
       "package": "@workflow/world-local",
       "name": "Local",
       "description": "Zero-config world bundled with Workflow for local development. No external services required.",
-      "docs": "/docs/deploying/world/local-world",
+      "docs": "/worlds/local",
       "env": {},
       "services": [],
       "features": []
@@ -17,7 +17,7 @@
       "package": "@workflow/world-postgres",
       "name": "Postgres",
       "description": "Production-ready, self-hosted world using PostgreSQL for durable storage and graphile-worker for reliable job processing.",
-      "docs": "/docs/deploying/world/postgres-world",
+      "docs": "/worlds/postgres",
       "example": "https://github.com/vercel/workflow-examples/tree/main/postgres",
       "features": [],
       "env": {
@@ -50,7 +50,7 @@
       "package": "@workflow/world-vercel",
       "name": "Vercel",
       "description": "Fully-managed world for Vercel deployments. Zero config, infinitely scalable, built-in authentication.",
-      "docs": "/docs/deploying/world/vercel-world",
+      "docs": "/worlds/vercel",
       "features": ["encryption"],
       "env": {
         "WORKFLOW_VERCEL_ENV": "production"
