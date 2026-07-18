@@ -854,12 +854,13 @@ export async function executeStep(
       });
 
       // Flush pending ops (stream writes, etc.) with a short inline wait.
-      // Now that WorkflowServerWritableStream flushes synchronously on
-      // each write (not via setTimeout), the flushablePipe's pendingOps
-      // accurately reflects whether data has reached the server. Most ops
-      // settle within ~200ms (100ms lock-release polling + HTTP flush).
-      // If ops don't settle in 500ms (e.g., WritableStream kept open
-      // across steps), waitUntil handles the rest.
+      // WorkflowServerWritableStream batches writes (write() resolves on
+      // buffer-accept), but flushablePipe holds each pendingOp until the
+      // sink's drain barrier reports the chunk server-acked — so pendingOps
+      // still accurately reflects whether data has reached the server.
+      // Most ops settle within ~200ms (lock-release polling + the final
+      // batched HTTP flush). If ops don't settle in 500ms (e.g.,
+      // WritableStream kept open across steps), waitUntil handles the rest.
       if (ops.length > 0) {
         const opsPromise = Promise.all(ops);
         // The race below surfaces failures inline when ops settle quickly;

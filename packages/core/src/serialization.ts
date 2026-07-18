@@ -76,6 +76,7 @@ import {
   ABORT_STREAM_NAME,
   BODY_INIT_SYMBOL,
   STABLE_ULID,
+  STREAM_DRAINED_SYMBOL,
   STREAM_FRAMING_SYMBOL,
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
@@ -952,8 +953,13 @@ export function createReconnectingFramedStream(
 }
 
 /**
- * Default flush interval in milliseconds for buffered stream writes.
- * Chunks are accumulated and flushed together to reduce network overhead.
+ * Default group-commit window in milliseconds for buffered stream writes:
+ * how long the first chunk of an idle stream waits before its flush is
+ * dispatched, giving immediately-following chunks the chance to join the
+ * same batch. Once a flush RPC is in flight, later chunks accumulate for
+ * the next batch regardless of this window (the in-flight RPC itself is
+ * the batching window), so raising it mainly trades first-chunk latency
+ * for batch size on slow producers.
  */
 const STREAM_FLUSH_INTERVAL_MS = 10;
 
@@ -964,6 +970,23 @@ const STREAM_FLUSH_INTERVAL_MS = 10;
 const getStreamFlushIntervalMs = (): number =>
   envNumber('WORKFLOW_STREAM_FLUSH_INTERVAL_MS', STREAM_FLUSH_INTERVAL_MS, {
     integer: true,
+  });
+
+/**
+ * Default cap on bytes buffered client-side awaiting flush. `write()`
+ * applies backpressure (stays pending, which pauses the upstream producer
+ * through standard Web Streams backpressure) while the buffer is at or over
+ * this limit, so a producer much faster than the network cannot buffer
+ * unboundedly. A write into an empty buffer is always accepted, so a single
+ * chunk larger than the cap still flows.
+ */
+const STREAM_MAX_BUFFERED_BYTES = 1024 * 1024;
+
+/** Effective buffered-bytes cap. Override: `WORKFLOW_STREAM_MAX_BUFFERED_BYTES`. */
+const getStreamMaxBufferedBytes = (): number =>
+  envNumber('WORKFLOW_STREAM_MAX_BUFFERED_BYTES', STREAM_MAX_BUFFERED_BYTES, {
+    integer: true,
+    min: 1,
   });
 
 /**
@@ -1064,149 +1087,226 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       }
     };
 
-    // Buffering state for batched writes
+    // Buffering state for batched, pipelined writes.
     // Encryption/decryption is handled at the framing level by
     // getSerializeStream/getDeserializeStream, not here.
+    //
+    // `write()` resolves when a chunk is ACCEPTED into the buffer (bounded
+    // by getStreamMaxBufferedBytes), not when it reaches the server.
+    // Batching emerges from pipelining: while one flush RPC is in flight,
+    // newly written chunks accumulate and the next loop iteration sends
+    // them as a single writeMulti batch. The server-ack barrier that steps
+    // rely on ("a step must not complete while its stream data is still
+    // client-buffered", see #1446) lives in `drained()` — exposed via
+    // STREAM_DRAINED_SYMBOL and held by flushablePipe's pendingOps — and in
+    // `close()`, which drains before issuing the close RPC. The previous
+    // implementation enforced that barrier by blocking every `write()` on
+    // its own flush, which serialized streams to one single-chunk PUT per
+    // round-trip (~20-25 chunks/s) and made the writeMulti path
+    // unreachable.
     let buffer: Uint8Array[] = [];
+    let bufferedBytes = 0;
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    let flushPromise: Promise<void> | null = null;
+    let flushing = false;
+    let terminalError: unknown = null;
     let resolvedFlushIntervalMs: number | undefined;
     // Client-observed write-batch timing: stamped at `write()` entry for the
-    // first chunk of a batch — before the backpressure wait on any in-flight
-    // flush — so the emitted span covers the full app-perceived latency
-    // (queueing + flush-timer dwell + RPC). Cleared when a flush takes the
-    // batch; restored on write failure so a retried batch keeps its true t0.
+    // first chunk of a batch — before the backpressure wait on the buffer
+    // cap — so the emitted span covers the full app-perceived latency
+    // (backpressure + flush-timer dwell + RPC). Cleared when a flush takes
+    // the batch.
     let batchStartAt: number | undefined;
+    let controller!: WritableStreamDefaultController;
 
-    const flush = async (): Promise<void> => {
+    /** Waiters for full drain (buffer empty, no flush RPC in flight). */
+    let drainWaiters: Array<{
+      resolve: () => void;
+      reject: (err: unknown) => void;
+    }> = [];
+    /** Writes parked on the buffered-bytes cap. */
+    let backpressureWaiters: Array<() => void> = [];
+
+    const wakeBackpressure = (): void => {
+      const waiters = backpressureWaiters;
+      backpressureWaiters = [];
+      for (const w of waiters) w();
+    };
+
+    const settleDrainIfIdle = (): void => {
+      if (flushing) return;
+      if (terminalError === null && buffer.length > 0) return;
+      const waiters = drainWaiters;
+      drainWaiters = [];
+      if (terminalError !== null) {
+        for (const w of waiters) w.reject(terminalError);
+      } else {
+        for (const w of waiters) w.resolve();
+      }
+    };
+
+    /**
+     * Terminal failure: no retry path exists once a flush RPC has failed
+     * (matching the previous behavior, where the failure rejected the
+     * blocking write() and errored the pipe). Error the WritableStream via
+     * the controller so in-flight/subsequent writer.write() and
+     * writer.closed reject — that is how flushablePipe observes the failure
+     * even when the producer has gone idle — and reject the drain barrier
+     * so pendingOps holders and close() see it too.
+     */
+    const failStream = (err: unknown): void => {
+      if (terminalError === null) terminalError = err;
+      try {
+        controller.error(err);
+      } catch {
+        // Already errored/closed.
+      }
+      buffer = [];
+      bufferedBytes = 0;
+      wakeBackpressure();
+      settleDrainIfIdle();
+    };
+
+    /**
+     * Resolves once every chunk accepted so far is server-acked (buffer
+     * empty and no flush RPC in flight); rejects if the stream failed.
+     * Exposed on the instance via STREAM_DRAINED_SYMBOL.
+     */
+    const drained = (): Promise<void> => {
+      if (terminalError !== null) return Promise.reject(terminalError);
+      if (!flushing && buffer.length === 0) return Promise.resolve();
+      return new Promise<void>((resolve, reject) => {
+        drainWaiters.push({ resolve, reject });
+      });
+    };
+
+    /**
+     * Drain the buffer with sequential batched RPCs. A single drainer runs
+     * at a time; chunks accepted while an RPC is in flight are picked up by
+     * the next loop iteration as one batch.
+     */
+    const flushLoop = async (): Promise<void> => {
+      if (flushing) return;
+      flushing = true;
+      try {
+        while (buffer.length > 0 && terminalError === null) {
+          // Order the first server write after the run exists (turbo
+          // optimistic start); a no-op on every later flush and outside
+          // turbo.
+          await ensureRunReady();
+
+          const chunksToFlush = buffer;
+          buffer = [];
+          bufferedBytes = 0;
+          wakeBackpressure();
+          const batchStart = batchStartAt;
+          batchStartAt = undefined;
+          const dispatchAt = Date.now();
+
+          const world = await worldPromise;
+          // Cache the flush interval from the world on first use
+          if (resolvedFlushIntervalMs === undefined) {
+            resolvedFlushIntervalMs =
+              world.streamFlushIntervalMs ?? getStreamFlushIntervalMs();
+          }
+          const rpcStartAt = Date.now();
+          // Use writeMulti if available for batch writes
+          if (
+            typeof world.streams.writeMulti === 'function' &&
+            chunksToFlush.length > 1
+          ) {
+            await world.streams.writeMulti(runId, name, chunksToFlush);
+          } else {
+            // Fall back to sequential writes
+            for (const chunk of chunksToFlush) {
+              await world.streams.write(runId, name, chunk);
+            }
+          }
+
+          if (batchStart !== undefined) {
+            recordStreamWriteFlush(
+              batchStart,
+              dispatchAt,
+              runId,
+              name,
+              chunksToFlush.length,
+              chunksToFlush.reduce((sum, c) => sum + c.byteLength, 0),
+              Date.now() - rpcStartAt
+            );
+          }
+        }
+      } catch (error) {
+        failStream(error);
+      } finally {
+        flushing = false;
+        settleDrainIfIdle();
+      }
+    };
+
+    /**
+     * Arm the group-commit window for an idle stream. While a flush is in
+     * flight no timer is needed: the flush loop re-checks the buffer after
+     * each RPC and batches whatever accumulated.
+     */
+    const scheduleFlush = (): void => {
+      if (flushTimer || flushing) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        void flushLoop();
+      }, resolvedFlushIntervalMs ?? getStreamFlushIntervalMs());
+    };
+
+    /** Dispatch immediately, skipping the group-commit window (close path). */
+    const kickFlush = (): void => {
       if (flushTimer) {
         clearTimeout(flushTimer);
         flushTimer = null;
       }
-
-      if (buffer.length === 0) return;
-
-      // Order the first server write after the run exists (turbo optimistic
-      // start); a no-op on every later flush and outside turbo.
-      await ensureRunReady();
-
-      // Copy chunks to flush, but don't clear buffer until write succeeds
-      // This prevents data loss if the write operation fails
-      const chunksToFlush = buffer.slice();
-      const batchStart = batchStartAt;
-      batchStartAt = undefined;
-      const dispatchAt = Date.now();
-
-      const world = await worldPromise;
-      // Cache the flush interval from the world on first use
-      if (resolvedFlushIntervalMs === undefined) {
-        resolvedFlushIntervalMs =
-          world.streamFlushIntervalMs ?? getStreamFlushIntervalMs();
-      }
-      const rpcStartAt = Date.now();
-      try {
-        // Use writeMulti if available for batch writes
-        if (
-          typeof world.streams.writeMulti === 'function' &&
-          chunksToFlush.length > 1
-        ) {
-          await world.streams.writeMulti(runId, name, chunksToFlush);
-        } else {
-          // Fall back to sequential writes
-          for (const chunk of chunksToFlush) {
-            await world.streams.write(runId, name, chunk);
-          }
-        }
-      } catch (error) {
-        // The batch stays buffered for retry — restore its original t0 (the
-        // oldest, if a newer write stamped one meanwhile) so the eventually
-        // successful flush reports the full dwell.
-        if (batchStart !== undefined) {
-          batchStartAt =
-            batchStartAt === undefined
-              ? batchStart
-              : Math.min(batchStartAt, batchStart);
-        }
-        throw error;
-      }
-
-      if (batchStart !== undefined) {
-        recordStreamWriteFlush(
-          batchStart,
-          dispatchAt,
-          runId,
-          name,
-          chunksToFlush.length,
-          chunksToFlush.reduce((sum, c) => sum + c.byteLength, 0),
-          Date.now() - rpcStartAt
-        );
-      }
-
-      // Only clear buffer after successful write to prevent data loss
-      buffer = [];
-    };
-
-    /** Resolvers/rejectors waiting for the current scheduled flush */
-    let flushWaiters: Array<{
-      resolve: () => void;
-      reject: (err: unknown) => void;
-    }> = [];
-
-    const scheduleFlush = (): void => {
-      if (flushTimer) return; // Already scheduled
-
-      flushTimer = setTimeout(() => {
-        flushTimer = null;
-        const currentWaiters = flushWaiters;
-        flushWaiters = [];
-        flushPromise = flush().then(
-          () => {
-            for (const w of currentWaiters) w.resolve();
-          },
-          (err) => {
-            for (const w of currentWaiters) w.reject(err);
-          }
-        );
-      }, resolvedFlushIntervalMs ?? getStreamFlushIntervalMs());
+      void flushLoop();
     };
 
     super({
+      start(c) {
+        controller = c;
+      },
       async write(chunk) {
+        if (terminalError !== null) throw terminalError;
+
         // Batch t0 for the write-flush span: at entry, before the
-        // backpressure wait below, so queueing behind an in-flight flush
-        // counts toward the app-perceived dwell.
+        // backpressure wait below, so time parked on the buffer cap counts
+        // toward the app-perceived dwell.
         if (batchStartAt === undefined) batchStartAt = Date.now();
 
-        // Wait for any in-progress flush to complete before adding to buffer
-        if (flushPromise) {
-          await flushPromise;
-          flushPromise = null;
+        // Bounded buffer: park while at/over the byte cap — never when the
+        // buffer is empty, so an oversized single chunk still flows. A
+        // parked sink write() also pauses the upstream producer through
+        // standard Web Streams backpressure.
+        while (
+          terminalError === null &&
+          buffer.length > 0 &&
+          bufferedBytes >= getStreamMaxBufferedBytes()
+        ) {
+          await new Promise<void>((resolve) => {
+            backpressureWaiters.push(resolve);
+          });
         }
+        if (terminalError !== null) throw terminalError;
 
         buffer.push(chunk);
+        bufferedBytes += chunk.byteLength;
         scheduleFlush();
-
-        // Wait for the scheduled flush to complete so that callers
-        // (like flushablePipe) know data has reached the server
-        // before decrementing pendingOps. Without this, pendingOps
-        // reaches 0 when the buffered write returns (instant), but
-        // the 10ms flush timer hasn't fired yet.
-        await new Promise<void>((resolve, reject) => {
-          flushWaiters.push({ resolve, reject });
-        });
+        // Accepted: resolve now. Server-ack barriers are drained() (held
+        // by flushablePipe via pendingOps) and close().
       },
       async close() {
-        // Wait for any in-progress flush to complete
-        if (flushPromise) {
-          await flushPromise;
-          flushPromise = null;
-        }
+        // Dispatch whatever is buffered without waiting out the
+        // group-commit window, then wait for every accepted chunk to be
+        // server-acked before closing the stream on the server.
+        kickFlush();
+        await drained();
 
-        // Flush any remaining buffered chunks
-        await flush();
-
-        // A close with an empty buffer skips flush()'s write (and its barrier),
-        // but can itself be the first write to a brand-new stream — gate it too.
+        // A close with an empty buffer skips the flush loop's write (and
+        // its barrier), but can itself be the first write to a brand-new
+        // stream — gate it too.
         await ensureRunReady();
 
         const world = await worldPromise;
@@ -1220,16 +1320,16 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
           clearTimeout(flushTimer);
           flushTimer = null;
         }
-        // Discard buffered chunks - they won't be written
-        buffer = [];
-        // Reject any pending flushWaiters so the write() promises settle
-        // and don't leak. Without this, write() hangs forever on an
-        // unsettled promise because the cleared timer will never fire.
-        const waiters = flushWaiters;
-        flushWaiters = [];
-        const abortError = reason ?? new Error('Stream aborted');
-        for (const w of waiters) w.reject(abortError);
+        // Discard buffered chunks (they won't be written) and settle every
+        // parked write and drain waiter so nothing leaks.
+        failStream(reason ?? new Error('Stream aborted'));
       },
+    });
+
+    // Server-ack barrier for holders of the raw sink (flushablePipe).
+    Object.defineProperty(this, STREAM_DRAINED_SYMBOL, {
+      value: drained,
+      writable: false,
     });
   }
 }

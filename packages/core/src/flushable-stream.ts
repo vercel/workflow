@@ -1,6 +1,7 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
 import { envNumber } from '@workflow/world';
+import { STREAM_DRAINED_SYMBOL } from './symbols.js';
 
 /**
  * Polling interval (in ms) for lock release detection.
@@ -207,6 +208,63 @@ export function pollReadableLock(
 }
 
 /**
+ * Hold a pending op until the sink's drain barrier reports the accepted
+ * chunk server-acked, WITHOUT blocking the pipe loop — that's what lets
+ * batches form while a flush RPC is in flight. All outstanding ops of a
+ * drain cycle settle together when the sink's buffer empties. A drain
+ * failure is surfaced here for the idle-producer case (no further write to
+ * reject); the pipe loop's writer.closed race observes the same failure
+ * when the producer is still active.
+ */
+function holdOpUntilDrained(
+  sinkDrained: () => Promise<void>,
+  state: FlushableStreamState
+): void {
+  sinkDrained().then(
+    () => {
+      state.pendingOps--;
+    },
+    (err) => {
+      state.pendingOps--;
+      state.streamEnded = true;
+      if (!state.doneResolved) {
+        state.doneResolved = true;
+        state.reject(err);
+      }
+    }
+  );
+}
+
+/**
+ * Write one chunk to the sink, counting it as a pending op until it is
+ * server-acked — "flushed" for step-completion purposes means at the
+ * server, not in a client buffer (#1446). Batching sinks
+ * (WorkflowServerWritableStream) resolve write() at buffer-accept and
+ * expose a drain barrier (`sinkDrained`) that reports the true ack; sinks
+ * without the barrier ack on write() resolution, as before.
+ */
+async function writeAndHoldOp(
+  writer: WritableStreamDefaultWriter,
+  value: unknown,
+  state: FlushableStreamState,
+  sinkDrained: (() => Promise<void>) | undefined
+): Promise<void> {
+  state.pendingOps++;
+  let accepted = false;
+  try {
+    await writer.write(value);
+    accepted = true;
+  } finally {
+    if (!accepted) state.pendingOps--;
+  }
+  if (sinkDrained) {
+    holdOpUntilDrained(sinkDrained, state);
+  } else {
+    state.pendingOps--;
+  }
+}
+
+/**
  * Creates a flushable pipe from a ReadableStream to a WritableStream.
  * Unlike pipeTo(), this resolves when:
  * 1. The source stream completes (close/error), OR
@@ -225,6 +283,14 @@ export async function flushablePipe(
   const reader = source.getReader();
   const writer = sink.getWriter();
   let cancelReason: unknown;
+  // Server-ack barrier on batching sinks (WorkflowServerWritableStream):
+  // their write() resolves when a chunk is ACCEPTED into the client buffer,
+  // not when it reaches the server, so `pendingOps` must be held until the
+  // sink reports the buffer drained. Sinks without the barrier ack on
+  // write() resolution, as before.
+  const sinkDrained = (
+    sink as { [STREAM_DRAINED_SYMBOL]?: () => Promise<void> }
+  )[STREAM_DRAINED_SYMBOL];
 
   try {
     while (true) {
@@ -259,13 +325,7 @@ export async function flushablePipe(
         return;
       }
 
-      // Count write as a pending op - this is what we need to flush
-      state.pendingOps++;
-      try {
-        await writer.write(readResult.value);
-      } finally {
-        state.pendingOps--;
-      }
+      await writeAndHoldOp(writer, readResult.value, state, sinkDrained);
     }
   } catch (err) {
     state.streamEnded = true;

@@ -34,6 +34,21 @@ export const STREAM_SERVER_RUN_ID_SYMBOL = Symbol.for(
 export const STREAM_SERVER_DEPLOYMENT_ID_SYMBOL = Symbol.for(
   'WORKFLOW_STREAM_SERVER_DEPLOYMENT_ID'
 );
+/**
+ * Stamped on `WorkflowServerWritableStream` instances: a `() => Promise<void>`
+ * that resolves once every chunk accepted so far has been acknowledged by the
+ * server (buffer empty, no flush RPC in flight), and rejects if the stream
+ * failed terminally.
+ *
+ * `write()` on that sink resolves when a chunk is ACCEPTED into the client
+ * buffer — not when it reaches the server — so batches can form while a
+ * flush RPC is in flight. This barrier is what preserves the invariant that
+ * #1446 introduced (a step must not complete while its stream data is still
+ * client-buffered): `flushablePipe` holds a pendingOp per chunk until this
+ * barrier resolves, and `close()` awaits it before the close RPC.
+ */
+export const STREAM_DRAINED_SYMBOL = Symbol.for('WORKFLOW_STREAM_DRAINED');
+
 export const BODY_INIT_SYMBOL = Symbol.for('BODY_INIT');
 export const WEBHOOK_RESPONSE_WRITABLE = Symbol.for(
   'WEBHOOK_RESPONSE_WRITABLE'

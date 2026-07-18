@@ -104,17 +104,36 @@ describe('WorkflowServerWritableStream write-flush telemetry', () => {
     expect(durationMs).toBeGreaterThanOrEqual(dwell as number);
   });
 
-  it('emits one span per flush cycle', async () => {
+  it('emits one span per flush cycle, covering the whole batch', async () => {
     const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
     const writer = stream.getWriter();
 
+    // Writes resolve at buffer-accept, so all three chunks join one batch
+    // (and one flush span).
     await writer.write(new Uint8Array([1]));
     await writer.write(new Uint8Array([2]));
     await writer.write(new Uint8Array([3]));
     await writer.close();
 
-    const spans = await waitForSpans('workflow.stream.flush', 3);
-    expect(spans).toHaveLength(3);
+    const spans = await waitForSpans('workflow.stream.flush', 1);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].attributes['workflow.stream.flush.chunks']).toBe(3);
+    expect(spans[0].attributes['workflow.stream.flush.bytes']).toBe(3);
+  });
+
+  it('emits separate spans for separate flush cycles', async () => {
+    const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+    const writer = stream.getWriter();
+
+    await writer.write(new Uint8Array([1]));
+    // Let the first commit window elapse and its flush settle before the
+    // next write, forcing a second cycle.
+    await new Promise((r) => setTimeout(r, 30));
+    await writer.write(new Uint8Array([2]));
+    await writer.close();
+
+    const spans = await waitForSpans('workflow.stream.flush', 2);
+    expect(spans).toHaveLength(2);
     for (const span of spans) {
       expect(span.attributes['workflow.stream.flush.chunks']).toBe(1);
     }
