@@ -122,6 +122,11 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
       '@swc/core/*',
       '@swc/wasm',
       'esbuild',
+      // Native addons are externalized so esbuild does not fail on a `.node`
+      // file it cannot bundle. NOTE: this builder does not trace/copy native
+      // artifacts into the .func, so an app that actually loads a native addon
+      // is not yet supported on Vercel — see the limitation called out in the
+      // README's "Deploying to Vercel" section and the changeset.
       '*.node',
     ];
 
