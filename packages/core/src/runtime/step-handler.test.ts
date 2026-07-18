@@ -134,22 +134,32 @@ vi.mock('../private.js', () => ({
   getStepFunction: vi.fn().mockReturnValue(mockStepFn),
 }));
 
-// Mock get-port
-vi.mock('@workflow/utils/get-port', () => ({
-  getPort: vi.fn().mockResolvedValue(3000),
-}));
-
 // Import the module AFTER all mocks are set up - this triggers createQueueHandler
 // which populates capturedHandlerRef
 import './step-handler.js';
-import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import { getStepFunction } from '../private.js';
 import {
   getErrorName,
   getErrorStack,
   normalizeUnknownError,
 } from '../types.js';
+import { MAX_QUEUE_DELIVERIES } from './constants.js';
+import {
+  resetPortCacheForTesting,
+  setPortResolverForTesting,
+} from './get-port-lazy.js';
 import { getWorld } from './world.js';
+
+const mockPortResolver = vi.fn(async () => 3000);
+
+beforeEach(() => {
+  mockPortResolver.mockReset().mockResolvedValue(3000);
+  setPortResolverForTesting(mockPortResolver);
+});
+
+afterEach(() => {
+  resetPortCacheForTesting();
+});
 
 function capturedHandler(
   message: unknown,
@@ -226,6 +236,13 @@ describe('step-handler 409 handling', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('reuses cached port discovery across step invocations', async () => {
+    await capturedHandler(createMessage(), createMetadata('myStep'));
+    await capturedHandler(createMessage(), createMetadata('myStep'));
+
+    expect(mockPortResolver).toHaveBeenCalledOnce();
   });
 
   describe('step_completed 409', () => {
