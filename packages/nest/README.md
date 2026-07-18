@@ -138,14 +138,20 @@ deployed workflow runs stay `pending` because nothing consumes the queue.
 
 Create a `_vercel/entry.ts` that default-exports a Node request handler backed by
 your NestJS app (the `_vercel/` prefix avoids colliding with Vercel's automatic
-`api/` function detection):
+`api/` function detection). Import `AppModule` from the **compiled** `dist/`
+output — `nest build` runs first and its SWC pass emits the decorator metadata
+NestJS DI relies on; importing raw `src/` TypeScript would route the app back
+through esbuild, which does not emit `emitDecoratorMetadata`. Also import
+`reflect-metadata` at the top so DI metadata is registered:
 
 {/*@skip-typecheck: Shows the Vercel entry module shape*/}
 
 ```typescript
 // _vercel/entry.ts
+import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
-import { AppModule } from '../src/app.module';
+// Compiled by `nest build` before the Vercel Build Output step runs.
+import { AppModule } from '../dist/app.module.js';
 
 let ready: Promise<any> | undefined;
 
