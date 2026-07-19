@@ -201,6 +201,17 @@ export function serializeError<T extends { error?: SerializedData }>(
   return data;
 }
 
+/**
+ * Joins User-Agent product tokens with spaces per the RFC 9110 `User-Agent`
+ * grammar (`product *( RWS ( product / comment ) )`), skipping empty parts.
+ * Never join UA products with `Headers.append()` — repeated header values
+ * combine with `", "`, and a comma glued to a product token breaks
+ * whitespace-delimited parsers on the receiving side.
+ */
+const joinUserAgentProducts = (
+  ...products: (string | null | undefined)[]
+): string => products.filter(Boolean).join(' ');
+
 const getUserAgent = () => {
   const deploymentId = process.env.VERCEL_DEPLOYMENT_ID;
   if (deploymentId) {
@@ -239,7 +250,10 @@ export const getHeaders = (
 ): Headers => {
   const projectConfig = config?.projectConfig;
   const headers = new Headers(config?.headers);
-  headers.set('User-Agent', getUserAgent());
+  headers.set(
+    'User-Agent',
+    joinUserAgentProducts(getUserAgent(), headers.get('User-Agent'))
+  );
   const testLimitOverrides = getTestLimitOverridesHeader();
   if (testLimitOverrides) {
     headers.set(TEST_LIMIT_OVERRIDES_HEADER, testLimitOverrides);
