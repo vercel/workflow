@@ -51,6 +51,9 @@ const RETRY_AGENT_OPTIONS: RetryHandler.RetryOptions = {
   retryAfter: true,
   // Undici's defaults omit connection timeouts even though the request never
   // reached the server, so include them while preserving the default set.
+  // All workflow operations are idempotent, except POST for step_retrying event,
+  // which is safe against duplication. We can re-try on connection timeouts or
+  // resets safely under this assumption.
   errorCodes: [
     'ECONNRESET',
     'ECONNREFUSED',
