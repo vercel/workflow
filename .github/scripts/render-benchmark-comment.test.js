@@ -115,9 +115,11 @@ test('renders a completed run with a table and embedded history', async () => {
     body,
     /<sub>Scenarios — \*\*stream\*\*: one streaming step in turbo mode/
   );
-  // Threshold marks: TTFS p75 398 > 200 → 🔴; SL p75 48 <= 50 → 🟢; WO unmarked
+  // Target marks: TTFS p75 398 > 200 → 🔴; SL row is within target on every
+  // percentile, so it stays unmarked (no 🟢 anywhere); WO has no targets.
   assert.match(body, /398 🔴/);
-  assert.match(body, /48 🟢/);
+  assert.match(body, /\| 30 \| 48 \| 55 \| 120 \|/);
+  assert.doesNotMatch(body, /🟢/);
   assert.match(body, /\| 1100 \|/);
   // Targets legend derived from row targets
   assert.match(body, /Targets \(p75\/p90\/p99, ms\) — TTFS 200\/300\/600/);
@@ -133,17 +135,19 @@ test('renders a completed run with a table and embedded history', async () => {
   assert.strictEqual(history[0].results[0].metrics.length, 4);
 });
 
-test('renders best/p75/p99 deltas against a baseline and embeds them in history', async () => {
+test('renders best/p75/p90/p99 deltas with 🔻/💚 threshold marks and embeds them', async () => {
   const { renderComment, extractHistory } = await loadModule();
   const baseline = sampleResult({
     metrics: sampleResult()
       .metrics.filter((row) => row.metric !== 'wo') // no baseline for WO
       .map((row) => ({
         ...row,
-        // ttfs best 320 vs 300 → +6.7%, p75 398 vs 380 → +4.7%,
-        //           p99 634 vs 600 → +5.7%; sl/stso unchanged → ±0%
-        best: { ttfs: 300, sl: 30, stso: 60 }[row.metric],
-        p75: { ttfs: 380, sl: 48, stso: 85 }[row.metric],
+        // ttfs: best 320 vs 250 → +28% 🔻, p75 398 vs 500 → -20% 💚,
+        //       p90 512 vs 512 → ±0%, p99 634 vs 600 → +5.7% (no mark).
+        // sl/stso baselines equal the run → ±0% everywhere.
+        best: { ttfs: 250, sl: 30, stso: 60 }[row.metric],
+        p75: { ttfs: 500, sl: 48, stso: 85 }[row.metric],
+        p90: { ttfs: 512, sl: 55, stso: 120 }[row.metric],
         p99: { ttfs: 600, sl: 120, stso: 200 }[row.metric],
       })),
   });
@@ -155,30 +159,32 @@ test('renders best/p75/p99 deltas against a baseline and embeds them in history'
     commit: 'abcdef1234567890',
   });
 
-  // Deltas land on Best, P75, and P99 for TTFS
-  assert.match(body, /\| 320 \(\+6\.7%\) \|/);
-  assert.match(body, /398 🔴 \(\+4\.7%\) \|/);
+  // Best regression past +15% → 🔻
+  assert.match(body, /\| 320 \(\+28%\) 🔻 \|/);
+  // P75 improvement past -15% → 💚 (alongside the 🔴 target miss)
+  assert.match(body, /398 🔴 \(-20%\) 💚/);
+  // P90 now carries a delta (previously undecorated); ±0%, no threshold mark
+  assert.match(body, /512 🔴 \(±0%\) \|/);
+  // P99 small delta, no threshold mark
   assert.match(body, /634 🔴 \(\+5\.7%\) \|/);
-  // Unchanged baselines render ±0% (SL best)
-  assert.match(body, /\| 30 \(±0%\) \|/);
-  // P90 never carries a delta
-  assert.doesNotMatch(body, /512 🔴 \(/);
   // WO has no baseline row → no delta on its Best cell
   assert.match(body, /\| 900 \|/);
   assert.match(
     body,
-    /Best\/P75\/P99 deltas compare against the most recent benchmark run on `main`/
+    /Best\/P75\/P90\/P99 deltas compare against the most recent benchmark run on `main`/
   );
-  // The annotation is embedded so history re-renders keep the deltas
+  assert.match(body, /💚 one better than/);
+  // The annotations are embedded so history re-renders keep the deltas
   const history = extractHistory(body);
-  assert.strictEqual(history[0].results[0].metrics[0].baselineBest, 300);
+  assert.strictEqual(history[0].results[0].metrics[0].baselineBest, 250);
+  assert.strictEqual(history[0].results[0].metrics[0].baselineP90, 512);
   const rerendered = renderComment({
     status: 'running',
     results: [],
     history,
     commit: 'ffffff1234567890',
   });
-  assert.match(rerendered, /\| 320 \(\+6\.7%\) \|/);
+  assert.match(rerendered, /\| 320 \(\+28%\) 🔻 \|/);
 });
 
 test('suppresses deltas when the baseline methodology version differs', async () => {

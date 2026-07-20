@@ -160,8 +160,8 @@ function formatMs(value) {
 }
 
 /**
- * Annotates each metric row with the matching baseline values (best, p75, p99)
- * from the most recent main-branch run, keyed by
+ * Annotates each metric row with the matching baseline values (best, p75, p90,
+ * p99) from the most recent main-branch run, keyed by
  * methodologyVersion/backend/app/metric/scenario. The methodology version is
  * part of the key so a change to the measurement window (e.g. the switch to
  * the in-deployment trigger) does not diff incomparable numbers: an old
@@ -170,39 +170,50 @@ function formatMs(value) {
  * so history re-renders keep showing the deltas each run was originally
  * compared against.
  */
+// Which run field each baseline annotation is compared against, and where the
+// baseline value is read from (best falls back to a pre-rename baseline's min).
+const BASELINE_FIELDS = [
+  { annotation: 'baselineBest', from: (base) => base.best ?? base.min },
+  { annotation: 'baselineP75', from: (base) => base.p75 },
+  { annotation: 'baselineP90', from: (base) => base.p90 },
+  { annotation: 'baselineP99', from: (base) => base.p99 },
+];
+
 export function annotateWithBaseline(results, baseline) {
   if (!baseline || baseline.length === 0) return results;
   const methodology = (result) => result.methodologyVersion ?? 'legacy';
+  const keyFor = (result, row) =>
+    `${methodology(result)}/${result.backend}/${result.app}/${row.metric}/${row.scenario}`;
   const baselineRows = new Map();
   for (const result of baseline) {
     for (const row of result.metrics ?? []) {
-      baselineRows.set(
-        `${methodology(result)}/${result.backend}/${result.app}/${row.metric}/${row.scenario}`,
-        row
-      );
+      baselineRows.set(keyFor(result, row), row);
     }
   }
+  const annotate = (result, row) => {
+    const base = baselineRows.get(keyFor(result, row));
+    if (!base) return row;
+    const annotated = { ...row };
+    for (const { annotation, from } of BASELINE_FIELDS) {
+      const value = from(base);
+      if (typeof value === 'number') annotated[annotation] = value;
+    }
+    return annotated;
+  };
   return results.map((result) => ({
     ...result,
-    metrics: (result.metrics ?? []).map((row) => {
-      const base = baselineRows.get(
-        `${methodology(result)}/${result.backend}/${result.app}/${row.metric}/${row.scenario}`
-      );
-      if (!base) return row;
-      // The fastest-sample field was renamed `min` -> `best`; fall back to
-      // `min` so deltas keep working against baselines from before the rename.
-      const baselineBest = base.best ?? base.min;
-      return {
-        ...row,
-        ...(typeof baselineBest === 'number' ? { baselineBest } : {}),
-        ...(typeof base.p75 === 'number' ? { baselineP75: base.p75 } : {}),
-        ...(typeof base.p99 === 'number' ? { baselineP99: base.p99 } : {}),
-      };
-    }),
+    metrics: (result.metrics ?? []).map((row) => annotate(result, row)),
   }));
 }
 
-/** Formats a vs-main delta, e.g. " (+4.2%)"; empty without a baseline. */
+// Deltas beyond ±this vs main get a directional marker: 🔻 for a regression,
+// 💚 for an improvement. Smaller moves show the percentage alone.
+const DELTA_MARK_THRESHOLD_PCT = 15;
+
+/**
+ * Formats a vs-main delta, e.g. " (+4.2%)"; empty without a baseline. Moves
+ * worse than +15% are flagged 🔻 and moves better than -15% are flagged 💚.
+ */
 function formatDelta(current, baseline) {
   if (
     typeof current !== 'number' ||
@@ -213,19 +224,26 @@ function formatDelta(current, baseline) {
     return '';
   }
   const pct = ((current - baseline) / baseline) * 100;
+  const mark =
+    pct > DELTA_MARK_THRESHOLD_PCT
+      ? ' 🔻'
+      : pct < -DELTA_MARK_THRESHOLD_PCT
+        ? ' 💚'
+        : '';
   if (Math.abs(pct) < 0.5) return ' (±0%)';
   const digits = Math.abs(pct) >= 10 ? 0 : 1;
-  return ` (${pct > 0 ? '+' : ''}${pct.toFixed(digits)}%)`;
+  return ` (${pct > 0 ? '+' : ''}${pct.toFixed(digits)}%)${mark}`;
 }
 
 /**
- * Formats a percentile cell, marking it 🟢/🔴 against its target when one is
- * defined for this row.
+ * Formats a percentile cell, marking it 🔴 when it is over its target. Within
+ * target is left unmarked (no 🟢) to keep the table quiet — only misses stand
+ * out.
  */
 function formatCell(value, target) {
   const formatted = formatMs(value);
   if (formatted === '—' || typeof target !== 'number') return formatted;
-  return `${formatted} ${value <= target ? '🟢' : '🔴'}`;
+  return value > target ? `${formatted} 🔴` : formatted;
 }
 
 function shortCommit(commit) {
@@ -250,9 +268,9 @@ function renderResultTable(result) {
     // Abbreviations only — the definitions live in the comment footer.
     const name = label ? `**${label.name}**` : row.metric;
     const targets = row.targets ?? {};
-    // Deltas vs main are shown on Best/P75/P99 (not P90).
+    // Deltas vs main are shown on Best/P75/P90/P99.
     lines.push(
-      `| ${name} | ${row.scenario} | ${formatMs(row.best)}${formatDelta(row.best, row.baselineBest)} | ${formatCell(row.p75, targets.p75)}${formatDelta(row.p75, row.baselineP75)} | ${formatCell(row.p90, targets.p90)} | ${formatCell(row.p99, targets.p99)}${formatDelta(row.p99, row.baselineP99)} | ${row.samples} |`
+      `| ${name} | ${row.scenario} | ${formatMs(row.best)}${formatDelta(row.best, row.baselineBest)} | ${formatCell(row.p75, targets.p75)}${formatDelta(row.p75, row.baselineP75)} | ${formatCell(row.p90, targets.p90)}${formatDelta(row.p90, row.baselineP90)} | ${formatCell(row.p99, targets.p99)}${formatDelta(row.p99, row.baselineP99)} | ${row.samples} |`
     );
   }
   return lines.join('\n');
@@ -324,6 +342,7 @@ function renderFooter(entries) {
       (row) =>
         typeof row.baselineBest === 'number' ||
         typeof row.baselineP75 === 'number' ||
+        typeof row.baselineP90 === 'number' ||
         typeof row.baselineP99 === 'number'
     )
   );
@@ -331,7 +350,7 @@ function renderFooter(entries) {
   return [
     ...(hasBaseline
       ? [
-          '<sub>Best/P75/P99 deltas compare against the most recent benchmark run on `main` at the time of this run.</sub>',
+          '<sub>Best/P75/P90/P99 deltas compare against the most recent benchmark run on `main` at the time of this run. 🔻 flags a delta worse than +15%, 💚 one better than −15%.</sub>',
           '',
         ]
       : []),
@@ -340,7 +359,7 @@ function renderFooter(entries) {
     ...(targetsLegend
       ? [
           '',
-          `<sub>🟢/🔴 mark percentiles within/above target. Targets (p75/p90/p99, ms) — ${targetsLegend}</sub>`,
+          `<sub>🔴 marks a percentile over its target (within target is left unmarked). Targets (p75/p90/p99, ms) — ${targetsLegend}</sub>`,
         ]
       : []),
     '',
