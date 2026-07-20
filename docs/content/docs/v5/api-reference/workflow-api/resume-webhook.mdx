@@ -50,11 +50,13 @@ showSections={['parameters']}
 
 ### Returns
 
-Returns a `Promise<Response>` that resolves to:
+Returns a `Promise<Response>` that resolves to one of:
 
-- `Response`: The HTTP response from the workflow's `respondWith()` call
+- A `202 Accepted` response when the webhook was created in the default mode (no `respondWith` option).
+- The exact `Response` object configured via `createWebhook({ respondWith: new Response(...) })`.
+- The workflow's manual `Response` when the webhook was created with `createWebhook({ respondWith: "manual" })` and a step calls `request.respondWith(response)`.
 
-Throws an error if the webhook token is not found or invalid.
+Throws [`HookNotFoundError`](/docs/api-reference/workflow-errors/hook-not-found-error) if the token does not match an active webhook.
 
 ## Usage Note
 
@@ -81,7 +83,7 @@ export async function POST(request: Request) {
 
   try {
     const response = await resumeWebhook(token, request); // [!code highlight]
-    return response; // Returns the workflow's custom response
+    return response; // 202 Accepted, a configured static Response, or a manual workflow response
   } catch (error) {
     return new Response("Webhook not found", { status: 404 });
   }
