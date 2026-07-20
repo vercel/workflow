@@ -1131,7 +1131,7 @@ export function createEventsStorage(
             // because this is a rare race-condition path — the runtime
             // falls back to loadWorkflowRunEvents().
             if (currentRun.status === 'running') {
-              return { run: currentRun };
+              return { run: currentRun, maxEvents: getMaxEventsPerRun() };
             }
 
             run = await writeRunUnderLifecycleLock(
