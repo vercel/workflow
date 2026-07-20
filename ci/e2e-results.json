@@ -1,15 +1,15 @@
 {
-  "lastUpdated": "2026-07-20T19:27:44.074Z",
-  "commit": "6d1d7006cf442c715c464ec2b8c80a21d1c90b01",
+  "lastUpdated": "2026-07-20T19:58:42.976Z",
+  "commit": "542138dc0b37f492fbf51b75e8ba4f57e291fc8f",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
       "status": "passing",
-      "total": 4131,
-      "passed": 3631,
+      "total": 4437,
+      "passed": 3899,
       "failed": 0,
-      "skipped": 500,
+      "skipped": 538,
       "frameworks": {
         "astro": {
           "total": 306,
@@ -32,13 +32,13 @@
           "failed": 0
         },
         "nextjs-turbopack": {
-          "total": 612,
-          "passed": 593,
+          "total": 765,
+          "passed": 727,
           "failed": 0
         },
         "nextjs-webpack": {
-          "total": 459,
-          "passed": 440,
+          "total": 612,
+          "passed": 574,
           "failed": 0
         },
         "nitro": {
