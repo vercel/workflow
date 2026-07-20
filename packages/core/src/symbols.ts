@@ -34,6 +34,22 @@ export const STREAM_SERVER_RUN_ID_SYMBOL = Symbol.for(
 export const STREAM_SERVER_DEPLOYMENT_ID_SYMBOL = Symbol.for(
   'WORKFLOW_STREAM_SERVER_DEPLOYMENT_ID'
 );
+/**
+ * Stamped on a `WorkflowServerWritableStream` instance to expose a batched,
+ * durable write entry point: `(chunks) => Promise<void>` that flushes every
+ * chunk in one `writeMulti` (falling back to sequential `write`s when the
+ * world lacks `writeMulti`) and resolves only once the whole batch has
+ * reached the server.
+ *
+ * `flushablePipe` feature-detects this to coalesce chunks that arrive while a
+ * previous batch is still in flight into a single server write. Sinks without
+ * it (plain `WritableStream`s, `TransformStream` writables on the read path)
+ * fall back to the per-chunk write loop. See `flushablePipe`.
+ */
+export const STREAM_WRITE_BATCH_SYMBOL = Symbol.for(
+  'WORKFLOW_STREAM_WRITE_BATCH'
+);
+
 export const BODY_INIT_SYMBOL = Symbol.for('BODY_INIT');
 export const WEBHOOK_RESPONSE_WRITABLE = Symbol.for(
   'WEBHOOK_RESPONSE_WRITABLE'

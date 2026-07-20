@@ -49,6 +49,8 @@
     "./astro": "./dist/astro.js",
     "./vite": "./dist/vite.js",
     "./nest": "./dist/nest.js",
+    "./nest/builder": "./dist/nest-builder.js",
+    "./nest/vercel-builder": "./dist/nest-vercel-builder.js",
     "./runtime": "./dist/runtime.js",
     "./observability": {
       "types": "./dist/observability.d.ts",

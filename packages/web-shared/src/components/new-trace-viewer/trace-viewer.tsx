@@ -28,6 +28,7 @@ import {
   TIMELINE_PADDING_PX,
   Timeline,
   TimelineHeader,
+  type TimelineHover,
 } from './components/timeline';
 import { TraceShortcutHelper } from './components/trace-shortcut-helper';
 import { ROW_HEIGHT_PX, scrollRowIntoView } from './components/use-row-window';
@@ -400,14 +401,14 @@ function NewTraceViewerContent({
   }, [handleClearActiveSpan]);
 
   const timelineRef = useRef<HTMLDivElement>(null);
-  const [hoverFraction, setHoverFraction] = useState<number | null>(null);
+  const [hover, setHover] = useState<TimelineHover | null>(null);
 
   const hoverInfo = useMemo(() => {
-    if (hoverFraction == null) return null;
-    const absTime = viewport.start + hoverFraction * viewDuration;
+    if (hover == null) return null;
+    const absTime = viewport.start + hover.fraction * viewDuration;
     const offset = absTime - root.startTime;
-    return { fraction: hoverFraction, label: formatDurationPrecise(offset) };
-  }, [hoverFraction, viewport.start, viewDuration, root.startTime]);
+    return { fraction: hover.fraction, label: formatDurationPrecise(offset) };
+  }, [hover, viewport.start, viewDuration, root.startTime]);
 
   const handleTimelineMouseMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -423,13 +424,16 @@ function NewTraceViewerContent({
           (e.clientX - rect.left - TIMELINE_PADDING_PX) / contentWidth
         )
       );
-      setHoverFraction(fraction);
+      setHover({
+        fraction,
+        rowIndex: Math.floor((e.clientY - rect.top) / ROW_HEIGHT_PX),
+      });
     },
     []
   );
 
   const handleTimelineMouseLeave = useCallback(() => {
-    setHoverFraction(null);
+    setHover(null);
   }, []);
 
   useEffect(() => {
@@ -579,7 +583,7 @@ function NewTraceViewerContent({
               searchResult={searchResult}
               onSelect={handleSelectSpan}
               onRevealTime={handleRevealTime}
-              hoverFraction={hoverFraction}
+              hover={hover}
               altHeld={altHeld}
             />
           </div>
