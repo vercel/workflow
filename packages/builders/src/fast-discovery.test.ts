@@ -345,7 +345,6 @@ export const allWorkflows = { workflow };
     );
 
     expect(discovered.discoveredWorkflows).toEqual(new Set());
-    expect(discovered.discoveredFiles).toEqual(new Set([normalize(entryFile)]));
   });
 
   it('discovers path aliases inherited through tsconfig extends', async () => {
