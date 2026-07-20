@@ -3257,7 +3257,10 @@ describe('e2e', () => {
         new URL('/api/resume-plain-hook', deploymentUrl),
         {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: {
+            'content-type': 'application/json',
+            ...(await getTrustedSourcesHeaders()),
+          },
           body: JSON.stringify({
             token,
             ok: true,
