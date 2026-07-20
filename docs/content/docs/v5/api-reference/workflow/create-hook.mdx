@@ -161,7 +161,6 @@ declare function processOwnedOrder(orderId: string): Promise<void>; // @setup
 export async function processOrder(orderId: string) {
   "use workflow";
 
-  // Do not use `using` here. It calls dispose() and releases the token.
   const hook = createHook({ // [!code highlight]
     token: `order:${orderId}`, // [!code highlight]
     experimental_minRetention: "30d", // [!code highlight]
@@ -183,7 +182,9 @@ The Hook remains active until the workflow ends, even if the configured time pas
 
 After the workflow ends, [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) can still find the Hook until retention ends, but the Hook cannot be resumed.
 
-`hook.dispose()` releases the token immediately. Because `using` calls `dispose()`, do not use it when the token should remain unavailable after the run ends.
+<Callout type="warn">
+`using` auto-disposes the Hook at scope exit, which releases the token immediately and defeats `experimental_minRetention`. Declare retained Hooks with `const` and let the runtime clean them up when the run ends.
+</Callout>
 
 <Callout type="warn">
 This option is experimental. If the configured World does not support it, the workflow fails when registering the Hook. `createWebhook()` does not accept this option.

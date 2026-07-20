@@ -36,10 +36,10 @@ export function SplitPane({
   scrollContainerRef,
 }: SplitPaneProps) {
   const parts = Children.toArray(children);
-  if (parts.length !== 2) {
-    throw new Error('SplitPane expects exactly two children');
+  if (parts.length !== 3) {
+    throw new Error('SplitPane expects exactly three children');
   }
-  const [start, end] = parts;
+  const [start, end, endOverlay] = parts;
 
   const [startPx, setStartPx] = useState(DEFAULT_START_PX);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -85,7 +85,7 @@ export function SplitPane({
   );
 
   return (
-    <div className={cn('flex flex-col h-full min-h-0', className)}>
+    <div className={cn('relative flex flex-col h-full min-h-0', className)}>
       <div
         className="shrink-0 grid"
         style={{ gridTemplateColumns: colTemplate }}
@@ -125,6 +125,16 @@ export function SplitPane({
           />
         </div>
         {end}
+      </div>
+      <div
+        className="pointer-events-none absolute inset-x-0 bottom-3 z-[5] grid"
+        style={{ gridTemplateColumns: colTemplate }}
+      >
+        <div />
+        <div />
+        <div className="flex min-w-0 items-center justify-between gap-3 pl-4 pr-3">
+          {endOverlay}
+        </div>
       </div>
     </div>
   );

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { dehydrateStepReturnValue } from './serialization.js';
 import { createUseStep } from './step.js';
 import { createContext } from './vm/index.js';
@@ -43,6 +44,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const ctx: WorkflowOrchestratorContext = {
     runId: 'wrun_test',
     encryptionKey: undefined,
+    replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent: (event) => {

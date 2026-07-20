@@ -302,7 +302,14 @@ export interface Storage {
   };
 }
 
-/** Optional features a World can explicitly advertise to the runtime. */
+/**
+ * Optional feature capabilities a World implementation declares so the core
+ * runtime can enable optimizations that depend on backend behavior, instead
+ * of inferring support from environment variables alone. Every capability
+ * defaults to "unsupported" when absent — runtime fast paths that rely on
+ * one must fail closed (keep their conservative behavior) unless the World
+ * explicitly declares it.
+ */
 export interface WorldCapabilities {
   /**
    * Supports `experimental_minRetention` for Hooks. Missing or inactive means
@@ -311,6 +318,33 @@ export interface WorldCapabilities {
   hookRetention?: {
     active: boolean;
   };
+
+  /**
+   * The World enforces the optimistic-concurrency precondition guard: an
+   * event creation carrying a `stateUpdatedAt` snapshot is rejected with a
+   * `PreconditionFailedError` (412) when a newer out-of-band event (e.g. a
+   * received hook) was recorded after that snapshot. Worlds that accept but
+   * ignore `stateUpdatedAt` must leave this unset so runtime optimizations
+   * that rely on the 412 fence (see `WORKFLOW_PRECONDITION_GUARD`) are not
+   * enabled without an actual fence behind them.
+   */
+  preconditionGuard?: boolean;
+
+  /**
+   * The World's queue supports `maxConcurrency`-limited consumption — in
+   * particular the per-run flow topics consumed with `maxConcurrency: 1`
+   * that `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses to serialize a run's
+   * orchestrator invocations. Worlds whose queue has no concurrency-limit
+   * concept must leave this unset.
+   *
+   * Note this declares queue *support*, not deployed configuration: the
+   * serialization also requires the build-time half (a flow trigger emitted
+   * with `maxConcurrency: 1`), which a runtime process cannot verify today.
+   * The core runtime therefore does not yet take any fast path from this
+   * capability alone — it exists so a future build-verified signal can be
+   * combined with it (and so Worlds document the contract explicitly).
+   */
+  maxConcurrency?: boolean;
 }
 
 /**
@@ -335,7 +369,11 @@ export interface World extends Queue, Streamer, Storage {
    */
   specVersion: number;
 
-  /** Optional features supported by this World. */
+  /**
+   * Feature capabilities this World implementation supports — see
+   * {@link WorldCapabilities}. Absent (or absent members) means
+   * "unsupported": runtime optimizations gated on a capability fail closed.
+   */
   capabilities?: WorldCapabilities;
 
   /**

@@ -95,9 +95,10 @@ jobs:
   # backend (e.g. postgres or local), add a matrix entry with
   # `world: postgres` / `world: local` and gate the Vercel-specific steps —
   # the runner (packages/core/e2e/benchmark.test.ts) already selects its
-  # backend from the same env vars as the e2e tests. Note that the stream
-  # latency (SL) metric requires `run.getReadable()` to work from the test
-  # process, which the local world's in-process streamer does not support.
+  # backend from the same env vars as the e2e tests. SL is measured inside the
+  # workflow (benchSlWorkflow's parallel reader/writer steps read/write on the
+  # deployment), so it no longer needs `run.getReadable()` to work from the
+  # test process; the runner only polls returnValue for the collected timings.
   benchmark:
     name: Benchmark (${{ matrix.target.world }}, ${{ matrix.target.app }})
     runs-on: ubuntu-latest

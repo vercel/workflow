@@ -174,6 +174,11 @@ export interface SpanGap {
   rowIndex: number;
 }
 
+/** Project an absolute time onto the viewport as a clamped [0, 1] fraction. */
+function toViewportFrac(ms: number, viewStart: number, range: number): number {
+  return Math.min(Math.max((ms - viewStart) / range, 0), 1);
+}
+
 export function computeSpanGaps(
   spans: Span[],
   viewStart: number,
@@ -189,13 +194,85 @@ export function computeSpanGaps(
     const gapMs = startTime - endTime;
     if (gapMs <= 0) continue;
 
-    const leftFrac = Math.min(Math.max((endTime - viewStart) / range, 0), 1);
-    const rightFrac = Math.min(Math.max((startTime - viewStart) / range, 0), 1);
+    const leftFrac = toViewportFrac(endTime, viewStart, range);
+    const rightFrac = toViewportFrac(startTime, viewStart, range);
     if (rightFrac - leftFrac < 0.001) continue;
 
     gaps.push({ gapMs, leftFrac, rightFrac, rowIndex: i });
   }
   return gaps;
+}
+
+export interface SpanDelta {
+  /** True measured time between the two spans, unaffected by clamping. */
+  deltaMs: number;
+  /** Viewport-clamped fraction of the anchor span's measured edge. */
+  anchorFrac: number;
+  /** Viewport-clamped fraction of the hovered span's measured edge. */
+  hoveredFrac: number;
+  /**
+   * Which edge of the anchor span the measurement runs from: its end when the
+   * spans are disjoint and the anchor comes first, otherwise its start.
+   */
+  anchorEdge: 'start' | 'end';
+  /**
+   * Set when the hovered span lies entirely outside the viewport on one side,
+   * i.e. its row renders an off-screen arrow the line should stop short of.
+   */
+  hoveredOffscreen: 'left' | 'right' | null;
+}
+
+/**
+ * Measure the temporal delta between an anchor (selected) span and a hovered
+ * span for the Alt+hover measurement overlay. Ordering the two spans by start
+ * time (E = earlier-starting, L = later-starting), the measurement runs to
+ * L's start from E's end when the spans are disjoint ("how long after E ended
+ * did L start"), or from E's start when they overlap ("how long after E
+ * started did L start"). Fractions are clamped to the viewport like
+ * `computeSpanGaps`; `deltaMs` is always the true duration. Returns null when
+ * the measurement lies entirely outside the viewport.
+ */
+export function computeSpanDelta(
+  anchor: Span,
+  hovered: Span,
+  viewStart: number,
+  viewEnd: number
+): SpanDelta | null {
+  const range = viewEnd - viewStart;
+  if (range <= 0) return null;
+
+  const anchorStart = getHighResInMs(anchor.startTime);
+  const hoveredStart = getHighResInMs(hovered.startTime);
+  const anchorIsEarlier = anchorStart <= hoveredStart;
+  const earlierStart = anchorIsEarlier ? anchorStart : hoveredStart;
+  const earlierEnd = getHighResInMs(
+    anchorIsEarlier ? anchor.endTime : hovered.endTime
+  );
+  const laterStart = anchorIsEarlier ? hoveredStart : anchorStart;
+
+  const originMs = earlierEnd <= laterStart ? earlierEnd : earlierStart;
+  const deltaMs = laterStart - originMs;
+
+  // Entirely outside the viewport. Compared in time-space (not clamped
+  // fractions) so a zero-delta point sitting exactly on a viewport edge —
+  // e.g. the root span selected at default zoom — still renders.
+  if (laterStart < viewStart || originMs > viewEnd) {
+    return null;
+  }
+
+  const originFrac = toViewportFrac(originMs, viewStart, range);
+  const laterFrac = toViewportFrac(laterStart, viewStart, range);
+
+  const hoveredEnd = getHighResInMs(hovered.endTime);
+
+  return {
+    deltaMs,
+    anchorFrac: anchorIsEarlier ? originFrac : laterFrac,
+    hoveredFrac: anchorIsEarlier ? laterFrac : originFrac,
+    anchorEdge: anchorIsEarlier && earlierEnd <= laterStart ? 'end' : 'start',
+    hoveredOffscreen:
+      hoveredStart > viewEnd ? 'right' : hoveredEnd < viewStart ? 'left' : null,
+  };
 }
 
 // ---------------------------------------------------------------------------

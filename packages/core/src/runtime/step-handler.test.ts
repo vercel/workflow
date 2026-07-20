@@ -178,11 +178,6 @@ vi.mock('../private.js', () => ({
   getStepFunction: vi.fn().mockReturnValue(mockStepFn),
 }));
 
-// Mock get-port
-vi.mock('@workflow/utils/get-port', () => ({
-  getPort: vi.fn().mockResolvedValue(3000),
-}));
-
 import { getStepFunction } from '../private.js';
 import { cancelAbortReaders, dehydrateStepError } from '../serialization.js';
 import {
@@ -191,12 +186,27 @@ import {
   normalizeUnknownError,
 } from '../types.js';
 import { MAX_QUEUE_DELIVERIES } from './constants.js';
+import {
+  resetPortCacheForTesting,
+  setPortResolverForTesting,
+} from './get-port-lazy.js';
 import { executeStep } from './step-executor.js';
 // Import the module AFTER all mocks are set up
 // Since getWorldHandlers is now async, we need to call stepEntrypoint
 // to trigger createQueueHandler and populate capturedHandlerRef
 import { stepEntrypoint } from './step-handler.js';
 import { getWorld } from './world.js';
+
+const mockPortResolver = vi.fn(async () => 3000);
+
+beforeEach(() => {
+  mockPortResolver.mockReset().mockResolvedValue(3000);
+  setPortResolverForTesting(mockPortResolver);
+});
+
+afterEach(() => {
+  resetPortCacheForTesting();
+});
 
 function capturedHandler(
   message: unknown,
@@ -279,6 +289,13 @@ describe('step-handler 409 handling', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('reuses cached port discovery across step invocations', async () => {
+    await capturedHandler(createMessage(), createMetadata('myStep'));
+    await capturedHandler(createMessage(), createMetadata('myStep'));
+
+    expect(mockPortResolver).toHaveBeenCalledOnce();
   });
 
   describe('step_completed 409', () => {
@@ -1305,13 +1322,16 @@ describe('executeStep optimistic inline start', () => {
     expect(result.type).toBe('completed');
     expect(mockStepFn).toHaveBeenCalledTimes(1);
     // The lazy step_started carries the input so the world creates the step.
+    // The third argument is the CreateEventParams slot — undefined here
+    // because no precondition-guard snapshot (`stateUpdatedAt`) was passed.
     expect(mockEventsCreate).toHaveBeenCalledWith(
       'wrun_test123',
       expect.objectContaining({
         eventType: 'step_started',
         correlationId: 'step_abc',
         eventData: expect.objectContaining({ stepName: 'myStep', input: [] }),
-      })
+      }),
+      undefined
     );
   });
 
@@ -1521,9 +1541,8 @@ describe('executeStep optimistic inline start', () => {
         (event as { eventType: string }).eventType === 'step_completed'
     );
     expect(completedWrite).toBeDefined();
-    const eventData = (
-      completedWrite![1] as { eventData: { rsfs?: number } }
-    ).eventData;
+    const eventData = (completedWrite![1] as { eventData: { rsfs?: number } })
+      .eventData;
     expect(eventData.rsfs).toBeDefined();
     expect(eventData.rsfs).toBeGreaterThanOrEqual(0);
   });
