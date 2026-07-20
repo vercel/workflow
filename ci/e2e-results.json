@@ -1,15 +1,15 @@
 {
-  "lastUpdated": "2026-07-20T21:15:28.651Z",
-  "commit": "aafc3fd7f44eac0698979d964ff7d890037006e4",
+  "lastUpdated": "2026-07-20T21:46:18.475Z",
+  "commit": "0bc22c8e9b50c84f5aafd38b833d2a20470843ee",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
       "status": "passing",
-      "total": 4284,
-      "passed": 3765,
+      "total": 4437,
+      "passed": 3899,
       "failed": 0,
-      "skipped": 519,
+      "skipped": 538,
       "frameworks": {
         "astro": {
           "total": 306,
@@ -32,8 +32,8 @@
           "failed": 0
         },
         "nextjs-turbopack": {
-          "total": 612,
-          "passed": 593,
+          "total": 765,
+          "passed": 727,
           "failed": 0
         },
         "nextjs-webpack": {
@@ -126,53 +126,18 @@
     },
     "vercel": {
       "status": "partial",
-      "total": 1530,
-      "passed": 1300,
-      "failed": 3,
-      "skipped": 227,
+      "total": 153,
+      "passed": 148,
+      "failed": 2,
+      "skipped": 3,
       "frameworks": {
-        "astro": {
+        "nextjs-turbopack": {
           "total": 153,
-          "passed": 126,
-          "failed": 0
-        },
-        "express": {
-          "total": 153,
-          "passed": 125,
-          "failed": 1
-        },
-        "fastify": {
-          "total": 153,
-          "passed": 125,
-          "failed": 1
-        },
-        "nextjs-webpack": {
-          "total": 153,
-          "passed": 150,
-          "failed": 0
-        },
-        "nitro": {
-          "total": 153,
-          "passed": 125,
-          "failed": 1
-        },
-        "nuxt": {
-          "total": 153,
-          "passed": 126,
-          "failed": 0
-        },
-        "sveltekit": {
-          "total": 153,
-          "passed": 145,
-          "failed": 0
-        },
-        "vite": {
-          "total": 153,
-          "passed": 126,
-          "failed": 0
+          "passed": 148,
+          "failed": 2
         }
       },
-      "progress": 85
+      "progress": 97
     }
   }
 }
