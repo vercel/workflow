@@ -18,6 +18,7 @@ import {
 import {
   type Event,
   getQueueTopicPrefix,
+  isLegacySpecVersion,
   ROOT_RUN_ID_ATTRIBUTE,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
@@ -706,7 +707,9 @@ export function workflowEntrypoint(
                   // will pick up the replay.
                   if (incomingStepId && incomingStepName) {
                     try {
-                      const bgRun = await world.runs.get(runId);
+                      const bgRun = await world.runs.get(runId, {
+                        resolveData: 'none',
+                      });
                       if (bgRun.status !== 'running') {
                         runtimeLogger.debug(
                           'Run already finished, skipping background step',
@@ -850,7 +853,36 @@ export function workflowEntrypoint(
                           'All parallel steps done, replaying inline after background step',
                           { workflowRunId: runId }
                         );
-                        workflowRun = bgRun;
+                        const runCreatedEvent = cachedEvents.find(
+                          (event) => event.eventType === 'run_created'
+                        );
+                        let replayInput: unknown;
+                        if (runCreatedEvent) {
+                          replayInput = runCreatedEvent.eventData.input;
+                        } else {
+                          if (!isLegacySpecVersion(bgRun.specVersion)) {
+                            throw new WorkflowRuntimeError(
+                              `Workflow run "${runId}" has no "run_created" event`
+                            );
+                          }
+                          // Legacy runs predate the event-sourced run_created
+                          // invariant, so retain the resolved GET only for them.
+                          const legacyRun = await world.runs.get(runId, {
+                            resolveData: 'all',
+                          });
+                          if (legacyRun.status !== 'running') {
+                            return;
+                          }
+                          replayInput = legacyRun.input;
+                        }
+                        workflowRun = {
+                          ...bgRun,
+                          input: replayInput,
+                          status: 'running',
+                          output: undefined,
+                          error: undefined,
+                          completedAt: undefined,
+                        };
                         workflowStartedAt = bgStartedAt;
                         // cachedEvents and eventsCursor already set from load above
                       } else {

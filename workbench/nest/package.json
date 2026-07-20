@@ -10,6 +10,7 @@
     "prebuild": "pnpm generate:workflows && pnpm setup:swcrc",
     "dev": "nest start --watch",
     "build": "nest build",
+    "vercel-build": "pnpm setup:swcrc && nest build && node ../../packages/nest/dist/cli.js build --vercel --dirs src/workflows --entry _vercel/entry.ts",
     "start": "node dist/main.js"
   },
   "engines": {

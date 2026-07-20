@@ -16,7 +16,8 @@ related:
 This guide will walk through setting up your first workflow in a NestJS app. Along the way, you'll learn more about the concepts that are fundamental to using the Workflow SDK in your own projects.
 
 <Callout>
-NestJS integration is experimental and not yet supported for deployment to Vercel.
+NestJS integration is experimental. Deployment to Vercel is supported via the
+`workflow-nest build --vercel` command — see [Deploy to Vercel](#deploy-to-vercel) below.
 </Callout>
 
 ---
@@ -358,6 +359,66 @@ npx workflow inspect runs
 ```
 
 ![Workflow SDK Web UI](/o11y-ui.png)
+
+</Step>
+
+<Step>
+
+## Deploy to Vercel
+
+Because NestJS is not a Vercel-native framework, the Workflow SDK produces a
+[Build Output API](https://vercel.com/docs/build-output-api) directory for you. This emits the
+workflow queue-consumer function (registered with `experimentalTriggers` so Vercel's queue can
+discover it) alongside your NestJS app as a catch-all function. Without it, workflow runs stay
+`pending` because nothing consumes the queue.
+
+Add a Vercel-specific entry module that default-exports your Nest app's underlying Node handler:
+
+```typescript title="_vercel/entry.ts" lineNumbers
+import 'reflect-metadata';
+import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import express from 'express';
+import { AppModule } from '../dist/app.module.js';
+
+let ready: Promise<express.Express> | undefined;
+
+async function createHandler() {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bodyParser: false,
+  });
+  app.use(express.json());
+  await app.init();
+  return app.getHttpAdapter().getInstance();
+}
+
+export default async function handler(req: express.Request, res: express.Response) {
+  ready ??= createHandler();
+  return (await ready)(req, res);
+}
+```
+
+Skip the in-process build on Vercel (the bundles are pre-built) by passing `skipBuild` when
+`VERCEL` is set:
+
+{/* @skip-typecheck - config snippet, WorkflowModule imported above */}
+```typescript title="src/app.module.ts"
+WorkflowModule.forRoot({ skipBuild: Boolean(process.env.VERCEL) });
+```
+
+Then set your build command so the Build Output is produced after `nest build`:
+
+```json title="package.json" lineNumbers
+{
+  "scripts": {
+    "vercel-build": "workflow-nest init --force && nest build && workflow-nest build --vercel --dirs src/workflows --entry _vercel/entry.ts"
+  }
+}
+```
+
+Deploy as usual. `workflow-nest build --vercel` runs automatically on Vercel (it also detects the
+`VERCEL` environment variable), writing `.vercel/output` with the consumer function so your runs
+execute instead of staying `pending`.
 
 </Step>
 
