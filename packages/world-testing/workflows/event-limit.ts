@@ -5,10 +5,7 @@ async function tick(i: number): Promise<number> {
 
 /**
  * Runaway workflow: creates far more events than a low `WORKFLOW_MAX_EVENTS`
- * ceiling allows. With the limit set low (and turbo disabled so the runtime
- * reads `maxEvents` off the run_started response), the event-limit guard fails
- * the run with MAX_EVENTS_EXCEEDED before the loop finishes — so the 100
- * iterations never all run.
+ * ceiling, so the event-limit guard fails it before the loop finishes.
  */
 export async function runawayWorkflow(): Promise<number> {
   'use workflow';

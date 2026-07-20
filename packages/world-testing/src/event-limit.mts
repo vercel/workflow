@@ -6,9 +6,8 @@ export function eventLimit(world: string) {
     'fails a runaway run at the server-supplied event limit',
     { timeout: 59_000 },
     async () => {
-      // Low ceiling so a short runaway trips it; turbo off because turbo
-      // backgrounds run_started and the guard reads `maxEvents` off the
-      // run_started response (so enforcement is on the non-turbo path).
+      // Low ceiling to trip it fast; turbo off because turbo backgrounds
+      // run_started (the guard reads maxEvents off that response).
       const server = await startServer({
         world,
         env: { WORKFLOW_MAX_EVENTS: '10', WORKFLOW_TURBO: '0' },

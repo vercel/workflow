@@ -353,10 +353,8 @@ export class ReplayDivergenceError extends WorkflowRuntimeError {
 }
 
 /**
- * Thrown by the runtime when a run's event log reaches the server-supplied
- * per-run event ceiling. Recorded with the distinct `MAX_EVENTS_EXCEEDED` code
- * (see `classifyRunError`) and attributed to the user's runaway workflow,
- * rather than falling through to a generic `USER_ERROR`.
+ * Thrown when a run's event log reaches the server-supplied per-run event
+ * ceiling. Classified as `MAX_EVENTS_EXCEEDED` (see `classifyRunError`).
  */
 export class MaxEventsExceededError extends WorkflowError {
   readonly eventCount: number;

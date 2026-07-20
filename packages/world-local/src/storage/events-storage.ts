@@ -81,10 +81,8 @@ import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
 
 /**
- * Server-owned per-run event ceiling the Local World reports on run responses,
- * mirroring the Vercel World's `maxEvents` so the SDK runtime can enforce the
- * limit in-process (no server involved). Overridable via `WORKFLOW_MAX_EVENTS`
- * (used by tests to exercise the limit); defaults to the published 25,000.
+ * Per-run event ceiling the Local World reports on run responses (mirrors the
+ * Vercel World). Overridable via `WORKFLOW_MAX_EVENTS`; defaults to 25,000.
  */
 const DEFAULT_MAX_EVENTS_PER_RUN = 25_000;
 function getMaxEventsPerRun(): number {
@@ -2308,8 +2306,7 @@ export function createEventsStorage(
           cursor,
           hasMore,
           ...(stepCreatedLazily ? { stepCreated: true } : {}),
-          // Server-owned per-run event ceiling (mirrors the Vercel World) so
-          // the runtime enforces the limit under the Local World too.
+          // Per-run event ceiling (mirrors the Vercel World).
           ...(run ? { maxEvents: getMaxEventsPerRun() } : {}),
         };
       } // end createImpl
