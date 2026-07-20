@@ -65,8 +65,10 @@ import {
   hookRecoveryMarkerPath,
   hookTokenClaimPath,
   isHookDisposalCommitted,
+  isRunTerminalCommitted,
   monotonicUlid,
   releaseHookTokenClaimIfOwnedBy,
+  runTerminalMarkerPath,
 } from './helpers.js';
 import {
   deleteHookByRunMarker,
@@ -1056,6 +1058,25 @@ export function createEventsStorage(
         // first writers, `{ overwrite: true }` for retries that may
         // be repairing an orphaned partial write).
         let hookEntityWriteOptions: { overwrite: boolean } | undefined;
+
+        // Publish the durable run-terminal marker before any terminal state
+        // write below (and thus before the terminal event is appended to the
+        // log at the bottom of this function). Its existence is the earliest
+        // cross-process evidence that the run can never accept a new
+        // correlated event again — the run-level analogue of the hook
+        // dispose marker. `hook_received` consults it with a
+        // publish-then-verify protocol so a late hook_received in another
+        // process cannot survive past this transition. The terminal-state
+        // validation above has already rejected transitions from an
+        // already-terminal run, so reaching here means this is a fresh
+        // terminal transition; `writeExclusive` returning false (marker
+        // already present from a concurrent duplicate) is harmless.
+        if (isTerminalRunEventType(data.eventType) && currentRun) {
+          await writeExclusive(
+            runTerminalMarkerPath(basedir, effectiveRunId, tag),
+            ''
+          );
+        }
 
         // Create/update entity based on event type (event-sourced architecture)
         // Run lifecycle events
@@ -2157,39 +2178,74 @@ export function createEventsStorage(
         // rememberStoredEvent).
         const serializedEvent = JSON.stringify(event, jsonReplacer, 2);
 
-        // `hook_received` publishes its event under the same per-run
-        // `withRunFileLock` that run_completed / run_failed / run_cancelled
-        // use for their own terminal-transition write (see
-        // `writeRunUnderLifecycleLock` above). A re-read of run status taken
-        // outside that lock does not close the race: a concurrent terminal
-        // transition can still acquire the lock and commit between the
-        // unlocked re-read and this event's publish. Taking the lock here
-        // instead means hook_received either waits behind an in-flight
-        // terminal transition and observes the committed status, or
-        // completes its own check-then-publish before a terminal
-        // transition's critical section can begin — there is no
-        // interleaving where both proceed.
-        const eventPublished =
-          data.eventType === 'hook_received'
-            ? await withRunFileLock(effectiveRunId, async () => {
-                const runAtPublish = await readJSONWithFallback(
-                  basedir,
-                  'runs',
-                  effectiveRunId,
-                  WorkflowRunSchema,
-                  tag
-                );
-                if (
-                  runAtPublish &&
-                  isTerminalWorkflowRunStatus(runAtPublish.status)
-                ) {
-                  throw new RunExpiredError(
-                    `Workflow run "${effectiveRunId}" is already in terminal state "${runAtPublish.status}"`
-                  );
-                }
-                return writeExclusive(eventPath, serializedEvent);
-              })
-            : await writeExclusive(eventPath, serializedEvent);
+        // Cross-process terminal-run guard for `hook_received`. A terminal
+        // transition (run_completed / run_failed / run_cancelled) in ANY
+        // process publishes a durable `runTerminalMarkerPath` marker BEFORE
+        // it writes the run state and appends its terminal event (see the
+        // terminal-marker write earlier in this function). `withRunFileLock`
+        // only serializes writers within a single process — it is an
+        // in-memory mutex — so it cannot close the shared-filesystem race
+        // this backend explicitly supports. We instead use a lock-free
+        // publish-then-verify protocol against that durable marker:
+        //
+        //   1. (fast path) if the run is already terminal, reject before
+        //      writing an event, so the common case never creates a file.
+        //   2. publish the event with writeExclusive.
+        //   3. re-check the marker; if it appeared, roll back the
+        //      just-published event and reject.
+        //
+        // Correctness: the event survives only if the marker was still
+        // absent at step 3. Because a terminal transition writes its marker
+        // before its own terminal event, an absent marker at step 3 means
+        // this hook_received was genuinely published before the run became
+        // terminal — so it legitimately orders before the terminal event in
+        // the log. Conversely, if a terminal transition committed its marker
+        // between steps 1 and 2, step 3 observes it and the event is removed.
+        // The fast path additionally reads the run state so a terminal state
+        // written by any path (not only via the marker) is still rejected.
+        if (data.eventType === 'hook_received') {
+          const terminalByMarker = await isRunTerminalCommitted(
+            basedir,
+            effectiveRunId,
+            tag
+          );
+          const runNow = terminalByMarker
+            ? null
+            : await readJSONWithFallback(
+                basedir,
+                'runs',
+                effectiveRunId,
+                WorkflowRunSchema,
+                tag
+              );
+          if (
+            terminalByMarker ||
+            (runNow && isTerminalWorkflowRunStatus(runNow.status))
+          ) {
+            throw new RunExpiredError(
+              `Workflow run "${effectiveRunId}" is already in a terminal state`
+            );
+          }
+        }
+
+        const eventPublished = await writeExclusive(eventPath, serializedEvent);
+
+        // Step 3 of the publish-then-verify protocol above: a terminal
+        // transition may have committed its marker between the fast-path
+        // check and this publish. The event has not been cached yet
+        // (rememberStoredEvent runs below), so nothing else can observe it;
+        // its path is unique to this eventId, so deleting it removes only
+        // our own write.
+        if (
+          eventPublished &&
+          data.eventType === 'hook_received' &&
+          (await isRunTerminalCommitted(basedir, effectiveRunId, tag))
+        ) {
+          await deleteJSON(eventPath);
+          throw new RunExpiredError(
+            `Workflow run "${effectiveRunId}" is already in a terminal state`
+          );
+        }
         if (!eventPublished) {
           // For `hook_created`, losing the event publish means the
           // event was already committed at this exact (canonical)

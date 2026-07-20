@@ -53,6 +53,50 @@ export async function isHookDisposalCommitted(
 }
 
 /**
+ * Path of the exclusive-create marker file that commits a run's terminal
+ * transition. The `run_completed` / `run_failed` / `run_cancelled` handlers
+ * write this marker BEFORE the run state file (and thus before the terminal
+ * event is appended to the log), so its existence is the earliest durable,
+ * cross-process evidence that the run can never accept a new correlated
+ * event again. It is the run-level analogue of {@link hookDisposeLockPath}
+ * and is consulted by `hook_received`'s publish-then-verify guard.
+ */
+export function runTerminalMarkerPath(
+  basedir: string,
+  runId: string,
+  tag?: string
+): string {
+  const name = tag ? `${runId}.terminal.${tag}` : `${runId}.terminal`;
+  return resolveWithinBase(basedir, '.locks', 'runs', name);
+}
+
+/**
+ * Whether a run's terminal transition has been committed (its terminal
+ * marker exists). Mirrors {@link isHookDisposalCommitted}'s tag visibility:
+ * an untagged marker is visible to every tag, a tagged marker only to its
+ * own tag.
+ */
+export async function isRunTerminalCommitted(
+  basedir: string,
+  runId: string,
+  tag?: string
+): Promise<boolean> {
+  const candidates = [runTerminalMarkerPath(basedir, runId)];
+  if (tag) {
+    candidates.push(runTerminalMarkerPath(basedir, runId, tag));
+  }
+  for (const markerPath of candidates) {
+    try {
+      await fs.access(markerPath);
+      return true;
+    } catch {
+      // marker not present at this path
+    }
+  }
+  return false;
+}
+
+/**
  * Path of the exclusive-create claim file that reserves a hook token.
  */
 export function hookTokenClaimPath(basedir: string, token: string): string {

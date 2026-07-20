@@ -6,9 +6,13 @@ import type { Event, Storage } from '@workflow/world';
 import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { writeJSON } from './fs.js';
-import { hashToken, hookDisposeLockPath } from './storage/helpers.js';
-import { withRunFileLock } from './storage/runs-storage.js';
+import { writeExclusive, writeJSON } from './fs.js';
+import * as helpers from './storage/helpers.js';
+import {
+  hashToken,
+  hookDisposeLockPath,
+  runTerminalMarkerPath,
+} from './storage/helpers.js';
 import { createStorage } from './storage.js';
 import {
   completeWait,
@@ -4557,15 +4561,13 @@ describe('Storage', () => {
       ).rejects.toMatchObject({ name: 'HookNotFoundError' });
     });
 
-    it("should reject hook_received with RunExpiredError when the run terminates after hook_received's earlier checks (linearization guard)", async () => {
-      // Reproduces the race the guard added at the event-write linearization
-      // point defends against: hook_received's early currentRun/hook-exists
-      // checks pass while the run is still running, then the run reaches a
-      // terminal state before hook_received's event write commits. Writing
-      // the terminal status directly to disk (bypassing updateRun's
-      // deleteAllHooksForRun cleanup) reproduces exactly that ordering
-      // without deleting the hook, isolating the assertion to the
-      // re-check immediately before the event publish.
+    it('should reject hook_received when the run state is already terminal (fast path)', async () => {
+      // hook_received's early currentRun / hook-exists checks pass while the
+      // run is still running, then the run reaches a terminal state before
+      // the event write. Writing the terminal status directly to disk
+      // (bypassing updateRun's deleteAllHooksForRun cleanup, so the hook
+      // still exists) isolates the assertion to the terminal-run guard at
+      // the event-publish site rather than the hook-existence check.
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
@@ -4595,119 +4597,110 @@ describe('Storage', () => {
           eventData: { payload: {} },
         })
       ).rejects.toMatchObject({ name: 'RunExpiredError' });
+
+      // No hook_received event may have been appended.
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(0);
     });
 
-    it('should serialize hook_received behind an in-flight terminal transition on the same run-file lock', async () => {
-      // The previous test proves the re-check's *logic*, but a status
-      // re-read taken outside the lock that run_completed / run_failed /
-      // run_cancelled use for their own write does not actually close the
-      // race: a concurrent terminal transition can still commit between an
-      // unlocked re-read and the event publish. This test proves
-      // hook_received's publish genuinely participates in that same
-      // `withRunFileLock` queue — not just that it happens to observe a
-      // status set before it started — by manually occupying the lock and
-      // asserting hook_received cannot settle until the hold is released.
+    it('should reject hook_received when a run-terminal marker is committed by another process', async () => {
+      // The cross-process case the in-memory `withRunFileLock` cannot cover.
+      // A terminal transition in another process publishes the durable
+      // `runTerminalMarkerPath` marker BEFORE writing the run state and
+      // appending its terminal event. Here we write ONLY that marker (run
+      // state left 'running', hook left intact) so the guard's fast path
+      // must reject purely on the marker — the cross-instance signal — and
+      // must not append an event.
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
         input: new Uint8Array(),
       });
       const hook = await createHook(storage, run.runId, {
-        hookId: 'hook_lock_order',
-        token: 'token-lock-order',
+        hookId: 'hook_marker_terminal',
+        token: 'token-marker-terminal',
       });
 
-      let releaseHold: () => void = () => {};
-      const holdGate = new Promise<void>((resolve) => {
-        releaseHold = resolve;
-      });
+      await writeExclusive(runTerminalMarkerPath(testDir, run.runId), '');
 
-      // Occupy the run's file lock, then — while still holding it — write
-      // the terminal transition directly, mirroring exactly what
-      // run_completed's own critical section does under this same lock
-      // (see `writeRunUnderLifecycleLock`).
-      const heldLock = withRunFileLock(run.runId, async () => {
-        await holdGate;
-        const runPath = path.join(testDir, 'runs', `${run.runId}.json`);
-        await writeJSON(
-          runPath,
-          { ...run, status: 'completed', completedAt: new Date() },
-          { overwrite: true }
-        );
-      });
-
-      const hookReceivedPromise = storage.events.create(run.runId, {
-        eventType: 'hook_received',
-        correlationId: hook.hookId,
-        eventData: { payload: {} },
-      });
-
-      let settled = false;
-      hookReceivedPromise.then(
-        () => {
-          settled = true;
-        },
-        () => {
-          settled = true;
-        }
-      );
-
-      // Generous real-time wait: if hook_received's check-then-publish were
-      // not behind the shared lock, it would settle well within this
-      // window regardless of how many unlocked steps precede it.
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(settled).toBe(false);
-
-      releaseHold();
-      await heldLock;
-
-      await expect(hookReceivedPromise).rejects.toMatchObject({
-        name: 'RunExpiredError',
-      });
-    });
-
-    it('should race hook_received against a concurrent run_completed without corrupting state', async () => {
-      // Unlike the manually-ordered test above, this lets real concurrent
-      // calls interleave however the event loop schedules them, fuzzing
-      // both lock orderings across runs. Whichever side wins the lock, the
-      // outcome must be internally consistent.
-      const run = await createRun(storage, {
-        deploymentId: 'deployment-123',
-        workflowName: 'test-workflow',
-        input: new Uint8Array(),
-      });
-      const hook = await createHook(storage, run.runId, {
-        hookId: 'hook_race_concurrent',
-        token: 'token-race-concurrent',
-      });
-
-      const [hookOutcome, runOutcome] = await Promise.allSettled([
+      await expect(
         storage.events.create(run.runId, {
           eventType: 'hook_received',
           correlationId: hook.hookId,
           eventData: { payload: {} },
-        }),
-        updateRun(storage, run.runId, 'run_completed', {
-          output: new Uint8Array([1]),
-        }),
-      ]);
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
 
-      // run_completed does not depend on hook_received, so it must always
-      // succeed regardless of ordering.
-      expect(runOutcome.status).toBe('fulfilled');
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(0);
+    });
 
-      if (hookOutcome.status === 'fulfilled') {
-        // hook_received's publish won the lock and completed while the run
-        // was still running.
-        expect(hookOutcome.value.event?.eventType).toBe('hook_received');
-      } else {
-        // hook_received queued behind run_completed's lock (or lost the
-        // hook-existence race to its cleanup) and correctly rejected
-        // instead of appending an event past the run's terminal state.
-        expect(['RunExpiredError', 'HookNotFoundError']).toContain(
-          (hookOutcome.reason as { name?: string }).name
-        );
+    it('should roll back a hook_received published in the check-to-publish window (cross-process close)', async () => {
+      // Directly exercises step 3 of the publish-then-verify protocol: the
+      // terminal marker is committed by another process AFTER hook_received's
+      // fast-path check but before its post-publish re-check. We simulate
+      // that exact interleaving by making the FIRST `isRunTerminalCommitted`
+      // probe (the fast path) still observe no marker, but commit the marker
+      // as a side effect so the SECOND probe (post-publish) sees it — forcing
+      // the rollback branch that deletes the just-published event and throws.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(storage, run.runId, {
+        hookId: 'hook_rollback_window',
+        token: 'token-rollback-window',
+      });
+
+      const markerPath = runTerminalMarkerPath(testDir, run.runId);
+      const realIsRunTerminalCommitted = helpers.isRunTerminalCommitted;
+      let probes = 0;
+      const spy = vi
+        .spyOn(helpers, 'isRunTerminalCommitted')
+        .mockImplementation(async (base, runId, tag) => {
+          probes++;
+          if (probes === 1) {
+            // Fast path: report not-terminal, but commit the marker now so
+            // the post-publish re-check (the real implementation) observes a
+            // terminal transition that landed during the publish.
+            await writeExclusive(markerPath, '');
+            return false;
+          }
+          return realIsRunTerminalCommitted(base, runId, tag);
+        });
+
+      try {
+        await expect(
+          storage.events.create(run.runId, {
+            eventType: 'hook_received',
+            correlationId: hook.hookId,
+            eventData: { payload: {} },
+          })
+        ).rejects.toMatchObject({ name: 'RunExpiredError' });
+      } finally {
+        spy.mockRestore();
       }
+
+      // The event published in the window must have been rolled back.
+      expect(probes).toBeGreaterThanOrEqual(2);
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(0);
     });
   });
 
