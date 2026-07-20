@@ -81,6 +81,7 @@ import {
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
   STREAM_TYPE_SYMBOL,
+  STREAM_WRITE_BATCH_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
 import * as Attr from './telemetry/semantic-conventions.js';
@@ -1230,6 +1231,33 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         const abortError = reason ?? new Error('Stream aborted');
         for (const w of waiters) w.reject(abortError);
       },
+    });
+
+    // Batched, durable write entry point used by `flushablePipe` to coalesce
+    // chunks that arrive while a previous batch is still in flight into a
+    // single server write. It buffers every chunk and awaits one `flush()`,
+    // so the whole batch goes out as one `writeMulti` and resolves only once
+    // the batch has reached the server. It shares the buffer/flush machinery
+    // with the per-chunk sink `write()`, but the two are never used
+    // concurrently on the same stream: `flushablePipe` uses either this path
+    // or the writer, never both. On failure `flush()` retains the batch in the
+    // buffer and rethrows, so the caller's durability tracking stays accurate.
+    //
+    // No-`writeMulti` fallback: when the world lacks `writeMulti`, `flush()`
+    // degrades to sequential `write`s for the batch's chunks — one round trip
+    // each, within this single call, while backpressure holds the producer.
+    // `flushablePipe` bounds that stall by capping each coalesced batch (see
+    // `MAX_CHUNKS_PER_BATCH` / `MAX_BYTES_PER_BATCH`), so the fallback can't
+    // turn one drain into an unbounded sequential run.
+    Object.defineProperty(this, STREAM_WRITE_BATCH_SYMBOL, {
+      value: async (chunks: Uint8Array[]): Promise<void> => {
+        if (chunks.length === 0) return;
+        if (batchStartAt === undefined) batchStartAt = Date.now();
+        for (const chunk of chunks) buffer.push(chunk);
+        await flush();
+      },
+      enumerable: false,
+      writable: false,
     });
   }
 }

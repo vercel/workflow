@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   createFlushableState,
   flushablePipe,
@@ -6,6 +6,46 @@ import {
   pollReadableLock,
   pollWritableLock,
 } from './flushable-stream.js';
+import { STREAM_WRITE_BATCH_SYMBOL } from './symbols.js';
+
+const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * A batch-capable mock sink, mirroring the durable batch entry point that
+ * `WorkflowServerWritableStream` exposes under `STREAM_WRITE_BATCH_SYMBOL`.
+ * `gate` (when provided) lets a test hold a batch write "in flight" so it can
+ * enqueue more chunks and observe coalescing.
+ */
+function makeBatchSink(
+  gate?: (call: number, chunks: Uint8Array[]) => Promise<void> | void
+) {
+  const batches: Uint8Array[][] = [];
+  let closed = false;
+  let call = 0;
+  const sink = new WritableStream<Uint8Array>({
+    close() {
+      closed = true;
+    },
+  }) as WritableStream<Uint8Array> & {
+    [STREAM_WRITE_BATCH_SYMBOL]: (chunks: Uint8Array[]) => Promise<void>;
+  };
+  sink[STREAM_WRITE_BATCH_SYMBOL] = async (chunks: Uint8Array[]) => {
+    const n = call++;
+    batches.push(chunks.slice());
+    await gate?.(n, chunks);
+  };
+  return { sink, batches, isClosed: () => closed };
+}
+
+function makeControlledSource() {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const source = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+    },
+  });
+  return { source, controller: () => controller };
+}
 
 describe('flushable stream behavior', () => {
   it('does not emit an unhandled rejection before the runtime awaits a failed operation', async () => {
@@ -398,5 +438,266 @@ describe('flushable stream behavior', () => {
     expect(chunks).toContain('valid chunk');
     // Ensure the stream ended
     expect(state.streamEnded).toBe(true);
+  });
+});
+
+describe('flushablePipe batching (STREAM_WRITE_BATCH_SYMBOL sinks)', () => {
+  afterEach(() => {
+    delete process.env.WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS;
+    delete process.env.WORKFLOW_STREAM_MAX_CHUNKS_PER_BATCH;
+    delete process.env.WORKFLOW_STREAM_MAX_BYTES_PER_BATCH;
+  });
+
+  it('coalesces chunks that arrive during an in-flight batch into one write', async () => {
+    // Hold the first batch write "in flight" so the chunks that arrive while
+    // it is pending accumulate and go out together as the next batch.
+    let releaseFirst!: () => void;
+    const firstInFlight = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    const { sink, batches } = makeBatchSink((call) =>
+      call === 0 ? firstInFlight : undefined
+    );
+    const { source, controller } = makeControlledSource();
+    const state = createFlushableState();
+
+    const pipe = flushablePipe(source, sink, state).catch(() => {});
+
+    // First chunk: consumer picks it up alone and blocks on the gate.
+    controller().enqueue(new Uint8Array([1]));
+    await tick();
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(1);
+
+    // While the first write is in flight, three more chunks arrive.
+    controller().enqueue(new Uint8Array([2]));
+    controller().enqueue(new Uint8Array([3]));
+    controller().enqueue(new Uint8Array([4]));
+    await tick();
+    // Still only the first batch has been dispatched — the rest are queued.
+    expect(batches).toHaveLength(1);
+    // They are counted as pending (read but not yet durable): 1 in-flight + 3.
+    expect(state.pendingOps).toBe(4);
+
+    // Release the first write; the queued chunks flush as a single batch.
+    releaseFirst();
+    await tick();
+    expect(batches).toHaveLength(2);
+    expect(Array.from(batches[1].map((c) => c[0]))).toEqual([2, 3, 4]);
+
+    controller().close();
+    await pipe;
+    await expect(state.promise).resolves.toBeUndefined();
+    expect(state.pendingOps).toBe(0);
+  });
+
+  it('delivers every chunk in order and closes the sink on completion', async () => {
+    const { sink, batches, isClosed } = makeBatchSink();
+    const { source, controller } = makeControlledSource();
+    const state = createFlushableState();
+
+    const pipe = flushablePipe(source, sink, state).catch(() => {});
+
+    for (let i = 0; i < 25; i++) controller().enqueue(new Uint8Array([i]));
+    controller().close();
+    await pipe;
+
+    const delivered = batches.flat().map((c) => c[0]);
+    expect(delivered).toEqual(Array.from({ length: 25 }, (_, i) => i));
+    expect(isClosed()).toBe(true);
+    await expect(state.promise).resolves.toBeUndefined();
+    expect(state.pendingOps).toBe(0);
+  });
+
+  it('keeps pendingOps > 0 until batches are durable (lock-release durability)', async () => {
+    let releaseWrite!: () => void;
+    const inFlight = new Promise<void>((r) => {
+      releaseWrite = r;
+    });
+    const { sink } = makeBatchSink(() => inFlight);
+    const { source, controller } = makeControlledSource();
+    const state = createFlushableState();
+
+    const pipe = flushablePipe(source, sink, state).catch(() => {});
+
+    controller().enqueue(new Uint8Array([1]));
+    controller().close();
+    await tick();
+
+    // Source is done, but the write has not landed yet: a lock-release poll
+    // must NOT resolve while the chunk is still un-durable.
+    pollReadableLock(source, state);
+    await tick(LOCK_POLL_INTERVAL_MS + 20);
+    expect(state.doneResolved).toBe(false);
+    expect(state.pendingOps).toBe(1);
+
+    releaseWrite();
+    await pipe;
+    expect(state.pendingOps).toBe(0);
+    await expect(state.promise).resolves.toBeUndefined();
+  });
+
+  it('propagates a batch-write failure through state.promise', async () => {
+    const { sink } = makeBatchSink((call) => {
+      if (call === 0) throw new Error('batch write failed');
+    });
+    const { source, controller } = makeControlledSource();
+    const state = createFlushableState();
+
+    const pipe = flushablePipe(source, sink, state).catch(() => {});
+
+    controller().enqueue(new Uint8Array([1]));
+    await tick();
+
+    await pipe;
+    await expect(state.promise).rejects.toThrow('batch write failed');
+    expect(state.streamEnded).toBe(true);
+  });
+
+  it('does NOT decrement pendingOps for a failed (retained, un-durable) batch', async () => {
+    // On failure the sink retains the batch in its buffer, so those chunks are
+    // still "read but not durable" — pendingOps must keep counting them.
+    const { sink } = makeBatchSink((call) => {
+      if (call === 0) throw new Error('batch write failed');
+    });
+    const { source, controller } = makeControlledSource();
+    const state = createFlushableState();
+
+    const pipe = flushablePipe(source, sink, state).catch(() => {});
+
+    controller().enqueue(new Uint8Array([1]));
+    controller().enqueue(new Uint8Array([2]));
+    await tick();
+
+    await pipe;
+    await expect(state.promise).rejects.toThrow('batch write failed');
+    // Both chunks were read; the batch write failed and retained them, so the
+    // count stays at 2 rather than being silently zeroed in a `finally`.
+    expect(state.pendingOps).toBe(2);
+  });
+
+  it('splits a coalesced batch at the chunk-count wire limit', async () => {
+    process.env.WORKFLOW_STREAM_MAX_CHUNKS_PER_BATCH = '2';
+
+    let releaseFirst!: () => void;
+    const firstInFlight = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    const { sink, batches } = makeBatchSink((call) =>
+      call === 0 ? firstInFlight : undefined
+    );
+    const { source, controller } = makeControlledSource();
+    const state = createFlushableState();
+    const pipe = flushablePipe(source, sink, state).catch(() => {});
+
+    // First chunk goes out alone and blocks; five more queue behind it.
+    controller().enqueue(new Uint8Array([1]));
+    await tick();
+    for (const n of [2, 3, 4, 5, 6]) controller().enqueue(new Uint8Array([n]));
+    await tick();
+
+    releaseFirst();
+    controller().close();
+    await pipe;
+
+    // No batch exceeds the 2-chunk cap, and every chunk is delivered in order.
+    expect(batches.every((b) => b.length <= 2)).toBe(true);
+    expect(batches.flat().map((c) => c[0])).toEqual([1, 2, 3, 4, 5, 6]);
+    await expect(state.promise).resolves.toBeUndefined();
+  });
+
+  it('splits a coalesced batch at the byte wire limit', async () => {
+    // Cap at 10 bytes; each chunk is 4 bytes, so at most 2 fit per batch.
+    process.env.WORKFLOW_STREAM_MAX_BYTES_PER_BATCH = '10';
+
+    let releaseFirst!: () => void;
+    const firstInFlight = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    const { sink, batches } = makeBatchSink((call) =>
+      call === 0 ? firstInFlight : undefined
+    );
+    const { source, controller } = makeControlledSource();
+    const state = createFlushableState();
+    const pipe = flushablePipe(source, sink, state).catch(() => {});
+
+    controller().enqueue(new Uint8Array([0, 0, 0, 1]));
+    await tick();
+    for (let i = 2; i <= 5; i++) {
+      controller().enqueue(new Uint8Array([0, 0, 0, i]));
+    }
+    await tick();
+
+    releaseFirst();
+    controller().close();
+    await pipe;
+
+    for (const b of batches) {
+      const bytes = b.reduce((sum, c) => sum + c.byteLength, 0);
+      expect(bytes).toBeLessThanOrEqual(10);
+    }
+    expect(batches.flat().map((c) => c[3])).toEqual([1, 2, 3, 4, 5]);
+    await expect(state.promise).resolves.toBeUndefined();
+  });
+
+  it('sends an oversized single chunk alone rather than stalling', async () => {
+    process.env.WORKFLOW_STREAM_MAX_BYTES_PER_BATCH = '4';
+
+    const { sink, batches } = makeBatchSink();
+    const { source, controller } = makeControlledSource();
+    const state = createFlushableState();
+    const pipe = flushablePipe(source, sink, state).catch(() => {});
+
+    // A single chunk larger than the byte cap must still be delivered (alone).
+    controller().enqueue(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]));
+    controller().close();
+    await pipe;
+
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(1);
+    expect(batches[0][0].byteLength).toBe(8);
+    await expect(state.promise).resolves.toBeUndefined();
+  });
+
+  it('applies backpressure once too many chunks are outstanding', async () => {
+    process.env.WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS = '2';
+
+    let releaseFirst!: () => void;
+    const firstInFlight = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    const { sink, batches } = makeBatchSink((call) =>
+      call === 0 ? firstInFlight : undefined
+    );
+
+    // A source that records how many chunks the pipe has pulled, so we can
+    // assert the producer stops reading under backpressure.
+    let pulled = 0;
+    const total = 6;
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled < total) {
+          controller.enqueue(new Uint8Array([pulled]));
+          pulled++;
+        } else {
+          controller.close();
+        }
+      },
+    });
+    const state = createFlushableState();
+    const pipe = flushablePipe(source, sink, state).catch(() => {});
+
+    // First chunk is in flight; the producer may read ahead only up to the cap
+    // (2 outstanding) and then must wait, so it cannot drain all 6.
+    await tick(20);
+    expect(batches).toHaveLength(1);
+    expect(pulled).toBeLessThan(total);
+    expect(state.pendingOps).toBeLessThanOrEqual(2);
+
+    // Releasing the in-flight write lets the pipe drain the rest.
+    releaseFirst();
+    await pipe;
+    expect(batches.flat()).toHaveLength(total);
+    expect(state.pendingOps).toBe(0);
   });
 });
