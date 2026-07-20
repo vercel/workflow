@@ -78,6 +78,17 @@ describe('getHeaders', () => {
     process.env = originalEnv;
   });
 
+  it('appends a caller user-agent token to the world-vercel user-agent', () => {
+    const headers = getHeaders(
+      { headers: { 'User-Agent': 'eve/0.18.1' } },
+      { usingProxy: false }
+    );
+
+    expect(headers.get('User-Agent')).toMatch(
+      /^@workflow\/world-vercel\/\S+ node-\S+ \S+ \([^)]*\)(?: \S+)? eve\/0\.18\.1$/
+    );
+  });
+
   it('does not attach x-vercel-trusted-oidc-idp-token (set by getHttpConfig)', () => {
     process.env.VERCEL_OIDC_TOKEN = 'my-oidc-token';
     const headers = getHeaders(undefined, { usingProxy: false });
