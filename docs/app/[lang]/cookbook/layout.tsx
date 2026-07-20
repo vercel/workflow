@@ -12,6 +12,7 @@ const Layout = async ({
     <div className="bg-background-100">
       <DocsLayout
         currentVersion={LATEST_VERSION.id}
+        lang={lang}
         tree={getCookbookTree(lang)}
       >
         {children}

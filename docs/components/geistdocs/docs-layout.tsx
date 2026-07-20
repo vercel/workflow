@@ -2,6 +2,7 @@ import { GeistdocsDocsLayout as PackageDocsLayout } from '@vercel/geistdocs/layo
 import { GeistdocsVersionSelect } from '@vercel/geistdocs/versions';
 import type { ComponentProps, CSSProperties, ReactNode } from 'react';
 import { config } from '@/lib/geistdocs/config';
+import { getVersionSwitchPaths } from '@/lib/geistdocs/version-switch-paths';
 
 type DocsTree = ComponentProps<typeof PackageDocsLayout>['tree'];
 type DocsTreeNode = DocsTree['children'][number];
@@ -61,12 +62,14 @@ const addSidebarBadgesToTree = (tree: DocsTree): DocsTree => ({
 interface DocsLayoutProps {
   children: ReactNode;
   currentVersion?: string;
+  lang: string;
   tree: ComponentProps<typeof PackageDocsLayout>['tree'];
 }
 
 export const DocsLayout = ({
   tree,
   currentVersion = config.versions?.current,
+  lang,
   children,
 }: DocsLayoutProps) => (
   <PackageDocsLayout
@@ -81,6 +84,7 @@ export const DocsLayout = ({
       config.versions ? (
         <GeistdocsVersionSelect
           current={currentVersion}
+          paths={getVersionSwitchPaths(lang)}
           versions={config.versions}
         />
       ) : null
