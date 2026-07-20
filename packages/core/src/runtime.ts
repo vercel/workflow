@@ -18,6 +18,7 @@ import {
 import {
   type Event,
   getQueueTopicPrefix,
+  isLegacySpecVersion,
   ROOT_RUN_ID_ATTRIBUTE,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
@@ -852,8 +853,31 @@ export function workflowEntrypoint(
                           'All parallel steps done, replaying inline after background step',
                           { workflowRunId: runId }
                         );
+                        const runCreatedEvent = cachedEvents.find(
+                          (event) => event.eventType === 'run_created'
+                        );
+                        let replayInput: unknown;
+                        if (runCreatedEvent) {
+                          replayInput = runCreatedEvent.eventData.input;
+                        } else {
+                          if (!isLegacySpecVersion(bgRun.specVersion)) {
+                            throw new WorkflowRuntimeError(
+                              `Workflow run "${runId}" has no "run_created" event`
+                            );
+                          }
+                          // Legacy runs predate the event-sourced run_created
+                          // invariant, so retain the resolved GET only for them.
+                          const legacyRun = await world.runs.get(runId, {
+                            resolveData: 'all',
+                          });
+                          if (legacyRun.status !== 'running') {
+                            return;
+                          }
+                          replayInput = legacyRun.input;
+                        }
                         workflowRun = {
                           ...bgRun,
+                          input: replayInput,
                           status: 'running',
                           output: undefined,
                           error: undefined,
