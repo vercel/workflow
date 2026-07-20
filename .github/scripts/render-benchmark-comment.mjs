@@ -160,50 +160,59 @@ function formatMs(value) {
 }
 
 /**
- * Annotates each metric row with the matching baseline average (from the most
- * recent main-branch run), keyed by
+ * Annotates each metric row with the matching baseline values (best, p75, p99)
+ * from the most recent main-branch run, keyed by
  * methodologyVersion/backend/app/metric/scenario. The methodology version is
  * part of the key so a change to the measurement window (e.g. the switch to
  * the in-deployment trigger) does not diff incomparable numbers: an old
  * baseline won't match the new run, and the delta stays blank until `main` has
- * produced a same-methodology baseline. The annotation is stored on the entry
- * so history re-renders keep showing the delta each run was originally
+ * produced a same-methodology baseline. The annotations are stored on the entry
+ * so history re-renders keep showing the deltas each run was originally
  * compared against.
  */
 export function annotateWithBaseline(results, baseline) {
   if (!baseline || baseline.length === 0) return results;
   const methodology = (result) => result.methodologyVersion ?? 'legacy';
-  const baselineAvgs = new Map();
+  const baselineRows = new Map();
   for (const result of baseline) {
     for (const row of result.metrics ?? []) {
-      baselineAvgs.set(
+      baselineRows.set(
         `${methodology(result)}/${result.backend}/${result.app}/${row.metric}/${row.scenario}`,
-        row.avg
+        row
       );
     }
   }
   return results.map((result) => ({
     ...result,
     metrics: (result.metrics ?? []).map((row) => {
-      const baselineAvg = baselineAvgs.get(
+      const base = baselineRows.get(
         `${methodology(result)}/${result.backend}/${result.app}/${row.metric}/${row.scenario}`
       );
-      return typeof baselineAvg === 'number' ? { ...row, baselineAvg } : row;
+      if (!base) return row;
+      // The fastest-sample field was renamed `min` -> `best`; fall back to
+      // `min` so deltas keep working against baselines from before the rename.
+      const baselineBest = base.best ?? base.min;
+      return {
+        ...row,
+        ...(typeof baselineBest === 'number' ? { baselineBest } : {}),
+        ...(typeof base.p75 === 'number' ? { baselineP75: base.p75 } : {}),
+        ...(typeof base.p99 === 'number' ? { baselineP99: base.p99 } : {}),
+      };
     }),
   }));
 }
 
-/** Formats the avg-vs-main delta, e.g. " (+4.2%)"; empty without a baseline. */
-function formatDelta(current, baselineAvg) {
+/** Formats a vs-main delta, e.g. " (+4.2%)"; empty without a baseline. */
+function formatDelta(current, baseline) {
   if (
     typeof current !== 'number' ||
-    typeof baselineAvg !== 'number' ||
-    baselineAvg <= 0 ||
-    !Number.isFinite(current / baselineAvg)
+    typeof baseline !== 'number' ||
+    baseline <= 0 ||
+    !Number.isFinite(current / baseline)
   ) {
     return '';
   }
-  const pct = ((current - baselineAvg) / baselineAvg) * 100;
+  const pct = ((current - baseline) / baseline) * 100;
   if (Math.abs(pct) < 0.5) return ' (±0%)';
   const digits = Math.abs(pct) >= 10 ? 0 : 1;
   return ` (${pct > 0 ? '+' : ''}${pct.toFixed(digits)}%)`;
@@ -230,8 +239,8 @@ function metricSortKey(row) {
 
 function renderResultTable(result) {
   const lines = [
-    '| Metric | Scenario | Avg (ms) | P10 (ms) | P75 (ms) | P90 (ms) | P99 (ms) | Samples |',
-    '|--------|----------|---------:|---------:|---------:|---------:|---------:|--------:|',
+    '| Metric | Scenario | Best (ms) | P75 (ms) | P90 (ms) | P99 (ms) | Samples |',
+    '|--------|----------|----------:|---------:|---------:|---------:|--------:|',
   ];
   const rows = [...result.metrics].sort(
     (a, b) => metricSortKey(a) - metricSortKey(b)
@@ -241,8 +250,9 @@ function renderResultTable(result) {
     // Abbreviations only — the definitions live in the comment footer.
     const name = label ? `**${label.name}**` : row.metric;
     const targets = row.targets ?? {};
+    // Deltas vs main are shown on Best/P75/P99 (not P90).
     lines.push(
-      `| ${name} | ${row.scenario} | ${formatMs(row.avg)}${formatDelta(row.avg, row.baselineAvg)} | ${formatMs(row.p10)} | ${formatCell(row.p75, targets.p75)} | ${formatCell(row.p90, targets.p90)} | ${formatCell(row.p99, targets.p99)} | ${row.samples} |`
+      `| ${name} | ${row.scenario} | ${formatMs(row.best)}${formatDelta(row.best, row.baselineBest)} | ${formatCell(row.p75, targets.p75)}${formatDelta(row.p75, row.baselineP75)} | ${formatCell(row.p90, targets.p90)} | ${formatCell(row.p99, targets.p99)}${formatDelta(row.p99, row.baselineP99)} | ${row.samples} |`
     );
   }
   return lines.join('\n');
@@ -310,13 +320,18 @@ function renderFooter(entries) {
   const scenarioLegend = buildScenarioLegend(results);
   const targetsLegend = buildTargetsLegend(results);
   const hasBaseline = results.some((result) =>
-    (result.metrics ?? []).some((row) => typeof row.baselineAvg === 'number')
+    (result.metrics ?? []).some(
+      (row) =>
+        typeof row.baselineBest === 'number' ||
+        typeof row.baselineP75 === 'number' ||
+        typeof row.baselineP99 === 'number'
+    )
   );
 
   return [
     ...(hasBaseline
       ? [
-          '<sub>Avg deltas compare against the most recent benchmark run on `main` at the time of this run.</sub>',
+          '<sub>Best/P75/P99 deltas compare against the most recent benchmark run on `main` at the time of this run.</sub>',
           '',
         ]
       : []),
@@ -331,7 +346,7 @@ function renderFooter(entries) {
     '',
     '<sub>All metrics are measured from deployment-side timestamps only. Runs are triggered by an in-deployment route that stamps the anchor (`clientStart`) right before `start()`, so the CI runner’s request and its path through api.vercel.com sit outside every measured window. TTFS = in-deployment `start()` → first step body (turbo uses the in-process fast path, non-turbo the dispatch path), and includes the VQS dispatch hop plus any `/flow` cold start. STSO/WO are measured between step bodies on the deployment. SL is measured inside the workflow (parallel reader/writer steps), so it no longer includes the api.vercel.com read path.</sub>',
     '',
-    '<sub>Cold starts are kept in the numbers on purpose — they are part of real bursty-workload latency. The workbench deployment cold-starts the `/flow` invocation for a large fraction of runs, inflating P75+; the **P10** column shows the warm-start floor for comparison.</sub>',
+    '<sub>Cold starts are kept in the numbers on purpose — they are part of real bursty-workload latency. The workbench deployment cold-starts the `/flow` invocation for a large fraction of runs, inflating P75+; the **Best** column shows the fastest (warm-start) sample for comparison.</sub>',
   ].join('\n');
 }
 
