@@ -10,7 +10,6 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { createWorkflowBaseUrl, pluralize } from '@workflow/utils';
-import { getPort } from '@workflow/utils/get-port';
 import {
   getQueueTopicPrefix,
   resolveQueueNamespace,
@@ -41,6 +40,7 @@ import {
 } from '../types.js';
 
 import { MAX_QUEUE_DELIVERIES } from './constants.js';
+import { getPortLazy } from './get-port-lazy.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -158,7 +158,7 @@ const stepHandler = createQueueHandler(
 
       // Resolve local async values concurrently before entering the trace span
       const [port, spanKind] = await Promise.all([
-        isVercel ? undefined : getPort(),
+        isVercel ? undefined : getPortLazy(),
         getSpanKind('CONSUMER'),
       ]);
 
