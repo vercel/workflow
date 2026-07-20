@@ -81,6 +81,21 @@ import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
 
 /**
+ * Server-owned per-run event ceiling the Local World reports on run responses,
+ * mirroring the Vercel World's `maxEvents` so the SDK runtime can enforce the
+ * limit in-process (no server involved). Overridable via `WORKFLOW_MAX_EVENTS`
+ * (used by tests to exercise the limit); defaults to the published 25,000.
+ */
+const DEFAULT_MAX_EVENTS_PER_RUN = 25_000;
+function getMaxEventsPerRun(): number {
+  const raw = process.env.WORKFLOW_MAX_EVENTS;
+  const parsed = raw !== undefined ? Number(raw) : Number.NaN;
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_MAX_EVENTS_PER_RUN;
+}
+
+/**
  * Per-step in-process async mutex. Serializes concurrent `events.create` calls
  * that target the same step, so that the "check terminal state, then write step
  * entity + event" sequence is atomic. Without this, two concurrent step_started
@@ -883,6 +898,7 @@ export function createEventsStorage(
             return {
               event: stripEventDataRefs(event, resolveData),
               run: currentRun,
+              ...(currentRun ? { maxEvents: getMaxEventsPerRun() } : {}),
             };
           }
 
@@ -2292,6 +2308,9 @@ export function createEventsStorage(
           cursor,
           hasMore,
           ...(stepCreatedLazily ? { stepCreated: true } : {}),
+          // Server-owned per-run event ceiling (mirrors the Vercel World) so
+          // the runtime enforces the limit under the Local World too.
+          ...(run ? { maxEvents: getMaxEventsPerRun() } : {}),
         };
       } // end createImpl
     },

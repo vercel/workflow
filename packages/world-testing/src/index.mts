@@ -1,5 +1,6 @@
 import { addition } from './addition.mjs';
 import { errors } from './errors.mjs';
+import { eventLimit } from './event-limit.mjs';
 import { hooks } from './hooks.mjs';
 import { idempotency } from './idempotency.mjs';
 import { inlineExecution } from './inline-execution.mjs';
@@ -14,4 +15,5 @@ export function createTestSuite(pkgName: string) {
   errors(pkgName);
   inlineExecution(pkgName);
   lineage(pkgName);
+  eventLimit(pkgName);
 }
