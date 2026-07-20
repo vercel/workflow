@@ -1,5 +1,6 @@
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createFlushableState, flushablePipe } from './flushable-stream.js';
 import { setWorld } from './runtime/world.js';
 import {
   dehydrateStepReturnValue,
@@ -457,6 +458,149 @@ describe('WorkflowServerWritableStream', () => {
       await closePromise;
 
       expect(order).toEqual(['barrier', 'close']);
+    });
+  });
+
+  describe('writeMulti batching via flushablePipe', () => {
+    it('coalesces chunks that arrive during an in-flight write into one writeMulti', async () => {
+      // Hold the first server write in flight so the chunks produced while it
+      // is pending accumulate and flush together via writeMulti. Without the
+      // coalescing pipe, each chunk would be its own single write() and
+      // writeMulti would never be called with more than one chunk.
+      let releaseFirst!: () => void;
+      const firstInFlight = new Promise<void>((r) => {
+        releaseFirst = r;
+      });
+      mockStreams.write.mockImplementationOnce(async () => {
+        await firstInFlight;
+      });
+
+      const serverWritable = new WorkflowServerWritableStream(
+        'run-123',
+        'test-stream'
+      );
+      const state = createFlushableState();
+
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      const source = new ReadableStream<Uint8Array>({
+        start(c) {
+          controller = c;
+        },
+      });
+
+      const pipe = flushablePipe(source, serverWritable, state).catch(() => {});
+
+      // First chunk goes out alone (a single write) and blocks in flight.
+      controller.enqueue(new Uint8Array([1]));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+      expect(mockStreams.writeMulti).not.toHaveBeenCalled();
+
+      // Three more chunks arrive while the first write is in flight.
+      controller.enqueue(new Uint8Array([2]));
+      controller.enqueue(new Uint8Array([3]));
+      controller.enqueue(new Uint8Array([4]));
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Release the first write; the queued chunks flush as ONE writeMulti.
+      releaseFirst();
+      controller.close();
+      await pipe;
+
+      expect(mockStreams.writeMulti).toHaveBeenCalledTimes(1);
+      const [, , batched] = mockStreams.writeMulti.mock.calls[0];
+      expect(batched.map((c: Uint8Array) => c[0])).toEqual([2, 3, 4]);
+      expect(mockStreams.close).toHaveBeenCalledTimes(1);
+      await expect(state.promise).resolves.toBeUndefined();
+    });
+
+    it('falls back to sequential writes when the world lacks writeMulti', async () => {
+      delete (mockStreams as { writeMulti?: unknown }).writeMulti;
+
+      let releaseFirst!: () => void;
+      const firstInFlight = new Promise<void>((r) => {
+        releaseFirst = r;
+      });
+      mockStreams.write.mockImplementationOnce(async () => {
+        await firstInFlight;
+      });
+
+      const serverWritable = new WorkflowServerWritableStream(
+        'run-123',
+        'test-stream'
+      );
+      const state = createFlushableState();
+
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      const source = new ReadableStream<Uint8Array>({
+        start(c) {
+          controller = c;
+        },
+      });
+      const pipe = flushablePipe(source, serverWritable, state).catch(() => {});
+
+      controller.enqueue(new Uint8Array([1]));
+      await new Promise((r) => setTimeout(r, 10));
+      controller.enqueue(new Uint8Array([2]));
+      controller.enqueue(new Uint8Array([3]));
+      await new Promise((r) => setTimeout(r, 10));
+      releaseFirst();
+      controller.close();
+      await pipe;
+
+      // All three chunks are delivered via sequential write() calls.
+      expect(mockStreams.write).toHaveBeenCalledTimes(3);
+      const delivered = mockStreams.write.mock.calls.map(
+        (call: unknown[]) => (call[2] as Uint8Array)[0]
+      );
+      expect(delivered).toEqual([1, 2, 3]);
+      await expect(state.promise).resolves.toBeUndefined();
+    });
+
+    it('errors the stream on a failed batch without re-sending or closing', async () => {
+      // Let the first (single) write land, then make the coalesced writeMulti
+      // fail. flush() retains the batch in the buffer and rethrows; the pipe
+      // errors. Nothing should re-send the buffered chunks or close the stream.
+      let releaseFirst!: () => void;
+      const firstInFlight = new Promise<void>((r) => {
+        releaseFirst = r;
+      });
+      mockStreams.write.mockImplementationOnce(async () => {
+        await firstInFlight;
+      });
+      mockStreams.writeMulti.mockRejectedValueOnce(new Error('batch failed'));
+
+      const serverWritable = new WorkflowServerWritableStream(
+        'run-123',
+        'test-stream'
+      );
+      const state = createFlushableState();
+
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      const source = new ReadableStream<Uint8Array>({
+        start(c) {
+          controller = c;
+        },
+      });
+      const pipe = flushablePipe(source, serverWritable, state).catch(() => {});
+
+      controller.enqueue(new Uint8Array([1]));
+      await new Promise((r) => setTimeout(r, 10));
+      controller.enqueue(new Uint8Array([2]));
+      controller.enqueue(new Uint8Array([3]));
+      await new Promise((r) => setTimeout(r, 10));
+      releaseFirst();
+      await pipe;
+
+      await expect(state.promise).rejects.toThrow('batch failed');
+      expect(mockStreams.writeMulti).toHaveBeenCalledTimes(1);
+      expect(mockStreams.close).not.toHaveBeenCalled();
+
+      // Wait past any flush interval: the retained chunks are not re-sent by a
+      // leaked timer or later path, and the stream stays closed-off.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(mockStreams.writeMulti).toHaveBeenCalledTimes(1);
+      expect(mockStreams.close).not.toHaveBeenCalled();
     });
   });
 });

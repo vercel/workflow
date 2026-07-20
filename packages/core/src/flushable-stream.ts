@@ -1,6 +1,64 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
 import { envNumber } from '@workflow/world';
+import { STREAM_WRITE_BATCH_SYMBOL } from './symbols.js';
+
+/**
+ * A batched, durable write entry point a sink may expose under
+ * {@link STREAM_WRITE_BATCH_SYMBOL}. Resolves once every chunk in the batch
+ * has reached the server. See `WorkflowServerWritableStream`.
+ */
+type BatchWrite = (chunks: Uint8Array[]) => Promise<void>;
+
+/**
+ * Flow-control knob: upper bound on chunks read-but-not-yet-durably-written
+ * while coalescing. Once this many chunks are outstanding the producer stops
+ * reading until the consumer drains a batch, so a fast producer paired with a
+ * slow server can't grow the in-memory queue without bound. Override:
+ * `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS`.
+ *
+ * This is deliberately distinct from the per-request batch caps below: this
+ * bounds how much is *buffered*, those bound how much goes out in one
+ * `writeMulti`. Raising this must never let a single request exceed a wire
+ * limit — batch sizing enforces that independently.
+ */
+export const MAX_INFLIGHT_CHUNKS = 1000;
+
+const getMaxInflightChunks = (): number =>
+  envNumber('WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS', MAX_INFLIGHT_CHUNKS, {
+    integer: true,
+    min: 1,
+  });
+
+/**
+ * Wire limit: maximum number of chunks in a single coalesced `writeMulti`.
+ * The server enforces a per-multi-write chunk cap (1,000 today); a batch is
+ * split at this bound so it can never be rejected wholesale, independently of
+ * the backpressure knob above. Override: `WORKFLOW_STREAM_MAX_CHUNKS_PER_BATCH`.
+ */
+export const MAX_CHUNKS_PER_BATCH = 1000;
+
+const getMaxChunksPerBatch = (): number =>
+  envNumber('WORKFLOW_STREAM_MAX_CHUNKS_PER_BATCH', MAX_CHUNKS_PER_BATCH, {
+    integer: true,
+    min: 1,
+  });
+
+/**
+ * Wire limit: maximum cumulative bytes in a single coalesced `writeMulti`.
+ * Chunk *count* alone is not enough — 1,000 small chunks are ~100KB but 1,000
+ * file-sized chunks can be hundreds of MB, which platform request-body limits
+ * reject long before the count cap matters. A batch is split once adding the
+ * next chunk would exceed this (a single chunk larger than the cap still goes
+ * out alone). Default 1 MiB. Override: `WORKFLOW_STREAM_MAX_BYTES_PER_BATCH`.
+ */
+export const MAX_BYTES_PER_BATCH = 1024 * 1024;
+
+const getMaxBytesPerBatch = (): number =>
+  envNumber('WORKFLOW_STREAM_MAX_BYTES_PER_BATCH', MAX_BYTES_PER_BATCH, {
+    integer: true,
+    min: 1,
+  });
 
 /**
  * Polling interval (in ms) for lock release detection.
@@ -217,7 +275,32 @@ export function pollReadableLock(
  * @param state - The flushable state tracker
  * @returns Promise that resolves when stream ends (not when done promise resolves)
  */
-export async function flushablePipe(
+export function flushablePipe(
+  source: ReadableStream,
+  sink: WritableStream,
+  state: FlushableStreamState
+): Promise<void> {
+  // When the sink can accept a batch of chunks in one durable write (server
+  // writables do), coalesce chunks that arrive while a previous batch is still
+  // in flight into a single server write. Without this, the WHATWG
+  // `WritableStream` contract serializes the sink one chunk per write() and the
+  // per-chunk `await writer.write()` in the fallback means the sink's buffer
+  // never holds more than one chunk — so its `writeMulti` batching path never
+  // engages and every chunk becomes its own server round trip.
+  const batchWrite = (sink as { [STREAM_WRITE_BATCH_SYMBOL]?: BatchWrite })[
+    STREAM_WRITE_BATCH_SYMBOL
+  ];
+  return typeof batchWrite === 'function'
+    ? flushablePipeCoalescing(source, sink, state, batchWrite)
+    : flushablePipePerChunk(source, sink, state);
+}
+
+/**
+ * Per-chunk variant of {@link flushablePipe}: awaits each `writer.write()`
+ * before reading the next chunk. Used for sinks without a durable batch write
+ * (plain `WritableStream`s, `TransformStream` writables on the read path).
+ */
+async function flushablePipePerChunk(
   source: ReadableStream,
   sink: WritableStream,
   state: FlushableStreamState
@@ -285,6 +368,216 @@ export async function flushablePipe(
     // Uses cancelReason (set in the catch block) so the source receives context
     // about why it was cancelled. On normal completion cancelReason is undefined,
     // which is a harmless no-op on an already-done reader.
+    reader.cancel(cancelReason).catch(() => {});
+    reader.releaseLock();
+    writer.releaseLock();
+  }
+}
+
+/**
+ * Shared, mutable coordination state between the coalescing pipe's producer
+ * (reads from source into `queue`) and consumer (drains `queue` in batches).
+ */
+interface CoalesceContext {
+  state: FlushableStreamState;
+  batchWrite: BatchWrite;
+  /** Chunks read but not yet handed to a batch write. */
+  queue: Uint8Array[];
+  /** Set once the source has reported `done`. */
+  sourceDone: boolean;
+  /** Resolver that wakes the consumer when the queue grows or the source ends. */
+  wakeConsumer: (() => void) | null;
+  /** Resolver that wakes the producer when the consumer relieves backpressure. */
+  wakeProducer: (() => void) | null;
+  /** Wire limit: max chunks per coalesced `writeMulti`. */
+  maxChunksPerBatch: number;
+  /** Wire limit: max cumulative bytes per coalesced `writeMulti`. */
+  maxBytesPerBatch: number;
+}
+
+function wake(ctx: CoalesceContext, which: 'wakeConsumer' | 'wakeProducer') {
+  const resolve = ctx[which];
+  if (resolve) {
+    ctx[which] = null;
+    resolve();
+  }
+}
+
+/**
+ * How many leading queued chunks fit in one `writeMulti` without crossing the
+ * chunk-count or byte wire limits. Always returns at least 1 so a single chunk
+ * larger than the byte cap still makes progress (alone).
+ */
+function nextBatchSize(ctx: CoalesceContext): number {
+  let count = 0;
+  let bytes = 0;
+  for (const chunk of ctx.queue) {
+    if (count >= ctx.maxChunksPerBatch) break;
+    if (count > 0 && bytes + chunk.byteLength > ctx.maxBytesPerBatch) break;
+    count++;
+    bytes += chunk.byteLength;
+  }
+  return count;
+}
+
+/**
+ * Consumer loop: drains the queue one batch at a time, awaiting each batch so it
+ * is durable on the server before its chunks leave `pendingOps`. It takes as
+ * much of the queue as the wire limits allow each round, so chunks that arrived
+ * while the previous batch was in flight coalesce into the next server write.
+ *
+ * `pendingOps` is decremented only after `batchWrite` *succeeds*: on failure the
+ * chunks stay retained in the sink's buffer (see `WorkflowServerWritableStream`)
+ * and are therefore still "read but not durable", so they must keep counting.
+ * A throw propagates out of the loop; the pipe's producer then tears down.
+ */
+async function drainBatches(ctx: CoalesceContext): Promise<void> {
+  while (true) {
+    if (ctx.queue.length === 0) {
+      if (ctx.sourceDone) return;
+      await new Promise<void>((resolve) => {
+        ctx.wakeConsumer = resolve;
+      });
+      continue;
+    }
+    const count = nextBatchSize(ctx);
+    const batch = ctx.queue.slice(0, count);
+    ctx.queue = ctx.queue.slice(count);
+    await ctx.batchWrite(batch);
+    ctx.state.pendingOps -= batch.length;
+    // Relieve producer backpressure now that this batch is durable.
+    wake(ctx, 'wakeProducer');
+  }
+}
+
+/**
+ * Await the next chunk while a batch write is in flight, racing three outcomes:
+ * a read result, the sink closing under us, or a server-write failure from the
+ * consumer (surfaced promptly even while blocked on the read). On normal
+ * completion the consumer only settles after the producer sets `sourceDone`, so
+ * its branch throws only on real failure.
+ */
+function readNextChunk(
+  reader: ReadableStreamDefaultReader,
+  writer: WritableStreamDefaultWriter,
+  consumer: Promise<void>
+): Promise<Awaited<ReturnType<ReadableStreamDefaultReader['read']>>> {
+  return Promise.race([
+    reader.read(),
+    writer.closed.then(() => {
+      throw new WorkflowRuntimeError('Writable stream closed prematurely');
+    }),
+    consumer.then(
+      () => {
+        throw new WorkflowRuntimeError('Stream consumer ended prematurely');
+      },
+      (err) => {
+        throw err;
+      }
+    ),
+  ]);
+}
+
+/**
+ * Backpressure: once too many chunks are outstanding, stop reading until the
+ * consumer drains a batch. Racing the consumer avoids a deadlock if it ends or
+ * fails while we wait.
+ */
+async function awaitBackpressureRelief(
+  ctx: CoalesceContext,
+  consumer: Promise<void>,
+  maxInflight: number
+): Promise<void> {
+  if (ctx.state.pendingOps < maxInflight) return;
+  await Promise.race([
+    new Promise<void>((resolve) => {
+      ctx.wakeProducer = resolve;
+    }),
+    consumer.then(
+      () => undefined,
+      () => undefined
+    ),
+  ]);
+}
+
+/**
+ * Batching variant of {@link flushablePipe} for sinks that expose a durable
+ * batch write ({@link STREAM_WRITE_BATCH_SYMBOL}). A producer reads from
+ * `source` into a queue; {@link drainBatches} coalesces queued chunks into as
+ * few server writes as possible — turning a fast burst of chunks into a handful
+ * of round trips instead of one per chunk.
+ *
+ * Durability is preserved exactly as in the per-chunk path: `state.pendingOps`
+ * counts chunks that have been read but not yet durably written, so the
+ * lock-release completion (`pollWritableLock` / `pollReadableLock`) never fires
+ * while data is still queued or in flight, and the source-done path awaits every
+ * batch before closing.
+ */
+async function flushablePipeCoalescing(
+  source: ReadableStream,
+  sink: WritableStream,
+  state: FlushableStreamState,
+  batchWrite: BatchWrite
+): Promise<void> {
+  const reader = source.getReader();
+  const writer = sink.getWriter();
+  const maxInflight = getMaxInflightChunks();
+  let cancelReason: unknown;
+
+  const ctx: CoalesceContext = {
+    state,
+    batchWrite,
+    queue: [],
+    sourceDone: false,
+    wakeConsumer: null,
+    wakeProducer: null,
+    maxChunksPerBatch: getMaxChunksPerBatch(),
+    maxBytesPerBatch: getMaxBytesPerBatch(),
+  };
+  const consumer = drainBatches(ctx);
+
+  try {
+    while (!state.streamEnded) {
+      const readResult = await readNextChunk(reader, writer, consumer);
+      if (state.streamEnded) return;
+
+      if (readResult.done) {
+        // Signal end-of-source and wait for every queued/in-flight batch to
+        // reach the server before closing, so no chunk is dropped.
+        ctx.sourceDone = true;
+        wake(ctx, 'wakeConsumer');
+        await consumer;
+        state.streamEnded = true;
+        await writer.close();
+        if (!state.doneResolved) {
+          state.doneResolved = true;
+          state.resolve();
+        }
+        return;
+      }
+
+      // Count the chunk as pending the moment it is read — it stays counted
+      // until its batch is durably written.
+      ctx.queue.push(readResult.value as Uint8Array);
+      state.pendingOps++;
+      wake(ctx, 'wakeConsumer');
+
+      await awaitBackpressureRelief(ctx, consumer, maxInflight);
+    }
+  } catch (err) {
+    state.streamEnded = true;
+    cancelReason = err;
+    // Let the consumer settle so its rejection (if any) is observed here rather
+    // than surfacing as an unhandled rejection.
+    ctx.sourceDone = true;
+    wake(ctx, 'wakeConsumer');
+    await consumer.catch(() => {});
+    if (!state.doneResolved) {
+      state.doneResolved = true;
+      state.reject(err);
+    }
+    throw err;
+  } finally {
     reader.cancel(cancelReason).catch(() => {});
     reader.releaseLock();
     writer.releaseLock();
