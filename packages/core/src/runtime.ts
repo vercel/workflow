@@ -3,6 +3,7 @@ import {
   CorruptedEventLogError,
   EntityConflictError,
   FatalError,
+  MaxEventsExceededError,
   PreconditionFailedError,
   ReplayDivergenceError,
   RUN_ERROR_CODES,
@@ -42,7 +43,6 @@ import {
   isInlineOwnershipEnabled,
   isTurboEnabled,
 } from './runtime/constants.js';
-import { handleEventLimitExceeded } from './runtime/event-limit.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -1433,19 +1433,18 @@ export function workflowEntrypoint(
                       // run_started response. Undefined ⇒ no enforcement
                       // (older servers, or the turbo path which backgrounds
                       // run_started). Checked after the log is loaded and
-                      // before replay schedules more work.
+                      // before replay schedules more work. Throwing lets the
+                      // loop's terminal catch write run_failed (classified as
+                      // MAX_EVENTS_EXCEEDED); the failure is deterministic so
+                      // it is never retried/redelivered.
                       if (
                         maxEventsLimit !== undefined &&
                         events.length >= maxEventsLimit
                       ) {
-                        await handleEventLimitExceeded({
-                          runId,
-                          workflowName,
-                          requestId,
-                          eventCount: events.length,
-                          limit: maxEventsLimit,
-                        });
-                        return;
+                        throw new MaxEventsExceededError(
+                          events.length,
+                          maxEventsLimit
+                        );
                       }
 
                       // Update cache reference (may have been set for first time)
