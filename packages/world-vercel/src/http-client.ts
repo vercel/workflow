@@ -49,23 +49,6 @@ export const EVENTS_AGENT_OPTIONS = {
 const RETRY_AGENT_OPTIONS: RetryHandler.RetryOptions = {
   // Observe Retry-After header if received
   retryAfter: true,
-  // Undici's defaults omit connection timeouts even though the request never
-  // reached the server, so include them while preserving the default set.
-  // All workflow operations are idempotent, except POST for step_retrying event,
-  // which is safe against duplication. We can re-try on connection timeouts or
-  // resets safely under this assumption.
-  errorCodes: [
-    'ECONNRESET',
-    'ECONNREFUSED',
-    'ENOTFOUND',
-    'ENETDOWN',
-    'ENETUNREACH',
-    'EHOSTDOWN',
-    'EHOSTUNREACH',
-    'EPIPE',
-    'UND_ERR_SOCKET',
-    'UND_ERR_CONNECT_TIMEOUT',
-  ],
   // Retry 5xx in-process (genuine transient blips recover fast), but NOT 429.
   // The Vercel firewall issues a challenge as a 429: our server-to-server
   // client cannot solve a challenge, so in-process retries just re-trigger it
