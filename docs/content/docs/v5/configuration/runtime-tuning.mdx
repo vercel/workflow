@@ -133,6 +133,21 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - Stream write buffering interval.
 - Also available as `streamFlushIntervalMs` on Worlds that expose it.
 
+### `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS`
+
+- Default: `1000`
+- Flow-control bound: how many stream chunks may be read-but-not-yet-durably-written while writes are coalesced. Once this many are outstanding, the producer pauses reading until a batch is written. Bounds in-memory buffering; distinct from the per-request batch caps below.
+
+### `WORKFLOW_STREAM_MAX_CHUNKS_PER_BATCH`
+
+- Default: `1000`
+- Wire limit: maximum number of chunks sent in a single coalesced multi-write. Larger bursts are split across requests so one request can't exceed the server's per-multi-write chunk cap.
+
+### `WORKFLOW_STREAM_MAX_BYTES_PER_BATCH`
+
+- Default: `1048576` (1 MiB)
+- Wire limit: maximum cumulative bytes in a single coalesced multi-write, so large chunks don't produce a request body that platform limits reject. A single chunk larger than this is still sent on its own.
+
 ### `WORKFLOW_FRAMED_STREAM_MAX_RECONNECTS`
 
 - Default: `50`

@@ -556,5 +556,51 @@ describe('WorkflowServerWritableStream', () => {
       expect(delivered).toEqual([1, 2, 3]);
       await expect(state.promise).resolves.toBeUndefined();
     });
+
+    it('errors the stream on a failed batch without re-sending or closing', async () => {
+      // Let the first (single) write land, then make the coalesced writeMulti
+      // fail. flush() retains the batch in the buffer and rethrows; the pipe
+      // errors. Nothing should re-send the buffered chunks or close the stream.
+      let releaseFirst!: () => void;
+      const firstInFlight = new Promise<void>((r) => {
+        releaseFirst = r;
+      });
+      mockStreams.write.mockImplementationOnce(async () => {
+        await firstInFlight;
+      });
+      mockStreams.writeMulti.mockRejectedValueOnce(new Error('batch failed'));
+
+      const serverWritable = new WorkflowServerWritableStream(
+        'run-123',
+        'test-stream'
+      );
+      const state = createFlushableState();
+
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      const source = new ReadableStream<Uint8Array>({
+        start(c) {
+          controller = c;
+        },
+      });
+      const pipe = flushablePipe(source, serverWritable, state).catch(() => {});
+
+      controller.enqueue(new Uint8Array([1]));
+      await new Promise((r) => setTimeout(r, 10));
+      controller.enqueue(new Uint8Array([2]));
+      controller.enqueue(new Uint8Array([3]));
+      await new Promise((r) => setTimeout(r, 10));
+      releaseFirst();
+      await pipe;
+
+      await expect(state.promise).rejects.toThrow('batch failed');
+      expect(mockStreams.writeMulti).toHaveBeenCalledTimes(1);
+      expect(mockStreams.close).not.toHaveBeenCalled();
+
+      // Wait past any flush interval: the retained chunks are not re-sent by a
+      // leaked timer or later path, and the stream stays closed-off.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(mockStreams.writeMulti).toHaveBeenCalledTimes(1);
+      expect(mockStreams.close).not.toHaveBeenCalled();
+    });
   });
 });

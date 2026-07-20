@@ -11,16 +11,51 @@ import { STREAM_WRITE_BATCH_SYMBOL } from './symbols.js';
 type BatchWrite = (chunks: Uint8Array[]) => Promise<void>;
 
 /**
- * Upper bound on chunks read-but-not-yet-durably-written while coalescing.
- * Once this many chunks are outstanding the producer stops reading until the
- * consumer drains a batch, so a fast producer paired with a slow server can't
- * grow the in-memory queue without bound. Override:
+ * Flow-control knob: upper bound on chunks read-but-not-yet-durably-written
+ * while coalescing. Once this many chunks are outstanding the producer stops
+ * reading until the consumer drains a batch, so a fast producer paired with a
+ * slow server can't grow the in-memory queue without bound. Override:
  * `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS`.
+ *
+ * This is deliberately distinct from the per-request batch caps below: this
+ * bounds how much is *buffered*, those bound how much goes out in one
+ * `writeMulti`. Raising this must never let a single request exceed a wire
+ * limit — batch sizing enforces that independently.
  */
 export const MAX_INFLIGHT_CHUNKS = 1000;
 
 const getMaxInflightChunks = (): number =>
   envNumber('WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS', MAX_INFLIGHT_CHUNKS, {
+    integer: true,
+    min: 1,
+  });
+
+/**
+ * Wire limit: maximum number of chunks in a single coalesced `writeMulti`.
+ * The server enforces a per-multi-write chunk cap (1,000 today); a batch is
+ * split at this bound so it can never be rejected wholesale, independently of
+ * the backpressure knob above. Override: `WORKFLOW_STREAM_MAX_CHUNKS_PER_BATCH`.
+ */
+export const MAX_CHUNKS_PER_BATCH = 1000;
+
+const getMaxChunksPerBatch = (): number =>
+  envNumber('WORKFLOW_STREAM_MAX_CHUNKS_PER_BATCH', MAX_CHUNKS_PER_BATCH, {
+    integer: true,
+    min: 1,
+  });
+
+/**
+ * Wire limit: maximum cumulative bytes in a single coalesced `writeMulti`.
+ * Chunk *count* alone is not enough — 1,000 small chunks are ~100KB but 1,000
+ * file-sized chunks can be hundreds of MB, which platform request-body limits
+ * reject long before the count cap matters. A batch is split once adding the
+ * next chunk would exceed this (a single chunk larger than the cap still goes
+ * out alone). Default 1 MiB. Override: `WORKFLOW_STREAM_MAX_BYTES_PER_BATCH`.
+ */
+export const MAX_BYTES_PER_BATCH = 1024 * 1024;
+
+const getMaxBytesPerBatch = (): number =>
+  envNumber('WORKFLOW_STREAM_MAX_BYTES_PER_BATCH', MAX_BYTES_PER_BATCH, {
     integer: true,
     min: 1,
   });
@@ -354,6 +389,10 @@ interface CoalesceContext {
   wakeConsumer: (() => void) | null;
   /** Resolver that wakes the producer when the consumer relieves backpressure. */
   wakeProducer: (() => void) | null;
+  /** Wire limit: max chunks per coalesced `writeMulti`. */
+  maxChunksPerBatch: number;
+  /** Wire limit: max cumulative bytes per coalesced `writeMulti`. */
+  maxBytesPerBatch: number;
 }
 
 function wake(ctx: CoalesceContext, which: 'wakeConsumer' | 'wakeProducer') {
@@ -365,11 +404,32 @@ function wake(ctx: CoalesceContext, which: 'wakeConsumer' | 'wakeProducer') {
 }
 
 /**
- * Consumer loop: drains the whole queue into one `batchWrite` at a time,
- * awaiting each batch so it is durable on the server before its chunks are
- * removed from `pendingOps`. Because it takes *everything* queued each round,
- * chunks that arrived while the previous batch was in flight coalesce into the
- * next server write.
+ * How many leading queued chunks fit in one `writeMulti` without crossing the
+ * chunk-count or byte wire limits. Always returns at least 1 so a single chunk
+ * larger than the byte cap still makes progress (alone).
+ */
+function nextBatchSize(ctx: CoalesceContext): number {
+  let count = 0;
+  let bytes = 0;
+  for (const chunk of ctx.queue) {
+    if (count >= ctx.maxChunksPerBatch) break;
+    if (count > 0 && bytes + chunk.byteLength > ctx.maxBytesPerBatch) break;
+    count++;
+    bytes += chunk.byteLength;
+  }
+  return count;
+}
+
+/**
+ * Consumer loop: drains the queue one batch at a time, awaiting each batch so it
+ * is durable on the server before its chunks leave `pendingOps`. It takes as
+ * much of the queue as the wire limits allow each round, so chunks that arrived
+ * while the previous batch was in flight coalesce into the next server write.
+ *
+ * `pendingOps` is decremented only after `batchWrite` *succeeds*: on failure the
+ * chunks stay retained in the sink's buffer (see `WorkflowServerWritableStream`)
+ * and are therefore still "read but not durable", so they must keep counting.
+ * A throw propagates out of the loop; the pipe's producer then tears down.
  */
 async function drainBatches(ctx: CoalesceContext): Promise<void> {
   while (true) {
@@ -380,15 +440,13 @@ async function drainBatches(ctx: CoalesceContext): Promise<void> {
       });
       continue;
     }
-    const batch = ctx.queue;
-    ctx.queue = [];
-    try {
-      await ctx.batchWrite(batch);
-    } finally {
-      ctx.state.pendingOps -= batch.length;
-      // Relieve producer backpressure now that this batch is durable.
-      wake(ctx, 'wakeProducer');
-    }
+    const count = nextBatchSize(ctx);
+    const batch = ctx.queue.slice(0, count);
+    ctx.queue = ctx.queue.slice(count);
+    await ctx.batchWrite(batch);
+    ctx.state.pendingOps -= batch.length;
+    // Relieve producer backpressure now that this batch is durable.
+    wake(ctx, 'wakeProducer');
   }
 }
 
@@ -473,6 +531,8 @@ async function flushablePipeCoalescing(
     sourceDone: false,
     wakeConsumer: null,
     wakeProducer: null,
+    maxChunksPerBatch: getMaxChunksPerBatch(),
+    maxBytesPerBatch: getMaxBytesPerBatch(),
   };
   const consumer = drainBatches(ctx);
 
