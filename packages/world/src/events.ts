@@ -778,8 +778,6 @@ export interface EventResult {
   hook?: import('./hooks.js').Hook;
   /** The wait entity (for wait_created/wait_completed events) */
   wait?: import('./waits.js').Wait;
-  /** Server-owned max event count for the run (run-lifecycle responses); the runtime enforces it. */
-  maxEvents?: number;
   /**
    * Events with data resolved. Two producers populate this:
    *
@@ -807,6 +805,8 @@ export interface EventResult {
    * the safe default (treated as "not the lazy creator").
    */
   stepCreated?: boolean;
+  /** Server-owned max event count for the run (run-lifecycle responses); the runtime enforces it. */
+  maxEvents?: number;
 }
 
 export interface GetEventParams {

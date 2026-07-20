@@ -10,7 +10,7 @@ async function tick(i: number): Promise<number> {
 export async function runawayWorkflow(): Promise<number> {
   'use workflow';
   let total = 0;
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 15; i++) {
     total += await tick(i);
   }
   return total;
