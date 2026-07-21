@@ -8,6 +8,7 @@ import {
   resolveWithinBase,
   stripTag,
   ulidToDate,
+  withWindowsRetry,
 } from '../fs.js';
 
 /**
@@ -95,8 +96,15 @@ export async function isRunTerminalCommitted(
     try {
       await fs.access(markerPath);
       return true;
-    } catch {
-      // marker not present at this path
+    } catch (error) {
+      // Only ENOENT proves the marker is absent. This check is what
+      // rejects a resume that staged AFTER the terminal reap passed, so a
+      // swallowed EACCES/EMFILE here would let that resume promote its
+      // event after termination — propagate anything else and fail the
+      // resume instead.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
     }
   }
   return false;
@@ -169,14 +177,33 @@ export async function reapPendingHookEvents(
     let entries: string[];
     try {
       entries = await fs.readdir(dir);
-    } catch {
-      // No staging directory — nothing was ever staged for this run.
-      continue;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        // No staging directory — nothing was ever staged for this run.
+        continue;
+      }
+      // Any other failure means staged files may remain, and this reap is
+      // the correctness-critical half of the arbitration: proceeding would
+      // let a stalled resume promote its event AFTER the terminal state is
+      // written. Abort the terminal transition instead; its retry re-runs
+      // the (idempotent) marker write and reap.
+      throw error;
     }
     for (const entry of entries) {
-      await fs.unlink(path.join(dir, entry)).catch(() => {});
+      try {
+        await withWindowsRetry(() => fs.unlink(path.join(dir, entry)));
+      } catch (error) {
+        // ENOENT means the arbitration was already decided for this file:
+        // the resume promoted (and cleaned up) or a concurrent reaper won.
+        // Every other failure leaves the staged inode linkable and must
+        // abort, same as the readdir failure above.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+      }
     }
-    // Best-effort: a resume staging concurrently recreates it as needed.
+    // Best-effort only from here: a leftover empty directory is harmless
+    // (a resume staging concurrently recreates it as needed).
     await fs.rmdir(dir).catch(() => {});
   }
 }
@@ -211,8 +238,15 @@ export async function mintRunDominantEventKey(
   let files: string[] = [];
   try {
     files = await fs.readdir(path.join(basedir, 'events'));
-  } catch {
-    // No events directory yet — nothing visible to dominate.
+  } catch (error) {
+    // Only ENOENT ("no events directory yet") means there is provably
+    // nothing visible to dominate. Any other failure would silently mint a
+    // wall-clock key with no dominance guarantee over an already-accepted
+    // hook — abort the terminal transition instead; its retry re-runs this
+    // scan.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
   }
   const prefix = `${runId}-`;
   let maxUlid: string | null = null;

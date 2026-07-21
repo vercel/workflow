@@ -4922,6 +4922,93 @@ describe('Storage', () => {
       );
       expect(types.at(-1)).toBe('run_completed');
     });
+
+    // chmod-based permission simulation is a no-op for directories on
+    // Windows, so these two abort-path tests only run on POSIX platforms.
+    it.skipIf(process.platform === 'win32')(
+      'should abort the terminal transition when the staging reap fails',
+      async () => {
+        // The reap is the correctness-critical half of the arbitration: if
+        // it fails for any reason other than "nothing staged" (ENOENT), a
+        // staged file may remain linkable, and proceeding would let the
+        // stalled resume promote its event after the terminal state is
+        // written. A non-ENOENT reap failure must therefore abort the
+        // terminal transition BEFORE the state write, leaving it retryable.
+        const run = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        });
+        const stagedPath = helpers.pendingHookEventPath(
+          testDir,
+          run.runId,
+          'evnt_00000000000000000000000001'
+        );
+        await writeExclusive(stagedPath, '{}');
+        const pendingDir = path.dirname(stagedPath);
+        await fs.chmod(pendingDir, 0o000);
+
+        try {
+          await expect(
+            updateRun(storage, run.runId, 'run_completed', {
+              output: new Uint8Array([1]),
+            })
+          ).rejects.toMatchObject({ code: 'EACCES' });
+        } finally {
+          await fs.chmod(pendingDir, 0o755);
+        }
+
+        // The transition aborted before the terminal state write, and the
+        // staged file survived — the arbitration was never forfeited.
+        expect((await storage.runs.get(run.runId)).status).toBe('pending');
+        await expect(fs.access(stagedPath)).resolves.toBeUndefined();
+
+        // A retry completes the transition and reaps the staged file.
+        await updateRun(storage, run.runId, 'run_completed', {
+          output: new Uint8Array([1]),
+        });
+        expect((await storage.runs.get(run.runId)).status).toBe('completed');
+        await expect(fs.access(stagedPath)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      }
+    );
+
+    it.skipIf(process.platform === 'win32')(
+      'should abort the terminal transition when the dominance scan fails',
+      async () => {
+        // mintRunDominantEventKey's ordering guarantee depends on seeing
+        // every visible event of the run. A non-ENOENT readdir failure must
+        // abort the terminal transition before the state write instead of
+        // silently minting a wall-clock key with no dominance guarantee.
+        const run = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        });
+        const eventsDir = path.join(testDir, 'events');
+        await fs.chmod(eventsDir, 0o000);
+
+        try {
+          await expect(
+            updateRun(storage, run.runId, 'run_completed', {
+              output: new Uint8Array([1]),
+            })
+          ).rejects.toMatchObject({ code: 'EACCES' });
+        } finally {
+          await fs.chmod(eventsDir, 0o755);
+        }
+
+        // Aborted before the terminal state write.
+        expect((await storage.runs.get(run.runId)).status).toBe('pending');
+
+        // A retry completes the transition normally.
+        await updateRun(storage, run.runId, 'run_completed', {
+          output: new Uint8Array([1]),
+        });
+        expect((await storage.runs.get(run.runId)).status).toBe('completed');
+      }
+    );
   });
 
   describe('terminal-run guard for legacy runs', () => {

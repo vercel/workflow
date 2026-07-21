@@ -100,7 +100,7 @@ const isWindows = process.platform === 'win32';
  * are briefly locked by another process or antivirus. This wrapper adds
  * exponential backoff retry logic. On non-Windows platforms, executes directly.
  */
-async function withWindowsRetry<T>(
+export async function withWindowsRetry<T>(
   fn: () => Promise<T>,
   maxRetries = 5
 ): Promise<T> {
