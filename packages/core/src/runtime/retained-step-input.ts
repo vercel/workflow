@@ -48,8 +48,16 @@ const HOST_DISPATCH_CONSTRUCTORS = [
 
 // Host primordials captured at module load — before any workflow code can
 // exist in the process — so the checker itself never invokes a live host
-// method workflow code could have replaced (host constructors are reachable
-// via e.g. `structuredClone(new Map()).constructor`).
+// member workflow code could have replaced (host constructors are reachable
+// via e.g. `structuredClone(new Map()).constructor` or exposed classes).
+const hostGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const hostGetPrototypeOf = Object.getPrototypeOf;
+const hostIsFrozen = Object.isFrozen;
+const hostOwnKeys = Reflect.ownKeys;
+const hostIsArray = Array.isArray;
+const hostIsInteger = Number.isInteger;
+const hostNumber = Number;
+const hostString = String;
 const hostMapForEach = Map.prototype.forEach;
 const hostSetForEach = Set.prototype.forEach;
 // biome-ignore lint/style/noNonNullAssertion: the %TypedArray% buffer getter always exists
@@ -74,7 +82,7 @@ const TYPED_ARRAY_CONSTRUCTORS = [
 ] as const;
 
 function hasOwn(target: object, key: string | symbol): boolean {
-  return Object.getOwnPropertyDescriptor(target, key) !== undefined;
+  return hostGetOwnPropertyDescriptor(target, key) !== undefined;
 }
 
 function isHostDispatchPristine(): boolean {
@@ -84,11 +92,11 @@ function isHostDispatchPristine(): boolean {
     if (constructor === undefined) continue;
     if (hasOwn(constructor as object, Symbol.hasInstance)) return false;
   }
-  for (const constructor of [Object, Array]) {
-    if (
-      hasOwn(constructor, WORKFLOW_SERIALIZE) ||
-      hasOwn(constructor, 'classId')
-    ) {
+  // The class reducer reads `cls[WORKFLOW_SERIALIZE]` / `cls.classId` as
+  // inherited Gets, so the constructors' whole prototype chains — host
+  // Function.prototype and Object.prototype — must be clean too.
+  for (const target of [Object, Array, Function.prototype, Object.prototype]) {
+    if (hasOwn(target, WORKFLOW_SERIALIZE) || hasOwn(target, 'classId')) {
       return false;
     }
   }
@@ -114,7 +122,7 @@ function isHostDispatchPristine(): boolean {
 // can redefine its globals (or their `prototype` slots) with accessors, and
 // validation must not execute workflow-owned code.
 function ownDataProperty(target: object, key: string): unknown {
-  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  const descriptor = hostGetOwnPropertyDescriptor(target, key);
   return descriptor && 'value' in descriptor ? descriptor.value : undefined;
 }
 
@@ -150,7 +158,7 @@ function frozenRealmPrototype(
   constructorName: string
 ): object | undefined {
   const prototype = constructorPrototype(workflowGlobal, constructorName);
-  return prototype !== undefined && Object.isFrozen(prototype)
+  return prototype !== undefined && hostIsFrozen(prototype)
     ? prototype
     : undefined;
 }
@@ -160,7 +168,7 @@ function hasAllowedPrototype(
   workflowGlobal: Record<string, any>,
   constructorName: string
 ): boolean {
-  const prototype = Object.getPrototypeOf(value);
+  const prototype = hostGetPrototypeOf(value);
   return (
     prototype ===
       constructorPrototype(
@@ -171,12 +179,12 @@ function hasAllowedPrototype(
 }
 
 function isArrayIndex(key: string): boolean {
-  const index = Number(key);
+  const index = hostNumber(key);
   return (
-    Number.isInteger(index) &&
+    hostIsInteger(index) &&
     index >= 0 &&
     index < 2 ** 32 - 1 &&
-    String(index) === key
+    hostString(index) === key
   );
 }
 
@@ -187,7 +195,7 @@ function isPassiveArrayProperty(
   seen: WeakSet<object>
 ): boolean {
   if (key === 'length') return true;
-  const descriptor = Object.getOwnPropertyDescriptor(array, key);
+  const descriptor = hostGetOwnPropertyDescriptor(array, key);
   if (!descriptor) return false;
   // Only own enumerable data indices are passive. Anything hidden — symbol
   // tags, non-enumerable properties, accessors — can be observed by
@@ -209,7 +217,7 @@ function isPassiveArray(
 ): boolean {
   return (
     hasAllowedPrototype(value, workflowGlobal, 'Array') &&
-    Reflect.ownKeys(value).every((key) =>
+    hostOwnKeys(value).every((key) =>
       isPassiveArrayProperty(value, key, workflowGlobal, seen)
     )
   );
@@ -220,7 +228,7 @@ function isPassiveArray(
 // symbol could still be observed through other dispatch lookups, and clean
 // instances are the overwhelmingly common case anyway.
 function hasNoOwnProperties(value: object): boolean {
-  return Reflect.ownKeys(value).length === 0;
+  return hostOwnKeys(value).length === 0;
 }
 
 function isPassiveMap(
@@ -228,7 +236,7 @@ function isPassiveMap(
   workflowGlobal: Record<string, any>,
   seen: WeakSet<object>
 ): boolean {
-  const prototype = Object.getPrototypeOf(value);
+  const prototype = hostGetPrototypeOf(value);
   if (prototype !== frozenRealmPrototype(workflowGlobal, 'Map')) return false;
   if (!hasNoOwnProperties(value)) return false;
   let passive = true;
@@ -247,7 +255,7 @@ function isPassiveSet(
   workflowGlobal: Record<string, any>,
   seen: WeakSet<object>
 ): boolean {
-  const prototype = Object.getPrototypeOf(value);
+  const prototype = hostGetPrototypeOf(value);
   if (prototype !== frozenRealmPrototype(workflowGlobal, 'Set')) return false;
   if (!hasNoOwnProperties(value)) return false;
   let passive = true;
@@ -261,7 +269,7 @@ function isPassiveDate(
   value: object,
   workflowGlobal: Record<string, any>
 ): boolean {
-  const prototype = Object.getPrototypeOf(value);
+  const prototype = hostGetPrototypeOf(value);
   return (
     prototype === frozenRealmPrototype(workflowGlobal, 'Date') &&
     hasNoOwnProperties(value)
@@ -276,7 +284,7 @@ function isPassiveTypedArray(
   // prototypes — NOT "anything chaining to %TypedArray%": a workflow can
   // manufacture a frozen hostile prototype with a delegating `buffer` getter
   // and setPrototypeOf a real typed array onto it.
-  const prototype = Object.getPrototypeOf(value);
+  const prototype = hostGetPrototypeOf(value);
   if (
     !TYPED_ARRAY_CONSTRUCTORS.some(
       (name) => prototype === frozenRealmPrototype(workflowGlobal, name)
@@ -286,7 +294,7 @@ function isPassiveTypedArray(
   }
   // Own keys on a typed array are exactly its canonical indices.
   if (
-    !Reflect.ownKeys(value).every(
+    !hostOwnKeys(value).every(
       (key) => typeof key === 'string' && isArrayIndex(key)
     )
   ) {
@@ -301,7 +309,7 @@ function isPassiveArrayBuffer(
   value: object,
   workflowGlobal: Record<string, any>
 ): boolean {
-  const prototype = Object.getPrototypeOf(value);
+  const prototype = hostGetPrototypeOf(value);
   return (
     prototype === frozenRealmPrototype(workflowGlobal, 'ArrayBuffer') &&
     hasNoOwnProperties(value)
@@ -314,7 +322,7 @@ function isPassiveObjectProperty(
   workflowGlobal: Record<string, any>,
   seen: WeakSet<object>
 ): boolean {
-  const descriptor = Object.getOwnPropertyDescriptor(object, key);
+  const descriptor = hostGetOwnPropertyDescriptor(object, key);
   if (!descriptor) return false;
   // Only own enumerable string-keyed data properties are passive. Anything
   // hidden — symbol tags, non-enumerable properties, accessors — can be
@@ -335,7 +343,7 @@ function isPassivePlainObject(
   seen: WeakSet<object>
 ): boolean {
   if (!hasAllowedPrototype(value, workflowGlobal, 'Object')) return false;
-  return Reflect.ownKeys(value).every((key) =>
+  return hostOwnKeys(value).every((key) =>
     isPassiveObjectProperty(value, key, workflowGlobal, seen)
   );
 }
@@ -378,7 +386,7 @@ function isPassive(
   if (seen.has(value)) return true;
   seen.add(value);
 
-  if (Array.isArray(value)) return isPassiveArray(value, workflowGlobal, seen);
+  if (hostIsArray(value)) return isPassiveArray(value, workflowGlobal, seen);
   if (types.isMap(value)) return isPassiveMap(value, workflowGlobal, seen);
   if (types.isSet(value)) return isPassiveSet(value, workflowGlobal, seen);
   if (types.isDate(value)) return isPassiveDate(value, workflowGlobal);

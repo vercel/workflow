@@ -391,3 +391,50 @@ describe('checker execution surface', () => {
     expect(vm.runInContext('globalThis.__retainedTestCalls', context)).toBe(0);
   });
 });
+
+describe('walker primordials', () => {
+  it('uses captured primordials, not live host statics', () => {
+    const { context, workflowGlobal } = makeContext();
+    const map = vm.runInContext('new Map([["k", { ok: true }]])', context);
+
+    // If the walker consulted the live host statics, these would throw.
+    const originalDescriptor = Object.getOwnPropertyDescriptor;
+    const originalOwnKeys = Reflect.ownKeys;
+    (Object as any).getOwnPropertyDescriptor = () => {
+      throw new Error('live getOwnPropertyDescriptor used');
+    };
+    (Reflect as any).ownKeys = () => {
+      throw new Error('live ownKeys used');
+    };
+    try {
+      expect(isRetainedSerializationPassive(map, workflowGlobal)).toBe(true);
+    } finally {
+      (Object as any).getOwnPropertyDescriptor = originalDescriptor;
+      (Reflect as any).ownKeys = originalOwnKeys;
+    }
+  });
+
+  it('declines when host Function.prototype carries serializer statics', () => {
+    const { context, workflowGlobal } = makeContext();
+    const plain = vm.runInContext('({ ok: true })', context);
+    expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(true);
+
+    Object.defineProperty(
+      Function.prototype,
+      Symbol.for('workflow-serialize'),
+      {
+        get() {
+          return undefined;
+        },
+        configurable: true,
+      }
+    );
+    try {
+      expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(false);
+    } finally {
+      delete (Function.prototype as any)[Symbol.for('workflow-serialize')];
+    }
+
+    expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(true);
+  });
+});
