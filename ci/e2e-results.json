@@ -1,15 +1,15 @@
 {
-  "lastUpdated": "2026-07-21T06:57:30.292Z",
-  "commit": "9a2770ab34bc4a1f0164a7676d40f2018a6e58e1",
+  "lastUpdated": "2026-07-21T08:55:40.039Z",
+  "commit": "a5e6f1167aa07f36b49777d3c020282d11a0abf2",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
       "status": "passing",
-      "total": 4466,
-      "passed": 3908,
+      "total": 4312,
+      "passed": 3773,
       "failed": 0,
-      "skipped": 558,
+      "skipped": 539,
       "frameworks": {
         "astro": {
           "total": 308,
@@ -37,8 +37,8 @@
           "failed": 0
         },
         "nextjs-webpack": {
-          "total": 616,
-          "passed": 578,
+          "total": 462,
+          "passed": 443,
           "failed": 0
         },
         "nitro": {
@@ -123,6 +123,66 @@
         }
       },
       "progress": 87
+    },
+    "vercel": {
+      "status": "partial",
+      "total": 2002,
+      "passed": 1700,
+      "failed": 7,
+      "skipped": 295,
+      "frameworks": {
+        "astro": {
+          "total": 154,
+          "passed": 126,
+          "failed": 0
+        },
+        "express": {
+          "total": 154,
+          "passed": 125,
+          "failed": 1
+        },
+        "fastify": {
+          "total": 154,
+          "passed": 125,
+          "failed": 1
+        },
+        "hono": {
+          "total": 154,
+          "passed": 125,
+          "failed": 1
+        },
+        "nextjs-turbopack": {
+          "total": 154,
+          "passed": 151,
+          "failed": 0
+        },
+        "nextjs-webpack": {
+          "total": 154,
+          "passed": 151,
+          "failed": 0
+        },
+        "nitro": {
+          "total": 154,
+          "passed": 126,
+          "failed": 0
+        },
+        "nuxt": {
+          "total": 154,
+          "passed": 124,
+          "failed": 2
+        },
+        "sveltekit": {
+          "total": 154,
+          "passed": 145,
+          "failed": 0
+        },
+        "vite": {
+          "total": 154,
+          "passed": 126,
+          "failed": 0
+        }
+      },
+      "progress": 85
     }
   }
 }
