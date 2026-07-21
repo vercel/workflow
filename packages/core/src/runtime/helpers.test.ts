@@ -510,8 +510,8 @@ describe('withPreconditionRetry', () => {
     }
   });
 
-  it('passes no snapshot to op when the guard is not opted in', async () => {
-    delete process.env.WORKFLOW_PRECONDITION_GUARD;
+  it('passes no snapshot to op when the guard is explicitly disabled', async () => {
+    process.env.WORKFLOW_PRECONDITION_GUARD = '0';
     const log: MutableEventLog = {
       events: [makeUlidEvent(1_700_000_000_000)],
       cursor: 'c0',
@@ -526,6 +526,24 @@ describe('withPreconditionRetry', () => {
     );
     expect(op).toHaveBeenCalledTimes(1);
     expect(eventsListMock).not.toHaveBeenCalled();
+  });
+
+  it('sends a snapshot by default when the guard variable is unset (on by default)', async () => {
+    delete process.env.WORKFLOW_PRECONDITION_GUARD;
+    const time = 1_700_000_000_000;
+    const log: MutableEventLog = {
+      events: [makeUlidEvent(time)],
+      cursor: 'c0',
+    };
+    const op = vi.fn(async (stateUpdatedAt?: number) => {
+      expect(stateUpdatedAt).toBe(time);
+      return 'ok';
+    });
+
+    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
+      'ok'
+    );
+    expect(op).toHaveBeenCalledTimes(1);
   });
 
   it('passes the latest snapshot time to op and returns its result without reloading', async () => {

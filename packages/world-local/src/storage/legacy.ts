@@ -1,10 +1,76 @@
+import fs from 'node:fs/promises';
+import { RunExpiredError } from '@workflow/errors';
 import type { Event, EventResult, WorkflowRun } from '@workflow/world';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  isTerminalWorkflowRunStatus,
+} from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
-import { assertSafeEntityId, resolveWithinBase, writeJSON } from '../fs.js';
+import {
+  assertSafeEntityId,
+  jsonReplacer,
+  promoteExclusive,
+  resolveWithinBase,
+  writeExclusive,
+  writeJSON,
+} from '../fs.js';
 import { filterRunData, stripEventDataRefs } from './filters.js';
-import { monotonicUlid } from './helpers.js';
+import {
+  isRunTerminalCommitted,
+  monotonicUlid,
+  pendingHookEventPath,
+  reapPendingHookEvents,
+  runTerminalMarkerPath,
+} from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
+
+/**
+ * Terminal-run guard + publish for a legacy `hook_received`, mirroring the
+ * current-spec hook_received protocol in events-storage.ts: fast-path
+ * rejection, then stage → re-check marker → promote, so a concurrent legacy
+ * run_cancelled (which reaps staged events after committing its marker)
+ * arbitrates atomically with this publish.
+ */
+async function publishLegacyHookReceived(
+  basedir: string,
+  runId: string,
+  eventId: string,
+  serializedEvent: string,
+  eventPath: string,
+  currentRun: WorkflowRun
+): Promise<void> {
+  if (
+    isTerminalWorkflowRunStatus(currentRun.status) ||
+    (await isRunTerminalCommitted(basedir, runId))
+  ) {
+    throw new RunExpiredError(
+      `Workflow run "${runId}" is already in a terminal state`
+    );
+  }
+  const stagedPath = pendingHookEventPath(basedir, runId, eventId);
+  await writeExclusive(stagedPath, serializedEvent);
+  try {
+    if (await isRunTerminalCommitted(basedir, runId)) {
+      throw new RunExpiredError(
+        `Workflow run "${runId}" is already in a terminal state`
+      );
+    }
+    const promoted = await promoteExclusive(stagedPath, eventPath);
+    if (promoted !== 'linked') {
+      // 'missing': a terminal transition reaped the staged file — the
+      // atomic loss of the arbitration. 'exists' cannot happen for a
+      // freshly generated ULID; treat it the same way rather than report
+      // a publish that did not happen.
+      throw new RunExpiredError(
+        `Workflow run "${runId}" is already in a terminal state`
+      );
+    }
+  } finally {
+    // The staged path is not reader-visible; removing it is pure cleanup
+    // on every outcome (already gone when reaped).
+    await fs.unlink(stagedPath).catch(() => {});
+  }
+}
 
 /**
  * Handle events for legacy runs (pre-event-sourcing, specVersion < 2).
@@ -13,6 +79,9 @@ import { deleteAllHooksForRun } from './hooks-storage.js';
  * - wait_completed: Store event only (no entity mutation)
  * - hook_received: Store event only (hooks exist via old system, no entity mutation)
  * - Other events: Throw error (not supported for legacy runs)
+ *
+ * Legacy runs predate tags, so all marker / staging paths below are
+ * untagged.
  */
 export async function handleLegacyEvent(
   basedir: string,
@@ -31,7 +100,15 @@ export async function handleLegacyEvent(
 
   switch (data.eventType) {
     case 'run_cancelled': {
-      // Legacy: Skip event storage, directly update run to cancelled
+      // Legacy: Skip event storage, directly update run to cancelled.
+      //
+      // Commit the durable run-terminal marker and reap staged
+      // hook_received events BEFORE the state write, exactly like the
+      // current-spec terminal transitions in events-storage.ts, so a
+      // concurrent legacy hook_received in another process is subject to
+      // the same stage → check → promote arbitration.
+      await writeExclusive(runTerminalMarkerPath(basedir, runId), '');
+      await reapPendingHookEvents(basedir, runId);
       const now = new Date();
       const run: WorkflowRun = {
         runId: currentRun.runId,
@@ -81,7 +158,18 @@ export async function handleLegacyEvent(
         'events',
         `${compositeKey}.json`
       );
-      await writeJSON(eventPath, event);
+      if (data.eventType === 'hook_received') {
+        await publishLegacyHookReceived(
+          basedir,
+          runId,
+          eventId,
+          JSON.stringify(event, jsonReplacer, 2),
+          eventPath,
+          currentRun
+        );
+      } else {
+        await writeJSON(eventPath, event);
+      }
       return { event: stripEventDataRefs(event, resolveData) };
     }
 

@@ -100,7 +100,7 @@ const isWindows = process.platform === 'win32';
  * are briefly locked by another process or antivirus. This wrapper adds
  * exponential backoff retry logic. On non-Windows platforms, executes directly.
  */
-async function withWindowsRetry<T>(
+export async function withWindowsRetry<T>(
   fn: () => Promise<T>,
   maxRetries = 5
 ): Promise<T> {
@@ -474,6 +474,42 @@ export async function writeExclusive(
     if (tempFileCreated) {
       await withWindowsRetry(() => fs.unlink(tempPath), 3).catch(() => {});
     }
+  }
+}
+
+/**
+ * Atomically promote a previously staged file (see {@link writeExclusive})
+ * to its visible destination via a hard link. The single `link(2)` call is
+ * the linearization point:
+ *
+ *   - `'linked'`  — this call made the destination visible.
+ *   - `'exists'`  — another writer published the destination first
+ *                   (same meaning as `writeExclusive` returning false).
+ *   - `'missing'` — the staged file was concurrently unlinked, so the
+ *                   promotion atomically lost to whoever removed it and
+ *                   the destination was never made visible.
+ *
+ * The staged file is left in place on success; callers unlink it
+ * themselves (a leftover staged file is harmless — it is not at a
+ * reader-visible path).
+ */
+export async function promoteExclusive(
+  stagedPath: string,
+  filePath: string
+): Promise<'linked' | 'exists' | 'missing'> {
+  try {
+    await withEnsuredDirectory(path.dirname(filePath), () =>
+      withWindowsRetry(() => fs.link(stagedPath, filePath))
+    );
+    return 'linked';
+  } catch (error: any) {
+    if (error.code === 'EEXIST') {
+      return 'exists';
+    }
+    if (error.code === 'ENOENT') {
+      return 'missing';
+    }
+    throw error;
   }
 }
 

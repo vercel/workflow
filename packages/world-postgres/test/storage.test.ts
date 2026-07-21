@@ -3,6 +3,7 @@ import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import type { Hook, Step, WorkflowRun } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { encode } from 'cbor-x';
+import { eq } from 'drizzle-orm';
 import { Pool } from 'pg';
 import { decodeTime, ulid } from 'ulid';
 import {
@@ -2653,6 +2654,113 @@ describe('Storage (Postgres integration)', () => {
           token: 'new-token-cancelled',
         })
       ).rejects.toThrow(/terminal/i);
+    });
+
+    it('should reject hook_received on a completed run', async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(events, run.runId, {
+        hookId: 'hook_before_complete',
+        token: 'token-before-complete',
+      });
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array([1]),
+      });
+
+      // run_completed's hook/wait cleanup runs before hook_received is
+      // attempted here, so this sequential case surfaces as the hook no
+      // longer existing rather than the terminal-run guard below (which
+      // covers the case where hook_received's write is still in flight
+      // when the run terminates concurrently, see the next test).
+      await expect(
+        events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'HookNotFoundError' });
+    });
+
+    it('should reject hook_received with RunExpiredError when the run terminates after hook_received earlier checks (linearization guard)', async () => {
+      // Reproduces the race the transactional guard defends against:
+      // hook_received's earlier currentRun/hook-exists checks pass while
+      // the run is still running, then the run reaches a terminal state
+      // before hook_received's guarded transaction commits. Updating the
+      // run row directly (bypassing events.create's hook/wait cleanup)
+      // reproduces exactly that ordering without deleting the hook,
+      // isolating the assertion to the FOR UPDATE re-check inside the
+      // hook_received transaction.
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(events, run.runId, {
+        hookId: 'hook_race_terminal',
+        token: 'token-race-terminal',
+      });
+
+      await drizzle
+        .update(DrizzleSchema.runs)
+        .set({ status: 'completed', completedAt: new Date() })
+        .where(eq(DrizzleSchema.runs.runId, run.runId));
+
+      await expect(
+        events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
+    });
+
+    it('accepts hook_received on a live legacy run', async () => {
+      // Legacy runs (specVersion <= 1) are routed to
+      // handleLegacyEventPostgres, which bypasses the current-spec guard
+      // chain — the guard must be applied there too. Simulated by
+      // downgrading a real run's persisted specVersion.
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'legacy-workflow',
+        input: new Uint8Array(),
+      });
+      await drizzle
+        .update(DrizzleSchema.runs)
+        .set({ specVersion: 1 })
+        .where(eq(DrizzleSchema.runs.runId, run.runId));
+
+      const result = await events.create(run.runId, {
+        eventType: 'hook_received',
+        correlationId: 'hook_legacy_live',
+        eventData: { payload: {} },
+      });
+      expect(result.event?.eventType).toBe('hook_received');
+    });
+
+    it('rejects hook_received with RunExpiredError on a cancelled legacy run', async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'legacy-workflow',
+        input: new Uint8Array(),
+      });
+      await drizzle
+        .update(DrizzleSchema.runs)
+        .set({ specVersion: 1 })
+        .where(eq(DrizzleSchema.runs.runId, run.runId));
+
+      // Routed to the legacy run_cancelled handler (direct state update).
+      await events.create(run.runId, { eventType: 'run_cancelled' });
+
+      await expect(
+        events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: 'hook_legacy_cancelled',
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
     });
   });
 

@@ -237,6 +237,15 @@ jobs:
         env:
           APP_NAME: "nextjs-turbopack"
 
+      # Regression test for the o2flow beta.26 incident: hook.resume() from a
+      # plain API route must resolve the workflow world inside an isolated
+      # (lambda-like) route bundle. Runs in this job because it also performs
+      # a production Turbopack build of the nextjs-turbopack workbench.
+      - name: Run Route Bundle Isolation Tests
+        run: pnpm vitest run packages/core/e2e/route-bundle-isolation.test.ts
+        env:
+          APP_NAME: "nextjs-turbopack"
+
   vitest-plugin:
     name: Vitest Plugin Tests
     runs-on: ubuntu-latest

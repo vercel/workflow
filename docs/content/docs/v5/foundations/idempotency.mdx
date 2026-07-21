@@ -96,7 +96,7 @@ export async function processOrder(orderId: string): Promise<OrderResult> {
 }
 ```
 
-The runtime creates the hook atomically. At most one active hook can own `order:${orderId}`, so duplicate workflow runs converge on one active owner. A duplicate run observes `getConflict()` resolving with the owner's `Run` and returns before it reaches `chargeOrder()`. The conflicting run's accessors (`status`, `returnValue`, `cancel()`, …) are durable steps, so the duplicate run can do more than report the owner — see [conflict-handling strategies](#conflict-handling-strategies) below.
+The runtime creates the hook atomically. At most one hook can own `order:${orderId}`, so duplicate workflow runs converge on one owner. A duplicate run observes `getConflict()` resolving with the owner's `Run` and returns before it reaches `chargeOrder()`. The conflicting run's accessors (`status`, `returnValue`, `cancel()`, …) are durable steps, so the duplicate run can do more than report the owner — see [conflict-handling strategies](#conflict-handling-strategies) below.
 
 Outside the workflow, try to resume the hook first. If the hook is not registered yet, start the workflow and retry the resume until the new run creates the hook:
 
@@ -149,7 +149,7 @@ export async function POST(request: Request) {
 This avoids creating a new run only after the first run has registered its hook. Because `start()` returns before the run body executes and calls `createHook()`, two concurrent requests can both observe "no hook yet" and each call `start()`. The race is resolved inside the workflow body, where the losing run observes `getConflict()` resolving with the active owner and returns without doing duplicate-sensitive work — and the route detects it by comparing the resumed hook's `runId` against the run it just started, without waiting for either run to finish. A native API for atomically starting a run and registering a hook is in the works. Until then, model recovery inside the workflow by checking `hook.getConflict()`.
 </Callout>
 
-This is active-run coordination. When the workflow completes and disposes the hook, the token can be used again. If a duplicate request after completion must return the original result instead of starting fresh work, persist that completed result under the same domain key.
+This coordinates active runs by default: the token becomes available when its workflow ends. Set `experimental_minRetention` to keep it unavailable to late duplicates. After the workflow ends, the Hook can still be found with `getHookByToken()` until retention ends, but it cannot be resumed. See [`createHook()` minimum retention](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) for examples and supported values.
 
 ### Conflict-handling strategies
 
@@ -182,7 +182,7 @@ export async function processOrder(orderId: string) {
 }
 ```
 
-**Inspect the owner before deciding.** Branch on the owner's live state:
+**Inspect the owner before deciding.** Reuse a completed owner's result, but reject other duplicates:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -200,17 +200,17 @@ export async function processOrder(orderId: string) {
   const conflict = await request.getConflict();
   if (conflict) {
     const status = await conflict.status; // [!code highlight]
-    if (status === "running") {
-      return { status: "duplicate" as const, runId: conflict.runId };
+    if (status === "completed") {
+      return await conflict.returnValue;
     }
-    // Owner already reached a terminal state; its hook will be released.
+    return { status: "duplicate" as const, runId: conflict.runId };
   }
 
   return await processOwnedOrder(orderId);
 }
 ```
 
-**Signal the owner instead of doing the work.** The duplicate run knows the token, so it can deliver this run's input to the owner's hook from a step:
+**Signal the owner instead of doing the work.** A conflict can refer to a finished run when `experimental_minRetention` is set, so check its status before sending data to its Hook:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -230,16 +230,19 @@ export async function processOrder(orderId: string, confirmed: boolean) {
   using request = createHook<OrderRequest>({ token });
 
   const conflict = await request.getConflict();
-  if (conflict) {
+  if (conflict && ["pending", "running"].includes(await conflict.status)) {
     await forwardToOwner(token, { confirmed }); // [!code highlight]
     return { status: "forwarded" as const, runId: conflict.runId };
+  }
+  if (conflict) {
+    return { status: "duplicate" as const, runId: conflict.runId };
   }
 
   // ... own the token and do the work
 }
 ```
 
-**Supersede the owner.** Newest-wins: cancel the active run, then claim the released token. Cancellation disposes the owner's hooks; the retry loop covers the window where that disposal has not propagated yet:
+**Supersede the owner.** Without minimum retention, cancel the active run, then claim the released token. The retry loop covers the window where cancellation cleanup has not propagated yet:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -271,6 +274,10 @@ export async function processOrderNewestWins(orderId: string) {
   throw new Error(`Could not claim ${token} after cancelling the owner`);
 }
 ```
+
+<Callout type="warn">
+This pattern does not work with `experimental_minRetention`: cancelling the old run does not make its token available early.
+</Callout>
 
 If duplicate requests should only reuse the active run without sending data, use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) as an advisory pre-check before calling `start()`. The workflow should still check `hook.getConflict()`, because the lookup and `start()` are not atomic.
 

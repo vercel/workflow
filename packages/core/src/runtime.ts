@@ -62,7 +62,11 @@ import {
   ReplayBudget,
 } from './runtime/replay-budget.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
-import { executeStep } from './runtime/step-executor.js';
+import {
+  DEFAULT_STEP_MAX_RETRIES,
+  executeStep,
+} from './runtime/step-executor.js';
+import { getStepFunction } from './private.js';
 import { computeStepLatencyTracking } from './runtime/step-latency.js';
 import {
   backstopIdempotencyKey,
@@ -249,6 +253,29 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
     eventId: terminalRunEvent.eventId,
   });
   return true;
+}
+
+/**
+ * Number of `step_started` events already recorded for a step, used as the
+ * authoritative attempt count for the inline retry ceiling. Each real attempt
+ * writes exactly one `step_started` (the atomic create-claim / single-flight
+ * prevents concurrent double-starts from inflating this), so the count equals
+ * the number of attempts that have begun.
+ */
+function countStepStartedEvents(
+  events: Event[] | null | undefined,
+  stepId: string
+): number {
+  if (!events) {
+    return 0;
+  }
+  let count = 0;
+  for (const e of events) {
+    if (e.eventType === 'step_started' && e.correlationId === stepId) {
+      count++;
+    }
+  }
+  return count;
 }
 
 /**
@@ -755,6 +782,38 @@ export function workflowEntrypoint(
                       const bgStartedAt = bgRun.startedAt
                         ? +bgRun.startedAt
                         : Date.now();
+
+                      // Retry ceiling for a backgrounded step. `metadata.attempt`
+                      // (the queue delivery count) is a cheap upper bound, but it
+                      // over-counts: a ThrottleError / TooEarlyError — or any
+                      // redelivery that never ran the body — still advances it, so
+                      // trusting it directly could fail a step as "exceeded max
+                      // retries" before the body ever ran (a user-visible
+                      // regression under transient backend pressure). Use it only
+                      // as a fast gate: while it is at or under the ceiling the
+                      // step cannot be exhausted, so proceed without touching the
+                      // log. Only once it crosses the ceiling do we load the full
+                      // event log and derive the authoritative attempt from the
+                      // recorded `step_started` count — the count only real
+                      // attempts write, so throttle/too-early redeliveries are
+                      // excluded. This still bounds timeouts, which write no error
+                      // for the post-body guard to catch. The load also primes the
+                      // replay's `cachedEvents`/`eventsCursor` (the post-step
+                      // continuation below refreshes them once the step's terminal
+                      // event lands).
+                      let bgAuthoritativeAttempt = metadata.attempt;
+                      const bgMaxRetries =
+                        getStepFunction(incomingStepName)?.maxRetries ??
+                        DEFAULT_STEP_MAX_RETRIES;
+                      if (metadata.attempt > bgMaxRetries + 1) {
+                        const loaded = await loadWorkflowRunEvents(runId);
+                        cachedEvents = loaded.events;
+                        eventsCursor = loaded.cursor;
+                        bgAuthoritativeAttempt =
+                          countStepStartedEvents(cachedEvents, incomingStepId) +
+                          1;
+                      }
+
                       // Pause the replay budget while the step body runs —
                       // step duration is bounded by the platform's function
                       // maxDuration, not by the replay timeout. See the
@@ -786,6 +845,10 @@ export function workflowEntrypoint(
                               stepId: incomingStepId,
                               stepName: incomingStepName,
                               runSpecVersion: bgRun.specVersion,
+                              // Retry ceiling: the queue delivery count as a fast
+                              // gate, verified against the recorded step_started
+                              // count once it crosses the ceiling (see above).
+                              authoritativeAttempt: bgAuthoritativeAttempt,
                             })
                         );
                       } finally {
@@ -1532,6 +1595,7 @@ export function workflowEntrypoint(
                           // execution commits fire-and-forget `*_created`
                           // events before the terminal `awaitRunReady()` below.
                           runReadyBarrier,
+                          worldCapabilities: world.capabilities,
                         });
                         await payloadPrewarm;
                       }
@@ -2322,6 +2386,25 @@ export function workflowEntrypoint(
                                 stepId: s.correlationId,
                                 stepName: s.stepName,
                                 runSpecVersion: workflowRun.specVersion,
+                                // Attempt number = prior step_started count + 1
+                                // (this execution's start). A lazy step is
+                                // brand-new by construction (it enters the batch
+                                // only when it has no step_created yet), so it
+                                // has zero prior starts and is always attempt 1 —
+                                // skip the log scan entirely. Only an
+                                // owned-recovery re-run (this message re-executing
+                                // a step it crashed/timed out on) can have prior
+                                // starts, and that path is uncommon, so reserve
+                                // the O(n) scan for it rather than walking the
+                                // growing log for every inline step (which would
+                                // be O(n²) across a long sequential workflow).
+                                authoritativeAttempt:
+                                  s.lazyStepInput !== undefined
+                                    ? 1
+                                    : countStepStartedEvents(
+                                        cachedEvents,
+                                        s.correlationId
+                                      ) + 1,
                                 // Lazy inline start: send the deferred step's
                                 // input on step_started so the world creates
                                 // the step on the fly. Absent for
@@ -2735,6 +2818,17 @@ export function workflowEntrypoint(
                         // Serialize the original thrown value so its full
                         // type identity and custom properties round-trip
                         // through the event log.
+                        //
+                        // Precondition-guard asymmetry: unlike `run_completed`,
+                        // this terminal `run_failed` sends no `stateUpdatedAt`
+                        // snapshot, so it is never 412-rejected even if a hook
+                        // landed mid-replay and could have changed the path that
+                        // threw. This is intentional and fail-open: a spurious
+                        // failure is recoverable (the run can be re-run from the
+                        // dashboard), whereas a spurious *completion* commits a
+                        // wrong result. Guarding this write symmetrically would
+                        // also need the loaded event log, which is scoped to the
+                        // replay `try` above and not available in this catch.
                         try {
                           // Turbo: order the terminal write after the
                           // backgrounded run_started so the run exists.

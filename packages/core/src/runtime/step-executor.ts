@@ -51,7 +51,7 @@ import {
 } from './step-latency.js';
 import { safeWaitUntil } from './wait-until.js';
 
-const DEFAULT_STEP_MAX_RETRIES = 3;
+export const DEFAULT_STEP_MAX_RETRIES = 3;
 
 /**
  * Extract the inline delta from a step-terminal `events.create` result,
@@ -180,6 +180,17 @@ export interface StepExecutorParams {
    * runtime/step-latency.ts.
    */
   latencyTracking?: StepLatencyTracking;
+  /**
+   * Authoritative attempt number for this execution, used to bound retries
+   * against `maxRetries` BEFORE the body runs. In order to also catch
+   * step timeouts (which we can't have catch handlers for), we determine
+   * the attempt count based as follows:
+   * - Inline (combined handler): the number of `step_started` events already
+   *   in the event log for this step, plus one for the attempt about to run.
+   * - Background (queue-dispatched): the queue delivery count
+   *   (`metadata.attempt`), which increments on every redelivery.
+   */
+  authoritativeAttempt?: number;
 }
 
 /**
@@ -350,6 +361,70 @@ export async function executeStep(
     span?.setAttributes({
       ...Attribute.StepMaxRetries(maxRetries),
     });
+
+    // maxRetries enforced before starting another attempt. Timeouts can kill
+    // a step execution without any way to catch the error, so the post-body/error
+    // guards below might miss it. Hence, we use `authoritativeAttempt` count
+    // as an additional guard based on step_started count or queue delivery count
+    // on backgrounded steps.
+    // Thrown-error exhaustion still terminates one attempt earlier via the post-body
+    // guard (with the thrown error as cause), and this check does not affect that.
+    if (
+      params.authoritativeAttempt !== undefined &&
+      params.authoritativeAttempt > maxRetries + 1
+    ) {
+      const retryCount = maxRetries;
+      const errorMessage = `Step "${stepName}" exceeded max retries (${retryCount} ${pluralize('retry', 'retries', retryCount)})`;
+      stepLogger.error('Step exceeded max retries', {
+        workflowRunId,
+        stepName,
+        stepId,
+        attempt: params.authoritativeAttempt,
+        maxRetries,
+      });
+      try {
+        await world.events.create(workflowRunId, {
+          eventType: 'step_failed',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: stepId,
+          eventData: {
+            stepName,
+            error: await dehydrateStepError(
+              new FatalError(errorMessage),
+              workflowRunId,
+              await getEncryptionKey(),
+              [],
+              globalThis,
+              compression
+            ),
+          },
+        });
+      } catch (err) {
+        if (EntityConflictError.is(err)) {
+          // Step already reached a terminal state (a concurrent handler or an
+          // earlier delivery failed/completed it) — nothing to do.
+          runtimeLogger.info(
+            'Tried failing step for exceeded retries, but step has already finished.',
+            {
+              workflowRunId,
+              stepId,
+              stepName,
+              message: err instanceof Error ? err.message : String(err),
+            }
+          );
+          return { type: 'skipped' };
+        }
+        if (RunExpiredError.is(err)) {
+          return { type: 'gone' };
+        }
+        throw err;
+      }
+      span?.setAttributes({
+        ...Attribute.StepStatus('failed'),
+        ...Attribute.StepRetryExhausted(true),
+      });
+      return { type: 'failed' };
+    }
 
     // Maps a `step_started` rejection to a terminal StepExecutionResult,
     // shared by the await path (below) and the optimistic-start reconciliation.

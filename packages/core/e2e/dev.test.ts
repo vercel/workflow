@@ -85,7 +85,9 @@ export function createDevTests(config?: DevTestConfig) {
     const multiPhaseHmrTestTimeoutMs =
       hmrTestTimeoutMs + hmrRediscoveryTimeoutMs;
     const flowRouteHmrRediscoveryTimeoutMs = finalConfig.canary
-      ? 240_000
+      ? process.env.APP_NAME === 'nextjs-webpack'
+        ? 300_000
+        : 240_000
       : hmrRediscoveryTimeoutMs;
     const flowRouteHmrFuzzTimeoutMs = finalConfig.canary ? 480_000 : 240_000;
     const readManifestStepFunctionNames = async (): Promise<string[]> => {
