@@ -182,7 +182,7 @@ export async function processOrder(orderId: string) {
 }
 ```
 
-**Inspect the owner before deciding.** Branch on the owner's state:
+**Inspect the owner before deciding.** Reuse a completed owner's result, but reject other duplicates:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -200,7 +200,10 @@ export async function processOrder(orderId: string) {
   const conflict = await request.getConflict();
   if (conflict) {
     const status = await conflict.status; // [!code highlight]
-    return { status: "duplicate" as const, ownerStatus: status, runId: conflict.runId };
+    if (status === "completed") {
+      return await conflict.returnValue;
+    }
+    return { status: "duplicate" as const, runId: conflict.runId };
   }
 
   return await processOwnedOrder(orderId);
