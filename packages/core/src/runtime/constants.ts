@@ -294,6 +294,34 @@ export function isInlineOwnershipEnabled(): boolean {
 }
 
 /**
+ * Whether in-process VM continuation is enabled (default OFF — experimental).
+ *
+ * When on, the inline replay loop keeps a suspended workflow VM alive across
+ * iterations instead of rebuilding the `vm.Context` and replaying the whole
+ * event log from event 1 on every pass. After an inline step's terminal event
+ * is appended, the loop feeds the newly-appended events into the SAME live VM
+ * (resolving the pending step promise) so the workflow body advances to its
+ * next suspension point — skipping the from-scratch replay entirely.
+ *
+ * This is sound ONLY within a single invocation's inline loop: the same process
+ * holds the VM and the same handler owns the appended writes, so the durable
+ * event log stays authoritative. It is scoped further to *simple, step-only*
+ * suspensions (no hooks/waits/attribute writes); any other suspension, or any
+ * divergence between the live VM's consumed prefix and the authoritative log,
+ * makes the continuation bail out and the loop falls back to a full replay in
+ * a fresh VM. Worst case is therefore identical to the from-scratch replay path.
+ *
+ * Default **ON** so CI and benchmarks exercise (and measure) the continuation
+ * path. `WORKFLOW_VM_CONTINUATION=0` (or `false`) is the kill switch that
+ * reverts to rebuilding the VM and replaying from scratch on every pass.
+ */
+export function isVmContinuationEnabled(): boolean {
+  const raw = process.env.WORKFLOW_VM_CONTINUATION;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
  * Default inline-ownership lease, in seconds: how long after a step's latest
  * (stamped) `step_started` a non-owner invocation assumes the owning
  * invocation may still be alive. Within the lease, wake replays enqueue the

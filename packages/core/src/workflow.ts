@@ -152,7 +152,16 @@ export async function runWorkflow(
    * committed at workflow completion order after the run's creation. Undefined
    * outside turbo, where `run_started` is awaited up front.
    */
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  /**
+   * When true, and the workflow suspends on steps only (no hooks/waits/attribute
+   * writes), the returned/thrown `WorkflowSuspension` carries a `continuation`
+   * handle that resumes the SAME live VM with newly-appended events instead of
+   * replaying from scratch. Gated by the inline loop on
+   * `isVmContinuationEnabled()`. Default false → behavior is byte-identical to
+   * the pre-continuation code path.
+   */
+  enableContinuation?: boolean
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
@@ -211,6 +220,23 @@ export async function runWorkflow(
 
     const workflowDiscontinuation = withResolvers<void>();
 
+    // VM continuation: in continuation mode a step-only suspension is a
+    // resumable checkpoint, not a terminal reject. `suspendSignal` is resolved
+    // (re-armed each resume cycle) when the live VM reaches such a checkpoint;
+    // any non-suspension error still rejects `workflowDiscontinuation`. Outside
+    // continuation mode the signal is never resolved, so the race below behaves
+    // exactly as `Promise.race([workflowFn, discontinuation])` did before.
+    let suspendSignal = withResolvers<void>();
+    let lastSuspension: WorkflowSuspension | undefined;
+    const onWorkflowError = (error: Error) => {
+      if (enableContinuation && WorkflowSuspension.is(error)) {
+        lastSuspension = error;
+        suspendSignal.resolve();
+        return;
+      }
+      workflowDiscontinuation.reject(error);
+    };
+
     const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
     const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
@@ -240,7 +266,7 @@ export async function runWorkflow(
       runId: workflowRun.runId,
       encryptionKey,
       globalThis: vmGlobalThis,
-      onWorkflowError: workflowDiscontinuation.reject,
+      onWorkflowError,
       eventsConsumer,
       // Correlation IDs (step_/wait_/hook_) are derived from `generateUlid`, so
       // the time prefix fed to `ulid()` MUST be replay-stable across every
@@ -877,13 +903,13 @@ export async function runWorkflow(
       ...Attribute.WorkflowArgumentsCount(args.length),
     });
 
-    // Invoke user workflow
-    try {
-      const result = await Promise.race([
-        workflowFn(...args),
-        workflowDiscontinuation.promise,
-      ]);
-
+    // Finalize a completed workflow: dehydrate the return value and drain any
+    // fire-and-forget queue items. Shared by the first pass and every
+    // continuation resume so completion is handled identically regardless of
+    // how the VM reached its terminal state.
+    const finalizeCompleted = async (
+      result: unknown
+    ): Promise<Uint8Array | unknown> => {
       const dehydrated = await dehydrateWorkflowReturnValue(
         result,
         workflowRun.runId,
@@ -910,7 +936,9 @@ export async function runWorkflow(
       );
 
       return dehydrated;
-    } catch (err) {
+    };
+
+    const finalizeFailed = async (err: unknown): Promise<never> => {
       // Control-flow signals are handled by the runtime and do not mean the
       // workflow has terminally failed.
       if (WorkflowSuspension.is(err) || ReplayDivergenceError.is(err)) {
@@ -927,6 +955,74 @@ export async function runWorkflow(
       );
 
       throw err;
-    }
+    };
+
+    // A step-only suspension (no hooks, waits, attribute writes, hook
+    // disposals, or aborts) is the sole continuation-eligible checkpoint: those
+    // other operations introduce out-of-band resume/parallel invocations and
+    // delivery-barrier ordering that the from-scratch replay path handles
+    // specially. Anything else leaves `continuation` unset so the caller falls
+    // back to a fresh replay.
+    const isContinuationEligible = (s: WorkflowSuspension): boolean =>
+      s.hookCount === 0 &&
+      s.waitCount === 0 &&
+      s.attributeCount === 0 &&
+      s.hookDisposedCount === 0 &&
+      s.abortCount === 0;
+
+    // Kick off the user workflow once. In continuation mode the same underlying
+    // promise is raced on every resume cycle; it settles only when the workflow
+    // truly completes or throws.
+    const workflowResult = Promise.resolve(workflowFn(...args)).then(
+      (value: unknown) => ({ kind: 'done' as const, value })
+    );
+
+    // Drive the VM to its next checkpoint. Returns the dehydrated result on
+    // completion; throws a `WorkflowSuspension` (carrying a `continuation` when
+    // eligible) on suspension; throws the workflow's error otherwise.
+    const pump = async (): Promise<Uint8Array | unknown> => {
+      let outcome: { kind: 'done'; value: unknown } | { kind: 'suspended' };
+      try {
+        outcome = await Promise.race([
+          workflowResult,
+          suspendSignal.promise.then(() => ({ kind: 'suspended' as const })),
+          // Rejects only — a non-suspension workflow error routes here.
+          workflowDiscontinuation.promise as Promise<never>,
+        ]);
+      } catch (err) {
+        return await finalizeFailed(err);
+      }
+
+      if (outcome.kind === 'done') {
+        return await finalizeCompleted(outcome.value);
+      }
+
+      // Suspended checkpoint.
+      const suspension = lastSuspension;
+      if (!suspension) {
+        // Defensive: signal resolved without a recorded suspension. Fall back
+        // to the terminal reject path (never expected in practice).
+        throw new WorkflowRuntimeError(
+          'VM continuation: suspended without a recorded suspension'
+        );
+      }
+      if (enableContinuation && isContinuationEligible(suspension)) {
+        suspension.continuation = {
+          resume: async (newEvents: unknown[]) => {
+            // Re-arm the checkpoint signal BEFORE feeding events so the next
+            // end-of-events detection resolves the fresh signal, not a stale one.
+            suspendSignal = withResolvers<void>();
+            lastSuspension = undefined;
+            // Adopt the authoritative log and re-drive the live consumer. A
+            // diverged prefix throws ReplayDivergenceError → caller falls back.
+            eventsConsumer.resume(newEvents as Event[]);
+            return pump();
+          },
+        };
+      }
+      throw suspension;
+    };
+
+    return await pump();
   });
 }
