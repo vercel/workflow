@@ -37,6 +37,17 @@ export function createWorld(config?: APIConfig): World {
     // at least it — workflow-server declared spec-5 support in
     // vercel/workflow-server#520.
     specVersion: SPEC_VERSION_SUPPORTS_COMPRESSION,
+    capabilities: {
+      // workflow-server enforces the `stateUpdatedAt` optimistic-concurrency
+      // guard: creations carrying a stale snapshot are rejected with 412
+      // (PreconditionFailedError) when the run's outside-event marker is
+      // newer. See vercel/workflow-server#484.
+      preconditionGuard: true,
+      // Vercel Queues supports maxConcurrency-limited consumers, which
+      // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
+      // flow topics (see queue.ts and @workflow/builders).
+      maxConcurrency: true,
+    },
     // On Vercel the platform fails the function invocation when the
     // process exits non-zero, and VQS redelivers the queue message via a
     // fresh invocation. The core runtime uses this to decide whether

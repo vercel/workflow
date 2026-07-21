@@ -13,6 +13,7 @@ const Layout = async ({
       <PreReleaseBanner pathname={`/${lang}/v5/cookbook`} />
       <DocsLayout
         currentVersion={PRE_RELEASE_VERSION.id}
+        lang={lang}
         tree={getCookbookTree(lang, PRE_RELEASE_VERSION.prefix)}
       >
         {children}

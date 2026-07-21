@@ -573,14 +573,22 @@
   @apply hidden;
 }
 
-/* Align docs content with navbar on mobile */
-#nd-page {
-  @apply max-md:px-6;
-}
+/*
+ * On mobile the sticky MobileDocsBar abuts the navbar via a negative top
+ * margin, which would otherwise overlap and clip the page breadcrumb rendered
+ * above it. Hide the breadcrumb on mobile so the bar sits flush under the
+ * navbar; it stays visible on desktop, where the bar is hidden. Also align
+ * docs content with the navbar. Container-based to match the new
+ * container-responsive sidebar.
+ */
+@container (max-width: 960px) {
+  #nd-page {
+    @apply px-6;
+  }
 
-/* Hide breadcrumb on mobile — the mobile docs bar handles navigation */
-#nd-page > .text-fd-muted-foreground:first-child {
-  @apply max-md:hidden;
+  #nd-page > .text-fd-muted-foreground:first-child {
+    @apply hidden;
+  }
 }
 
 /* TOC and footer links use gray-1000 */

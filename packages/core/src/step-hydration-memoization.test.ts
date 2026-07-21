@@ -4,12 +4,9 @@ import { monotonicFactory } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { dehydrateStepReturnValue } from './serialization.js';
 import { createUseStep } from './step.js';
-import {
-  createStepHydrationCache,
-  type StepHydrationCache,
-} from './step-hydration-cache.js';
 import { createContext } from './vm/index.js';
 
 /**
@@ -20,7 +17,7 @@ import { createContext } from './vm/index.js';
  * preserved on cache hits.
  *
  * Each replay iteration of a run builds a fresh `WorkflowOrchestratorContext`
- * but shares a single `stepHydrationCache` (owned by the inline loop). We
+ * but shares a single `replayPayloadCache` (owned by the inline loop). We
  * simulate that here by constructing two contexts that share one cache.
  */
 
@@ -28,7 +25,7 @@ import { createContext } from './vm/index.js';
 // the inline loop threads one cache across replay iterations.
 function setupWorkflowContext(
   events: Event[],
-  stepHydrationCache?: StepHydrationCache
+  replayPayloadCache = new ReplayPayloadCache(undefined)
 ): WorkflowOrchestratorContext {
   const context = createContext({
     seed: 'test',
@@ -53,7 +50,7 @@ function setupWorkflowContext(
     promiseQueue: Promise.resolve(),
     pendingDeliveries: 0,
     pendingDeliveryBarriers: new Map(),
-    stepHydrationCache,
+    replayPayloadCache,
   };
 }
 
@@ -91,7 +88,7 @@ describe('step hydration memoization through the step consumer', () => {
 
   it('skips re-hydration of primitive step results on a second replay sharing the cache', async () => {
     const events = await makeStepEvents();
-    const cache = createStepHydrationCache();
+    const cache = new ReplayPayloadCache(undefined);
 
     const serialization = await import('./serialization.js');
     const hydrateSpy = vi.spyOn(serialization, 'hydrateStepReturnValue');
@@ -123,7 +120,7 @@ describe('step hydration memoization through the step consumer', () => {
 
   it('preserves event-log resolution order on cache hits even with variable timing', async () => {
     const events = await makeStepEvents();
-    const cache = createStepHydrationCache();
+    const cache = new ReplayPayloadCache(undefined);
 
     // Replay 1: populate the cache (no timing games needed).
     const ctx1 = setupWorkflowContext(events, cache);
@@ -169,7 +166,7 @@ describe('step hydration memoization through the step consumer', () => {
         createdAt: new Date(),
       },
     ];
-    const cache = createStepHydrationCache();
+    const cache = new ReplayPayloadCache(undefined);
 
     // Replay 1: hydrate the object, then mutate it (as workflow code might).
     const ctx1 = setupWorkflowContext(events, cache);
@@ -184,6 +181,5 @@ describe('step hydration memoization through the step consumer', () => {
 
     expect(second).not.toBe(first);
     expect(second.count).toBe(0);
-    expect(cache.size).toBe(0); // object results are never memoized
   });
 });
