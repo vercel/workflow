@@ -68,7 +68,6 @@ export function EntityDetailPanel({
   isDecrypting = false,
   selectedSpan,
   showSeparateEventOccurrenceTimestamps = false,
-  getModuleSourceUrl,
   resolveModuleSourceUrl,
 }: {
   run: WorkflowRun;
@@ -100,10 +99,6 @@ export function EntityDetailPanel({
   selectedSpan: SelectedSpanInfo | null;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
-  getModuleSourceUrl?: (info: {
-    moduleSpecifier: string;
-    deploymentId: string;
-  }) => string | undefined;
   resolveModuleSourceUrl?: (info: {
     moduleSpecifier: string;
     deploymentId: string;
@@ -302,25 +297,14 @@ export function EntityDetailPanel({
   const linkDeploymentId =
     typeof dataDeploymentId === 'string' ? dataDeploymentId : run.deploymentId;
 
-  // Synchronous best-effort link, available immediately on render.
-  const syncModuleSourceUrl = useMemo(() => {
-    if (!getModuleSourceUrl || !linkModuleSpecifier || !linkDeploymentId) {
-      return undefined;
-    }
-    return getModuleSourceUrl({
-      moduleSpecifier: linkModuleSpecifier,
-      deploymentId: linkDeploymentId,
-    });
-  }, [getModuleSourceUrl, linkModuleSpecifier, linkDeploymentId]);
-
-  // Fully-resolved link (e.g. with the file's real extension). Resolved
-  // asynchronously and preferred once available; falls back to the sync value
-  // if the resolver is absent, errors, or returns undefined.
-  const [resolvedModuleSourceUrl, setResolvedModuleSourceUrl] = useState<
-    string | undefined
-  >(undefined);
+  // The source link, resolved asynchronously by the host (it may look the
+  // file up in the deployment's source tree). Undefined until resolved or when
+  // no link applies — the Module row then renders as plain text.
+  const [moduleSourceUrl, setModuleSourceUrl] = useState<string | undefined>(
+    undefined
+  );
   useEffect(() => {
-    setResolvedModuleSourceUrl(undefined);
+    setModuleSourceUrl(undefined);
     if (!resolveModuleSourceUrl || !linkModuleSpecifier || !linkDeploymentId) {
       return;
     }
@@ -330,17 +314,15 @@ export function EntityDetailPanel({
       deploymentId: linkDeploymentId,
     })
       .then((url) => {
-        if (!cancelled && url) setResolvedModuleSourceUrl(url);
+        if (!cancelled) setModuleSourceUrl(url);
       })
       .catch(() => {
-        // Keep the synchronous best-effort link on failure.
+        // Leave the row as plain text if resolution fails.
       });
     return () => {
       cancelled = true;
     };
   }, [resolveModuleSourceUrl, linkModuleSpecifier, linkDeploymentId]);
-
-  const moduleSourceUrl = resolvedModuleSourceUrl ?? syncModuleSourceUrl;
 
   if (!selectedSpan || !resource || !resourceId) {
     return null;

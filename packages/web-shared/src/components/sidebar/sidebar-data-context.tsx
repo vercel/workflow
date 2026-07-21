@@ -26,17 +26,14 @@ export interface SidebarDataContextValue {
   hasEncryptedData?: boolean;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
-  getModuleSourceUrl?: (info: {
-    moduleSpecifier: string;
-    deploymentId: string;
-  }) => string | undefined;
   /**
-   * Async variant of {@link getModuleSourceUrl}. When provided, the detail
-   * panel awaits this to obtain a fully-resolved source link (e.g. one that
-   * has looked up the file's real extension against the deployment's source
-   * tree) and prefers it over the synchronous `getModuleSourceUrl` result.
-   * Should resolve to `undefined` when it cannot produce a better link, so the
-   * panel falls back to the synchronous best-effort value.
+   * Resolve the "Module" row in the span detail panel to a link to the
+   * module's source (e.g. the deployment source view on vercel.com). Given the
+   * module specifier and its deployment, it should resolve to the best link it
+   * can produce — ideally one that has looked up the file's real path and
+   * extension against the deployment's source tree — or `undefined` when no
+   * link is applicable (e.g. package specifiers). Awaited by the panel, so
+   * hosts can do async lookups.
    */
   resolveModuleSourceUrl?: (info: {
     moduleSpecifier: string;
