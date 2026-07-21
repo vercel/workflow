@@ -26,13 +26,14 @@ related:
 | **What it gives you** | Durable orchestration, steps, hooks, streaming, observability | Runtime (microVM hosting), Harness (managed agent loop), Memory, Gateway (tools/MCP), Identity, Browser, Code Interpreter, Observability, Policy, Evaluations |
 | **Languages** | TypeScript / JS (Python beta) | Python-first for authoring; TypeScript or Python project scaffolding via the `@aws/agentcore` CLI; framework-agnostic (LangGraph, CrewAI, Strands, etc.) |
 | **Isolation** | VM-sandboxed workflow code + full-Node steps | Dedicated Firecracker microVM per session (strong hardware isolation) |
-| **Max duration** | No limit (Vercel World) | 8-hour hard cap per session |
+| **Max duration** | No limit ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | 8-hour hard cap per session |
 | **AI streaming** | Native **durable, resumable** streaming (survives reconnect, cold start, replay) | Live SSE / WebSocket only — no buffering or replay of missed tokens |
 | **Versioning** | Runs pinned to immutable deployment | Immutable runtime versions + endpoints; in-flight sessions stay on their launch version (deployment/rollback only — no replay) |
 | **Portability** | Apache-2.0; runs anywhere Node runs; World abstraction | AWS-only; agent *code* is portable, the operating platform is not |
 | **Compliance** | Inherits your platform | HIPAA-eligible; SOC/PCI/ISO not third-party certified; not FedRAMP-authorized |
 | **Pricing** | SDK free; pay your platform | Per-module consumption (vCPU-hr / GB-hr, etc.) + model inference billed via Bedrock; no minimums |
-| **Maturity** | Built and maintained by Vercel | Backed by AWS |
+
+**What the limits mean in practice:** AgentCore's 8-hour session cap means an agent that waits on a human, a long-running job, or a slow external system can't span that wait in one session. Workflow SDK runs have [no duration cap](https://vercel.com/docs/workflows/pricing) — they suspend durably at `sleep()` and hooks for hours or weeks.
 
 ## The core distinction: durability
 

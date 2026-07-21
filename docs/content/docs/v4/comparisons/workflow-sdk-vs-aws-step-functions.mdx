@@ -31,9 +31,10 @@ related:
 | **Versioning** | Runs pinned to immutable deployment | Published versions are immutable; aliases route (≤2 versions) for canary/rollback; **in-flight executions keep their start-time definition** |
 | **Portability** | Apache-2.0; runs anywhere Node runs | Proprietary, AWS-only; ASL is AWS-specific — high lock-in |
 | **Pricing** | SDK free; pay your platform | **Standard:** $0.025 / 1K state transitions. **Express:** $1 / M requests + GB-second duration |
-| **Limits** | 50 MB payload; 2 GB/run; no duration cap | 256 KB payload between states; Standard 25K history events / 1 year; Express 5 minutes |
+| **Limits** | 50 MB payload; 2 GB/run; no duration cap ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | 256 KB payload between states; Standard 25K history events / 1 year; Express 5 minutes |
 | **AI** | `WorkflowAgent` in the AI SDK; durable streaming | Bedrock integration + a preview AgentCore "InvokeHarness" task; no native client streaming |
-| **Maturity** | Built and maintained by Vercel | Very mature; heavy AWS adoption |
+
+**What the limits mean in practice:** the 256 KB cap on payloads between states is the binding constraint for AI workloads — virtually any model context or tool transcript has to round-trip through S3 with claim-check plumbing — and Standard executions cap history at 25K events. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) are 50 MB per payload and 2 GB of state per run.
 
 ## Code vs. JSON
 
@@ -97,12 +98,14 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 
 ### Step Functions features without a direct Workflow SDK equivalent
 
-These are Step Functions capabilities that the Workflow SDK does not replicate one-to-one — here's how to cover each on the Workflow SDK side:
+Each row is a Step Functions capability the Workflow SDK does not replicate one-to-one, paired with how to cover it on the Workflow SDK side:
 
-- **Express workflows.** At-least-once and 5-minute duration fit the durable-replay model poorly; keep them on Step Functions or move to a queue consumer.
-- **Distributed Map** (up to 10,000 concurrent children, S3 item sources). Fan out with step-wrapped `start()` per item, then bound concurrency with `p-limit`.
-- **Optimized AWS service integrations.** Become ordinary SDK calls inside steps; `.sync` waits become explicit polling or hooks.
-- **Per-state IAM roles.** Steps share the deployment's credentials; scope secrets at deploy time.
+| Step Functions feature | How to cover it with the Workflow SDK |
+| --- | --- |
+| Express workflows | At-least-once and 5-minute duration fit the durable-replay model poorly; keep them on Step Functions or move to a queue consumer |
+| Distributed Map (up to 10,000 concurrent children, S3 item sources) | Fan out with step-wrapped `start()` per item, then bound concurrency with `p-limit` |
+| Optimized AWS service integrations | Become ordinary SDK calls inside steps; `.sync` waits become explicit polling or hooks |
+| Per-state IAM roles | Steps share the deployment's credentials; scope secrets at deploy time |
 
 ---
 *Compiled from public documentation. Step Functions pricing/limits are region-specific (figures are us-east-1); verify against [the AWS pricing page](https://aws.amazon.com/step-functions/pricing/). Not based on head-to-head benchmarks.*

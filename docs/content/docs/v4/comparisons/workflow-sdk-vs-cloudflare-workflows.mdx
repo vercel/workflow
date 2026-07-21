@@ -14,7 +14,7 @@ related:
 [Cloudflare Workflows](https://developers.cloudflare.com/workflows/) is a durable-execution engine built on Cloudflare Workers and SQLite-backed Durable Objects. It's the closest architectural peer to the Workflow SDK — both persist progress and replay to survive failures — which makes the differences in **versioning safety, encryption, and portability** the deciding factors.
 
 <Callout type="info">
-**Choose the Workflow SDK** when you want an open-source, portable engine that runs in your existing app (and off a single vendor), deployment-pinned versioning, and application-level E2E encryption. **Choose Cloudflare Workflows** when you're already all-in on Cloudflare and want near-zero cold starts and global edge distribution out of the box.
+**Choose the Workflow SDK** when you want an open-source, portable engine that runs in your existing app (and off a single vendor), deployment-pinned versioning, and application-level E2E encryption. **Choose Cloudflare Workflows** when you're already all-in on Cloudflare.
 </Callout>
 
 ## At a glance
@@ -31,8 +31,9 @@ related:
 | **Performance** | No-penalty resume; scale-to-zero; up to 100K concurrency (Vercel) | **~0 ms isolate cold starts**; 50K concurrent instances; global Anycast (330+ cities) — strongest cold-start and edge story |
 | **Portability** | Apache-2.0; World abstraction; self-hostable | Engine proprietary; tied to Durable Objects; **highest lock-in** of these tools |
 | **Pricing** | SDK free; pay your platform | Workers Standard: requests + CPU-time + storage + per-step ($0.80 / 100K steps); idle/sleep not billed |
-| **Limits** | 50 MB payloads; 2 GB/run; 10K steps | **1 MiB** step result & event payload; 1 GB state/instance; 10K steps (up to 25K) |
-| **Maturity** | Built and maintained by Vercel | Backed by Cloudflare |
+| **Limits** | 50 MB payloads; 2 GB/run; 10K steps ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | **1 MiB** step result & event payload; 1 GB state/instance; 10K steps (up to 25K) |
+
+**What the limits mean in practice:** Cloudflare's 1 MiB cap on step results and event payloads is the tightest in this section — a single large model response or document can exceed it, pushing anything sizable into R2/KV indirection — and instance state is capped at 1 GB. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) are 50 MB per payload and 2 GB of state per run.
 
 ## Versioning: pinned vs. live code
 
