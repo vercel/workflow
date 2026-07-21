@@ -1,8 +1,14 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { monotonicFactory } from 'ulid';
-import { resolveWithinBase, stripTag, ulidToDate } from '../fs.js';
+import { decodeTime, monotonicFactory } from 'ulid';
+import {
+  hasTag,
+  isUntagged,
+  resolveWithinBase,
+  stripTag,
+  ulidToDate,
+} from '../fs.js';
 
 /**
  * Hash a hook token to produce a filesystem-safe constraint filename.
@@ -173,6 +179,70 @@ export async function reapPendingHookEvents(
     // Best-effort: a resume staging concurrently recreates it as needed.
     await fs.rmdir(dir).catch(() => {});
   }
+}
+
+/**
+ * Mint an event key (eventId + createdAt) that sorts strictly AFTER every
+ * reader-visible event of the run in the given tag's view.
+ *
+ * `events.list()` orders by `(createdAt, eventId)`, and both are normally
+ * allocated at `createImpl()` entry — BEFORE the terminal transition's
+ * marker + reap linearization point. A terminal invocation can therefore
+ * allocate an older key, stall, lose the promote arbitration to a later
+ * `hook_received` (legitimately), and then append its terminal event with
+ * the stale key — replaying the accepted hook AFTER the terminal event.
+ * Terminal transitions call this after their reap to re-derive the key at
+ * the linearization point instead.
+ *
+ * Dominance argument: the returned timestamp is strictly greater than the
+ * ULID timestamp of every visible event of the run (bumped past the max
+ * when the wall clock hasn't advanced), so the minted ULID compares
+ * lexicographically greater than every visible eventId regardless of
+ * another process's random ULID bits; and `createdAt` (same timestamp) is
+ * >= every visible event's `createdAt`, which was stamped at that event's
+ * `createImpl()` entry — before its publish, and thus before this call.
+ * Equal-`createdAt` ties fall to the strictly-dominant eventId.
+ */
+export async function mintRunDominantEventKey(
+  basedir: string,
+  runId: string,
+  tag?: string
+): Promise<{ eventId: string; createdAt: Date }> {
+  let files: string[] = [];
+  try {
+    files = await fs.readdir(path.join(basedir, 'events'));
+  } catch {
+    // No events directory yet — nothing visible to dominate.
+  }
+  const prefix = `${runId}-`;
+  let maxUlid: string | null = null;
+  for (const file of files) {
+    if (!file.startsWith(prefix) || !file.endsWith('.json')) {
+      continue;
+    }
+    const fileId = file.slice(0, -'.json'.length);
+    // Mirror read visibility: untagged files are visible to every tag,
+    // tagged files only to their own tag.
+    if (!isUntagged(fileId) && !(tag && hasTag(fileId, tag))) {
+      continue;
+    }
+    const candidate = stripTag(fileId).slice(prefix.length);
+    if (!maxUlid || candidate > maxUlid) {
+      maxUlid = candidate;
+    }
+  }
+  let ts = Date.now();
+  if (maxUlid) {
+    try {
+      const maxTs = decodeTime(maxUlid.replace(/^evnt_/, ''));
+      if (ts <= maxTs) {
+        ts = maxTs + 1;
+      }
+    } catch {
+      // Malformed eventId in the log — fall back to the wall clock.
+    }
+  }
+  return { eventId: `evnt_${monotonicUlid(ts)}`, createdAt: new Date(ts) };
 }
 
 /**

@@ -67,6 +67,7 @@ import {
   hookTokenClaimPath,
   isHookDisposalCommitted,
   isRunTerminalCommitted,
+  mintRunDominantEventKey,
   monotonicUlid,
   pendingHookEventPath,
   releaseHookTokenClaimIfOwnedBy,
@@ -1095,6 +1096,24 @@ export function createEventsStorage(
             ''
           );
           await reapPendingHookEvents(basedir, effectiveRunId, tag);
+          // Re-derive this terminal event's replay-ordering key at the
+          // linearization point. The eventId/createdAt allocated at
+          // createImpl() entry can predate a hook_received that
+          // legitimately won the promote arbitration while this invocation
+          // was stalled before the marker write; events.list() sorts by
+          // (createdAt, eventId), so the stale key would order the terminal
+          // event BEFORE that accepted hook on replay. Every accepted hook
+          // is reader-visible by the end of the reap, so a key that
+          // strictly dominates all visible events of the run guarantees the
+          // terminal event replays last. See mintRunDominantEventKey for
+          // the dominance argument.
+          const dominantKey = await mintRunDominantEventKey(
+            basedir,
+            effectiveRunId,
+            tag
+          );
+          eventId = dominantKey.eventId;
+          event = { ...event, eventId, createdAt: dominantKey.createdAt };
         }
 
         // Create/update entity based on event type (event-sourced architecture)

@@ -6,6 +6,7 @@ import type { Event, Storage } from '@workflow/world';
 import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fsModule from './fs.js';
 import { promoteExclusive, writeExclusive, writeJSON } from './fs.js';
 import * as helpers from './storage/helpers.js';
 import {
@@ -4853,6 +4854,73 @@ describe('Storage', () => {
       expect(
         events.data.filter((e) => e.eventType === 'hook_received')
       ).toHaveLength(0);
+    });
+
+    it('should order the terminal event after a hook_received accepted while the terminal call was stalled', async () => {
+      // The replay-ordering half of the guard. events.list() sorts by
+      // (createdAt, eventId), both normally allocated at createImpl()
+      // entry. Interleaving: run_completed enters and allocates its (older)
+      // key, stalls before writing the terminal marker; a hook_received
+      // then enters with a newer key and legitimately wins the promote
+      // arbitration; the terminal call resumes and appends its event. With
+      // the entry-allocated key the accepted hook would replay AFTER the
+      // terminal event. The terminal transition must therefore re-derive
+      // its key at the marker+reap linearization point, dominating every
+      // reader-visible event of the run.
+      //
+      // The stall is reproduced by intercepting the terminal marker's
+      // writeExclusive — the first cross-process-visible step of the
+      // transition — and running the full hook_received to completion
+      // inside the interception (the marker is not yet on disk, so the
+      // hook is accepted).
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(storage, run.runId, {
+        hookId: 'hook_stalled_terminal',
+        token: 'token-stalled-terminal',
+      });
+
+      const markerPath = runTerminalMarkerPath(testDir, run.runId);
+      const realWriteExclusive = fsModule.writeExclusive;
+      let intercepted = false;
+      const spy = vi
+        .spyOn(fsModule, 'writeExclusive')
+        .mockImplementation(async (filePath, data) => {
+          if (!intercepted && filePath === markerPath) {
+            intercepted = true;
+            await storage.events.create(run.runId, {
+              eventType: 'hook_received',
+              correlationId: hook.hookId,
+              eventData: { payload: {} },
+            });
+          }
+          return realWriteExclusive(filePath, data);
+        });
+
+      try {
+        await updateRun(storage, run.runId, 'run_completed', {
+          output: new Uint8Array([9]),
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(intercepted).toBe(true);
+
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: { sortOrder: 'asc' },
+      });
+      const types = events.data.map((e) => e.eventType);
+      expect(types.filter((t) => t === 'hook_received')).toHaveLength(1);
+      // The accepted hook must replay BEFORE the terminal event, and the
+      // terminal event must be the last event of the run.
+      expect(types.indexOf('hook_received')).toBeLessThan(
+        types.indexOf('run_completed')
+      );
+      expect(types.at(-1)).toBe('run_completed');
     });
   });
 
