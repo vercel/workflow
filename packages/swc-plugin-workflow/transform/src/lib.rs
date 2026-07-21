@@ -377,6 +377,21 @@ pub struct StepTransform {
         String,
         bool,
     )>,
+    // Config-property assignments (currently `maxRetries`) written on a step
+    // function that is defined *inside* a workflow body. In step mode the
+    // workflow body is replaced with a `throw`, so an assignment like
+    // `myStep.maxRetries = 0` living in that body would be dropped and the step
+    // would silently revert to the default retry count. These assignments are
+    // collected here and re-emitted at module scope on the hoisted step
+    // function so the runtime observes the configured value.
+    // Tuple: (parent_prefix, local_fn_name, prop_name, literal_value).
+    // `parent_prefix` matches the `parent_workflow_name` recorded in
+    // `nested_step_functions`, and `local_fn_name` matches that entry's
+    // `fn_name`, so the two are joined at emission time to target the hoisted
+    // `{parent}${local}` identifier. Only literal right-hand sides are
+    // collected, since the assignment is hoisted to module scope and must not
+    // capture workflow-local bindings.
+    nested_step_config_assignments: Vec<(String, String, String, Box<Expr>)>,
     // Counter for anonymous function names
     #[allow(dead_code)]
     anonymous_fn_counter: usize,
@@ -1804,11 +1819,63 @@ impl StepTransform {
                 }
                 stmt.visit_mut_children_with(self);
             }
+            Stmt::Expr(expr_stmt) => {
+                self.collect_nested_step_config_assignment(&expr_stmt.expr);
+                stmt.visit_mut_children_with(self);
+            }
             _ => {
                 stmt.visit_mut_children_with(self);
             }
         }
     }
+
+    /// In step mode, record a `<step>.maxRetries = <literal>` assignment that is
+    /// written inside a workflow (or other enclosing) function body so it can be
+    /// re-emitted on the hoisted step at module scope. Without this the
+    /// assignment is lost when the workflow body is replaced with a `throw`, and
+    /// the step silently reverts to the default retry count. Only literal
+    /// right-hand sides are collected, since the statement is moved to module
+    /// scope and must not depend on any enclosing binding. Non-matching
+    /// assignments recorded here are simply never emitted (see the nested-step
+    /// hoisting loop), so over-collection is harmless.
+    fn collect_nested_step_config_assignment(&mut self, expr: &Expr) {
+        if !matches!(self.mode, TransformMode::Step) {
+            return;
+        }
+        let Some(parent) = self.current_parent_function_name.clone() else {
+            return;
+        };
+        let Expr::Assign(assign) = expr else {
+            return;
+        };
+        if assign.op != AssignOp::Assign {
+            return;
+        }
+        if !matches!(&*assign.right, Expr::Lit(_)) {
+            return;
+        }
+        let AssignTarget::Simple(SimpleAssignTarget::Member(member)) = &assign.left else {
+            return;
+        };
+        let Expr::Ident(obj) = &*member.obj else {
+            return;
+        };
+        let MemberProp::Ident(prop) = &member.prop else {
+            return;
+        };
+        // Only `maxRetries` is a user-configurable step property today. Keeping
+        // the allowlist explicit avoids hoisting unrelated property writes.
+        if prop.sym.as_ref() != "maxRetries" {
+            return;
+        }
+        self.nested_step_config_assignments.push((
+            parent,
+            obj.sym.to_string(),
+            prop.sym.to_string(),
+            assign.right.clone(),
+        ));
+    }
+
     pub fn new(mode: TransformMode, filename: String, module_specifier: Option<String>) -> Self {
         Self {
             mode,
@@ -1838,6 +1905,7 @@ impl StepTransform {
             declared_identifiers: HashSet::new(),
             object_property_step_functions: Vec::new(),
             nested_step_functions: Vec::new(),
+            nested_step_config_assignments: Vec::new(),
             anonymous_fn_counter: 0,
             object_property_workflow_conversions: Vec::new(),
             nested_step_full_names: HashMap::new(),
@@ -5270,7 +5338,51 @@ impl VisitMut for StepTransform {
                             .body
                             .insert(current_insert_pos, ModuleItem::Stmt(registration_stmt));
                         current_insert_pos += 1;
+
+                        // Re-emit any config-property assignments (e.g.
+                        // `maxRetries`) that were written on this step inside the
+                        // workflow body. They are rewritten onto the hoisted step
+                        // identifier so the runtime observes them; without this,
+                        // the original assignment is discarded when the workflow
+                        // body is replaced with a `throw`.
+                        for (a_parent, a_local, a_prop, a_value) in
+                            &self.nested_step_config_assignments
+                        {
+                            if a_parent != &parent_workflow_name || a_local != &fn_name {
+                                continue;
+                            }
+                            let assign_stmt = Stmt::Expr(ExprStmt {
+                                span: DUMMY_SP,
+                                expr: Box::new(Expr::Assign(AssignExpr {
+                                    span: DUMMY_SP,
+                                    op: AssignOp::Assign,
+                                    left: AssignTarget::Simple(SimpleAssignTarget::Member(
+                                        MemberExpr {
+                                            span: DUMMY_SP,
+                                            obj: Box::new(Expr::Ident(Ident::new(
+                                                hoisted_name.clone().into(),
+                                                DUMMY_SP,
+                                                SyntaxContext::empty(),
+                                            ))),
+                                            prop: MemberProp::Ident(IdentName {
+                                                span: DUMMY_SP,
+                                                sym: a_prop.clone().into(),
+                                            }),
+                                        },
+                                    )),
+                                    right: a_value.clone(),
+                                })),
+                            });
+                            module
+                                .body
+                                .insert(current_insert_pos, ModuleItem::Stmt(assign_stmt));
+                            current_insert_pos += 1;
+                        }
                     }
+                    // Config assignments have now been re-emitted for every
+                    // hoisted nested step; drop them so a later module (or a
+                    // repeated pass) cannot re-emit stale entries.
+                    self.nested_step_config_assignments.clear();
 
                     // Then process object property step functions (they typically appear later)
                     // Collect hoisting information before the loop

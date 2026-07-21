@@ -1270,6 +1270,31 @@ export async function errorRetryDisabled() {
   }
 }
 
+/**
+ * Test: maxRetries set on a step defined *inside* the workflow body is honored.
+ * The `.maxRetries = 0` assignment lives in the workflow body, which the step
+ * transform replaces with a throw; the compiler must re-emit it onto the
+ * hoisted step so the runtime runs the step exactly once (attempt === 1)
+ * instead of falling back to the default of 3 retries.
+ */
+export async function errorRetryDisabledNested() {
+  'use workflow';
+  async function nestedThrowWithNoRetries() {
+    'use step';
+    const { attempt } = getStepMetadata();
+    throw new Error(`Failed on attempt ${attempt}`);
+  }
+  nestedThrowWithNoRetries.maxRetries = 0;
+
+  try {
+    await nestedThrowWithNoRetries();
+    return { failed: false, attempt: null };
+  } catch (e: any) {
+    const match = e.message?.match(/attempt (\d+)/);
+    return { failed: true, attempt: match ? parseInt(match[1]) : null };
+  }
+}
+
 // ------------------------------------------------------------
 // SECTION 3: CATCHABILITY
 // Tests that errors can be caught and inspected in workflow code

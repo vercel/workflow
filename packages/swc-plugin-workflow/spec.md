@@ -197,6 +197,53 @@ example.workflowId = "workflow//./input//example";
 })(example$innerStep, "step//./input//example/innerStep");
 ```
 
+#### Step config assignments on nested steps
+
+Step configuration is expressed by assigning a property on the step function
+(currently only `maxRetries`). When a step is defined *inside* a workflow body,
+such an assignment lives in that body — which step mode replaces wholesale with a
+`throw`. To keep the configuration from being silently dropped (which would reset
+the step to the default retry count), a `<step>.maxRetries = <literal>` assignment
+is re-emitted at module scope on the hoisted step function, right after its
+registration IIFE. Only literal right-hand sides are hoisted, since the statement
+is moved out of the workflow's scope and must not capture workflow-local bindings.
+
+Input:
+```javascript
+export async function example(a) {
+  "use workflow";
+
+  async function innerStep(x) {
+    "use step";
+    return x + 1;
+  }
+  innerStep.maxRetries = 0;
+
+  return await innerStep(a);
+}
+```
+
+Output (Step Mode):
+```javascript
+/**__internal_workflows{"workflows":{"input.js":{"example":{"workflowId":"workflow//./input//example"}}},"steps":{"input.js":{"innerStep":{"stepId":"step//./input//example/innerStep"}}}}*/;
+async function example$innerStep(x) {
+    return x + 1;
+}
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(example$innerStep, "step//./input//example/innerStep");
+example$innerStep.maxRetries = 0;
+export async function example(a) {
+    throw new Error("You attempted to execute workflow example function directly. To start a workflow, use start(example) from workflow/api");
+}
+example.workflowId = "workflow//./input//example";
+```
+
+In workflow mode the assignment is left in place on the step proxy; it is inert
+there because retry configuration is only read where the step executes.
+
 ### Steps in Nested Object Properties
 
 Step functions can be defined inside deeply nested object properties, including function call arguments. The plugin recursively processes nested objects to find step functions, generating compound paths for the step IDs.

@@ -1448,6 +1448,21 @@ describe('e2e', () => {
         expect(result.failed).toBe(true);
         expect(result.attempt).toBe(1);
       });
+
+      test(
+        'maxRetries=0 on a nested (in-workflow) step disables retries',
+        { timeout: 60_000 },
+        async () => {
+          // Regression: `.maxRetries` assigned inside the workflow body used to
+          // be dropped by the step transform, so a nested step silently
+          // retried the default number of times. It must run exactly once.
+          const run = await start(await e2e('errorRetryDisabledNested'), []);
+          const result = await run.returnValue;
+
+          expect(result.failed).toBe(true);
+          expect(result.attempt).toBe(1);
+        }
+      );
     });
 
     describe('catchability', () => {
