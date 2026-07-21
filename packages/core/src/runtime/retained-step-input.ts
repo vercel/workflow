@@ -46,6 +46,33 @@ const HOST_DISPATCH_CONSTRUCTORS = [
   'TransformStream',
 ] as const;
 
+// Host primordials captured at module load — before any workflow code can
+// exist in the process — so the checker itself never invokes a live host
+// method workflow code could have replaced (host constructors are reachable
+// via e.g. `structuredClone(new Map()).constructor`).
+const hostMapForEach = Map.prototype.forEach;
+const hostSetForEach = Set.prototype.forEach;
+// biome-ignore lint/style/noNonNullAssertion: the %TypedArray% buffer getter always exists
+const hostTypedArrayBuffer = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  'buffer'
+)!.get!;
+
+const TYPED_ARRAY_CONSTRUCTORS = [
+  'Int8Array',
+  'Uint8Array',
+  'Uint8ClampedArray',
+  'Int16Array',
+  'Uint16Array',
+  'Int32Array',
+  'Uint32Array',
+  'Float16Array',
+  'Float32Array',
+  'Float64Array',
+  'BigInt64Array',
+  'BigUint64Array',
+] as const;
+
 function hasOwn(target: object, key: string | symbol): boolean {
   return Object.getOwnPropertyDescriptor(target, key) !== undefined;
 }
@@ -205,8 +232,9 @@ function isPassiveMap(
   if (prototype !== frozenRealmPrototype(workflowGlobal, 'Map')) return false;
   if (!hasNoOwnProperties(value)) return false;
   let passive = true;
-  // Host forEach iterates via internal slots — no realm members execute.
-  Map.prototype.forEach.call(value, (entryValue: unknown, key: unknown) => {
+  // The captured host forEach iterates via internal slots — no realm
+  // members (and no live, replaceable host members) execute.
+  hostMapForEach.call(value, (entryValue: unknown, key: unknown) => {
     passive &&=
       isPassive(key, workflowGlobal, seen) &&
       isPassive(entryValue, workflowGlobal, seen);
@@ -223,7 +251,7 @@ function isPassiveSet(
   if (prototype !== frozenRealmPrototype(workflowGlobal, 'Set')) return false;
   if (!hasNoOwnProperties(value)) return false;
   let passive = true;
-  Set.prototype.forEach.call(value, (entryValue: unknown) => {
+  hostSetForEach.call(value, (entryValue: unknown) => {
     passive &&= isPassive(entryValue, workflowGlobal, seen);
   });
   return passive;
@@ -244,22 +272,15 @@ function isPassiveTypedArray(
   value: object,
   workflowGlobal: Record<string, any>
 ): boolean {
+  // Identity against the finite set of the realm's real (frozen) typed-array
+  // prototypes — NOT "anything chaining to %TypedArray%": a workflow can
+  // manufacture a frozen hostile prototype with a delegating `buffer` getter
+  // and setPrototypeOf a real typed array onto it.
   const prototype = Object.getPrototypeOf(value);
   if (
-    prototype === null ||
-    types.isProxy(prototype) ||
-    !Object.isFrozen(prototype)
-  ) {
-    return false;
-  }
-  // The subclass prototype must chain to the realm's frozen %TypedArray%
-  // parent, where the buffer/byteOffset/byteLength getters live.
-  const uint8Prototype = frozenRealmPrototype(workflowGlobal, 'Uint8Array');
-  if (uint8Prototype === undefined) return false;
-  const typedArrayPrototype = Object.getPrototypeOf(uint8Prototype);
-  if (
-    Object.getPrototypeOf(prototype) !== typedArrayPrototype ||
-    !Object.isFrozen(typedArrayPrototype)
+    !TYPED_ARRAY_CONSTRUCTORS.some(
+      (name) => prototype === frozenRealmPrototype(workflowGlobal, name)
+    )
   ) {
     return false;
   }
@@ -271,9 +292,9 @@ function isPassiveTypedArray(
   ) {
     return false;
   }
-  // Frozen chain ⇒ the getters are the originals; safe to invoke. Reject
-  // SharedArrayBuffer backing (cross-thread mutation is unserializable).
-  return !types.isSharedArrayBuffer((value as Uint8Array).buffer);
+  // Read the backing buffer via the captured host getter (internal slots
+  // work cross-realm); reject SharedArrayBuffer backing.
+  return !types.isSharedArrayBuffer(hostTypedArrayBuffer.call(value));
 }
 
 function isPassiveArrayBuffer(

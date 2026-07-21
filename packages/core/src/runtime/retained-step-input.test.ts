@@ -342,3 +342,52 @@ describe('serialization touches only the frozen surface', () => {
     }
   });
 });
+
+describe('checker execution surface', () => {
+  it('never invokes live host collection methods', () => {
+    const { context, workflowGlobal } = makeContext();
+    const map = vm.runInContext('new Map([["k", 1]])', context);
+
+    let invoked = 0;
+    const original = Map.prototype.forEach;
+    // Simulate workflow code having replaced the reachable host method.
+    Map.prototype.forEach = function (
+      this: Map<unknown, unknown>,
+      ...args: [any]
+    ) {
+      invoked++;
+      return original.apply(this, args);
+    };
+    try {
+      // The checker uses the module-captured primordial: same verdict,
+      // replaced method never runs.
+      expect(isRetainedSerializationPassive(map, workflowGlobal)).toBe(true);
+      expect(invoked).toBe(0);
+    } finally {
+      Map.prototype.forEach = original;
+    }
+  });
+
+  it('declines typed arrays re-prototyped onto a frozen hostile prototype', () => {
+    const { context, workflowGlobal } = makeContext();
+    const value = vm.runInContext(
+      `(() => {
+        globalThis.__retainedTestCalls = 0;
+        const realGetter = Object.getOwnPropertyDescriptor(
+          Object.getPrototypeOf(Uint8Array.prototype), "buffer").get;
+        const hostile = Object.create(
+          Object.getPrototypeOf(Uint8Array.prototype),
+          { buffer: { get() { globalThis.__retainedTestCalls++; return realGetter.call(this); } } }
+        );
+        Object.freeze(hostile);
+        const ta = new Uint8Array([1, 2]);
+        Object.setPrototypeOf(ta, hostile);
+        return ta;
+      })()`,
+      context
+    );
+
+    expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(false);
+    expect(vm.runInContext('globalThis.__retainedTestCalls', context)).toBe(0);
+  });
+});
