@@ -33,13 +33,11 @@ function sampleResult(overrides = {}) {
         metric: 'ttfs',
         scenario: 'stream',
         unit: 'ms',
+        best: 320,
         avg: 412.3,
-        p10: 357,
         p75: 398,
         p90: 512,
         p99: 634,
-        min: 320,
-        max: 700,
         samples: 30,
         targets: { p75: 200, p90: 300, p99: 600 },
       },
@@ -47,13 +45,11 @@ function sampleResult(overrides = {}) {
         metric: 'sl',
         scenario: 'stream',
         unit: 'ms',
+        best: 30,
         avg: 55.1,
-        p10: 41,
         p75: 48,
         p90: 55,
         p99: 120,
-        min: 30,
-        max: 130,
         samples: 30,
         targets: { p75: 50, p90: 60, p99: 125 },
       },
@@ -61,13 +57,11 @@ function sampleResult(overrides = {}) {
         metric: 'stso',
         scenario: '1020 steps (101-120)',
         unit: 'ms',
+        best: 60,
         avg: 91,
-        p10: 72,
         p75: 85,
         p90: 120,
         p99: 200,
-        min: 60,
-        max: 250,
         samples: 19,
         targets: { p75: 30, p90: 45, p99: 90 },
       },
@@ -75,13 +69,11 @@ function sampleResult(overrides = {}) {
         metric: 'wo',
         scenario: 'stream',
         unit: 'ms',
+        best: 900,
         avg: 1200,
-        p10: 1000,
         p75: 1100,
         p90: 1500,
         p99: 1900,
-        min: 900,
-        max: 2000,
         samples: 30,
       },
     ],
@@ -105,14 +97,15 @@ test('renders a completed run with a table and embedded history', async () => {
   assert.match(body, /\*\*SL\*\*/);
   assert.match(body, /\| stream \|/);
   assert.match(body, /1020 steps \(101-120\)/);
-  // "ms" lives in the column headers, not in the cells
+  // "ms" lives in the column headers, not in the cells; no Avg column
   assert.match(
     body,
-    /\| Avg \(ms\) \| P10 \(ms\) \| P75 \(ms\) \| P90 \(ms\) \| P99 \(ms\) \|/
+    /\| Best \(ms\) \| P75 \(ms\) \| P90 \(ms\) \| P99 \(ms\) \|/
   );
+  assert.doesNotMatch(body, /Avg \(ms\)/);
   assert.doesNotMatch(body, /\d ms \|/);
-  // P10 cell renders between Avg and P75 (warm-start floor for TTFS)
-  assert.match(body, /\| 412 \| 357 \| 398 🔴 \|/);
+  // Best cell (fastest sample) renders before P75 (warm-start floor for TTFS)
+  assert.match(body, /\| 320 \| 398 🔴 \|/);
   // Metric definitions live in the footer, not in the table rows
   assert.doesNotMatch(body, /\| \*\*TTFS\*\* <sub>/);
   assert.match(body, /<sub>Metrics — \*\*TTFS\*\*: time to first step body/);
@@ -122,9 +115,11 @@ test('renders a completed run with a table and embedded history', async () => {
     body,
     /<sub>Scenarios — \*\*stream\*\*: one streaming step in turbo mode/
   );
-  // Threshold marks: TTFS p75 398 > 200 → 🔴; SL p75 48 <= 50 → 🟢; WO unmarked
+  // Target marks: TTFS p75 398 > 200 → 🔴; SL row is within target on every
+  // percentile, so it stays unmarked (no 🟢 anywhere); WO has no targets.
   assert.match(body, /398 🔴/);
-  assert.match(body, /48 🟢/);
+  assert.match(body, /\| 30 \| 48 \| 55 \| 120 \|/);
+  assert.doesNotMatch(body, /🟢/);
   assert.match(body, /\| 1100 \|/);
   // Targets legend derived from row targets
   assert.match(body, /Targets \(p75\/p90\/p99, ms\) — TTFS 200\/300\/600/);
@@ -140,15 +135,20 @@ test('renders a completed run with a table and embedded history', async () => {
   assert.strictEqual(history[0].results[0].metrics.length, 4);
 });
 
-test('renders avg deltas against a baseline and embeds them in history', async () => {
+test('renders best/p75/p90/p99 deltas with 🔻/💚 threshold marks and embeds them', async () => {
   const { renderComment, extractHistory } = await loadModule();
   const baseline = sampleResult({
     metrics: sampleResult()
       .metrics.filter((row) => row.metric !== 'wo') // no baseline for WO
       .map((row) => ({
         ...row,
-        // ttfs 412.3 vs 400 → +3.1%; sl 55.1 vs 50 → +10%; stso 91 vs 91 → ±0%
-        avg: { ttfs: 400, sl: 50, stso: 91 }[row.metric],
+        // ttfs: best 320 vs 250 → +28% 🔻, p75 398 vs 500 → -20% 💚,
+        //       p90 512 vs 512 → ±0%, p99 634 vs 600 → +5.7% (no mark).
+        // sl/stso baselines equal the run → ±0% everywhere.
+        best: { ttfs: 250, sl: 30, stso: 60 }[row.metric],
+        p75: { ttfs: 500, sl: 48, stso: 85 }[row.metric],
+        p90: { ttfs: 512, sl: 55, stso: 120 }[row.metric],
+        p99: { ttfs: 600, sl: 120, stso: 200 }[row.metric],
       })),
   });
   const body = renderComment({
@@ -159,26 +159,32 @@ test('renders avg deltas against a baseline and embeds them in history', async (
     commit: 'abcdef1234567890',
   });
 
-  // 412.3 renders rounded (>= 100), 55.1 keeps its decimal
-  assert.match(body, /\| 412 \(\+3\.1%\) \|/);
-  assert.match(body, /\| 55\.1 \(\+10%\) \|/);
-  assert.match(body, /\| 91 \(±0%\) \|/);
-  // WO has no baseline row → no delta
-  assert.match(body, /\| 1200 \|/);
+  // Best regression past +15% → 🔻
+  assert.match(body, /\| 320 \(\+28%\) 🔻 \|/);
+  // P75 improvement past -15% → 💚 (alongside the 🔴 target miss)
+  assert.match(body, /398 🔴 \(-20%\) 💚/);
+  // P90 now carries a delta (previously undecorated); ±0%, no threshold mark
+  assert.match(body, /512 🔴 \(±0%\) \|/);
+  // P99 small delta, no threshold mark
+  assert.match(body, /634 🔴 \(\+5\.7%\) \|/);
+  // WO has no baseline row → no delta on its Best cell
+  assert.match(body, /\| 900 \|/);
   assert.match(
     body,
-    /Avg deltas compare against the most recent benchmark run on `main`/
+    /Best\/P75\/P90\/P99 deltas compare against the most recent benchmark run on `main`/
   );
-  // The annotation is embedded so history re-renders keep the delta
+  assert.match(body, /💚 one better than/);
+  // The annotations are embedded so history re-renders keep the deltas
   const history = extractHistory(body);
-  assert.strictEqual(history[0].results[0].metrics[0].baselineAvg, 400);
+  assert.strictEqual(history[0].results[0].metrics[0].baselineBest, 250);
+  assert.strictEqual(history[0].results[0].metrics[0].baselineP90, 512);
   const rerendered = renderComment({
     status: 'running',
     results: [],
     history,
     commit: 'ffffff1234567890',
   });
-  assert.match(rerendered, /\| 412 \(\+3\.1%\) \|/);
+  assert.match(rerendered, /\| 320 \(\+28%\) 🔻 \|/);
 });
 
 test('suppresses deltas when the baseline methodology version differs', async () => {
@@ -188,7 +194,7 @@ test('suppresses deltas when the baseline methodology version differs', async ()
   // match — the numbers are not comparable.
   const baseline = sampleResult({
     methodologyVersion: 1,
-    metrics: sampleResult().metrics.map((row) => ({ ...row, avg: 400 })),
+    metrics: sampleResult().metrics.map((row) => ({ ...row, best: 200 })),
   });
   const body = renderComment({
     status: 'completed',
@@ -199,7 +205,7 @@ test('suppresses deltas when the baseline methodology version differs', async ()
   });
   // No percentage deltas, and the "compare against main" note is absent.
   assert.doesNotMatch(body, /%\)/);
-  assert.doesNotMatch(body, /Avg deltas/);
+  assert.doesNotMatch(body, /deltas compare against/);
 });
 
 test('renders no deltas without a baseline', async () => {
@@ -211,7 +217,7 @@ test('renders no deltas without a baseline', async () => {
     commit: 'abcdef1234567890',
   });
   assert.doesNotMatch(body, /%\)/);
-  assert.doesNotMatch(body, /Avg deltas/);
+  assert.doesNotMatch(body, /deltas compare against/);
 });
 
 test('collapses previous results on re-runs', async () => {
@@ -347,7 +353,7 @@ test('CLI renders results from a directory and previous body file', async () => 
     }
   );
   const baseline = sampleResult();
-  baseline.metrics = baseline.metrics.map((row) => ({ ...row, avg: 400 }));
+  baseline.metrics = baseline.metrics.map((row) => ({ ...row, best: 300 }));
   fs.writeFileSync(
     path.join(
       baselineDir,
@@ -376,8 +382,8 @@ test('CLI renders results from a directory and previous body file', async () => 
   const second = fs.readFileSync(secondOut, 'utf8');
   assert.match(second, /Previous results \(1\)/);
   assert.match(second, /#### 1111111/);
-  // ttfs avg 412.3 (rendered rounded) vs baseline 400 → +3.1%
-  assert.match(second, /\| 412 \(\+3\.1%\) \|/);
+  // ttfs best 320 vs baseline 300 → +6.7%
+  assert.match(second, /\| 320 \(\+6\.7%\) \|/);
 });
 
 test('CLI fails when completed with no results', async () => {

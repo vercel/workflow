@@ -3226,6 +3226,61 @@ describe('e2e', () => {
     });
   });
 
+  // Regression test for the o2flow v5 upgrade incident (5.0.0-beta.26, fixed
+  // by #2752): a plain API route — no workflow directives anywhere in its
+  // module graph — importing a `defineHook()` hook from a shared module and
+  // calling `.resume()` on it. On broken versions the framework bundler
+  // tree-shook the world registration out of the route bundle and the resume
+  // failed with Turbopack's "Cannot find module as expression is too dynamic"
+  // stub before reaching any world API. Only deployed apps reproduce the
+  // broken case (isolated route bundles); local dev servers mask it because
+  // evaluating next.config registers the world process-wide — see
+  // route-bundle-isolation.test.ts for the locally-reproducible variant.
+  test.skipIf(!isNextJsApp)(
+    'plainModuleDoneHook resumed via plain API route (o2flow shape)',
+    { timeout: 90_000 },
+    async () => {
+      const token = `plain-module-hook-${Math.random().toString(36).slice(2)}`;
+
+      const run = await start(
+        await getWorkflowMetadata(
+          deploymentUrl,
+          'workflows/102_plain_module_hook.ts',
+          'waitForPlainModuleHook'
+        ),
+        [token]
+      );
+
+      await waitForHook(token, { runId: run.runId });
+
+      const res = await fetch(
+        new URL('/api/resume-plain-hook', deploymentUrl),
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(await getTrustedSourcesHeaders()),
+          },
+          body: JSON.stringify({
+            token,
+            ok: true,
+            note: 'resumed-from-plain-route',
+          }),
+        }
+      );
+      const body = await res.text();
+      expect(res.status, `resume route responded ${res.status}: ${body}`).toBe(
+        200
+      );
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual({
+        resumedWith: { ok: true, note: 'resumed-from-plain-route' },
+        plainModuleHookTestData: 'workflow_completed',
+      });
+    }
+  );
+
   test(
     'hookWithSleepWorkflow - hook payloads delivered correctly with concurrent sleep',
     { timeout: 90_000 },

@@ -10,14 +10,15 @@
  * metrics below depend on the CI runner's clock or its network path to the
  * proxy; they are computed purely from Vercel-side timestamps.
  *
- * Metrics (all in milliseconds, reported as avg/p10/p75/p90/p99):
+ * Metrics (all in milliseconds, reported as best/p75/p90/p99; avg is kept in
+ * the JSON for reference but not shown in the PR comment):
  *
- * p10 is reported alongside the upper percentiles so warm-start latency (the
- * fast floor) is visible next to the cold-start tail: the workbench deployment
- * cold-starts the `/flow` invocation for a large fraction of runs (bursty,
- * low-traffic), which inflates p75+. Cold starts are kept in the numbers on
- * purpose — they are part of real bursty-workload latency — and p10 shows what
- * a warm trigger looks like.
+ * The best (fastest) sample is reported alongside the upper percentiles so
+ * warm-start latency (the fast floor) is visible next to the cold-start tail:
+ * the workbench deployment cold-starts the `/flow` invocation for a large
+ * fraction of runs (bursty, low-traffic), which inflates p75+. Cold starts are
+ * kept in the numbers on purpose — they are part of real bursty-workload
+ * latency — and the best sample shows what a fully warm trigger looks like.
  *
  * - TTFS  (time to first step): `steps[0].start` (first step body execution,
  *          deployment clock) minus the in-deployment `clientStart` returned by
@@ -25,8 +26,8 @@
  *          turbo path (no hooks) can exercise the runtime's in-process fast
  *          path; the non-turbo path (a hook registered before the step)
  *          exercises the dispatch path. Both are proxy-independent. TTFS
- *          includes the VQS dispatch hop and any `/flow` cold start (see p10
- *          note above).
+ *          includes the VQS dispatch hop and any `/flow` cold start (see the
+ *          best-sample note above).
  * - STSO  (step-to-step overhead): gap between consecutive step body
  *          executions (`steps[i].start - steps[i-1].end`) in a workflow with
  *          many trivial sequential steps. Both timestamps come from step
@@ -416,14 +417,13 @@ async function runScenario<T>(
 // ============================================================================
 
 interface MetricStats {
+  /** Fastest (best) sample — the warm-start floor vs the cold-start tail. */
+  best: number;
+  /** Mean; kept in the JSON for reference but not shown in the PR comment. */
   avg: number;
-  /** 10th percentile — surfaces the warm-start floor vs the cold-start tail. */
-  p10: number;
   p75: number;
   p90: number;
   p99: number;
-  min: number;
-  max: number;
   samples: number;
 }
 
@@ -444,13 +444,11 @@ function computeStats(samples: number[]): MetricStats {
     ];
   const round = (v: number) => Math.round(v * 10) / 10;
   return {
+    best: round(sorted[0]),
     avg: round(sorted.reduce((sum, v) => sum + v, 0) / sorted.length),
-    p10: round(percentile(10)),
     p75: round(percentile(75)),
     p90: round(percentile(90)),
     p99: round(percentile(99)),
-    min: round(sorted[0]),
-    max: round(sorted[sorted.length - 1]),
     samples: sorted.length,
   };
 }
@@ -689,11 +687,11 @@ describe('workflow benchmarks', () => {
     console.log(`[bench] Results written to ${outputPath}`);
     console.table(
       metricRows.map(
-        ({ metric, scenario, avg, p10, p75, p90, p99, samples }) => ({
+        ({ metric, scenario, best, avg, p75, p90, p99, samples }) => ({
           metric,
           scenario,
+          best,
           avg,
-          p10,
           p75,
           p90,
           p99,
