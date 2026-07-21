@@ -3,6 +3,109 @@
 import Link from 'next/link';
 import type { ComponentProps } from 'react';
 
+// AWS Step Functions icon
+export const AwsStepFunctions = (props: ComponentProps<'svg'>) => (
+  <svg
+    viewBox="0 0 80 80"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    {...props}
+  >
+    <title>AWS Step Functions</title>
+    <rect width="80" height="80" rx="12" fill="#E7157B" />
+    <path
+      d="M40 14C25.64 14 14 25.64 14 40C14 54.36 25.64 66 40 66C54.36 66 66 54.36 66 40C66 25.64 54.36 14 40 14ZM40 20C51.05 20 60 28.95 60 40C60 51.05 51.05 60 40 60C28.95 60 20 51.05 20 40C20 28.95 28.95 20 40 20Z"
+      fill="white"
+    />
+    <path
+      d="M40 26C40 26 28 34 28 40C28 46 33.37 51 40 51C46.63 51 52 46 52 40C52 34 40 26 40 26Z"
+      fill="white"
+    />
+    <circle cx="40" cy="40" r="5" fill="#E7157B" />
+  </svg>
+);
+
+// AWS Bedrock AgentCore icon
+export const AwsBedrockAgentCore = (props: ComponentProps<'svg'>) => (
+  <svg
+    viewBox="0 0 80 80"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    {...props}
+  >
+    <title>AWS Bedrock AgentCore</title>
+    <rect width="80" height="80" rx="12" fill="#7AA116" />
+    <path
+      d="M40 16L58 27V53L40 64L22 53V27L40 16Z"
+      stroke="white"
+      strokeWidth="3"
+      fill="none"
+    />
+    <path
+      d="M40 16V64M22 27L58 53M58 27L22 53"
+      stroke="white"
+      strokeWidth="2"
+      opacity="0.5"
+    />
+    <circle cx="40" cy="40" r="8" fill="white" />
+    <circle cx="40" cy="40" r="4" fill="#7AA116" />
+  </svg>
+);
+
+// Inngest icon
+export const Inngest = (props: ComponentProps<'svg'>) => (
+  <svg
+    viewBox="0 0 80 80"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    {...props}
+  >
+    <title>Inngest</title>
+    <rect width="80" height="80" rx="12" fill="#1A1A1A" />
+    <path
+      d="M20 40C20 40 28 24 40 24C52 24 60 40 60 40C60 40 52 56 40 56C28 56 20 40 20 40Z"
+      stroke="white"
+      strokeWidth="3"
+      fill="none"
+    />
+    <path
+      d="M28 32L52 48M52 32L28 48"
+      stroke="white"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+    />
+    <circle cx="40" cy="40" r="5" fill="white" />
+  </svg>
+);
+
+// trigger.dev icon
+export const TriggerDev = (props: ComponentProps<'svg'>) => (
+  <svg
+    viewBox="0 0 80 80"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    {...props}
+  >
+    <title>trigger.dev</title>
+    <rect width="80" height="80" rx="12" fill="#1A1A1A" />
+    <path
+      d="M22 40L38 22L56 40L38 58L22 40Z"
+      stroke="white"
+      strokeWidth="3"
+      fill="none"
+      strokeLinejoin="round"
+    />
+    <path d="M34 40H58" stroke="white" strokeWidth="3" strokeLinecap="round" />
+    <path
+      d="M50 32L58 40L50 48"
+      stroke="white"
+      strokeWidth="3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 export const Express = (props: ComponentProps<'svg'>) => (
   <svg
     width="999"

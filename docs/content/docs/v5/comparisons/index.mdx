@@ -9,6 +9,9 @@ related:
   - /worlds/vercel
 ---
 
+import { SiTemporal, SiCloudflareworkers } from "@icons-pack/react-simple-icons";
+import { AwsStepFunctions, AwsBedrockAgentCore, Inngest, TriggerDev } from "@/app/[lang]/(home)/components/frameworks";
+
 The Workflow SDK overlaps with several categories: durable execution engines, background-job platforms, managed orchestrators, and AI-agent runtimes. This section compares it against the most common alternatives, one deep dive per tool.
 
 ## What makes the Workflow SDK different
@@ -37,22 +40,46 @@ These comparisons are compiled from each product's public documentation and are 
 ## Deep dives
 
 <Cards>
-    <Card href="/docs/comparisons/workflow-sdk-vs-temporal" title="vs Temporal">
+    <Card href="/docs/comparisons/workflow-sdk-vs-temporal">
+        <div className="flex flex-col items-center justify-center gap-2 py-2">
+            <SiTemporal className="size-10" style={{ color: "#000000" }} />
+            <span className="font-medium">vs Temporal</span>
+        </div>
         The mature, language-agnostic durable-execution platform. You run the workers; Workflow SDK runs in your app.
     </Card>
-    <Card href="/docs/comparisons/workflow-sdk-vs-cloudflare-workflows" title="vs Cloudflare Workflows">
+    <Card href="/docs/comparisons/workflow-sdk-vs-cloudflare-workflows">
+        <div className="flex flex-col items-center justify-center gap-2 py-2">
+            <SiCloudflareworkers className="size-10" style={{ color: "#F48120" }} />
+            <span className="font-medium">vs Cloudflare Workflows</span>
+        </div>
         A durable engine on Workers + Durable Objects. Both replay; they handle versioning and encryption very differently.
     </Card>
-    <Card href="/docs/comparisons/workflow-sdk-vs-aws-step-functions" title="vs AWS Step Functions">
+    <Card href="/docs/comparisons/workflow-sdk-vs-aws-step-functions">
+        <div className="flex flex-col items-center justify-center gap-2 py-2">
+            <AwsStepFunctions className="size-10" />
+            <span className="font-medium">vs AWS Step Functions</span>
+        </div>
         Declarative ASL JSON state machines vs. plain TypeScript control flow.
     </Card>
-    <Card href="/docs/comparisons/workflow-sdk-vs-aws-agentcore" title="vs AWS Bedrock AgentCore">
+    <Card href="/docs/comparisons/workflow-sdk-vs-aws-agentcore">
+        <div className="flex flex-col items-center justify-center gap-2 py-2">
+            <AwsBedrockAgentCore className="size-10" />
+            <span className="font-medium">vs AWS Bedrock AgentCore</span>
+        </div>
         An AI-agent hosting platform — not a durable-execution engine. Different axis.
     </Card>
-    <Card href="/docs/comparisons/workflow-sdk-vs-inngest" title="vs Inngest">
+    <Card href="/docs/comparisons/workflow-sdk-vs-inngest">
+        <div className="flex flex-col items-center justify-center gap-2 py-2">
+            <Inngest className="size-10" />
+            <span className="font-medium">vs Inngest</span>
+        </div>
         Event-driven durable functions that run on your own infra over HTTP.
     </Card>
-    <Card href="/docs/comparisons/workflow-sdk-vs-trigger-dev" title="vs trigger.dev">
+    <Card href="/docs/comparisons/workflow-sdk-vs-trigger-dev">
+        <div className="flex flex-col items-center justify-center gap-2 py-2">
+            <TriggerDev className="size-10" />
+            <span className="font-medium">vs trigger.dev</span>
+        </div>
         A TypeScript task platform that achieves durability by snapshotting the process (CRIU).
     </Card>
 </Cards>
