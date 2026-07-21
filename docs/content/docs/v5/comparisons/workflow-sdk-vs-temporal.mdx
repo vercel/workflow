@@ -9,7 +9,7 @@ related:
   - /docs/foundations/hooks
   - /docs/foundations/streaming
   - /docs/ai
-  - /docs/deploying/world/vercel-world
+  - /worlds/vercel
 ---
 
 [Temporal](https://temporal.io) is the most mature durable-execution platform — battle-tested at large scale, with seven language SDKs. It and the Workflow SDK share the same core idea (durable orchestration via event-sourced replay), so the real differences are operational: **where your code runs, how you version it, and how it streams to clients.**
@@ -39,7 +39,7 @@ related:
 
 Temporal Cloud manages the durable engine, but **you still build, deploy, and scale a fleet of Workers** that poll task queues and run your Workflow and Activity code. Those workers connect *out* to Temporal Cloud, typically over the public internet (AWS PrivateLink / GCP Private Service Connect are available as same-region options). Readable observability requires you to stand up a **Codec Server** so the Web UI can decrypt payloads your data converter encrypted.
 
-With the Workflow SDK on Vercel, orchestration, execution, and observability are co-located on one platform with internal networking, and per-run E2E encryption is on by default with no codec server to run. There are no workers, task queues, or a control plane to operate. (Self-hosting via the [Postgres World](/docs/deploying/world/postgres-world) is the closest analog to running your own Temporal cluster.)
+With the Workflow SDK on Vercel, orchestration, execution, and observability are co-located on one platform with internal networking, and per-run E2E encryption is on by default with no codec server to run. There are no workers, task queues, or a control plane to operate. (Self-hosting via the [Postgres World](/worlds/postgres) is the closest analog to running your own Temporal cluster.)
 
 ## Versioning
 

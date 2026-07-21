@@ -6,14 +6,14 @@ summary: Side-by-side comparisons of the Workflow SDK against Temporal, Cloudfla
 related:
   - /docs/foundations/workflows-and-steps
   - /docs/how-it-works/event-sourcing
-  - /docs/deploying/world/vercel-world
+  - /worlds/vercel
 ---
 
 The Workflow SDK overlaps with several categories: durable execution engines, background-job platforms, managed orchestrators, and AI-agent runtimes. This section compares it against the most common alternatives, one deep dive per tool.
 
 ## What makes the Workflow SDK different
 
-- **It's an open-source SDK, not a hosted product.** Your workflows are plain TypeScript in your existing app. Run them on the managed [Vercel World](/docs/deploying/world/vercel-world), or self-host on the [Postgres World](/docs/deploying/world/postgres-world) — the [World abstraction](/docs/deploying/building-a-world) lets you own and swap the storage, queue, and streaming layers independently.
+- **It's an open-source SDK, not a hosted product.** Your workflows are plain TypeScript in your existing app. Run them on the managed [Vercel World](/worlds/vercel), or self-host on the [Postgres World](/worlds/postgres) — the [World abstraction](/worlds/building-a-world) lets you own and swap the storage, queue, and streaming layers independently.
 - **Versioning is safe by default.** Runs are pinned to the immutable deployment that started them, so shipping new code never disturbs in-flight runs. Upgrading a run is explicit and opt-in. See [Versioning](/docs/comparisons/workflow-sdk-vs-temporal#versioning).
 - **Realtime durable streaming is built in.** Stream partial output (LLM tokens, progress) to clients with [streams](/docs/foundations/streaming) that survive reconnects, cold starts, and replays — essential for chat and agent UIs.
 - **First-class AI agents.** `WorkflowAgent` ships inside the [AI SDK](/docs/ai), turning an agent loop into a durable workflow with automatic step retries and human-in-the-loop pauses.

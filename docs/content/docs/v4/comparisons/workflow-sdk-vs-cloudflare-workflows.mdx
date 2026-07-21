@@ -8,7 +8,7 @@ prerequisites:
 related:
   - /docs/how-it-works/event-sourcing
   - /docs/foundations/streaming
-  - /docs/deploying/building-a-world
+  - /worlds/building-a-world
 ---
 
 [Cloudflare Workflows](https://developers.cloudflare.com/workflows/) is a durable-execution engine built on Cloudflare Workers and SQLite-backed Durable Objects. It's the closest architectural peer to the Workflow SDK — both persist progress and replay to survive failures — which makes the differences in **versioning safety, encryption, and portability** the deciding factors.
@@ -45,7 +45,7 @@ Both engines replay, so changing code mid-run is the key hazard — and they tak
 
 Cloudflare encrypts Durable Object data at rest with Cloudflare-managed keys, but there is no application-level / end-to-end encryption and no customer-managed-key option — payloads are visible to the platform. The Workflow SDK encrypts each run's inputs, outputs, step I/O, and streams with a per-run AES-256-GCM key.
 
-On portability, Cloudflare Workflows is the most locked-in of the tools in this section: the API and Durable-Object-bound state are Cloudflare-specific, so moving means a rewrite. The Workflow SDK is Apache-2.0 and its [World abstraction](/docs/deploying/building-a-world) lets you run the same code on Vercel, on Postgres, or on a backend you build.
+On portability, Cloudflare Workflows is the most locked-in of the tools in this section: the API and Durable-Object-bound state are Cloudflare-specific, so moving means a rewrite. The Workflow SDK is Apache-2.0 and its [World abstraction](/worlds/building-a-world) lets you run the same code on Vercel, on Postgres, or on a backend you build.
 
 ## Where Cloudflare leads
 

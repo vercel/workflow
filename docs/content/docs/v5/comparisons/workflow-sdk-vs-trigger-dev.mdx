@@ -38,7 +38,7 @@ related:
 
 trigger.dev freezes the entire OS process with CRIU when a task hits a wait point, then restores it later — so there's **no replay and no determinism rule**: you can call `Date.now()` or `Math.random()` anywhere, and prior steps don't re-execute. The cost is an execution model that requires CRIU-capable infrastructure (which makes self-hosting heavier than a plain container) and runs on trigger.dev's runtime as a separate deploy target.
 
-The Workflow SDK reconstructs state by **replaying the workflow function** against its event log. That requires the workflow body to be deterministic (side effects go in `"use step"` functions), but it runs inside your existing app and deployment with no special host requirements, and the [World abstraction](/docs/deploying/building-a-world) lets you swap the storage/queue/stream layers.
+The Workflow SDK reconstructs state by **replaying the workflow function** against its event log. That requires the workflow body to be deterministic (side effects go in `"use step"` functions), but it runs inside your existing app and deployment with no special host requirements, and the [World abstraction](/worlds/building-a-world) lets you swap the storage/queue/stream layers.
 
 Notably, **both pin runs to a version** so deploys never corrupt in-flight work — trigger.dev via atomic version-locking, the Workflow SDK via immutable-deployment pinning.
 
