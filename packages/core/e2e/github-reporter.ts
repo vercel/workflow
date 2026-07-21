@@ -26,6 +26,13 @@ interface FailedTestInfo {
   file: string;
   errorMessage: string;
   runId?: string;
+  /**
+   * All run IDs found in the failure output. Tests that assert over a
+   * batch of runs (e.g. the multi-region all-regions case) aggregate
+   * several failures — each with its own `Run ID:` marker — into one
+   * error message; the runtime-log capture wants every one of them.
+   */
+  runIds?: string[];
   dashboardUrl?: string;
   status?: string;
 }
@@ -69,8 +76,15 @@ export default class GithubAnnotationReporter implements Reporter {
         .join('\n');
 
       // Try to extract run diagnostics from error output.
-      // The onTestFailed hook in utils.ts writes diagnostics with specific markers.
-      const diagnosticsMatch = errorMessage.match(/Run ID:\s+(wrun_\S+)/);
+      // The onTestFailed hook in utils.ts writes diagnostics with specific
+      // markers, and assertion messages may embed the same `Run ID:` form.
+      // Extract from the FULL message (before truncation below) so batch
+      // failures spanning many runs keep every ID.
+      const runIds = [
+        ...new Set(
+          [...errorMessage.matchAll(/Run ID:\s+(wrun_\S+)/g)].map((m) => m[1])
+        ),
+      ];
       const dashboardMatch = errorMessage.match(/Dashboard:\s+(https:\/\/\S+)/);
       const statusMatch = errorMessage.match(/Status:\s+(\S+)/);
 
@@ -79,7 +93,8 @@ export default class GithubAnnotationReporter implements Reporter {
         fullName: test.fullName,
         file: module.moduleId,
         errorMessage: errorMessage.slice(0, 500),
-        runId: diagnosticsMatch?.[1],
+        runId: runIds[0],
+        runIds: runIds.length > 0 ? runIds : undefined,
         dashboardUrl: dashboardMatch?.[1],
         status: statusMatch?.[1],
       });
@@ -114,6 +129,7 @@ export default class GithubAnnotationReporter implements Reporter {
       const diag = byTestName.get(test.testName);
       if (diag) {
         test.runId ??= diag.runId;
+        test.runIds ??= [diag.runId];
         test.dashboardUrl ??= diag.dashboardUrl ?? undefined;
       }
     }
@@ -128,8 +144,17 @@ export default class GithubAnnotationReporter implements Reporter {
    */
   private emitAnnotations() {
     for (const test of this.failedTests) {
-      const parts = [test.errorMessage.split('\n')[0].slice(0, 150)];
-      if (test.runId) parts.push(`Run: ${test.runId}`);
+      // 300 chars keeps region-mismatch messages (run ID + x-vercel-id
+      // proxy request ID) intact in the annotation.
+      const parts = [test.errorMessage.split('\n')[0].slice(0, 300)];
+      const runIds = test.runIds ?? (test.runId ? [test.runId] : []);
+      if (runIds.length === 1) {
+        parts.push(`Run: ${runIds[0]}`);
+      } else if (runIds.length > 1) {
+        const shown = runIds.slice(0, 3).join(', ');
+        const more = runIds.length - 3;
+        parts.push(`Runs: ${shown}${more > 0 ? ` (+${more} more)` : ''}`);
+      }
       if (test.status) parts.push(`Status: ${test.status}`);
       if (test.dashboardUrl) parts.push(test.dashboardUrl);
       const body = parts.join(' | ');

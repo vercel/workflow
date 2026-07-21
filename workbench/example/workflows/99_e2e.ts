@@ -3677,6 +3677,26 @@ export async function parallelStepsThenWebhookWorkflow(iterations: number) {
 }
 
 /**
+ * Best-effort capture of the Vercel proxy request ID (`x-vercel-id`) of
+ * the invocation currently executing. Reads the ambient Vercel request
+ * context straight off globalThis — the same source `@vercel/functions`'
+ * getContext() uses — rather than importing the package, because this
+ * file is shared by every workbench app. The symbol is populated by the
+ * Vercel runtime per request (and propagated into the workflow VM by
+ * @workflow/core), so this returns null on non-Vercel deployments.
+ */
+function readInvocationRequestId(): string | null {
+  const requestContext = (
+    globalThis as {
+      [key: symbol]:
+        | { get?: () => { headers?: Record<string, string> } | undefined }
+        | undefined;
+    }
+  )[Symbol.for('@vercel/request-context')]?.get?.();
+  return requestContext?.headers?.['x-vercel-id'] ?? null;
+}
+
+/**
  * Multi-region e2e probe (see packages/core/e2e/e2e-region.test.ts).
  *
  * Returns the `VERCEL_REGION` observed by both the workflow (flow route)
@@ -3686,17 +3706,41 @@ export async function parallelStepsThenWebhookWorkflow(iterations: number) {
  * to be deployed to the target regions (workbench/nextjs-turbopack
  * vercel.json pins iad1+sfo1+fra1) and the world's queue to route the
  * flow message by the run ID's region tag (@workflow/world-vercel).
+ *
+ * Alongside each observed region the probe records the invocation's
+ * Vercel proxy request ID (`x-vercel-id`) so that a region mismatch can
+ * be reported with the exact request that executed in the wrong region
+ * (queue delivery is expected to invoke the callback in the tagged
+ * region — a mismatch is a routing bug to escalate, and the request ID
+ * is what the platform team needs to trace it). Reading a per-request
+ * value inside the workflow function is non-deterministic across
+ * replays, which is fine here: it is never branched on, and the value
+ * that ends up in the return value belongs to the same (final)
+ * invocation whose VERCEL_REGION is being asserted.
  */
 export async function regionProbeWorkflow(label: string) {
   'use workflow';
   const workflowRegion = process.env.VERCEL_REGION ?? null;
-  const stepRegion = await regionProbeStep();
-  return { label, workflowRegion, stepRegion };
+  const workflowRequestId = readInvocationRequestId();
+  const step = await regionProbeStep();
+  return {
+    label,
+    workflowRegion,
+    workflowRequestId,
+    stepRegion: step.region,
+    stepRequestId: step.requestId,
+  };
 }
 
-async function regionProbeStep(): Promise<string | null> {
+async function regionProbeStep(): Promise<{
+  region: string | null;
+  requestId: string | null;
+}> {
   'use step';
-  return process.env.VERCEL_REGION ?? null;
+  return {
+    region: process.env.VERCEL_REGION ?? null,
+    requestId: readInvocationRequestId(),
+  };
 }
 
 async function writeCrossRegionStreamChunks(

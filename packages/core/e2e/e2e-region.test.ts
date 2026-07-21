@@ -1,5 +1,12 @@
 import { decode, isTagged } from '@workflow/world-vercel/run-id';
-import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import {
@@ -15,6 +22,7 @@ import {
   setupRunTracking,
   setupWorld,
   trackRun,
+  writeDiagnosticsSidecar,
 } from './utils';
 
 /**
@@ -86,48 +94,12 @@ const ALL_REGIONS = [
 ] as const;
 const REGIONS = ['iad1', 'sfo1', 'fra1'] as const;
 
-/**
- * Queue delivery is GUARANTEED to the tagged region's dataplane (failed
- * sends buffer durably and are re-driven), and the delivery callback
- * always egresses from that region. Execution locality of the consumer
- * invocation is looser, though: the callback enters Vercel's edge at
- * whichever POP the egress geolocates to, and adjacent regions can
- * resolve to each other's functions (observed live: kix1-tagged runs —
- * callback egressing from Osaka — executing in hnd1/Tokyo). Run-ID
- * tagging, data placement, and completion remain strictly the tagged
- * region; only where the handler physically runs is geo-elastic, so the
- * assertion tolerates each region's geographic neighbors.
- */
-const EXECUTION_ADJACENCY: Record<string, readonly string[]> = {
-  arn1: ['fra1', 'dub1'],
-  bom1: ['sin1', 'hkg1'],
-  cdg1: ['lhr1', 'fra1'],
-  cle1: ['iad1', 'pdx1'],
-  cpt1: ['fra1', 'lhr1'],
-  dub1: ['lhr1', 'fra1'],
-  fra1: ['cdg1', 'dub1'],
-  gru1: ['iad1', 'cle1'],
-  hkg1: ['sin1', 'syd1'],
-  hnd1: ['kix1', 'sin1'],
-  iad1: ['cle1', 'pdx1'],
-  icn1: ['kix1', 'syd1', 'hnd1'],
-  kix1: ['hnd1', 'syd1'],
-  lhr1: ['cdg1', 'arn1'],
-  pdx1: ['sfo1', 'cle1'],
-  sfo1: ['pdx1', 'cle1'],
-  sin1: ['hkg1', 'syd1'],
-  syd1: ['sin1', 'hkg1'],
-  yul1: ['iad1', 'pdx1'],
-};
-
-function allowedExecutionRegions(region: string): readonly string[] {
-  return [region, ...(EXECUTION_ADJACENCY[region] ?? [])];
-}
-
 interface RegionProbeResult {
   label: string;
   workflowRegion: string | null;
+  workflowRequestId: string | null;
   stepRegion: string | null;
+  stepRequestId: string | null;
 }
 
 /** Tracked wrapper around start() for run diagnostics on failure. */
@@ -192,19 +164,27 @@ async function expectRunInRegion(
   expect(decoded.tagged && decoded.region).toBe(region);
 
   // 2. The workflow and its step actually executed in the tagged region
-  // (or a geographic neighbor — see EXECUTION_ADJACENCY; tagging and
-  // data placement stay strict).
+  // — strictly. Queue delivery targets the tagged region's dataplane and
+  // the delivery callback is expected to be invoked in that SAME region,
+  // so any mismatch is a routing bug, not tolerable geo-elasticity. The
+  // failure message carries the run ID (in the `Run ID:` form the CI
+  // reporter extracts for runtime-log capture) plus the offending
+  // invocation's Vercel proxy request ID (x-vercel-id) so mismatches can
+  // be escalated with everything needed to trace them server-side.
   const returnValue = await run.returnValue;
   expect(returnValue.label).toBe(label);
-  const allowed = allowedExecutionRegions(region);
   expect(
-    allowed,
-    `workflow executed in ${returnValue.workflowRegion}, tagged ${region}`
-  ).toContain(returnValue.workflowRegion);
+    returnValue.workflowRegion,
+    `workflow executed in ${returnValue.workflowRegion}, tagged ${region} — ` +
+      `Run ID: ${run.runId} — workflow invocation x-vercel-id: ` +
+      `${returnValue.workflowRequestId ?? 'unavailable'}`
+  ).toBe(region);
   expect(
-    allowed,
-    `step executed in ${returnValue.stepRegion}, tagged ${region}`
-  ).toContain(returnValue.stepRegion);
+    returnValue.stepRegion,
+    `step executed in ${returnValue.stepRegion}, tagged ${region} — ` +
+      `Run ID: ${run.runId} — step invocation x-vercel-id: ` +
+      `${returnValue.stepRequestId ?? 'unavailable'}`
+  ).toBe(region);
 
   // 3. The server agrees the run completed (data reachable via the same
   // tag-derived region routing the writes used).
@@ -220,6 +200,13 @@ describe.skipIf(isLocalDeployment())('multi-region (world-vercel)', () => {
 
   beforeEach((ctx) => {
     setupRunTracking(ctx.task.name);
+  });
+
+  // Write the run-diagnostics sidecar so the CI reporter can map failed
+  // tests to run IDs (and the runtime-log capture can then pull every
+  // request row — proxy request IDs included — for those runs).
+  afterAll(() => {
+    writeDiagnosticsSidecar();
   });
 
   describe('explicit region: start({ region }) in the test process', () => {

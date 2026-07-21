@@ -72,7 +72,13 @@ function readFailedRunIds() {
   try {
     const failures = JSON.parse(fs.readFileSync(failuresPath, 'utf-8'));
     for (const failure of failures) {
-      if (failure.runId) failedRunIds.set(failure.runId, failure.testName);
+      // `runIds` carries every run referenced by the failure (batch tests
+      // aggregate several runs into one error); `runId` is the legacy
+      // single-run field.
+      const runIds = failure.runIds ?? (failure.runId ? [failure.runId] : []);
+      for (const runId of runIds) {
+        failedRunIds.set(runId, failure.testName);
+      }
     }
   } catch {
     // Sidecar absent (no failures, or reporter didn't run) — fine.
