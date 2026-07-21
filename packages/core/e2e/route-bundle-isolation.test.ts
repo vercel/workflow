@@ -86,17 +86,24 @@ describe('route bundle isolation (o2flow hook.resume regression)', () => {
       // nothing else (dev server, next.config evaluation, other routes) can
       // register the workflow world on globalThis first. This mirrors how a
       // Vercel lambda cold-starts an isolated route function.
+      //
+      // The harness prefixes its single result line with a unique marker so
+      // the test can find it even when the route bundle or the world logs to
+      // stdout before or after it.
+      const RESULT_MARKER = '__ROUTE_BUNDLE_ISOLATION_RESULT__';
       const harness = `
         const m = require(process.argv[1]);
+        const report = (result) =>
+          console.log(${JSON.stringify(RESULT_MARKER)} + JSON.stringify(result));
         // module.exports may resolve asynchronously (Turbopack async modules)
         Promise.resolve(m)
           .then(async (mod) => {
             const POST = mod.routeModule?.userland?.POST;
             if (typeof POST !== 'function') {
-              console.log(JSON.stringify({
+              report({
                 harnessError: 'route bundle did not expose routeModule.userland.POST',
                 exportKeys: Object.keys(mod),
-              }));
+              });
               return;
             }
             const res = await POST(
@@ -109,12 +116,12 @@ describe('route bundle isolation (o2flow hook.resume regression)', () => {
                 }),
               })
             );
-            console.log(JSON.stringify({ status: res.status, body: await res.text() }));
+            report({ status: res.status, body: await res.text() });
           })
           .catch((err) => {
-            console.log(JSON.stringify({
+            report({
               harnessError: err instanceof Error ? err.message : String(err),
-            }));
+            });
           });
       `;
 
@@ -124,8 +131,20 @@ describe('route bundle isolation (o2flow hook.resume regression)', () => {
         { cwd: appPath, env: buildEnv, timeout: 60_000 }
       );
 
-      const lastLine = stdout.trim().split('\n').at(-1) ?? '';
-      const result = JSON.parse(lastLine) as {
+      const resultLine = stdout
+        .split('\n')
+        .filter((line) => line.includes(RESULT_MARKER))
+        .at(-1);
+      if (!resultLine) {
+        throw new Error(
+          `route bundle harness produced no ${RESULT_MARKER} line; full stdout:\n${stdout}`
+        );
+      }
+      const result = JSON.parse(
+        resultLine.slice(
+          resultLine.indexOf(RESULT_MARKER) + RESULT_MARKER.length
+        )
+      ) as {
         status?: number;
         body?: string;
         harnessError?: string;
@@ -134,7 +153,7 @@ describe('route bundle isolation (o2flow hook.resume regression)', () => {
 
       expect(
         result.harnessError,
-        `harness failed: ${lastLine}`
+        `harness failed: ${resultLine}\nfull stdout:\n${stdout}`
       ).toBeUndefined();
 
       // The exact failure from the o2flow incident: Turbopack replaced the
