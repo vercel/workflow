@@ -247,6 +247,30 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
 }
 
 /**
+ * Number of `step_started` events already recorded for a step, used as the
+ * authoritative attempt count for the inline retry ceiling. Each real attempt
+ * writes exactly one `step_started` (the atomic create-claim / single-flight
+ * prevents concurrent double-starts from inflating this), so the count equals
+ * the number of attempts that have begun. `undefined` events (no log loaded
+ * yet) count as zero.
+ */
+function countStepStartedEvents(
+  events: Event[] | null | undefined,
+  stepId: string
+): number {
+  if (!events) {
+    return 0;
+  }
+  let count = 0;
+  for (const e of events) {
+    if (e.eventType === 'step_started' && e.correlationId === stepId) {
+      count++;
+    }
+  }
+  return count;
+}
+
+/**
  * The lineage root of a loaded run: its `$rootRunId` attribute, or its own id
  * when it is itself a root.
  */
@@ -751,6 +775,14 @@ export function workflowEntrypoint(
                               stepId: incomingStepId,
                               stepName: incomingStepName,
                               runSpecVersion: bgRun.specVersion,
+                              // A backgrounded step is redelivered as the same
+                              // queue message on every retry — including the
+                              // visibility-timeout redelivery a timed-out step
+                              // produces — so the delivery count is the
+                              // authoritative attempt number that bounds
+                              // maxRetries (a timeout writes no error, so the
+                              // error-based guards can't).
+                              authoritativeAttempt: metadata.attempt,
                             })
                         );
                       } finally {
@@ -2242,6 +2274,21 @@ export function workflowEntrypoint(
                                 stepId: s.correlationId,
                                 stepName: s.stepName,
                                 runSpecVersion: workflowRun.specVersion,
+                                // Authoritative attempt number for the retry
+                                // ceiling: the step_started events already in
+                                // the event log for this step, plus the one
+                                // this execution is about to write. This is the
+                                // only signal that bounds an inline step that
+                                // keeps timing out — the flow invocation is
+                                // redelivered and re-runs the step (appending a
+                                // step_started) with no error recorded, and the
+                                // optimistic-start path synthesizes
+                                // step.attempt = 1.
+                                authoritativeAttempt:
+                                  countStepStartedEvents(
+                                    cachedEvents,
+                                    s.correlationId
+                                  ) + 1,
                                 // Lazy inline start: send the deferred step's
                                 // input on step_started so the world creates
                                 // the step on the fly. Absent for
