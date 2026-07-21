@@ -2305,14 +2305,25 @@ export function workflowEntrypoint(
                                 stepId: s.correlationId,
                                 stepName: s.stepName,
                                 runSpecVersion: workflowRun.specVersion,
-                                // Attempt number is step_started event count
-                                // +1 for the one that the current execution is
-                                // about to write.
+                                // Attempt number = prior step_started count + 1
+                                // (this execution's start). A lazy step is
+                                // brand-new by construction (it enters the batch
+                                // only when it has no step_created yet), so it
+                                // has zero prior starts and is always attempt 1 —
+                                // skip the log scan entirely. Only an
+                                // owned-recovery re-run (this message re-executing
+                                // a step it crashed/timed out on) can have prior
+                                // starts, and that path is uncommon, so reserve
+                                // the O(n) scan for it rather than walking the
+                                // growing log for every inline step (which would
+                                // be O(n²) across a long sequential workflow).
                                 authoritativeAttempt:
-                                  countStepStartedEvents(
-                                    cachedEvents,
-                                    s.correlationId
-                                  ) + 1,
+                                  s.lazyStepInput !== undefined
+                                    ? 1
+                                    : countStepStartedEvents(
+                                        cachedEvents,
+                                        s.correlationId
+                                      ) + 1,
                                 // Lazy inline start: send the deferred step's
                                 // input on step_started so the world creates
                                 // the step on the fly. Absent for
