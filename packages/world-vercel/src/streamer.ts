@@ -5,7 +5,10 @@ import type {
   StreamInfoResponse,
 } from '@workflow/world';
 import { z } from 'zod';
-import { getStreamDispatcher } from './http-client.js';
+import {
+  getStreamCloseDispatcher,
+  getStreamDispatcher,
+} from './http-client.js';
 import {
   type APIConfig,
   getHttpConfig,
@@ -21,16 +24,20 @@ export const MAX_CHUNKS_PER_REQUEST = 1000;
 const DEFAULT_STREAM_MUTATION_TIMEOUT_MS = 30_000;
 
 // Stream writes (the PUT write/close path) go through the H2 stream
-// dispatcher (see getStreamDispatcher): they send a fully-buffered body (or
-// none), so they benefit from H2 multiplexing without hitting the duplex
-// issues that keep the long-lived live-read (GET) on plain fetch. Because
-// stream appends aren't idempotent, that stream dispatcher uses a deliberately
-// narrowed retry policy (see STREAM_RETRY_OPTIONS): it retries only on
-// transient connection errors and HTTP 429 — both of which guarantee the chunk
-// was never persisted — and never on 5xx, so a retry can't duplicate an
-// already-applied write. Snapshot reads (chunks/info) go
-// through makeRequest (default H1 dispatcher); the live-read and list use
-// plain fetch().
+// dispatchers: they send a fully-buffered body (or none), so they benefit from
+// H2 multiplexing without hitting the duplex issues that keep the long-lived
+// live-read (GET) on plain fetch. The two mutations have different retry
+// policies because they differ in idempotency:
+//  - chunk appends are NOT idempotent, so getStreamDispatcher's policy (see
+//    STREAM_RETRY_OPTIONS) retries only on transient connection errors and
+//    HTTP 429 — both of which guarantee the chunk was never persisted — and
+//    never on 5xx, so a retry can't duplicate an already-applied write.
+//  - close IS idempotent, so getStreamCloseDispatcher's policy (see
+//    STREAM_CLOSE_RETRY_OPTIONS) also retries 5xx; the server's close-barrier
+//    protocol relies on that, surfacing transient reconciliation states as
+//    retriable 503s with the stream left durably closing.
+// Snapshot reads (chunks/info) go through makeRequest (default H1 dispatcher);
+// the live-read and list use plain fetch().
 
 function getStreamUrl(
   name: string,
@@ -67,10 +74,15 @@ async function fetchStreamMutation(
     return await fetch(url, {
       ...init,
       signal: AbortSignal.timeout(timeoutMs),
-      // Stream mutations go through the dedicated H2 stream dispatcher rather
-      // than the global agent — see the note at the top of this file.
+      // Stream mutations go through the dedicated H2 stream dispatchers rather
+      // than the global agent — see the note at the top of this file. Close is
+      // idempotent (unlike chunk appends), so it gets the dispatcher that
+      // retries 5xx, which the server's close-barrier protocol depends on.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici's dispatcher option isn't in @types/node's RequestInit
-      dispatcher: getStreamDispatcher(config),
+      dispatcher:
+        operation === 'close'
+          ? getStreamCloseDispatcher(config)
+          : getStreamDispatcher(config),
     } as any);
   } catch (err) {
     if (

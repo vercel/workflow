@@ -11,9 +11,11 @@ import {
   getDispatcher,
   getEventsAgentOptions,
   getEventsDispatcher,
+  getStreamCloseDispatcher,
   getStreamDispatcher,
   MAX_RETRIES,
   RETRY_ERROR_CODES,
+  STREAM_CLOSE_RETRY_OPTIONS,
   STREAM_RETRY_OPTIONS,
 } from './http-client.js';
 
@@ -72,6 +74,28 @@ describe('getStreamDispatcher', () => {
   // transient-network-error defaults) is the load-bearing part.
   it('does not retry stream writes on transport timeouts', () => {
     expect(STREAM_RETRY_OPTIONS.errorCodes).toBeUndefined();
+  });
+
+  // Stream CLOSE is the one idempotent stream PUT: a duplicate close of a
+  // completed stream early-returns, and the server's close-barrier fence is
+  // an if_not_exists stamp a re-entered close resumes. The barrier protocol
+  // RELIES on close retrying 5xx: transient reconciliation failures (and
+  // unsafe close shapes awaiting in-flight backups) surface as retriable
+  // 503s with the stream left durably closing. Without 5xx here, that 503
+  // rejects writer.close() and the stream stays fenced until run expiry.
+  it('retries stream close on 5xx (idempotent, and the close barrier depends on it)', () => {
+    expect(STREAM_CLOSE_RETRY_OPTIONS.methods).toEqual(['PUT']);
+    for (const code of [429, 500, 502, 503, 504]) {
+      expect(STREAM_CLOSE_RETRY_OPTIONS.statusCodes).toContain(code);
+    }
+    expect(STREAM_CLOSE_RETRY_OPTIONS.retryAfter).toBe(true);
+  });
+
+  it('close uses its own shared dispatcher, distinct from the write dispatcher', () => {
+    expect(getStreamCloseDispatcher()).toBe(getStreamCloseDispatcher());
+    expect(getStreamCloseDispatcher()).not.toBe(getStreamDispatcher());
+    const custom = {};
+    expect(getStreamCloseDispatcher({ dispatcher: custom })).toBe(custom);
   });
 });
 
