@@ -47,11 +47,6 @@ export function createWorld(config?: APIConfig): World {
       // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
       // flow topics (see queue.ts and @workflow/builders).
       maxConcurrency: true,
-      // workflow-server persists stream chunks durably and replays them to a
-      // late reader (including one that opens the stream after it was written
-      // and closed), so the run-completion fast-path signal that
-      // `WORKFLOW_RETURN_VALUE_STREAM` uses is observable across invocations.
-      returnValueSignalStream: true,
     },
     // On Vercel the platform fails the function invocation when the
     // process exits non-zero, and VQS redelivers the queue message via a

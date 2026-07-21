@@ -26,17 +26,20 @@ import { isReturnValueStreamEnabled } from './constants.js';
 const RETURN_VALUE_SIGNAL_MARKER = new Uint8Array([1]);
 
 /**
- * Whether the return-value stream fast path should engage for this World: the
- * flag is on AND the World declares durable cross-reader stream catch-up.
- * Both the writer and the waiter gate on this, so with the flag off (or an
- * unsupported World) the writer emits nothing and the waiter keeps the legacy
- * fixed poll — byte-identical to the pre-feature behavior.
+ * Whether the return-value stream fast path should engage. Gated only on the
+ * kill switch (default on): every World implements streams with the durable
+ * cross-reader catch-up this relies on — a late/racing reader opening at
+ * `startIndex: 0` observes a marker written (and the close) before it attached
+ * — verified per-world in the test suite, so there is no per-World capability
+ * gate. Both the writer and the waiter gate on this, so with the kill switch
+ * thrown the writer emits nothing and the waiter keeps the legacy fixed poll,
+ * byte-identical to the pre-feature behavior.
+ *
+ * Takes `world` (unused today) to keep the writer/waiter call sites uniform and
+ * leave room to fall back should a future World ever lack stream catch-up.
  */
-export function isReturnValueSignalActive(world: World): boolean {
-  return (
-    isReturnValueStreamEnabled() &&
-    world.capabilities?.returnValueSignalStream === true
-  );
+export function isReturnValueSignalActive(_world: World): boolean {
+  return isReturnValueStreamEnabled();
 }
 
 /**

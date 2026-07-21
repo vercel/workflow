@@ -361,26 +361,28 @@ export function getReplayDivergenceMaxRetries(): number {
 }
 
 /**
- * Whether the return-value stream fast path is enabled. When on, and the
- * active World declares the `returnValueSignalStream` capability, `await
- * run.returnValue` waits on a run-scoped system stream signal (an implicit
- * long poll through the existing stream-read infrastructure) instead of a
- * fixed ~1s poll, resolving within a stream round-trip of the run's terminal
- * transition. A slow fallback poll (see `getReturnValueFallbackPollMs`) always
- * remains as a backstop.
+ * Whether the return-value stream fast path is enabled (default **ON**). When
+ * on, `await run.returnValue` waits on a run-scoped system stream signal (an
+ * implicit long poll through the existing stream-read infrastructure) instead
+ * of a fixed ~1s poll, resolving within a stream round-trip of the run's
+ * terminal transition. Every World implements streams, so the fast path works
+ * uniformly across worlds; a slow fallback poll (see
+ * `getReturnValueFallbackPollMs`) always remains as a backstop for a missed
+ * signal (crash between the terminal event write and the stream write, a
+ * transient stream failure, or a run that terminated before this shipped).
  *
- * **Off by default** — the fast path adds a stream write at every terminal
- * transition and changes the wait mechanism, so it is opt-in per deployment
- * while it bakes. When off (or the World lacks the capability) `returnValue`
- * is byte-identical to the fixed-poll behavior.
+ * `WORKFLOW_RETURN_VALUE_STREAM=0` (or `false`) is the kill switch: it restores
+ * the pure fixed 1s poll, byte-identical to the pre-feature behavior — no
+ * terminal stream write, no waiter. It exists only as an emergency escape
+ * hatch, not an opt-in gate.
  *
- * Reads `process.env.WORKFLOW_RETURN_VALUE_STREAM` lazily. Enabled only by an
- * explicit `'1'` / `'true'` (case-insensitive).
+ * Reads `process.env.WORKFLOW_RETURN_VALUE_STREAM` lazily; disabled only by an
+ * explicit `'0'` / `'false'` (case-insensitive).
  */
 export function isReturnValueStreamEnabled(): boolean {
   const raw = process.env.WORKFLOW_RETURN_VALUE_STREAM;
-  if (raw === undefined || raw === '') return false;
-  return raw === '1' || raw.toLowerCase() === 'true';
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
 }
 
 /**

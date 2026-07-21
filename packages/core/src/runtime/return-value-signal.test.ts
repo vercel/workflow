@@ -12,22 +12,16 @@ const STREAM_NAME = getReturnValueStreamId(RUN_ID);
 
 /**
  * Build a minimal World whose streams surface is fully controllable. Only the
- * members these helpers touch are provided.
+ * members these helpers touch are provided. No `capabilities` — the fast path
+ * is no longer capability-gated.
  */
-function makeWorld(opts: {
-  capability?: boolean;
-  streams?: Partial<World['streams']>;
-}): World {
+function makeWorld(streams?: Partial<World['streams']>): World {
   return {
-    capabilities:
-      opts.capability === undefined
-        ? undefined
-        : { returnValueSignalStream: opts.capability },
     streams: {
       write: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
       get: vi.fn(),
-      ...opts.streams,
+      ...streams,
     },
   } as unknown as World;
 }
@@ -47,7 +41,8 @@ function pendingStream(): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({ start() {} });
 }
 
-const ENABLED = { WORKFLOW_RETURN_VALUE_STREAM: '1' };
+/** Explicit kill switch. */
+const DISABLED = { WORKFLOW_RETURN_VALUE_STREAM: '0' };
 
 beforeEach(() => {
   delete process.env.WORKFLOW_RETURN_VALUE_STREAM;
@@ -59,47 +54,36 @@ afterEach(() => {
 });
 
 describe('isReturnValueSignalActive', () => {
-  it('is false when the flag is off, regardless of capability', () => {
-    expect(isReturnValueSignalActive(makeWorld({ capability: true }))).toBe(
-      false
-    );
+  it('is on by default (no env set)', () => {
+    expect(isReturnValueSignalActive(makeWorld())).toBe(true);
   });
 
-  it('is false when the flag is on but the World lacks the capability', () => {
-    process.env.WORKFLOW_RETURN_VALUE_STREAM = '1';
-    expect(isReturnValueSignalActive(makeWorld({}))).toBe(false);
-    expect(isReturnValueSignalActive(makeWorld({ capability: false }))).toBe(
-      false
-    );
+  it('stays on for the empty string and explicit enable values', () => {
+    for (const raw of ['', '1', 'true', 'TRUE']) {
+      process.env.WORKFLOW_RETURN_VALUE_STREAM = raw;
+      expect(isReturnValueSignalActive(makeWorld())).toBe(true);
+    }
   });
 
-  it('is true only when the flag is on and the capability is declared', () => {
-    process.env.WORKFLOW_RETURN_VALUE_STREAM = '1';
-    expect(isReturnValueSignalActive(makeWorld({ capability: true }))).toBe(
-      true
-    );
+  it('is off only for the explicit kill-switch values', () => {
+    for (const raw of ['0', 'false', 'FALSE']) {
+      process.env.WORKFLOW_RETURN_VALUE_STREAM = raw;
+      expect(isReturnValueSignalActive(makeWorld())).toBe(false);
+    }
   });
 });
 
 describe('signalRunTerminal', () => {
-  it('does nothing when inactive (flag off)', async () => {
-    const world = makeWorld({ capability: true });
+  it('does nothing when the kill switch is thrown', async () => {
+    Object.assign(process.env, DISABLED);
+    const world = makeWorld();
     await signalRunTerminal(world, RUN_ID);
     expect(world.streams.write).not.toHaveBeenCalled();
     expect(world.streams.close).not.toHaveBeenCalled();
   });
 
-  it('does nothing when the World lacks the capability', async () => {
-    Object.assign(process.env, ENABLED);
-    const world = makeWorld({ capability: false });
-    await signalRunTerminal(world, RUN_ID);
-    expect(world.streams.write).not.toHaveBeenCalled();
-    expect(world.streams.close).not.toHaveBeenCalled();
-  });
-
-  it('writes a marker chunk then closes when active', async () => {
-    Object.assign(process.env, ENABLED);
-    const world = makeWorld({ capability: true });
+  it('writes a marker chunk then closes by default', async () => {
+    const world = makeWorld();
     await signalRunTerminal(world, RUN_ID);
     expect(world.streams.write).toHaveBeenCalledTimes(1);
     const [runId, name, chunk] = (
@@ -113,10 +97,8 @@ describe('signalRunTerminal', () => {
   });
 
   it('swallows write errors (best-effort fast path)', async () => {
-    Object.assign(process.env, ENABLED);
     const world = makeWorld({
-      capability: true,
-      streams: { write: vi.fn().mockRejectedValue(new Error('boom')) },
+      write: vi.fn().mockRejectedValue(new Error('boom')),
     });
     await expect(signalRunTerminal(world, RUN_ID)).resolves.toBeUndefined();
     // Write failed before close, so close is never reached — and no throw.
@@ -127,7 +109,7 @@ describe('signalRunTerminal', () => {
 describe('createReturnValueSignalWaiter', () => {
   it('resolves fast when the stream yields a non-empty chunk', async () => {
     const get = vi.fn().mockResolvedValue(streamOf(new Uint8Array([1])));
-    const world = makeWorld({ capability: true, streams: { get } });
+    const world = makeWorld({ get });
     const waiter = createReturnValueSignalWaiter(world, RUN_ID);
     // A generous fallback; the chunk must win the race well before it.
     await waiter.waitForSignalOrTimeout(10_000);
@@ -137,7 +119,7 @@ describe('createReturnValueSignalWaiter', () => {
 
   it('resolves on a clean close even with no data chunk', async () => {
     const get = vi.fn().mockResolvedValue(streamOf());
-    const world = makeWorld({ capability: true, streams: { get } });
+    const world = makeWorld({ get });
     const waiter = createReturnValueSignalWaiter(world, RUN_ID);
     await waiter.waitForSignalOrTimeout(10_000);
     waiter.close();
@@ -147,7 +129,7 @@ describe('createReturnValueSignalWaiter', () => {
     const get = vi
       .fn()
       .mockResolvedValue(streamOf(new Uint8Array(0), new Uint8Array([1])));
-    const world = makeWorld({ capability: true, streams: { get } });
+    const world = makeWorld({ get });
     const waiter = createReturnValueSignalWaiter(world, RUN_ID);
     await waiter.waitForSignalOrTimeout(10_000);
     waiter.close();
@@ -156,7 +138,7 @@ describe('createReturnValueSignalWaiter', () => {
   it('falls back to the timeout when no signal arrives', async () => {
     vi.useFakeTimers();
     const get = vi.fn().mockResolvedValue(pendingStream());
-    const world = makeWorld({ capability: true, streams: { get } });
+    const world = makeWorld({ get });
     const waiter = createReturnValueSignalWaiter(world, RUN_ID);
     const p = waiter.waitForSignalOrTimeout(5_000);
     let resolved = false;
@@ -173,7 +155,7 @@ describe('createReturnValueSignalWaiter', () => {
 
   it('degrades to timeout-only waiting after a stream-read failure', async () => {
     const get = vi.fn().mockRejectedValue(new Error('stream down'));
-    const world = makeWorld({ capability: true, streams: { get } });
+    const world = makeWorld({ get });
     const waiter = createReturnValueSignalWaiter(world, RUN_ID);
     // First wait observes the failure and marks itself signalled.
     await waiter.waitForSignalOrTimeout(10);
@@ -196,7 +178,7 @@ describe('createReturnValueSignalWaiter', () => {
       }),
     } as unknown as ReadableStream<Uint8Array>;
     const get = vi.fn().mockResolvedValue(getReaderStream);
-    const world = makeWorld({ capability: true, streams: { get } });
+    const world = makeWorld({ get });
     const waiter = createReturnValueSignalWaiter(world, RUN_ID);
     // Kick off a read so a reader exists, but don't await (it never resolves).
     void waiter.waitForSignalOrTimeout(50);

@@ -325,23 +325,6 @@ export interface WorldCapabilities {
    * combined with it (and so Worlds document the contract explicitly).
    */
   maxConcurrency?: boolean;
-
-  /**
-   * The World's streams can carry a run-scoped *completion signal* that a
-   * reader in a different process/invocation can observe. Concretely, when a
-   * writer does `streams.write(...)` + `streams.close(...)` on a system stream
-   * at a run's terminal transition, an independent reader that opens
-   * `streams.get(...)` — even one that attaches *after* the stream was written
-   * and closed — reliably catches up and observes the chunk (or the close).
-   *
-   * When set, `await run.returnValue` (under `WORKFLOW_RETURN_VALUE_STREAM`)
-   * waits on that signal as a fast path instead of a fixed ~1s poll, falling
-   * back to a slow poll only as a backstop. Absent (the default) means the
-   * fast path is disabled and the fixed poll is kept — so a World that lacks
-   * durable cross-reader stream catch-up must leave this unset rather than
-   * silently degrade `returnValue` to the slow fallback interval.
-   */
-  returnValueSignalStream?: boolean;
 }
 
 /**

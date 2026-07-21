@@ -315,13 +315,13 @@ export class Run<TResult> {
   /**
    * Polls the workflow return value until it is completed.
    *
-   * By default the loop re-reads the run record on a fixed 1s cadence. Under
-   * the return-value stream fast path (`WORKFLOW_RETURN_VALUE_STREAM` + a World
-   * that declares `returnValueSignalStream`) the "not yet completed" wait
-   * instead blocks on a run-scoped system stream signal, backstopped by a slow
-   * fallback poll — so a run that finishes mid-interval is observed within a
-   * stream round-trip rather than up to a full second later. The run record
-   * remains the source of truth: every wake re-reads it via `runs.get`.
+   * By default the return-value stream fast path is on: the "not yet
+   * completed" wait blocks on a run-scoped system stream signal (which every
+   * World supports), backstopped by a slow fallback poll — so a run that
+   * finishes mid-interval is observed within a stream round-trip rather than up
+   * to a full second later. The `WORKFLOW_RETURN_VALUE_STREAM=0` kill switch
+   * reverts the wait to the legacy fixed 1s cadence. The run record remains the
+   * source of truth: every wake re-reads it via `runs.get`.
    * @internal
    * @returns The workflow return value.
    */
@@ -337,9 +337,9 @@ export class Run<TResult> {
     const NOT_FOUND_MAX_RETRIES = this.#resilientStart ? 3 : 0;
     const NOT_FOUND_DELAYS = [1_000, 3_000, 6_000];
 
-    // Return-value stream fast path (see method doc). Undefined when the flag
-    // is off or the World lacks the capability, in which case `waitNotYetDone`
-    // is the legacy fixed 1s sleep and this method is byte-identical to before.
+    // Return-value stream fast path (see method doc). Undefined only when the
+    // kill switch is thrown, in which case `waitNotYetDone` is the legacy fixed
+    // 1s sleep and this method is byte-identical to the pre-feature behavior.
     const signalWaiter = isReturnValueSignalActive(world)
       ? createReturnValueSignalWaiter(world, this.runId)
       : undefined;

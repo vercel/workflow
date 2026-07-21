@@ -36,15 +36,11 @@ function streamOf(...chunks: Uint8Array[]): ReadableStream<Uint8Array> {
 }
 
 function makeWorld(opts: {
-  capability?: boolean;
   getImpl: () => Promise<RunRecord>;
   streamsGet?: ReturnType<typeof vi.fn>;
 }): World {
   return {
     specVersion: SPEC_VERSION_CURRENT,
-    capabilities: opts.capability
-      ? { returnValueSignalStream: true }
-      : undefined,
     runs: {
       get: vi.fn(opts.getImpl),
     },
@@ -70,10 +66,9 @@ afterEach(() => {
 
 describe('Run#returnValue', () => {
   it('resolves immediately for an already-completed run without touching the stream (late attach)', async () => {
-    process.env.WORKFLOW_RETURN_VALUE_STREAM = '1';
+    // Default-on; no env set.
     const streamsGet = vi.fn();
     const world = makeWorld({
-      capability: true,
       getImpl: async () => ({ status: 'completed', output: 'RESULT' }),
       streamsGet,
     });
@@ -87,9 +82,7 @@ describe('Run#returnValue', () => {
   });
 
   it('throws WorkflowRunFailedError for a failed run', async () => {
-    process.env.WORKFLOW_RETURN_VALUE_STREAM = '1';
     const world = makeWorld({
-      capability: true,
       getImpl: async () => ({
         status: 'failed',
         error: new Error('boom'),
@@ -105,9 +98,7 @@ describe('Run#returnValue', () => {
   });
 
   it('throws WorkflowRunCancelledError for a cancelled run', async () => {
-    process.env.WORKFLOW_RETURN_VALUE_STREAM = '1';
     const world = makeWorld({
-      capability: true,
       getImpl: async () => ({ status: 'cancelled' }),
     });
     setWorld(world);
@@ -118,12 +109,10 @@ describe('Run#returnValue', () => {
     );
   });
 
-  it('fast path: wakes on the stream signal, then re-reads the authoritative result', async () => {
-    process.env.WORKFLOW_RETURN_VALUE_STREAM = '1';
+  it('fast path (default): wakes on the stream signal, then re-reads the authoritative result', async () => {
     let call = 0;
     const streamsGet = vi.fn().mockResolvedValue(streamOf(new Uint8Array([1])));
     const world = makeWorld({
-      capability: true,
       getImpl: async () => {
         call += 1;
         // First observation: still running → wait on the stream. The stream
@@ -141,12 +130,12 @@ describe('Run#returnValue', () => {
     expect(streamsGet).toHaveBeenCalledWith('wrun_fast', expect.any(String), 0);
   });
 
-  it('flag off: keeps the fixed 1s poll and never opens the stream', async () => {
+  it('kill switch off: keeps the fixed 1s poll and never opens the stream', async () => {
     vi.useFakeTimers();
+    process.env.WORKFLOW_RETURN_VALUE_STREAM = '0';
     const streamsGet = vi.fn();
     let call = 0;
     const world = makeWorld({
-      capability: true, // capability present, but flag off → inactive
       getImpl: async () => {
         call += 1;
         return call === 1
@@ -157,33 +146,9 @@ describe('Run#returnValue', () => {
     });
     setWorld(world);
 
-    const run = new Run<string>('wrun_flagoff');
+    const run = new Run<string>('wrun_killswitch');
     const p = run.returnValue;
     // Advance through the legacy 1s sleep between poll iterations.
-    await vi.advanceTimersByTimeAsync(1_000);
-    await expect(p).resolves.toBe('RESULT');
-    expect(streamsGet).not.toHaveBeenCalled();
-  });
-
-  it('missing capability: keeps the fixed 1s poll and never opens the stream', async () => {
-    vi.useFakeTimers();
-    process.env.WORKFLOW_RETURN_VALUE_STREAM = '1';
-    const streamsGet = vi.fn();
-    let call = 0;
-    const world = makeWorld({
-      capability: false, // flag on, but World does not declare the capability
-      getImpl: async () => {
-        call += 1;
-        return call === 1
-          ? { status: 'running' }
-          : { status: 'completed', output: 'RESULT' };
-      },
-      streamsGet,
-    });
-    setWorld(world);
-
-    const run = new Run<string>('wrun_nocap');
-    const p = run.returnValue;
     await vi.advanceTimersByTimeAsync(1_000);
     await expect(p).resolves.toBe('RESULT');
     expect(streamsGet).not.toHaveBeenCalled();
