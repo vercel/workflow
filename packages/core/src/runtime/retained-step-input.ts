@@ -58,6 +58,7 @@ const hostIsArray = Array.isArray;
 const hostIsInteger = Number.isInteger;
 const hostNumber = Number;
 const hostString = String;
+const hostBigIntToString = BigInt.prototype.toString;
 const hostMapForEach = Map.prototype.forEach;
 const hostSetForEach = Set.prototype.forEach;
 // biome-ignore lint/style/noNonNullAssertion: the %TypedArray% buffer getter always exists
@@ -115,6 +116,12 @@ function isHostDispatchPristine(): boolean {
   // added @@hasInstance would be found by dispatch lookup. (Host
   // Function.prototype's @@hasInstance is spec non-configurable.)
   if (hasOwn(Object.prototype, Symbol.hasInstance)) return false;
+  // The BigInt reducer calls `.toString()` on bigint primitives from host
+  // code, which resolves on the HOST BigInt.prototype (primitives are
+  // realm-less; method lookup uses the running code's realm).
+  if (ownDataProperty(BigInt.prototype, 'toString') !== hostBigIntToString) {
+    return false;
+  }
   return true;
 }
 

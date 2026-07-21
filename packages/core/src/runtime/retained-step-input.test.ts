@@ -392,6 +392,27 @@ describe('checker execution surface', () => {
   });
 });
 
+describe('bigint serialization', () => {
+  it('declines retention while host BigInt.prototype.toString is replaced', () => {
+    const { context, workflowGlobal } = makeContext();
+    const value = vm.runInContext('({ big: 42n })', context);
+    expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(true);
+
+    const original = BigInt.prototype.toString;
+    // biome-ignore lint/suspicious/noGlobalAssign: simulating workflow-realm tampering
+    BigInt.prototype.toString = function (this: bigint, ...args: [number?]) {
+      return original.apply(this, args);
+    };
+    try {
+      expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(false);
+    } finally {
+      BigInt.prototype.toString = original;
+    }
+
+    expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(true);
+  });
+});
+
 describe('walker primordials', () => {
   it('uses captured primordials, not live host statics', () => {
     const { context, workflowGlobal } = makeContext();

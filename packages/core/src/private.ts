@@ -133,6 +133,13 @@ export interface WorkflowOrchestratorContext {
   runId: string;
   encryptionKey: CryptoKey | undefined;
   globalThis: typeof globalThis;
+  /**
+   * Increments on every retained-session resume. Suspension signals capture
+   * it when scheduled and no-op if it moved — a timer queued at boundary N
+   * must not signal after the session resumed into boundary N+1, so the
+   * state machine never has to reason about cross-boundary timer ordering.
+   */
+  suspensionGeneration: number;
   eventsConsumer: EventsConsumer;
   /**
    * Map of pending invocations keyed by correlationId.

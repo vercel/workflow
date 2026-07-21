@@ -452,6 +452,7 @@ function createWorkflowSession({
         promiseQueueHolder.current = value;
       },
       pendingDeliveries: 0,
+      suspensionGeneration: 0,
       pendingDeliveryBarriers: new Map(),
       replayPayloadCache,
     };
@@ -1155,6 +1156,7 @@ function createWorkflowSession({
             }
             const interruption = withResolvers<never>();
             state = { type: 'running', interruption };
+            workflowContext.suspensionGeneration++;
             eventsConsumer.append(nextEvents.slice(consumedEvents.length));
             return {
               type: 'resumed',

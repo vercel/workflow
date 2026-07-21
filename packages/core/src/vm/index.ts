@@ -173,6 +173,7 @@ export function freezeSerializationIntrinsics(g: typeof globalThis): void {
     if (constructor !== undefined) Object.freeze(constructor.prototype);
   }
   Object.freeze(g.ArrayBuffer.prototype);
+  Object.freeze(g.BigInt.prototype);
   const hostGlobal = globalThis as unknown as Record<string, unknown>;
   for (const name of SERIALIZATION_BINDINGS) {
     const descriptor = Object.getOwnPropertyDescriptor(g, name);
