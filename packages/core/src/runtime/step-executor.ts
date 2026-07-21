@@ -51,7 +51,7 @@ import {
 } from './step-latency.js';
 import { safeWaitUntil } from './wait-until.js';
 
-const DEFAULT_STEP_MAX_RETRIES = 3;
+export const DEFAULT_STEP_MAX_RETRIES = 3;
 
 /**
  * Extract the inline delta from a step-terminal `events.create` result,

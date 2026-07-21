@@ -61,7 +61,11 @@ import {
   ReplayBudget,
 } from './runtime/replay-budget.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
-import { executeStep } from './runtime/step-executor.js';
+import {
+  DEFAULT_STEP_MAX_RETRIES,
+  executeStep,
+} from './runtime/step-executor.js';
+import { getStepFunction } from './private.js';
 import { computeStepLatencyTracking } from './runtime/step-latency.js';
 import {
   backstopIdempotencyKey,
@@ -743,6 +747,38 @@ export function workflowEntrypoint(
                       const bgStartedAt = bgRun.startedAt
                         ? +bgRun.startedAt
                         : Date.now();
+
+                      // Retry ceiling for a backgrounded step. `metadata.attempt`
+                      // (the queue delivery count) is a cheap upper bound, but it
+                      // over-counts: a ThrottleError / TooEarlyError — or any
+                      // redelivery that never ran the body — still advances it, so
+                      // trusting it directly could fail a step as "exceeded max
+                      // retries" before the body ever ran (a user-visible
+                      // regression under transient backend pressure). Use it only
+                      // as a fast gate: while it is at or under the ceiling the
+                      // step cannot be exhausted, so proceed without touching the
+                      // log. Only once it crosses the ceiling do we load the full
+                      // event log and derive the authoritative attempt from the
+                      // recorded `step_started` count — the count only real
+                      // attempts write, so throttle/too-early redeliveries are
+                      // excluded. This still bounds timeouts, which write no error
+                      // for the post-body guard to catch. The load also primes the
+                      // replay's `cachedEvents`/`eventsCursor` (the post-step
+                      // continuation below refreshes them once the step's terminal
+                      // event lands).
+                      let bgAuthoritativeAttempt = metadata.attempt;
+                      const bgMaxRetries =
+                        getStepFunction(incomingStepName)?.maxRetries ??
+                        DEFAULT_STEP_MAX_RETRIES;
+                      if (metadata.attempt > bgMaxRetries + 1) {
+                        const loaded = await loadWorkflowRunEvents(runId);
+                        cachedEvents = loaded.events;
+                        eventsCursor = loaded.cursor;
+                        bgAuthoritativeAttempt =
+                          countStepStartedEvents(cachedEvents, incomingStepId) +
+                          1;
+                      }
+
                       // Pause the replay budget while the step body runs —
                       // step duration is bounded by the platform's function
                       // maxDuration, not by the replay timeout. See the
@@ -774,15 +810,10 @@ export function workflowEntrypoint(
                               stepId: incomingStepId,
                               stepName: incomingStepName,
                               runSpecVersion: bgRun.specVersion,
-                              // A backgrounded step is redelivered as the same
-                              // queue message on every retry, so the delivery count
-                              // authoritative attempt number that bounds
-                              // maxRetries. Step timeout don't write errors, so we can't
-                              // use them for this purpose.
-                              // NOTE that throttle/too-early redeliveries of the queue would
-                              // consume re-tries. Getting an authoritative source would require
-                              // loading the full event log, so we accept this low-risk of false positives.
-                              authoritativeAttempt: metadata.attempt,
+                              // Retry ceiling: the queue delivery count as a fast
+                              // gate, verified against the recorded step_started
+                              // count once it crosses the ceiling (see above).
+                              authoritativeAttempt: bgAuthoritativeAttempt,
                             })
                         );
                       } finally {
