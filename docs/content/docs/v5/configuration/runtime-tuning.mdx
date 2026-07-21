@@ -40,10 +40,13 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 ### `WORKFLOW_PRECONDITION_GUARD`
 
-- Default: disabled
-- Set `1` to enable an optimistic-concurrency guard for event creation: replay-context event creations send a `stateUpdatedAt` snapshot timestamp, and a backend that supports the guard rejects a creation with 412 ([`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error)) when a newer out-of-band event (a received hook or a completed step) was recorded after that snapshot.
+- Default: enabled
+- An optimistic-concurrency guard for event creation: replay-context event creations send a `stateUpdatedAt` snapshot timestamp, and a backend that supports the guard rejects a creation with 412 ([`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error)) when a newer out-of-band event (a received hook or a completed step) was recorded after that snapshot.
 - On rejection the runtime reloads the event log and retries, falling back to a queue re-invocation with a fresh replay if it cannot catch up.
-- Backends that do not support the guard ignore the snapshot.
+- When enabled — and the World declares that it enforces the guard (`capabilities.preconditionGuard`; the Vercel World does) — the runtime also keeps the per-step event-log delta optimization (consuming the delta returned by a step's terminal write instead of issuing an extra `events.list` per step) active while the run has an open hook. Without an enforced guard, an open hook disables it.
+- While a hook is open on a guard-enforcing deployment, inline steps take the await-then-run path even when optimistic inline start is enabled: the step's `step_started` claim carries the snapshot and is awaited before the body runs, so a claim the backend rejects as stale never executes user code.
+- Backends that do not support the guard ignore the snapshot; they must not declare the capability, so guard-dependent optimizations stay off against them even when the flag is set.
+- Set `0` to disable.
 
 ## Inline execution
 
@@ -63,6 +66,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: enabled
 - Fast path for a run's first delivery.
+- Stops forcing optimistic inline step start once the run creates a hook or wait.
 - Set `0` or `false` to disable.
 
 ### `WORKFLOW_OPTIMISTIC_INLINE_START`
@@ -129,6 +133,21 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - Default: `10`
 - Stream write buffering interval.
 - Also available as `streamFlushIntervalMs` on Worlds that expose it.
+
+### `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS`
+
+- Default: `1000`
+- Flow-control bound: how many stream chunks may be read-but-not-yet-durably-written while writes are coalesced. Once this many are outstanding, the producer pauses reading until a batch is written. Bounds in-memory buffering; distinct from the per-request batch caps below.
+
+### `WORKFLOW_STREAM_MAX_CHUNKS_PER_BATCH`
+
+- Default: `1000`
+- Wire limit: maximum number of chunks sent in a single coalesced multi-write. Larger bursts are split across requests so one request can't exceed the server's per-multi-write chunk cap.
+
+### `WORKFLOW_STREAM_MAX_BYTES_PER_BATCH`
+
+- Default: `1048576` (1 MiB)
+- Wire limit: maximum cumulative bytes in a single coalesced multi-write, so large chunks don't produce a request body that platform limits reject. A single chunk larger than this is still sent on its own.
 
 ### `WORKFLOW_FRAMED_STREAM_MAX_RECONNECTS`
 

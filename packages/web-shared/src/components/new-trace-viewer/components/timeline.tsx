@@ -22,10 +22,12 @@ import type {
   OffscreenMarkers,
   Segment,
   SegmentStatus,
+  SpanDelta,
   TimeMarker,
 } from '../utils';
 import {
   computeOffscreenMarkers,
+  computeSpanDelta,
   computeSpanGaps,
   computeSpanMarkers,
   computeSpanSegments,
@@ -223,6 +225,11 @@ function projectSegments(
 // Small render helpers
 // ---------------------------------------------------------------------------
 
+/** Estimated rendered width of a 10px-mono duration label (6px/glyph + padding). */
+function estimateLabelWidthPx(label: string): number {
+  return label.length * 6 + 12;
+}
+
 function DurationLabel({
   label,
   className,
@@ -317,7 +324,7 @@ function SegmentBar({
           const leadInLabel = formatDurationPrecise(seg.fullDurationMs);
           const showLeadInLabel =
             showLabels &&
-            seg.pixelWidth >= Math.max(40, leadInLabel.length * 6 + 12);
+            seg.pixelWidth >= Math.max(40, estimateLabelWidthPx(leadInLabel));
           const isFullWidthQueued = segments.length === 1;
           return (
             <Fragment key={i}>
@@ -341,7 +348,8 @@ function SegmentBar({
         const label = formatDurationPrecise(seg.fullDurationMs);
         // Only render the label when there's enough room for it without clipping.
         const showLabel =
-          showLabels && seg.pixelWidth >= Math.max(40, label.length * 6 + 12);
+          showLabels &&
+          seg.pixelWidth >= Math.max(40, estimateLabelWidthPx(label));
 
         return (
           <div
@@ -462,7 +470,8 @@ const TimelineBar = memo(function TimelineBar({
 
   const totalLabel = formatDurationPrecise(totalDurationMs);
   const showTotalLabel =
-    geometry.visiblePixelWidth >= Math.max(40, totalLabel.length * 6 + 12);
+    geometry.visiblePixelWidth >=
+    Math.max(40, estimateLabelWidthPx(totalLabel));
 
   const handleClick = useCallback(() => {
     onSelect(span.spanId);
@@ -542,45 +551,99 @@ const TimelineBar = memo(function TimelineBar({
 export { TimelineBar };
 
 // ---------------------------------------------------------------------------
-// DeltaIndicator (Alt-key gap overlay)
+// DeltaMeasureLine (Alt-key measurement overlays: the selected ↔ hovered
+// measurement, and the ambient consecutive-gap indicators shown without a
+// selection)
 // ---------------------------------------------------------------------------
 
-const DELTA_CAP_HEIGHT_PX = 8;
-// Vertical offset to sit the indicator inside the gap between row N and N+1,
-// aligned with where the bar starts in the next row (rows center a 24px bar
-// inside 40px, so bars start ~8px from the top of the row).
-const DELTA_ROW_OFFSET_PX = 8;
+// Horizontal distance between the anchor bar's measured edge and the vertical
+// guide — also the width of the connector stub bridging the two.
+const MEASURE_GUIDE_OUTSET_PX = 4;
 
-const DeltaIndicator = memo(function DeltaIndicator({
-  leftFrac,
-  rightFrac,
-  label,
-  rowIndex,
+const DeltaMeasureLine = memo(function DeltaMeasureLine({
+  delta,
+  anchorRowIndex,
+  hoveredRowIndex,
+  timelineWidth,
 }: {
-  leftFrac: number;
-  rightFrac: number;
-  label: string;
-  rowIndex: number;
+  delta: SpanDelta;
+  anchorRowIndex: number;
+  hoveredRowIndex: number;
+  timelineWidth: number;
 }) {
-  const centerY = DELTA_ROW_OFFSET_PX + (rowIndex + 1) * ROW_HEIGHT_PX;
+  // Both ends of the measurement align with the vertical middle of the bars
+  // (bars are centered in their rows, so bar center == row center).
+  const anchorCenterY = anchorRowIndex * ROW_HEIGHT_PX + ROW_HEIGHT_PX / 2;
+  const lineY = hoveredRowIndex * ROW_HEIGHT_PX + ROW_HEIGHT_PX / 2;
+
+  // Guide connecting the middle of the anchor bar down/up to the line, so
+  // the measurement's origin stays legible when the rows are far apart.
+  // It sits just outside the anchor bar's measured edge (so it doesn't blend
+  // into the bar's border), joined to the bar by a short horizontal stub. The
+  // line runs from the elbow corner (the guide's x) to the hovered span's
+  // measured edge — pulled short of the edge arrow when the hovered span is
+  // fully off-screen.
+  const guideTop = Math.min(anchorCenterY, lineY);
+  const guideBottom = Math.max(anchorCenterY, lineY);
+  const anchorX = delta.anchorFrac * timelineWidth;
+  const guideX =
+    anchorX +
+    (delta.anchorEdge === 'end'
+      ? MEASURE_GUIDE_OUTSET_PX
+      : -MEASURE_GUIDE_OUTSET_PX);
+  const arrowClearance =
+    delta.hoveredOffscreen === 'right'
+      ? -(TINY_BAR_BOX_SIZE_PX + 4)
+      : delta.hoveredOffscreen === 'left'
+        ? TINY_BAR_BOX_SIZE_PX + 4
+        : 0;
+  const hoveredX = delta.hoveredFrac * timelineWidth + arrowClearance;
+  const startX = Math.min(guideX, hoveredX);
+  const endX = Math.max(guideX, hoveredX);
+
+  const label = formatDurationPrecise(delta.deltaMs);
+  const labelWidthPx = estimateLabelWidthPx(label);
+  // Center the label on the line; when the line is too short, place it beside
+  // the right endpoint, flipping left near the viewport's right edge.
+  const labelPlacement =
+    endX - startX >= labelWidthPx
+      ? { left: (startX + endX) / 2, translate: '-translate-x-1/2' }
+      : endX + 4 + labelWidthPx <= timelineWidth
+        ? { left: endX + 4, translate: '' }
+        : { left: startX - 4, translate: '-translate-x-full' };
 
   return (
-    <div
-      className="absolute pointer-events-none"
-      style={{
-        left: `${leftFrac * 100}%`,
-        width: `${(rightFrac - leftFrac) * 100}%`,
-        top: centerY - DELTA_CAP_HEIGHT_PX / 2,
-        height: DELTA_CAP_HEIGHT_PX,
-      }}
-    >
-      <div className="absolute left-0 top-0 w-px h-full bg-amber-800" />
-      <div className="absolute left-0 right-0 top-1/2 h-px bg-amber-800" />
-      <div className="absolute right-0 top-0 w-px h-full bg-amber-800" />
-      <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-label-12 leading-none whitespace-nowrap rounded-xs px-1 py-0.5 text-gray-100 bg-amber-800">
+    <>
+      <div
+        className="absolute h-px bg-amber-800"
+        style={{
+          left: Math.min(anchorX, guideX),
+          width: MEASURE_GUIDE_OUTSET_PX,
+          top: anchorCenterY,
+        }}
+      />
+      <div
+        className="absolute w-px bg-amber-800"
+        style={{
+          left: guideX,
+          top: guideTop,
+          height: guideBottom - guideTop,
+        }}
+      />
+      <div
+        className="absolute h-px bg-amber-800"
+        style={{ left: startX, width: Math.max(endX - startX, 1), top: lineY }}
+      />
+      <span
+        className={cn(
+          'absolute -translate-y-1/2 font-mono text-[10px] font-medium leading-none tabular-nums whitespace-nowrap rounded-xs bg-background-100 px-1 py-0.5 text-amber-800',
+          labelPlacement.translate
+        )}
+        style={{ left: labelPlacement.left, top: lineY }}
+      >
         {label}
       </span>
-    </div>
+    </>
   );
 });
 
@@ -624,6 +687,13 @@ export function TimelineHeader({
 // Timeline
 // ---------------------------------------------------------------------------
 
+export interface TimelineHover {
+  /** Pointer x as a fraction of the timeline's content width, in [0, 1]. */
+  fraction: number;
+  /** Row index under the pointer; may be past the last row — not validated. */
+  rowIndex: number;
+}
+
 export function Timeline({
   spans,
   viewStart,
@@ -633,7 +703,7 @@ export function Timeline({
   searchResult,
   onSelect,
   onRevealTime,
-  hoverFraction,
+  hover,
   altHeld = false,
 }: {
   spans: Span[];
@@ -644,7 +714,7 @@ export function Timeline({
   searchResult: SpanSearchResult;
   onSelect: (spanId: string) => void;
   onRevealTime?: (timeMs: number) => void;
-  hoverFraction?: number | null;
+  hover?: TimelineHover | null;
   altHeld?: boolean;
 }): ReactNode {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -667,10 +737,44 @@ export function Timeline({
     return () => ro.disconnect();
   }, []);
 
-  const gaps = useMemo(
-    () => computeSpanGaps(spans, viewStart, viewEnd),
+  // Each consecutive gap renders as a measurement from the earlier span's end
+  // edge to the next span's start, in the same visual language as the
+  // selected ↔ hovered measurement.
+  const gapMeasurements = useMemo(
+    () =>
+      computeSpanGaps(spans, viewStart, viewEnd).map((gap) => ({
+        delta: {
+          deltaMs: gap.gapMs,
+          anchorFrac: gap.leftFrac,
+          hoveredFrac: gap.rightFrac,
+          anchorEdge: 'end',
+          hoveredOffscreen: null,
+        } satisfies SpanDelta,
+        anchorRowIndex: gap.rowIndex,
+        hoveredRowIndex: gap.rowIndex + 1,
+      })),
     [spans, viewStart, viewEnd]
   );
+
+  // With a span selected, Alt+hover measures selected ↔ hovered instead of
+  // showing the all-sibling-gaps overlay.
+  const anchorIndex = useMemo(
+    () => (selectedId ? spans.findIndex((s) => s.spanId === selectedId) : -1),
+    [spans, selectedId]
+  );
+
+  const measurement = useMemo(() => {
+    if (!altHeld || hover == null || hover.rowIndex === anchorIndex) {
+      return null;
+    }
+    const anchorSpan = spans[anchorIndex];
+    const hoveredSpan = spans[hover.rowIndex];
+    if (!anchorSpan || !hoveredSpan) return null;
+    const delta = computeSpanDelta(anchorSpan, hoveredSpan, viewStart, viewEnd);
+    return delta
+      ? { delta, anchorRowIndex: anchorIndex, hoveredRowIndex: hover.rowIndex }
+      : null;
+  }, [altHeld, anchorIndex, hover, spans, viewStart, viewEnd]);
 
   return (
     <div
@@ -694,14 +798,14 @@ export function Timeline({
           ) : null
         )}
       </div>
-      {hoverFraction != null && (
+      {hover != null && (
         <div
           className="absolute inset-y-0 pointer-events-none z-10"
           style={TIMELINE_INSET_STYLE}
         >
           <div
             className="absolute top-0 bottom-0 w-px bg-gray-alpha-500"
-            style={{ left: `${hoverFraction * 100}%` }}
+            style={{ left: `${hover.fraction * 100}%` }}
           />
         </div>
       )}
@@ -720,21 +824,28 @@ export function Timeline({
           />
         ))}
       </div>
-      {altHeld && (
+      {altHeld && anchorIndex < 0 && (
         <div
           aria-hidden
           className="absolute inset-y-0 pointer-events-none"
           style={TIMELINE_INSET_STYLE}
         >
-          {gaps.map((gap) => (
-            <DeltaIndicator
-              key={gap.rowIndex}
-              leftFrac={gap.leftFrac}
-              rightFrac={gap.rightFrac}
-              label={formatDurationPrecise(gap.gapMs)}
-              rowIndex={gap.rowIndex}
+          {gapMeasurements.map((gap) => (
+            <DeltaMeasureLine
+              key={gap.anchorRowIndex}
+              {...gap}
+              timelineWidth={timelineWidth}
             />
           ))}
+        </div>
+      )}
+      {measurement && (
+        <div
+          aria-hidden
+          className="absolute inset-y-0 pointer-events-none z-20"
+          style={TIMELINE_INSET_STYLE}
+        >
+          <DeltaMeasureLine {...measurement} timelineWidth={timelineWidth} />
         </div>
       )}
     </div>

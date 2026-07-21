@@ -136,6 +136,7 @@ interface SplitEventData {
     resumeAt?: Date;
     retryAfter?: Date;
     hookToken?: string;
+    hookTokenRetentionUntil?: Date;
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
     errorCode?: string;
@@ -187,6 +188,7 @@ type MetaSourceField =
   | 'resumeAt'
   | 'retryAfter'
   | 'token'
+  | 'tokenRetentionUntil'
   | 'isWebhook'
   | 'isSystem'
   | 'errorCode'
@@ -288,6 +290,11 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   // `hookToken` in the frame meta, so do the rename here.
   if (typeof eventData.token === 'string') {
     meta.hookToken = eventData.token;
+  }
+  // This new World field is Date-only; unlike legacy date fields above, it
+  // does not need an ISO string fallback.
+  if (eventData.tokenRetentionUntil instanceof Date) {
+    meta.hookTokenRetentionUntil = eventData.tokenRetentionUntil;
   }
   if (typeof eventData.isWebhook === 'boolean') {
     meta.hookIsWebhook = eventData.isWebhook;

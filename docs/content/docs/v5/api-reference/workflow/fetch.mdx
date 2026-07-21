@@ -93,7 +93,7 @@ This API is provided as a convenience to easily use `fetch` in workflow, but oft
 
 ### Customizing Fetch Behavior
 
-Here's an example of a custom fetch wrapper that provides more sophisticated error handling with custom retry logic:
+Here's an example of a custom fetch wrapper that provides more sophisticated error handling with custom retry logic. Call `globalThis.fetch` inside your own `"use step"` function — calling the workflow `fetch` imported from `workflow` would nest a step inside a step:
 
 ```typescript lineNumbers
 import { FatalError, RetryableError } from "workflow"
@@ -104,7 +104,7 @@ export async function customFetch(
 ) {
     "use step"
 
-    const response = await fetch(url, init)
+    const response = await globalThis.fetch(url, init)
 
     // Handle client errors (4xx) - don't retry
     if (response.status >= 400 && response.status < 500) {
@@ -145,7 +145,6 @@ export async function customFetch(
 
 This example demonstrates:
 
-- Setting custom `maxRetries` to 5 retries (6 total attempts including the initial attempt).
 - Throwing [`FatalError`](/docs/api-reference/workflow/fatal-error) for client errors (400-499) to prevent retries.
 - Handling 429 rate limiting by reading the `Retry-After` header and using [`RetryableError`](/docs/api-reference/workflow/retryable-error).
-- Allowing automatic retries for server errors (5xx).
+- Allowing automatic retries for server errors (5xx) by throwing a plain `Error`.

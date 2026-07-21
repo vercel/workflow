@@ -9,6 +9,7 @@ const Layout = async ({ children, params }: LayoutProps<'/[lang]/docs'>) => {
     <div className="bg-background-100">
       <DocsLayout
         currentVersion={LATEST_VERSION.id}
+        lang={lang}
         tree={getDocsTreeForVersion(lang, LATEST_VERSION)}
       >
         {children}

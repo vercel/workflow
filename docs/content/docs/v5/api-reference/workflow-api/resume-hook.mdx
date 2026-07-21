@@ -14,6 +14,8 @@ Resumes a workflow run by sending a payload to a hook identified by its token.
 
 It creates a `hook_received` event and re-triggers the workflow to continue execution.
 
+A Hook kept by `experimental_minRetention` after its workflow ends cannot be resumed. `resumeHook()` throws `HookNotFoundError` in that case.
+
 <Callout type="warn">
 `resumeHook` is a runtime function that must be called from outside a workflow function.
 </Callout>

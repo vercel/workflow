@@ -14,6 +14,7 @@ import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
 import { DEFERRED_CHECK_DELAY_MS, EventsConsumer } from './events-consumer.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { dehydrateStepReturnValue } from './serialization.js';
 import { createContext } from './vm/index.js';
 import {
@@ -34,6 +35,7 @@ function setupWorkflowContext(
   return {
     runId: 'wrun_test',
     encryptionKey: undefined,
+    replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent,

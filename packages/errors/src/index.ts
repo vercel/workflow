@@ -769,6 +769,10 @@ export class ThrottleError extends WorkflowWorldError {
  * The workflow runtime handles this automatically: it reloads the event log
  * and retries, ultimately re-enqueueing the run if it cannot catch up. Users
  * interacting with world storage backends directly may encounter it.
+ *
+ * @property retryAfter - Delay in seconds before retrying. Accepted for
+ *   forward-compatibility; the runtime currently reloads and retries
+ *   immediately and does not read this field.
  */
 export class PreconditionFailedError extends WorkflowWorldError {
   constructor(message: string, options?: { retryAfter?: number }) {

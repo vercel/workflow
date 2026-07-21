@@ -62,7 +62,7 @@ Learn more about [`WorkflowReadableStreamOptions`](/docs/api-reference/workflow-
 * `attributes` seeds plaintext run metadata as part of creation and requires a World implementing spec version 4 or later. Keys that start with `$` are reserved for framework and library code; framework-level callers can pass `allowReservedAttributes: true` to seed reserved keys, with the same semantics as the [`setAttributes`](/docs/api-reference/workflow/set-attributes) option of the same name.
 
 <Callout type="info">
-If `start()` throws `'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.`, the passed function was not transformed as a workflow. The two most common causes are a missing `"use workflow"` directive or missing framework integration. See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function).
+If `start()` throws `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`, the passed function was not transformed as a workflow. The two most common causes are a missing `"use workflow"` directive or missing framework integration. See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function).
 </Callout>
 
 ## Examples

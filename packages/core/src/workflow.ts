@@ -6,7 +6,7 @@ import {
 } from '@workflow/errors';
 import { createWorkflowBaseUrl, withResolvers } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, WorkflowRun } from '@workflow/world';
+import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
@@ -16,6 +16,7 @@ import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
@@ -25,7 +26,6 @@ import {
   hydrateWorkflowArguments,
 } from './serialization.js';
 import { createUseStep } from './step.js';
-import type { StepHydrationCache } from './step-hydration-cache.js';
 import {
   BODY_INIT_SYMBOL,
   STABLE_ULID,
@@ -139,20 +139,25 @@ export async function runWorkflow(
   events: Event[],
   encryptionKey: CryptoKey | undefined,
   /**
-   * Optional per-run cache for hydrated step return values, owned by the inline
-   * replay loop so it survives across the loop's iterations (each of which
-   * creates a fresh context). Memoizes the decrypt + devalue-parse of completed
-   * step results to turn O(N²) replay hydration into O(N). Omitted by callers
-   * that replay only once (then there is nothing to reuse).
+   * Optional per-run cache for replay payload preparation and immutable final
+   * values. Owned by the inline replay loop so it survives fresh VM contexts
+   * created by successive iterations of this invocation.
    */
-  stepHydrationCache?: StepHydrationCache,
+  replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache(
+    encryptionKey
+  ),
   /**
    * Turbo mode only: resolves once the backgrounded `run_started` has landed.
    * Threaded into the end-of-run drain so fire-and-forget `*_created` writes
    * committed at workflow completion order after the run's creation. Undefined
    * outside turbo, where `run_started` is awaited up front.
    */
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  /**
+   * Features supported by the World executing this workflow. Missing
+   * capabilities are treated as unsupported.
+   */
+  worldCapabilities?: WorldCapabilities
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
@@ -239,6 +244,7 @@ export async function runWorkflow(
     const workflowContext: WorkflowOrchestratorContext = {
       runId: workflowRun.runId,
       encryptionKey,
+      worldCapabilities,
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
       eventsConsumer,
@@ -264,7 +270,7 @@ export async function runWorkflow(
       },
       pendingDeliveries: 0,
       pendingDeliveryBarriers: new Map(),
-      stepHydrationCache,
+      replayPayloadCache,
     };
 
     // Consume run lifecycle events - these are structural events that don't
@@ -859,11 +865,15 @@ export async function runWorkflow(
     let args: unknown[] = [];
     workflowContext.promiseQueue = workflowContext.promiseQueue.then(
       async () => {
+        const prepared =
+          await replayPayloadCache.prepareWorkflowInput(workflowRun);
         args = await hydrateWorkflowArguments(
           workflowRun.input,
           workflowRun.runId,
           encryptionKey,
-          vmGlobalThis
+          vmGlobalThis,
+          {},
+          prepared
         );
       }
     );

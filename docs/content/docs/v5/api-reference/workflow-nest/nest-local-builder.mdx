@@ -12,7 +12,7 @@ Builder that scans a NestJS project for workflow files and compiles them into th
 ## Usage
 
 ```typescript title="scripts/build-workflows.ts" lineNumbers
-import { NestLocalBuilder } from "workflow/nest"; // [!code highlight]
+import { NestLocalBuilder } from "workflow/nest/builder"; // [!code highlight]
 
 const builder = new NestLocalBuilder({
   dirs: ["src"],
