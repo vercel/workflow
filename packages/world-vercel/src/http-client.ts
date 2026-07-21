@@ -4,6 +4,7 @@ import type { APIConfig } from './utils.js';
 let _dispatcher: RetryAgent | undefined;
 let _eventsDispatcher: RetryAgent | undefined;
 let _streamDispatcher: RetryAgent | undefined;
+let _streamCloseDispatcher: RetryAgent | undefined;
 
 /** Shared between both agents — connection pooling and H1 pipelining tuning. */
 const BASE_AGENT_OPTIONS = {
@@ -86,6 +87,28 @@ export const STREAM_RETRY_OPTIONS: RetryHandler.RetryOptions = {
 };
 
 /**
+ * Retry options for stream CLOSE (the `X-Stream-Done` PUT). Unlike chunk
+ * appends, close is idempotent on the server: a duplicate close of a
+ * completed stream early-returns, and the close-barrier protocol's durable
+ * `closing` fence is an if_not_exists stamp that a re-entered close resumes
+ * — so a 5xx whose effect may or may not have applied is safe to retry,
+ * and the server's close barrier *relies* on it: a transient reconciliation
+ * failure (or an unsafe close shape awaiting in-flight backups) is surfaced
+ * as a retriable 503 with the stream left durably closing, expecting the
+ * writer to close again. Without 5xx here, that 503 would reject
+ * `writer.close()` outright and leave the stream fenced until run expiry.
+ * 429 keeps the same pass-through-to-queue reasoning as chunk writes not
+ * applying: close is one terminal request, so honoring Retry-After
+ * in-process is the cleaner behavior. Exported so a test can pin the
+ * close-is-retriable contract.
+ */
+export const STREAM_CLOSE_RETRY_OPTIONS: RetryHandler.RetryOptions = {
+  retryAfter: true,
+  methods: ['PUT'],
+  statusCodes: [429, 500, 502, 503, 504],
+};
+
+/**
  * Resolves the undici dispatcher for a request: the caller's override, or the
  * shared default agent (HTTP/1.1).
  */
@@ -111,6 +134,15 @@ export function getEventsDispatcher(config?: APIConfig): unknown {
  */
 export function getStreamDispatcher(config?: APIConfig): unknown {
   return config?.dispatcher ?? getDefaultStreamDispatcher();
+}
+
+/**
+ * Resolves the dispatcher for stream CLOSE: the caller's override, or the
+ * shared close agent whose retry policy includes 5xx — close is idempotent
+ * (see STREAM_CLOSE_RETRY_OPTIONS), unlike chunk appends.
+ */
+export function getStreamCloseDispatcher(config?: APIConfig): unknown {
+  return config?.dispatcher ?? getDefaultStreamCloseDispatcher();
 }
 
 /** Build a shared undici RetryAgent wrapping an Agent with the given options. */
@@ -168,4 +200,13 @@ function getDefaultStreamDispatcher(): RetryAgent {
     STREAM_RETRY_OPTIONS
   );
   return _streamDispatcher;
+}
+
+/** Shared agent for the idempotent stream close (5xx retriable). */
+function getDefaultStreamCloseDispatcher(): RetryAgent {
+  _streamCloseDispatcher ??= makeRetryDispatcher(
+    EVENTS_AGENT_OPTIONS,
+    STREAM_CLOSE_RETRY_OPTIONS
+  );
+  return _streamCloseDispatcher;
 }
