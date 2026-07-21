@@ -30,6 +30,18 @@ export interface SidebarDataContextValue {
     moduleSpecifier: string;
     deploymentId: string;
   }) => string | undefined;
+  /**
+   * Async variant of {@link getModuleSourceUrl}. When provided, the detail
+   * panel awaits this to obtain a fully-resolved source link (e.g. one that
+   * has looked up the file's real extension against the deployment's source
+   * tree) and prefers it over the synchronous `getModuleSourceUrl` result.
+   * Should resolve to `undefined` when it cannot produce a better link, so the
+   * panel falls back to the synchronous best-effort value.
+   */
+  resolveModuleSourceUrl?: (info: {
+    moduleSpecifier: string;
+    deploymentId: string;
+  }) => Promise<string | undefined>;
 }
 
 const SidebarDataContext = createContext<SidebarDataContextValue | null>(null);
