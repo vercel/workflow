@@ -182,25 +182,13 @@ export interface StepExecutorParams {
   latencyTracking?: StepLatencyTracking;
   /**
    * Authoritative attempt number for this execution, used to bound retries
-   * against `maxRetries` BEFORE the body runs — the only way to cap a step
-   * that keeps timing out. A timeout hard-kills the function mid-body, so no
-   * `step_failed`/`step_retrying` is ever written: `step.error` stays null and
-   * the post-body/error guards never fire, while each redelivery increments
-   * the start count. Callers supply a count that reflects real attempts:
-   *
+   * against `maxRetries` BEFORE the body runs. In order to also catch
+   * step timeouts (which we can't have catch handlers for), we determine
+   * the attempt count based as follows:
    * - Inline (combined handler): the number of `step_started` events already
    *   in the event log for this step, plus one for the attempt about to run.
-   *   The log is authoritative because the optimistic-start path synthesizes
-   *   `step.attempt = 1` and concurrent double-starts are prevented by the
-   *   atomic create-claim / single-flight.
    * - Background (queue-dispatched): the queue delivery count
-   *   (`metadata.attempt`), which increments on every redelivery — including
-   *   the visibility-timeout redelivery that a timed-out step produces.
-   *
-   * When this attempt number exceeds `maxRetries + 1` the step has exhausted
-   * its retries and is failed here, without starting another attempt. Undefined
-   * on paths that predate this (they fall back to the post-start
-   * `step.attempt`/`step.error` guards).
+   *   (`metadata.attempt`), which increments on every redelivery.
    */
   authoritativeAttempt?: number;
 }
@@ -374,18 +362,13 @@ export async function executeStep(
       ...Attribute.StepMaxRetries(maxRetries),
     });
 
-    // Retry ceiling enforced BEFORE starting another attempt. This is what
-    // bounds a step that keeps timing out: a timeout hard-kills the body with
-    // no `step_failed`, so the post-body/error guards below never see it and
-    // `step.error` never gates the count up. `authoritativeAttempt` is the
-    // real attempt number (see StepExecutorParams.authoritativeAttempt); when
-    // it exceeds `maxRetries + 1` the step is failed here without running the
-    // body again. Runs strictly before the start block, so no additional
-    // `step_started` is written for the rejected attempt — the step already
-    // exists (it was started on every prior attempt), so `step_failed` is a
-    // valid terminal write. Thrown-error exhaustion still terminates one
-    // attempt earlier via the post-body guard (with the thrown error as
-    // cause), so this check does not change that path.
+    // maxRetries enforced before starting another attempt. Timeouts can kill
+    // a step execution without any way to catch the error, so the post-body/error
+    // guards below might miss it. Hence, we use `authoritativeAttempt` count
+    // as an additional guard based on step_started count or queue delivery count
+    // on backgrounded steps.
+    // Thrown-error exhaustion still terminates one attempt earlier via the post-body
+    // guard (with the thrown error as cause), and this check does not affect that.
     if (
       params.authoritativeAttempt !== undefined &&
       params.authoritativeAttempt > maxRetries + 1
