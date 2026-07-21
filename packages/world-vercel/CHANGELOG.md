@@ -1,5 +1,18 @@
 # @workflow/world-vercel
 
+## 4.5.1
+
+### Patch Changes
+
+- [#2959](https://github.com/vercel/workflow/pull/2959) [`aac6ea5`](https://github.com/vercel/workflow/commit/aac6ea53ecb1a281b187652fc4bb7db6596f5d4f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Log the underlying queue handler error before retrying a failed delivery.
+
+- [#3013](https://github.com/vercel/workflow/pull/3013) [`7c0266f`](https://github.com/vercel/workflow/commit/7c0266f193065a045e2b36b3072b1dc1d08c07fb) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Retry transient connection timeouts so Eve can resume existing workflow runs after brief network failures.
+
+- [#2998](https://github.com/vercel/workflow/pull/2998) [`8eb110c`](https://github.com/vercel/workflow/commit/8eb110ca2ec0923ad21d51e745925da74c9f0284) Thanks [@ruiconti](https://github.com/ruiconti)! - Append caller-provided user-agent tokens to the world-vercel user-agent instead of discarding them.
+
+- Updated dependencies []:
+  - @workflow/errors@4.1.5
+
 ## 4.5.0
 
 ### Minor Changes
