@@ -38,6 +38,7 @@ import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import {
+  getMaxEventsOverride,
   getMaxQueueDeliveries,
   getReplayDivergenceMaxRetries,
   isInlineOwnershipEnabled,
@@ -147,6 +148,20 @@ export {
   setWorld,
   type WorldFactoryModule,
 } from './runtime/world.js';
+
+/**
+ * Apply the optional client-side event-limit override.
+ * `WORKFLOW_MAX_EVENTS_OVERRIDE`, when set to a positive integer, clamps the
+ * server-supplied per-run event ceiling to a smaller value so enforcement can
+ * be exercised without a server-side change. Clamp-down only: it never raises
+ * the server's limit, and it takes effect even when the server returns none.
+ * Unset ⇒ server value passes through unchanged.
+ */
+function clampMaxEvents(serverValue: number | undefined): number | undefined {
+  const override = getMaxEventsOverride();
+  if (override === undefined) return serverValue;
+  return serverValue === undefined ? override : Math.min(serverValue, override);
+}
 
 function getWorkflowSetupErrorCode(err: unknown): RunErrorCode | null {
   if (WorkflowRuntimeError.is(err)) {
@@ -977,6 +992,19 @@ export function workflowEntrypoint(
                         { requestId, skipPreload: true }
                       );
                       runReadyBarrier = startedPromise;
+                      // Turbo backgrounds run_started, so the non-turbo assignment
+                      // below never runs — thread the per-run event ceiling off the
+                      // backgrounded response here instead. The guard re-checks
+                      // maxEventsLimit every loop iteration, so a value that lands
+                      // shortly after start still enforces well before a runaway
+                      // log approaches the ceiling.
+                      startedPromise.then(
+                        (r) => {
+                          const limit = clampMaxEvents(r?.maxEvents);
+                          if (limit !== undefined) maxEventsLimit = limit;
+                        },
+                        () => {}
+                      );
                       // Attach a no-op rejection handler so an early failure
                       // never surfaces as an unhandledRejection before a consumer
                       // (await/then) is attached; consumers still observe it.
@@ -1040,7 +1068,7 @@ export function workflowEntrypoint(
                           );
                         }
                         workflowRun = result.run;
-                        maxEventsLimit = result.maxEvents;
+                        maxEventsLimit = clampMaxEvents(result.maxEvents);
                         // Anchors RSFS — see the declaration above.
                         runStartedReceivedAtMs = Date.now();
 

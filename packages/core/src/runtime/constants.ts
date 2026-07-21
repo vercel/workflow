@@ -215,6 +215,35 @@ export function getMaxInlineSteps(): number {
   return parsed;
 }
 
+const warnedMaxEventsValues = new Set<string>();
+
+/**
+ * Optional client-side override for the server-supplied per-run event ceiling.
+ * When set to a positive integer, the runtime clamps the server's limit *down*
+ * to this value (never raises it) so enforcement can be exercised without a
+ * server-side change. `undefined` (unset) ⇒ use the server value as-is.
+ *
+ * Reads `process.env.WORKFLOW_MAX_EVENTS_OVERRIDE` lazily so tests and
+ * deployments can override per invocation. Invalid values fall back to unset
+ * (no throw — the env var is an escape hatch) and emit a one-time warning.
+ */
+export function getMaxEventsOverride(): number | undefined {
+  const raw = process.env.WORKFLOW_MAX_EVENTS_OVERRIDE;
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    if (!warnedMaxEventsValues.has(raw)) {
+      warnedMaxEventsValues.add(raw);
+      runtimeLogger.warn(
+        'Ignoring WORKFLOW_MAX_EVENTS_OVERRIDE: not a positive integer; using server limit',
+        { raw }
+      );
+    }
+    return undefined;
+  }
+  return parsed;
+}
+
 /**
  * Whether optimistic inline step start is enabled. When on, the owned-inline
  * path begins running a brand-new step's body *before* its lazy `step_started`
