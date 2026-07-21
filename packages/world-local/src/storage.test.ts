@@ -6,7 +6,7 @@ import type { Event, Storage } from '@workflow/world';
 import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { writeExclusive, writeJSON } from './fs.js';
+import { promoteExclusive, writeExclusive, writeJSON } from './fs.js';
 import * as helpers from './storage/helpers.js';
 import {
   hashToken,
@@ -4645,22 +4645,24 @@ describe('Storage', () => {
       ).toHaveLength(0);
     });
 
-    it('should roll back a hook_received published in the check-to-publish window (cross-process close)', async () => {
-      // Directly exercises step 3 of the publish-then-verify protocol: the
-      // terminal marker is committed by another process AFTER hook_received's
-      // fast-path check but before its post-publish re-check. We simulate
-      // that exact interleaving by making the FIRST `isRunTerminalCommitted`
-      // probe (the fast path) still observe no marker, but commit the marker
-      // as a side effect so the SECOND probe (post-publish) sees it — forcing
-      // the rollback branch that deletes the just-published event and throws.
+    it('should reject a hook_received when the terminal marker commits in the stage-to-check window', async () => {
+      // Exercises step 3 of the stage → check → promote protocol: a
+      // terminal transition in another process commits its marker and reaps
+      // the staging directory AFTER hook_received's fast-path check but
+      // BEFORE its post-stage marker re-check. We simulate that exact
+      // interleaving by making the FIRST `isRunTerminalCommitted` probe
+      // (the fast path) still observe no marker, but perform the concurrent
+      // transition's marker write + reap as a side effect so the SECOND
+      // probe (post-stage, the real implementation) sees the marker and
+      // rejects before the promote — the event must never become visible.
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
         input: new Uint8Array(),
       });
       const hook = await createHook(storage, run.runId, {
-        hookId: 'hook_rollback_window',
-        token: 'token-rollback-window',
+        hookId: 'hook_stage_window',
+        token: 'token-stage-window',
       });
 
       const markerPath = runTerminalMarkerPath(testDir, run.runId);
@@ -4671,10 +4673,11 @@ describe('Storage', () => {
         .mockImplementation(async (base, runId, tag) => {
           probes++;
           if (probes === 1) {
-            // Fast path: report not-terminal, but commit the marker now so
-            // the post-publish re-check (the real implementation) observes a
-            // terminal transition that landed during the publish.
+            // Fast path: report not-terminal, but perform the concurrent
+            // terminal transition's durable prefix (marker + reap) now so
+            // the post-stage re-check observes it.
             await writeExclusive(markerPath, '');
+            await helpers.reapPendingHookEvents(base, runId, tag);
             return false;
           }
           return realIsRunTerminalCommitted(base, runId, tag);
@@ -4692,8 +4695,243 @@ describe('Storage', () => {
         spy.mockRestore();
       }
 
-      // The event published in the window must have been rolled back.
       expect(probes).toBeGreaterThanOrEqual(2);
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(0);
+    });
+
+    it('should reject a hook_received whose staged event is reaped in the check-to-promote window', async () => {
+      // Exercises step 4 — the atomic arbitration itself. The terminal
+      // transition's marker + reap land AFTER hook_received's post-stage
+      // marker re-check but BEFORE its promote: the reap unlinks the staged
+      // file, so the promote's hard link fails ('missing') and the resume
+      // is rejected. We simulate this by having the SECOND
+      // `isRunTerminalCommitted` probe truthfully report "no marker as of
+      // the check", while committing the marker and reaping (as the
+      // concurrent process) before returning. The event must never become
+      // visible — there is no rollback of reader-visible state anywhere on
+      // this path.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(storage, run.runId, {
+        hookId: 'hook_promote_window',
+        token: 'token-promote-window',
+      });
+
+      const markerPath = runTerminalMarkerPath(testDir, run.runId);
+      const realIsRunTerminalCommitted = helpers.isRunTerminalCommitted;
+      let probes = 0;
+      const spy = vi
+        .spyOn(helpers, 'isRunTerminalCommitted')
+        .mockImplementation(async (base, runId, tag) => {
+          probes++;
+          if (probes === 2) {
+            // The staged file exists at this point. Perform the concurrent
+            // terminal transition's marker write + reap, then report the
+            // state as of the check (before the transition): no marker.
+            await writeExclusive(markerPath, '');
+            await helpers.reapPendingHookEvents(base, runId, tag);
+            return false;
+          }
+          return realIsRunTerminalCommitted(base, runId, tag);
+        });
+
+      try {
+        await expect(
+          storage.events.create(run.runId, {
+            eventType: 'hook_received',
+            correlationId: hook.hookId,
+            eventData: { payload: {} },
+          })
+        ).rejects.toMatchObject({ name: 'RunExpiredError' });
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(probes).toBeGreaterThanOrEqual(2);
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(0);
+    });
+
+    it('should keep a hook_received that won the promote before the run terminated', async () => {
+      // The accept side of the arbitration: the resume's hard link lands
+      // before any terminal transition, so the event is visible and stays
+      // in the log; a subsequent run_completed (which writes the marker and
+      // reaps an already-empty staging directory) must not disturb it.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(storage, run.runId, {
+        hookId: 'hook_promote_winner',
+        token: 'token-promote-winner',
+      });
+
+      await storage.events.create(run.runId, {
+        eventType: 'hook_received',
+        correlationId: hook.hookId,
+        eventData: { payload: {} },
+      });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([7]),
+      });
+
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(1);
+      // The terminal transition committed its durable marker.
+      await expect(
+        fs.access(runTerminalMarkerPath(testDir, run.runId))
+      ).resolves.toBeUndefined();
+    });
+
+    it('should reap a staged hook_received from another process on a terminal transition', async () => {
+      // The transition-side half of the arbitration, with the "other
+      // process" represented purely by filesystem state: a resume in
+      // another process staged its event and stalled before promoting.
+      // A real run_completed here must reap that staged file, so the
+      // stalled resume's later promote atomically fails and its event is
+      // never visible.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await createHook(storage, run.runId, {
+        hookId: 'hook_stalled_resume',
+        token: 'token-stalled-resume',
+      });
+
+      const stalledEventId = 'evnt_00000000000000000000000000';
+      const stagedPath = helpers.pendingHookEventPath(
+        testDir,
+        run.runId,
+        stalledEventId
+      );
+      await writeExclusive(stagedPath, '{}');
+
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([1]),
+      });
+
+      // The transition reaped the staged file...
+      await expect(fs.access(stagedPath)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      // ...so the stalled resume's promote loses the arbitration.
+      const eventPath = path.join(
+        testDir,
+        'events',
+        `${run.runId}-${stalledEventId}.json`
+      );
+      await expect(promoteExclusive(stagedPath, eventPath)).resolves.toBe(
+        'missing'
+      );
+      // And its event never became visible.
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(0);
+    });
+  });
+
+  describe('terminal-run guard for legacy runs', () => {
+    // Legacy runs (specVersion <= 1) are routed to handleLegacyEvent, which
+    // bypasses the current-spec guard chain entirely — so the guard must be
+    // applied there too. A legacy run is simulated by downgrading a real
+    // run's persisted specVersion.
+    async function createLegacyRun() {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'legacy-workflow',
+        input: new Uint8Array(),
+      });
+      const runPath = path.join(testDir, 'runs', `${run.runId}.json`);
+      await writeJSON(runPath, { ...run, specVersion: 1 }, { overwrite: true });
+      return run;
+    }
+
+    it('accepts hook_received on a live legacy run', async () => {
+      const run = await createLegacyRun();
+      const result = await storage.events.create(run.runId, {
+        eventType: 'hook_received',
+        correlationId: 'hook_legacy_live',
+        eventData: { payload: {} },
+      });
+      expect(result.event?.eventType).toBe('hook_received');
+
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(1);
+    });
+
+    it('rejects hook_received on a cancelled legacy run', async () => {
+      const run = await createLegacyRun();
+      await storage.events.create(run.runId, { eventType: 'run_cancelled' });
+
+      // The legacy cancellation path committed the durable marker before
+      // its state write, like current-spec terminal transitions.
+      await expect(
+        fs.access(runTerminalMarkerPath(testDir, run.runId))
+      ).resolves.toBeUndefined();
+
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: 'hook_legacy_cancelled',
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
+
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(0);
+    });
+
+    it('rejects hook_received when only the terminal marker is committed (cross-process)', async () => {
+      // A legacy run_cancelled in another process has committed its marker
+      // but not yet written the cancelled state: the run file still says
+      // 'running', so only the durable marker can reject this resume.
+      const run = await createLegacyRun();
+      await writeExclusive(runTerminalMarkerPath(testDir, run.runId), '');
+
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: 'hook_legacy_marker',
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
+
       const events = await storage.events.list({
         runId: run.runId,
         pagination: {},

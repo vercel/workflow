@@ -2662,6 +2662,52 @@ describe('Storage (Postgres integration)', () => {
         })
       ).rejects.toMatchObject({ name: 'RunExpiredError' });
     });
+
+    it('accepts hook_received on a live legacy run', async () => {
+      // Legacy runs (specVersion <= 1) are routed to
+      // handleLegacyEventPostgres, which bypasses the current-spec guard
+      // chain — the guard must be applied there too. Simulated by
+      // downgrading a real run's persisted specVersion.
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'legacy-workflow',
+        input: new Uint8Array(),
+      });
+      await drizzle
+        .update(DrizzleSchema.runs)
+        .set({ specVersion: 1 })
+        .where(eq(DrizzleSchema.runs.runId, run.runId));
+
+      const result = await events.create(run.runId, {
+        eventType: 'hook_received',
+        correlationId: 'hook_legacy_live',
+        eventData: { payload: {} },
+      });
+      expect(result.event?.eventType).toBe('hook_received');
+    });
+
+    it('rejects hook_received with RunExpiredError on a cancelled legacy run', async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'legacy-workflow',
+        input: new Uint8Array(),
+      });
+      await drizzle
+        .update(DrizzleSchema.runs)
+        .set({ specVersion: 1 })
+        .where(eq(DrizzleSchema.runs.runId, run.runId));
+
+      // Routed to the legacy run_cancelled handler (direct state update).
+      await events.create(run.runId, { eventType: 'run_cancelled' });
+
+      await expect(
+        events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: 'hook_legacy_cancelled',
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
+    });
   });
 
   describe('idempotent operations', () => {

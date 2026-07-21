@@ -3,4 +3,4 @@
 '@workflow/world-postgres': patch
 ---
 
-Fix `hook_received` being appended after a concurrent run termination by re-checking run status at the event-write linearization point.
+Reject `hook_received` on terminal runs, including when the termination commits concurrently (cross-process) and for legacy (pre-event-sourcing) runs.

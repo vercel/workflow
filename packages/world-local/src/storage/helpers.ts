@@ -97,6 +97,85 @@ export async function isRunTerminalCommitted(
 }
 
 /**
+ * Directory holding staged (not yet reader-visible) `hook_received` events
+ * for a run. Staging lives under `.locks` — outside the `events` directory —
+ * so no list/read path can ever observe an event that has not been promoted.
+ *
+ * Protocol (see the `hook_received` publish block in `events-storage.ts`):
+ * a resume stages its event file here, re-checks the run-terminal marker,
+ * and then promotes the staged file into `events/` with an atomic hard
+ * link. A terminal transition writes its marker and then REAPS this
+ * directory (unlinking every staged file) before it writes the terminal
+ * run state. The unlink-vs-link race on a staged file is decided atomically
+ * by the filesystem, so exactly one side wins: either the event was visible
+ * before the terminal transition proceeded, or it is never visible at all.
+ */
+export function pendingHookEventDir(
+  basedir: string,
+  runId: string,
+  tag?: string
+): string {
+  const name = tag ? `${runId}.pending.${tag}` : `${runId}.pending`;
+  return resolveWithinBase(basedir, '.locks', 'runs', name);
+}
+
+/**
+ * Staging path for a single `hook_received` event (see
+ * {@link pendingHookEventDir}).
+ */
+export function pendingHookEventPath(
+  basedir: string,
+  runId: string,
+  eventId: string,
+  tag?: string
+): string {
+  return path.join(pendingHookEventDir(basedir, runId, tag), `${eventId}.json`);
+}
+
+/**
+ * Reap every staged `hook_received` event for a run. Called by terminal
+ * transitions AFTER committing the run-terminal marker and BEFORE writing
+ * the terminal run state, so that:
+ *
+ *   - any staged event whose promotion has not happened yet is unlinked
+ *     here, making its later `promoteExclusive` fail (`'missing'`) — the
+ *     resume is rejected and its event is never reader-visible;
+ *   - any event already promoted was, by construction, visible before this
+ *     reap completed — i.e. before the run's terminal state and terminal
+ *     event were written — so it legitimately precedes the termination;
+ *   - any event staged after this reap started necessarily staged after the
+ *     marker was committed, and the stage→promote path re-checks the marker
+ *     between those two operations, so it self-rejects.
+ *
+ * Mirrors marker visibility for tagged worlds: reaps the untagged staging
+ * directory and, when tagged, the tag's own staging directory.
+ */
+export async function reapPendingHookEvents(
+  basedir: string,
+  runId: string,
+  tag?: string
+): Promise<void> {
+  const dirs = [pendingHookEventDir(basedir, runId)];
+  if (tag) {
+    dirs.push(pendingHookEventDir(basedir, runId, tag));
+  }
+  for (const dir of dirs) {
+    let entries: string[];
+    try {
+      entries = await fs.readdir(dir);
+    } catch {
+      // No staging directory — nothing was ever staged for this run.
+      continue;
+    }
+    for (const entry of entries) {
+      await fs.unlink(path.join(dir, entry)).catch(() => {});
+    }
+    // Best-effort: a resume staging concurrently recreates it as needed.
+    await fs.rmdir(dir).catch(() => {});
+  }
+}
+
+/**
  * Path of the exclusive-create claim file that reserves a hook token.
  */
 export function hookTokenClaimPath(basedir: string, token: string): string {

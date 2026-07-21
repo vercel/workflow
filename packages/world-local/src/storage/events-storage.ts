@@ -52,6 +52,7 @@ import {
   paginatedFileSystemQuery,
   readJSON,
   readJSONWithFallback,
+  promoteExclusive,
   resolveWithinBase,
   taggedPath,
   write,
@@ -67,7 +68,9 @@ import {
   isHookDisposalCommitted,
   isRunTerminalCommitted,
   monotonicUlid,
+  pendingHookEventPath,
   releaseHookTokenClaimIfOwnedBy,
+  reapPendingHookEvents,
   runTerminalMarkerPath,
 } from './helpers.js';
 import {
@@ -1059,23 +1062,39 @@ export function createEventsStorage(
         // be repairing an orphaned partial write).
         let hookEntityWriteOptions: { overwrite: boolean } | undefined;
 
-        // Publish the durable run-terminal marker before any terminal state
-        // write below (and thus before the terminal event is appended to the
-        // log at the bottom of this function). Its existence is the earliest
-        // cross-process evidence that the run can never accept a new
-        // correlated event again — the run-level analogue of the hook
-        // dispose marker. `hook_received` consults it with a
-        // publish-then-verify protocol so a late hook_received in another
-        // process cannot survive past this transition. The terminal-state
-        // validation above has already rejected transitions from an
-        // already-terminal run, so reaching here means this is a fresh
-        // terminal transition; `writeExclusive` returning false (marker
-        // already present from a concurrent duplicate) is harmless.
+        // Terminal transitions commit in two cross-process-visible steps
+        // BEFORE any terminal state write below (and thus before the
+        // terminal event is appended to the log at the bottom of this
+        // function):
+        //
+        //   1. Publish the durable run-terminal marker. Its existence is
+        //      the earliest cross-process evidence that the run can never
+        //      accept a new `hook_received` again — the run-level analogue
+        //      of the hook dispose marker.
+        //   2. Reap the run's staged (not yet reader-visible) hook_received
+        //      events. A resume publishes in three steps — stage, re-check
+        //      this marker, promote via atomic hard link into `events/` —
+        //      so the reap's unlink and the resume's link race on the SAME
+        //      staged file and the filesystem decides a single winner:
+        //      either the resume's event was already visible before this
+        //      transition proceeded (it legitimately precedes the
+        //      termination), or its staged file is gone, its promotion
+        //      fails, and the event is never visible to any reader. A
+        //      resume that stages after this reap necessarily stages after
+        //      the marker, and its own marker re-check rejects it. See
+        //      `reapPendingHookEvents` for the full argument.
+        //
+        // The terminal-state validation above has already rejected
+        // transitions from an already-terminal run, so reaching here means
+        // this is a fresh terminal transition; `writeExclusive` returning
+        // false (marker already present from a concurrent duplicate) is
+        // harmless, and both duplicates reap.
         if (isTerminalRunEventType(data.eventType) && currentRun) {
           await writeExclusive(
             runTerminalMarkerPath(basedir, effectiveRunId, tag),
             ''
           );
+          await reapPendingHookEvents(basedir, effectiveRunId, tag);
         }
 
         // Create/update entity based on event type (event-sourced architecture)
@@ -2180,30 +2199,42 @@ export function createEventsStorage(
 
         // Cross-process terminal-run guard for `hook_received`. A terminal
         // transition (run_completed / run_failed / run_cancelled) in ANY
-        // process publishes a durable `runTerminalMarkerPath` marker BEFORE
-        // it writes the run state and appends its terminal event (see the
-        // terminal-marker write earlier in this function). `withRunFileLock`
-        // only serializes writers within a single process — it is an
-        // in-memory mutex — so it cannot close the shared-filesystem race
-        // this backend explicitly supports. We instead use a lock-free
-        // publish-then-verify protocol against that durable marker:
+        // process (1) publishes a durable `runTerminalMarkerPath` marker and
+        // (2) reaps the run's staged hook_received events, both BEFORE it
+        // writes the terminal run state or appends its terminal event (see
+        // the terminal-transition block earlier in this function). In-memory
+        // locks cannot close the shared-filesystem race this backend
+        // explicitly supports, and a published event file is immediately
+        // visible to `events.list()` in other processes — so it can never be
+        // "rolled back" after the fact. Instead, the event stays INVISIBLE
+        // to readers until a single atomic filesystem operation decides its
+        // fate:
         //
-        //   1. (fast path) if the run is already terminal, reject before
-        //      writing an event, so the common case never creates a file.
-        //   2. publish the event with writeExclusive.
-        //   3. re-check the marker; if it appeared, roll back the
-        //      just-published event and reject.
+        //   1. (fast path) reject if the run is already terminal — by
+        //      marker, or by run state for runs that predate the marker —
+        //      so the common case never creates a file.
+        //   2. STAGE the event at a non-reader-visible path under `.locks`.
+        //   3. re-CHECK the terminal marker; reject if present.
+        //   4. PROMOTE the staged file into `events/` with an atomic hard
+        //      link; reject if the staged file was reaped (`'missing'`).
         //
-        // Correctness: the event survives only if the marker was still
-        // absent at step 3. Because a terminal transition writes its marker
-        // before its own terminal event, an absent marker at step 3 means
-        // this hook_received was genuinely published before the run became
-        // terminal — so it legitimately orders before the terminal event in
-        // the log. Conversely, if a terminal transition committed its marker
-        // between steps 1 and 2, step 3 observes it and the event is removed.
-        // The fast path additionally reads the run state so a terminal state
-        // written by any path (not only via the marker) is still rejected.
+        // Correctness: the reap's `unlink` and step 4's `link` target the
+        // same staged file, so the filesystem serializes them — exactly one
+        // wins. If the link wins, the event was reader-visible before the
+        // reap completed, and therefore before the terminal state and
+        // terminal event were written: acceptance happened-before the
+        // termination and legitimately precedes it. If the unlink wins,
+        // promotion fails and the event is never visible to any reader —
+        // there is nothing to roll back. A resume that stages after the
+        // reap has passed necessarily stages after the marker was
+        // committed, so step 3 rejects it. Rejections before step 4 unlink
+        // a file no reader can see.
+        let eventPublished: boolean;
         if (data.eventType === 'hook_received') {
+          // Step 1: fast path. The marker is the authoritative durable
+          // signal; the run-state read additionally rejects runs whose
+          // terminal state was written without a marker (e.g. runs that
+          // terminated on an older storage version).
           const terminalByMarker = await isRunTerminalCommitted(
             basedir,
             effectiveRunId,
@@ -2226,26 +2257,47 @@ export function createEventsStorage(
               `Workflow run "${effectiveRunId}" is already in a terminal state`
             );
           }
-        }
 
-        const eventPublished = await writeExclusive(eventPath, serializedEvent);
-
-        // Step 3 of the publish-then-verify protocol above: a terminal
-        // transition may have committed its marker between the fast-path
-        // check and this publish. The event has not been cached yet
-        // (rememberStoredEvent runs below), so nothing else can observe it;
-        // its path is unique to this eventId, so deleting it removes only
-        // our own write.
-        if (
-          eventPublished &&
-          data.eventType === 'hook_received' &&
-          (await isRunTerminalCommitted(basedir, effectiveRunId, tag))
-        ) {
-          await deleteJSON(eventPath);
-          throw new RunExpiredError(
-            `Workflow run "${effectiveRunId}" is already in a terminal state`
+          const stagedPath = pendingHookEventPath(
+            basedir,
+            effectiveRunId,
+            eventId,
+            tag
           );
+          const staged = await writeExclusive(stagedPath, serializedEvent);
+          if (!staged) {
+            // eventId is a freshly generated ULID; its staging path can
+            // only be occupied by a previous crashed attempt of this very
+            // event, which never promoted. Surface the same conflict shape
+            // as a visible-path collision.
+            throw new EntityConflictError(
+              `Event "${eventId}" already exists for run "${effectiveRunId}"`
+            );
+          }
+          try {
+            if (await isRunTerminalCommitted(basedir, effectiveRunId, tag)) {
+              throw new RunExpiredError(
+                `Workflow run "${effectiveRunId}" is already in a terminal state`
+              );
+            }
+            const promoted = await promoteExclusive(stagedPath, eventPath);
+            if (promoted === 'missing') {
+              // A terminal transition reaped the staged file between the
+              // check and the link — the atomic loss of the arbitration.
+              throw new RunExpiredError(
+                `Workflow run "${effectiveRunId}" is already in a terminal state`
+              );
+            }
+            eventPublished = promoted === 'linked';
+          } finally {
+            // The staged path is not reader-visible; removing it is pure
+            // cleanup on every outcome (already gone when reaped).
+            await deleteJSON(stagedPath).catch(() => {});
+          }
+        } else {
+          eventPublished = await writeExclusive(eventPath, serializedEvent);
         }
+
         if (!eventPublished) {
           // For `hook_created`, losing the event publish means the
           // event was already committed at this exact (canonical)
