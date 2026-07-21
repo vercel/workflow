@@ -31,7 +31,7 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import { getMaxInlineSteps } from './constants.js';
 import { type MutableEventLog, withPreconditionRetry } from './helpers.js';
-import { prepareRetainedStepInput } from './retained-step-input.js';
+import { isRetainedSerializationPassive } from './retained-step-input.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -497,30 +497,30 @@ export async function handleSuspension({
   // racing with concurrent handlers on step execution.
   const createdStepCorrelationIds = new Set<string>();
 
-  // All-or-nothing: clones are only used when EVERY new step input in the
-  // batch is passive. A mixed batch would let an unsafe sibling's
-  // serialization (which can run getters) mutate objects a clone already
-  // snapshotted, changing what the other step durably receives relative to
-  // the ordinary in-order VM traversal.
+  // Serialization always runs through the one ordinary path below, so the
+  // durable bytes cannot depend on retention. What retention needs to know is
+  // whether that serialization will execute workflow code (getters, hooks,
+  // patched prototype members) — side effects a cold replay would not repeat.
+  // If any input in the batch is not provably passive, the caller demotes the
+  // session so the side effects land in a VM that is about to be discarded,
+  // exactly like the pre-retention runtime.
   let retainedStepInputsSafe = true;
-  const clonesByCorrelationId = new Map<string, unknown>();
   if (prepareForRetention) {
     for (const queueItem of stepItems) {
       if (!stepsNeedingCreation.has(queueItem.correlationId)) continue;
-      const prepared = prepareRetainedStepInput(
-        {
-          args: queueItem.args,
-          closureVars: queueItem.closureVars,
-          thisVal: queueItem.thisVal,
-        },
-        suspension.globalThis
-      );
-      if (!prepared.retainable) {
+      if (
+        !isRetainedSerializationPassive(
+          {
+            args: queueItem.args,
+            closureVars: queueItem.closureVars,
+            thisVal: queueItem.thisVal,
+          },
+          suspension.globalThis
+        )
+      ) {
         retainedStepInputsSafe = false;
-        clonesByCorrelationId.clear();
         break;
       }
-      clonesByCorrelationId.set(queueItem.correlationId, prepared.value);
     }
   }
 
@@ -557,16 +557,15 @@ export async function handleSuspension({
     if (stepsNeedingCreation.has(queueItem.correlationId)) {
       ops.push(
         (async () => {
-          const clone = clonesByCorrelationId.get(queueItem.correlationId);
           const dehydratedInput = await dehydrateStepArguments(
-            clone ?? {
+            {
               args: queueItem.args,
               closureVars: queueItem.closureVars,
               thisVal: queueItem.thisVal,
             },
             runId,
             encryptionKey,
-            clone ? globalThis : suspension.globalThis,
+            suspension.globalThis,
             false,
             compression
           );

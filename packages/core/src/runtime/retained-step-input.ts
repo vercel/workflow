@@ -1,102 +1,8 @@
 import { types } from 'node:util';
-import { runInContext, createContext as vmCreateContext } from 'node:vm';
-import { WORKFLOW_SERIALIZE } from '@workflow/serde';
-
-export type RetainedStepInputPreparation =
-  | { readonly retainable: true; readonly value: unknown }
-  | { readonly retainable: false };
-
-// A pristine realm nothing else can reach: clones are built from its Object
-// and Array so their entire prototype chain is immune to intrinsic mutation
-// in both the workflow realm and the host realm (workflow code can obtain
-// host-realm objects through APIs like `structuredClone` and vandalize their
-// prototypes).
-const pristineRealm = runInContext(
-  '({ Object, Array })',
-  vmCreateContext()
-) as { Object: ObjectConstructor; Array: ArrayConstructor };
-
-// Host constructors that serialization dispatches on when the clone is
-// serialized under the host global — plus Object/Array, whose statics and
-// prototypes the class reducer and devalue's tag lookup read for
-// host-prototype originals (hydrated step results are host-realm objects).
-// The workflow VM's own intrinsics are frozen (see vm/index.ts), but host
-// intrinsics are shared with the whole process and cannot be frozen, so
-// dispatch-pristineness is verified instead. Any dirt declines retention
-// BEFORE a clone exists, so a spoofed predicate can never observe (or
-// capture) a pristine-realm object.
-const HOST_DISPATCH_CONSTRUCTORS = [
-  'Object',
-  'Array',
-  'Function',
-  'Map',
-  'Set',
-  'Date',
-  'RegExp',
-  'ArrayBuffer',
-  'SharedArrayBuffer',
-  'DataView',
-  'Int8Array',
-  'Uint8Array',
-  'Uint8ClampedArray',
-  'Int16Array',
-  'Uint16Array',
-  'Int32Array',
-  'Uint32Array',
-  'Float16Array',
-  'Float32Array',
-  'Float64Array',
-  'BigInt64Array',
-  'BigUint64Array',
-  'Headers',
-  'URL',
-  'URLSearchParams',
-  'DOMException',
-  'AbortController',
-  'AbortSignal',
-  'Request',
-  'Response',
-  'ReadableStream',
-  'WritableStream',
-  'TransformStream',
-] as const;
-
-function hasOwn(target: object, key: string | symbol): boolean {
-  return Object.getOwnPropertyDescriptor(target, key) !== undefined;
-}
-
-function isHostDispatchPristine(): boolean {
-  const hostGlobal = globalThis as unknown as Record<string, unknown>;
-  for (const name of HOST_DISPATCH_CONSTRUCTORS) {
-    const constructor = hostGlobal[name];
-    if (constructor === undefined) continue;
-    if (hasOwn(constructor as object, Symbol.hasInstance)) return false;
-  }
-  for (const constructor of [Object, Array]) {
-    if (
-      hasOwn(constructor, WORKFLOW_SERIALIZE) ||
-      hasOwn(constructor, 'classId')
-    ) {
-      return false;
-    }
-  }
-  for (const [prototype, constructor] of [
-    [Object.prototype, Object],
-    [Array.prototype, Array],
-  ] as const) {
-    if (
-      hasOwn(prototype, Symbol.toStringTag) ||
-      ownDataProperty(prototype, 'constructor') !== constructor
-    ) {
-      return false;
-    }
-  }
-  // Constructor prototype chains end at host Object.prototype, where an
-  // added @@hasInstance would be found by dispatch lookup. (Host
-  // Function.prototype's @@hasInstance is spec non-configurable.)
-  if (hasOwn(Object.prototype, Symbol.hasInstance)) return false;
-  return true;
-}
+import {
+  getSerializationPins,
+  verifySerializationPins,
+} from '../vm/serialization-pins.js';
 
 // Own data-property read that never performs a property Get — workflow code
 // can redefine its globals (or their `prototype` slots) with accessors, and
@@ -141,27 +47,6 @@ function hasAllowedPrototype(
   );
 }
 
-// Cloneable exotics (per the structured-clone spec) whose devalue/reducer
-// serialization reads prototype methods, getters, or iterators the workflow
-// realm can mutate — serializing them is not provably passive, so they
-// decline the fast path even when their prototype identity looks intact.
-function isSlotBearingExotic(value: object): boolean {
-  return (
-    types.isMap(value) ||
-    types.isSet(value) ||
-    types.isDate(value) ||
-    types.isRegExp(value) ||
-    types.isArrayBuffer(value) ||
-    types.isSharedArrayBuffer(value) ||
-    types.isDataView(value) ||
-    types.isTypedArray(value) ||
-    types.isBoxedPrimitive(value) ||
-    types.isNativeError(value) ||
-    types.isPromise(value) ||
-    types.isArgumentsObject(value)
-  );
-}
-
 function isArrayIndex(key: string): boolean {
   const index = Number(key);
   return (
@@ -184,13 +69,13 @@ function isPassiveArrayProperty(
   // Only own enumerable data indices are passive. Anything hidden — symbol
   // tags, non-enumerable properties, accessors — can be observed by
   // serialization dispatch (reducer probes, thenable checks, the class
-  // reducer) while being dropped by the clone.
+  // reducer) and can execute workflow code when read.
   return (
     typeof key === 'string' &&
     isArrayIndex(key) &&
     descriptor.enumerable === true &&
     'value' in descriptor &&
-    isPassivelyCloneable(descriptor.value, workflowGlobal, seen)
+    isPassive(descriptor.value, workflowGlobal, seen)
   );
 }
 
@@ -207,6 +92,119 @@ function isPassiveArray(
   );
 }
 
+// Instances of the supported built-ins must carry no own properties at all:
+// serialization never reads own properties on them, but an own accessor or
+// symbol could still be observed through other dispatch lookups, and clean
+// instances are the overwhelmingly common case anyway.
+function hasNoOwnProperties(value: object): boolean {
+  return Reflect.ownKeys(value).length === 0;
+}
+
+function isPassiveMap(
+  value: Map<unknown, unknown>,
+  workflowGlobal: Record<string, any>,
+  seen: WeakSet<object>
+): boolean {
+  const pins = getSerializationPins(workflowGlobal);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== pins?.mapPrototype && prototype !== Map.prototype) {
+    return false;
+  }
+  if (!hasNoOwnProperties(value)) return false;
+  let passive = true;
+  // Host forEach iterates via internal slots — no realm members execute.
+  Map.prototype.forEach.call(value, (entryValue: unknown, key: unknown) => {
+    passive &&=
+      isPassive(key, workflowGlobal, seen) &&
+      isPassive(entryValue, workflowGlobal, seen);
+  });
+  return passive;
+}
+
+function isPassiveSet(
+  value: Set<unknown>,
+  workflowGlobal: Record<string, any>,
+  seen: WeakSet<object>
+): boolean {
+  const pins = getSerializationPins(workflowGlobal);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== pins?.setPrototype && prototype !== Set.prototype) {
+    return false;
+  }
+  if (!hasNoOwnProperties(value)) return false;
+  let passive = true;
+  Set.prototype.forEach.call(value, (entryValue: unknown) => {
+    passive &&= isPassive(entryValue, workflowGlobal, seen);
+  });
+  return passive;
+}
+
+function isPassiveDate(
+  value: object,
+  workflowGlobal: Record<string, any>
+): boolean {
+  const pins = getSerializationPins(workflowGlobal);
+  const prototype = Object.getPrototypeOf(value);
+  return (
+    (prototype === pins?.datePrototype || prototype === Date.prototype) &&
+    hasNoOwnProperties(value)
+  );
+}
+
+function isPassiveTypedArray(
+  value: object,
+  workflowGlobal: Record<string, any>
+): boolean {
+  const pins = getSerializationPins(workflowGlobal);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype === null || types.isProxy(prototype)) return false;
+  const parent = Object.getPrototypeOf(prototype);
+  const hostTypedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+  if (
+    parent !== pins?.typedArrayPrototype &&
+    parent !== hostTypedArrayPrototype
+  ) {
+    return false;
+  }
+  // The measured getters resolve on %TypedArray%.prototype; a shadow on the
+  // subclass prototype (e.g. Float32Array.prototype) would intercept them.
+  for (const name of ['buffer', 'byteOffset', 'byteLength']) {
+    if (Object.getOwnPropertyDescriptor(prototype, name)) return false;
+  }
+  // Own keys on a typed array are exactly its canonical indices.
+  if (
+    !Reflect.ownKeys(value).every(
+      (key) => typeof key === 'string' && isArrayIndex(key)
+    )
+  ) {
+    return false;
+  }
+  // The pinned/native getter is safe to invoke; reject SharedArrayBuffer
+  // backing (cross-thread mutation is unserializable either way).
+  const bufferGetter = (
+    pins !== undefined && parent === pins.typedArrayPrototype
+      ? pins.typedArrayBuffer
+      : Object.getOwnPropertyDescriptor(hostTypedArrayPrototype, 'buffer')?.get
+  ) as (() => unknown) | undefined;
+  return (
+    bufferGetter !== undefined &&
+    !types.isSharedArrayBuffer(bufferGetter.call(value))
+  );
+}
+
+function isPassiveArrayBuffer(
+  value: object,
+  workflowGlobal: Record<string, any>
+): boolean {
+  const pins = getSerializationPins(workflowGlobal);
+  const prototype = Object.getPrototypeOf(value);
+  return (
+    (prototype === pins?.arrayBufferPrototype ||
+      prototype === ArrayBuffer.prototype) &&
+    hasNoOwnProperties(value)
+  );
+}
+
 function isPassiveObjectProperty(
   object: object,
   key: string | symbol,
@@ -218,13 +216,13 @@ function isPassiveObjectProperty(
   // Only own enumerable string-keyed data properties are passive. Anything
   // hidden — symbol tags, non-enumerable properties, accessors — can be
   // observed by serialization dispatch (reducer probes like `.signal`,
-  // thenable checks, the class reducer) while being dropped by the clone.
+  // thenable checks, the class reducer) and can execute workflow code.
   return (
     typeof key === 'string' &&
     key !== '__proto__' &&
     descriptor.enumerable === true &&
     'value' in descriptor &&
-    isPassivelyCloneable(descriptor.value, workflowGlobal, seen)
+    isPassive(descriptor.value, workflowGlobal, seen)
   );
 }
 
@@ -240,20 +238,25 @@ function isPassivePlainObject(
 }
 
 /**
- * Whether structured cloning `value` is provably byte-equivalent to the
- * ordinary VM serialization AND cannot execute workflow-owned code.
+ * Whether serializing `value` through the ordinary pipeline provably executes
+ * no workflow code and draws no workflow-realm randomness.
  *
- * The retained VM must not observe serialization side effects that a later
- * cold replay cannot reconstruct, and the durable bytes must not depend on
- * `WORKFLOW_RETAINED_VM`. Only primitives, plain objects, and plain arrays
- * qualify: devalue traverses them exclusively through own-property reads
- * (`Object.keys`, `Object.hasOwn` + indices), so no workflow-realm prototype
- * state can influence the output. Everything else — proxies, accessors,
- * functions, custom classes, and built-ins like Map/Set/Date whose
- * serialization consults mutable realm prototypes (iterators, getters) —
- * declines the fast path and serializes through the ordinary VM traversal.
+ * Retained sessions keep running after suspension, so serialization side
+ * effects there would desync the live VM from what a cold replay
+ * reconstructs (replay never re-serializes an already-created step). The
+ * bytes themselves cannot differ by mode — serialization happens once and
+ * every mode reads the same `step_created` event — so passivity is the only
+ * property retention needs.
+ *
+ * Passive values: primitives; plain objects and arrays (own enumerable
+ * string-keyed data properties only — devalue traverses these purely via own
+ * reads); and Map/Set/Date/typed arrays/ArrayBuffer instances whose measured
+ * prototype members are verified pinned (see vm/serialization-pins.ts).
+ * Everything else — proxies, accessors, functions, custom classes, RegExp,
+ * hidden keys — declines, serializes exactly the same way, and the session
+ * falls back to ordinary replay for that boundary.
  */
-function isPassivelyCloneable(
+function isPassive(
   value: unknown,
   workflowGlobal: Record<string, any>,
   seen: WeakSet<object>
@@ -272,61 +275,36 @@ function isPassivelyCloneable(
   if (seen.has(value)) return true;
   seen.add(value);
 
-  if (Array.isArray(value)) {
-    return isPassiveArray(value, workflowGlobal, seen);
+  if (Array.isArray(value)) return isPassiveArray(value, workflowGlobal, seen);
+  if (types.isMap(value)) return isPassiveMap(value, workflowGlobal, seen);
+  if (types.isSet(value)) return isPassiveSet(value, workflowGlobal, seen);
+  if (types.isDate(value)) return isPassiveDate(value, workflowGlobal);
+  if (types.isTypedArray(value)) {
+    return isPassiveTypedArray(value, workflowGlobal);
   }
-  if (isSlotBearingExotic(value)) return false;
+  if (types.isArrayBuffer(value)) {
+    return isPassiveArrayBuffer(value, workflowGlobal);
+  }
+  if (
+    types.isSharedArrayBuffer(value) ||
+    types.isRegExp(value) ||
+    types.isDataView(value) ||
+    types.isBoxedPrimitive(value) ||
+    types.isNativeError(value) ||
+    types.isPromise(value) ||
+    types.isArgumentsObject(value)
+  ) {
+    return false;
+  }
   return isPassivePlainObject(value, workflowGlobal, seen);
 }
 
-// Deep-copy walker-validated plain data into the pristine realm, copying
-// exactly what devalue serializes: dense/sparse own indices for arrays and
-// own enumerable string properties for objects. All reads are data-property
-// reads — the walker already rejected everything else.
-function cloneIntoPristineRealm(
-  value: unknown,
-  copies: WeakMap<object, unknown>
-): unknown {
-  if (value === null || typeof value !== 'object') return value;
-  const existing = copies.get(value);
-  if (existing !== undefined) return existing;
-
-  if (Array.isArray(value)) {
-    const copy = new pristineRealm.Array(value.length) as unknown[];
-    copies.set(value, copy);
-    for (const key of Reflect.ownKeys(value)) {
-      if (typeof key !== 'string' || !isArrayIndex(key)) continue;
-      copy[Number(key)] = cloneIntoPristineRealm(
-        (value as unknown as Record<string, unknown>)[key],
-        copies
-      );
-    }
-    return copy;
-  }
-
-  const copy = new pristineRealm.Object() as Record<string, unknown>;
-  copies.set(value, copy);
-  for (const key of Object.keys(value)) {
-    copy[key] = cloneIntoPristineRealm(
-      (value as Record<string, unknown>)[key],
-      copies
-    );
-  }
-  return copy;
-}
-
-export function prepareRetainedStepInput(
+export function isRetainedSerializationPassive(
   value: unknown,
   workflowGlobal: Record<string, any>
-): RetainedStepInputPreparation {
-  if (
-    !isHostDispatchPristine() ||
-    !isPassivelyCloneable(value, workflowGlobal, new WeakSet())
-  ) {
-    return { retainable: false };
-  }
-  return {
-    retainable: true,
-    value: cloneIntoPristineRealm(value, new WeakMap()),
-  };
+): boolean {
+  return (
+    verifySerializationPins(workflowGlobal) &&
+    isPassive(value, workflowGlobal, new WeakSet())
+  );
 }

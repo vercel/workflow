@@ -3,6 +3,7 @@ import { types } from 'node:util';
 import { runInContext, createContext as vmCreateContext } from 'node:vm';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import seedrandom from 'seedrandom';
+import { registerSerializationPins } from './serialization-pins.js';
 import { installUint8ArrayBase64 } from './uint8array-base64.js';
 import { createRandomUUID } from './uuid.js';
 
@@ -148,12 +149,11 @@ export function freezeSerializationIntrinsics(g: typeof globalThis): void {
     // Freeze VM-realm and session-local constructor objects — including
     // their prototype chains, which `Symbol.hasInstance` lookup walks (the
     // Date wrapper delegates statics to the unfrozen original VM Date via
-    // setPrototypeOf). A binding that references the shared host intrinsic
-    // stays unfrozen: both serialization paths dispatch through that same
-    // object, so a mutation cannot make them disagree (and freezing it
-    // would affect the whole process). Host Function.prototype's
-    // @@hasInstance is spec-immutable; host Object.prototype is verified
-    // separately (see isHostDispatchPristine).
+    // setPrototypeOf) — so reducer `instanceof` dispatch can never execute a
+    // workflow-planted hook while a retained VM's inputs serialize. A binding
+    // that references the shared host intrinsic stays unfrozen: freezing it
+    // would affect the whole process, and host-realm members run host code,
+    // which cannot touch retained VM state.
     if (
       (typeof value === 'function' ||
         (typeof value === 'object' && value !== null)) &&
@@ -332,6 +332,10 @@ export function createContext(options: CreateContextOptions) {
   // HACK: Shim `exports` for the bundle
   g.exports = {};
   (g as any).module = { exports: g.exports };
+
+  // Capture the serialization-touched prototype members while the realm is
+  // provably pristine — no workflow code has run yet.
+  registerSerializationPins(g);
 
   return {
     context,

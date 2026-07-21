@@ -1,18 +1,38 @@
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
-import * as stepSerialization from '../serialization/step.js';
+import { dehydrateStepArguments } from '../serialization.js';
 import { createContext } from '../vm/index.js';
-import { prepareRetainedStepInput } from './retained-step-input.js';
+import { isRetainedSerializationPassive } from './retained-step-input.js';
 
 const seed = 'retained-step-input';
 const fixedTimestamp = 1_700_000_000_000;
 
-describe('prepareRetainedStepInput', () => {
-  it('clones passive cross-realm data into the host realm', () => {
-    const { context, globalThis: workflowGlobal } = createContext({
-      seed,
-      fixedTimestamp,
-    });
+function makeContext() {
+  const { context, globalThis: workflowGlobal } = createContext({
+    seed,
+    fixedTimestamp,
+  });
+  // Mimic the globals workflow.ts installs before any serialization happens
+  // (the stream/request reducers dispatch on them unguarded).
+  for (const name of [
+    'ReadableStream',
+    'WritableStream',
+    'TransformStream',
+    'Request',
+    'Response',
+    'AbortController',
+    'AbortSignal',
+  ]) {
+    if ((workflowGlobal as any)[name] === undefined) {
+      (workflowGlobal as any)[name] = (globalThis as any)[name];
+    }
+  }
+  return { context, workflowGlobal };
+}
+
+describe('isRetainedSerializationPassive', () => {
+  it('accepts plain cross-realm data', () => {
+    const { context, workflowGlobal } = makeContext();
     const value = vm.runInContext(
       `({
         nested: [{ ok: true }, "text", 42n],
@@ -22,102 +42,55 @@ describe('prepareRetainedStepInput', () => {
       context
     );
 
-    const prepared = prepareRetainedStepInput(value, workflowGlobal);
-
-    expect(prepared.retainable).toBe(true);
-    if (!prepared.retainable) return;
-    expect(prepared.value).toEqual({
-      nested: [{ ok: true }, 'text', 42n],
-      sparse: [1, undefined, 3],
-      flag: false,
-    });
-    // The clone's prototype chain lives in a pristine realm: not the
-    // workflow realm, not the host realm.
-    const cloneProto = Object.getPrototypeOf(prepared.value);
-    expect(cloneProto).not.toBe(Object.prototype);
-    expect(Object.getPrototypeOf(cloneProto)).toBe(null);
+    expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(true);
   });
 
-  it('produces the same serialized bytes as ordinary VM traversal', async () => {
-    const { context, globalThis: workflowGlobal } = createContext({
-      seed,
-      fixedTimestamp,
-    });
-    const value = vm.runInContext(
-      `({
-        nested: [{ ok: true, missing: undefined }],
-        sparse: [1, , 3],
-        big: 42n,
-        text: "workflow",
-      })`,
-      context
-    );
-    const prepared = prepareRetainedStepInput(value, workflowGlobal);
-    expect(prepared.retainable).toBe(true);
-    if (!prepared.retainable) return;
-
-    const original = await stepSerialization.serialize(value, undefined, {
-      global: workflowGlobal,
-    });
-    const cloned = await stepSerialization.serialize(
-      prepared.value,
-      undefined,
-      { global: globalThis }
-    );
-
-    expect(cloned).toEqual(original);
-  });
-
-  it('declines arrays with an own constructor property', () => {
-    const { context, globalThis: workflowGlobal } = createContext({
-      seed,
-      fixedTimestamp,
-    });
-    const value = vm.runInContext(
-      `(() => {
-        const arr = [1];
-        Object.defineProperty(arr, "constructor", {
-          value: class Fake { static classId = "fake"; },
-          enumerable: false,
-        });
-        return arr;
-      })()`,
-      context
-    );
-
-    expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
-      retainable: false,
-    });
-  });
-
-  it('declines built-ins whose serialization consults realm prototypes', () => {
-    const { context, globalThis: workflowGlobal } = createContext({
-      seed,
-      fixedTimestamp,
-    });
+  it('accepts the supported built-ins with pristine pins', () => {
+    const { context, workflowGlobal } = makeContext();
     for (const expression of [
-      'new Map([["k", 1]])',
-      'new Set([1, 2])',
+      'new Map([["k", { ok: true }]])',
+      'new Set([1, "two"])',
       'new Date(1234)',
-      '/workflow/gi',
-      'new Uint8Array([1, 2])',
+      'new Uint8Array([1, 2, 3])',
+      'new Float32Array([1.5])',
       'new ArrayBuffer(8)',
-      'new DataView(new ArrayBuffer(8))',
-      'new Error("boom")',
-      'Object.assign(Object.create(Object.prototype), { m: new Map() })',
+      '({ when: new Date(0), bytes: new Uint8Array(2), index: new Map() })',
     ]) {
       const value = vm.runInContext(expression, context);
-      expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
-        retainable: false,
-      });
+      expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(true);
+    }
+  });
+
+  it('accepts host-realm instances (hydrated step results)', () => {
+    const { workflowGlobal } = makeContext();
+    const value = {
+      map: new Map([['k', 1]]),
+      date: new Date(1234),
+      bytes: new Uint8Array([9]),
+    };
+
+    expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(true);
+  });
+
+  it('declines types whose serialization is not pinned', () => {
+    const { context, workflowGlobal } = makeContext();
+    for (const expression of [
+      '/workflow/gi',
+      'new DataView(new ArrayBuffer(8))',
+      'new SharedArrayBuffer(8)',
+      'new Uint8Array(new SharedArrayBuffer(4))',
+      'new Error("boom")',
+      'new (class Sub extends Map {})()',
+      'Object.assign(new Map(), { expando: 1 })',
+      'Object.create(null)',
+    ]) {
+      const value = vm.runInContext(expression, context);
+      expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(false);
     }
   });
 
   it('declines accessors without invoking them', () => {
-    const { context, globalThis: workflowGlobal } = createContext({
-      seed,
-      fixedTimestamp,
-    });
+    const { context, workflowGlobal } = makeContext();
     const value = vm.runInContext(
       `(() => {
         globalThis.__retainedTestCalls = 0;
@@ -126,17 +99,12 @@ describe('prepareRetainedStepInput', () => {
       context
     );
 
-    expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
-      retainable: false,
-    });
+    expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(false);
     expect(vm.runInContext('globalThis.__retainedTestCalls', context)).toBe(0);
   });
 
   it('declines proxies without invoking their traps', () => {
-    const { context, globalThis: workflowGlobal } = createContext({
-      seed,
-      fixedTimestamp,
-    });
+    const { context, workflowGlobal } = makeContext();
     const value = vm.runInContext(
       `(() => {
         globalThis.__retainedTestCalls = 0;
@@ -150,17 +118,12 @@ describe('prepareRetainedStepInput', () => {
       context
     );
 
-    expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
-      retainable: false,
-    });
+    expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(false);
     expect(vm.runInContext('globalThis.__retainedTestCalls', context)).toBe(0);
   });
 
   it('declines custom class serializers without invoking them', () => {
-    const { context, globalThis: workflowGlobal } = createContext({
-      seed,
-      fixedTimestamp,
-    });
+    const { context, workflowGlobal } = makeContext();
     const value = vm.runInContext(
       `(() => {
         globalThis.__retainedTestCalls = 0;
@@ -177,161 +140,197 @@ describe('prepareRetainedStepInput', () => {
       context
     );
 
-    expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
-      retainable: false,
-    });
+    expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(false);
     expect(vm.runInContext('globalThis.__retainedTestCalls', context)).toBe(0);
   });
-});
 
-describe('prepareRetainedStepInput review-hardening', () => {
-  it('declines non-enumerable array indices (structuredClone would drop them)', () => {
-    const { context, globalThis: workflowGlobal } = createContext({
-      seed,
-      fixedTimestamp,
-    });
-    const value = vm.runInContext(
+  it('declines hidden own keys (symbols, non-enumerables, constructor)', () => {
+    const { context, workflowGlobal } = makeContext();
+    for (const expression of [
+      `(() => {
+        const tagged = { plain: true };
+        Object.defineProperty(tagged, Symbol.for("WORKFLOW_ABORT_STREAM_NAME"), {
+          value: "abort-stream", enumerable: false,
+        });
+        return tagged;
+      })()`,
+      `(() => {
+        const hidden = { plain: true };
+        Object.defineProperty(hidden, "signal", {
+          get() { return { aborted: false }; }, enumerable: false,
+        });
+        return hidden;
+      })()`,
+      `(() => {
+        const arr = [1];
+        Object.defineProperty(arr, "constructor", {
+          value: class Fake { static classId = "fake"; }, enumerable: false,
+        });
+        return arr;
+      })()`,
       `(() => {
         const arr = [1, 2];
         Object.defineProperty(arr, "0", { value: 7, enumerable: false });
         return arr;
       })()`,
+    ]) {
+      const value = vm.runInContext(expression, context);
+      expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(false);
+    }
+  });
+
+  it('declines everything once a pinned member is patched', () => {
+    const { context, workflowGlobal } = makeContext();
+    const plain = vm.runInContext('({ ok: true })', context);
+    expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(true);
+
+    vm.runInContext(
+      `globalThis.__origIterator = Map.prototype[Symbol.iterator];
+       Map.prototype[Symbol.iterator] = function () { return globalThis.__origIterator.call(this); };`,
+      context
+    );
+    expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(false);
+
+    vm.runInContext(
+      'Map.prototype[Symbol.iterator] = globalThis.__origIterator;',
+      context
+    );
+    expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(true);
+  });
+
+  it('declines per pinned member: iterator next, Date methods', () => {
+    for (const patch of [
+      'Object.getPrototypeOf((new Map())[Symbol.iterator]()).next = function () {};',
+      'Object.getPrototypeOf((new Set())[Symbol.iterator]()).next = function () {};',
+      'Date.prototype.toISOString = function () { return "spoofed"; };',
+      'Date.prototype.getDate = function () { return 1; };',
+    ]) {
+      const { context, workflowGlobal } = makeContext();
+      const plain = vm.runInContext('({ ok: true })', context);
+      vm.runInContext(patch, context);
+      expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(false);
+    }
+  });
+
+  it('declines typed arrays whose subclass prototype shadows a pinned getter', () => {
+    const { context, workflowGlobal } = makeContext();
+    const value = vm.runInContext(
+      `(() => {
+        Object.defineProperty(Float32Array.prototype, "buffer", {
+          get() { return new ArrayBuffer(0); }, configurable: true,
+        });
+        return new Float32Array([1.5]);
+      })()`,
       context
     );
 
-    expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
-      retainable: false,
-    });
+    expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(false);
+    // Pins themselves are intact, so unrelated values stay retainable.
+    const plain = vm.runInContext('({ ok: true })', context);
+    expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(true);
   });
+});
 
-  it('never performs a property Get on redefined workflow globals', () => {
-    const { context, globalThis: workflowGlobal } = createContext({
-      seed,
-      fixedTimestamp,
-    });
-    const value = vm.runInContext(
-      `(() => {
-        globalThis.__retainedTestCalls = 0;
-        const arr = [1];
-        for (const name of ["Array", "Object"]) {
-          Object.defineProperty(globalThis, name, {
-            get() { globalThis.__retainedTestCalls++; throw new Error("boom"); },
+describe('serialization touches only pinned members', () => {
+  // THE coupling test: the pin list in vm/serialization-pins.ts is only sound
+  // if it covers every prototype member `dehydrateStepArguments` executes for
+  // the supported built-ins. Wrap every configurable member on the relevant
+  // prototypes with a recorder and assert the serializer hits nothing beyond
+  // the pinned set. If serde changes what it touches, this fails loudly —
+  // update the pin list (and this list) together.
+  const PINNED = new Set([
+    'Map.prototype.Symbol(Symbol.iterator)',
+    '%MapIteratorPrototype%.next',
+    'Set.prototype.Symbol(Symbol.iterator)',
+    '%SetIteratorPrototype%.next',
+    'Date.prototype.getDate',
+    'Date.prototype.toISOString',
+    '%TypedArray%.prototype.buffer',
+    '%TypedArray%.prototype.byteOffset',
+    '%TypedArray%.prototype.byteLength',
+    'ArrayBuffer.prototype.byteLength',
+  ]);
+
+  it('for Map, Set, Date, typed arrays, and ArrayBuffer', async () => {
+    const { context, workflowGlobal } = makeContext();
+    const g = workflowGlobal as any;
+    const touched = new Set<string>();
+
+    const wrapPrototype = (prototype: object, label: string) => {
+      for (const key of Reflect.ownKeys(prototype)) {
+        if (key === 'constructor') continue;
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, key);
+        if (!descriptor || !descriptor.configurable) continue;
+        const name = `${label}.${String(key)}`;
+        if (typeof descriptor.value === 'function') {
+          const original = descriptor.value;
+          Object.defineProperty(prototype, key, {
+            ...descriptor,
+            value: function (this: unknown, ...args: unknown[]) {
+              touched.add(name);
+              return original.apply(this, args);
+            },
+          });
+        } else if (descriptor.get) {
+          const originalGet = descriptor.get;
+          Object.defineProperty(prototype, key, {
+            ...descriptor,
+            get() {
+              touched.add(name);
+              return originalGet.call(this);
+            },
+            set: descriptor.set,
           });
         }
-        return { arr };
-      })()`,
+      }
+    };
+
+    const values = vm.runInContext(
+      `({
+        map: new Map([["k", 1]]),
+        set: new Set([1, 2]),
+        date: new Date(1234),
+        f32: new Float32Array([1.5, 2.5]),
+        u8: new Uint8Array([1, 2, 3]),
+        ab: new ArrayBuffer(8),
+      })`,
       context
     );
 
-    // The vandalized globals make the VM-realm prototypes unverifiable, so
-    // validation declines — without throwing or invoking the getters.
-    expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
-      retainable: false,
-    });
-    expect(vm.runInContext('globalThis.__retainedTestCalls', context)).toBe(0);
-  });
-
-  it('never inspects a proxied workflow constructor', () => {
-    const { context, globalThis: workflowGlobal } = createContext({
-      seed,
-      fixedTimestamp,
-    });
-    const value = vm.runInContext(
-      `(() => {
-        const arr = [1];
-        globalThis.__retainedTestCalls = 0;
-        globalThis.Array = new Proxy(function Array() {}, {
-          getOwnPropertyDescriptor(target, key) {
-            globalThis.__retainedTestCalls++;
-            return Reflect.getOwnPropertyDescriptor(target, key);
-          },
-        });
-        return arr;
-      })()`,
-      context
+    wrapPrototype(g.Map.prototype, 'Map.prototype');
+    wrapPrototype(
+      Object.getPrototypeOf(new g.Map()[Symbol.iterator]()),
+      '%MapIteratorPrototype%'
     );
-
-    expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
-      retainable: false,
-    });
-    expect(vm.runInContext('globalThis.__retainedTestCalls', context)).toBe(0);
-  });
-});
-
-describe('host dispatch pristineness', () => {
-  it('declines retention while a host dispatch constructor is spoofed', () => {
-    const { context, globalThis: workflowGlobal } = createContext({
-      seed,
-      fixedTimestamp,
-    });
-    const value = vm.runInContext('({ plain: true })', context);
-
-    expect(prepareRetainedStepInput(value, workflowGlobal).retainable).toBe(
-      true
+    wrapPrototype(g.Set.prototype, 'Set.prototype');
+    wrapPrototype(
+      Object.getPrototypeOf(new g.Set()[Symbol.iterator]()),
+      '%SetIteratorPrototype%'
     );
+    const datePrototype = Object.getOwnPropertyDescriptor(g.Date, 'prototype')!
+      .value as object;
+    wrapPrototype(datePrototype, 'Date.prototype');
+    wrapPrototype(
+      Object.getPrototypeOf(g.Uint8Array.prototype),
+      '%TypedArray%.prototype'
+    );
+    wrapPrototype(g.Uint8Array.prototype, 'Uint8Array.prototype');
+    wrapPrototype(g.Float32Array.prototype, 'Float32Array.prototype');
+    wrapPrototype(g.ArrayBuffer.prototype, 'ArrayBuffer.prototype');
 
-    Object.defineProperty(Headers, Symbol.hasInstance, {
-      value: () => false,
-      configurable: true,
-    });
-    try {
-      expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
-        retainable: false,
-      });
-    } finally {
-      delete (Headers as any)[Symbol.hasInstance];
+    for (const value of Object.values(values as Record<string, unknown>)) {
+      touched.clear();
+      await dehydrateStepArguments(
+        { args: [value], closureVars: undefined, thisVal: undefined },
+        'wrun_pin_coverage',
+        undefined,
+        g,
+        false,
+        false
+      );
+      for (const name of touched) {
+        expect(PINNED, `unpinned member executed: ${name}`).toContain(name);
+      }
     }
-
-    expect(prepareRetainedStepInput(value, workflowGlobal).retainable).toBe(
-      true
-    );
-  });
-});
-
-describe('symbol-tagged inputs', () => {
-  it('declines objects carrying symbol properties (serialization dispatch tags)', () => {
-    const { context, globalThis: workflowGlobal } = createContext({
-      seed,
-      fixedTimestamp,
-    });
-    const value = vm.runInContext(
-      `(() => {
-        const signal = { aborted: false };
-        Object.defineProperty(signal, Symbol.for("WORKFLOW_ABORT_STREAM_NAME"), {
-          value: "abort-stream",
-          enumerable: false,
-        });
-        return { signal };
-      })()`,
-      context
-    );
-
-    expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
-      retainable: false,
-    });
-  });
-});
-
-describe('hidden properties', () => {
-  it('declines objects with non-enumerable properties (reducer probes read them)', () => {
-    const { context, globalThis: workflowGlobal } = createContext({
-      seed,
-      fixedTimestamp,
-    });
-    const value = vm.runInContext(
-      `(() => {
-        const controllerish = { plain: true };
-        Object.defineProperty(controllerish, "signal", {
-          get() { return { aborted: false }; },
-          enumerable: false,
-        });
-        return controllerish;
-      })()`,
-      context
-    );
-
-    expect(prepareRetainedStepInput(value, workflowGlobal)).toEqual({
-      retainable: false,
-    });
   });
 });
