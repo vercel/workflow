@@ -1,6 +1,14 @@
-import { HookConflictError, ReplayDivergenceError } from '@workflow/errors';
+import {
+  FatalError,
+  HookConflictError,
+  ReplayDivergenceError,
+} from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE } from '@workflow/serde';
-import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
+import {
+  type PromiseWithResolvers,
+  parseDurationToDate,
+  withResolvers,
+} from '@workflow/utils';
 import type { HookConflictEvent } from '@workflow/world';
 import { getSerializationClass, RUN_CLASS_ID } from '../class-serialization.js';
 import type { Hook, HookOptions } from '../create-hook.js';
@@ -69,9 +77,31 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       );
     }
 
+    if (
+      options.isWebhook === true &&
+      options.experimental_minRetention !== undefined
+    ) {
+      throw new Error(
+        'Webhook hooks do not support `experimental_minRetention`. Use a non-webhook `createHook()` with `resumeHook()`.'
+      );
+    }
+
+    if (
+      options.experimental_minRetention !== undefined &&
+      ctx.worldCapabilities?.hookRetention?.active !== true
+    ) {
+      throw new FatalError(
+        'The configured World does not support `experimental_minRetention` for Hooks.'
+      );
+    }
+
     // Generate hook ID and token
     const correlationId = `hook_${ctx.generateUlid()}`;
     const token = options.token ?? ctx.generateNanoid();
+    const tokenRetentionUntil =
+      options.experimental_minRetention === undefined
+        ? undefined
+        : parseDurationToDate(options.experimental_minRetention);
 
     // Add hook creation to invocations queue (using Map for O(1) operations)
     const isWebhook = options.isWebhook ?? false;
@@ -80,6 +110,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       type: 'hook',
       correlationId,
       token,
+      tokenRetentionUntil,
       metadata: options.metadata,
       isWebhook,
     });
@@ -162,6 +193,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         const queueItem = ctx.invocationsQueue.get(correlationId);
         if (queueItem && queueItem.type === 'hook') {
           queueItem.hasCreatedEvent = true;
+          queueItem.tokenRetentionUntil = event.eventData.tokenRetentionUntil;
         }
         hasCreated = true;
 

@@ -32,7 +32,14 @@ A World connects workflows to the infrastructure that powers them. The World int
 
 {/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
+interface WorldCapabilities {
+  hookRetention?: {
+    active: boolean;
+  };
+}
+
 interface World extends Storage, Queue, Streamer {
+  capabilities?: WorldCapabilities;
   start?(): Promise<void>;
   close?(): Promise<void>;
   getEncryptionKeyForRun?(run: WorkflowRun): Promise<Uint8Array | undefined>;
@@ -40,7 +47,7 @@ interface World extends Storage, Queue, Streamer {
 }
 ```
 
-The optional `start()` method initializes background tasks (for example, queue polling). The optional `close()` method releases resources like connection pools and listeners. The optional `getEncryptionKeyForRun()` method returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
+The optional `capabilities` object advertises additional behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention. The optional `start()` method initializes background tasks (for example, queue polling). The optional `close()` method releases resources like connection pools and listeners. The optional `getEncryptionKeyForRun()` method returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
 
 ## The Event Log Model
 
@@ -93,9 +100,11 @@ interface Storage {
 
 **Run Creation:** For `run_created` events, the `runId` parameter may be a client-provided string or `null`. When `null`, your World generates and returns a new `runId`.
 
-**Hook Tokens:** Hook tokens must be unique. If a `hook_created` event conflicts with an existing token, return a `hook_conflict` event instead and include the active hook owner's run ID as `eventData.conflictingRunId`.
+**Hook Tokens:** Hook tokens must be unique. If a `hook_created` event conflicts with an active Hook or a token still reserved after its run ended, return a `hook_conflict` event and include the owner's run ID as `eventData.conflictingRunId`.
 
-**Automatic Hook Disposal:** When a workflow reaches a terminal state (`completed`, `failed`, or `cancelled`), automatically dispose of all associated hooks to release tokens for reuse.
+Keep the owning Run available for at least as long as its token remains unavailable, because conflicts return that Run.
+
+**Automatic Hook Cleanup:** When a run ends, remove its live Hooks. Make each token available unless its `tokenRetentionUntil` is still in the future. A `hook_disposed` event always makes the token available immediately.
 
 ## Queue Interface
 

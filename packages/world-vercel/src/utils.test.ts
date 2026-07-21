@@ -90,6 +90,17 @@ describe('getHeaders', () => {
     expect(headers.get('x-workflow-test-limit-overrides')).toBeNull();
   });
 
+  it('appends a caller user-agent token to the world-vercel user-agent', () => {
+    const headers = getHeaders(
+      { headers: { 'User-Agent': 'eve/0.18.1' } },
+      { usingProxy: false }
+    );
+
+    expect(headers.get('User-Agent')).toMatch(
+      /^@workflow\/world-vercel\/\S+ node-\S+ \S+ \([^)]*\)(?: \S+)? eve\/0\.18\.1$/
+    );
+  });
+
   it('forwards WORKFLOW_TEST_LIMIT_OVERRIDES verbatim as x-workflow-test-limit-overrides', () => {
     const overrides = '{"STREAM_MAX_DURATION_MS":5000}';
     process.env.WORKFLOW_TEST_LIMIT_OVERRIDES = overrides;

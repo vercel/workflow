@@ -11,6 +11,8 @@ related:
 
 Retrieves a hook by its unique token, returning the associated workflow run information and any metadata that was set when the hook was created. This function is useful for inspecting hook details before deciding whether to resume a workflow.
 
+When `experimental_minRetention` is set, this function continues to return the Hook after its workflow ends until retention ends. That Hook cannot be resumed. Use `getRun(hook.runId)` to inspect the finished run.
+
 <Callout type="warn">
 `getHookByToken` is a runtime function that must be called from outside a workflow function.
 </Callout>

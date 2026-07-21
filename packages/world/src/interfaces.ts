@@ -130,10 +130,10 @@ export interface Streamer {
  * - run_cancelled event for run cancellation
  * - hook_disposed event for explicit hook disposal (optional)
  *
- * Note: Hooks are automatically disposed by the World implementation when a workflow
- * reaches a terminal state (run_completed, run_failed, run_cancelled). This releases
- * hook tokens for reuse by future workflows. The hook_disposed event is only needed
- * for explicit disposal before workflow completion.
+ * When a workflow reaches a terminal state, its Hooks can no longer be resumed.
+ * Worlds normally remove them and release their tokens. A Hook with minimum
+ * retention remains readable and keeps its token unavailable until its retention
+ * ends. A hook_disposed event always removes the Hook and releases its token.
  */
 export interface Storage {
   runs: {
@@ -284,8 +284,20 @@ export interface Storage {
   };
 
   hooks: {
+    /**
+     * Returns a Hook by ID. A Hook kept by minimum retention remains readable
+     * after its run ends, but cannot be resumed.
+     */
     get(hookId: string, params?: GetHookParams): Promise<Hook>;
+    /**
+     * Returns the Hook that owns a token, including a Hook kept by minimum
+     * retention after its run ends.
+     */
     getByToken(token: string, params?: GetHookParams): Promise<Hook>;
+    /**
+     * Lists Hooks, including Hooks kept by minimum retention after their runs
+     * end.
+     */
     list(params: ListHooksParams): Promise<PaginatedResponse<Hook>>;
   };
 }
@@ -299,6 +311,14 @@ export interface Storage {
  * explicitly declares it.
  */
 export interface WorldCapabilities {
+  /**
+   * Supports `experimental_minRetention` for Hooks. Missing or inactive means
+   * the runtime rejects retained Hooks before registration.
+   */
+  hookRetention?: {
+    active: boolean;
+  };
+
   /**
    * The World enforces the optimistic-concurrency precondition guard: an
    * event creation carrying a `stateUpdatedAt` snapshot is rejected with a

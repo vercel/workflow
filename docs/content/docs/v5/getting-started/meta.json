@@ -12,7 +12,8 @@
     "sveltekit",
     "tanstack-start",
     "vite",
-    "python"
+    "python",
+    "nestjs"
   ],
   "defaultOpen": true
 }

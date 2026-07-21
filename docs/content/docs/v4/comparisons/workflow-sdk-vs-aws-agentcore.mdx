@@ -1,0 +1,55 @@
+---
+title: Workflow SDK vs AWS Bedrock AgentCore
+description: How the Workflow SDK compares to AWS Bedrock AgentCore — a durable-execution framework versus an AI-agent hosting platform. They solve different problems.
+type: conceptual
+summary: AgentCore hosts and operates AI agents in isolated microVMs but is not a durable-execution engine. The Workflow SDK provides durable orchestration and resumable streaming for agents.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/ai
+  - /docs/ai/resumable-streams
+  - /docs/foundations/streaming
+---
+
+[Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) is AWS's platform for **hosting and operating AI agents** — secure microVM runtime, plus building blocks for Memory, tool Gateways, and Identity. It is *not* a durable-execution engine, which makes this less a head-to-head and more a "different axis" comparison.
+
+<Callout type="info">
+**These solve different problems.** AgentCore answers "where do I securely run and operate an agent on AWS?" The Workflow SDK answers "how do I make a multi-step, tool-calling agent loop durable, resumable, and streamable?" AWS itself pairs AgentCore with a durable layer (Step Functions, or Temporal) for resumability — the Workflow SDK provides that durable layer natively, in your own app.
+</Callout>
+
+## At a glance
+
+| | Workflow SDK | AWS Bedrock AgentCore |
+| --- | --- | --- |
+| **Category** | Open-source durable-functions SDK | AI-agent hosting & operations platform |
+| **Durable execution?** | ✅ Event-log replay; the agent loop resumes from its last checkpoint after a crash | ❌ Not built-in — sessions are ephemeral microVMs; durability is opt-in via Memory or a framework checkpointer |
+| **What it gives you** | Durable orchestration, steps, hooks, streaming, observability | Runtime (microVM hosting), Harness (managed agent loop), Memory, Gateway (tools/MCP), Identity, Browser, Code Interpreter, Observability, Policy, Evaluations |
+| **Languages** | TypeScript / JS (Python beta) | Python-first for authoring; TypeScript or Python project scaffolding via the `@aws/agentcore` CLI; framework-agnostic (LangGraph, CrewAI, Strands, etc.) |
+| **Isolation** | VM-sandboxed workflow code + full-Node steps | Dedicated Firecracker microVM per session (strong hardware isolation) |
+| **Max duration** | No limit ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | 8-hour hard cap per session |
+| **AI streaming** | Native **durable, resumable** streaming (survives reconnect, cold start, replay) | Live SSE / WebSocket only — no buffering or replay of missed tokens |
+| **Versioning** | Runs pinned to immutable deployment | Immutable runtime versions + endpoints; in-flight sessions stay on their launch version (deployment/rollback only — no replay) |
+| **Portability** | Apache-2.0; runs anywhere Node runs; World abstraction | AWS-only; agent *code* is portable, the operating platform is not |
+| **Compliance** | Inherits your platform | HIPAA-eligible; SOC/PCI/ISO not third-party certified; not FedRAMP-authorized |
+| **Pricing** | SDK free; pay your platform | Per-module consumption (vCPU-hr / GB-hr, etc.) + model inference billed via Bedrock; no minimums |
+
+**What the limits mean in practice:** AgentCore's 8-hour session cap means an agent that waits on a human, a long-running job, or a slow external system can't span that wait in one session. Workflow SDK runs have [no duration cap](https://vercel.com/docs/workflows/pricing) — they suspend durably at `sleep()` and hooks for hours or weeks.
+
+## The core distinction: durability
+
+AgentCore Runtime gives each session an isolated microVM with up to 8 hours of runtime, but the compute is **ephemeral** — on a crash or stop, the next invocation gets a fresh microVM with no automatic replay of the agent loop. AWS's own guidance is to use AgentCore Memory or a framework checkpointer for state durability, and to layer a workflow engine (Step Functions or Temporal) on top when you need durable orchestration.
+
+The Workflow SDK *is* that durable layer. With `WorkflowAgent` (in the [AI SDK](/docs/ai)), the agent loop becomes a durable workflow: each model call and tool execution is a checkpointed step, the run resumes mid-loop after a failure, and partial output streams to the client through [resumable streams](/docs/ai/resumable-streams) that survive disconnects and cold starts.
+
+## Where AgentCore leads
+
+AgentCore is purpose-built for operating agents on AWS, and brings things the Workflow SDK doesn't try to be:
+
+- **MicroVM isolation per session** — the strongest hardware isolation among the tools in this section.
+- **Managed agent infrastructure** — Memory, a tool Gateway (turn APIs/Lambda/MCP servers into tools), and Identity (credential vaulting, OAuth) as first-class managed services.
+- **Enterprise/AWS compliance breadth** and VPC/PrivateLink networking.
+
+If your priority is running agents inside AWS with managed memory, tools, and identity, AgentCore is a strong fit. If your priority is **durable, resumable, streamable** agent execution that lives in your own TypeScript app and isn't tied to AWS, the Workflow SDK fits better — and the two can be combined (host on AgentCore, orchestrate durably with the Workflow SDK).
+
+---
+*Compiled from public documentation. AgentCore cold-start figures are community-sourced (no published SLA). Verify against [the AgentCore docs](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html). Not based on head-to-head benchmarks.*

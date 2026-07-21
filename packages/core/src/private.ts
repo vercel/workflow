@@ -3,6 +3,7 @@
  */
 
 import { withResolvers } from '@workflow/utils';
+import type { WorldCapabilities } from '@workflow/world';
 import type { CryptoKey } from './encryption.js';
 import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
@@ -132,6 +133,7 @@ export function getStepFunction(stepId: string): StepFunction | undefined {
 export interface WorkflowOrchestratorContext {
   runId: string;
   encryptionKey: CryptoKey | undefined;
+  worldCapabilities?: WorldCapabilities;
   globalThis: typeof globalThis;
   eventsConsumer: EventsConsumer;
   /**

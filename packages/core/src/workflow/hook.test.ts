@@ -38,6 +38,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   return {
     runId: 'wrun_test',
     encryptionKey: undefined,
+    worldCapabilities: { hookRetention: { active: true } },
     replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
@@ -1173,6 +1174,87 @@ describe('createCreateHook', () => {
     if (queueItem?.type === 'hook') {
       expect(queueItem.isWebhook).toBe(true);
     }
+  });
+
+  it('evaluates minimum retention with the same duration parser as sleep', () => {
+    const ctx = setupWorkflowContext([]);
+    const createHook = createCreateHook(ctx);
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      createHook({ experimental_minRetention: 1_000 });
+
+      const queueItem = ctx.invocationsQueue.values().next().value;
+      expect(queueItem?.type).toBe('hook');
+      if (queueItem?.type === 'hook') {
+        expect(queueItem.tokenRetentionUntil).toEqual(new Date(1_001_000));
+      }
+    } finally {
+      dateNow.mockRestore();
+    }
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['inactive', { hookRetention: { active: false } }],
+  ])('rejects minimum retention when the capability is %s', (_state, capabilities) => {
+    const ctx = setupWorkflowContext([]);
+    ctx.worldCapabilities = capabilities;
+    const createHook = createCreateHook(ctx);
+
+    expect(() => createHook({ experimental_minRetention: '30d' })).toThrow(
+      'The configured World does not support `experimental_minRetention` for Hooks.'
+    );
+    expect(ctx.invocationsQueue.size).toBe(0);
+  });
+
+  it.each([
+    {
+      name: 'uses the persisted retention deadline',
+      eventData: {
+        token: 'test-token',
+        tokenRetentionUntil: new Date('2026-07-15T00:00:00.000Z'),
+      },
+      expected: new Date('2026-07-15T00:00:00.000Z'),
+    },
+    {
+      name: 'keeps an old event without a retention deadline unchanged',
+      eventData: { token: 'test-token' },
+      expected: undefined,
+    },
+  ])('$name on replay', async ({ eventData, expected }) => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'hook_created',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData,
+        createdAt: new Date(),
+      },
+    ]);
+    const createHook = createCreateHook(ctx);
+    const hook = createHook({
+      token: 'test-token',
+      experimental_minRetention: '30d',
+    });
+
+    await expect(hook.getConflict()).resolves.toBeNull();
+
+    const queueItem = ctx.invocationsQueue.values().next().value;
+    expect(queueItem?.type).toBe('hook');
+    if (queueItem?.type === 'hook') {
+      expect(queueItem.tokenRetentionUntil).toEqual(expected);
+    }
+  });
+
+  it('rejects minimum retention for a webhook hook', () => {
+    const ctx = setupWorkflowContext([]);
+    const createHook = createCreateHook(ctx);
+
+    expect(() =>
+      createHook({ isWebhook: true, experimental_minRetention: '30d' })
+    ).toThrow('Webhook hooks do not support `experimental_minRetention`.');
+    expect(ctx.invocationsQueue.size).toBe(0);
   });
 
   it('should throw when an empty string token is provided', () => {
