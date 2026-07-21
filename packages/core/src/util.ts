@@ -76,6 +76,22 @@ export function getAbortStreamId(id: string) {
   return `strm_${id}_system_abort`;
 }
 
+/**
+ * Generate the run-scoped system stream ID that carries the run-completion
+ * fast-path signal consumed by `await run.returnValue` (under
+ * `WORKFLOW_RETURN_VALUE_STREAM`). Derived deterministically from the run ID
+ * so the writer (the completing/failing/cancelling side) and the waiter
+ * compute the same name with no coordination. Uses the "_system_return"
+ * namespace to isolate from user-defined streams, mirroring
+ * {@link getAbortStreamId}'s "_system_abort".
+ *
+ * @param runId - The workflow run ID (`wrun_…`)
+ * @returns The stream ID in format: `strm_{ULID}_system_return`
+ */
+export function getReturnValueStreamId(runId: string): string {
+  return `${runId.replace('wrun_', 'strm_')}_system_return`;
+}
+
 const ABORT_TOKEN_PREFIX = 'abrt_';
 
 /**

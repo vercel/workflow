@@ -59,6 +59,7 @@ import {
   handleReplayBudgetExhausted,
   ReplayBudget,
 } from './runtime/replay-budget.js';
+import { signalRunTerminal } from './runtime/return-value-signal.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { executeStep } from './runtime/step-executor.js';
 import { computeStepLatencyTracking } from './runtime/step-latency.js';
@@ -218,6 +219,11 @@ async function recordFatalRunError({
     }
     throw failErr;
   }
+
+  // Reached only when run_failed was durably written (the catch above always
+  // returns or rethrows). Wake any `await run.returnValue` waiter via the
+  // return-value stream fast path (no-op unless enabled + supported).
+  await signalRunTerminal(world, runId);
 }
 
 function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
@@ -419,6 +425,10 @@ export function workflowEntrypoint(
               },
               { requestId }
             );
+            // run_failed durably written — wake any `await run.returnValue`
+            // waiter via the return-value stream fast path (no-op unless
+            // enabled + supported).
+            await signalRunTerminal(world, runId);
           } catch (err) {
             if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
               // Run already finished, consume the message silently
@@ -1490,6 +1500,12 @@ export function workflowEntrypoint(
                         throw err;
                       }
 
+                      // run_completed is durably written (the catch above
+                      // returns on conflict, rethrows otherwise). Wake any
+                      // `await run.returnValue` waiter via the return-value
+                      // stream fast path (no-op unless enabled + supported).
+                      await signalRunTerminal(world, runId);
+
                       span?.setAttributes({
                         ...Attribute.WorkflowRunStatus('completed'),
                       });
@@ -1651,6 +1667,10 @@ export function workflowEntrypoint(
                             }
                             throw failErr;
                           }
+                          // run_failed durably written — wake any
+                          // `await run.returnValue` waiter via the return-value
+                          // stream fast path (no-op unless enabled + supported).
+                          await signalRunTerminal(world, runId);
                           span?.setAttributes({
                             ...Attribute.WorkflowRunStatus('failed'),
                             ...Attribute.WorkflowErrorCode(errorCode),
@@ -2675,6 +2695,12 @@ export function workflowEntrypoint(
                           }
                           throw failErr;
                         }
+
+                        // run_failed is durably written (the catch above
+                        // returns on conflict, rethrows otherwise). Wake any
+                        // `await run.returnValue` waiter via the return-value
+                        // stream fast path (no-op unless enabled + supported).
+                        await signalRunTerminal(world, runId);
 
                         span?.setAttributes({
                           ...Attribute.WorkflowRunStatus('failed'),

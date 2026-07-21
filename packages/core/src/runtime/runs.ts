@@ -8,6 +8,7 @@ import {
 import { importKey } from '../encryption.js';
 import { hydrateWorkflowArguments } from '../serialization.js';
 import { getWorkflowQueueName } from './helpers.js';
+import { signalRunTerminal } from './return-value-signal.js';
 import { start } from './start.js';
 
 export interface RecreateRunOptions {
@@ -141,6 +142,10 @@ export async function cancelRun(
         : {}),
     };
     await world.events.create(runId, eventRequest, { v1Compat: compatMode });
+    // Wake any `await run.returnValue` waiter via the return-value stream fast
+    // path (no-op unless enabled + supported). The canceller writes the signal
+    // because a suspended run has no live invocation to emit it.
+    await signalRunTerminal(world, runId);
   } catch (err) {
     throw new Error(
       `Failed to cancel run ${runId}: ${err instanceof Error ? err.message : String(err)}`,

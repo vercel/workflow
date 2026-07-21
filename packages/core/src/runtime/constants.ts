@@ -359,3 +359,63 @@ export function getReplayDivergenceMaxRetries(): number {
     { integer: true }
   );
 }
+
+/**
+ * Whether the return-value stream fast path is enabled. When on, and the
+ * active World declares the `returnValueSignalStream` capability, `await
+ * run.returnValue` waits on a run-scoped system stream signal (an implicit
+ * long poll through the existing stream-read infrastructure) instead of a
+ * fixed ~1s poll, resolving within a stream round-trip of the run's terminal
+ * transition. A slow fallback poll (see `getReturnValueFallbackPollMs`) always
+ * remains as a backstop.
+ *
+ * **Off by default** — the fast path adds a stream write at every terminal
+ * transition and changes the wait mechanism, so it is opt-in per deployment
+ * while it bakes. When off (or the World lacks the capability) `returnValue`
+ * is byte-identical to the fixed-poll behavior.
+ *
+ * Reads `process.env.WORKFLOW_RETURN_VALUE_STREAM` lazily. Enabled only by an
+ * explicit `'1'` / `'true'` (case-insensitive).
+ */
+export function isReturnValueStreamEnabled(): boolean {
+  const raw = process.env.WORKFLOW_RETURN_VALUE_STREAM;
+  if (raw === undefined || raw === '') return false;
+  return raw === '1' || raw.toLowerCase() === 'true';
+}
+
+/**
+ * Default backstop poll interval (ms) for `await run.returnValue` when the
+ * return-value stream fast path is active. The stream signal normally wakes
+ * the waiter well before this elapses; the poll only covers the gaps the
+ * signal cannot: a crash between the terminal event write and the stream
+ * write, a transient stream-read failure, or a run that terminated before the
+ * feature existed. It is intentionally much slower than the legacy 1s poll —
+ * the stream carries the latency-sensitive path — to keep steady-state
+ * `runs.get` load low.
+ *
+ * Override via `WORKFLOW_RETURN_VALUE_FALLBACK_POLL_MS` (clamped to
+ * `MIN`..`MAX`).
+ */
+export const RETURN_VALUE_FALLBACK_POLL_MS = 5_000;
+
+/** Lower bound for the fallback-poll env override. */
+export const MIN_RETURN_VALUE_FALLBACK_POLL_MS = 1_000;
+
+/** Upper bound for the fallback-poll env override. */
+export const MAX_RETURN_VALUE_FALLBACK_POLL_MS = 30_000;
+
+/**
+ * Effective fallback-poll interval for the return-value stream fast path.
+ * Override via `WORKFLOW_RETURN_VALUE_FALLBACK_POLL_MS`.
+ */
+export function getReturnValueFallbackPollMs(): number {
+  return envNumber(
+    'WORKFLOW_RETURN_VALUE_FALLBACK_POLL_MS',
+    RETURN_VALUE_FALLBACK_POLL_MS,
+    {
+      integer: true,
+      min: MIN_RETURN_VALUE_FALLBACK_POLL_MS,
+      max: MAX_RETURN_VALUE_FALLBACK_POLL_MS,
+    }
+  );
+}

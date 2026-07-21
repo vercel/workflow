@@ -17,7 +17,13 @@ import {
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
+import { getReturnValueFallbackPollMs } from './constants.js';
 import { getWorldLazy } from './get-world-lazy.js';
+import {
+  createReturnValueSignalWaiter,
+  isReturnValueSignalActive,
+  signalRunTerminal,
+} from './return-value-signal.js';
 import {
   type CancelRunOptions,
   type StopSleepOptions,
@@ -176,6 +182,9 @@ export class Run<TResult> {
         ? { eventData: { cancelReason: options.cancelReason } }
         : {}),
     });
+    // Wake any `await run.returnValue` waiter via the return-value stream fast
+    // path (no-op unless enabled + supported).
+    await signalRunTerminal(world, this.runId);
   }
 
   /**
@@ -304,7 +313,15 @@ export class Run<TResult> {
   }
 
   /**
-   * Polls the workflow return value every 1 second until it is completed.
+   * Polls the workflow return value until it is completed.
+   *
+   * By default the loop re-reads the run record on a fixed 1s cadence. Under
+   * the return-value stream fast path (`WORKFLOW_RETURN_VALUE_STREAM` + a World
+   * that declares `returnValueSignalStream`) the "not yet completed" wait
+   * instead blocks on a run-scoped system stream signal, backstopped by a slow
+   * fallback poll — so a run that finishes mid-interval is observed within a
+   * stream round-trip rather than up to a full second later. The run record
+   * remains the source of truth: every wake re-reads it via `runs.get`.
    * @internal
    * @returns The workflow return value.
    */
@@ -320,6 +337,20 @@ export class Run<TResult> {
     const NOT_FOUND_MAX_RETRIES = this.#resilientStart ? 3 : 0;
     const NOT_FOUND_DELAYS = [1_000, 3_000, 6_000];
 
+    // Return-value stream fast path (see method doc). Undefined when the flag
+    // is off or the World lacks the capability, in which case `waitNotYetDone`
+    // is the legacy fixed 1s sleep and this method is byte-identical to before.
+    const signalWaiter = isReturnValueSignalActive(world)
+      ? createReturnValueSignalWaiter(world, this.runId)
+      : undefined;
+    const notYetDoneDelayMs = signalWaiter
+      ? getReturnValueFallbackPollMs()
+      : 1_000;
+    const waitNotYetDone = (): Promise<void> =>
+      signalWaiter
+        ? signalWaiter.waitForSignalOrTimeout(notYetDoneDelayMs)
+        : new Promise((resolve) => setTimeout(resolve, notYetDoneDelayMs));
+
     // NOTE: when this poll runs inside a step (e.g. the step that a parent
     // workflow uses to await a child workflow's `returnValue`), it blocks
     // a queue worker slot for as long as the child run takes to finish.
@@ -327,64 +358,69 @@ export class Run<TResult> {
     // peak number of such polls in flight — see the `queueConcurrency`
     // default on the Postgres world and the notes in the eager-processing
     // changelog for details.
-    while (true) {
-      try {
-        const run = await world.runs.get(this.runId);
+    try {
+      while (true) {
+        try {
+          const run = await world.runs.get(this.runId);
 
-        if (run.status === 'completed') {
-          const encryptionKey = await this.#getEncryptionKey();
-          return await hydrateWorkflowReturnValue(
-            run.output,
-            this.runId,
-            encryptionKey
-          );
-        }
-
-        if (run.status === 'cancelled') {
-          throw new WorkflowRunCancelledError(this.runId);
-        }
-
-        if (run.status === 'failed') {
-          // Hydrate the serialized run error so the original thrown value
-          // (with its type identity, cause chain, etc.) is set as the
-          // `cause` on WorkflowRunFailedError.
-          const encryptionKey = await this.#getEncryptionKey();
-          let hydratedError: unknown;
-          try {
-            hydratedError = await hydrateRunError(
-              run.error,
+          if (run.status === 'completed') {
+            const encryptionKey = await this.#getEncryptionKey();
+            return await hydrateWorkflowReturnValue(
+              run.output,
               this.runId,
               encryptionKey
             );
-          } catch {
-            // If hydration fails, surface a generic fallback rather than
-            // leaving the user with a raw Uint8Array. The run's errorCode
-            // is still preserved on the thrown WorkflowRunFailedError.
-            hydratedError = new Error('Failed to hydrate workflow run error');
           }
-          throw new WorkflowRunFailedError(this.runId, hydratedError, {
-            errorCode: run.errorCode,
-          });
-        }
 
-        // Run not completed yet — sleep and poll again.
-        throw new WorkflowRunNotCompletedError(this.runId, run.status);
-      } catch (error) {
-        if (WorkflowRunNotCompletedError.is(error)) {
-          await new Promise((resolve) => setTimeout(resolve, 1_000));
-          continue;
+          if (run.status === 'cancelled') {
+            throw new WorkflowRunCancelledError(this.runId);
+          }
+
+          if (run.status === 'failed') {
+            // Hydrate the serialized run error so the original thrown value
+            // (with its type identity, cause chain, etc.) is set as the
+            // `cause` on WorkflowRunFailedError.
+            const encryptionKey = await this.#getEncryptionKey();
+            let hydratedError: unknown;
+            try {
+              hydratedError = await hydrateRunError(
+                run.error,
+                this.runId,
+                encryptionKey
+              );
+            } catch {
+              // If hydration fails, surface a generic fallback rather than
+              // leaving the user with a raw Uint8Array. The run's errorCode
+              // is still preserved on the thrown WorkflowRunFailedError.
+              hydratedError = new Error('Failed to hydrate workflow run error');
+            }
+            throw new WorkflowRunFailedError(this.runId, hydratedError, {
+              errorCode: run.errorCode,
+            });
+          }
+
+          // Run not completed yet — wait (stream signal or fallback poll)
+          // and re-read.
+          throw new WorkflowRunNotCompletedError(this.runId, run.status);
+        } catch (error) {
+          if (WorkflowRunNotCompletedError.is(error)) {
+            await waitNotYetDone();
+            continue;
+          }
+          if (
+            WorkflowRunNotFoundError.is(error) &&
+            notFoundRetries < NOT_FOUND_MAX_RETRIES
+          ) {
+            const delay = NOT_FOUND_DELAYS[notFoundRetries]!;
+            notFoundRetries++;
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            continue;
+          }
+          throw error;
         }
-        if (
-          WorkflowRunNotFoundError.is(error) &&
-          notFoundRetries < NOT_FOUND_MAX_RETRIES
-        ) {
-          const delay = NOT_FOUND_DELAYS[notFoundRetries]!;
-          notFoundRetries++;
-          await new Promise((resolve) => setTimeout(resolve, delay));
-          continue;
-        }
-        throw error;
       }
+    } finally {
+      signalWaiter?.close();
     }
   }
 }
