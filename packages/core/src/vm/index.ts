@@ -3,7 +3,6 @@ import { types } from 'node:util';
 import { runInContext, createContext as vmCreateContext } from 'node:vm';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import seedrandom from 'seedrandom';
-import { registerSerializationPins } from './serialization-pins.js';
 import { installUint8ArrayBase64 } from './uint8array-base64.js';
 import { createRandomUUID } from './uuid.js';
 
@@ -141,6 +140,39 @@ export function freezeSerializationIntrinsics(g: typeof globalThis): void {
   // The typed-array constructors dispatch `instanceof` through their shared
   // %TypedArray% parent.
   Object.freeze(Object.getPrototypeOf(g.Uint8Array));
+  // Prototypes of the built-ins the retained fast path accepts as step
+  // arguments (see runtime/retained-step-input.ts): serialization both
+  // executes members on them (iteration protocols, getters) and merely READS
+  // others (`constructor` via the class reducer), so pinning individual
+  // members is not enough — a replaced data property becomes executable the
+  // moment it is redefined as an accessor. Frozen wholesale, nothing on them
+  // can ever be workflow-planted. RegExp/DataView prototypes stay mutable;
+  // those types always take the ordinary replay path.
+  Object.freeze(g.Map.prototype);
+  Object.freeze(Object.getPrototypeOf(new g.Map()[Symbol.iterator]()));
+  Object.freeze(g.Set.prototype);
+  Object.freeze(Object.getPrototypeOf(new g.Set()[Symbol.iterator]()));
+  // biome-ignore lint/style/noNonNullAssertion: Date always has a prototype
+  Object.freeze(Object.getOwnPropertyDescriptor(g.Date, 'prototype')!.value);
+  Object.freeze(Object.getPrototypeOf(g.Uint8Array.prototype));
+  for (const name of [
+    'Int8Array',
+    'Uint8Array',
+    'Uint8ClampedArray',
+    'Int16Array',
+    'Uint16Array',
+    'Int32Array',
+    'Uint32Array',
+    'Float16Array',
+    'Float32Array',
+    'Float64Array',
+    'BigInt64Array',
+    'BigUint64Array',
+  ]) {
+    const constructor = (g as unknown as Record<string, any>)[name];
+    if (constructor !== undefined) Object.freeze(constructor.prototype);
+  }
+  Object.freeze(g.ArrayBuffer.prototype);
   const hostGlobal = globalThis as unknown as Record<string, unknown>;
   for (const name of SERIALIZATION_BINDINGS) {
     const descriptor = Object.getOwnPropertyDescriptor(g, name);
@@ -332,10 +364,6 @@ export function createContext(options: CreateContextOptions) {
   // HACK: Shim `exports` for the bundle
   g.exports = {};
   (g as any).module = { exports: g.exports };
-
-  // Capture the serialization-touched prototype members while the realm is
-  // provably pristine — no workflow code has run yet.
-  registerSerializationPins(g);
 
   return {
     context,

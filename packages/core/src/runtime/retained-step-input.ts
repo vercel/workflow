@@ -1,8 +1,87 @@
 import { types } from 'node:util';
-import {
-  getSerializationPins,
-  verifySerializationPins,
-} from '../vm/serialization-pins.js';
+import { WORKFLOW_SERIALIZE } from '@workflow/serde';
+
+// Host constructors that serialization dispatches on (`value instanceof
+// global.X`), plus Object/Array, whose statics and prototypes the class
+// reducer and devalue's tag lookup read for host-prototype values (hydrated
+// step results are host-realm plain objects). The workflow VM's own
+// intrinsics are frozen (see vm/index.ts), but host intrinsics are shared
+// with the whole process and cannot be frozen — and workflow code can reach
+// them (exposed host classes, `structuredClone` results) and plant
+// workflow-realm hooks. Verified instead: any dirt declines retention, so a
+// planted hook can never execute while a retained VM's inputs serialize.
+const HOST_DISPATCH_CONSTRUCTORS = [
+  'Object',
+  'Array',
+  'Function',
+  'Map',
+  'Set',
+  'Date',
+  'RegExp',
+  'ArrayBuffer',
+  'SharedArrayBuffer',
+  'DataView',
+  'Int8Array',
+  'Uint8Array',
+  'Uint8ClampedArray',
+  'Int16Array',
+  'Uint16Array',
+  'Int32Array',
+  'Uint32Array',
+  'Float16Array',
+  'Float32Array',
+  'Float64Array',
+  'BigInt64Array',
+  'BigUint64Array',
+  'Headers',
+  'URL',
+  'URLSearchParams',
+  'DOMException',
+  'AbortController',
+  'AbortSignal',
+  'Request',
+  'Response',
+  'ReadableStream',
+  'WritableStream',
+  'TransformStream',
+] as const;
+
+function hasOwn(target: object, key: string | symbol): boolean {
+  return Object.getOwnPropertyDescriptor(target, key) !== undefined;
+}
+
+function isHostDispatchPristine(): boolean {
+  const hostGlobal = globalThis as unknown as Record<string, unknown>;
+  for (const name of HOST_DISPATCH_CONSTRUCTORS) {
+    const constructor = hostGlobal[name];
+    if (constructor === undefined) continue;
+    if (hasOwn(constructor as object, Symbol.hasInstance)) return false;
+  }
+  for (const constructor of [Object, Array]) {
+    if (
+      hasOwn(constructor, WORKFLOW_SERIALIZE) ||
+      hasOwn(constructor, 'classId')
+    ) {
+      return false;
+    }
+  }
+  for (const [prototype, constructor] of [
+    [Object.prototype, Object],
+    [Array.prototype, Array],
+  ] as const) {
+    if (
+      hasOwn(prototype, Symbol.toStringTag) ||
+      ownDataProperty(prototype, 'constructor') !== constructor
+    ) {
+      return false;
+    }
+  }
+  // Constructor prototype chains end at host Object.prototype, where an
+  // added @@hasInstance would be found by dispatch lookup. (Host
+  // Function.prototype's @@hasInstance is spec non-configurable.)
+  if (hasOwn(Object.prototype, Symbol.hasInstance)) return false;
+  return true;
+}
 
 // Own data-property read that never performs a property Get — workflow code
 // can redefine its globals (or their `prototype` slots) with accessors, and
@@ -28,6 +107,23 @@ function constructorPrototype(
   return typeof prototype === 'object' &&
     prototype !== null &&
     !types.isProxy(prototype)
+    ? prototype
+    : undefined;
+}
+
+// The workflow realm's prototype for a supported built-in, but only once the
+// sandbox froze it: serialization both executes members on these prototypes
+// (iterators, getters) and reads others (`constructor`), so a mutable
+// prototype — including one in a realm where freezeSerializationIntrinsics
+// never ran — is not provably passive. Host-realm instances of these
+// built-ins decline for the same reason: host prototypes cannot be frozen
+// and are reachable from workflow code (e.g. via structuredClone results).
+function frozenRealmPrototype(
+  workflowGlobal: Record<string, any>,
+  constructorName: string
+): object | undefined {
+  const prototype = constructorPrototype(workflowGlobal, constructorName);
+  return prototype !== undefined && Object.isFrozen(prototype)
     ? prototype
     : undefined;
 }
@@ -105,11 +201,8 @@ function isPassiveMap(
   workflowGlobal: Record<string, any>,
   seen: WeakSet<object>
 ): boolean {
-  const pins = getSerializationPins(workflowGlobal);
   const prototype = Object.getPrototypeOf(value);
-  if (prototype !== pins?.mapPrototype && prototype !== Map.prototype) {
-    return false;
-  }
+  if (prototype !== frozenRealmPrototype(workflowGlobal, 'Map')) return false;
   if (!hasNoOwnProperties(value)) return false;
   let passive = true;
   // Host forEach iterates via internal slots — no realm members execute.
@@ -126,11 +219,8 @@ function isPassiveSet(
   workflowGlobal: Record<string, any>,
   seen: WeakSet<object>
 ): boolean {
-  const pins = getSerializationPins(workflowGlobal);
   const prototype = Object.getPrototypeOf(value);
-  if (prototype !== pins?.setPrototype && prototype !== Set.prototype) {
-    return false;
-  }
+  if (prototype !== frozenRealmPrototype(workflowGlobal, 'Set')) return false;
   if (!hasNoOwnProperties(value)) return false;
   let passive = true;
   Set.prototype.forEach.call(value, (entryValue: unknown) => {
@@ -143,10 +233,9 @@ function isPassiveDate(
   value: object,
   workflowGlobal: Record<string, any>
 ): boolean {
-  const pins = getSerializationPins(workflowGlobal);
   const prototype = Object.getPrototypeOf(value);
   return (
-    (prototype === pins?.datePrototype || prototype === Date.prototype) &&
+    prototype === frozenRealmPrototype(workflowGlobal, 'Date') &&
     hasNoOwnProperties(value)
   );
 }
@@ -155,21 +244,24 @@ function isPassiveTypedArray(
   value: object,
   workflowGlobal: Record<string, any>
 ): boolean {
-  const pins = getSerializationPins(workflowGlobal);
   const prototype = Object.getPrototypeOf(value);
-  if (prototype === null || types.isProxy(prototype)) return false;
-  const parent = Object.getPrototypeOf(prototype);
-  const hostTypedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
   if (
-    parent !== pins?.typedArrayPrototype &&
-    parent !== hostTypedArrayPrototype
+    prototype === null ||
+    types.isProxy(prototype) ||
+    !Object.isFrozen(prototype)
   ) {
     return false;
   }
-  // The measured getters resolve on %TypedArray%.prototype; a shadow on the
-  // subclass prototype (e.g. Float32Array.prototype) would intercept them.
-  for (const name of ['buffer', 'byteOffset', 'byteLength']) {
-    if (Object.getOwnPropertyDescriptor(prototype, name)) return false;
+  // The subclass prototype must chain to the realm's frozen %TypedArray%
+  // parent, where the buffer/byteOffset/byteLength getters live.
+  const uint8Prototype = frozenRealmPrototype(workflowGlobal, 'Uint8Array');
+  if (uint8Prototype === undefined) return false;
+  const typedArrayPrototype = Object.getPrototypeOf(uint8Prototype);
+  if (
+    Object.getPrototypeOf(prototype) !== typedArrayPrototype ||
+    !Object.isFrozen(typedArrayPrototype)
+  ) {
+    return false;
   }
   // Own keys on a typed array are exactly its canonical indices.
   if (
@@ -179,28 +271,18 @@ function isPassiveTypedArray(
   ) {
     return false;
   }
-  // The pinned/native getter is safe to invoke; reject SharedArrayBuffer
-  // backing (cross-thread mutation is unserializable either way).
-  const bufferGetter = (
-    pins !== undefined && parent === pins.typedArrayPrototype
-      ? pins.typedArrayBuffer
-      : Object.getOwnPropertyDescriptor(hostTypedArrayPrototype, 'buffer')?.get
-  ) as (() => unknown) | undefined;
-  return (
-    bufferGetter !== undefined &&
-    !types.isSharedArrayBuffer(bufferGetter.call(value))
-  );
+  // Frozen chain ⇒ the getters are the originals; safe to invoke. Reject
+  // SharedArrayBuffer backing (cross-thread mutation is unserializable).
+  return !types.isSharedArrayBuffer((value as Uint8Array).buffer);
 }
 
 function isPassiveArrayBuffer(
   value: object,
   workflowGlobal: Record<string, any>
 ): boolean {
-  const pins = getSerializationPins(workflowGlobal);
   const prototype = Object.getPrototypeOf(value);
   return (
-    (prototype === pins?.arrayBufferPrototype ||
-      prototype === ArrayBuffer.prototype) &&
+    prototype === frozenRealmPrototype(workflowGlobal, 'ArrayBuffer') &&
     hasNoOwnProperties(value)
   );
 }
@@ -250,8 +332,8 @@ function isPassivePlainObject(
  *
  * Passive values: primitives; plain objects and arrays (own enumerable
  * string-keyed data properties only — devalue traverses these purely via own
- * reads); and Map/Set/Date/typed arrays/ArrayBuffer instances whose measured
- * prototype members are verified pinned (see vm/serialization-pins.ts).
+ * reads); and workflow-realm Map/Set/Date/typed arrays/ArrayBuffer whose
+ * prototypes the sandbox froze (see freezeSerializationIntrinsics).
  * Everything else — proxies, accessors, functions, custom classes, RegExp,
  * hidden keys — declines, serializes exactly the same way, and the session
  * falls back to ordinary replay for that boundary.
@@ -304,7 +386,6 @@ export function isRetainedSerializationPassive(
   workflowGlobal: Record<string, any>
 ): boolean {
   return (
-    verifySerializationPins(workflowGlobal) &&
-    isPassive(value, workflowGlobal, new WeakSet())
+    isHostDispatchPristine() && isPassive(value, workflowGlobal, new WeakSet())
   );
 }

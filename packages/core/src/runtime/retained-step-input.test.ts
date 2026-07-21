@@ -1,13 +1,13 @@
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { dehydrateStepArguments } from '../serialization.js';
-import { createContext } from '../vm/index.js';
+import { createContext, freezeSerializationIntrinsics } from '../vm/index.js';
 import { isRetainedSerializationPassive } from './retained-step-input.js';
 
 const seed = 'retained-step-input';
 const fixedTimestamp = 1_700_000_000_000;
 
-function makeContext() {
+function makeContext({ freeze = true } = {}) {
   const { context, globalThis: workflowGlobal } = createContext({
     seed,
     fixedTimestamp,
@@ -27,6 +27,7 @@ function makeContext() {
       (workflowGlobal as any)[name] = (globalThis as any)[name];
     }
   }
+  if (freeze) freezeSerializationIntrinsics(workflowGlobal);
   return { context, workflowGlobal };
 }
 
@@ -45,7 +46,7 @@ describe('isRetainedSerializationPassive', () => {
     expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(true);
   });
 
-  it('accepts the supported built-ins with pristine pins', () => {
+  it('accepts the supported built-ins on a frozen realm', () => {
     const { context, workflowGlobal } = makeContext();
     for (const expression of [
       'new Map([["k", { ok: true }]])',
@@ -61,18 +62,23 @@ describe('isRetainedSerializationPassive', () => {
     }
   });
 
-  it('accepts host-realm instances (hydrated step results)', () => {
+  it('accepts host-realm plain data but not host-realm built-ins', () => {
     const { workflowGlobal } = makeContext();
-    const value = {
-      map: new Map([['k', 1]]),
-      date: new Date(1234),
-      bytes: new Uint8Array([9]),
-    };
-
-    expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(true);
+    // Hydrated step results are host-realm plain objects/arrays.
+    expect(
+      isRetainedSerializationPassive({ nested: [{ ok: true }] }, workflowGlobal)
+    ).toBe(true);
+    // Host built-in prototypes cannot be frozen (process-shared) and are
+    // reachable from workflow code, so host-realm instances decline.
+    expect(
+      isRetainedSerializationPassive(new Map([['k', 1]]), workflowGlobal)
+    ).toBe(false);
+    expect(isRetainedSerializationPassive(new Date(0), workflowGlobal)).toBe(
+      false
+    );
   });
 
-  it('declines types whose serialization is not pinned', () => {
+  it('declines types whose serialization surface is not frozen', () => {
     const { context, workflowGlobal } = makeContext();
     for (const expression of [
       '/workflow/gi',
@@ -179,66 +185,64 @@ describe('isRetainedSerializationPassive', () => {
     }
   });
 
-  it('declines everything once a pinned member is patched', () => {
+  it('freezing makes prototype patches impossible, so retention persists', () => {
     const { context, workflowGlobal } = makeContext();
-    const plain = vm.runInContext('({ ok: true })', context);
-    expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(true);
+    const map = vm.runInContext('new Map([["k", 1]])', context);
+    expect(isRetainedSerializationPassive(map, workflowGlobal)).toBe(true);
 
-    vm.runInContext(
-      `globalThis.__origIterator = Map.prototype[Symbol.iterator];
-       Map.prototype[Symbol.iterator] = function () { return globalThis.__origIterator.call(this); };`,
-      context
-    );
-    expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(false);
-
-    vm.runInContext(
-      'Map.prototype[Symbol.iterator] = globalThis.__origIterator;',
-      context
-    );
-    expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(true);
-  });
-
-  it('declines per pinned member: iterator next, Date methods', () => {
-    for (const patch of [
-      'Object.getPrototypeOf((new Map())[Symbol.iterator]()).next = function () {};',
-      'Object.getPrototypeOf((new Set())[Symbol.iterator]()).next = function () {};',
-      'Date.prototype.toISOString = function () { return "spoofed"; };',
-      'Date.prototype.getDate = function () { return 1; };',
+    // Redefining a member the serializer reads throws on the frozen prototype.
+    for (const attempt of [
+      '"use strict"; Object.defineProperty(Map.prototype, "constructor", { get() { return 1; } })',
+      '"use strict"; Map.prototype[Symbol.iterator] = function () {};',
+      '"use strict"; Date.prototype.toISOString = function () { return "x"; };',
+      '"use strict"; Object.defineProperty(Float32Array.prototype, "buffer", { get() {} })',
     ]) {
-      const { context, workflowGlobal } = makeContext();
-      const plain = vm.runInContext('({ ok: true })', context);
-      vm.runInContext(patch, context);
-      expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(false);
+      expect(() => vm.runInContext(attempt, context)).toThrow(
+        /not extensible|read only|Cannot redefine/
+      );
     }
+    // Nothing changed, so the built-ins remain retainable.
+    expect(isRetainedSerializationPassive(map, workflowGlobal)).toBe(true);
   });
 
-  it('declines typed arrays whose subclass prototype shadows a pinned getter', () => {
-    const { context, workflowGlobal } = makeContext();
-    const value = vm.runInContext(
-      `(() => {
-        Object.defineProperty(Float32Array.prototype, "buffer", {
-          get() { return new ArrayBuffer(0); }, configurable: true,
-        });
-        return new Float32Array([1.5]);
-      })()`,
-      context
-    );
-
-    expect(isRetainedSerializationPassive(value, workflowGlobal)).toBe(false);
-    // Pins themselves are intact, so unrelated values stay retainable.
+  it('declines built-ins when the realm was never frozen', () => {
+    const { context, workflowGlobal } = makeContext({ freeze: false });
+    const map = vm.runInContext('new Map()', context);
+    expect(isRetainedSerializationPassive(map, workflowGlobal)).toBe(false);
+    // Plain data does not depend on the built-in prototypes.
     const plain = vm.runInContext('({ ok: true })', context);
+    expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(true);
+  });
+
+  it('declines retention while a host dispatch constructor is hooked', () => {
+    const { context, workflowGlobal } = makeContext();
+    const plain = vm.runInContext('({ ok: true })', context);
+    expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(true);
+
+    Object.defineProperty(Headers, Symbol.hasInstance, {
+      value: () => false,
+      configurable: true,
+    });
+    try {
+      expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(false);
+    } finally {
+      delete (Headers as any)[Symbol.hasInstance];
+    }
+
     expect(isRetainedSerializationPassive(plain, workflowGlobal)).toBe(true);
   });
 });
 
-describe('serialization touches only pinned members', () => {
-  // THE coupling test: the pin list in vm/serialization-pins.ts is only sound
-  // if it covers every prototype member `dehydrateStepArguments` executes for
-  // the supported built-ins. Wrap every configurable member on the relevant
-  // prototypes with a recorder and assert the serializer hits nothing beyond
-  // the pinned set. If serde changes what it touches, this fails loudly —
-  // update the pin list (and this list) together.
-  const PINNED = new Set([
+describe('serialization touches only the frozen surface', () => {
+  // THE coupling test: retention is only sound if every prototype member
+  // `dehydrateStepArguments` executes for the supported built-ins lives on an
+  // object `freezeSerializationIntrinsics` freezes. Wrap every configurable
+  // member on the relevant prototypes (in an unfrozen realm) with a recorder
+  // and assert the serializer hits nothing beyond this measured set — every
+  // entry of which is on a frozen prototype in production. If serde starts
+  // touching something new, this fails loudly: extend the freeze (and this
+  // list) together.
+  const FROZEN_SURFACE = new Set([
     'Map.prototype.Symbol(Symbol.iterator)',
     '%MapIteratorPrototype%.next',
     'Set.prototype.Symbol(Symbol.iterator)',
@@ -252,7 +256,8 @@ describe('serialization touches only pinned members', () => {
   ]);
 
   it('for Map, Set, Date, typed arrays, and ArrayBuffer', async () => {
-    const { context, workflowGlobal } = makeContext();
+    // Unfrozen realm: the recorders themselves need to redefine members.
+    const { context, workflowGlobal } = makeContext({ freeze: false });
     const g = workflowGlobal as any;
     const touched = new Set<string>();
 
@@ -329,7 +334,10 @@ describe('serialization touches only pinned members', () => {
         false
       );
       for (const name of touched) {
-        expect(PINNED, `unpinned member executed: ${name}`).toContain(name);
+        expect(
+          FROZEN_SURFACE,
+          `member outside the frozen surface executed: ${name}`
+        ).toContain(name);
       }
     }
   });

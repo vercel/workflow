@@ -80,7 +80,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Default: enabled
 - Keeps the suspended workflow VM alive across inline steps within one invocation, so each iteration of the inline loop appends only the newly written events instead of replaying the whole event log in a fresh VM.
 - Suspensions involving hooks, waits, or attributes — and any replay divergence — always fall back to a full replay.
-- Step inputs made of plain data (objects, arrays, primitives) and standard built-ins (`Map`, `Set`, `Date`, typed arrays, `ArrayBuffer`) remain retainable. Anything whose serialization could execute workflow code — accessors, proxies, functions, custom class serializers, `RegExp` — falls back to replay for that boundary, as does any input if the prototype members serialization relies on have been modified.
+- Step inputs made of plain data (objects, arrays, primitives) and standard built-ins (`Map`, `Set`, `Date`, typed arrays, `ArrayBuffer`) remain retainable. Anything whose serialization could execute workflow code — accessors, proxies, functions, custom class serializers, `RegExp` — falls back to replay for that boundary.
 - Set `0` or `false` to replay from scratch in a fresh VM on every iteration.
 
 ### `WORKFLOW_INLINE_OWNERSHIP`
