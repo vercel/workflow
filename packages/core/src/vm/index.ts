@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { types } from 'node:util';
 import { runInContext, createContext as vmCreateContext } from 'node:vm';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import seedrandom from 'seedrandom';
@@ -8,6 +10,153 @@ export interface CreateContextOptions {
   seed: string;
   // Fixed timestamp for deterministic Date operations
   fixedTimestamp: number;
+}
+
+// WebCrypto digest algorithm names → node:crypto (OpenSSL) names.
+const DIGEST_ALGORITHMS: Record<string, string> = {
+  'SHA-1': 'sha1',
+  'SHA-256': 'sha256',
+  'SHA-384': 'sha384',
+  'SHA-512': 'sha512',
+};
+
+// Intrinsic prototype getters, captured so view metadata is read from
+// internal slots like WebCrypto's BufferSource conversion — own properties
+// shadowing `buffer`/`byteOffset`/`byteLength` on a view must not change
+// which bytes are hashed.
+function intrinsicGetter(prototype: object, name: string) {
+  // biome-ignore lint/style/noNonNullAssertion: intrinsic accessors always exist
+  return Object.getOwnPropertyDescriptor(prototype, name)!.get!;
+}
+const arrayBufferByteLength = intrinsicGetter(
+  ArrayBuffer.prototype,
+  'byteLength'
+);
+const typedArrayPrototype = Object.getPrototypeOf(
+  Uint8Array.prototype
+) as object;
+const viewGetters = {
+  typedArray: {
+    buffer: intrinsicGetter(typedArrayPrototype, 'buffer'),
+    byteOffset: intrinsicGetter(typedArrayPrototype, 'byteOffset'),
+    byteLength: intrinsicGetter(typedArrayPrototype, 'byteLength'),
+  },
+  dataView: {
+    buffer: intrinsicGetter(DataView.prototype, 'buffer'),
+    byteOffset: intrinsicGetter(DataView.prototype, 'byteOffset'),
+    byteLength: intrinsicGetter(DataView.prototype, 'byteLength'),
+  },
+};
+
+// WebCrypto BufferSource conversion: typed-array/DataView views are read via
+// internal slots; anything else must be a real ArrayBuffer (the native
+// byteLength getter is a brand check that works across vm realms) so that
+// e.g. a plain number is rejected with TypeError instead of allocating a
+// Uint8Array of that length.
+function toDigestBytes(data: ArrayBuffer | ArrayBufferView): Uint8Array {
+  if (types.isTypedArray(data) || types.isDataView(data)) {
+    const getters = types.isDataView(data)
+      ? viewGetters.dataView
+      : viewGetters.typedArray;
+    const buffer = getters.buffer.call(data) as ArrayBuffer;
+    // WebCrypto's BufferSource excludes SharedArrayBuffer-backed views.
+    if (types.isSharedArrayBuffer(buffer)) {
+      throw new TypeError(
+        'crypto.subtle.digest does not accept SharedArrayBuffer-backed views'
+      );
+    }
+    return new Uint8Array(
+      buffer,
+      getters.byteOffset.call(data) as number,
+      getters.byteLength.call(data) as number
+    );
+  }
+  arrayBufferByteLength.call(data);
+  return new Uint8Array(data as ArrayBuffer);
+}
+
+// Global bindings the serialization reducers dispatch on (`value instanceof
+// global.X` — e.g. the Map/Set/Headers reducers in
+// packages/core/src/serialization/reducers/common.ts:312-329 and the
+// Request/Response/stream reducers in packages/core/src/serialization.ts).
+// Pinned (non-writable) so workflow code cannot swap in a constructor whose
+// `Symbol.hasInstance` the serializer would then execute. Absent bindings are
+// pinned to `undefined` so a spoofing global cannot be introduced either.
+const SERIALIZATION_BINDINGS = [
+  'Object',
+  'Array',
+  'Function',
+  'Map',
+  'Set',
+  'Date',
+  'RegExp',
+  'ArrayBuffer',
+  'SharedArrayBuffer',
+  'DataView',
+  'Int8Array',
+  'Uint8Array',
+  'Uint8ClampedArray',
+  'Int16Array',
+  'Uint16Array',
+  'Int32Array',
+  'Uint32Array',
+  'Float16Array',
+  'Float32Array',
+  'Float64Array',
+  'BigInt64Array',
+  'BigUint64Array',
+  'Headers',
+  'URL',
+  'URLSearchParams',
+  'DOMException',
+  'AbortController',
+  'AbortSignal',
+  'Request',
+  'Response',
+  'ReadableStream',
+  'WritableStream',
+  'TransformStream',
+] as const;
+
+/**
+ * Pin the sandbox surfaces that serialization dispatch resolves through.
+ * Called after ALL SDK globals are installed, immediately before the
+ * workflow bundle evaluates.
+ *
+ * Frozen — the universal lookup backstops only:
+ * - `Object.prototype` / `Array.prototype`: every missed property read on a
+ *   plain object or array terminates here (reducer probes like `.signal`,
+ *   `Symbol.toStringTag` lookups by devalue's type detection, `constructor`
+ *   reads by the class reducer in
+ *   packages/core/src/serialization/reducers/class.ts:26-43), so a planted
+ *   accessor here would execute during serialization of ANY value.
+ * - `Function.prototype`: `x instanceof C` resolves `Symbol.hasInstance`
+ *   through the constructor's prototype chain (tc39.es/ecma262/#sec-instanceofoperator),
+ *   which ends here for every constructor.
+ * No real-world polyfill patches these three, so freezing them costs nothing.
+ *
+ * NOT frozen — constructors and the value-type prototypes (`Map.prototype`,
+ * `Date.prototype`, typed arrays, …): polyfills legitimately add methods
+ * there (Temporal's `Date.prototype.toTemporalInstant`, core-js
+ * `Set.prototype.union`, `Object.groupBy`, `Array.fromAsync`). New
+ * data-valued members are inert during serialization — only the specific
+ * members the serializer EXECUTES matter, and the retained-input gate
+ * verifies those per boundary against captured originals instead
+ * (see runtime/retained-step-input.ts).
+ */
+export function freezeSerializationIntrinsics(g: typeof globalThis): void {
+  Object.freeze(g.Object.prototype);
+  Object.freeze(g.Array.prototype);
+  Object.freeze(g.Function.prototype);
+  for (const name of SERIALIZATION_BINDINGS) {
+    const descriptor = Object.getOwnPropertyDescriptor(g, name);
+    Object.defineProperty(g, name, {
+      value: descriptor && 'value' in descriptor ? descriptor.value : undefined,
+      writable: false,
+      configurable: false,
+      enumerable: descriptor?.enumerable ?? false,
+    });
+  }
 }
 
 /**
@@ -58,7 +207,53 @@ export function createContext(options: CreateContextOptions) {
 
   const randomUUID = createRandomUUID(rng);
 
-  const boundDigest = originalSubtle.digest.bind(originalSubtle);
+  // The sandbox must not expose any way for workflow code to observe host
+  // timing or host state: after this block, every promise a workflow can
+  // create settles either from the event log or within its own microtask
+  // cascade, so a suspended VM is fully quiescent and can be retained across
+  // inline steps (see `canRetainWorkflowSession`).
+  //
+  // - `Atomics.waitAsync` is a wall-clock timer (via SharedArrayBuffer).
+  // - The async `WebAssembly` entry points resolve on compile-thread timing;
+  //   the synchronous `new WebAssembly.Module()` / `Instance()` remain.
+  // - `WeakRef.deref()` and finalizer callbacks observe GC timing.
+  // - Dynamic `import()` settles within a microtask (rejected: no
+  //   `importModuleDynamically`), so it needs no handling.
+  const intrinsics = g as unknown as Record<string, Record<string, unknown>>;
+  delete intrinsics.Atomics.waitAsync;
+  delete intrinsics.WebAssembly.compile;
+  delete intrinsics.WebAssembly.instantiate;
+  delete intrinsics.WebAssembly.compileStreaming;
+  delete intrinsics.WebAssembly.instantiateStreaming;
+  delete intrinsics.WeakRef;
+  delete intrinsics.FinalizationRegistry;
+
+  // `crypto.subtle.digest` computes synchronously via node:crypto, so its
+  // promise settles on a deterministic microtask instead of host threadpool
+  // timing — a digest can never advance a suspended workflow, and
+  // digest-using VMs stay retainable. Values are byte-identical to WebCrypto.
+  const digest = (
+    algorithm: string | { name: string },
+    data: ArrayBuffer | ArrayBufferView
+  ): Promise<ArrayBuffer> => {
+    try {
+      const name = typeof algorithm === 'string' ? algorithm : algorithm.name;
+      const ossl = DIGEST_ALGORITHMS[name.toUpperCase()];
+      if (!ossl) {
+        throw new DOMException(
+          `Unrecognized algorithm name: ${name}`,
+          'NotSupportedError'
+        );
+      }
+      const hash = createHash(ossl).update(toDigestBytes(data)).digest();
+      // Copy out: small Buffers share the internal pool allocation.
+      const out = new ArrayBuffer(hash.byteLength);
+      new Uint8Array(out).set(hash);
+      return Promise.resolve(out);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  };
 
   g.crypto = new Proxy(originalCrypto, {
     get(target, prop) {
@@ -78,7 +273,7 @@ export function createContext(options: CreateContextOptions) {
                 );
               };
             } else if (prop === 'digest') {
-              return boundDigest;
+              return digest;
             }
             return target[prop as keyof typeof originalSubtle];
           },
