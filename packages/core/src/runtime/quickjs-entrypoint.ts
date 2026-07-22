@@ -43,6 +43,7 @@ import { getWorkflowQueueName, queueMessage } from './helpers.js';
 import {
   type PendingAttribute,
   type PendingHook,
+  type PendingOperation,
   type PendingStep,
   type PendingWait,
   runQuickJSWorkflow,
@@ -80,6 +81,292 @@ export function isFirstInvocation(
   return preloadedEvents.every(
     (e) => e.eventType === 'run_created' || e.eventType === 'run_started'
   );
+}
+
+/**
+ * Dispatch durable side effects for a set of pending VM operations:
+ * step_created (+ optional queueing), hook_created / hook_received (aborts),
+ * attr_set, hook_disposed, and wait_created events.
+ *
+ * Used in two modes:
+ *  - suspension (queueSteps: true): normal suspension processing; new steps
+ *    are queued for execution.
+ *  - terminal drain (queueSteps: false): flush leftover side effects when
+ *    the workflow completed or failed — mirrors the node:vm engine's
+ *    drainPendingQueueItems. Steps are created but NOT queued, and the run
+ *    is never requeued.
+ */
+async function dispatchPendingOps(params: {
+  world: Awaited<ReturnType<typeof getWorld>>;
+  runId: string;
+  workflowRun: WorkflowRun;
+  encryptionKey: Awaited<ReturnType<typeof importKey>> | undefined;
+  pendingOperations: PendingOperation[];
+  queueSteps: boolean;
+  wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
+}): Promise<{ createdAttributeEvent: boolean }> {
+  const { world, runId, workflowRun, encryptionKey, pendingOperations } =
+    params;
+  const wfdiag = params.wfdiag;
+  // Set when a new attr_set event is written this invocation. The
+  // workflow must be re-invoked to consume it (resolving the pending
+  // setAttributes() promise), so the entrypoint requeues immediately —
+  // same pattern as an elapsed wait.
+  let createdAttributeEvent = false;
+  const opsPromises: Promise<void>[] = [];
+
+  for (const op of pendingOperations) {
+    if (op.type === 'step' && !op.hasCreatedEvent) {
+      const step = op as PendingStep;
+      opsPromises.push(
+        (async () => {
+          // Create step_created event. `step.input` is the
+          // format-prefixed devalue bytes ("devl" + devalue) produced
+          // by `globalThis[Symbol.for('workflow-serialize')]({args,
+          // closureVars, thisVal})` inside the VM. The VM has no
+          // access to the CryptoKey, so encryption is applied here
+          // on the host side — matching what
+          // `dehydrateStepArguments` does in the node:vm engine.
+          try {
+            await world.events.create(runId, {
+              eventType: 'step_created',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: step.correlationId,
+              eventData: {
+                stepName: step.stepId,
+                input: await encryptSerializedData(step.input, encryptionKey),
+              },
+            });
+          } catch (err) {
+            if (EntityConflictError.is(err)) return;
+            throw err;
+          }
+
+          // Queue the step execution via the unified workflow queue
+          // (V2 architecture). The combined handler in runtime.ts
+          // dispatches messages with `stepId` to executeStep, which
+          // works for both VM engines — so the QuickJS engine reuses
+          // the same step execution path as the node:vm engine
+          // instead of needing a separate step route. Skipped in
+          // terminal-drain mode (the workflow already finished; the
+          // event is the durable record, matching the node:vm drain).
+          if (params.queueSteps) {
+            const traceCarrier = await serializeTraceCarrier();
+            await queueMessage(
+              world,
+              getWorkflowQueueName(workflowRun.workflowName),
+              {
+                runId,
+                stepId: step.correlationId,
+                stepName: step.stepId,
+                traceCarrier,
+                requestedAt: new Date(),
+              },
+              {
+                idempotencyKey: step.correlationId,
+              }
+            );
+            wfdiag('step_queued', {
+              stepId: step.stepId,
+              correlationId: step.correlationId,
+            });
+          }
+        })()
+      );
+    } else if (
+      op.type === 'hook' &&
+      (!op.hasCreatedEvent || (op as PendingHook).abortRequested)
+    ) {
+      const hook = op as PendingHook;
+      runtimeLogger.debug('QuickJS runtime: processing hook op', {
+        workflowRunId: runId,
+        correlationId: hook.correlationId,
+        token: hook.token,
+        tokenType: typeof hook.token,
+        isWebhook: hook.isWebhook,
+        isSystem: hook.isSystem,
+        hasCreatedEvent: hook.hasCreatedEvent,
+        abortRequested: hook.abortRequested,
+      });
+
+      opsPromises.push(
+        (async () => {
+          if (!hook.hasCreatedEvent) {
+            // `hook.metadata` is the format-prefixed devalue bytes
+            // produced by `globalThis[Symbol.for('workflow-serialize')]
+            // (options.metadata)` inside the VM. Encrypt on the host
+            // side before writing — matches the node:vm engine's
+            // `dehydrateStepArguments` flow.
+            //
+            // No pre-check via hooks.list: with deterministic correlationIds
+            // (same VM seed across replays) and per-(runId, correlationId)
+            // uniqueness in worlds, the storage layer rejects duplicates as
+            // EntityConflictError, which we swallow below. This drops one
+            // network round-trip per pending hook.
+            try {
+              const encryptedMetadata =
+                typeof hook.metadata === 'undefined'
+                  ? undefined
+                  : await encryptSerializedData(hook.metadata, encryptionKey);
+              const result = await world.events.create(runId, {
+                eventType: 'hook_created',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: hook.correlationId,
+                eventData: {
+                  token: hook.token,
+                  metadata: encryptedMetadata,
+                  // Always include isWebhook explicitly. Worlds default it to
+                  // `true` when absent, which would break the public webhook
+                  // endpoint's 404 guard for hooks created via createHook().
+                  isWebhook: hook.isWebhook,
+                  // System hooks (AbortController) are exempt from user
+                  // token namespace conflict checks.
+                  ...(hook.isSystem ? { isSystem: true } : {}),
+                } as any,
+              });
+
+              // If storage detected a real token conflict with another
+              // workflow's hook, re-queue so the workflow handler can
+              // process the conflict event and fail gracefully.
+              if (result.event?.eventType === 'hook_conflict') {
+                await queueMessage(
+                  world,
+                  `__wkf_workflow_${workflowRun.workflowName}`,
+                  {
+                    runId,
+                  },
+                  { idempotencyKey: `hook_conflict_${hook.correlationId}` }
+                );
+              }
+            } catch (err) {
+              // Already created by a concurrent invocation — fall through
+              // to abort processing below (if any) instead of bailing.
+              if (!EntityConflictError.is(err)) throw err;
+            }
+          }
+
+          if (hook.abortRequested) {
+            // Record the abort durably: a hook_received event carrying
+            // the VM-serialized `{ aborted: true, reason }` payload,
+            // plus a best-effort stream packet for real-time step
+            // propagation. Mirrors the node:vm engine's suspension
+            // handler (hooksNeedingAbort).
+            const abortPayload =
+              hook.abortPayload instanceof Uint8Array
+                ? ((await encryptSerializedData(
+                    hook.abortPayload,
+                    encryptionKey
+                  )) as Uint8Array)
+                : undefined;
+            try {
+              await world.events.create(runId, {
+                eventType: 'hook_received',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: hook.correlationId,
+                eventData: {
+                  token: hook.token,
+                  payload: abortPayload,
+                } as any,
+              });
+            } catch (err) {
+              if (!EntityConflictError.is(err)) throw err;
+            }
+            // streamName is derived from the abort hook token
+            // (`abrt_{id}` → `strm_{id}_system_abort`).
+            if (hook.token.startsWith('abrt_') && abortPayload) {
+              const streamName = `strm_${hook.token.slice('abrt_'.length)}_system_abort`;
+              try {
+                await world.streams.write(runId, streamName, abortPayload);
+                await world.streams.close(runId, streamName);
+              } catch {
+                // Best-effort — the hook event provides the durable
+                // fallback.
+                runtimeLogger.debug(
+                  'QuickJS runtime: failed to write abort stream packet',
+                  {
+                    workflowRunId: runId,
+                    correlationId: hook.correlationId,
+                  }
+                );
+              }
+            }
+            wfdiag('abort_recorded', {
+              correlationId: hook.correlationId,
+              token: hook.token,
+            });
+          }
+        })()
+      );
+    } else if (op.type === 'attribute' && !op.hasCreatedEvent) {
+      const attr = op as PendingAttribute;
+      opsPromises.push(
+        (async () => {
+          try {
+            await world.events.create(runId, {
+              eventType: 'attr_set',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: attr.correlationId,
+              eventData: {
+                changes: attr.changes,
+                writer: { type: 'workflow' },
+                ...(attr.allowReservedAttributes
+                  ? { allowReservedAttributes: true }
+                  : {}),
+              } as any,
+            });
+            createdAttributeEvent = true;
+          } catch (err) {
+            if (EntityConflictError.is(err)) {
+              // Event already exists (concurrent invocation) — the
+              // replay still needs to consume it, so requeue.
+              createdAttributeEvent = true;
+              return;
+            }
+            throw err;
+          }
+        })()
+      );
+    } else if (op.type === 'hook_dispose' && !op.hasCreatedEvent) {
+      opsPromises.push(
+        (async () => {
+          try {
+            await world.events.create(runId, {
+              eventType: 'hook_disposed',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: op.correlationId,
+            });
+          } catch (err) {
+            if (EntityConflictError.is(err)) return;
+            throw err;
+          }
+        })()
+      );
+    } else if (op.type === 'wait' && !op.hasCreatedEvent) {
+      const wait = op as PendingWait;
+      opsPromises.push(
+        (async () => {
+          try {
+            await world.events.create(runId, {
+              eventType: 'wait_created',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: wait.correlationId,
+              eventData: {
+                resumeAt: new Date(wait.resumeAt),
+              },
+            });
+          } catch (err) {
+            if (EntityConflictError.is(err)) return;
+            throw err;
+          }
+        })()
+      );
+    }
+  }
+
+  // Per-op dispatch runs in parallel.
+  await Promise.all(opsPromises);
+
+  return { createdAttributeEvent };
 }
 
 /**
@@ -318,6 +605,30 @@ export async function runWorkflowWithQuickJS(params: {
       ...Attribute.QuickJSOutcome('completed'),
     });
 
+    // Flush leftover pending side effects (abort recordings, system-hook
+    // disposals, fire-and-forget attribute/hook events) BEFORE writing
+    // run_completed — mirrors the node:vm engine's drainPendingQueueItems.
+    // Drain failures are swallowed: the workflow's own outcome is the
+    // source of truth.
+    if (result.completed.drainOperations?.length) {
+      try {
+        await dispatchPendingOps({
+          world,
+          runId,
+          workflowRun,
+          encryptionKey,
+          pendingOperations: result.completed.drainOperations,
+          queueSteps: false,
+          wfdiag,
+        });
+      } catch (err) {
+        runtimeLogger.warn('QuickJS runtime: terminal drain failed', {
+          workflowRunId: runId,
+          message: (err as Error)?.message,
+        });
+      }
+    }
+
     // Create run_completed event.
     // The VM serializes the workflow result as format-prefixed devalue bytes
     // ("devl" + devalue) with no encryption (the VM has no access to the
@@ -385,196 +696,15 @@ export async function runWorkflowWithQuickJS(params: {
     // on cloud worlds (e.g. Vercel) where each storage call is a
     // network round-trip.
     let minTimeoutSeconds: number | undefined;
-    // Set when a new attr_set event is written this invocation. The
-    // workflow must be re-invoked to consume it (resolving the pending
-    // setAttributes() promise), so the entrypoint requeues immediately —
-    // same pattern as an elapsed wait.
-    let createdAttributeEvent = false;
-    const opsPromises: Promise<void>[] = [];
-
-    for (const op of pendingOperations) {
-      if (op.type === 'step' && !op.hasCreatedEvent) {
-        const step = op as PendingStep;
-        opsPromises.push(
-          (async () => {
-            // Create step_created event. `step.input` is the
-            // format-prefixed devalue bytes ("devl" + devalue) produced
-            // by `globalThis[Symbol.for('workflow-serialize')]({args,
-            // closureVars, thisVal})` inside the VM. The VM has no
-            // access to the CryptoKey, so encryption is applied here
-            // on the host side — matching what
-            // `dehydrateStepArguments` does in the node:vm engine.
-            try {
-              await world.events.create(runId, {
-                eventType: 'step_created',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: step.correlationId,
-                eventData: {
-                  stepName: step.stepId,
-                  input: await encryptSerializedData(step.input, encryptionKey),
-                },
-              });
-            } catch (err) {
-              if (EntityConflictError.is(err)) return;
-              throw err;
-            }
-
-            // Queue the step execution via the unified workflow queue
-            // (V2 architecture). The combined handler in runtime.ts
-            // dispatches messages with `stepId` to executeStep, which
-            // works for both VM engines — so the QuickJS engine reuses
-            // the same step execution path as the node:vm engine
-            // instead of needing a separate step route.
-            const traceCarrier = await serializeTraceCarrier();
-            await queueMessage(
-              world,
-              getWorkflowQueueName(workflowRun.workflowName),
-              {
-                runId,
-                stepId: step.correlationId,
-                stepName: step.stepId,
-                traceCarrier,
-                requestedAt: new Date(),
-              },
-              {
-                idempotencyKey: step.correlationId,
-              }
-            );
-            wfdiag('step_queued', {
-              stepId: step.stepId,
-              correlationId: step.correlationId,
-            });
-          })()
-        );
-      } else if (op.type === 'hook' && !op.hasCreatedEvent) {
-        const hook = op as PendingHook;
-        runtimeLogger.debug('QuickJS runtime: creating hook_created event', {
-          workflowRunId: runId,
-          correlationId: hook.correlationId,
-          token: hook.token,
-          tokenType: typeof hook.token,
-          isWebhook: hook.isWebhook,
-        });
-
-        opsPromises.push(
-          (async () => {
-            // `hook.metadata` is the format-prefixed devalue bytes
-            // produced by `globalThis[Symbol.for('workflow-serialize')]
-            // (options.metadata)` inside the VM. Encrypt on the host
-            // side before writing — matches the node:vm engine's
-            // `dehydrateStepArguments` flow.
-            //
-            // No pre-check via hooks.list: with deterministic correlationIds
-            // (same VM seed across replays) and per-(runId, correlationId)
-            // uniqueness in worlds, the storage layer rejects duplicates as
-            // EntityConflictError, which we swallow below. This drops one
-            // network round-trip per pending hook.
-            try {
-              const encryptedMetadata =
-                typeof hook.metadata === 'undefined'
-                  ? undefined
-                  : await encryptSerializedData(hook.metadata, encryptionKey);
-              const result = await world.events.create(runId, {
-                eventType: 'hook_created',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: hook.correlationId,
-                eventData: {
-                  token: hook.token,
-                  metadata: encryptedMetadata,
-                  // Always include isWebhook explicitly. Worlds default it to
-                  // `true` when absent, which would break the public webhook
-                  // endpoint's 404 guard for hooks created via createHook().
-                  isWebhook: hook.isWebhook,
-                } as any,
-              });
-
-              // If storage detected a real token conflict with another
-              // workflow's hook, re-queue so the workflow handler can
-              // process the conflict event and fail gracefully.
-              if (result.event?.eventType === 'hook_conflict') {
-                await queueMessage(
-                  world,
-                  `__wkf_workflow_${workflowRun.workflowName}`,
-                  {
-                    runId,
-                  },
-                  { idempotencyKey: `hook_conflict_${hook.correlationId}` }
-                );
-              }
-            } catch (err) {
-              if (EntityConflictError.is(err)) return;
-              throw err;
-            }
-          })()
-        );
-      } else if (op.type === 'attribute' && !op.hasCreatedEvent) {
-        const attr = op as PendingAttribute;
-        opsPromises.push(
-          (async () => {
-            try {
-              await world.events.create(runId, {
-                eventType: 'attr_set',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: attr.correlationId,
-                eventData: {
-                  changes: attr.changes,
-                  writer: { type: 'workflow' },
-                  ...(attr.allowReservedAttributes
-                    ? { allowReservedAttributes: true }
-                    : {}),
-                } as any,
-              });
-              createdAttributeEvent = true;
-            } catch (err) {
-              if (EntityConflictError.is(err)) {
-                // Event already exists (concurrent invocation) — the
-                // replay still needs to consume it, so requeue.
-                createdAttributeEvent = true;
-                return;
-              }
-              throw err;
-            }
-          })()
-        );
-      } else if (op.type === 'hook_dispose' && !op.hasCreatedEvent) {
-        opsPromises.push(
-          (async () => {
-            try {
-              await world.events.create(runId, {
-                eventType: 'hook_disposed',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: op.correlationId,
-              });
-            } catch (err) {
-              if (EntityConflictError.is(err)) return;
-              throw err;
-            }
-          })()
-        );
-      } else if (op.type === 'wait' && !op.hasCreatedEvent) {
-        const wait = op as PendingWait;
-        opsPromises.push(
-          (async () => {
-            try {
-              await world.events.create(runId, {
-                eventType: 'wait_created',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: wait.correlationId,
-                eventData: {
-                  resumeAt: new Date(wait.resumeAt),
-                },
-              });
-            } catch (err) {
-              if (EntityConflictError.is(err)) return;
-              throw err;
-            }
-          })()
-        );
-      }
-    }
-
-    // Per-op dispatch runs in parallel.
-    await Promise.all(opsPromises);
+    const { createdAttributeEvent } = await dispatchPendingOps({
+      world,
+      runId,
+      workflowRun,
+      encryptionKey,
+      pendingOperations,
+      queueSteps: true,
+      wfdiag,
+    });
 
     // Handle pending waits — both newly created and still-pending from
     // earlier invocations. For each wait, either create a wait_completed
@@ -678,6 +808,27 @@ export async function runWorkflowWithQuickJS(params: {
     parentSpan?.setAttributes({
       ...Attribute.QuickJSOutcome('failed'),
     });
+
+    // Flush leftover pending side effects before writing run_failed —
+    // same drain semantics as the completed branch.
+    if (result.failed.drainOperations?.length) {
+      try {
+        await dispatchPendingOps({
+          world,
+          runId,
+          workflowRun,
+          encryptionKey,
+          pendingOperations: result.failed.drainOperations,
+          queueSteps: false,
+          wfdiag,
+        });
+      } catch (err) {
+        runtimeLogger.warn('QuickJS runtime: terminal drain failed', {
+          workflowRunId: runId,
+          message: (err as Error)?.message,
+        });
+      }
+    }
 
     // Create run_failed event. Serialize the error through the
     // first-class dehydration pipeline so consumers (CLI, observability,
