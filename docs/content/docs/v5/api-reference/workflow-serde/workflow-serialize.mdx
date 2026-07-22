@@ -69,6 +69,7 @@ This method runs inside the workflow context and is subject to the same constrai
 - No Node.js-specific APIs (like `fs`, `path`, `crypto`, etc.)
 - No non-deterministic operations (like `Math.random()` or `Date.now()`)
 - No external network calls
+- No side effects on workflow state — the method may run outside deterministic replay, so mutations would not be reconstructed
 
 Keep this method simple and focused on extracting data from the instance.
 </Callout>

@@ -43,6 +43,7 @@ import {
   getReplayDivergenceMaxRetries,
   isInlineOwnershipEnabled,
   isTurboEnabled,
+  isVmRetentionEnabled,
 } from './runtime/constants.js';
 import {
   getQueueOverhead,
@@ -98,7 +99,11 @@ import {
 } from './telemetry.js';
 import { getErrorName, getErrorStack, normalizeUnknownError } from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
-import { runWorkflow } from './workflow.js';
+import {
+  executeWorkflow,
+  type WorkflowExecutionResult,
+  type WorkflowSession,
+} from './workflow.js';
 
 export type { Event, WorkflowRun };
 export { WorkflowSuspension } from './global.js';
@@ -353,6 +358,36 @@ function openHookAndWaitState(events: Event[]): {
     if (openHook && openWait) break;
   }
   return { openHook, openWait };
+}
+
+/**
+ * Retain only pure step boundaries with no out-of-band continuation source.
+ * Attributes require replay; hooks and waits can wake another invocation.
+ * `WORKFLOW_RETAINED_VM=0` disables retention entirely.
+ *
+ * Quiescence assumes workflow code stays inside the sandbox's determinism
+ * contract. Escaping to the host realm (e.g. recovering the host `Function`
+ * constructor from an exposed host class to schedule real timers) makes a
+ * workflow nondeterministic under ordinary replay too, and is not defended
+ * here.
+ */
+function canRetainWorkflowSession(
+  suspension: WorkflowSuspension,
+  events: Event[]
+): boolean {
+  if (
+    !isVmRetentionEnabled() ||
+    suspension.stepCount === 0 ||
+    suspension.hookCount > 0 ||
+    suspension.waitCount > 0 ||
+    suspension.attributeCount > 0 ||
+    suspension.hookDisposedCount > 0 ||
+    suspension.abortCount > 0
+  ) {
+    return false;
+  }
+  const { openHook, openWait } = openHookAndWaitState(events);
+  return !openHook && !openWait;
 }
 
 /**
@@ -1233,6 +1268,13 @@ export function workflowEntrypoint(
                     encryptionKey
                   );
 
+                  let workflowExecution:
+                    | { readonly type: 'replay' }
+                    | {
+                        readonly type: 'retained';
+                        readonly session: WorkflowSession;
+                      } = { type: 'replay' };
+
                   // Main replay loop
                   // biome-ignore lint/correctness/noConstantCondition: intentional loop
                   while (true) {
@@ -1561,38 +1603,69 @@ export function workflowEntrypoint(
                       // point and the inline executeStep mutates eventsCursor.
                       preInlineWriteCursor = eventsCursor;
 
-                      // Replay workflow
-                      runtimeLogger.debug('Starting workflow replay', {
+                      let executionMode = workflowExecution.type;
+                      runtimeLogger.debug('Starting workflow execution', {
                         workflowRunId: runId,
                         loopIteration,
                         eventCount: events.length,
+                        executionMode,
                       });
                       replayStart = Date.now();
-                      // Start every missing decrypt/decompress operation before
-                      // VM setup. Web Crypto work can overlap bundle evaluation;
-                      // consumers still deserialize and resolve in event order.
-                      const payloadPrewarm = replayPayloadCache.prewarm(
-                        workflowRun,
-                        events
-                      );
-                      const result = await runWorkflow(
-                        workflowCode,
-                        workflowRun,
-                        events,
-                        encryptionKey,
-                        replayPayloadCache,
-                        // Turbo: the end-of-run drain inside runWorkflow commits
-                        // fire-and-forget `*_created` events before the terminal
-                        // `awaitRunReady()` below, so gate those writes on the
-                        // backgrounded run_started too. Undefined outside turbo.
-                        runReadyBarrier,
-                        world.capabilities
-                      );
-                      await payloadPrewarm;
-                      runtimeLogger.debug('Workflow replay completed', {
+                      let workflowResult: WorkflowExecutionResult =
+                        workflowExecution.type === 'retained'
+                          ? await executeWorkflow({
+                              type: 'resume',
+                              session: workflowExecution.session,
+                              events,
+                            })
+                          : { type: 'replay' };
+
+                      if (workflowResult.type === 'replay') {
+                        executionMode = 'replay';
+                        workflowExecution = { type: 'replay' };
+                        // Start every missing decrypt/decompress operation
+                        // before VM setup. Web Crypto work can overlap bundle
+                        // evaluation; consumers still deserialize and resolve
+                        // in event order.
+                        const payloadPrewarm = replayPayloadCache.prewarm(
+                          workflowRun,
+                          events
+                        );
+                        workflowResult = await executeWorkflow({
+                          type: 'replay',
+                          workflowCode,
+                          workflowRun,
+                          events,
+                          encryptionKey,
+                          replayPayloadCache,
+                          // Turbo: the end-of-run drain inside workflow
+                          // execution commits fire-and-forget `*_created`
+                          // events before the terminal `awaitRunReady()` below.
+                          runReadyBarrier,
+                          worldCapabilities: world.capabilities,
+                        });
+                        await payloadPrewarm;
+                      }
+
+                      if (workflowResult.type === 'suspended') {
+                        workflowExecution = canRetainWorkflowSession(
+                          workflowResult.suspension,
+                          events
+                        )
+                          ? {
+                              type: 'retained',
+                              session: workflowResult.session,
+                            }
+                          : { type: 'replay' };
+                        throw workflowResult.suspension;
+                      }
+
+                      const result = workflowResult.output;
+                      runtimeLogger.debug('Workflow execution completed', {
                         workflowRunId: runId,
                         loopIteration,
                         replayMs: Date.now() - replayStart,
+                        executionMode,
                       });
 
                       // Workflow completed. Send the snapshot but do NOT
@@ -1717,7 +1790,15 @@ export function workflowEntrypoint(
                             requestId,
                             eventLog: suspensionLog,
                             runReadyBarrier,
+                            prepareForRetention:
+                              workflowExecution.type === 'retained',
                           });
+                          if (
+                            workflowExecution.type === 'retained' &&
+                            !suspensionResult.retainedStepInputsSafe
+                          ) {
+                            workflowExecution = { type: 'replay' };
+                          }
                         } catch (suspensionError) {
                           // A suspension create whose stale (412) rejection
                           // survived the in-guard reload retries: schedule an

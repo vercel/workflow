@@ -4,7 +4,11 @@ import {
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { createWorkflowBaseUrl, withResolvers } from '@workflow/utils';
+import {
+  createWorkflowBaseUrl,
+  type PromiseWithResolvers,
+  withResolvers,
+} from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
@@ -36,7 +40,7 @@ import {
   WORKFLOW_USE_STEP,
 } from './symbols.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
-import { trace } from './telemetry.js';
+import { applyWorkflowSuspensionToSpan, trace } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
 import { createContext, freezeSerializationIntrinsics } from './vm/index.js';
 import { runCachedWorkflowScript } from './vm/script-cache.js';
@@ -133,6 +137,152 @@ async function drainPendingQueueItems(
   }
 }
 
+interface WorkflowCompletion {
+  readonly output: unknown;
+  readonly resultType: string;
+}
+
+type WorkflowSessionState =
+  | {
+      readonly type: 'running';
+      readonly interruption: PromiseWithResolvers<never>;
+    }
+  | { readonly type: 'suspended'; readonly suspension: WorkflowSuspension }
+  | { readonly type: 'replay' }
+  | { readonly type: 'completed' };
+
+// The suspension counts are all derived from `steps` in the WorkflowSuspension
+// constructor, so identical items mean an identical boundary.
+function isSameSuspensionBoundary(
+  previous: WorkflowSuspension,
+  next: WorkflowSuspension
+): boolean {
+  return (
+    previous.steps.length === next.steps.length &&
+    previous.steps.every((item, index) => item === next.steps[index])
+  );
+}
+
+// A suspended VM is quiescent, but each parked step consumer signals its own
+// (identical) suspension via scheduleWhenIdle — absorb those duplicates and
+// treat anything else as unretainable.
+function updateSuspendedSession(
+  suspension: WorkflowSuspension,
+  error: Error
+): WorkflowSessionState {
+  return WorkflowSuspension.is(error) &&
+    isSameSuspensionBoundary(suspension, error)
+    ? { type: 'suspended', suspension }
+    : { type: 'replay' };
+}
+
+export interface WorkflowSession {
+  readonly workflowRun: WorkflowRun;
+  readonly argumentCount: number;
+  resume(events: Event[]): WorkflowSessionResumeResult;
+}
+
+type WorkflowSessionResumeResult =
+  | {
+      readonly type: 'resumed';
+      readonly execution: Promise<WorkflowCompletion>;
+    }
+  | { readonly type: 'replay' };
+
+interface WorkflowSessionOptions {
+  readonly workflowCode: string;
+  readonly workflowRun: WorkflowRun;
+  readonly events: Event[];
+  readonly encryptionKey: CryptoKey | undefined;
+  readonly replayPayloadCache: ReplayPayloadCache;
+  readonly runReadyBarrier?: Promise<unknown>;
+  readonly worldCapabilities?: WorldCapabilities;
+}
+
+type WorkflowExecutionRequest =
+  | ({ readonly type: 'replay' } & WorkflowSessionOptions)
+  | {
+      readonly type: 'resume';
+      readonly session: WorkflowSession;
+      readonly events: Event[];
+    };
+
+type WorkflowReplayResult =
+  | { readonly type: 'completed'; readonly output: unknown }
+  | {
+      readonly type: 'suspended';
+      readonly suspension: WorkflowSuspension;
+      readonly session: WorkflowSession;
+    };
+
+export type WorkflowExecutionResult =
+  | { readonly type: 'replay' }
+  | WorkflowReplayResult;
+
+// A fresh replay always completes or suspends; only resuming a session can
+// request another replay (stale session or diverged event prefix).
+export async function executeWorkflow(
+  request: { readonly type: 'replay' } & WorkflowSessionOptions
+): Promise<WorkflowReplayResult>;
+export async function executeWorkflow(
+  request: WorkflowExecutionRequest
+): Promise<WorkflowExecutionResult>;
+export async function executeWorkflow(
+  request: WorkflowExecutionRequest
+): Promise<WorkflowExecutionResult> {
+  const workflowRun =
+    request.type === 'replay'
+      ? request.workflowRun
+      : request.session.workflowRun;
+  const mode = request.type === 'replay' ? 'replay' : 'retained';
+
+  return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
+    span?.setAttributes({
+      ...Attribute.WorkflowName(workflowRun.workflowName),
+      ...Attribute.WorkflowRunId(workflowRun.runId),
+      ...Attribute.WorkflowRunStatus(workflowRun.status),
+      ...Attribute.WorkflowEventsCount(request.events.length),
+      ...Attribute.WorkflowExecutionMode(mode),
+    });
+
+    let session: WorkflowSession;
+    let execution: Promise<WorkflowCompletion>;
+    switch (request.type) {
+      case 'replay': {
+        const started = await createWorkflowSession(request);
+        session = started.session;
+        execution = started.execution;
+        break;
+      }
+      case 'resume': {
+        session = request.session;
+        const resumed = session.resume(request.events);
+        if (resumed.type === 'replay') return resumed;
+        execution = resumed.execution;
+        break;
+      }
+    }
+
+    span?.setAttributes({
+      ...Attribute.WorkflowArgumentsCount(session.argumentCount),
+    });
+
+    try {
+      const completed = await execution;
+      span?.setAttributes({
+        ...Attribute.WorkflowResultType(completed.resultType),
+      });
+      return { type: 'completed', output: completed.output };
+    } catch (error) {
+      if (WorkflowSuspension.is(error)) {
+        if (span) applyWorkflowSuspensionToSpan(error, span);
+        return { type: 'suspended', suspension: error, session };
+      }
+      throw error;
+    }
+  });
+}
+
 export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
@@ -140,8 +290,7 @@ export async function runWorkflow(
   encryptionKey: CryptoKey | undefined,
   /**
    * Optional per-run cache for replay payload preparation and immutable final
-   * values. Owned by the inline replay loop so it survives fresh VM contexts
-   * created by successive iterations of this invocation.
+   * values. Owned by the inline execution loop for this invocation.
    */
   replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache(
     encryptionKey
@@ -159,14 +308,33 @@ export async function runWorkflow(
    */
   worldCapabilities?: WorldCapabilities
 ): Promise<Uint8Array | unknown> {
-  return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
-    span?.setAttributes({
-      ...Attribute.WorkflowName(workflowRun.workflowName),
-      ...Attribute.WorkflowRunId(workflowRun.runId),
-      ...Attribute.WorkflowRunStatus(workflowRun.status),
-      ...Attribute.WorkflowEventsCount(events.length),
-    });
+  const result = await executeWorkflow({
+    type: 'replay',
+    workflowCode,
+    workflowRun,
+    events,
+    encryptionKey,
+    replayPayloadCache,
+    runReadyBarrier,
+    worldCapabilities,
+  });
+  if (result.type === 'suspended') throw result.suspension;
+  return result.output;
+}
 
+function createWorkflowSession({
+  workflowCode,
+  workflowRun,
+  events,
+  encryptionKey,
+  replayPayloadCache,
+  runReadyBarrier,
+  worldCapabilities,
+}: WorkflowSessionOptions): Promise<{
+  session: WorkflowSession;
+  execution: Promise<WorkflowCompletion>;
+}> {
+  return (async () => {
     const startedAt = workflowRun.startedAt;
     if (!startedAt) {
       throw new WorkflowRuntimeError(
@@ -214,7 +382,31 @@ export async function runWorkflow(
       fixedTimestamp,
     });
 
-    const workflowDiscontinuation = withResolvers<void>();
+    const initialInterruption = withResolvers<never>();
+    let state: WorkflowSessionState = {
+      type: 'running',
+      interruption: initialInterruption,
+    };
+
+    const onWorkflowError = (error: Error): void => {
+      switch (state.type) {
+        case 'running': {
+          const { interruption } = state;
+          state = WorkflowSuspension.is(error)
+            ? { type: 'suspended', suspension: error }
+            : { type: 'replay' };
+          interruption.reject(error);
+          return;
+        }
+        case 'suspended':
+          state = updateSuspendedSession(state.suspension, error);
+          return;
+        case 'replay':
+        case 'completed':
+          return;
+      }
+      state satisfies never;
+    };
 
     const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
     const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
@@ -231,7 +423,7 @@ export async function runWorkflow(
         updateTimestamp(+event.createdAt);
       },
       onUnconsumedEvent: (event) => {
-        workflowDiscontinuation.reject(
+        onWorkflowError(
           new ReplayDivergenceError(
             `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}.`,
             { eventId: event.eventId }
@@ -246,7 +438,7 @@ export async function runWorkflow(
       encryptionKey,
       worldCapabilities,
       globalThis: vmGlobalThis,
-      onWorkflowError: workflowDiscontinuation.reject,
+      onWorkflowError,
       eventsConsumer,
       // Correlation IDs (step_/wait_/hook_) are derived from `generateUlid`, so
       // the time prefix fed to `ulid()` MUST be replay-stable across every
@@ -269,6 +461,7 @@ export async function runWorkflow(
         promiseQueueHolder.current = value;
       },
       pendingDeliveries: 0,
+      suspensionGeneration: 0,
       pendingDeliveryBarriers: new Map(),
       replayPayloadCache,
     };
@@ -883,48 +1076,16 @@ export async function runWorkflow(
     );
     await workflowContext.promiseQueue;
 
-    span?.setAttributes({
-      ...Attribute.WorkflowArgumentsCount(args.length),
-    });
+    const workflowExecution = (async (): Promise<unknown> => {
+      return await workflowFn(...args);
+    })();
 
-    // Invoke user workflow
-    try {
-      const result = await Promise.race([
-        workflowFn(...args),
-        workflowDiscontinuation.promise,
-      ]);
-
-      const dehydrated = await dehydrateWorkflowReturnValue(
-        result,
-        workflowRun.runId,
-        encryptionKey,
-        vmGlobalThis,
-        false,
-        // Gate payload compression on the run's specVersion: only runs
-        // marked as possibly containing compressed payloads (spec >= 5)
-        // get gzip data.
-        (workflowRun.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
-      );
-
-      span?.setAttributes({
-        ...Attribute.WorkflowResultType(typeof result),
-      });
-
-      await drainPendingQueueItems(
-        workflowRun.runId,
-        workflowContext.invocationsQueue,
-        vmGlobalThis,
-        workflowRun,
-        'completed',
-        runReadyBarrier
-      );
-
-      return dehydrated;
-    } catch (err) {
+    const failWorkflow = async (error: unknown): Promise<never> => {
+      state = { type: 'completed' };
       // Control-flow signals are handled by the runtime and do not mean the
       // workflow has terminally failed.
-      if (WorkflowSuspension.is(err) || ReplayDivergenceError.is(err)) {
-        throw err;
+      if (WorkflowSuspension.is(error) || ReplayDivergenceError.is(error)) {
+        throw error;
       }
 
       await drainPendingQueueItems(
@@ -936,7 +1097,96 @@ export async function runWorkflow(
         runReadyBarrier
       );
 
-      throw err;
-    }
-  });
+      throw error;
+    };
+
+    const completeWorkflow = async (
+      result: unknown
+    ): Promise<WorkflowCompletion> => {
+      state = { type: 'completed' };
+      try {
+        const output = await dehydrateWorkflowReturnValue(
+          result,
+          workflowRun.runId,
+          encryptionKey,
+          vmGlobalThis,
+          false,
+          // Gate payload compression on the run's specVersion: only runs
+          // marked as possibly containing compressed payloads (spec >= 5)
+          // get gzip data.
+          (workflowRun.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
+        );
+
+        await drainPendingQueueItems(
+          workflowRun.runId,
+          workflowContext.invocationsQueue,
+          vmGlobalThis,
+          workflowRun,
+          'completed',
+          runReadyBarrier
+        );
+
+        return { output, resultType: typeof result };
+      } catch (error) {
+        return failWorkflow(error);
+      }
+    };
+
+    const waitForExecution = async (
+      interruption: PromiseWithResolvers<never>
+    ): Promise<WorkflowCompletion> => {
+      let result: unknown;
+      try {
+        result = await Promise.race([workflowExecution, interruption.promise]);
+      } catch (error) {
+        if (state.type === 'suspended' && error === state.suspension) {
+          throw error;
+        }
+        return failWorkflow(error);
+      }
+      return completeWorkflow(result);
+    };
+
+    const session: WorkflowSession = {
+      workflowRun,
+      argumentCount: args.length,
+      resume(nextEvents) {
+        switch (state.type) {
+          case 'suspended': {
+            const consumedEvents = eventsConsumer.events;
+            const isStrictExtension =
+              nextEvents.length > consumedEvents.length &&
+              consumedEvents.every(
+                (event, index) => event.eventId === nextEvents[index]?.eventId
+              );
+            if (!isStrictExtension) {
+              state = { type: 'replay' };
+              return { type: 'replay' };
+            }
+            const interruption = withResolvers<never>();
+            state = { type: 'running', interruption };
+            workflowContext.suspensionGeneration++;
+            eventsConsumer.append(nextEvents.slice(consumedEvents.length));
+            return {
+              type: 'resumed',
+              execution: waitForExecution(interruption),
+            };
+          }
+          case 'replay':
+            return { type: 'replay' };
+          case 'completed':
+          case 'running':
+            throw new WorkflowRuntimeError(
+              `Cannot resume ${state.type} workflow "${workflowRun.runId}"`
+            );
+        }
+        state satisfies never;
+      },
+    };
+
+    return {
+      session,
+      execution: waitForExecution(initialInterruption),
+    };
+  })();
 }

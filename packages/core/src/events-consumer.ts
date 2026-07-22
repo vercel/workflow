@@ -79,11 +79,16 @@ export class EventsConsumer {
   private unconsumedCheckVersion = 0;
 
   constructor(events: Event[], options: EventsConsumerOptions) {
-    this.events = events;
+    this.events = [...events];
     this.eventIndex = 0;
     this.onConsumedEvent = options.onConsumedEvent;
     this.onUnconsumedEvent = options.onUnconsumedEvent;
     this.getPromiseQueue = options.getPromiseQueue;
+  }
+
+  append(events: Event[]): void {
+    this.events.push(...events);
+    process.nextTick(this.consume);
   }
 
   /**

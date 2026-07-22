@@ -56,7 +56,11 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // Crucially, if we got here, then this step Promise does
           // not resolve so that the user workflow code does not proceed any further.
           // Notify the workflow handler that this step has not been run / has not completed yet.
+          const generation = ctx.suspensionGeneration;
           scheduleWhenIdle(ctx, () => {
+            // A retained session may have resumed past this boundary while
+            // the timer was queued; a stale signal must not fire.
+            if (generation !== ctx.suspensionGeneration) return;
             ctx.onWorkflowError(
               new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
             );

@@ -31,6 +31,7 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import { getMaxInlineSteps } from './constants.js';
 import { type MutableEventLog, withPreconditionRetry } from './helpers.js';
+import { isRetainedSerializationPassive } from './retained-step-input.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -56,6 +57,11 @@ export interface SuspensionHandlerParams {
    * where `run_started` was already awaited up front.
    */
   runReadyBarrier?: Promise<unknown>;
+  /**
+   * Prepare new step inputs without traversing workflow-owned objects during
+   * serialization. Enabled only while the caller is holding a retained VM.
+   */
+  prepareForRetention?: boolean;
 }
 
 /**
@@ -121,6 +127,8 @@ export interface SuspensionHandlerResult {
    * durably creating the user's hooks doesn't count as runtime overhead.
    */
   hookCreationMs: number;
+  /** Whether every newly serialized step input was passive retained-VM data. */
+  retainedStepInputsSafe: boolean;
 }
 
 async function createHookEvent({
@@ -205,6 +213,7 @@ export async function handleSuspension({
   requestId,
   eventLog,
   runReadyBarrier,
+  prepareForRetention = false,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -489,6 +498,33 @@ export async function handleSuspension({
   // racing with concurrent handlers on step execution.
   const createdStepCorrelationIds = new Set<string>();
 
+  // Serialization always runs through the one ordinary path below, so the
+  // durable bytes cannot depend on retention. What retention needs to know is
+  // whether that serialization will execute workflow code (getters, hooks,
+  // patched prototype members) — side effects a cold replay would not repeat.
+  // If any input in the batch is not provably passive, the caller demotes the
+  // session so the side effects land in a VM that is about to be discarded,
+  // exactly like the pre-retention runtime.
+  let retainedStepInputsSafe = true;
+  if (prepareForRetention) {
+    for (const queueItem of stepItems) {
+      if (!stepsNeedingCreation.has(queueItem.correlationId)) continue;
+      if (
+        !isRetainedSerializationPassive(
+          {
+            args: queueItem.args,
+            closureVars: queueItem.closureVars,
+            thisVal: queueItem.thisVal,
+          },
+          suspension.globalThis
+        )
+      ) {
+        retainedStepInputsSafe = false;
+        break;
+      }
+    }
+  }
+
   // Lazy inline start: defer the step_created write for up to
   // `getMaxInlineSteps()` steps the caller will run inline (in parallel). Each
   // step is created on the fly by the lazy `step_started` executeStep sends
@@ -717,6 +753,7 @@ export async function handleSuspension({
     hasAttributeEvents: attributeItems.length > 0,
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,
+    retainedStepInputsSafe,
   };
 }
 
