@@ -1,5 +1,16 @@
 # @workflow/world-testing
 
+## 4.1.12
+
+### Patch Changes
+
+- [#2916](https://github.com/vercel/workflow/pull/2916) [`ab33490`](https://github.com/vercel/workflow/commit/ab33490cde332e851ec6f99076ce9099dd2805a7) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Update vitest peer dependency range to ^4.1.10
+
+- Updated dependencies [[`0422a0e`](https://github.com/vercel/workflow/commit/0422a0e51b3299bbd8570e0055419659b8ba3fe1), [`b1d1a06`](https://github.com/vercel/workflow/commit/b1d1a066a5710fbd5f97b69ae4dd8a4d892b4d57), [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94)]:
+  - @workflow/core@4.6.1
+  - @workflow/cli@4.3.1
+  - workflow@4.6.1
+
 ## 4.1.11
 
 ### Patch Changes

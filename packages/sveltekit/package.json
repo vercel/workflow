@@ -1,6 +1,6 @@
 {
   "name": "@workflow/sveltekit",
-  "version": "4.0.11",
+  "version": "4.0.12",
   "description": "SvelteKit integration for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
