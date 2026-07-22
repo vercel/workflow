@@ -29,12 +29,12 @@ import {
 import { classifyRunError } from '../classify-error.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
+import { encrypt as encryptSerializedData } from '../serialization/encryption.js';
 import {
   dehydrateRunError,
   hydrateRunError,
   maybeEncrypt,
 } from '../serialization.js';
-import { encrypt as encryptSerializedData } from '../serialization/encryption.js';
 import { remapErrorStack, stripInlineSourceMap } from '../source-map.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
