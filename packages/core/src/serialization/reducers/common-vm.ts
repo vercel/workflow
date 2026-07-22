@@ -305,7 +305,21 @@ export function getCommonReducers(): Partial<Reducers> {
       )
         return false;
       const name = value[Symbol.for('WORKFLOW_STREAM_NAME')];
-      return { name: name || '__empty' };
+      const s: { name: string; runId?: string; deploymentId?: string } = {
+        name: name || '__empty',
+      };
+      // When the handle was forwarded from another run (parent -> child
+      // via start()), preserve the foreign runId/deploymentId so the
+      // step-side reviver opens the writable against the original stream.
+      // Mirrors the node:vm workflow reducer in serialization.ts.
+      const foreignRunId = value[Symbol.for('WORKFLOW_STREAM_SERVER_RUN_ID')];
+      if (typeof foreignRunId === 'string') s.runId = foreignRunId;
+      const foreignDeploymentId =
+        value[Symbol.for('WORKFLOW_STREAM_SERVER_DEPLOYMENT_ID')];
+      if (typeof foreignDeploymentId === 'string') {
+        s.deploymentId = foreignDeploymentId;
+      }
+      return s;
     }) as any,
     Set: (value) => value instanceof Set && Array.from(value),
     URL: (value) => value instanceof URL && value.href,
@@ -535,6 +549,20 @@ export function getCommonRevivers(): Partial<Revivers> {
       const stream = Object.create(WS ? WS.prototype : {});
       if (value && 'name' in value) {
         stream[Symbol.for('WORKFLOW_STREAM_NAME')] = value.name;
+      }
+      // Preserve the foreign runId/deploymentId, if present, so that when
+      // the handle is later passed to a step the workflow reducer can
+      // forward it through to the step reviver (cross-run writable
+      // forwarding via start()).
+      if (value && typeof (value as any).runId === 'string') {
+        stream[Symbol.for('WORKFLOW_STREAM_SERVER_RUN_ID')] = (
+          value as any
+        ).runId;
+      }
+      if (value && typeof (value as any).deploymentId === 'string') {
+        stream[Symbol.for('WORKFLOW_STREAM_SERVER_DEPLOYMENT_ID')] = (
+          value as any
+        ).deploymentId;
       }
       return stream;
     },

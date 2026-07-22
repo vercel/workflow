@@ -104,10 +104,17 @@ async function dispatchPendingOps(params: {
   pendingOperations: PendingOperation[];
   queueSteps: boolean;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
-}): Promise<{ createdAttributeEvent: boolean }> {
+}): Promise<{
+  createdAttributeEvent: boolean;
+  createdGetConflictHook: boolean;
+}> {
   const { world, runId, workflowRun, encryptionKey, pendingOperations } =
     params;
   const wfdiag = params.wfdiag;
+  // Set when a hook with a parked getConflict() awaiter had its
+  // hook_created written this invocation. The workflow must be re-invoked
+  // so replay can confirm creation and resolve the awaiter.
+  let createdGetConflictHook = false;
   // Set when a new attr_set event is written this invocation. The
   // workflow must be re-invoked to consume it (resolving the pending
   // setAttributes() promise), so the entrypoint requeues immediately —
@@ -243,6 +250,9 @@ async function dispatchPendingOps(params: {
               // to abort processing below (if any) instead of bailing.
               if (!EntityConflictError.is(err)) throw err;
             }
+            if (hook.hasGetConflictAwaiter) {
+              createdGetConflictHook = true;
+            }
           }
 
           if (hook.abortRequested) {
@@ -366,7 +376,7 @@ async function dispatchPendingOps(params: {
   // Per-op dispatch runs in parallel.
   await Promise.all(opsPromises);
 
-  return { createdAttributeEvent };
+  return { createdAttributeEvent, createdGetConflictHook };
 }
 
 /**
@@ -696,15 +706,16 @@ export async function runWorkflowWithQuickJS(params: {
     // on cloud worlds (e.g. Vercel) where each storage call is a
     // network round-trip.
     let minTimeoutSeconds: number | undefined;
-    const { createdAttributeEvent } = await dispatchPendingOps({
-      world,
-      runId,
-      workflowRun,
-      encryptionKey,
-      pendingOperations,
-      queueSteps: true,
-      wfdiag,
-    });
+    const { createdAttributeEvent, createdGetConflictHook } =
+      await dispatchPendingOps({
+        world,
+        runId,
+        workflowRun,
+        encryptionKey,
+        pendingOperations,
+        queueSteps: true,
+        wfdiag,
+      });
 
     // Handle pending waits — both newly created and still-pending from
     // earlier invocations. For each wait, either create a wait_completed
@@ -748,12 +759,16 @@ export async function runWorkflowWithQuickJS(params: {
       await Promise.all(waitCompletePromises);
     }
 
-    if (needsRequeue || createdAttributeEvent) {
-      // An elapsed wait was completed or a new attr_set event was
-      // written — re-queue immediately so the next invocation can
-      // process the new event.
+    if (needsRequeue || createdAttributeEvent || createdGetConflictHook) {
+      // An elapsed wait was completed, a new attr_set event was written,
+      // or a getConflict()-awaited hook was created — re-queue immediately
+      // so the next invocation can process the new event.
       wfdiag('exit_suspended', {
-        action: needsRequeue ? 'wait_elapsed_requeue' : 'attr_set_requeue',
+        action: needsRequeue
+          ? 'wait_elapsed_requeue'
+          : createdAttributeEvent
+            ? 'attr_set_requeue'
+            : 'get_conflict_requeue',
         timeoutSeconds: 0,
       });
       return { timeoutSeconds: 0 };

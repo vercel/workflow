@@ -100,6 +100,12 @@ export interface PendingHook {
   abortPayload?: Uint8Array;
   /** Set by the completion drain when a system hook is implicitly disposed. */
   disposed?: boolean;
+  /**
+   * True when the workflow is awaiting hook.getConflict() for this hook.
+   * The entrypoint re-invokes the workflow right after writing
+   * hook_created so replay can confirm creation and resolve the awaiter.
+   */
+  hasGetConflictAwaiter?: boolean;
 }
 
 export interface PendingAttribute {
@@ -435,14 +441,28 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   // Register in pending operations.
   // Serialize metadata inside the VM so Response/Request objects are
   // properly handled by the devalue reducers before crossing the boundary.
-  globalThis.__pending.push({
+  var pendingOp = {
     type: "hook",
     correlationId: correlationId,
     token: token,
     isWebhook: !!options.isWebhook,
     metadata: options.metadata ? globalThis[Symbol.for("workflow-serialize")](options.metadata) : undefined,
     hasCreatedEvent: false,
-  });
+  };
+  globalThis.__pending.push(pendingOp);
+
+  // Per-hook lifecycle state backing hook.getConflict(): resolves null
+  // once creation is confirmed (hook_created), or resolves with the
+  // conflicting Run handle / rejects with HookConflictError on
+  // hook_conflict. State transitions are driven by the host during event
+  // processing (see processEvents).
+  globalThis.__hooks = globalThis.__hooks || {};
+  globalThis.__hooks[correlationId] = {
+    token: token,
+    created: false,
+    conflict: null,
+    getConflictResolvers: [],
+  };
 
   // Each await creates a new promise for the next payload.
   // The correlationId stays the same — the resolver is replaced each time.
@@ -475,11 +495,32 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     }
   }
 
+  function getConflict() {
+    var state = globalThis.__hooks[correlationId];
+    if (state.conflict) {
+      return state.conflict.run
+        ? Promise.resolve(state.conflict.run)
+        : Promise.reject(state.conflict.error);
+    }
+    if (state.created) {
+      return Promise.resolve(null);
+    }
+    // Creation not yet confirmed by the event log — park the awaiter and
+    // flag the pending op so the entrypoint re-invokes the workflow right
+    // after writing hook_created (nothing external resumes a getConflict
+    // awaiter; confirmation only comes from replaying the new event).
+    pendingOp.hasGetConflictAwaiter = true;
+    return new Promise(function(resolve, reject) {
+      state.getConflictResolvers.push({ resolve: resolve, reject: reject });
+    });
+  }
+
   var hook = {
     token: token,
     then: function(onFulfilled, onRejected) {
       return createHookPromise().then(onFulfilled, onRejected);
     },
+    getConflict: getConflict,
     dispose: disposeHook,
   };
 
@@ -1336,22 +1377,67 @@ async function processEvents(
         break;
       }
       case 'hook_conflict': {
-        const hasResolver = vm.dump(
-          vm.evalCode(`!!globalThis.__resolvers["${escapedCid}"]`)
-        );
-        if (hasResolver) {
-          const conflictToken = (eventData?.token as string) ?? 'unknown';
+        // Another workflow owns this hook token. Payload awaiters reject
+        // with HookConflictError; getConflict() awaiters resolve with a
+        // Run handle for the conflicting run (revived through the VM's
+        // class registry so its methods are durable step proxies) or
+        // reject with the error when no handle can be constructed —
+        // mirroring the node:vm engine's hook.ts hook_conflict handling.
+        const conflictToken = (eventData?.token as string) ?? 'unknown';
+        const conflictingRunId = eventData?.conflictingRunId as
+          | string
+          | undefined;
+        const didSettle = vm.dump(
           vm.evalCode(
-            `globalThis.__resolvers["${escapedCid}"].reject(new Error(${JSON.stringify(`Hook token "${conflictToken}" is already in use by another workflow`)}));` +
-              `delete globalThis.__resolvers["${escapedCid}"];`
-          ).dispose();
-          {
-            resolved = true;
-            let b: number;
-            do {
-              b = vm.executePendingJobs();
-            } while (b > 0);
-          }
+            `(function(){
+              var cid = ${JSON.stringify(cid)};
+              var token = ${JSON.stringify(conflictToken)};
+              var conflictingRunId = ${JSON.stringify(conflictingRunId ?? null)};
+              var ErrCls = globalThis[Symbol.for('@workflow/errors//HookConflictError')];
+              var err;
+              if (typeof ErrCls === 'function') {
+                err = new ErrCls(token, conflictingRunId || undefined);
+              } else {
+                err = new Error('Hook token "' + token + '" is already in use by another workflow');
+                err.name = 'HookConflictError';
+                err.token = token;
+                if (conflictingRunId) err.conflictingRunId = conflictingRunId;
+              }
+              var run = null;
+              if (conflictingRunId) {
+                var reg = globalThis[Symbol.for('workflow-class-registry')];
+                var RunCls = reg && reg.get('class//workflow//Run');
+                var des = RunCls && RunCls[Symbol.for('workflow-deserialize')];
+                if (typeof des === 'function') {
+                  run = des.call(RunCls, { runId: conflictingRunId });
+                }
+              }
+              var settled = false;
+              var state = globalThis.__hooks && globalThis.__hooks[cid];
+              if (state && !state.conflict) {
+                state.conflict = { error: err, run: run };
+                var gc = state.getConflictResolvers;
+                state.getConflictResolvers = [];
+                for (var i = 0; i < gc.length; i++) {
+                  if (run) { gc[i].resolve(run); } else { gc[i].reject(err); }
+                  settled = true;
+                }
+              }
+              if (globalThis.__resolvers[cid]) {
+                globalThis.__resolvers[cid].reject(err);
+                delete globalThis.__resolvers[cid];
+                settled = true;
+              }
+              return settled;
+            })()`
+          )
+        );
+        if (didSettle) {
+          resolved = true;
+          let b: number;
+          do {
+            b = vm.executePendingJobs();
+          } while (b > 0);
         }
         markCreated(vm, escapedCid);
         break;
@@ -1359,8 +1445,33 @@ async function processEvents(
       case 'step_created':
       case 'step_started':
       case 'step_retrying':
-      case 'wait_created':
+      case 'wait_created': {
+        markCreated(vm, escapedCid);
+        break;
+      }
       case 'hook_created': {
+        // Confirm creation for getConflict() awaiters: resolve them with
+        // null (no conflict) once the event log proves the hook exists.
+        const settledGetConflict = vm.dump(
+          vm.evalCode(
+            `(function(){
+              var state = globalThis.__hooks && globalThis.__hooks[${JSON.stringify(cid)}];
+              if (!state) return false;
+              state.created = true;
+              var gc = state.getConflictResolvers;
+              state.getConflictResolvers = [];
+              for (var i = 0; i < gc.length; i++) gc[i].resolve(null);
+              return gc.length > 0;
+            })()`
+          )
+        );
+        if (settledGetConflict) {
+          resolved = true;
+          let b: number;
+          do {
+            b = vm.executePendingJobs();
+          } while (b > 0);
+        }
         markCreated(vm, escapedCid);
         break;
       }
