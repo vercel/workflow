@@ -980,3 +980,167 @@ describe('global surface parity', () => {
     expect(value.plainCompare).toBeLessThan(0);
   });
 });
+
+describe('VM snapshot/restore', () => {
+  const twoStepCode = `
+    var add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//add");
+    async function workflow() {
+      var a = await add(10, 7);
+      var b = await add(a, 8);
+      return b;
+    }
+    workflow.workflowId = "workflow//test//workflow";
+    globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+  `;
+
+  async function suspendFresh(run: ReturnType<typeof makeRun>) {
+    const { startQuickJSWorkflow } = await import('./quickjs-runtime.js');
+    const session = await startQuickJSWorkflow({
+      workflowCode: twoStepCode,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [],
+    });
+    expect(session.result.suspended).toBeDefined();
+    return session;
+  }
+
+  function stepEvents(
+    run: { runId: string },
+    cid: string,
+    result: number,
+    idPrefix: string
+  ) {
+    return [
+      {
+        eventId: `${idPrefix}_created`,
+        runId: run.runId,
+        eventType: 'step_created' as const,
+        correlationId: cid,
+        eventData: { stepName: 'step//test//add' },
+        createdAt: new Date('2025-01-01T00:00:01Z'),
+      },
+      {
+        eventId: `${idPrefix}_completed`,
+        runId: run.runId,
+        eventType: 'step_completed' as const,
+        correlationId: cid,
+        eventData: { result },
+        createdAt: new Date('2025-01-01T00:00:02Z'),
+      },
+    ];
+  }
+
+  it('restores a snapshot and resumes at the suspension point', async () => {
+    const { startQuickJSWorkflow } = await import('./quickjs-runtime.js');
+    const run = makeRun();
+    const s1 = await suspendFresh(run);
+    const step1Cid = s1.result.suspended!.pendingOperations[0].correlationId;
+    const snapshotBytes = s1.snapshot();
+    s1.dispose();
+    expect(snapshotBytes).toBeInstanceOf(Uint8Array);
+    expect(snapshotBytes.byteLength).toBeGreaterThan(1000);
+
+    // Restore in a "fresh process": only the delta events are supplied.
+    const s2 = await startQuickJSWorkflow({
+      workflowCode: twoStepCode,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: stepEvents(run, step1Cid, 17, 'evnt_s1'),
+      existingSnapshot: {
+        data: snapshotBytes,
+        metadata: { eventsCursor: 'cursor_1', createdAt: new Date() },
+      },
+    });
+    expect(s2.result.suspended).toBeDefined();
+    const step2Cid = s2.result.suspended!.pendingOperations[0].correlationId;
+    expect(step2Cid).toMatch(/^step_[0-9A-Z]{26}$/);
+    expect(step2Cid).not.toBe(step1Cid);
+
+    // Feed step 2's completion into the restored live VM.
+    const final = await s2.continueWithEvents(
+      stepEvents(run, step2Cid, 25, 'evnt_s2')
+    );
+    expect(unwrapResult(final.completed!.result)).toBe(25);
+    s2.dispose();
+  });
+
+  it('produces identical post-restore correlationIds for concurrent resumes from the same snapshot', async () => {
+    const { startQuickJSWorkflow } = await import('./quickjs-runtime.js');
+    const run = makeRun();
+    const s1 = await suspendFresh(run);
+    const step1Cid = s1.result.suspended!.pendingOperations[0].correlationId;
+    const snapshotBytes = s1.snapshot();
+    s1.dispose();
+
+    const delta = stepEvents(run, step1Cid, 17, 'evnt_s1');
+    const meta = { eventsCursor: 'cursor_1', createdAt: new Date() };
+    const [ra, rb] = await Promise.all([
+      startQuickJSWorkflow({
+        workflowCode: twoStepCode,
+        workflowId: 'workflow//test//workflow',
+        workflowRun: run,
+        events: delta,
+        existingSnapshot: { data: snapshotBytes, metadata: meta },
+      }),
+      startQuickJSWorkflow({
+        workflowCode: twoStepCode,
+        workflowId: 'workflow//test//workflow',
+        workflowRun: run,
+        events: delta,
+        existingSnapshot: { data: snapshotBytes, metadata: meta },
+      }),
+    ]);
+    expect(ra.result.suspended!.pendingOperations[0].correlationId).toBe(
+      rb.result.suspended!.pendingOperations[0].correlationId
+    );
+    ra.dispose();
+    rb.dispose();
+  });
+
+  it('supports restore from an OLDER snapshot with multi-suspension partial replay (threshold model)', async () => {
+    const { startQuickJSWorkflow } = await import('./quickjs-runtime.js');
+    const run = makeRun();
+
+    // Take a snapshot at suspension 1 only.
+    const s1 = await suspendFresh(run);
+    const step1Cid = s1.result.suspended!.pendingOperations[0].correlationId;
+    const snapshotBytes = s1.snapshot();
+    s1.dispose();
+
+    // Simulate a later invocation that resumed from that snapshot WITHOUT
+    // saving a newer one: it consumed step 1's results and recorded step 2.
+    const mid = await startQuickJSWorkflow({
+      workflowCode: twoStepCode,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: stepEvents(run, step1Cid, 17, 'evnt_s1'),
+      existingSnapshot: {
+        data: snapshotBytes,
+        metadata: { eventsCursor: 'cursor_1', createdAt: new Date() },
+      },
+    });
+    const step2Cid = mid.result.suspended!.pendingOperations[0].correlationId;
+    mid.dispose();
+
+    // A fresh resume still restores the OLD snapshot but the delta now
+    // spans TWO suspensions (step 1 and step 2 events). The restored heap
+    // must regenerate step 2's id identically to consume its events.
+    const late = await startQuickJSWorkflow({
+      workflowCode: twoStepCode,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [
+        ...stepEvents(run, step1Cid, 17, 'evnt_s1'),
+        ...stepEvents(run, step2Cid, 25, 'evnt_s2'),
+      ],
+      existingSnapshot: {
+        data: snapshotBytes,
+        metadata: { eventsCursor: 'cursor_1', createdAt: new Date() },
+      },
+    });
+    expect(late.result.completed).toBeDefined();
+    expect(unwrapResult(late.result.completed!.result)).toBe(25);
+    late.dispose();
+  });
+});

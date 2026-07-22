@@ -27,7 +27,12 @@
  * `node:vm` engine's replay determinism.
  */
 
-import type { Event, RunInput, WorkflowRun } from '@workflow/world';
+import type {
+  Event,
+  RunInput,
+  SnapshotMetadata,
+  WorkflowRun,
+} from '@workflow/world';
 import * as nanoid from 'nanoid';
 import {
   type ExtensionDescriptor,
@@ -190,10 +195,26 @@ export interface QuickJSRuntimeOptions {
   /** The workflow run entity */
   workflowRun: WorkflowRun;
   /**
-   * The full event log for the run. Every invocation replays the complete
-   * log from the start (same replay semantics as the `node:vm` engine).
+   * The event log to process. Without a snapshot this is the FULL log and
+   * every invocation replays it from the start (same replay semantics as
+   * the `node:vm` engine). With `existingSnapshot`, this is the delta of
+   * events recorded at/after the snapshot's `eventsCursor` — feeding
+   * already-consumed events is harmless (consumed resolvers are gone and
+   * hook deliveries are deduped in the VM heap), so an imprecise cursor
+   * only costs redundant scanning.
    */
   events: Event[];
+  /**
+   * A previously persisted VM-memory snapshot to restore from, or
+   * null/undefined for a fresh boot + full replay. Restoring skips VM
+   * bootstrap, bundle evaluation, and pre-snapshot re-execution entirely:
+   * the WASM heap resumes at the exact suspension point it was captured
+   * at, and only `events` are processed on top.
+   */
+  existingSnapshot?: {
+    data: Uint8Array;
+    metadata: SnapshotMetadata;
+  } | null;
   /** Encryption key for decrypting event payloads (undefined if unencrypted) */
   encryptionKey?: DecryptionKey;
   /**
@@ -966,30 +987,34 @@ function getCompiledAssets() {
   return compiledAssetsPromise;
 }
 
-async function initWorkflowVM(
-  getNowMs: () => number,
-  interruptBudget: InterruptBudget
-): Promise<QuickJS> {
-  // Deterministic replay clock: Date.now() / new Date() inside the VM
-  // read the host-controlled clock instead of wall time. Replay
-  // re-executes the workflow from the top on every invocation, so the
-  // clock must be derived from the event log (not real time) for the
-  // workflow to observe stable timestamps across invocations.
-  const wasi: WasiOptions = (memory) => ({
+/**
+ * Deterministic replay clock: Date.now() / new Date() inside the VM read
+ * the host-controlled clock instead of wall time. Replay re-executes the
+ * workflow (or resumes a restored heap) against the event log, so the
+ * clock must be derived from the log — not real time — for the workflow
+ * to observe stable timestamps across invocations.
+ */
+function buildWasiClock(getNowMs: () => number): WasiOptions {
+  return (memory) => ({
     clock_time_get(_clockId: number, _precision: bigint, resultPtr: number) {
       const timeNs = BigInt(Math.round(getNowMs())) * 1_000_000n;
       new DataView(memory.buffer).setBigUint64(resultPtr, timeNs, true);
       return 0;
     },
   });
+}
 
+async function initWorkflowVM(
+  getNowMs: () => number,
+  interruptBudget: InterruptBudget
+): Promise<QuickJS> {
   const assets = await getCompiledAssets();
   const vm = await QuickJS.create({
     wasm: assets.wasm as never,
     memoryLimit: 256 * 1024 * 1024,
     interruptHandler: createInterruptHandler(interruptBudget),
     extensions: assets.extensions,
-    wasi,
+    wasi: buildWasiClock(getNowMs),
   });
 
   // Evaluate the VM serde bundle
@@ -999,6 +1024,30 @@ async function initWorkflowVM(
   vm.evalCode(VM_BOOTSTRAP, 'bootstrap.js').dispose();
 
   return vm;
+}
+
+/**
+ * Restore a VM from persisted snapshot bytes. The restored WASM heap
+ * resumes at the exact suspension point it was captured at — the serde
+ * bundle, workflow bundle, and all workflow state are already inside it,
+ * so no bootstrap or bundle evaluation happens here. Host callbacks are
+ * name-registered by the caller (they live host-side and do not survive
+ * serialization).
+ */
+async function restoreWorkflowVM(
+  data: Uint8Array,
+  getNowMs: () => number,
+  interruptBudget: InterruptBudget
+): Promise<QuickJS> {
+  const assets = await getCompiledAssets();
+  const snapshot = QuickJS.deserializeSnapshot(data);
+  return QuickJS.restore(snapshot, {
+    wasm: assets.wasm as never,
+    memoryLimit: 256 * 1024 * 1024,
+    interruptHandler: createInterruptHandler(interruptBudget),
+    extensions: assets.extensions,
+    wasi: buildWasiClock(getNowMs),
+  });
 }
 
 /**
@@ -1018,6 +1067,13 @@ export interface QuickJSWorkflowSession {
    * Resets the VM's interrupt budget for the new execution burst.
    */
   continueWithEvents(newEvents: Event[]): Promise<QuickJSRuntimeResult>;
+  /**
+   * Capture and serialize the live VM's memory. Only valid while the
+   * last result was `suspended`. The returned bytes restore via
+   * `existingSnapshot` on a later invocation (pair them with the events
+   * cursor at capture time).
+   */
+  snapshot(): Uint8Array;
   /** Dispose the VM if it is still alive. Safe to call multiple times. */
   dispose(): void;
 }
@@ -1059,11 +1115,23 @@ export async function startQuickJSWorkflow(
   // synthesized run object whose timestamps differ from the durably
   // stored ones that later invocations load. Matches the node:vm
   // engine's seed (workflow.ts).
-  const seed = [
+  //
+  // When restoring from a snapshot, the snapshot's events cursor is
+  // mixed into the seed: the restored heap already consumed some number
+  // of PRNG draws, so re-seeding from the base would replay the first-N
+  // draws and collide with correlationIds recorded before the snapshot.
+  // The cursor is stable for every resumption from the SAME snapshot
+  // (concurrent resumes still produce identical ids, preserving the
+  // world's dedup) but advances when a newer snapshot is taken.
+  const seedParts = [
     workflowRun.runId,
     workflowRun.workflowName,
     workflowRun.deploymentId,
-  ].join(':');
+  ];
+  if (options.existingSnapshot?.metadata.eventsCursor) {
+    seedParts.push(options.existingSnapshot.metadata.eventsCursor);
+  }
+  const seed = seedParts.join(':');
   const rng = seedrandom(seed);
 
   // Seeded nanoid generator — uses the same nanoid package and seeded PRNG
@@ -1084,8 +1152,55 @@ export async function startQuickJSWorkflow(
     if (Number.isFinite(ms)) vmNowMs = Math.max(vmNowMs, ms);
   };
 
-  // ---- Phase 1: static initialization ----
   const interruptBudget: InterruptBudget = { start: Date.now() };
+
+  if (options.existingSnapshot) {
+    // ---- RESTORE from a persisted VM snapshot ----
+    const vm = await restoreWorkflowVM(
+      options.existingSnapshot.data,
+      () => vmNowMs,
+      interruptBudget
+    );
+
+    // Re-register host callbacks after restore. Host functions are
+    // referenced from the WASM heap by name; the host-side registry is
+    // empty in a fresh process, so each callback must be re-registered
+    // under the same name used during newFunction() on the fresh-boot
+    // path. (The in-VM serde functions survive in the heap — no
+    // re-registration needed for them.)
+    vm.registerHostCallback('random', () => vm.newNumber(rng()));
+    vm.registerHostCallback('__generateNanoid', () =>
+      vm.newString(generateNanoid())
+    );
+
+    // Process the delta events and drain jobs.
+    {
+      let maxIterations = 100;
+      let madeProgress: boolean;
+      do {
+        madeProgress = await processEvents(
+          vm,
+          events,
+          advanceClock,
+          options.encryptionKey
+        );
+        let batch: number;
+        do {
+          batch = vm.executePendingJobs();
+          if (batch > 0) madeProgress = true;
+        } while (batch > 0);
+      } while (madeProgress && --maxIterations > 0);
+    }
+
+    return makeLiveSession(
+      vm,
+      interruptBudget,
+      advanceClock,
+      options.encryptionKey
+    );
+  }
+
+  // ---- Phase 1: static initialization ----
   const vm = await initWorkflowVM(() => vmNowMs, interruptBudget);
 
   // Any throw between here and the terminal paths (which dispose the VM
@@ -1326,6 +1441,11 @@ function makeSettledSession(
         'QuickJS workflow session is settled — continueWithEvents is only valid while suspended'
       );
     },
+    snapshot: () => {
+      throw new Error(
+        'QuickJS workflow session is settled — snapshot is only valid while suspended'
+      );
+    },
     dispose: () => {},
   };
 }
@@ -1378,6 +1498,15 @@ function makeLiveSession(
       if (!next.suspended) alive = false;
       session.result = next;
       return next;
+    },
+    snapshot(): Uint8Array {
+      if (!alive) {
+        throw new Error(
+          'QuickJS workflow session is not alive — snapshot is only valid while suspended'
+        );
+      }
+      const snap = vm.snapshot();
+      return QuickJS.serializeSnapshot(snap);
     },
     dispose(): void {
       if (alive) {
