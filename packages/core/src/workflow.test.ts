@@ -405,6 +405,68 @@ describe('runWorkflow', () => {
     ).toEqual({ type: 'replay' });
   });
 
+  it('falls back to replay (not failure) after mid-execution divergence', async () => {
+    const ops: Promise<any>[] = [];
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_retained_mid_divergence',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_retained_mid_divergence',
+        noEncryptionKey,
+        ops
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    const workflowCode = `
+      const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step");
+      async function workflow() { await step(); }
+      ${getWorkflowTransformCode('workflow')}`;
+    const events: Event[] = [];
+
+    const suspended = await executeWorkflow({
+      type: 'replay',
+      workflowCode,
+      workflowRun,
+      events,
+      encryptionKey: noEncryptionKey,
+      replayPayloadCache: new ReplayPayloadCache(noEncryptionKey),
+    });
+    assert(suspended.type === 'suspended');
+
+    // A strict extension whose appended suffix the VM cannot consume: the
+    // resume itself starts, then diverges mid-execution.
+    await expect(
+      executeWorkflow({
+        type: 'resume',
+        session: suspended.session,
+        events: [
+          {
+            eventId: 'event-alien',
+            runId: workflowRun.runId,
+            eventType: 'hook_received',
+            correlationId: 'hook_unknown',
+            eventData: {},
+            createdAt: new Date('2024-01-01T00:00:01.000Z'),
+          } as Event,
+        ],
+      })
+    ).rejects.toThrow(/could not consume event/);
+
+    // The session must demote to replay — not throw "cannot resume".
+    expect(
+      await executeWorkflow({
+        type: 'resume',
+        session: suspended.session,
+        events: [],
+      })
+    ).toEqual({ type: 'replay' });
+  });
+
   it('regenerates step correlation IDs independent of startedAt (turbo replay-stability)', async () => {
     // Turbo's first delivery synthesizes `startedAt` from the local clock,
     // while later (non-turbo) deliveries load the server-canonical `startedAt`.

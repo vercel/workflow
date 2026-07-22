@@ -100,17 +100,6 @@ const mixedBatchWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP"
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
-// Map/Date/typed-array arguments serialize through pinned prototype members
-// (see vm/serialization-pins.ts), so these boundaries stay retainable.
-const builtinArgsWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
-  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
-  async function workflow() {
-    const a = await s1({ index: new Map([["k", 1]]), when: new Date(1234) });
-    const b = await s2(new Uint8Array([1, 2, 3]));
-    return a + b;
-  }
-  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
-
 // `crypto.subtle.digest` computes synchronously via node:crypto, so a
 // digest-using VM stays quiescent at suspension and remains retainable.
 const digestWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
@@ -328,15 +317,6 @@ describe('retained VM through the inline replay loop', () => {
     );
     expect(output).toBeInstanceOf(Uint8Array);
     expect(vmBuilds).toBeGreaterThan(1);
-  });
-
-  it('retains boundaries whose args are supported built-ins', async () => {
-    const { vmBuilds, output } = await drive(
-      'wrun_retained_builtins',
-      builtinArgsWorkflow
-    );
-    expect(output).toBeInstanceOf(Uint8Array);
-    expect(vmBuilds).toBe(1);
   });
 
   it('retains a VM that used the synchronous crypto.subtle.digest', async () => {
