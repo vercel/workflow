@@ -363,7 +363,7 @@ describe('re-enqueue active runs on start', () => {
 
   it('cancels active runs (and does not re-enqueue) with start({ onRestart: "cancel" })', async () => {
     // Phase 1: seed runs in various states.
-    const world1 = createLocalWorld({ dataDir });
+    const world1 = createWorld({ dataDir });
     await world1.start();
 
     const pendingRun = await createRun(world1, {
@@ -391,7 +391,7 @@ describe('re-enqueue active runs on start', () => {
 
     // Phase 2: restart in "cancel" mode (the dev-server behavior). The handler
     // must NOT be called — active runs are cancelled, not re-enqueued.
-    const world2 = createLocalWorld({ dataDir });
+    const world2 = createWorld({ dataDir });
     const receivedRunIds: string[] = [];
     world2.registerHandler('__wkf_workflow_', async (req) => {
       const body = await req.json();

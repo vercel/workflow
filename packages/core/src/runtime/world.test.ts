@@ -1,3 +1,4 @@
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureWorldStarted, setWorld } from './world.js';
 
@@ -23,7 +24,9 @@ describe('ensureWorldStarted dev detection', () => {
 
   function mockWorld() {
     const start = vi.fn(async () => {});
-    setWorld({ start } as never);
+    // specVersion is required: getWorld() asserts the World's spec version
+    // matches the runtime's before returning it.
+    setWorld({ start, specVersion: SPEC_VERSION_CURRENT } as never);
     return start;
   }
 

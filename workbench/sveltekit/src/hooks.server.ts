@@ -1,8 +1,8 @@
-import { dev } from '$app/environment';
 import type { ServerInit } from '@sveltejs/kit';
 import { registerOTel } from '@vercel/otel';
 import { createWorld as createPostgresWorld } from '@workflow/world-postgres';
 import { setWorld } from 'workflow/runtime';
+import { dev } from '$app/environment';
 
 registerOTel({
   serviceName: 'example-sveltekit',
