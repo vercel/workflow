@@ -51,8 +51,10 @@ writeFileSync(
  * Do not edit manually.
  *
  * This is the VM serialization bundle — a self-contained IIFE that sets up
- * serialize/deserialize + TextEncoder/TextDecoder polyfills inside the
- * QuickJS WASM VM. It includes devalue and all workflow-mode reducers.
+ * the serialize/deserialize functions inside the QuickJS WASM VM. It
+ * includes devalue and all workflow-mode reducers/revivers. (TextEncoder,
+ * TextDecoder, and Headers are provided by quickjs-wasi's native C
+ * extensions — no JS polyfills are bundled.)
  *
  * Size: ${(bundleCode.length / 1024).toFixed(1)} KB minified
  */
