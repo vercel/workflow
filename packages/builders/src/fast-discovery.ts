@@ -63,10 +63,12 @@ interface FastDiscoverEntriesOptions {
   defaultTsconfigPath: string | undefined;
   workingDir: string;
   /**
-   * Whether files located under `node_modules` may be registered as workflows
-   * or steps. When `false`, third-party workflow/step files are skipped so
-   * their code is neither transformed nor bundled. Import traversal and serde
-   * discovery are unaffected. Defaults to `true`.
+   * Whether workflow discovery descends into `node_modules`. When `false`,
+   * imports from application code that resolve into `node_modules` are not
+   * followed, so no dependency file is read, scanned, or registered — third
+   * party workflow/step/serde code is neither transformed nor bundled. Imports
+   * *within* `node_modules` are still followed, so the SDK's own seeded runtime
+   * serde entry keeps discovering its transitive classes. Defaults to `true`.
    */
   discoverWorkflowsInNodeModules?: boolean;
 }
@@ -943,6 +945,20 @@ export async function fastDiscoverEntries({
       return;
     }
 
+    // Opt-out: don't descend into node_modules from application code. This
+    // stops workflow discovery from reading, scanning, or following any
+    // third-party dependency's file graph. Imports *within* node_modules are
+    // still followed (importer already under node_modules), so the SDK's own
+    // seeded runtime serde entry point keeps discovering its transitive
+    // classes (e.g. `Run`) even though it lives under node_modules.
+    if (
+      !discoverWorkflowsInNodeModules &&
+      isNodeModulesPath(resolved) &&
+      !isNodeModulesPath(filePath)
+    ) {
+      return;
+    }
+
     addImportParent(filePath, resolved);
     if (!isJsTsFile(resolved) || isGeneratedBuildArtifactPath(resolved)) {
       return;
@@ -968,17 +984,10 @@ export async function fastDiscoverEntries({
     }
 
     const patterns = detectWorkflowPatterns(source);
-    // When node_modules discovery is opted out, files under node_modules are
-    // not registered as workflows or steps (so third-party workflow code is
-    // neither transformed nor bundled). Serde registration and import
-    // traversal below are intentionally left intact — the SDK seeds its own
-    // runtime serde entry point, which lives in node_modules.
-    const registerWorkflowsAndSteps =
-      discoverWorkflowsInNodeModules || !isNodeModulesPath(filePath);
-    if (patterns.hasUseWorkflow && registerWorkflowsAndSteps) {
+    if (patterns.hasUseWorkflow) {
       state.discoveredWorkflows.add(filePath);
     }
-    if (patterns.hasUseStep && registerWorkflowsAndSteps) {
+    if (patterns.hasUseStep) {
       state.discoveredSteps.add(filePath);
     }
     if (patterns.hasSerde && hasLikelySerdeClass(source)) {
