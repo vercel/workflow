@@ -253,6 +253,24 @@ const bytea = customType<{ data: Buffer; notNull: false; default: false }>({
   },
 });
 
+/**
+ * VM snapshots for VM-memory snapshotting.
+ *
+ * Each row is a 1-to-1 mapping with a workflow run — a snapshot captures
+ * the QuickJS VM state at a suspension point so execution can resume from
+ * there without replaying the full event log.
+ *
+ * The binary data is stored as opaque bytes in the `data` column (the SDK
+ * applies compression/encryption before handing bytes to the world).
+ * Metadata (`eventsCursor`, `createdAt`) lives alongside for cheap loads.
+ */
+export const snapshots = schema.table('workflow_snapshots', {
+  runId: varchar('run_id').primaryKey(),
+  data: bytea('data').notNull(),
+  eventsCursor: varchar('events_cursor'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
 export const streams = schema.table(
   'workflow_stream_chunks',
   {

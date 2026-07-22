@@ -1,0 +1,73 @@
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createSnapshotsStorage } from './snapshots-storage.js';
+
+describe('snapshots storage (world-local)', () => {
+  let testDir: string;
+  let snapshots: ReturnType<typeof createSnapshotsStorage>;
+
+  beforeEach(async () => {
+    testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'snapshots-test-'));
+    snapshots = createSnapshotsStorage(testDir);
+  });
+
+  afterEach(async () => {
+    await fs.rm(testDir, { recursive: true, force: true });
+  });
+
+  it('returns null when no snapshot exists', async () => {
+    expect(await snapshots.load('wrun_missing')).toBeNull();
+  });
+
+  it('round-trips snapshot bytes and metadata', async () => {
+    const data = new Uint8Array([1, 2, 3, 250, 251, 252]);
+    const createdAt = new Date('2025-06-01T12:00:00Z');
+    await snapshots.save('wrun_a', data, {
+      eventsCursor: 'evnt_123',
+      createdAt,
+    });
+
+    const loaded = await snapshots.load('wrun_a');
+    expect(loaded).not.toBeNull();
+    expect(new Uint8Array(loaded!.data)).toEqual(data);
+    expect(loaded!.metadata.eventsCursor).toBe('evnt_123');
+    expect(+loaded!.metadata.createdAt).toBe(+createdAt);
+  });
+
+  it('overwrites the previous snapshot on save', async () => {
+    await snapshots.save('wrun_a', new Uint8Array([1]), {
+      eventsCursor: null,
+      createdAt: new Date(),
+    });
+    await snapshots.save('wrun_a', new Uint8Array([9, 9]), {
+      eventsCursor: 'evnt_9',
+      createdAt: new Date(),
+    });
+
+    const loaded = await snapshots.load('wrun_a');
+    expect(new Uint8Array(loaded!.data)).toEqual(new Uint8Array([9, 9]));
+    expect(loaded!.metadata.eventsCursor).toBe('evnt_9');
+  });
+
+  it('supports a null events cursor', async () => {
+    await snapshots.save('wrun_b', new Uint8Array([7]), {
+      eventsCursor: null,
+      createdAt: new Date(),
+    });
+    const loaded = await snapshots.load('wrun_b');
+    expect(loaded!.metadata.eventsCursor).toBeNull();
+  });
+
+  it('delete removes the snapshot (idempotent)', async () => {
+    await snapshots.save('wrun_c', new Uint8Array([1]), {
+      eventsCursor: null,
+      createdAt: new Date(),
+    });
+    await snapshots.delete('wrun_c');
+    expect(await snapshots.load('wrun_c')).toBeNull();
+    // Deleting again is a no-op.
+    await snapshots.delete('wrun_c');
+  });
+});
