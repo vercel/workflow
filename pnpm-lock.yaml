@@ -555,6 +555,9 @@ importers:
       nanoid:
         specifier: 5.1.6
         version: 5.1.6
+      quickjs-wasi:
+        specifier: 3.1.0
+        version: 3.1.0
       seedrandom:
         specifier: 3.0.5
         version: 3.0.5
@@ -14324,6 +14327,9 @@ packages:
   quick-lru@5.1.1:
     resolution: {integrity: sha512-WuyALRjWPDGtt/wzJiadO5AXY+8hZ80hVpe6MyivgraREW751X3SbhRvG3eLKOYN+8VEvqLcf3wdnt44Z4S4SA==}
     engines: {node: '>=10'}
+
+  quickjs-wasi@3.1.0:
+    resolution: {integrity: sha512-Vw2g4GhAh/QVgPIoDRgpPMBv9Z+E1LjUGgwrLewjjvTqONtty0GukgE+2IoZU1Z4anNF3uZIWA5EtBa3m0QiWQ==}
 
   radix-ui@1.4.3:
     resolution: {integrity: sha512-aWizCQiyeAenIdUbqEpXgRA1ya65P13NKn/W8rWkcN0OPkRDxdBVLWnIEDsS2RpwCK2nobI7oMUSmexzTDyAmA==}
@@ -31676,6 +31682,8 @@ snapshots:
   quick-format-unescaped@4.0.4: {}
 
   quick-lru@5.1.1: {}
+
+  quickjs-wasi@3.1.0: {}
 
   radix-ui@1.4.3(@types/react-dom@19.1.9(@types/react@19.1.13))(@types/react@19.1.13)(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
     dependencies:

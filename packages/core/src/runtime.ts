@@ -62,6 +62,7 @@ import {
   withHealthCheck,
   withPreconditionRetry,
 } from './runtime/helpers.js';
+import { runWorkflowWithQuickJS } from './runtime/quickjs-entrypoint.js';
 import {
   handleReplayBudgetExhausted,
   ReplayBudget,
@@ -71,6 +72,7 @@ import {
   DEFAULT_STEP_MAX_RETRIES,
   executeStep,
 } from './runtime/step-executor.js';
+import { useQuickJSVm } from './runtime/vm-mode.js';
 import { computeStepLatencyTracking } from './runtime/step-latency.js';
 import {
   backstopIdempotencyKey,
@@ -1168,6 +1170,35 @@ export function workflowEntrypoint(
                       }
                     } // end else (non-turbo run_started)
                   } // end if (!workflowRun)
+
+                  // --- QuickJS VM engine dispatch ---
+                  // The QuickJS engine (opt-in via WORKFLOW_VM=quickjs or
+                  // executionContext.workflowVm) is a self-contained
+                  // alternative to the node:vm inline-replay loop below.
+                  // It performs the same full event replay, but runs the
+                  // workflow code in a QuickJS WASM VM, queues steps via
+                  // the same combined route (so they hit executeStep below
+                  // on re-entry), and manages its own run_completed /
+                  // run_failed lifecycle. When the QuickJS engine is in
+                  // effect, return immediately after dispatch.
+                  if (useQuickJSVm(workflowRun)) {
+                    runtimeLogger.debug('Using QuickJS VM engine', {
+                      workflowRunId: runId,
+                      loopIteration,
+                    });
+                    const quickjsResult = await runWorkflowWithQuickJS({
+                      workflowCode,
+                      workflowName,
+                      workflowRun,
+                      preloadedEvents,
+                      runInput,
+                      parentSpan: span,
+                    });
+                    if (quickjsResult?.timeoutSeconds !== undefined) {
+                      return { timeoutSeconds: quickjsResult.timeoutSeconds };
+                    }
+                    return;
+                  }
 
                   // Resolve the encryption key for this run's deployment.
                   // Used eagerly here since both runWorkflow (input
