@@ -10,7 +10,13 @@
  * of making separate API calls for each entity type.
  */
 
-import type { Event, StepStatus } from '@workflow/world';
+import {
+  type Event,
+  isHookLifecycleEventType,
+  isStepEventType,
+  isWaitEventType,
+  type StepStatus,
+} from '@workflow/world';
 
 // ---------------------------------------------------------------------------
 // Materialized entity types
@@ -23,7 +29,6 @@ export interface MaterializedStep {
   status: StepStatus;
   attempt: number;
   createdAt: Date;
-  occurredAt?: Date;
   startedAt?: Date;
   completedAt?: Date;
   updatedAt: Date;
@@ -36,7 +41,6 @@ export interface MaterializedHook {
   runId: string;
   token?: string;
   createdAt: Date;
-  occurredAt?: Date;
   receivedCount: number;
   lastReceivedAt?: Date;
   disposedAt?: Date;
@@ -49,7 +53,6 @@ export interface MaterializedWait {
   runId: string;
   status: 'waiting' | 'completed';
   createdAt: Date;
-  occurredAt?: Date;
   resumeAt?: Date;
   completedAt?: Date;
   /** All events for this wait, in insertion order */
@@ -62,29 +65,19 @@ export interface MaterializedEntities {
   waits: MaterializedWait[];
 }
 
-const withOccurredAt = <T extends object>(
-  entity: T,
-  occurredAt: Event['occurredAt'] | undefined
-): T & { occurredAt?: Date } => {
-  if (!occurredAt || (entity as { occurredAt?: unknown }).occurredAt != null) {
-    return entity;
-  }
-  return { ...entity, occurredAt };
-};
-
 // ---------------------------------------------------------------------------
-// Helper: group events by correlationId prefix
+// Helper: group events by correlationId
 // ---------------------------------------------------------------------------
 
 function groupByCorrelationId(
   events: Event[],
-  prefixes: string[]
+  matchesEventType: (eventType: string) => boolean
 ): Map<string, Event[]> {
   const groups = new Map<string, Event[]>();
   for (const event of events) {
     const cid = event.correlationId;
     if (!cid) continue;
-    if (!prefixes.some((p) => cid.startsWith(p))) continue;
+    if (!matchesEventType(event.eventType)) continue;
     const existing = groups.get(cid);
     if (existing) {
       existing.push(event);
@@ -93,6 +86,14 @@ function groupByCorrelationId(
     }
   }
   return groups;
+}
+
+function getEventTimestamp(event: Event | undefined): Date | undefined {
+  const value = event?.occurredAt ?? event?.createdAt;
+  if (!value) return undefined;
+
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +107,7 @@ function groupByCorrelationId(
  * step_created event with no completion yet.
  */
 export function materializeSteps(events: Event[]): MaterializedStep[] {
-  const groups = groupByCorrelationId(events, ['step_']);
+  const groups = groupByCorrelationId(events, isStepEventType);
   const steps: MaterializedStep[] = [];
 
   for (const [correlationId, stepEvents] of groups) {
@@ -117,55 +118,50 @@ export function materializeSteps(events: Event[]): MaterializedStep[] {
     let attempt = 0;
     let startedAt: Date | undefined;
     let completedAt: Date | undefined;
-    let updatedAt = created.createdAt;
+    let updatedAt = getEventTimestamp(created) ?? created.createdAt;
 
     for (const e of stepEvents) {
       switch (e.eventType) {
         case 'step_started':
           status = 'running';
           attempt += 1;
-          if (!startedAt) startedAt = e.createdAt;
+          if (!startedAt) startedAt = getEventTimestamp(e) ?? e.createdAt;
           completedAt = undefined;
-          updatedAt = e.createdAt;
+          updatedAt = getEventTimestamp(e) ?? e.createdAt;
           break;
         case 'step_completed':
           status = 'completed';
-          completedAt = e.createdAt;
-          updatedAt = e.createdAt;
+          completedAt = getEventTimestamp(e) ?? e.createdAt;
+          updatedAt = getEventTimestamp(e) ?? e.createdAt;
           break;
         case 'step_failed':
           status = 'failed';
-          completedAt = e.createdAt;
-          updatedAt = e.createdAt;
+          completedAt = getEventTimestamp(e) ?? e.createdAt;
+          updatedAt = getEventTimestamp(e) ?? e.createdAt;
           break;
         case 'step_retrying':
           status = 'pending';
           completedAt = undefined;
-          updatedAt = e.createdAt;
+          updatedAt = getEventTimestamp(e) ?? e.createdAt;
           break;
       }
     }
 
-    steps.push(
-      withOccurredAt(
-        {
-          stepId: correlationId,
-          runId: created.runId,
-          stepName:
-            created.eventType === 'step_created'
-              ? (created.eventData?.stepName ?? correlationId)
-              : correlationId,
-          status,
-          attempt,
-          createdAt: created.createdAt,
-          startedAt,
-          completedAt,
-          updatedAt,
-          events: stepEvents,
-        },
-        created.occurredAt
-      )
-    );
+    steps.push({
+      stepId: correlationId,
+      runId: created.runId,
+      stepName:
+        created.eventType === 'step_created'
+          ? (created.eventData?.stepName ?? correlationId)
+          : correlationId,
+      status,
+      attempt,
+      createdAt: getEventTimestamp(created) ?? created.createdAt,
+      startedAt,
+      completedAt,
+      updatedAt,
+      events: stepEvents,
+    });
   }
 
   return steps;
@@ -179,7 +175,7 @@ export function materializeSteps(events: Event[]): MaterializedStep[] {
  * Group hook_* events by correlationId and build Hook-like entities.
  */
 export function materializeHooks(events: Event[]): MaterializedHook[] {
-  const groups = groupByCorrelationId(events, ['hook_']);
+  const groups = groupByCorrelationId(events, isHookLifecycleEventType);
   const hooks: MaterializedHook[] = [];
 
   for (const [correlationId, hookEvents] of groups) {
@@ -192,24 +188,19 @@ export function materializeHooks(events: Event[]): MaterializedHook[] {
     const disposed = hookEvents.find((e) => e.eventType === 'hook_disposed');
     const lastReceived = receivedEvents.at(-1);
 
-    hooks.push(
-      withOccurredAt(
-        {
-          hookId: correlationId,
-          runId: created.runId,
-          token:
-            created.eventType === 'hook_created'
-              ? created.eventData?.token
-              : undefined,
-          createdAt: created.createdAt,
-          receivedCount: receivedEvents.length,
-          lastReceivedAt: lastReceived?.createdAt,
-          disposedAt: disposed?.createdAt,
-          events: hookEvents,
-        },
-        created.occurredAt
-      )
-    );
+    hooks.push({
+      hookId: correlationId,
+      runId: created.runId,
+      token:
+        created.eventType === 'hook_created'
+          ? created.eventData?.token
+          : undefined,
+      createdAt: getEventTimestamp(created) ?? created.createdAt,
+      receivedCount: receivedEvents.length,
+      lastReceivedAt: getEventTimestamp(lastReceived),
+      disposedAt: getEventTimestamp(disposed),
+      events: hookEvents,
+    });
   }
 
   return hooks;
@@ -223,7 +214,7 @@ export function materializeHooks(events: Event[]): MaterializedHook[] {
  * Group wait_* events by correlationId and build Wait-like entities.
  */
 export function materializeWaits(events: Event[]): MaterializedWait[] {
-  const groups = groupByCorrelationId(events, ['wait_']);
+  const groups = groupByCorrelationId(events, isWaitEventType);
   const waits: MaterializedWait[] = [];
 
   for (const [correlationId, waitEvents] of groups) {
@@ -232,23 +223,18 @@ export function materializeWaits(events: Event[]): MaterializedWait[] {
 
     const completed = waitEvents.find((e) => e.eventType === 'wait_completed');
 
-    waits.push(
-      withOccurredAt(
-        {
-          waitId: correlationId,
-          runId: created.runId,
-          status: completed ? 'completed' : 'waiting',
-          createdAt: created.createdAt,
-          resumeAt:
-            created.eventType === 'wait_created'
-              ? created.eventData?.resumeAt
-              : undefined,
-          completedAt: completed?.createdAt,
-          events: waitEvents,
-        },
-        created.occurredAt
-      )
-    );
+    waits.push({
+      waitId: correlationId,
+      runId: created.runId,
+      status: completed ? 'completed' : 'waiting',
+      createdAt: getEventTimestamp(created) ?? created.createdAt,
+      resumeAt:
+        created.eventType === 'wait_created'
+          ? created.eventData?.resumeAt
+          : undefined,
+      completedAt: getEventTimestamp(completed),
+      events: waitEvents,
+    });
   }
 
   return waits;

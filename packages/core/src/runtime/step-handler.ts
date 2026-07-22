@@ -9,8 +9,12 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { formatStepName, pluralize, stepDisplayName } from '@workflow/utils';
-import { getPort } from '@workflow/utils/get-port';
+import {
+  createWorkflowBaseUrl,
+  formatStepName,
+  pluralize,
+  stepDisplayName,
+} from '@workflow/utils';
 import {
   getQueueTopicPrefix,
   resolveQueueNamespace,
@@ -47,7 +51,8 @@ import {
   promoteAbortErrorToFatal,
 } from '../types.js';
 
-import { MAX_QUEUE_DELIVERIES } from './constants.js';
+import { getMaxQueueDeliveries } from './constants.js';
+import { getPortLazy } from './get-port-lazy.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -127,9 +132,10 @@ function createStepHandler(namespace?: string) {
         { stepId, stepName: stepNameFromQueue }
       );
 
-      if (metadata.attempt > MAX_QUEUE_DELIVERIES) {
+      const maxQueueDeliveries = getMaxQueueDeliveries();
+      if (metadata.attempt > maxQueueDeliveries) {
         stepRuntimeLogger.error(
-          `Step handler exceeded max deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+          `Step handler exceeded max deliveries (${metadata.attempt}/${maxQueueDeliveries})`,
           {
             attempt: metadata.attempt,
           }
@@ -138,7 +144,7 @@ function createStepHandler(namespace?: string) {
           const world = await getWorld();
           const getEncryptionKey = memoizeEncryptionKey(world, workflowRunId);
           const err = new FatalError(
-            `Step exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`
+            `Step exceeded maximum queue deliveries (${metadata.attempt}/${maxQueueDeliveries})`
           );
           await world.events.create(
             workflowRunId,
@@ -218,9 +224,17 @@ function createStepHandler(namespace?: string) {
 
         // Resolve local async values concurrently before entering the trace span
         const [port, spanKind] = await Promise.all([
-          isVercel ? undefined : getPort(),
+          isVercel ? undefined : getPortLazy(),
           getSpanKind('CONSUMER'),
         ]);
+
+        // TODO: resolve the workflow base URL through the World interface.
+        // This fallback cannot see local/Postgres baseUrl overrides or custom-world routing.
+        const workflowBaseUrl = createWorkflowBaseUrl(
+          isVercel
+            ? `https://${process.env.VERCEL_URL}`
+            : `http://localhost:${port ?? 3000}`
+        );
 
         return trace(
           `step.execute ${stepDisplayName(stepName)}`,
@@ -666,11 +680,7 @@ function createStepHandler(namespace?: string) {
                       workflowName,
                       workflowRunId,
                       workflowStartedAt: new Date(+workflowStartedAt),
-                      // TODO: there should be a getUrl method on the world interface itself. This
-                      // solution only works for vercel + local worlds.
-                      url: isVercel
-                        ? `https://${process.env.VERCEL_URL}`
-                        : `http://localhost:${port ?? 3000}`,
+                      url: workflowBaseUrl,
                       features: { encryption: !!encryptionKey },
                     },
                     workflowDeploymentId: process.env.VERCEL_DEPLOYMENT_ID,

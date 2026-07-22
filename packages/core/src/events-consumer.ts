@@ -1,4 +1,4 @@
-import type { Event } from '@workflow/world';
+import { type Event, envNumber } from '@workflow/world';
 import { eventsLogger } from './logger.js';
 
 /**
@@ -8,6 +8,23 @@ import { eventsLogger } from './logger.js';
  * in host). Any subscribe() arriving during this window cancels the check.
  */
 export const DEFERRED_CHECK_DELAY_MS = 100;
+
+/**
+ * Effective deferred-check delay. Override: `WORKFLOW_DEFERRED_CHECK_DELAY_MS`.
+ *
+ * Unlike the other timing knobs this is not a polling interval but a
+ * determinism safety margin: firing the unconsumed-event check before the
+ * cross-VM subscribe() chain has landed rejects a healthy run with
+ * `ReplayDivergenceError`. Floored at 10ms so a too-low override can't
+ * manufacture spurious divergence (each false positive burns a
+ * divergence-recovery retry and can escalate to a terminal
+ * `CorruptedEventLogError`).
+ */
+const getDeferredCheckDelayMs = (): number =>
+  envNumber('WORKFLOW_DEFERRED_CHECK_DELAY_MS', DEFERRED_CHECK_DELAY_MS, {
+    integer: true,
+    min: 10,
+  });
 
 export enum EventConsumerResult {
   /**
@@ -207,7 +224,7 @@ export class EventsConsumer {
               this.pendingUnconsumedCheck = null;
               this.onUnconsumedEvent(currentEvent);
             }
-          }, DEFERRED_CHECK_DELAY_MS);
+          }, getDeferredCheckDelayMs());
         });
     }
   }

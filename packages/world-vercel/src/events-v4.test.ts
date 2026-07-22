@@ -10,10 +10,12 @@ import { MockAgent } from 'undici';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowRunEventV4,
+  getEventV4,
   getWorkflowRunEventsV4,
   throwForErrorResponse,
 } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
+import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 /**
  * The v4 client must preserve the typed-error contract of the v3
@@ -56,6 +58,27 @@ describe('throwForErrorResponse', () => {
     }
   });
 
+  it('maps a firewall challenge (429 + x-vercel-mitigated: challenge) to a retryable TRANSPORT WorkflowWorldError, not ThrottleError', () => {
+    // The hot event-write path (step_started included) must route a challenge
+    // to the TRANSPORT path so the runtime rethrows it to the queue (backoff +
+    // cap) rather than deferring it into an uncapped flat re-enqueue loop.
+    try {
+      call(429, '{"message":"rate limited"}', {
+        'x-vercel-mitigated': 'challenge',
+        'retry-after': '5',
+      });
+      expect.unreachable();
+    } catch (err) {
+      expect(ThrottleError.is(err)).toBe(false);
+      expect(WorkflowWorldError.is(err)).toBe(true);
+      expect((err as WorkflowWorldError).code).toBe('TRANSPORT');
+      expect((err as WorkflowWorldError).status).toBe(429);
+      expect((err as WorkflowWorldError).message).toContain(
+        'x-vercel-mitigated=challenge'
+      );
+    }
+  });
+
   it('maps 404 to WorkflowWorldError with status (hook → HookNotFoundError translation keys off this)', () => {
     try {
       call(404, '{"message":"hook not found","code":"not_found"}');
@@ -93,7 +116,8 @@ describe('throwForErrorResponse', () => {
  */
 describe('getWorkflowRunEventsV4 over HTTP', () => {
   it('parses a frame stream fetched via a custom dispatcher', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -133,7 +157,8 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
   });
 
   it('captures an explicit hasMore from the sentinel, independent of next', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -174,7 +199,8 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
   });
 
   it('leaves hasMore undefined for a legacy sentinel without the flag', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -201,7 +227,8 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
   });
 
   it('throws when the stream ends without the end sentinel (truncated response)', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -237,6 +264,52 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
 });
 
 /**
+ * getEventV4 returns after the first frame. The early return must cancel the
+ * response body (releasing its undici socket) without corrupting the returned
+ * value or hanging — the trailing frame below is never read.
+ */
+describe('getEventV4 over HTTP', () => {
+  it('returns the first frame and stops reading the rest', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    const body = new TextEncoder().encode('event-payload');
+    const frames = Buffer.concat([
+      encodeFrame(
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          eventType: 'run_created',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          eventData: {},
+        },
+        body
+      ),
+      // Trailing bytes the reader must never need.
+      encodeFrame({ eventId: 'evnt_unused' }, new Uint8Array(8)),
+    ]);
+
+    agent
+      .get(origin)
+      .intercept({ path: '/api/v4/runs/wrun_1/events/evnt_1', method: 'GET' })
+      .reply(200, frames, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const { event, body: returnedBody } = await getEventV4('wrun_1', 'evnt_1', {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    expect(event.eventId).toBe('evnt_1');
+    expect(event.eventType).toBe('run_created');
+    expect(new Uint8Array(returnedBody)).toEqual(body);
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+/**
  * Regression: v4 requests must go through the global `fetch`, not undici's
  * `request()`. Vercel's observability log viewer instruments the global
  * `fetch`; calling `undici.request()` directly bypassed it, so outgoing v4
@@ -250,7 +323,8 @@ describe('v4 transport uses global fetch (observability)', () => {
   });
 
   it('routes a v4 LIST through globalThis.fetch', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
     agent
@@ -285,7 +359,8 @@ describe('v4 transport uses global fetch (observability)', () => {
 
 describe('createWorkflowRunEventV4 over HTTP', () => {
   it('POSTs to the /events/:eventType alias and decodes the response', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -324,7 +399,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
   });
 
   it('forwards skipPreload in the run_started frame meta (turbo preload opt-out)', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -384,7 +460,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
   });
 
   it('omits skipPreload from the frame meta when not set (default / old SDK parity)', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -426,6 +503,109 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
 
     expect(capturedMeta?.eventType).toBe('run_started');
     expect('skipPreload' in (capturedMeta ?? {})).toBe(false);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('forwards stateUpdatedAt in the frame meta (precondition guard)', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+          const metaLen = new DataView(
+            bytes.buffer,
+            bytes.byteOffset,
+            bytes.byteLength
+          ).getUint32(0, false);
+          capturedMeta = decode(bytes.subarray(4, 4 + metaLen)) as Record<
+            string,
+            unknown
+          >;
+          return encode({ wait: { waitId: 'wait_1' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: 5,
+        correlationId: 'wait_1',
+        stateUpdatedAt: 1747742400000,
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.eventType).toBe('wait_created');
+    expect(capturedMeta?.stateUpdatedAt).toBe(1747742400000);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('omits stateUpdatedAt from the frame meta when not set', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+          const metaLen = new DataView(
+            bytes.buffer,
+            bytes.byteOffset,
+            bytes.byteLength
+          ).getUint32(0, false);
+          capturedMeta = decode(bytes.subarray(4, 4 + metaLen)) as Record<
+            string,
+            unknown
+          >;
+          return encode({ wait: { waitId: 'wait_1' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: 5,
+        correlationId: 'wait_1',
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.eventType).toBe('wait_created');
+    expect('stateUpdatedAt' in (capturedMeta ?? {})).toBe(false);
     agent.assertNoPendingInterceptors();
   });
 });

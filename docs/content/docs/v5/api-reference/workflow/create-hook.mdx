@@ -66,7 +66,7 @@ export default Hook;`}
 
 The returned `Hook` object also implements `AsyncIterable<T>`, which allows you to iterate over incoming payloads using `for await...of` syntax.
 
-Use `hook.getConflict()` to check whether the hook token is already claimed by another active hook, without waiting for hook payload data. Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.getConflict()` suspends the workflow to commit the registration, then resolves with `null` once `hook_created` is recorded, or with the conflicting [`Run`](/docs/api-reference/workflow-api/get-run) if another active hook already owns the same token.
+Use `hook.getConflict()` to check whether the hook token is already claimed by another hook, including one kept reserved after its run ends, without waiting for hook payload data. Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.getConflict()` suspends the workflow to commit the registration, then resolves with `null` once `hook_created` is recorded, or with the conflicting [`Run`](/docs/api-reference/workflow-api/get-run).
 
 ## Examples
 
@@ -143,10 +143,51 @@ async function processOrder(orderId: string) {
 
 Because `createHook()` alone does not suspend the workflow, awaiting `hook.getConflict()` is what actually suspends the run and commits the hook registration. It only waits for registration — to receive payload data from a future `resumeHook()` call, await the hook itself or iterate it with `for await...of`.
 
-On a conflict, the resolved value is a `Run` handle for the run that currently owns the token, with durable step-backed accessors. The duplicate run can decide in code how to handle it: return or log `conflict.runId`, inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel the owner with `await conflict.cancel()` and continue in the current run. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies in context.
+On a conflict, the resolved value is a `Run` handle for the run that owns the token, with durable step-backed accessors. The duplicate run can decide in code how to handle it: return or log `conflict.runId`, inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel the owner with `await conflict.cancel()` and continue in the current run. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies in context.
 
 <Callout type="info">
 Custom hook tokens are the recommended way to coordinate active workflow runs. Use a deterministic token from your domain, such as an order ID or conversation ID, create the hook near the beginning of the workflow, and check `await hook.getConflict()` before work that depends on owning the token. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+</Callout>
+
+### Keep a Token Unavailable After the Run Ends
+
+By default, another Hook can use the token after its workflow ends. Set `experimental_minRetention` to keep the token unavailable for at least a specific time after `createHook()` runs:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+declare function processOwnedOrder(orderId: string): Promise<void>; // @setup
+
+export async function processOrder(orderId: string) {
+  "use workflow";
+
+  const hook = createHook({ // [!code highlight]
+    token: `order:${orderId}`, // [!code highlight]
+    experimental_minRetention: "30d", // [!code highlight]
+  }); // [!code highlight]
+
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    return { status: "duplicate" as const, runId: conflict.runId };
+  }
+
+  await processOwnedOrder(orderId);
+  return { status: "processed" as const };
+}
+```
+
+`experimental_minRetention` accepts the same values as [`sleep()`](/docs/api-reference/workflow/sleep): a duration string such as `"30d"`, a number of milliseconds, or an absolute `Date`. Durations start when `createHook()` runs.
+
+The Hook remains active until the workflow ends, even if the configured time passes first. Another Hook can use the token only after both the workflow has ended and the configured time has passed. For example, `"30d"` keeps the token unavailable for 29 more days if the workflow ends after 1 day. A workflow that runs for more than 30 days releases the token when it ends.
+
+After the workflow ends, [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) can still find the Hook until retention ends, but the Hook cannot be resumed.
+
+<Callout type="warn">
+`using` auto-disposes the Hook at scope exit, which releases the token immediately and defeats `experimental_minRetention`. Declare retained Hooks with `const` and let the runtime clean them up when the run ends.
+</Callout>
+
+<Callout type="warn">
+This option is experimental. If the configured World does not support it, the workflow fails when registering the Hook. `createWebhook()` does not accept this option.
 </Callout>
 
 ### Waiting for Multiple Payloads

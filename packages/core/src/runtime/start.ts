@@ -1,21 +1,19 @@
-import {
-  EntityConflictError,
-  ThrottleError,
-  WorkflowRuntimeError,
-  WorkflowWorldError,
-} from '@workflow/errors';
+import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
   isLegacySpecVersion,
+  PARENT_RUN_ID_ATTRIBUTE,
+  ROOT_RUN_ID_ATTRIBUTE,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
-  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+  workflowRunIdSchema,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
 import { getRunCapabilities } from '../capabilities.js';
+import { isRetryableWorldError } from '../classify-error.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import type { Serializable } from '../schemas.js';
@@ -23,6 +21,7 @@ import {
   dehydrateWorkflowArguments,
   SerializationFormat,
 } from '../serialization.js';
+import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
@@ -30,6 +29,7 @@ import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName, healthCheck } from './helpers.js';
 import { Run } from './run.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
+import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
 
 /**
  * Timeout for the cross-deployment capability probe done before
@@ -44,6 +44,28 @@ const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
 
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
+
+/**
+ * Cross-run lineage for a run being started from inside another run.
+ *
+ * The ambient step context carries the parent run id and the root of its
+ * lineage; the runtime fills both from the run it already has loaded, so this
+ * is a pure context read with no I/O. The new run records `$parentRunId` (the
+ * edge) and inherits the parent's `$rootRunId` (the parent itself when it is a
+ * root), so a daisy chain or fan-out of any depth groups under one root id.
+ * Returns `undefined` for a top-level `start()`, which has no context, so
+ * standalone runs carry no lineage.
+ */
+function resolveLineageAttributes(): Record<string, string> | undefined {
+  const store = contextStorage.getStore();
+  const parentRunId = store?.workflowMetadata?.workflowRunId;
+  if (!parentRunId) return undefined;
+
+  return {
+    [ROOT_RUN_ID_ATTRIBUTE]: store.rootRunId ?? parentRunId,
+    [PARENT_RUN_ID_ATTRIBUTE]: parentRunId,
+  };
+}
 
 // `deploymentId: 'latest'` is a no-op in Worlds without atomic deployments.
 // The warning that explains this only needs to fire once per process: a
@@ -74,6 +96,19 @@ export interface StartOptionsBase {
   specVersion?: number;
 
   /**
+   * Optional region identifier for the new run. Currently consumed only
+   * by `@workflow/world-vercel`, which embeds the region into the tagged
+   * run ID and routes the initial workflow message to the matching
+   * regional queue. When omitted, the world falls back to its own
+   * default (for `world-vercel`: the `VERCEL_REGION` environment
+   * variable, then the server-side default region `iad1` — a concrete,
+   * routable region is always chosen).
+   *
+   * Worlds without a regional dimension ignore this field.
+   */
+  region?: string;
+
+  /**
    * Plaintext attributes to seed on the run as it is created.
    *
    * Available for native-attributes runs (spec version 4 and later).
@@ -90,9 +125,38 @@ export interface StartOptionsBase {
    * Only flip this to `true` if your caller is itself a framework or
    * library that owns a `$`-prefixed sub-namespace and knows the
    * conventions of any other tools writing into it. Same semantics as
-   * the `experimental_setAttributes` option of the same name.
+   * the `setAttributes` option of the same name.
    */
   allowReservedAttributes?: boolean;
+
+  /**
+   * The ID of an existing run this run is being replayed from, if any.
+   *
+   * Recorded on the new run's `executionContext` as `replayedFromRunId` so
+   * tooling (e.g. the dashboard runs list) can show that a run originated as
+   * a replay and link back to its source. Set automatically by
+   * {@link recreateRunFromExisting}; there's usually no reason to pass it
+   * directly.
+   *
+   * Must be a run ID: `wrun_` followed by a 26-char ULID. It's a foreign key
+   * to the source run, so `start()` validates the exact shape and rejects
+   * anything else rather than persist a lineage link that points at garbage.
+   */
+  replayedFromRunId?: string;
+  /**
+   * Queue namespace of the target deployment. Scopes the workflow queue
+   * topic to `__{namespace}_wkf_workflow_*` (e.g. `'eve'`) instead of the
+   * default `__wkf_workflow_*`, and is also used for the cross-deployment
+   * capability probe. Falls back to `WORKFLOW_QUEUE_NAMESPACE` in the
+   * calling process.
+   *
+   * Within a deployment the env fallback is correct. Cross-context callers
+   * (e.g. the observability dashboard replaying a run) must pass the
+   * TARGET deployment's namespace explicitly: the env fallback resolves in
+   * the caller's process, and a run enqueued to a topic the target has no
+   * consumer for is never picked up.
+   */
+  namespace?: string;
 }
 
 export interface StartOptionsWithDeploymentId extends StartOptionsBase {
@@ -208,7 +272,8 @@ export async function start<TArgs extends unknown[], TResult>(
         ...Attribute.WorkflowArgumentsCount(args.length),
       });
 
-      const world = opts?.world ?? (await getWorldLazy());
+      const world = opts.world ?? (await getWorldLazy());
+      assertWorldSupportsRuntimeProtocol(world);
       const currentDeploymentId = await world.getDeploymentId();
       let deploymentId = opts.deploymentId ?? currentDeploymentId;
 
@@ -263,6 +328,7 @@ export async function start<TArgs extends unknown[], TResult>(
         const probe = await healthCheck(world, 'workflow', {
           deploymentId,
           timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
+          namespace: opts.namespace,
         }).catch(() => undefined);
         const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
         framedByteStreams = capabilities.framedByteStreams;
@@ -274,20 +340,24 @@ export async function start<TArgs extends unknown[], TResult>(
       const ops: Promise<void>[] = [];
 
       // Generate runId client-side so we have it before serialization
-      // (required for future E2E encryption where runId is part of the encryption context)
-      const runId = `wrun_${ulid()}`;
+      // (required for future E2E encryption where runId is part of the
+      // encryption context). When the World provides a `createRunId()`
+      // implementation, use it so worlds can embed implementation-specific
+      // metadata (e.g., region) into the ID, forwarding the full options
+      // bag so worlds can read whichever fields they recognise; otherwise
+      // fall back to a standard monotonic ULID.
+      const runId = `wrun_${
+        world.createRunId
+          ? world.createRunId(opts as Readonly<Record<string, unknown>>)
+          : ulid()
+      }`;
 
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
 
-      // Use world-declared specVersion when available (our worlds set this),
-      // otherwise fall back to the safe baseline that community worlds handle.
-      // Community worlds built against older @workflow/world reject runs with
-      // specVersion > their SPEC_VERSION_CURRENT via requiresNewerWorld().
-      const specVersion =
-        opts.specVersion ??
-        world.specVersion ??
-        SPEC_VERSION_SUPPORTS_EVENT_SOURCING;
+      // Default new runs to the configured world's spec version. The world
+      // itself has already been checked against this runtime's spec version.
+      const specVersion = opts.specVersion ?? world.specVersion;
       const v1Compat = isLegacySpecVersion(specVersion);
       const allowReservedAttributes = opts.allowReservedAttributes === true;
       let attributes: Record<string, string> | undefined;
@@ -315,17 +385,41 @@ export async function start<TArgs extends unknown[], TResult>(
           changes.map(({ key, value }) => [key, value as string])
         );
       }
-      // Seed payload shared by run_created and the resilient-start queue
-      // input. The flag rides along so server-side validation matches the
-      // client-side check above on both paths.
-      const attributeSeed = attributes
+
+      // Cross-run lineage: the reserved keys ride on the run's existing
+      // attributes, so they add no extra write. Caller attributes are spread
+      // last, so a caller with allowReservedAttributes can deliberately
+      // re-parent.
+      const lineage =
+        specVersion >= SPEC_VERSION_SUPPORTS_ATTRIBUTES
+          ? resolveLineageAttributes()
+          : undefined;
+      const runAttributes = lineage
+        ? { ...lineage, ...attributes }
+        : attributes;
+
+      // Shared by the run_created event and the resilient-start queue input.
+      const attributeSeed = runAttributes
         ? {
-            attributes,
-            ...(allowReservedAttributes
+            attributes: runAttributes,
+            ...(allowReservedAttributes || lineage != null
               ? { allowReservedAttributes: true as const }
               : {}),
           }
         : {};
+
+      // `replayedFromRunId` is a foreign key to the source run; reject anything
+      // that isn't a real run ID so the lineage link can't point at garbage.
+      if (
+        opts.replayedFromRunId !== undefined &&
+        !workflowRunIdSchema.safeParse(opts.replayedFromRunId).success
+      ) {
+        throw new WorkflowRuntimeError(
+          `replayedFromRunId must be a run ID (wrun_<ulid>); received ${JSON.stringify(
+            String(opts.replayedFromRunId).slice(0, 64)
+          )}.`
+        );
+      }
 
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both
@@ -364,6 +458,9 @@ export async function start<TArgs extends unknown[], TResult>(
         traceCarrier,
         workflowCoreVersion,
         features: { encryption: !!encryptionKey },
+        ...(opts.replayedFromRunId
+          ? { replayedFromRunId: opts.replayedFromRunId }
+          : {}),
       };
 
       // Call events.create (run_created) and queue in parallel.
@@ -386,7 +483,7 @@ export async function start<TArgs extends unknown[], TResult>(
           { v1Compat }
         ),
         world.queue(
-          getWorkflowQueueName(workflowName),
+          getWorkflowQueueName(workflowName, opts.namespace),
           {
             runId,
             traceCarrier,
@@ -406,6 +503,11 @@ export async function start<TArgs extends unknown[], TResult>(
           {
             deploymentId,
             specVersion,
+            // Forward any caller-supplied region hint so worlds with
+            // per-region queue routing (e.g. world-vercel) can target the
+            // matching queue. Worlds without a regional dimension ignore
+            // this field.
+            ...(opts.region !== undefined ? { region: opts.region } : {}),
           }
         ),
       ]);
@@ -424,10 +526,11 @@ export async function start<TArgs extends unknown[], TResult>(
           // the run creation call gets a cold start or other slowdown, and the queue
           // + run_started call completes faster. We expect this to be <=1% of cases.
           // In this case, we can safely return.
-        } else if (isRetryableStartError(err)) {
-          // 429 (ThrottleError) and 5xx (WorkflowWorldError with status >= 500)
-          // are retryable — the run was accepted via the queue and creation
-          // will be re-tried by the runtime when it calls run_started.
+        } else if (isRetryableWorldError(err)) {
+          // 429 (ThrottleError), 5xx, and transient transport failures
+          // (TRANSPORT/TIMEOUT) are retryable — the run was accepted via the
+          // queue and creation will be re-tried by the runtime when it calls
+          // run_started.
           resilientStart = true;
           runtimeLogger.warn(
             'Run creation event failed, but the run was accepted via the queue. ' +
@@ -480,17 +583,4 @@ export async function start<TArgs extends unknown[], TResult>(
       return new Run<TResult>(runId, { resilientStart });
     });
   });
-}
-
-/**
- * Checks if an error from events.create (run_created) is retryable,
- * meaning the queue can re-try creation later via the run_started path.
- * - ThrottleError (429): rate limited, will succeed later
- * - WorkflowWorldError with status >= 500: server error, will succeed later
- */
-function isRetryableStartError(err: unknown): boolean {
-  if (ThrottleError.is(err)) return true;
-  if (WorkflowWorldError.is(err) && err.status && err.status >= 500)
-    return true;
-  return false;
 }

@@ -4,9 +4,9 @@ import {
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { withResolvers } from '@workflow/utils';
+import { createWorkflowBaseUrl, withResolvers } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, WorkflowRun } from '@workflow/world';
+import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
@@ -16,6 +16,7 @@ import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
@@ -25,7 +26,6 @@ import {
   hydrateWorkflowArguments,
 } from './serialization.js';
 import { createUseStep } from './step.js';
-import type { StepHydrationCache } from './step-hydration-cache.js';
 import {
   BODY_INIT_SYMBOL,
   STABLE_ULID,
@@ -84,7 +84,17 @@ async function drainPendingQueueItems(
   pendingQueue: Map<string, QueueItem>,
   vmGlobalThis: typeof globalThis,
   workflowRun: WorkflowRun,
-  outcome: 'completed' | 'failed'
+  outcome: 'completed' | 'failed',
+  /**
+   * Turbo mode only: resolves once the backgrounded `run_started` has landed.
+   * The drain runs at workflow completion *inside* `runWorkflow`, before the
+   * caller's terminal `awaitRunReady()` — so a workflow that creates a
+   * fire-and-forget hook (or wait/attribute) and then returns synchronously
+   * would otherwise have its `*_created` write race ahead of `run_started`.
+   * Threading the barrier into the suspension handler gates those writes the
+   * same way the normal suspension path is gated. Undefined outside turbo.
+   */
+  runReadyBarrier?: Promise<unknown>
 ): Promise<void> {
   if (pendingQueue.size === 0) return;
   // Implicitly dispose any abort hooks (system hooks) that are still alive at
@@ -110,6 +120,7 @@ async function drainPendingQueueItems(
       suspension: synthesized,
       world,
       run: workflowRun,
+      runReadyBarrier,
     });
   } catch (err) {
     runtimeLogger.warn(
@@ -128,13 +139,25 @@ export async function runWorkflow(
   events: Event[],
   encryptionKey: CryptoKey | undefined,
   /**
-   * Optional per-run cache for hydrated step return values, owned by the inline
-   * replay loop so it survives across the loop's iterations (each of which
-   * creates a fresh context). Memoizes the decrypt + devalue-parse of completed
-   * step results to turn O(N²) replay hydration into O(N). Omitted by callers
-   * that replay only once (then there is nothing to reuse).
+   * Optional per-run cache for replay payload preparation and immutable final
+   * values. Owned by the inline replay loop so it survives fresh VM contexts
+   * created by successive iterations of this invocation.
    */
-  stepHydrationCache?: StepHydrationCache
+  replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache(
+    encryptionKey
+  ),
+  /**
+   * Turbo mode only: resolves once the backgrounded `run_started` has landed.
+   * Threaded into the end-of-run drain so fire-and-forget `*_created` writes
+   * committed at workflow completion order after the run's creation. Undefined
+   * outside turbo, where `run_started` is awaited up front.
+   */
+  runReadyBarrier?: Promise<unknown>,
+  /**
+   * Features supported by the World executing this workflow. Missing
+   * capabilities are treated as unsupported.
+   */
+  worldCapabilities?: WorldCapabilities
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
@@ -176,7 +199,11 @@ export async function runWorkflow(
     // fs ops (readdir, readFile) into the flow route bundle. The resolved
     // port is cached per process (see get-port-lazy.ts), so this is cheap
     // on replays after the first.
-    const port = isVercel ? undefined : await getPortLazy();
+    const workflowBaseUrl = createWorkflowBaseUrl(
+      isVercel
+        ? `https://${process.env.VERCEL_URL}`
+        : `http://localhost:${(await getPortLazy()) ?? 3000}`
+    );
 
     const {
       context,
@@ -217,6 +244,7 @@ export async function runWorkflow(
     const workflowContext: WorkflowOrchestratorContext = {
       runId: workflowRun.runId,
       encryptionKey,
+      worldCapabilities,
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
       eventsConsumer,
@@ -242,7 +270,7 @@ export async function runWorkflow(
       },
       pendingDeliveries: 0,
       pendingDeliveryBarriers: new Map(),
-      stepHydrationCache,
+      replayPayloadCache,
     };
 
     // Consume run lifecycle events - these are structural events that don't
@@ -293,18 +321,12 @@ export async function runWorkflow(
     vmGlobalThis[WORKFLOW_GET_STREAM_ID] = (namespace?: string) =>
       getWorkflowRunStreamId(workflowRun.runId, namespace);
 
-    // TODO: there should be a getUrl method on the world interface itself. This
-    // solution only works for vercel + local worlds.
-    const url = isVercel
-      ? `https://${process.env.VERCEL_URL}`
-      : `http://localhost:${port ?? 3000}`;
-
     // For the workflow VM, we store the context in a symbol on the `globalThis` object
     const ctx: WorkflowMetadata = {
       workflowName: workflowRun.workflowName,
       workflowRunId: workflowRun.runId,
       workflowStartedAt: new vmGlobalThis.Date(+startedAt),
-      url,
+      url: workflowBaseUrl,
       features: { encryption: !!encryptionKey },
     };
 
@@ -843,11 +865,15 @@ export async function runWorkflow(
     let args: unknown[] = [];
     workflowContext.promiseQueue = workflowContext.promiseQueue.then(
       async () => {
+        const prepared =
+          await replayPayloadCache.prepareWorkflowInput(workflowRun);
         args = await hydrateWorkflowArguments(
           workflowRun.input,
           workflowRun.runId,
           encryptionKey,
-          vmGlobalThis
+          vmGlobalThis,
+          {},
+          prepared
         );
       }
     );
@@ -885,7 +911,8 @@ export async function runWorkflow(
         workflowContext.invocationsQueue,
         vmGlobalThis,
         workflowRun,
-        'completed'
+        'completed',
+        runReadyBarrier
       );
 
       return dehydrated;
@@ -901,7 +928,8 @@ export async function runWorkflow(
         workflowContext.invocationsQueue,
         vmGlobalThis,
         workflowRun,
-        'failed'
+        'failed',
+        runReadyBarrier
       );
 
       throw err;

@@ -9,7 +9,8 @@
     "testing",
     "deploying",
     "errors",
-    "migration-guides",
+    "comparisons",
+    "configuration",
     "api-reference"
   ]
 }

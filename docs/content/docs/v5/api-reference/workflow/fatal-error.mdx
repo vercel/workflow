@@ -29,16 +29,38 @@ async function fallibleStep() {
 
 ## API Signature
 
-### Parameters
+### Constructor
+
+`new FatalError(message)`
+
+| Parameter | Type     | Description        |
+| --------- | -------- | ------------------ |
+| `message` | `string` | The error message. |
+
+### Properties
 
 <TSDoc
 definition={`
-interface Error {
-  /**
-
-* The error message.
-   */
+interface FatalError {
+  /** The error message. */
   message: string;
+  /** Always true. Marks the error as non-retryable. */
+  fatal: boolean;
 }
-export default Error;`}
+export default FatalError;`}
 />
+
+### Static Methods
+
+#### `FatalError.is(value)`
+
+Type-safe check for `FatalError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+```typescript
+import { FatalError } from "workflow"
+declare const error: unknown; // @setup
+
+if (FatalError.is(error)) {
+  // error is typed as FatalError
+}
+```

@@ -10,18 +10,17 @@ import {
   type FinishReason,
   gateway,
   generateId,
-  type StepResult,
   type StopCondition,
   type ToolChoice,
   type ToolSet,
   type UIMessageChunk,
 } from 'ai';
+import { getErrorMessage } from '../get-error-message.js';
 import type {
   ProviderOptions,
   StreamTextTransform,
   TelemetrySettings,
 } from './durable-agent.js';
-import { getErrorMessage } from '../get-error-message.js';
 import { safeParseToolCallInput } from './safe-parse-tool-call-input.js';
 import { recordSpan } from './telemetry.js';
 import type { CompatibleLanguageModel } from './types.js';
@@ -50,6 +49,71 @@ function uint8ArrayToBase64(data: Uint8Array): string {
     binary += String.fromCharCode(data[i]);
   }
   return btoa(binary);
+}
+
+/**
+ * Reasoning part captured during streaming, in source order.
+ */
+export interface RawReasoningPart {
+  text: string;
+  providerMetadata?: SharedV3ProviderOptions;
+}
+
+/**
+ * File chunk captured during streaming. `data` is the raw value emitted by the
+ * model — a base64 string or a Uint8Array. The type is derived from the V3 file
+ * stream part so it tracks the SDK: if a future provider version widens it (e.g.
+ * a URL), `buildStepResult`'s base64 decode path stops type-checking and forces
+ * us to handle the new shape rather than silently corrupting it.
+ */
+export interface RawFile {
+  mediaType: string;
+  data: Extract<LanguageModelV3StreamPart, { type: 'file' }>['data'];
+}
+
+/**
+ * Response metadata extracted from the model's `response-metadata` chunk.
+ */
+export interface RawResponseMetadata {
+  id?: string;
+  modelId?: string;
+  timestamp?: Date | string;
+}
+
+/**
+ * Minimal aggregates needed to reconstruct a `StepResult` outside the step
+ * boundary. By returning only these fields (instead of a fully-populated
+ * StepResult), we avoid serializing the redundant copies the AI SDK keeps
+ * in StepResult — `toolCalls`/`dynamicToolCalls`/`staticToolCalls`,
+ * `content`, `reasoningText`, the always-empty `*ToolResults` arrays, the
+ * dual base64+uint8Array file encoding, and `request.body` (a JSON dump of
+ * the input prompt). The caller reconstructs the full StepResult from
+ * these fields plus the conversation prompt it already holds.
+ */
+export interface DoStreamStepRawResult {
+  text: string;
+  reasoning: RawReasoningPart[];
+  files: RawFile[];
+  sources: Array<Extract<LanguageModelV3StreamPart, { type: 'source' }>>;
+  warnings?: Extract<
+    LanguageModelV3StreamPart,
+    { type: 'stream-start' }
+  >['warnings'];
+  responseMetadata?: RawResponseMetadata;
+  /** Raw finish reason as emitted by the model (V3 may emit object or string). */
+  rawFinishReason: unknown;
+  usage?: FinishPart['usage'];
+  providerMetadata?: SharedV3ProviderOptions;
+}
+
+/**
+ * Result returned across the `doStreamStep` step boundary.
+ */
+export interface DoStreamStepResult {
+  toolCalls: LanguageModelV3ToolCall[];
+  raw: DoStreamStepRawResult;
+  uiChunks: UIMessageChunk[] | undefined;
+  providerExecutedToolResults: Map<string, ProviderExecutedToolResult>;
 }
 
 /**
@@ -111,7 +175,7 @@ export async function doStreamStep(
   writable: WritableStream<UIMessageChunk>,
   tools?: LanguageModelV3CallOptions['tools'],
   options?: DoStreamStepOptions
-) {
+): Promise<DoStreamStepResult> {
   'use step';
 
   let model: CompatibleLanguageModel | undefined;
@@ -218,7 +282,29 @@ export async function doStreamStep(
         string,
         ProviderExecutedToolResult
       >();
-      const chunks: LanguageModelV3StreamPart[] = [];
+
+      // Raw aggregates streamed in alongside chunks. We collect these here
+      // so we don't have to retain the full V3 chunk array, and so callers
+      // outside the step boundary can rebuild a StepResult without paying
+      // for StepResult's redundant fields across the boundary.
+      let textBuffer = '';
+      const reasoningById = new Map<
+        string,
+        { text: string; providerMetadata?: SharedV3ProviderOptions }
+      >();
+      const reasoningOrder: string[] = [];
+      const files: RawFile[] = [];
+      const sources: Array<
+        Extract<LanguageModelV3StreamPart, { type: 'source' }>
+      > = [];
+      let warnings:
+        | Extract<
+            LanguageModelV3StreamPart,
+            { type: 'stream-start' }
+          >['warnings']
+        | undefined;
+      let responseMetadata: RawResponseMetadata | undefined;
+
       const includeRawChunks = options?.includeRawChunks ?? false;
       const collectUIChunks = options?.collectUIChunks ?? false;
       const uiChunks: UIMessageChunk[] = [];
@@ -253,23 +339,89 @@ export async function doStreamStep(
               if (msToFirstChunk === undefined) {
                 msToFirstChunk = Date.now() - startTime;
               }
-              if (chunk.type === 'tool-call') {
-                toolCalls.push({
-                  ...chunk,
-                  input: chunk.input || '{}',
-                });
-              } else if (chunk.type === 'tool-result') {
-                // In V3, all tool-result stream parts are provider-executed by definition
-                providerExecutedToolResults.set(chunk.toolCallId, {
-                  toolCallId: chunk.toolCallId,
-                  toolName: chunk.toolName,
-                  result: chunk.result,
-                  isError: chunk.isError,
-                });
-              } else if (chunk.type === 'finish') {
-                finish = chunk;
+              switch (chunk.type) {
+                case 'tool-call':
+                  toolCalls.push({
+                    ...chunk,
+                    input: chunk.input || '{}',
+                  });
+                  break;
+                case 'tool-result':
+                  // In V3, all tool-result stream parts are provider-executed by definition
+                  providerExecutedToolResults.set(chunk.toolCallId, {
+                    toolCallId: chunk.toolCallId,
+                    toolName: chunk.toolName,
+                    result: chunk.result,
+                    isError: chunk.isError,
+                  });
+                  break;
+                case 'finish':
+                  finish = chunk;
+                  break;
+                case 'text-delta':
+                  textBuffer += chunk.delta;
+                  break;
+                case 'reasoning-start':
+                  reasoningById.set(chunk.id, {
+                    text: '',
+                    providerMetadata: chunk.providerMetadata as
+                      | SharedV3ProviderOptions
+                      | undefined,
+                  });
+                  reasoningOrder.push(chunk.id);
+                  break;
+                case 'reasoning-delta': {
+                  const entry = reasoningById.get(chunk.id);
+                  if (entry) {
+                    entry.text += chunk.delta;
+                    if (chunk.providerMetadata != null) {
+                      entry.providerMetadata =
+                        chunk.providerMetadata as SharedV3ProviderOptions;
+                    }
+                  } else {
+                    // Delta without a preceding start — still collect it
+                    reasoningById.set(chunk.id, {
+                      text: chunk.delta,
+                      providerMetadata: chunk.providerMetadata as
+                        | SharedV3ProviderOptions
+                        | undefined,
+                    });
+                    reasoningOrder.push(chunk.id);
+                  }
+                  break;
+                }
+                case 'reasoning-end': {
+                  // Mirror the AI SDK's behavior: reasoning-end can carry final providerMetadata.
+                  const entry = reasoningById.get(chunk.id);
+                  if (entry && chunk.providerMetadata != null) {
+                    entry.providerMetadata =
+                      chunk.providerMetadata as SharedV3ProviderOptions;
+                  }
+                  break;
+                }
+                case 'file':
+                  files.push({
+                    mediaType: chunk.mediaType,
+                    data: chunk.data,
+                  });
+                  break;
+                case 'source':
+                  sources.push(chunk);
+                  break;
+                case 'stream-start':
+                  warnings = chunk.warnings;
+                  break;
+                case 'response-metadata':
+                  // Merge per-field, mirroring the AI SDK: a provider may emit
+                  // multiple response-metadata chunks, and a later partial chunk
+                  // must not clobber fields populated by an earlier one.
+                  responseMetadata = {
+                    id: chunk.id ?? responseMetadata?.id,
+                    modelId: chunk.modelId ?? responseMetadata?.modelId,
+                    timestamp: chunk.timestamp ?? responseMetadata?.timestamp,
+                  };
+                  break;
               }
-              chunks.push(chunk);
               controller.enqueue(chunk);
             },
           })
@@ -532,18 +684,26 @@ export async function doStreamStep(
         )
         .pipeTo(writable, { preventClose: true });
 
-      const step = chunksToStep(chunks, toolCalls, conversationPrompt, finish);
+      // Materialize the reasoning aggregate in source order. Captured here
+      // so we can both compute telemetry and ship it across the boundary.
+      const reasoningParts: RawReasoningPart[] = reasoningOrder.map((id) => {
+        const entry = reasoningById.get(id)!;
+        return {
+          text: entry.text,
+          ...(entry.providerMetadata != null
+            ? { providerMetadata: entry.providerMetadata }
+            : {}),
+        };
+      });
+
+      const reasoningTextForTelemetry = reasoningParts
+        .map((r) => r.text)
+        .join('');
 
       // ── Record response-time telemetry attributes on the span ──
       if (span) {
         const msToFinish = Date.now() - startTime;
         const finishReason = normalizeFinishReason(finish?.finishReason);
-
-        // Extract response metadata from collected chunks
-        const responseMetadata = chunks.find(
-          (c): c is Extract<typeof c, { type: 'response-metadata' }> =>
-            c.type === 'response-metadata'
-        );
 
         // Usage attributes (not gated)
         const inputTokens = finish?.usage?.inputTokens?.total ?? 0;
@@ -598,14 +758,12 @@ export async function doStreamStep(
           'gen_ai.usage.output_tokens': outputTokens,
         };
 
-        // Output-gated response attributes — reuse aggregated values
-        // from chunksToStep to avoid redundant iteration over chunks.
         if (telemetry?.recordOutputs !== false) {
-          if (step.text) {
-            responseAttrs['ai.response.text'] = step.text;
+          if (textBuffer) {
+            responseAttrs['ai.response.text'] = textBuffer;
           }
-          if (step.reasoningText) {
-            responseAttrs['ai.response.reasoning'] = step.reasoningText;
+          if (reasoningTextForTelemetry) {
+            responseAttrs['ai.response.reasoning'] = reasoningTextForTelemetry;
           }
           if (toolCalls.length > 0) {
             responseAttrs['ai.response.toolCalls'] = JSON.stringify(toolCalls);
@@ -615,10 +773,23 @@ export async function doStreamStep(
         span.setAttributes(responseAttrs);
       }
 
+      const raw: DoStreamStepRawResult = {
+        text: textBuffer,
+        reasoning: reasoningParts,
+        files,
+        sources,
+        ...(warnings !== undefined ? { warnings } : {}),
+        ...(responseMetadata !== undefined ? { responseMetadata } : {}),
+        rawFinishReason: finish?.finishReason,
+        ...(finish?.usage !== undefined ? { usage: finish.usage } : {}),
+        ...(finish?.providerMetadata !== undefined
+          ? { providerMetadata: finish.providerMetadata }
+          : {}),
+      };
+
       return {
         toolCalls,
-        finish,
-        step,
+        raw,
         uiChunks: collectUIChunks ? uiChunks : undefined,
         providerExecutedToolResults,
       };
@@ -656,216 +827,4 @@ export function normalizeFinishReason(rawFinishReason: unknown): FinishReason {
     return rawFinishReason as FinishReason;
   }
   return 'other';
-}
-
-// This is a stand-in for logic in the AI-SDK streamText code which aggregates
-// chunks into a single step result.
-function chunksToStep(
-  chunks: LanguageModelV3StreamPart[],
-  toolCalls: LanguageModelV3ToolCall[],
-  conversationPrompt: LanguageModelV3Prompt,
-  finish?: FinishPart
-): StepResult<any> {
-  // Transform chunks to a single step result
-  const text = chunks
-    .filter(
-      (chunk): chunk is Extract<typeof chunk, { type: 'text-delta' }> =>
-        chunk.type === 'text-delta'
-    )
-    .map((chunk) => chunk.delta)
-    .join('');
-
-  // Collect reasoning parts by ID, mirroring how the AI SDK aggregates them:
-  // reasoning-start creates the part (with providerMetadata), reasoning-delta
-  // appends text, reasoning-end finalizes. For encrypted reasoning (e.g. OpenAI
-  // o-series), there may be no deltas — only start+end with providerMetadata
-  // carrying the itemId needed for Responses API item references.
-  const reasoningById = new Map<
-    string,
-    { text: string; providerMetadata?: unknown }
-  >();
-  for (const chunk of chunks) {
-    if (chunk.type === 'reasoning-start') {
-      reasoningById.set(chunk.id, {
-        text: '',
-        providerMetadata: chunk.providerMetadata,
-      });
-    } else if (chunk.type === 'reasoning-delta') {
-      const entry = reasoningById.get(chunk.id);
-      if (entry) {
-        entry.text += chunk.delta;
-        if (chunk.providerMetadata != null) {
-          entry.providerMetadata = chunk.providerMetadata;
-        }
-      } else {
-        // Delta without a preceding start — still collect it
-        reasoningById.set(chunk.id, {
-          text: chunk.delta,
-          providerMetadata: chunk.providerMetadata,
-        });
-      }
-    } else if (chunk.type === 'reasoning-end') {
-      // Merge reasoning-end metadata, mirroring the AI SDK's behavior
-      // where reasoning-end can carry final providerMetadata.
-      const entry = reasoningById.get(chunk.id);
-      if (entry && chunk.providerMetadata != null) {
-        entry.providerMetadata = chunk.providerMetadata;
-      }
-    }
-  }
-  const reasoning = Array.from(reasoningById.values());
-
-  const reasoningText = reasoning.map((r) => r.text).join('');
-
-  // Extract warnings from stream-start chunk
-  const streamStart = chunks.find(
-    (chunk): chunk is Extract<typeof chunk, { type: 'stream-start' }> =>
-      chunk.type === 'stream-start'
-  );
-
-  // Extract response metadata from response-metadata chunk
-  const responseMetadata = chunks.find(
-    (chunk): chunk is Extract<typeof chunk, { type: 'response-metadata' }> =>
-      chunk.type === 'response-metadata'
-  );
-
-  // Extract files from file chunks
-  // File chunks contain mediaType and data (base64 string or Uint8Array)
-  // GeneratedFile requires both base64 and uint8Array properties
-  const files = chunks
-    .filter(
-      (chunk): chunk is Extract<typeof chunk, { type: 'file' }> =>
-        chunk.type === 'file'
-    )
-    .map((chunk) => {
-      const data = chunk.data;
-      // If data is already a Uint8Array, convert to base64; otherwise use as-is
-      if (data instanceof Uint8Array) {
-        // Convert Uint8Array to base64 string
-        const base64 = uint8ArrayToBase64(data);
-        return {
-          mediaType: chunk.mediaType,
-          base64,
-          uint8Array: data,
-        };
-      } else {
-        // Data is base64 string, decode to Uint8Array
-        const binaryString = atob(data);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-        return {
-          mediaType: chunk.mediaType,
-          base64: data,
-          uint8Array: bytes,
-        };
-      }
-    });
-
-  // Extract sources from source chunks
-  const sources = chunks
-    .filter(
-      (chunk): chunk is Extract<typeof chunk, { type: 'source' }> =>
-        chunk.type === 'source'
-    )
-    .map((chunk) => chunk);
-
-  // Extract the raw finish reason from the V3 finish reason object
-  const v3FinishReason = finish?.finishReason;
-  const rawFinishReason =
-    typeof v3FinishReason === 'object' && v3FinishReason !== null
-      ? (v3FinishReason as { raw?: string }).raw
-      : typeof v3FinishReason === 'string'
-        ? v3FinishReason
-        : undefined;
-
-  const mapToolCall = (toolCall: LanguageModelV3ToolCall) => ({
-    type: 'tool-call' as const,
-    toolCallId: toolCall.toolCallId,
-    toolName: toolCall.toolName,
-    input: safeParseToolCallInput(toolCall.input),
-    dynamic: true as const,
-  });
-
-  const stepResult: StepResult<any> = {
-    stepNumber: 0, // Will be overridden by the caller
-    model: {
-      provider: responseMetadata?.modelId?.split(':')[0] ?? 'unknown',
-      modelId: responseMetadata?.modelId ?? 'unknown',
-    },
-    functionId: undefined,
-    metadata: undefined,
-    experimental_context: undefined,
-    content: [
-      ...(text ? [{ type: 'text' as const, text }] : []),
-      ...toolCalls.map(mapToolCall),
-    ],
-    text,
-    reasoning: reasoning.map((r) => ({
-      type: 'reasoning' as const,
-      text: r.text,
-      ...(r.providerMetadata != null
-        ? { providerOptions: r.providerMetadata as SharedV3ProviderOptions }
-        : {}),
-    })),
-    reasoningText: reasoningText || undefined,
-    files,
-    sources,
-    toolCalls: toolCalls.map(mapToolCall),
-    staticToolCalls: [],
-    dynamicToolCalls: toolCalls.map(mapToolCall),
-    toolResults: [],
-    staticToolResults: [],
-    dynamicToolResults: [],
-    finishReason: normalizeFinishReason(finish?.finishReason),
-    rawFinishReason,
-    usage: finish?.usage
-      ? {
-          inputTokens: finish.usage.inputTokens?.total ?? 0,
-          inputTokenDetails: {
-            noCacheTokens: finish.usage.inputTokens?.noCache,
-            cacheReadTokens: finish.usage.inputTokens?.cacheRead,
-            cacheWriteTokens: finish.usage.inputTokens?.cacheWrite,
-          },
-          outputTokens: finish.usage.outputTokens?.total ?? 0,
-          outputTokenDetails: {
-            textTokens: finish.usage.outputTokens?.text,
-            reasoningTokens: finish.usage.outputTokens?.reasoning,
-          },
-          totalTokens:
-            (finish.usage.inputTokens?.total ?? 0) +
-            (finish.usage.outputTokens?.total ?? 0),
-        }
-      : {
-          inputTokens: 0,
-          inputTokenDetails: {
-            noCacheTokens: undefined,
-            cacheReadTokens: undefined,
-            cacheWriteTokens: undefined,
-          },
-          outputTokens: 0,
-          outputTokenDetails: {
-            textTokens: undefined,
-            reasoningTokens: undefined,
-          },
-          totalTokens: 0,
-        },
-    warnings: streamStart?.warnings,
-    request: {
-      body: JSON.stringify({
-        prompt: conversationPrompt,
-        tools: toolCalls.map(mapToolCall),
-      }),
-    },
-    response: {
-      id: responseMetadata?.id ?? 'unknown',
-      timestamp: responseMetadata?.timestamp ?? new Date(),
-      modelId: responseMetadata?.modelId ?? 'unknown',
-      messages: [],
-    },
-    providerMetadata: finish?.providerMetadata || {},
-  };
-
-  return stepResult;
 }

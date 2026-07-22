@@ -121,15 +121,15 @@ flowchart TD
 
 **Hook states:**
 
-- `active`: Ready to receive payloads (hook exists in storage)
-- `disposed`: No longer accepting payloads (hook is deleted from storage)
+- `active`: Ready to receive payloads
+- `disposed`: No longer accepting payloads
 - `conflicted`: Hook creation failed because the token is already in use by another workflow
 
-Unlike other entities, hooks don't have a `status` field—the states above are conceptual. An "active" hook is one that exists in storage, while "disposed" means the hook has been deleted. When a `hook_disposed` event is created, the hook record is removed rather than updated.
+Unlike other entities, hooks don't have a `status` field—the states above are conceptual. When a `hook_disposed` event is created, the hook record is removed rather than updated.
 
-While a hook is active, its token is reserved and cannot be used by other workflows. If a workflow attempts to create a hook with a token that is already in use by another active hook, a `hook_conflict` event is recorded instead of `hook_created`. Current worlds include the token and the run ID that currently owns it, though older persisted events or world implementations may only include the token. This causes `hook.getConflict()` to resolve with the conflicting run and the hook's payload promise to reject with a `HookConflictError`, which you can detect with `HookConflictError.is(error)`. See the [hook-conflict error](/docs/errors/hook-conflict) documentation for more details.
+While a hook is active, its token is reserved and cannot be used by other workflows. If a workflow attempts to create a hook with a token reserved by another run — either by an active hook or by `experimental_minRetention` after its run ended — a `hook_conflict` event is recorded instead of `hook_created`. Current worlds include the token and the run ID that owns it, though older persisted events or world implementations may only include the token. This causes `hook.getConflict()` to resolve with the conflicting run and the hook's payload promise to reject with a `HookConflictError`, which you can detect with `HookConflictError.is(error)`. See the [hook-conflict error](/docs/errors/hook-conflict) documentation for more details.
 
-When a hook is disposed (either explicitly or when its workflow completes), the token is released and can be claimed by future workflows. Hooks are automatically disposed when a workflow reaches a terminal state (`completed`, `failed`, or `cancelled`). The `hook_disposed` event is only needed for explicit disposal before workflow completion.
+When a workflow ends, its Hooks can no longer be resumed. They are normally removed and their tokens become available again. With `experimental_minRetention`, a Hook remains readable and its token remains unavailable until retention ends. A `hook_disposed` event removes the Hook and makes its token available immediately.
 
 See [Hooks & Webhooks](/docs/foundations/hooks) for more on how hooks and webhooks work.
 
@@ -188,7 +188,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 | Event | Description |
 |-------|-------------|
 | `hook_created` | Creates a new hook in `active` state. Contains the hook token and optional metadata. |
-| `hook_conflict` | Records that hook creation failed because the token is already in use by another active hook. Contains the token and, for current worlds, the active hook owner's run ID. The hook is not created: `hook.getConflict()` resolves with the conflicting run, and awaiting the hook payload rejects with a `HookConflictError`. |
+| `hook_conflict` | Records that hook creation failed because another run owns the token. Contains the token and, for current worlds, the owner's run ID. The hook is not created: `hook.getConflict()` resolves with the conflicting run, and awaiting the hook payload rejects with a `HookConflictError`. |
 | `hook_received` | Records that a payload was delivered to the hook. The hook remains `active` and can receive more payloads. |
 | `hook_disposed` | Deletes the hook from storage (conceptually transitioning to `disposed` state). The token is released for reuse by future workflows. |
 

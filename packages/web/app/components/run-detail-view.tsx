@@ -1,17 +1,16 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
-import type { SpanSelectionInfo } from '@workflow/web-shared';
+import type { FetchSpanDetail } from '@workflow/web-shared';
 import {
   DecryptButton,
   ErrorBoundary,
   EventListView,
-  hydrateResourceIO,
-  hydrateResourceIOWithKey,
+  hydrateResourceIOAsync,
   NewTraceViewer,
   type SidebarDataContextValue,
   StreamViewer,
   stepEventsToStepEntity,
 } from '@workflow/web-shared';
-import type { Event, WorkflowRun } from '@workflow/world';
+import { type Event, isStepEventType, type WorkflowRun } from '@workflow/world';
 import {
   AlertCircle,
   GitBranch,
@@ -56,10 +55,12 @@ import { fetchEvent, getEncryptionKeyForRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
+  fetchSpanDetailResource,
+  getErrorMessage,
+  getErrorTitle,
   recreateRun,
   resumeHook,
   unwrapServerActionResult,
-  useWorkflowResourceData,
   useWorkflowStreams,
   useWorkflowTraceViewerData,
   wakeUpRun,
@@ -122,7 +123,7 @@ function GraphTabContent({
     if (!allEvents) return [];
     const stepEventsMap = new Map<string, Event[]>();
     for (const event of allEvents) {
-      if (event.eventType.startsWith('step_') && event.correlationId) {
+      if (isStepEventType(event.eventType) && event.correlationId) {
         const existing = stepEventsMap.get(event.correlationId);
         if (existing) {
           existing.push(event);
@@ -204,7 +205,6 @@ type Tab = 'trace' | 'graph' | 'streams' | 'events';
 
 export function RunDetailView({
   runId,
-  // TODO: This should open the right sidebar within the trace viewer
   selectedId: _selectedId,
 }: RunDetailViewProps) {
   const navigate = useNavigate();
@@ -301,35 +301,16 @@ export function RunDetailView({
       if (error) {
         throw error;
       }
-      const fullEvent = encryptionKeyRef.current
-        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
-        : hydrateResourceIO(result);
+      const fullEvent = await hydrateResourceIOAsync(
+        result,
+        encryptionKeyRef.current ?? undefined
+      );
       if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }
       return null;
     },
     [env]
-  );
-
-  // Callback for sidebar EventsList — takes (correlationId, eventId)
-  const handleLoadSidebarEventData = useCallback(
-    async (_correlationId: string, eventId: string) => {
-      const { error, result } = await unwrapServerActionResult(
-        fetchEvent(env, runId, eventId, 'all')
-      );
-      if (error) {
-        throw error;
-      }
-      const fullEvent = encryptionKeyRef.current
-        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
-        : hydrateResourceIO(result);
-      if ('eventData' in fullEvent) {
-        return fullEvent.eventData;
-      }
-      return null;
-    },
-    [env, runId]
   );
 
   // Only show graph tab for local backend
@@ -373,34 +354,18 @@ export function RunDetailView({
     enabled: activeTab === 'events',
   });
 
-  const [spanSelection, setSpanSelection] = useState<SpanSelectionInfo | null>(
-    null
-  );
-  const {
-    data: spanDetailData,
-    loading: spanDetailLoading,
-    error: spanDetailError,
-    refresh: refreshSpanDetail,
-  } = useWorkflowResourceData(
-    env,
-    spanSelection?.resource ?? 'run',
-    spanSelection?.resourceId ?? '',
-    {
-      runId: spanSelection?.runId,
-      enabled: Boolean(
-        spanSelection?.resource &&
-          spanSelection?.resourceId &&
-          spanSelection.resource !== 'hook'
-      ),
-      encryptionKey: encryptionKey ?? undefined,
-    }
+  const fetchSpanDetail = useCallback<FetchSpanDetail>(
+    (selection) =>
+      fetchSpanDetailResource(env, selection, {
+        encryptionKey: encryptionKey ?? undefined,
+      }),
+    [env, encryptionKey]
   );
 
   const [isDecrypting, setIsDecrypting] = useState(false);
 
   const handleDecrypt = useCallback(async () => {
     if (encryptionKey) {
-      refreshSpanDetail();
       return;
     }
     setIsDecrypting(true);
@@ -419,24 +384,17 @@ export function RunDetailView({
     } finally {
       setIsDecrypting(false);
     }
-  }, [encryptionKey, env, runId, refreshSpanDetail]);
-
-  const handleSpanSelect = useCallback((info: SpanSelectionInfo) => {
-    setSpanSelection(info);
-  }, []);
+  }, [encryptionKey, env, runId]);
 
   const sidebarData = useMemo<SidebarDataContextValue>(
     () => ({
       run,
       events: allEvents ?? [],
-      spanDetailData: spanDetailData ?? null,
-      spanDetailError,
-      spanDetailLoading,
-      onSpanSelect: handleSpanSelect,
+      fetchSpanDetail,
       onStreamClick: handleStreamClick,
       onRunClick: handleRunRefClick,
       onWakeUpSleep: handleWakeUpSleep,
-      onLoadEventData: handleLoadSidebarEventData,
+      onLoadEventData: handleLoadEventData,
       onResolveHook: handleResolveHook,
       encryptionKey: encryptionKey ?? undefined,
       onDecrypt: handleDecrypt,
@@ -446,14 +404,11 @@ export function RunDetailView({
     [
       run,
       allEvents,
-      spanDetailData,
-      spanDetailError,
-      spanDetailLoading,
-      handleSpanSelect,
+      fetchSpanDetail,
       handleStreamClick,
       handleRunRefClick,
       handleWakeUpSleep,
-      handleLoadSidebarEventData,
+      handleLoadEventData,
       handleResolveHook,
       encryptionKey,
       handleDecrypt,
@@ -533,8 +488,10 @@ export function RunDetailView({
     return (
       <Alert variant="destructive" className="m-4">
         <AlertCircle className="h-4 w-4" />
-        <AlertTitle>Error loading workflow run</AlertTitle>
-        <AlertDescription>{error.message}</AlertDescription>
+        <AlertTitle>
+          {getErrorTitle(error, 'Error loading workflow run')}
+        </AlertTitle>
+        <AlertDescription>{getErrorMessage(error)}</AlertDescription>
       </Alert>
     );
   }

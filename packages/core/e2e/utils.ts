@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import path, { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { createVercelWorld } from '@workflow/world-vercel';
+import { createWorkflowUrl } from '@workflow/utils';
+import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
+import { createWorld as createPostgresWorld } from '../../world-postgres/src/index.js';
 import type { Run } from '../src/runtime';
 import { getWorld, setWorld } from '../src/runtime';
 
@@ -372,7 +374,7 @@ export async function fetchManifest(
   const forceRefresh = options?.forceRefresh ?? false;
   if (cachedManifest && !forceRefresh) return cachedManifest;
 
-  const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
+  const url = createWorkflowUrl(deploymentUrl, { type: 'manifest' });
   const res = await fetch(url, {
     headers: await getTrustedSourcesHeaders(),
   });
@@ -483,7 +485,7 @@ export async function getWorkflowMetadata(
  * Configures the world based on the current environment:
  * - Local: sets env vars for local filesystem backend
  * - Vercel: creates and sets a Vercel world
- * - Postgres: relies on WORKFLOW_TARGET_WORLD and WORKFLOW_POSTGRES_URL env vars set by CI
+ * - Postgres: creates and sets a Postgres world
  */
 export function setupWorld(deploymentUrl: string): void {
   if (isLocalDeployment()) {
@@ -499,12 +501,15 @@ export function setupWorld(deploymentUrl: string): void {
     const isNextJs = appName.includes('nextjs') || appName.includes('next-');
     const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
     process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
+    if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
+      setWorld(createPostgresWorld());
+    }
   } else if (process.env.WORKFLOW_VERCEL_ENV) {
     // For Vercel tests: WORKFLOW_VERCEL_AUTH_TOKEN, WORKFLOW_VERCEL_PROJECT, etc. are set by CI.
     // Build the Vercel world explicitly with the CI-provided config rather than relying on
     // createWorld() reading these env vars (which no longer happens at runtime).
     setWorld(
-      createVercelWorld({
+      createVercelTestWorld({
         token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
         projectConfig: {
           environment: process.env.WORKFLOW_VERCEL_ENV || undefined,
@@ -515,7 +520,6 @@ export function setupWorld(deploymentUrl: string): void {
       })
     );
   }
-  // For Postgres tests: WORKFLOW_TARGET_WORLD and WORKFLOW_POSTGRES_URL are set by CI
 }
 
 // ============================================================================
@@ -731,6 +735,14 @@ function emitGitHubAnnotation(
 export function setupRunTracking(testName: string) {
   currentTestName = testName;
   trackedRuns = [];
+
+  // Heartbeat: announce the test the moment it starts, written straight to
+  // stdout to bypass vitest's per-file console buffering. Without this, a
+  // test that stalls (e.g. polling a run that never progresses) produces no
+  // output until its timeout, making CI look like a silent hang — the
+  // reporter only prints a test's result line once it completes. Emitting the
+  // name on start makes the stalling test immediately identifiable.
+  process.stdout.write(`\n[e2e] ▶ start: ${testName}\n`);
   onTestFailed(
     async (result) => {
       const errorMessage = result.errors?.[0]?.message || 'Test failed';

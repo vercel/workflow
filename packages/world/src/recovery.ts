@@ -1,5 +1,10 @@
 import type { Storage } from './interfaces.js';
-import type { Queue, ValidQueueName } from './queue.js';
+import type { ValidQueueName } from './queue.js';
+import {
+  getQueueTopicPrefix,
+  type Queue,
+  resolveQueueNamespace,
+} from './queue.js';
 import { isLegacySpecVersion, SPEC_VERSION_LEGACY } from './spec-version.js';
 
 /**
@@ -17,12 +22,18 @@ export const DEV_RESTART_CANCEL_REASON =
  * @param runs - Storage runs interface for listing active runs
  * @param enqueue - Queue's enqueue method
  * @param label - Log prefix for identifying the world implementation (e.g. "world-local")
+ * @param namespace - Optional queue namespace. Defaults to WORKFLOW_QUEUE_NAMESPACE.
  */
 export async function reenqueueActiveRuns(
   runs: Storage['runs'],
   enqueue: Queue['queue'],
-  label: string
+  label: string,
+  namespace?: string
 ): Promise<void> {
+  const workflowQueuePrefix = getQueueTopicPrefix(
+    'workflow',
+    resolveQueueNamespace(namespace)
+  );
   let reenqueued = 0;
   for (const status of ['pending', 'running'] as const) {
     let cursor: string | undefined;
@@ -35,7 +46,7 @@ export async function reenqueueActiveRuns(
       });
       for (const run of page.data) {
         try {
-          const queueName: ValidQueueName = `__wkf_workflow_${run.workflowName}`;
+          const queueName: ValidQueueName = `${workflowQueuePrefix}${run.workflowName}`;
           await enqueue(queueName, { runId: run.runId });
           reenqueued++;
         } catch (err) {
@@ -57,7 +68,7 @@ export async function reenqueueActiveRuns(
 
 /**
  * Cancel all active (pending/running) workflow runs by writing a terminal
- * `run_cancelled` event (carrying `reason`) for each. Used as the development
+ * `run_cancelled` event (carrying `eventData.cancelReason`) for each. Used as the development
  * boot-time behavior: rather than re-enqueuing runs from a previous dev session
  * — whose workflow code has likely changed, so replay would diverge — they are
  * cancelled with an explanatory reason.
@@ -92,7 +103,11 @@ export async function cancelActiveRuns(
           const specVersion = run.specVersion ?? SPEC_VERSION_LEGACY;
           await events.create(
             run.runId,
-            { eventType: 'run_cancelled', specVersion, reason },
+            {
+              eventType: 'run_cancelled',
+              specVersion,
+              eventData: { cancelReason: reason },
+            },
             { v1Compat: isLegacySpecVersion(specVersion) }
           );
           cancelled++;

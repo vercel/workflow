@@ -1,51 +1,9 @@
-import type { Node, Root } from 'fumadocs-core/page-tree';
-import { rewriteCookbookUrl } from '@/lib/geistdocs/cookbook-source';
-import { source } from '@/lib/geistdocs/source';
+import { createSitemapMarkdownRoute } from '@vercel/geistdocs/routes/sitemap';
+import { config } from '@/lib/geistdocs/config';
+import { allSources } from '@/lib/geistdocs/source';
 
-export const revalidate = false;
-export const dynamic = 'force-static';
-
-export async function GET(
-  _req: Request,
-  { params }: RouteContext<'/[lang]/sitemap.md'>
-) {
-  const { lang } = await params;
-  let mdText = '';
-
-  function traverseTree(node: Node | Root, depth = 0) {
-    const indent = '  '.repeat(depth);
-
-    if ('type' in node) {
-      // Exclude internal/preview-only pages from sitemap
-      if (node.type === 'page' && node.url.includes('/internal')) return;
-      if (node.type === 'folder' && node.name === 'Internal') return;
-      if (node.type === 'page') {
-        mdText += `${indent}- [${node.name}](${rewriteCookbookUrl(node.url)})\n`;
-      } else if (node.type === 'folder') {
-        if (node.index) {
-          mdText += `${indent}- [${node.name}](${rewriteCookbookUrl(node.index.url)})\n`;
-        } else {
-          mdText += `${indent}- ${node.name}\n`;
-        }
-        if (node.children.length > 0) {
-          for (const child of node.children) {
-            traverseTree(child, depth + 1);
-          }
-        }
-      }
-    } else if (node.children.length > 0) {
-      for (const child of node.children) {
-        traverseTree(child, depth);
-      }
-    }
-  }
-
-  const tree = source.getPageTree(lang);
-  traverseTree(tree, 0);
-
-  return new Response(mdText, {
-    headers: {
-      'Content-Type': 'text/markdown',
-    },
+export const { GET, generateStaticParams, revalidate, dynamic } =
+  createSitemapMarkdownRoute({
+    config,
+    sources: allSources.map((source) => ({ source })),
   });
-}

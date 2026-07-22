@@ -14,6 +14,7 @@ import {
   fetchEventsByCorrelationId,
   fetchHook,
   fetchHooks,
+  fetchHookToken,
   fetchRun,
   fetchRuns,
   fetchStep,
@@ -49,6 +50,8 @@ const handlers = {
       p.params ?? {}
     ),
   fetchHooks: (p: any) => fetchHooks(p.worldEnv ?? {}, p.params ?? {}),
+  fetchHookToken: (p: any) =>
+    fetchHookToken(p.worldEnv ?? {}, p.runId, p.hookId),
   fetchHook: (p: any) => fetchHook(p.worldEnv ?? {}, p.hookId, p.resolveData),
   cancelRun: (p: any) => cancelRun(p.worldEnv ?? {}, p.runId),
   recreateRun: (p: any) =>

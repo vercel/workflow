@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   getWaitContinuationDispatch,
   NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS,
@@ -119,6 +119,34 @@ describe('getWaitContinuationDispatch', () => {
         NOW + SEVEN_DAYS * 1000
       );
       expect(nearEnd.idempotencyKey).toMatch(new RegExp(`^${CORR_ID}:\\d+$`));
+    });
+  });
+
+  describe('max-delay override caps the near-elapsed threshold', () => {
+    const MAX_DELAY_ENV = 'WORKFLOW_WAIT_CONTINUATION_MAX_DELAY_SECONDS';
+
+    afterEach(() => {
+      delete process.env[MAX_DELAY_ENV];
+    });
+
+    it('never dispatches a delay above a max override set below the threshold', () => {
+      // Regression: the near-elapsed branch returned the full remaining time as
+      // the delay before the max was applied. With a max below the near-elapsed
+      // threshold, a wait in that band was dispatched with a delay above the
+      // max. The threshold is now capped at the max so every branch stays
+      // within it.
+      const overriddenMax = 1;
+      expect(overriddenMax).toBeLessThan(NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS);
+      process.env[MAX_DELAY_ENV] = String(overriddenMax);
+
+      // A wait exactly at the default near-elapsed threshold would previously
+      // return its full (> max) remaining time as the delay.
+      const { delaySeconds } = getWaitContinuationDispatch(
+        NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS,
+        CORR_ID,
+        NOW
+      );
+      expect(delaySeconds).toBeLessThanOrEqual(overriddenMax);
     });
   });
 });

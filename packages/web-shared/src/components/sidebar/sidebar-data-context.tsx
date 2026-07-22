@@ -1,26 +1,20 @@
 'use client';
 
-import { createContext, useContext, type ReactNode } from 'react';
-import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
-import type { SpanSelectionInfo } from './entity-detail-panel';
+import type { Event, Hook, WorkflowRun } from '@workflow/world';
+import { createContext, type ReactNode, useContext } from 'react';
+import type { FetchSpanDetail } from './use-selected-span-detail';
 
 export interface SidebarDataContextValue {
   run: WorkflowRun;
   events: Event[];
-  spanDetailData: WorkflowRun | Step | Hook | Event | null;
-  spanDetailError?: Error | null;
-  spanDetailLoading?: boolean;
-  onSpanSelect: (info: SpanSelectionInfo) => void;
+  fetchSpanDetail: FetchSpanDetail;
   onStreamClick?: (streamId: string) => void;
   onRunClick?: (runId: string) => void;
   onWakeUpSleep?: (
     runId: string,
     correlationId: string
   ) => Promise<{ stoppedCount: number }>;
-  onLoadEventData?: (
-    correlationId: string,
-    eventId: string
-  ) => Promise<unknown | null>;
+  onLoadEventData?: (event: Event) => Promise<unknown | null>;
   onResolveHook?: (
     hookToken: string,
     payload: unknown,
@@ -30,6 +24,12 @@ export interface SidebarDataContextValue {
   onDecrypt?: () => void;
   isDecrypting?: boolean;
   hasEncryptedData?: boolean;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
+  getModuleSourceUrl?: (info: {
+    moduleSpecifier: string;
+    deploymentId: string;
+  }) => string | undefined;
 }
 
 const SidebarDataContext = createContext<SidebarDataContextValue | null>(null);

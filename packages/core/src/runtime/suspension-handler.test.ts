@@ -30,6 +30,43 @@ function createWorld(eventsCreate: ReturnType<typeof vi.fn>): World {
 }
 
 describe('handleSuspension', () => {
+  it('persists the token retention deadline on hook_created', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const world = createWorld(eventsCreate);
+    const tokenRetentionUntil = new Date('2026-08-01T00:00:00.000Z');
+    const pending = new Map([
+      [
+        'hook_with_retention',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_with_retention',
+          token: 'order:123',
+          tokenRetentionUntil,
+        },
+      ],
+    ]);
+
+    await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+    });
+
+    expect(eventsCreate).toHaveBeenCalledWith(
+      run.runId,
+      expect.objectContaining({
+        eventType: 'hook_created',
+        eventData: expect.objectContaining({
+          token: 'order:123',
+          tokenRetentionUntil,
+        }),
+      }),
+      expect.anything()
+    );
+  });
+
   it('marks hook.getConflict()-awaited creations without converting them into wait timeouts', async () => {
     const eventsCreate = vi.fn().mockResolvedValue({
       event: {
@@ -246,5 +283,117 @@ describe('handleSuspension', () => {
 
     expect(result.hasAwaitedHookCreation).toBe(false);
     expect(result.timeoutSeconds).toBeUndefined();
+  });
+
+  // Regression test for #2777: a dispose() of an earlier hook must be
+  // flushed before a later same-token hook's creation is validated, or the
+  // new hook records a spurious hook_conflict against the run's own
+  // disposed hook.
+  it('flushes a prior hook disposal before validating a same-token recreation', async () => {
+    const eventsCreate = vi.fn(async (_runId, event) => ({ event }));
+    const world = createWorld(eventsCreate);
+    const pending = new Map([
+      [
+        'hook_old',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_old',
+          token: 'reused-token',
+          hasCreatedEvent: true,
+          disposed: true,
+        },
+      ],
+      [
+        'hook_new',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_new',
+          token: 'reused-token',
+          hasConflictAwaiter: true,
+        },
+      ],
+    ]);
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+    });
+
+    const hookCalls = eventsCreate.mock.calls.map(([, event]) => ({
+      eventType: event.eventType,
+      correlationId: event.correlationId,
+    }));
+    expect(hookCalls).toEqual([
+      { eventType: 'hook_disposed', correlationId: 'hook_old' },
+      { eventType: 'hook_created', correlationId: 'hook_new' },
+    ]);
+    expect(result.hasHookConflict).toBe(false);
+    expect(result.hasAwaitedHookCreation).toBe(true);
+  });
+
+  it('creates a hook before disposing it when both happen within one suspension', async () => {
+    const eventsCreate = vi.fn(async (_runId, event) => ({ event }));
+    const world = createWorld(eventsCreate);
+    const pending = new Map([
+      [
+        'hook_ephemeral',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_ephemeral',
+          token: 'ephemeral-token',
+          disposed: true,
+        },
+      ],
+    ]);
+
+    await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+    });
+
+    const hookCalls = eventsCreate.mock.calls.map(([, event]) => ({
+      eventType: event.eventType,
+      correlationId: event.correlationId,
+    }));
+    expect(hookCalls).toEqual([
+      { eventType: 'hook_created', correlationId: 'hook_ephemeral' },
+      { eventType: 'hook_disposed', correlationId: 'hook_ephemeral' },
+    ]);
+  });
+
+  it('does not dispose a hook whose creation conflicted', async () => {
+    const eventsCreate = vi.fn(async (_runId, event) => {
+      if (event.eventType === 'hook_created') {
+        return { event: { eventType: 'hook_conflict' } };
+      }
+      return { event };
+    });
+    const world = createWorld(eventsCreate);
+    const pending = new Map([
+      [
+        'hook_contended',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_contended',
+          token: 'contended-token',
+          disposed: true,
+        },
+      ],
+    ]);
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+    });
+
+    expect(result.hasHookConflict).toBe(true);
+    expect(
+      eventsCreate.mock.calls.some(
+        ([, event]) => event.eventType === 'hook_disposed'
+      )
+    ).toBe(false);
   });
 });

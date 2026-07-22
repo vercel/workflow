@@ -1,0 +1,127 @@
+---
+title: Recovering in-flight runs
+description: Start the World at server boot so runs that were in flight when the process stopped resume after a restart.
+type: guide
+summary: Call the World's start() at server boot to recover in-flight runs after a restart.
+prerequisites:
+  - /docs/deploying
+related:
+  - /worlds/local
+  - /worlds/postgres
+  - /worlds/vercel
+---
+
+When you self-host a workflow app on a long-lived server (the [local](/worlds/local) and [Postgres](/worlds/postgres) worlds), a run can be mid-flight — sleeping, waiting on a hook, or between steps — when the process stops or crashes. To resume those runs, the World's `start()` method runs **boot-time recovery**: it re-enqueues every `pending`/`running` run so execution continues.
+
+Recovery only happens if `start()` is actually called, and it must be called **once at server startup** — not in response to a request. Otherwise an idle server that restarted with in-flight runs would never pick them back up.
+
+## `ensureWorldStarted()`
+
+Call `ensureWorldStarted()` from `workflow/runtime` in your framework's server-startup hook:
+
+```ts
+import { ensureWorldStarted } from 'workflow/runtime';
+
+await ensureWorldStarted();
+```
+
+It is **idempotent** — it starts the World at most once per process, so it is safe to call from a hook that may run more than once. Re-enqueuing a run that is already progressing is harmless: the workflow handler is replay-idempotent, so duplicate enqueues converge rather than double-execute.
+
+You can call this regardless of which World you target. On the [Vercel World](/worlds/vercel) it is a no-op — delivery is push-based and the queue redelivers in-flight messages on its own, so there is no long-lived process to recover.
+
+## Development vs production
+
+What `start()` does with the in-flight runs depends on whether you're running a **production** build or a **development** server:
+
+- **Production** — runs are **recovered** (re-enqueued) so they resume where they left off.
+- **Development** — runs from a previous session are **cancelled** instead, with a reason recorded on the `run_cancelled` event (and an info log: `Dev mode: cancelled N in-flight run(s)…`). In dev your workflow code changes constantly, and recovery works by replaying the event log against the _current_ code — replaying a run that started on now-changed code would diverge. Cancelling these ephemeral dev runs is safer than resuming them.
+
+`ensureWorldStarted()` chooses the mode from a `dev` flag. Pass your framework's authoritative dev signal where one exists; otherwise it falls back to `process.env.NODE_ENV === 'development'`:
+
+| Framework | Dev signal |
+| --- | --- |
+| Nitro / Nuxt / Express / Hono / Fastify | `nitro.options.dev` — baked in automatically, no action needed |
+| SvelteKit | `import { dev } from '$app/environment'` |
+| Astro | `import.meta.env.DEV` |
+| Next.js | `process.env.NODE_ENV` (set reliably by `next dev` / `next build`) |
+| NestJS | none — derive from `process.env.NODE_ENV` (and make sure it's set) |
+
+To force recovery even in development (e.g. to debug recovery itself), set `WORKFLOW_RECOVER_IN_DEV=1`.
+
+<Callout type="warn">
+This dev cancellation only happens at server **restart**. If you edit a workflow while a run is in flight and your framework hot-reloads the module _without_ restarting the process (HMR / Fast Refresh), that running invocation can replay against the changed code mid-session — `start()` never re-runs, so the cancellation doesn't fire. If you hit a [replay divergence](/docs/errors/replay-divergence) after editing a workflow with a run in progress, restart the dev server (which then cancels the stale run) or cancel the run manually.
+</Callout>
+
+## Multi-instance deployments
+
+`start()` re-enqueues **every** `pending`/`running` run it finds in storage — it does not filter by which instance owns a run. On a horizontally-scaled or rolling deployment, each booting instance therefore re-enqueues all in-flight runs cluster-wide, including runs that are healthily in progress on another instance. This is safe, but worth understanding:
+
+- **Steps still execute exactly once.** Two guards cover the two windows a duplicate delivery can hit. While a step is **mid-flight** on another instance, the queue's job-key lock closes the concurrent window: steps are dispatched under a per-step idempotency key (the correlation ID), and the queue does not run a concurrent duplicate of a locked job (graphile-worker's job-key semantics in the Postgres World). After a step **completes**, the event log takes over — recording a start for a step that already reached a terminal state is rejected, so a late re-dispatch replays past the recorded result instead of re-executing the step. A **sleeping** run (or one waiting on a hook) has no step executing at all, so there is no concurrency to deduplicate — a duplicate delivery just replays and re-evaluates the wait.
+- **A sleeping run may wake early.** Re-enqueuing a run that is sleeping (or waiting on a hook) can deliver it before its deadline. On replay the workflow re-evaluates the sleep against the recorded deadline and sleeps for the remaining time, so the total sleep is still honored — the early delivery just costs an extra replay.
+
+<Callout>
+The mid-step half of this guarantee comes from the **queue**, not the replay engine. A [custom World](/worlds/building-a-world) whose queue does not lock/deduplicate jobs by key can execute the same step concurrently on two instances when a boot-time re-enqueue races an in-flight step — the event log's terminal-state guard only protects the window *after* a step completes.
+</Callout>
+
+Owner-aware recovery — re-enqueuing only the runs a booting instance is responsible for — is a planned refinement. Until then the redundant cluster-wide re-enqueues are harmless; if you want to avoid them entirely, call `ensureWorldStarted()` from a single designated instance.
+
+## Wiring it per framework
+
+Only the `@workflow/nitro` integration wires this up automatically. Every other framework needs the one-time manual setup below — a framework package handling your workflow routes does **not** imply it starts the World for you. (Astro is wired through middleware, so its recovery runs on the first request after boot rather than at boot itself.)
+
+### Next.js
+
+Add an `instrumentation.ts` at your project root. Guard on the Node.js runtime — `instrumentation.ts` also runs in the Edge runtime, which can't load the world modules:
+
+```ts title="instrumentation.ts"
+export async function register() {
+  if (process.env.NEXT_RUNTIME === 'nodejs') {
+    const { ensureWorldStarted } = await import('workflow/runtime');
+    await ensureWorldStarted();
+  }
+}
+```
+
+### Nitro, Nuxt, Express, Hono, Fastify (Nitro)
+
+No action required — the `@workflow/nitro` integration registers a Nitro server plugin that starts the World at boot for you. (Not on Vercel deploys, where the push-based Vercel World needs no boot recovery.)
+
+### SvelteKit
+
+Use the [`init`](https://svelte.dev/docs/kit/hooks#Shared-hooks-init) server hook, passing SvelteKit's `dev` flag:
+
+```ts title="src/hooks.server.ts"
+import { dev } from '$app/environment';
+import type { ServerInit } from '@sveltejs/kit';
+
+export const init: ServerInit = async () => {
+  const { ensureWorldStarted } = await import('workflow/runtime');
+  await ensureWorldStarted({ dev });
+};
+```
+
+### NestJS
+
+Call it in your `bootstrap()` before listening. NestJS exposes no build-time dev flag, so derive `dev` from `NODE_ENV` (and make sure it's set):
+
+```ts title="src/main.ts"
+async function bootstrap() {
+  const { ensureWorldStarted } = await import('workflow/runtime');
+  await ensureWorldStarted({ dev: process.env.NODE_ENV !== 'production' });
+  // ...create and listen
+}
+```
+
+### Astro
+
+Astro has no startup hook that works across all adapters, so start the World from middleware. `ensureWorldStarted()` is idempotent, so it only does real work on the first request. Pass Astro's `import.meta.env.DEV` as the dev flag:
+
+```ts title="src/middleware.ts"
+import { defineMiddleware } from 'astro:middleware';
+
+export const onRequest = defineMiddleware(async (_context, next) => {
+  const { ensureWorldStarted } = await import('workflow/runtime');
+  await ensureWorldStarted({ dev: import.meta.env.DEV });
+  return next();
+});
+```

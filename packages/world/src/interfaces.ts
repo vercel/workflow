@@ -1,3 +1,4 @@
+import type { Analytics } from './analytics.js';
 import type {
   AttributeChange,
   ExperimentalSetAttributesResult,
@@ -129,10 +130,10 @@ export interface Streamer {
  * - run_cancelled event for run cancellation
  * - hook_disposed event for explicit hook disposal (optional)
  *
- * Note: Hooks are automatically disposed by the World implementation when a workflow
- * reaches a terminal state (run_completed, run_failed, run_cancelled). This releases
- * hook tokens for reuse by future workflows. The hook_disposed event is only needed
- * for explicit disposal before workflow completion.
+ * When a workflow reaches a terminal state, its Hooks can no longer be resumed.
+ * Worlds normally remove them and release their tokens. A Hook with minimum
+ * retention remains readable and keeps its token unavailable until its retention
+ * ends. A hook_disposed event always removes the Hook and releases its token.
  */
 export interface Storage {
   runs: {
@@ -148,6 +149,25 @@ export interface Storage {
       id: string,
       params?: GetWorkflowRunParams
     ): Promise<WorkflowRun | WorkflowRunWithoutData>;
+
+    /**
+     * Retrieves several runs as one snapshot. The result preserves the input
+     * order and contains `null` for run IDs that do not exist.
+     */
+    getMany?: {
+      (
+        ids: readonly string[],
+        params: GetWorkflowRunParams & { resolveData: 'none' }
+      ): Promise<(WorkflowRunWithoutData | null)[]>;
+      (
+        ids: readonly string[],
+        params?: GetWorkflowRunParams & { resolveData?: 'all' }
+      ): Promise<(WorkflowRun | null)[]>;
+      (
+        ids: readonly string[],
+        params?: GetWorkflowRunParams
+      ): Promise<(WorkflowRun | WorkflowRunWithoutData | null)[]>;
+    };
 
     list(
       params: ListWorkflowRunsParams & { resolveData: 'none' }
@@ -264,8 +284,20 @@ export interface Storage {
   };
 
   hooks: {
+    /**
+     * Returns a Hook by ID. A Hook kept by minimum retention remains readable
+     * after its run ends, but cannot be resumed.
+     */
     get(hookId: string, params?: GetHookParams): Promise<Hook>;
+    /**
+     * Returns the Hook that owns a token, including a Hook kept by minimum
+     * retention after its run ends.
+     */
     getByToken(token: string, params?: GetHookParams): Promise<Hook>;
+    /**
+     * Lists Hooks, including Hooks kept by minimum retention after their runs
+     * end.
+     */
     list(params: ListHooksParams): Promise<PaginatedResponse<Hook>>;
   };
 }
@@ -295,19 +327,78 @@ export interface StartOptions {
 }
 
 /**
+ * Optional feature capabilities a World implementation declares so the core
+ * runtime can enable optimizations that depend on backend behavior, instead
+ * of inferring support from environment variables alone. Every capability
+ * defaults to "unsupported" when absent — runtime fast paths that rely on
+ * one must fail closed (keep their conservative behavior) unless the World
+ * explicitly declares it.
+ */
+export interface WorldCapabilities {
+  /**
+   * Supports `experimental_minRetention` for Hooks. Missing or inactive means
+   * the runtime rejects retained Hooks before registration.
+   */
+  hookRetention?: {
+    active: boolean;
+  };
+
+  /**
+   * The World enforces the optimistic-concurrency precondition guard: an
+   * event creation carrying a `stateUpdatedAt` snapshot is rejected with a
+   * `PreconditionFailedError` (412) when a newer out-of-band event (e.g. a
+   * received hook) was recorded after that snapshot. Worlds that accept but
+   * ignore `stateUpdatedAt` must leave this unset so runtime optimizations
+   * that rely on the 412 fence (see `WORKFLOW_PRECONDITION_GUARD`) are not
+   * enabled without an actual fence behind them.
+   */
+  preconditionGuard?: boolean;
+
+  /**
+   * The World's queue supports `maxConcurrency`-limited consumption — in
+   * particular the per-run flow topics consumed with `maxConcurrency: 1`
+   * that `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses to serialize a run's
+   * orchestrator invocations. Worlds whose queue has no concurrency-limit
+   * concept must leave this unset.
+   *
+   * Note this declares queue *support*, not deployed configuration: the
+   * serialization also requires the build-time half (a flow trigger emitted
+   * with `maxConcurrency: 1`), which a runtime process cannot verify today.
+   * The core runtime therefore does not yet take any fast path from this
+   * capability alone — it exists so a future build-verified signal can be
+   * combined with it (and so Worlds document the contract explicitly).
+   */
+  maxConcurrency?: boolean;
+}
+
+/**
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
 export interface World extends Queue, Streamer, Storage {
   /**
-   * The highest spec version this World supports.
+   * Optional analytics read namespace for observability surfaces.
    *
-   * When set, `start()` creates runs at this version so world-specific
-   * features (e.g., CBOR queue transport) are enabled automatically.
-   * When omitted, runs default to `SPEC_VERSION_SUPPORTS_EVENT_SOURCING` (2),
-   * the safe baseline that all worlds — including community worlds on
-   * older @workflow/world versions — are expected to handle.
+   * These APIs return metadata-only rows intended for UI/CLI listing and
+   * trace views. Payload-bearing fields remain on the canonical runtime
+   * storage APIs (`runs`, `steps`, `events`, `hooks`) and their RemoteRef
+   * resolution path.
    */
-  specVersion?: number;
+  analytics?: Analytics;
+
+  /**
+   * The Workflow protocol spec version this World implements.
+   *
+   * Current runtimes require this to exactly match their
+   * `SPEC_VERSION_CURRENT` before they create or replay runs.
+   */
+  specVersion: number;
+
+  /**
+   * Feature capabilities this World implementation supports — see
+   * {@link WorldCapabilities}. Absent (or absent members) means
+   * "unsupported": runtime optimizations gated on a capability fail closed.
+   */
+  capabilities?: WorldCapabilities;
 
   /**
    * Whether calling `process.exit(1)` from a queue handler is observed by
@@ -408,4 +499,57 @@ export interface World extends Queue, Streamer, Storage {
     runId: string,
     context?: Record<string, unknown>
   ): Promise<Uint8Array | undefined>;
+
+  /**
+   * Mint a new workflow run ID.
+   *
+   * Called by `start()` to generate the unique ID for a newly-created run.
+   * The returned value is the "bare" ID (without any `wrun_` prefix); the
+   * core attaches the prefix.
+   *
+   * Implementations are free to embed world-specific metadata in the ID
+   * (e.g., a region identifier) as long as the returned string remains a
+   * valid ULID. When omitted, `start()` falls back to generating a standard
+   * monotonic ULID.
+   *
+   * @param options - The full options bag passed to `start()` (typed as
+   *   `Record<string, unknown>` here to avoid a circular dependency with
+   *   `@workflow/core`). Worlds should read only the fields they
+   *   recognise — for example, `@workflow/world-vercel` reads
+   *   `options.region` to embed a region identifier. Unrecognised keys
+   *   must be ignored. `start()` always passes an object (an empty one
+   *   when it was called with no options), but implementations should
+   *   tolerate `undefined` for direct callers.
+   */
+  createRunId?(options?: Readonly<Record<string, unknown>>): string;
+
+  /**
+   * World-specific display fields for a run.
+   *
+   * Tooling — e.g. the `workflow inspect` CLI — calls this to enrich a
+   * run's listing row / detail output with fields only the world can
+   * derive: a region decoded from the run ID, placement read off the
+   * run's `executionContext`, a shard, a billing tier, etc. Consumers
+   * render each returned key as an additional column/property; when the
+   * hook is absent, no extra fields appear at all.
+   *
+   * The contract:
+   * - **Cheap and pure.** Called once per displayed run, so avoid I/O —
+   *   prefer deriving fields from the entity you are given.
+   * - **Read only what you recognise.** The argument is the run entity
+   *   as the caller has it (a full storage run, or a leaner analytics
+   *   row) — typed loosely for the same reason as {@link createRunId}.
+   *   Tolerate missing fields.
+   * - **Must not throw.**
+   * - A `null` field value means "applicable but undeterminable" and is
+   *   preserved as `null` in structured output (vs. the hook being
+   *   absent, where the key does not exist at all). Return `null` or an
+   *   empty object to add nothing for a given run.
+   */
+  describeRun?(
+    run: Readonly<Record<string, unknown>>
+  ):
+    | Record<string, string | null>
+    | null
+    | Promise<Record<string, string | null> | null>;
 }

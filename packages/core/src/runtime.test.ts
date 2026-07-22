@@ -1,4 +1,5 @@
 import {
+  PreconditionFailedError,
   RUN_ERROR_CODES,
   ThrottleError,
   WorkflowWorldError,
@@ -8,6 +9,7 @@ import {
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
 } from '@workflow/world';
+import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from './private.js';
 import { REPLAY_DIVERGENCE_MAX_RETRIES } from './runtime/constants.js';
@@ -53,6 +55,14 @@ async function runWorkflowHandlerWithEvents(
     createdEvents?: unknown[];
     queuedMessages?: unknown[];
     replayDivergence?: { eventId: string; count: number };
+    /**
+     * Make created events visible to subsequent events.list calls (appended
+     * to `events`), like a real World. Needed for flows where the handler
+     * makes in-process progress over its own writes (e.g. an attr_set
+     * resolved by the next replay iteration). Off by default so tests that
+     * pin the log's contents keep full control.
+     */
+    dynamicEventLog?: boolean;
   } = {}
 ) {
   const createdEvents = options.createdEvents ?? [];
@@ -66,14 +76,16 @@ async function runWorkflowHandlerWithEvents(
       };
     }
 
-    return {
-      event: {
-        eventId: `event-${createdEvents.length}`,
-        runId: workflowRun.runId,
-        createdAt: new Date(),
-        ...data,
-      },
+    const event = {
+      eventId: `event-${createdEvents.length}`,
+      runId: workflowRun.runId,
+      createdAt: new Date(),
+      ...data,
     };
+    if (options.dynamicEventLog) {
+      events.push(event as Event);
+    }
+    return { event };
   });
 
   setWorld({
@@ -311,6 +323,104 @@ describe('workflowEntrypoint replay guards', () => {
           errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
         }),
       })
+    );
+  });
+
+  it('redelivers (does NOT fail the run) when event listing hits a transient TRANSPORT error', async () => {
+    const createdEvents: unknown[] = [];
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_events_transport',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_events_transport',
+        undefined,
+        []
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    // The firewall in front of workflow-server returned 429→503 during an
+    // attack; the RetryAgent exhausted its retries and surfaced
+    // UND_ERR_REQ_RETRY, which world-vercel maps to a TRANSPORT error.
+    const transportError = new WorkflowWorldError(
+      'GET /v3/runs/wrun_events_transport/events transport failure after 1234ms (UND_ERR_REQ_RETRY)',
+      { code: 'TRANSPORT' }
+    );
+
+    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+      if (data.eventType !== 'run_started') {
+        createdEvents.push(data);
+      }
+      return data.eventType === 'run_started'
+        ? { run: workflowRun }
+        : {
+            event: {
+              eventId: `event-${createdEvents.length}`,
+              runId: workflowRun.runId,
+              createdAt: new Date(),
+              ...data,
+            },
+          };
+    });
+
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler: vi.fn(
+        (
+          _prefix: string,
+          handler: (message: unknown, metadata: unknown) => Promise<unknown>
+        ) => {
+          return async () => {
+            // The real createQueueHandler catches and applies a retry
+            // directive; here we let the throw escape so the test can assert
+            // the delivery rejects (which triggers redelivery in production).
+            await handler(
+              {
+                runId: workflowRun.runId,
+                requestedAt: new Date('2024-01-01T00:00:00.000Z'),
+              },
+              {
+                requestId: 'req_test',
+                attempt: 1,
+                queueName: '__wkf_workflow_workflow',
+                messageId: 'msg_test',
+              }
+            );
+            return new Response(null, { status: 204 });
+          };
+        }
+      ),
+      events: {
+        create: eventsCreate,
+        list: vi.fn(async () => {
+          throw transportError;
+        }),
+      },
+      runs: {
+        get: vi.fn(async () => workflowRun),
+      },
+      queue: vi.fn(),
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const handler = workflowEntrypoint(
+      `async function workflow() {
+        return 'done';
+      }${getWorkflowTransformCode('workflow')}`
+    );
+
+    // The transient transport failure must bubble out of the handler so the
+    // queue redelivers — not be swallowed into a run_failed event.
+    await expect(handler(new Request('https://example.test'))).rejects.toBe(
+      transportError
+    );
+
+    expect(createdEvents).not.toContainEqual(
+      expect.objectContaining({ eventType: 'run_failed' })
     );
   });
 
@@ -620,55 +730,36 @@ describe('workflowEntrypoint replay guards', () => {
         return "attribute won";
       }${getWorkflowTransformCode('workflow')}`;
 
-    const firstAttemptEvents: any[] = [];
-    const firstAttemptMessages: unknown[] = [];
+    const createdEvents: any[] = [];
+    const queuedMessages: unknown[] = [];
     await runWorkflowHandlerWithEvents(workflowCode, workflowRun, [], {
-      createdEvents: firstAttemptEvents,
-      queuedMessages: firstAttemptMessages,
+      createdEvents,
+      queuedMessages,
+      dynamicEventLog: true,
     });
 
-    expect(firstAttemptEvents).toContainEqual(
+    expect(createdEvents).toContainEqual(
       expect.objectContaining({ eventType: 'attr_set' })
     );
-    // Under lazy inline start the step that loses the attribute race is NOT
-    // eagerly created: its step_created is deferred for a lazy step_started
-    // that never fires, because the attr_set event triggers an immediate
-    // re-invocation before any step executes. So no step_created is written on
-    // this attempt — strictly less event-log garbage than the eager model,
-    // and correct because the step loses the race and is abandoned on replay.
-    expect(firstAttemptEvents).not.toContainEqual(
-      expect.objectContaining({ eventType: 'step_created' })
-    );
-    expect(firstAttemptMessages).toEqual([]);
-
-    const replayEvents = firstAttemptEvents
-      .filter(
-        (event) =>
-          event.eventType === 'attr_set' || event.eventType === 'step_created'
-      )
-      .map((event, index) => ({
-        ...event,
-        eventId: `event-${index}`,
-        runId: workflowRun.runId,
-        createdAt: new Date('2024-01-01T00:00:01.000Z'),
-      })) as Event[];
-    const replayCreatedEvents: unknown[] = [];
-    const replayQueuedMessages: unknown[] = [];
-
-    await runWorkflowHandlerWithEvents(
-      workflowCode,
-      workflowRun,
-      replayEvents,
-      {
-        createdEvents: replayCreatedEvents,
-        queuedMessages: replayQueuedMessages,
-      }
-    );
-
-    expect(replayCreatedEvents).toContainEqual(
+    // The attr_set suspension skips step processing and resolves through an
+    // in-process replay, where the durable attribute event wins the race —
+    // so the run completes within this same delivery, with no queue
+    // interaction.
+    expect(createdEvents).toContainEqual(
       expect.objectContaining({ eventType: 'run_completed' })
     );
-    expect(replayQueuedMessages).toEqual([]);
+    expect(queuedMessages).toEqual([]);
+    // Under lazy inline start the step that loses the attribute race is NOT
+    // eagerly created: its step_created is deferred for a lazy step_started
+    // that never fires, because the attribute-resolving replay decides the
+    // race before any step executes. So the losing step leaves no events at
+    // all — strictly less event-log garbage than the eager model.
+    expect(createdEvents).not.toContainEqual(
+      expect.objectContaining({ eventType: 'step_created' })
+    );
+    expect(createdEvents).not.toContainEqual(
+      expect.objectContaining({ eventType: 'step_started' })
+    );
   });
 
   it('fails the run when the World rejects an attr_set event as invalid', async () => {
@@ -1335,9 +1426,9 @@ describe('workflowEntrypoint turbo mode', () => {
   const ORIG_TURBO = process.env.WORKFLOW_TURBO;
   const ORIG_OPT = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
 
-  // Default: turbo ON (unset) and the global optimistic flag OFF (unset). Any
-  // optimistic behavior observed in these tests therefore comes from turbo
-  // forcing it — never from WORKFLOW_OPTIMISTIC_INLINE_START.
+  // Default: turbo ON (unset) and the global optimistic flag OFF (unset).
+  // Any optimistic behavior observed in these tests therefore comes from
+  // turbo forcing it — never from WORKFLOW_OPTIMISTIC_INLINE_START.
   beforeEach(() => {
     delete process.env.WORKFLOW_TURBO;
     delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
@@ -1623,5 +1714,714 @@ describe('workflowEntrypoint turbo mode', () => {
     expect(order.indexOf('step_started_called')).toBeLessThan(
       order.indexOf('body')
     );
+  });
+});
+
+describe('workflowEntrypoint inline-delta gate with open hooks', () => {
+  const ORIG_GUARD = process.env.WORKFLOW_PRECONDITION_GUARD;
+  const ORIG_OPT = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+
+  beforeEach(() => {
+    delete process.env.WORKFLOW_PRECONDITION_GUARD;
+    delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    deltaGateBodyRuns = [];
+  });
+  afterEach(() => {
+    if (ORIG_GUARD === undefined) {
+      delete process.env.WORKFLOW_PRECONDITION_GUARD;
+    } else {
+      process.env.WORKFLOW_PRECONDITION_GUARD = ORIG_GUARD;
+    }
+    if (ORIG_OPT === undefined) {
+      delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    } else {
+      process.env.WORKFLOW_OPTIMISTIC_INLINE_START = ORIG_OPT;
+    }
+    setWorld(undefined);
+    vi.clearAllMocks();
+    waitUntilPromises.length = 0;
+  });
+
+  registerStepFunction('deltaGateStep', async () => undefined);
+  let deltaGateBodyRuns: string[] = [];
+  registerStepFunction('deltaGateStepB', async () => {
+    deltaGateBodyRuns.push('B');
+    return undefined;
+  });
+
+  // A fire-and-forget hook alongside a single awaited step: the suspension
+  // creates a hook AND schedules one lazy inline step, leaving the hook open
+  // for the rest of the run.
+  const hookAndStepWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+    const s = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("deltaGateStep");
+    async function workflow() {
+      const hook = createHook({ token: 'delta-gate-token' });
+      return await s();
+    };globalThis.__private_workflows = new Map();
+    globalThis.__private_workflows.set("workflow", workflow);`;
+
+  // Same open hook, but two sequential steps — used to interleave an
+  // out-of-band event between step A's completion and step B's claim.
+  const hookAndTwoStepWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+    const a = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("deltaGateStep");
+    const b = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("deltaGateStepB");
+    async function workflow() {
+      const hook = createHook({ token: 'delta-gate-token' });
+      await a();
+      return await b();
+    };globalThis.__private_workflows = new Map();
+    globalThis.__private_workflows.set("workflow", workflow);`;
+
+  /**
+   * Drives the handler with a continuation message (no runInput, so turbo is
+   * off and the initial events.list — which supplies the cursor the delta
+   * diffs against — runs). Returns the events.create mock so tests can
+   * inspect the step-terminal write's params for `sinceCursor` and the
+   * step_started claims' params for `stateUpdatedAt`.
+   */
+  async function driveDeltaGate(
+    runId: string,
+    opts: {
+      /**
+       * World capabilities to declare. Absent by default — capability-gated
+       * fast paths must fail closed without them.
+       */
+      capabilities?: { preconditionGuard?: boolean; maxConcurrency?: boolean };
+      /** Workflow source to run (defaults to hookAndStepWorkflow). */
+      source?: string;
+      /**
+       * Reject the lazy step_started claim for this stepName with the given
+       * error (once), simulating a guard-enforcing backend 412-ing a stale
+       * claim after an out-of-band event bumped the run's marker.
+       */
+      rejectClaimOnce?: { stepName: string; error: Error };
+    } = {}
+  ) {
+    const workflowRun: WorkflowRun = {
+      runId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments([], runId, undefined, []),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    const durableEvents: Event[] = [];
+    const recordEvent = (data: any): Event => {
+      // ULID-shaped event IDs so the runtime's stateUpdatedAt snapshot
+      // (derived from the latest event id's ULID timestamp) is computable.
+      const created = {
+        eventId: `evnt_${ulid()}`,
+        runId,
+        createdAt: new Date(),
+        ...data,
+      } as Event;
+      durableEvents.push(created);
+      return created;
+    };
+
+    let claimRejected = false;
+    const eventsCreate = vi.fn(
+      async (_runId: string, data: any, _params?: any) => {
+        if (data.eventType === 'run_started') {
+          return { run: workflowRun, events: [] as Event[] };
+        }
+        if (data.eventType === 'step_started') {
+          const lazy = data.eventData as {
+            stepName?: string;
+            input?: unknown;
+          };
+          if (
+            opts.rejectClaimOnce &&
+            !claimRejected &&
+            lazy?.stepName === opts.rejectClaimOnce.stepName
+          ) {
+            claimRejected = true;
+            throw opts.rejectClaimOnce.error;
+          }
+          if (lazy?.input !== undefined) {
+            recordEvent({
+              eventType: 'step_created',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: data.correlationId,
+              eventData: { stepName: lazy.stepName, input: lazy.input },
+            });
+          }
+          return {
+            event: recordEvent(data),
+            step: {
+              runId,
+              stepId: data.correlationId,
+              stepName: lazy?.stepName,
+              status: 'running' as const,
+              attempt: 1,
+              input: lazy?.input,
+              startedAt: new Date(),
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            },
+            ...(lazy?.input !== undefined ? { stepCreated: true } : {}),
+          };
+        }
+        // The World returns no delta (like a World that doesn't support
+        // sinceCursor), so the next iteration falls back to events.list —
+        // these tests only assert whether the delta was REQUESTED.
+        return { event: recordEvent(data) };
+      }
+    );
+
+    const queueMock = vi.fn(async () => ({ messageId: null }));
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      capabilities: opts.capabilities,
+      createQueueHandler: vi.fn(
+        (
+          _prefix: string,
+          handler: (message: unknown, metadata: unknown) => Promise<unknown>
+        ) => {
+          return async () => {
+            await handler(
+              {
+                runId,
+                requestedAt: new Date('2024-01-01T00:00:00.000Z'),
+              },
+              {
+                requestId: 'req_delta_gate',
+                attempt: 1,
+                queueName: '__wkf_workflow_workflow',
+                messageId: 'msg_delta_gate',
+              }
+            );
+            return new Response(null, { status: 204 });
+          };
+        }
+      ),
+      events: {
+        create: eventsCreate,
+        list: vi.fn(async () => ({
+          data: [...durableEvents],
+          hasMore: false,
+          cursor: 'cursor_delta_gate',
+        })),
+      },
+      runs: { get: vi.fn(async () => workflowRun) },
+      queue: queueMock,
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const handler = workflowEntrypoint(opts.source ?? hookAndStepWorkflow);
+    const res = (await handler(
+      new Request('https://example.test')
+    )) as Response;
+    return { res, eventsCreate, queueMock };
+  }
+
+  function stepCompletedParams(eventsCreate: ReturnType<typeof vi.fn>) {
+    const call = eventsCreate.mock.calls.find(
+      (c) => (c[1] as any).eventType === 'step_completed'
+    );
+    expect(call).toBeDefined();
+    return call?.[2] as { sinceCursor?: string } | undefined;
+  }
+
+  it('requests the inline delta despite the open hook when the precondition guard is enabled and the World enforces it', async () => {
+    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
+    const { res, eventsCreate } = await driveDeltaGate(
+      'wrun_delta_gate_guard_on',
+      { capabilities: { preconditionGuard: true } }
+    );
+    expect(res.status).toBe(204);
+    // The suspension created a hook (left open) and one lazy inline step —
+    // with an enforced guard, a hook_received missed by the delta window is
+    // fenced by the outside-event marker, so the fast path stays active.
+    expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBe(
+      'cursor_delta_gate'
+    );
+    expect(eventsCreate.mock.calls).toContainEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ eventType: 'hook_created' }),
+      ])
+    );
+  });
+
+  it('does not request the inline delta with an open hook when the guard is disabled', async () => {
+    const { res, eventsCreate } = await driveDeltaGate(
+      'wrun_delta_gate_guard_off'
+    );
+    expect(res.status).toBe(204);
+    // Without the guard there is no fence for a hook_received landing in the
+    // delta window, so the conservative gate keeps the fetch path.
+    expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBeUndefined();
+  });
+
+  it('does not request the inline delta when the env flag is set but the World does not enforce the guard', async () => {
+    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
+    // No capabilities declared: the env flag only makes the runtime SEND
+    // snapshots — a World that ignores stateUpdatedAt provides no 412 fence,
+    // so the relaxation must fail closed to the conservative gate.
+    const { res, eventsCreate } = await driveDeltaGate(
+      'wrun_delta_gate_guard_no_capability'
+    );
+    expect(res.status).toBe(204);
+    expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBeUndefined();
+  });
+
+  it('abandons the batch and re-invokes when a stale lazy claim is rejected by the guard (interleaved hook_received)', async () => {
+    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
+    // Simulates the interleaving the fence exists for: after step A's
+    // terminal write, an out-of-band hook_received bumps the run's marker;
+    // the next replay (working from a view that misses it) schedules step B,
+    // whose lazy step_started claim the backend rejects as stale (412).
+    const { res, eventsCreate, queueMock } = await driveDeltaGate(
+      'wrun_delta_gate_stale_claim',
+      {
+        capabilities: { preconditionGuard: true },
+        source: hookAndTwoStepWorkflow,
+        rejectClaimOnce: {
+          stepName: 'deltaGateStepB',
+          error: new PreconditionFailedError(
+            'stale stateUpdatedAt: a newer outside event exists'
+          ),
+        },
+      }
+    );
+    // The handler responds normally: the rejection is mapped to an abandoned
+    // batch + re-invocation (a `{ timeoutSeconds: 0 }` redelivery outside
+    // turbo), never a run_failed.
+    expect(res.status).toBe(204);
+    // Step B's claim was issued from a loaded (non-empty) log, so it carried
+    // the guard snapshot — that is what lets the backend fence it. (The very
+    // first batch of a run loads an empty log and has no snapshot to send;
+    // the guard is best-effort there, matching the suspension creates.)
+    const rejectedClaim = eventsCreate.mock.calls.find(
+      (c) =>
+        (c[1] as any).eventType === 'step_started' &&
+        ((c[1] as any).eventData as { stepName?: string })?.stepName ===
+          'deltaGateStepB'
+    );
+    expect(typeof (rejectedClaim?.[2] as any)?.stateUpdatedAt).toBe('number');
+    // The fenced step never ran its body and never wrote events.
+    expect(deltaGateBodyRuns).toEqual([]);
+    expect(eventsCreate.mock.calls).not.toContainEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventType: 'step_completed',
+          eventData: expect.objectContaining({ stepName: 'deltaGateStepB' }),
+        }),
+      ])
+    );
+    expect(eventsCreate.mock.calls).not.toContainEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ eventType: 'run_failed' }),
+      ])
+    );
+    // Outside turbo the re-invocation is a redelivery of the current message,
+    // not an explicit continuation enqueue.
+    expect(queueMock).not.toHaveBeenCalled();
+  });
+
+  it('suppresses optimistic start on guarded stale-sensitive batches: a 412-fenced step never runs its body even with WORKFLOW_OPTIMISTIC_INLINE_START=1', async () => {
+    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '1';
+    // Same interleaving as above, but with optimistic start enabled globally.
+    // Without suppression, executeStep would begin step B's body immediately
+    // (before the claim settles) and only discard the result after the 412 —
+    // the side effects would already have run. With an open hook and the
+    // guard in force, the runtime takes the await-then-run path instead, so
+    // the fence covers user code: the rejected claim means the body never
+    // begins.
+    const { res, eventsCreate } = await driveDeltaGate(
+      'wrun_delta_gate_stale_claim_optimistic',
+      {
+        capabilities: { preconditionGuard: true },
+        source: hookAndTwoStepWorkflow,
+        rejectClaimOnce: {
+          stepName: 'deltaGateStepB',
+          error: new PreconditionFailedError(
+            'stale stateUpdatedAt: a newer outside event exists'
+          ),
+        },
+      }
+    );
+    expect(res.status).toBe(204);
+    expect(deltaGateBodyRuns).toEqual([]);
+    expect(eventsCreate.mock.calls).not.toContainEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ eventType: 'run_failed' }),
+      ])
+    );
+  });
+});
+
+describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
+  const ORIG_TURBO = process.env.WORKFLOW_TURBO;
+
+  beforeEach(() => {
+    delete process.env.WORKFLOW_TURBO;
+  });
+  afterEach(() => {
+    if (ORIG_TURBO === undefined) delete process.env.WORKFLOW_TURBO;
+    else process.env.WORKFLOW_TURBO = ORIG_TURBO;
+    setWorld(undefined);
+    vi.clearAllMocks();
+    waitUntilPromises.length = 0;
+  });
+
+  registerStepFunction('latStepOne', async () => undefined);
+  registerStepFunction('latStepTwo', async () => undefined);
+
+  const latXform = (name: string) =>
+    `;globalThis.__private_workflows = new Map();
+     globalThis.__private_workflows.set(${JSON.stringify(name)}, ${name});`;
+
+  const twoStepWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("latStepOne");
+    const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("latStepTwo");
+    async function workflow() { await s1(); return await s2(); }${latXform('workflow')}`;
+
+  // The first step races a long sleep: the suspension that schedules the
+  // step also creates a wait, which must disqualify the measurement.
+  const stepRacingSleepWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("latStepOne");
+    const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+    async function workflow() {
+      const [r] = await Promise.all([s1(), sleep('1h')]);
+      return r;
+    }${latXform('workflow')}`;
+
+  /** Backdated `wrun_` ULID so a real TTFS (≈ backdateMs) is computable. */
+  function makeLatencyRunId(backdateMs: number): string {
+    return `wrun_${ulid(Date.now() - backdateMs)}`;
+  }
+
+  /**
+   * Same as {@link makeLatencyRunId} but with the run-ID tagging schemes'
+   * metadata tag bit set (the MSB of the ULID's 48-bit timestamp, e.g.
+   * world-vercel's region-tagged IDs). For present-day timestamps the ULID's
+   * leading character is '0', so setting the tag bit turns it into a '4'.
+   */
+  function makeTaggedLatencyRunId(backdateMs: number): string {
+    const plain = ulid(Date.now() - backdateMs);
+    if (plain[0] !== '0') throw new Error('expected untagged leading char');
+    return `wrun_4${plain.slice(1)}`;
+  }
+
+  async function driveLatency(opts: {
+    runId: string;
+    source: string;
+    attempt?: number;
+    /** Pre-existing durable log (an earlier invocation's writes). */
+    seedEvents?: Event[];
+    /** false simulates a queue continuation delivery (no runInput → no turbo). */
+    withRunInput?: boolean;
+  }) {
+    const { runId, source } = opts;
+    const durable: Event[] = [...(opts.seedEvents ?? [])];
+    let seq = durable.length;
+    const rec = (data: any): Event => {
+      seq += 1;
+      const e = {
+        eventId: `e-${seq}`,
+        runId,
+        createdAt: new Date(),
+        ...data,
+      } as Event;
+      durable.push(e);
+      return e;
+    };
+    const runEntity: WorkflowRun = {
+      runId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments([], runId, undefined, []),
+      createdAt: new Date(Date.now() - 60_000),
+      updatedAt: new Date(),
+      startedAt: new Date(),
+      deploymentId: 'test-deployment',
+    };
+    const queued: unknown[] = [];
+
+    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+      if (data.eventType === 'run_started') {
+        // Preload mirrors the real server: the durable log as of now.
+        return { run: runEntity, events: [...durable] };
+      }
+      if (data.eventType === 'step_started') {
+        const d = data.eventData as { stepName?: string; input?: unknown };
+        if (d?.input !== undefined) {
+          rec({
+            eventType: 'step_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: data.correlationId,
+            eventData: { stepName: d.stepName, input: d.input },
+          });
+        }
+        return {
+          event: rec(data),
+          step: {
+            runId,
+            stepId: data.correlationId,
+            stepName: d?.stepName,
+            status: 'running' as const,
+            attempt: 1,
+            input: d?.input,
+            startedAt: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          ...(d?.input !== undefined ? { stepCreated: true } : {}),
+        };
+      }
+      return { event: rec(data) };
+    });
+
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler: vi.fn(
+        (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
+          async () => {
+            await handler(
+              {
+                runId,
+                requestedAt: new Date(),
+                ...(opts.withRunInput === false
+                  ? {}
+                  : {
+                      runInput: {
+                        input: await dehydrateWorkflowArguments(
+                          [],
+                          runId,
+                          undefined,
+                          []
+                        ),
+                        deploymentId: 'test-deployment',
+                        workflowName: 'workflow',
+                        specVersion: SPEC_VERSION_CURRENT,
+                        executionContext: {},
+                      },
+                    }),
+              },
+              {
+                requestId: 'req_latency',
+                attempt: opts.attempt ?? 1,
+                queueName: '__wkf_workflow_workflow',
+                messageId: 'msg_latency',
+              }
+            );
+            return new Response(null, { status: 204 });
+          }
+      ),
+      events: {
+        create: eventsCreate,
+        list: vi.fn(async () => ({
+          data: [...durable],
+          hasMore: false,
+          cursor: 'cursor_latency',
+        })),
+      },
+      runs: { get: vi.fn(async () => runEntity) },
+      queue: vi.fn(async (_queueName: string, message: unknown) => {
+        queued.push(message);
+        return { messageId: null };
+      }),
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const res = (await workflowEntrypoint(source)(
+      new Request('https://example.test')
+    )) as Response;
+    expect(res.status).toBe(204);
+
+    const stepCompleted = eventsCreate.mock.calls
+      .map((c) => c[1] as any)
+      .filter((d) => d.eventType === 'step_completed');
+    return { stepCompleted, eventsCreate, queued };
+  }
+
+  it('attaches ttfs to the first step and stso to the next back-to-back step (turbo)', async () => {
+    const backdateMs = 5_000;
+    const before = Date.now();
+    const { stepCompleted } = await driveLatency({
+      runId: makeLatencyRunId(backdateMs),
+      source: twoStepWorkflow,
+    });
+    const elapsed = Date.now() - before;
+    expect(stepCompleted).toHaveLength(2);
+
+    const [first, second] = stepCompleted;
+    // First step: TTFS anchored at the run-id ULID timestamp, no STSO.
+    expect(first.eventData.ttfs).toBeGreaterThanOrEqual(backdateMs);
+    expect(first.eventData.ttfs).toBeLessThanOrEqual(backdateMs + elapsed);
+    expect(first.eventData.stso).toBeUndefined();
+    expect(first.eventData.optimizations).toEqual([
+      'turbo',
+      'lazyStepStart',
+      'optimisticStart',
+    ]);
+
+    // RSFS/finalSchedulingReplay: under turbo, rsfsAnchorMs is stamped at local run
+    // synthesis (well after the backdated run-id timestamp), so unlike ttfs
+    // it stays within the test's own wall-clock budget.
+    expect(first.eventData.rsfs).toBeGreaterThanOrEqual(0);
+    expect(first.eventData.rsfs).toBeLessThanOrEqual(elapsed);
+    expect(first.eventData.finalSchedulingReplay).toBeGreaterThanOrEqual(0);
+    expect(first.eventData.finalSchedulingReplay).toBeLessThanOrEqual(elapsed);
+
+    // Second step ran back-to-back with the first: STSO only, and far
+    // smaller than the TTFS anchor distance (it measures the scheduling
+    // gap, not run age).
+    expect(second.eventData.ttfs).toBeUndefined();
+    expect(second.eventData.stso).toBeGreaterThanOrEqual(0);
+    expect(second.eventData.stso).toBeLessThanOrEqual(elapsed);
+    expect(second.eventData.stepCount).toBe(1);
+    expect(second.eventData.eventCount).toBeGreaterThan(0);
+    expect(second.eventData.optimizations).toEqual([
+      'turbo',
+      'lazyStepStart',
+      'optimisticStart',
+    ]);
+    // STSO-only steps never qualify for RSFS (it shares TTFS eligibility).
+    expect(second.eventData.rsfs).toBeUndefined();
+    expect(second.eventData.finalSchedulingReplay).toBeUndefined();
+  });
+
+  it('anchors ttfs correctly for a region-tagged run ID (tag bit cleared, not a future timestamp)', async () => {
+    const backdateMs = 5_000;
+    const before = Date.now();
+    const { stepCompleted } = await driveLatency({
+      runId: makeTaggedLatencyRunId(backdateMs),
+      source: twoStepWorkflow,
+    });
+    const elapsed = Date.now() - before;
+
+    // With the tag bit decoded as part of the timestamp the anchor would sit
+    // millennia in the future and the sample would be dropped (or, worse,
+    // clamp to an exact 0). Instead the tag bit is cleared and TTFS reflects
+    // the real run age.
+    const [first] = stepCompleted;
+    expect(first.eventData.ttfs).toBeGreaterThanOrEqual(backdateMs);
+    expect(first.eventData.ttfs).toBeLessThanOrEqual(backdateMs + elapsed);
+  });
+
+  it('still reports ttfs without turbo (redelivery), minus turbo-only optimization flags', async () => {
+    const backdateMs = 5_000;
+    const { stepCompleted } = await driveLatency({
+      runId: makeLatencyRunId(backdateMs),
+      source: twoStepWorkflow,
+      attempt: 2, // redelivery → turbo off, awaited run_started path
+    });
+    expect(stepCompleted).toHaveLength(2);
+    const [first] = stepCompleted;
+    expect(first.eventData.ttfs).toBeGreaterThanOrEqual(backdateMs);
+    expect(first.eventData.optimizations).toEqual(['lazyStepStart']);
+    // Non-turbo: rsfsAnchorMs is stamped right after the real (awaited)
+    // run_started response, so rsfs is a small non-negative duration too.
+    expect(first.eventData.rsfs).toBeGreaterThanOrEqual(0);
+    expect(first.eventData.finalSchedulingReplay).toBeGreaterThanOrEqual(0);
+  });
+
+  it('reports nothing when the first step is scheduled alongside a wait', async () => {
+    const { stepCompleted } = await driveLatency({
+      runId: makeLatencyRunId(5_000),
+      source: stepRacingSleepWorkflow,
+    });
+    expect(stepCompleted).toHaveLength(1);
+    expect(stepCompleted[0].eventData.ttfs).toBeUndefined();
+    expect(stepCompleted[0].eventData.stso).toBeUndefined();
+    expect(stepCompleted[0].eventData.rsfs).toBeUndefined();
+    expect(stepCompleted[0].eventData.finalSchedulingReplay).toBeUndefined();
+    expect(stepCompleted[0].eventData.optimizations).toBeUndefined();
+  });
+
+  const attrThenStepWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("latStepOne");
+    const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
+    async function workflow() {
+      await setAttributes([{ key: "k", value: "v" }]);
+      return await s1();
+    }${latXform('workflow')}`;
+
+  it('reports ttfs across a pre-step setAttributes, resolved in-process without a re-invoke', async () => {
+    // A workflow-body setAttributes before the first step resolves through
+    // an in-process replay: the same delivery commits attr_set, replays, and
+    // runs the step — no queue interaction. TTFS ends at the attr write, so
+    // the setAttributes call's duration is subtracted; here that detour is
+    // milliseconds, keeping ttfs ≈ the run's ULID backdate.
+    const backdateMs = 10_000;
+    const before = Date.now();
+    const first = await driveLatency({
+      runId: makeLatencyRunId(backdateMs),
+      source: attrThenStepWorkflow,
+    });
+    const elapsed = Date.now() - before;
+
+    // Everything happened in this one delivery: attr committed, step run,
+    // and nothing was enqueued (no re-invoke, no step dispatch).
+    const attrCreates = first.eventsCreate.mock.calls
+      .map((c) => c[1] as any)
+      .filter((d) => d.eventType === 'attr_set');
+    expect(attrCreates).toHaveLength(1);
+    expect(first.stepCompleted).toHaveLength(1);
+    expect(first.queued).toEqual([]);
+
+    const { ttfs, stso, optimizations } = first.stepCompleted[0].eventData;
+    expect(ttfs).toBeGreaterThanOrEqual(backdateMs);
+    expect(ttfs).toBeLessThanOrEqual(backdateMs + elapsed);
+    expect(stso).toBeUndefined();
+    // The attr detour does not end turbo: no resume invocation source
+    // exists, so the forced-optimistic fast path stays engaged.
+    expect(optimizations).toEqual([
+      'turbo',
+      'lazyStepStart',
+      'optimisticStart',
+    ]);
+  });
+
+  it('reports ttfs when a redelivery lands after a committed pre-step attr_set, ending the measurement at the attr write', async () => {
+    // Both measurement endpoints are values this test controls (the run-id
+    // ULID timestamp and the crafted attr occurredAt), so the expected ttfs
+    // is exact — no wall-clock slack that a slow CI runner could exceed.
+    const runCreatedAtMs = Date.now() - 10_000;
+    const runId = `wrun_${ulid(runCreatedAtMs)}`;
+
+    // Harvest a replay-consumable attr_set by driving the workflow once:
+    // its correlationId is a deterministic replay ULID, so only an event
+    // captured from a real drive of the SAME run id resolves the
+    // setAttributes call on the next drive's replay.
+    const harvest = await driveLatency({
+      runId,
+      source: attrThenStepWorkflow,
+    });
+    const attrCreates = harvest.eventsCreate.mock.calls
+      .map((c) => c[1] as any)
+      .filter((d) => d.eventType === 'attr_set');
+    expect(attrCreates).toHaveLength(1);
+
+    // Simulate a redelivery landing after the attr_set was committed but
+    // before the first step ran: a fresh world seeded with only the attr
+    // event, stamped as written 7s after run creation. The measurement must
+    // end at the attr write: exactly 7s, NOT the full wall-clock distance
+    // to now (10s+).
+    const attrOccurredAt = new Date(runCreatedAtMs + 7_000);
+    const attrEvent = {
+      ...attrCreates[0],
+      eventId: 'e-attr-1',
+      runId,
+      createdAt: attrOccurredAt,
+      occurredAt: attrOccurredAt,
+    } as Event;
+
+    const redelivery = await driveLatency({
+      runId,
+      source: attrThenStepWorkflow,
+      seedEvents: [attrEvent],
+      withRunInput: false,
+    });
+    expect(redelivery.stepCompleted).toHaveLength(1);
+    const { ttfs, stso, optimizations } = redelivery.stepCompleted[0].eventData;
+    // ULID time encoding is millisecond-exact, so this is deterministic.
+    expect(ttfs).toBe(+attrOccurredAt - runCreatedAtMs);
+    expect(stso).toBeUndefined();
+    // Continuation delivery is not turbo.
+    expect(optimizations).toEqual(['lazyStepStart']);
   });
 });

@@ -1,4 +1,8 @@
-import { RUN_ERROR_CODES, WorkflowWorldError } from '@workflow/errors';
+import {
+  PreconditionFailedError,
+  RUN_ERROR_CODES,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import type {
   Event,
   HealthCheckPayload,
@@ -12,6 +16,7 @@ import {
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  ulidToDate,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 
@@ -143,6 +148,16 @@ export interface HealthCheckOptions {
   timeout?: number;
   /** Deployment ID to send the health check to. Falls back to process.env.VERCEL_DEPLOYMENT_ID. */
   deploymentId?: string;
+  /**
+   * Queue namespace of the target deployment (e.g. `'eve'` for topics like
+   * `__eve_wkf_workflow_*`). Falls back to `WORKFLOW_QUEUE_NAMESPACE` in the
+   * calling process. Cross-context callers (e.g. the observability
+   * dashboard) must pass the target deployment's namespace explicitly —
+   * the env fallback resolves in the caller's process, and a message
+   * published to a mismatched topic has no consumer, so the check would
+   * always time out.
+   */
+  namespace?: string;
 }
 
 /**
@@ -167,6 +182,28 @@ const HEALTH_CHECK_READ_TIMEOUT = 500;
  * Read chunks from a stream with a timeout per read operation.
  * Returns { chunks, timedOut } where timedOut indicates if a read timed out.
  */
+/**
+ * Race a promise against a deadline. Rejects with a timeout error when the
+ * deadline elapses first. Used to bound `world.streams.get()` inside the
+ * health-check poll loop: some worlds hold that request open until the
+ * stream has data (e.g. workflow-server holds unwritten streams open for
+ * ~2 minutes), which would otherwise blow through the configured health
+ * check timeout — the `while` condition is only re-checked between
+ * iterations.
+ */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`Operation timed out after ${ms}ms`)),
+        ms
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 async function readStreamWithTimeout(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   readTimeout: number
@@ -255,10 +292,18 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
 export async function healthCheck(
   world: World,
   endpoint: HealthCheckEndpoint,
-  options?: HealthCheckOptions & { namespace?: string }
+  options?: HealthCheckOptions
 ): Promise<HealthCheckResult> {
   const timeout = options?.timeout ?? DEFAULT_HEALTH_CHECK_TIMEOUT;
-  const correlationId = generateId();
+  // Use the world's ID generator when available so the correlationId is a
+  // region-tagged ULID. The health-check response is delivered over a stream
+  // whose name embeds this correlationId; under platform-directed routing the
+  // reader and the responding endpoint can be served from different physical
+  // regions, so the region must be encoded in the ID itself for both sides to
+  // resolve the same (region-pinned) backend. Falls back to a plain ULID for
+  // worlds that don't tag IDs (e.g. local), which resolve to the default
+  // region on both sides.
+  const correlationId = world.createRunId?.() ?? generateId();
   const streamName = getHealthCheckStreamName(correlationId);
 
   const queueName =
@@ -280,9 +325,13 @@ export async function healthCheck(
 
     while (Date.now() - startTime < timeout) {
       try {
-        const stream = await world.streams.get(
-          generateHealthCheckRunId(correlationId),
-          streamName
+        const remainingMs = timeout - (Date.now() - startTime);
+        const stream = await withDeadline(
+          world.streams.get(
+            generateHealthCheckRunId(correlationId),
+            streamName
+          ),
+          remainingMs
         );
         const reader = stream.getReader();
         const { chunks, timedOut } = await readStreamWithTimeout(
@@ -519,6 +568,138 @@ export async function loadWorkflowRunEvents(
       return { events: loadedEvents, cursor };
     }
   );
+}
+
+/**
+ * Maximum number of times a replay-context event creation will reload the
+ * event log and retry after the backend rejects it as stale (412). After this
+ * many failed reloads the precondition error propagates so the run is
+ * re-invoked from the queue with a fresh replay.
+ */
+export const PRECONDITION_MAX_RELOAD_RETRIES = 2;
+
+/**
+ * A mutable view of the runtime's in-memory event log. `withPreconditionRetry`
+ * appends freshly-loaded events to `events` (in place) and advances `cursor`
+ * when it reloads, so the caller's loaded snapshot stays current.
+ */
+export interface MutableEventLog {
+  events: Event[];
+  cursor: string | null;
+}
+
+/**
+ * Whether the optimistic-concurrency guard for event creation is enabled.
+ * **On by default** where the runtime executes: replay-context creates send a
+ * `stateUpdatedAt` snapshot (and can be rejected with 412 by a supporting
+ * backend) unless `WORKFLOW_PRECONDITION_GUARD` is set to `0`. Backends without
+ * guard support ignore the snapshot, so enabling by default is
+ * backward-compatible.
+ */
+export function isPreconditionGuardEnabled(): boolean {
+  return process.env.WORKFLOW_PRECONDITION_GUARD !== '0';
+}
+
+/**
+ * The `stateUpdatedAt` value to send with a replay-context event creation: the
+ * ULID time (epoch ms) of the latest event the runtime has loaded. Events are
+ * stored in ascending order, so the last one is the newest. Returns `undefined`
+ * when there are no events or the latest id is not a decodable ULID.
+ *
+ * Granularity: snapshots are epoch-milliseconds, and the backend allows an
+ * equal-timestamp snapshot (an up-to-date client must not be rejected). Two
+ * out-of-band events landing in the same millisecond where only the first was
+ * loaded therefore pass the guard undetected — the guard is best-effort by
+ * design, and fails open rather than livelocking.
+ */
+export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
+  const last = events[events.length - 1];
+  if (!last) {
+    return undefined;
+  }
+  // Event IDs are prefixed ULIDs (e.g. `evnt_01ARYZ...`); ulidToDate only
+  // decodes the bare 26-char ULID, so strip the prefix first.
+  const eventId = last.eventId;
+  const underscore = eventId.lastIndexOf('_');
+  const rawUlid = underscore === -1 ? eventId : eventId.slice(underscore + 1);
+  const time = ulidToDate(rawUlid)?.getTime();
+  if (time === undefined) {
+    // Fail open: a non-decodable id disarms the guard for this create (no
+    // snapshot sent). Log so a fleet-wide silent disarm is diagnosable.
+    runtimeLogger.debug(
+      'Precondition guard: latest event id is not a decodable ULID; sending no snapshot',
+      { eventId }
+    );
+    return undefined;
+  }
+  return time;
+}
+
+/**
+ * The `stateUpdatedAt` to attach to a replay-context event creation:
+ * the loaded snapshot's ULID time when the precondition guard is enabled,
+ * `undefined` (no guard, backend behaves as before) otherwise.
+ */
+export function stateUpdatedAtForCreate(events: Event[]): number | undefined {
+  return isPreconditionGuardEnabled()
+    ? latestEventStateUpdatedAt(events)
+    : undefined;
+}
+
+/**
+ * Runs a replay-context event creation with the optimistic-concurrency guard.
+ *
+ * `op` receives the current `stateUpdatedAt` (the ULID time of the latest
+ * loaded event) to pass to `world.events.create`. If the backend rejects the
+ * creation as stale (`PreconditionFailedError` / 412), the event log is
+ * reloaded to completion from the last cursor, merged into `log` in place, and
+ * `op` is retried with the now-newer snapshot — up to
+ * `PRECONDITION_MAX_RELOAD_RETRIES` times. If it still fails, the error is
+ * rethrown so the run falls back to a queue re-invocation. Non-precondition
+ * errors are rethrown immediately.
+ */
+export async function withPreconditionRetry<T>(
+  runId: string,
+  log: MutableEventLog,
+  op: (stateUpdatedAt: number | undefined) => Promise<T>
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await op(stateUpdatedAtForCreate(log.events));
+    } catch (error) {
+      if (
+        !PreconditionFailedError.is(error) ||
+        attempt >= PRECONDITION_MAX_RELOAD_RETRIES
+      ) {
+        throw error;
+      }
+      runtimeLogger.info(
+        'Event creation rejected as stale; reloading event log and retrying',
+        {
+          workflowRunId: runId,
+          attempt: attempt + 1,
+          maxRetries: PRECONDITION_MAX_RELOAD_RETRIES,
+        }
+      );
+      const loaded = await loadWorkflowRunEvents(
+        runId,
+        log.cursor ?? undefined
+      );
+      appendUniqueEvents(
+        log.events,
+        new Set(log.events.map((e) => e.eventId)),
+        loaded.events
+      );
+      // When several creates share one `log` (e.g. hook creations under
+      // `Promise.all` in `handleSuspension`), concurrent 412s can reload
+      // concurrently. The event merge above is safe — `appendUniqueEvents`
+      // builds its dedup set synchronously right before appending — but this
+      // cursor write is last-write-wins, so an interleaved older reload can
+      // briefly regress the cursor. The only consequence is refetching a few
+      // already-deduped events on a later load; correctness is unaffected.
+      log.cursor = loaded.cursor ?? log.cursor;
+    }
+  }
 }
 
 /**

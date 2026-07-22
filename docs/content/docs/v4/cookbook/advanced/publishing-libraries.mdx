@@ -5,6 +5,10 @@ type: guide
 summary: Learn how to build, export, and test npm packages that ship workflow and step functions — including package.json exports, re-exporting for stable workflow IDs, keeping step I/O clean, and integration testing.
 ---
 
+<CopyPrompt
+  text="Package these workflow functions as a publishable npm library. Give the package a dedicated workflows entry point (for example `exports[&quot;./workflows&quot;]`) that ships the workflow and step source for the consumer's compiler to process. Keep every workflow and step input and output serializable, and read credentials from environment variables inside steps instead of accepting client instances. Document the consumer re-export requirement: consumers create a file in their `workflows/` directory containing `export * from &quot;<pkg>/workflows&quot;` so their build assigns stable workflow IDs and replay can resolve functions after cold starts. Add an integration test that runs a library workflow end to end from a consumer-style setup. Verify the build, stable IDs across deployments, and replay safety."
+/>
+
 import { File, Folder, Files } from "fumadocs-ui/components/files";
 
 <Callout>

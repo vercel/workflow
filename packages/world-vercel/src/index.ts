@@ -1,5 +1,7 @@
 import type { World } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
+import { createAnalytics } from './analytics.js';
+import { createRunId, describeRun } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue } from './queue.js';
@@ -8,6 +10,8 @@ import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 import type { APIConfig } from './utils.js';
 
+export { createAnalytics } from './analytics.js';
+export { createRunId, describeRun, regionForRunId } from './create-run-id.js';
 export {
   createGetEncryptionKeyForRun,
   deriveRunKey,
@@ -18,7 +22,7 @@ export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';
 export type { APIConfig } from './utils.js';
 
-export function createVercelWorld(config?: APIConfig): World {
+export function createWorld(config?: APIConfig): World {
   // Project ID for HKDF key derivation context.
   // Use config value first (set correctly by CLI/web), fall back to env var (runtime).
   const projectId =
@@ -33,6 +37,17 @@ export function createVercelWorld(config?: APIConfig): World {
     // at least it — workflow-server declared spec-5 support in
     // vercel/workflow-server#520.
     specVersion: SPEC_VERSION_SUPPORTS_COMPRESSION,
+    capabilities: {
+      // workflow-server enforces the `stateUpdatedAt` optimistic-concurrency
+      // guard: creations carrying a stale snapshot are rejected with 412
+      // (PreconditionFailedError) when the run's outside-event marker is
+      // newer. See vercel/workflow-server#484.
+      preconditionGuard: true,
+      // Vercel Queues supports maxConcurrency-limited consumers, which
+      // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
+      // flow topics (see queue.ts and @workflow/builders).
+      maxConcurrency: true,
+    },
     // On Vercel the platform fails the function invocation when the
     // process exits non-zero, and VQS redelivers the queue message via a
     // fresh invocation. The core runtime uses this to decide whether
@@ -48,7 +63,10 @@ export function createVercelWorld(config?: APIConfig): World {
     async start() {},
     ...createQueue(config),
     ...createStorage(config),
+    analytics: createAnalytics(config),
     ...instrumentObject('world.streams', createStreamer(config)),
+    createRunId,
+    describeRun,
     getEncryptionKeyForRun: createGetEncryptionKeyForRun(
       projectId,
       config?.projectConfig?.teamId,
@@ -57,4 +75,11 @@ export function createVercelWorld(config?: APIConfig): World {
     ),
     resolveLatestDeploymentId: createResolveLatestDeploymentId(config),
   };
+}
+
+/**
+ * @deprecated Use `createWorld()` instead.
+ */
+export function createVercelWorld(config?: APIConfig): World {
+  return createWorld(config);
 }

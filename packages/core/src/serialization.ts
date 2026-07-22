@@ -3,6 +3,7 @@ import {
   SerializationError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import { envNumber } from '@workflow/world';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import {
@@ -20,7 +21,7 @@ import {
 import { getStepFunction } from './private.js';
 // V2: use getWorldLazy in step-side code paths so Turbopack can statically
 // resolve the world bridge from the step bundle without dragging the full
-// world.ts module (and its dynamic-import behaviour) into the flow route.
+// host world module into the flow route.
 // See `packages/core/src/runtime/get-world-lazy.ts` and the
 // "Turbopack NFT Tracing Errors in V2 Combined Flow Route" section of
 // `docs/content/docs/changelog/eager-processing.mdx`.
@@ -80,10 +81,11 @@ import {
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
   STREAM_TYPE_SYMBOL,
+  STREAM_WRITE_BATCH_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
 import * as Attr from './telemetry/semantic-conventions.js';
-import { getActiveSpan } from './telemetry.js';
+import { getActiveSpan, getSpanKind, recordElapsedSpan } from './telemetry.js';
 import { getAbortStreamId } from './util.js';
 import { WorkflowAbortSignal } from './workflow/abort-controller.js';
 
@@ -551,6 +553,69 @@ export function getByteUnframingStream(): TransformStream<
   });
 }
 
+/**
+ * Emit the client-observed end-to-end time-to-first-chunk span for a live read:
+ * read dispatch (`startEpochMs`) → the first non-empty chunk reaching the
+ * reader, including the network hop. Fire-and-forget; no-op without OTEL.
+ */
+function recordReadTimeToFirstChunk(
+  startEpochMs: number,
+  runId: string,
+  name: string,
+  startIndex?: number,
+  connectMs?: number
+): void {
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.read', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.operation': 'read',
+        'workflow.stream.read.ttfc_ms': Date.now() - startEpochMs,
+        ...(typeof connectMs === 'number'
+          ? { 'workflow.stream.read.connect_ms': connectMs }
+          : {}),
+        ...(typeof startIndex === 'number'
+          ? { 'workflow.stream.start_index': startIndex }
+          : {}),
+      },
+    });
+  })();
+}
+
+/**
+ * Emit the client-observed read-completion span when a stream read drains:
+ * back-dated to the read dispatch, so its duration is the total read, with
+ * chunk/byte counts for throughput. Cancelled reads emit nothing. Fire-and-
+ * forget; no-op without OTEL.
+ */
+function recordStreamReadComplete(
+  startEpochMs: number,
+  runId: string,
+  name: string,
+  chunkCount: number,
+  byteCount: number,
+  reconnects?: number
+): void {
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.read.complete', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.operation': 'read_complete',
+        'workflow.stream.read.total_ms': Date.now() - startEpochMs,
+        'workflow.stream.read.chunks': chunkCount,
+        'workflow.stream.read.bytes': byteCount,
+        ...(typeof reconnects === 'number'
+          ? { 'workflow.stream.read.reconnects': reconnects }
+          : {}),
+      },
+    });
+  })();
+}
+
 export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
   #reader?: ReadableStreamDefaultReader<Uint8Array>;
 
@@ -558,6 +623,21 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
     if (typeof name !== 'string' || name.length === 0) {
       throw new WorkflowRuntimeError(`"name" is required, got "${name}"`);
     }
+    // Client-observed time-to-first-chunk state. `readStart` is stamped when the
+    // reader starts consuming (first pull → the read dispatch); the span is
+    // emitted once, when the first non-empty chunk reaches the reader. So its
+    // duration is the end-to-end TTFC including the network hop. No-op without
+    // an OpenTelemetry SDK registered.
+    let readStart: number | undefined;
+    let firstChunkReported = false;
+    // Client-observed connect duration: the world.streams.get await (read
+    // dispatch -> stream handle / response headers). Stamped on the
+    // workflow.stream.read span once the first chunk arrives.
+    let connectMs: number | undefined;
+    // Read-completion counters for the workflow.stream.read.complete span
+    // emitted when the stream drains.
+    let chunksDelivered = 0;
+    let bytesDelivered = 0;
     super({
       // @ts-expect-error Not sure why TypeScript is complaining about this
       type: 'bytes',
@@ -565,8 +645,11 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
       pull: async (controller) => {
         let reader = this.#reader;
         if (!reader) {
+          if (readStart === undefined) readStart = Date.now();
           const world = await getWorldLazy();
+          const connectStart = Date.now();
           const stream = await world.streams.get(runId, name, startIndex);
+          connectMs = Date.now() - connectStart;
           reader = this.#reader = stream.getReader();
         }
         if (!reader) {
@@ -577,8 +660,36 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         const result = await reader.read();
         if (result.done) {
           this.#reader = undefined;
+          if (readStart !== undefined) {
+            recordStreamReadComplete(
+              readStart,
+              runId,
+              name,
+              chunksDelivered,
+              bytesDelivered
+            );
+          }
           controller.close();
         } else {
+          // The server flushes a leading zero-length chunk (v3+) to commit
+          // response headers before any data; skip empties so TTFC measures to
+          // the first real chunk.
+          if (
+            !firstChunkReported &&
+            result.value.byteLength > 0 &&
+            readStart !== undefined
+          ) {
+            firstChunkReported = true;
+            recordReadTimeToFirstChunk(
+              readStart,
+              runId,
+              name,
+              startIndex,
+              connectMs
+            );
+          }
+          chunksDelivered += 1;
+          bytesDelivered += result.value.byteLength;
           // Forward raw bytes; encryption/decryption is handled at the
           // framing level by getSerializeStream/getDeserializeStream.
           controller.enqueue(result.value);
@@ -604,6 +715,17 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
  */
 export const FRAMED_STREAM_MAX_RECONNECTS = 50;
 
+/** Effective consecutive-reconnect cap. Override: `WORKFLOW_FRAMED_STREAM_MAX_RECONNECTS`. */
+const getFramedStreamMaxReconnects = (): number =>
+  envNumber(
+    'WORKFLOW_FRAMED_STREAM_MAX_RECONNECTS',
+    FRAMED_STREAM_MAX_RECONNECTS,
+    {
+      integer: true,
+      min: 1,
+    }
+  );
+
 /**
  * Absolute backstop on total reconnects for a single session, independent of
  * progress. The consecutive cap above resets on forward progress, which is
@@ -616,6 +738,14 @@ export const FRAMED_STREAM_MAX_RECONNECTS = 50;
  * with legitimate long-lived streams.
  */
 export const FRAMED_STREAM_MAX_TOTAL_RECONNECTS = 1000;
+
+/** Effective total-reconnect backstop. Override: `WORKFLOW_FRAMED_STREAM_MAX_TOTAL_RECONNECTS`. */
+const getFramedStreamMaxTotalReconnects = (): number =>
+  envNumber(
+    'WORKFLOW_FRAMED_STREAM_MAX_TOTAL_RECONNECTS',
+    FRAMED_STREAM_MAX_TOTAL_RECONNECTS,
+    { integer: true, min: 1 }
+  );
 
 /**
  * Wraps the length-prefix-framed byte stream from `world.streams.get` with
@@ -648,13 +778,22 @@ export function createReconnectingFramedStream(
   let totalReconnectCount = 0;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let buffer = new Uint8Array(0);
+  // Read telemetry (same semantics as WorkflowServerReadableStream):
+  // dispatch time, first-connect duration, first-frame latch, and totals.
+  let readStart: number | undefined;
+  let connectMs: number | undefined;
+  let firstChunkReported = false;
+  let chunksDelivered = 0;
+  let bytesDelivered = 0;
 
   async function connect(): Promise<void> {
     const world = await getWorldLazy();
     const effectiveStartIndex = reconnectSupported
       ? currentStartIndex + consumedFrames
       : startIndex;
+    const connectStart = Date.now();
     const stream = await world.streams.get(runId, name, effectiveStartIndex);
+    if (connectMs === undefined) connectMs = Date.now() - connectStart;
     reader = stream.getReader();
   }
 
@@ -676,17 +815,19 @@ export function createReconnectingFramedStream(
     // count it against the budget and try again rather than treating it as
     // fatal. Only budget exhaustion (a server that stays down) terminates the
     // stream.
+    const maxReconnects = getFramedStreamMaxReconnects();
+    const maxTotalReconnects = getFramedStreamMaxTotalReconnects();
     for (;;) {
       reconnectCount++;
       totalReconnectCount++;
-      if (reconnectCount > FRAMED_STREAM_MAX_RECONNECTS) {
+      if (reconnectCount > maxReconnects) {
         throw new Error(
-          `Stream "${name}" exceeded maximum reconnection attempts (${FRAMED_STREAM_MAX_RECONNECTS})`
+          `Stream "${name}" exceeded maximum reconnection attempts (${maxReconnects})`
         );
       }
-      if (totalReconnectCount > FRAMED_STREAM_MAX_TOTAL_RECONNECTS) {
+      if (totalReconnectCount > maxTotalReconnects) {
         throw new Error(
-          `Stream "${name}" exceeded maximum total reconnection attempts (${FRAMED_STREAM_MAX_TOTAL_RECONNECTS})`
+          `Stream "${name}" exceeded maximum total reconnection attempts (${maxTotalReconnects})`
         );
       }
       try {
@@ -701,6 +842,7 @@ export function createReconnectingFramedStream(
 
   return new ReadableStream<Uint8Array>({
     pull: async (controller) => {
+      if (readStart === undefined) readStart = Date.now();
       // Loop until we emit something, hit EOF, or fatally error. Reads that
       // only extend the in-flight-frame buffer don't enqueue anything — we
       // keep reading rather than returning empty-handed.
@@ -737,6 +879,16 @@ export function createReconnectingFramedStream(
           // bytes (there shouldn't be any; a well-formed stream ends on a
           // frame boundary).
           reader = undefined;
+          if (readStart !== undefined) {
+            recordStreamReadComplete(
+              readStart,
+              runId,
+              name,
+              chunksDelivered,
+              bytesDelivered,
+              totalReconnectCount
+            );
+          }
           controller.close();
           return;
         }
@@ -764,6 +916,18 @@ export function createReconnectingFramedStream(
           controller.enqueue(buffer.slice(0, total));
           buffer = buffer.slice(total);
           consumedFrames++;
+          chunksDelivered++;
+          bytesDelivered += total;
+          if (!firstChunkReported && readStart !== undefined) {
+            firstChunkReported = true;
+            recordReadTimeToFirstChunk(
+              readStart,
+              runId,
+              name,
+              startIndex,
+              connectMs
+            );
+          }
           emitted = true;
         }
 
@@ -793,6 +957,76 @@ export function createReconnectingFramedStream(
  * Chunks are accumulated and flushed together to reduce network overhead.
  */
 const STREAM_FLUSH_INTERVAL_MS = 10;
+
+/**
+ * Effective default stream-flush interval (a `world.streamFlushIntervalMs`
+ * still takes precedence). Override: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`.
+ */
+const getStreamFlushIntervalMs = (): number =>
+  envNumber('WORKFLOW_STREAM_FLUSH_INTERVAL_MS', STREAM_FLUSH_INTERVAL_MS, {
+    integer: true,
+  });
+
+/**
+ * Emit the client-observed span for one flushed batch of stream writes: first
+ * `write()` of the batch (`startEpochMs`) → the server write settling. The
+ * span's duration is therefore the app-perceived latency of the batch
+ * (buffer dwell + backpressure + RPC); `buffer_dwell_ms` isolates the
+ * pre-dispatch share so client-side batching cost can be told apart from
+ * network/server time. Named `workflow.stream.flush` — the per-request RPC
+ * beneath it is world-vercel's `workflow.stream.write` span (chunk_rtt), and
+ * the two must stay distinguishable. Fire-and-forget; no-op without OTEL.
+ */
+function recordStreamWriteFlush(
+  startEpochMs: number,
+  dispatchEpochMs: number,
+  runId: string,
+  name: string,
+  chunkCount: number,
+  byteCount: number,
+  rpcMs: number
+): void {
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.flush', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.operation': 'flush',
+        'workflow.stream.flush.buffer_dwell_ms': dispatchEpochMs - startEpochMs,
+        'workflow.stream.flush.chunks': chunkCount,
+        'workflow.stream.flush.bytes': byteCount,
+        // Client-observed World write RPC duration (network hop included).
+        // Same key as world-vercel's per-request span attribute so queries
+        // work regardless of which layer emitted it.
+        'workflow.stream.write.chunk_rtt': rpcMs,
+      },
+    });
+  })();
+}
+
+/**
+ * Emit the client-observed span for the stream-close RPC: its duration is the
+ * `world.streams.close` round trip (network hop included). Fire-and-forget;
+ * no-op without OTEL.
+ */
+function recordStreamClose(
+  startEpochMs: number,
+  runId: string,
+  name: string
+): void {
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.close', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.operation': 'close',
+        'workflow.stream.close.rpc_ms': Date.now() - startEpochMs,
+      },
+    });
+  })();
+}
 
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
   /**
@@ -838,6 +1072,12 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     let flushPromise: Promise<void> | null = null;
     let resolvedFlushIntervalMs: number | undefined;
+    // Client-observed write-batch timing: stamped at `write()` entry for the
+    // first chunk of a batch — before the backpressure wait on any in-flight
+    // flush — so the emitted span covers the full app-perceived latency
+    // (queueing + flush-timer dwell + RPC). Cleared when a flush takes the
+    // batch; restored on write failure so a retried batch keeps its true t0.
+    let batchStartAt: number | undefined;
 
     const flush = async (): Promise<void> => {
       if (flushTimer) {
@@ -854,24 +1094,53 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       // Copy chunks to flush, but don't clear buffer until write succeeds
       // This prevents data loss if the write operation fails
       const chunksToFlush = buffer.slice();
+      const batchStart = batchStartAt;
+      batchStartAt = undefined;
+      const dispatchAt = Date.now();
 
       const world = await worldPromise;
       // Cache the flush interval from the world on first use
       if (resolvedFlushIntervalMs === undefined) {
         resolvedFlushIntervalMs =
-          world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS;
+          world.streamFlushIntervalMs ?? getStreamFlushIntervalMs();
       }
-      // Use writeMulti if available for batch writes
-      if (
-        typeof world.streams.writeMulti === 'function' &&
-        chunksToFlush.length > 1
-      ) {
-        await world.streams.writeMulti(runId, name, chunksToFlush);
-      } else {
-        // Fall back to sequential writes
-        for (const chunk of chunksToFlush) {
-          await world.streams.write(runId, name, chunk);
+      const rpcStartAt = Date.now();
+      try {
+        // Use writeMulti if available for batch writes
+        if (
+          typeof world.streams.writeMulti === 'function' &&
+          chunksToFlush.length > 1
+        ) {
+          await world.streams.writeMulti(runId, name, chunksToFlush);
+        } else {
+          // Fall back to sequential writes
+          for (const chunk of chunksToFlush) {
+            await world.streams.write(runId, name, chunk);
+          }
         }
+      } catch (error) {
+        // The batch stays buffered for retry — restore its original t0 (the
+        // oldest, if a newer write stamped one meanwhile) so the eventually
+        // successful flush reports the full dwell.
+        if (batchStart !== undefined) {
+          batchStartAt =
+            batchStartAt === undefined
+              ? batchStart
+              : Math.min(batchStartAt, batchStart);
+        }
+        throw error;
+      }
+
+      if (batchStart !== undefined) {
+        recordStreamWriteFlush(
+          batchStart,
+          dispatchAt,
+          runId,
+          name,
+          chunksToFlush.length,
+          chunksToFlush.reduce((sum, c) => sum + c.byteLength, 0),
+          Date.now() - rpcStartAt
+        );
       }
 
       // Only clear buffer after successful write to prevent data loss
@@ -899,11 +1168,16 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
             for (const w of currentWaiters) w.reject(err);
           }
         );
-      }, resolvedFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS);
+      }, resolvedFlushIntervalMs ?? getStreamFlushIntervalMs());
     };
 
     super({
       async write(chunk) {
+        // Batch t0 for the write-flush span: at entry, before the
+        // backpressure wait below, so queueing behind an in-flight flush
+        // counts toward the app-perceived dwell.
+        if (batchStartAt === undefined) batchStartAt = Date.now();
+
         // Wait for any in-progress flush to complete before adding to buffer
         if (flushPromise) {
           await flushPromise;
@@ -937,7 +1211,9 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         await ensureRunReady();
 
         const world = await worldPromise;
+        const closeStart = Date.now();
         await world.streams.close(runId, name);
+        recordStreamClose(closeStart, runId, name);
       },
       abort(reason) {
         // Clean up timer to prevent leaks
@@ -955,6 +1231,33 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         const abortError = reason ?? new Error('Stream aborted');
         for (const w of waiters) w.reject(abortError);
       },
+    });
+
+    // Batched, durable write entry point used by `flushablePipe` to coalesce
+    // chunks that arrive while a previous batch is still in flight into a
+    // single server write. It buffers every chunk and awaits one `flush()`,
+    // so the whole batch goes out as one `writeMulti` and resolves only once
+    // the batch has reached the server. It shares the buffer/flush machinery
+    // with the per-chunk sink `write()`, but the two are never used
+    // concurrently on the same stream: `flushablePipe` uses either this path
+    // or the writer, never both. On failure `flush()` retains the batch in the
+    // buffer and rethrows, so the caller's durability tracking stays accurate.
+    //
+    // No-`writeMulti` fallback: when the world lacks `writeMulti`, `flush()`
+    // degrades to sequential `write`s for the batch's chunks — one round trip
+    // each, within this single call, while backpressure holds the producer.
+    // `flushablePipe` bounds that stall by capping each coalesced batch (see
+    // `MAX_CHUNKS_PER_BATCH` / `MAX_BYTES_PER_BATCH`), so the fallback can't
+    // turn one drain into an unbounded sequential run.
+    Object.defineProperty(this, STREAM_WRITE_BATCH_SYMBOL, {
+      value: async (chunks: Uint8Array[]): Promise<void> => {
+        if (chunks.length === 0) return;
+        if (batchStartAt === undefined) batchStartAt = Date.now();
+        for (const chunk of chunks) buffer.push(chunk);
+        await flush();
+      },
+      enumerable: false,
+      writable: false,
     });
   }
 }
@@ -1681,8 +1984,17 @@ function setupAbortStreamReader(
             );
           }),
         ]);
-        reader.releaseLock();
         if (result.value && !result.done) {
+          // An abort packet arrived: propagate it as fast as possible. Release
+          // the lock (synchronous) rather than cancelling here — on a
+          // service-backed World `reader.cancel()` can do a network round-trip,
+          // and awaiting it before `controller.abort()` would delay (or, if it
+          // hangs, drop) real-time abort delivery to the in-flight step.
+          try {
+            reader.releaseLock();
+          } catch {
+            // Reader may already be released; ignore.
+          }
           try {
             // Hydrate via the same machinery the writer used so the reason
             // round-trips with full type fidelity. Encryption key (if any)
@@ -1699,6 +2011,16 @@ function setupAbortStreamReader(
           } catch {
             controller.abort();
           }
+        } else {
+          // The step finished (or the reader was cancelled) without an abort.
+          // Cancel — not just release — so the underlying World stream is torn
+          // down: a polling World (e.g. world-local) otherwise leaks a tail
+          // reader (a 100ms filesystem poll plus emitter listeners) per step
+          // invocation for the life of the process, since a signal-bearing step
+          // opens one of these on every revival and usually never aborts. Fire
+          // and forget: a service-backed World's cancel may hit the network,
+          // and this path must not block the step's ops-settle window.
+          void reader.cancel().catch(() => {});
         }
       } catch {
         // Stream read failed — signal won't propagate in real-time,
@@ -2543,6 +2865,97 @@ export async function maybeDecrypt(
   return decrypt(data, key);
 }
 
+/**
+ * Replay hydration has two stages:
+ *
+ * 1. Host-side preparation decrypts and decompresses persisted data. That work
+ *    is independent of a workflow VM and can be cached across replay VMs.
+ * 2. Deserialization revives the prepared representation against the current
+ *    VM's globals. It must run again for every VM to produce fresh object graphs
+ *    and correctly scoped Workflow objects.
+ *
+ * `data` is the boundary between those stages. For current-format payloads it
+ * is still format-prefixed serialized bytes, not a live JavaScript value.
+ */
+export interface PreparedReplayPayload {
+  readonly data: unknown;
+}
+
+/**
+ * Swappable implementation of the host-side preparation stage. Supporting
+ * both direct and promised results lets a future synchronous Node decryptor use
+ * the same cache contract as today's asynchronous Web Crypto implementation.
+ */
+export type ReplayPayloadPreparer = (
+  value: unknown,
+  key: CryptoKey | undefined
+) => PreparedReplayPayload | Promise<PreparedReplayPayload>;
+
+/**
+ * Decrypt and decompress persisted data without parsing it into JavaScript.
+ * Legacy non-binary values pass through unchanged for their consumer to revive.
+ */
+export const prepareReplayPayload: ReplayPayloadPreparer = async (
+  value,
+  key
+) => {
+  const compressionStats: CompressionStats = {};
+  const prepared = await decompress(
+    await decrypt(value, key),
+    compressionStats
+  );
+  await recordCompression(compressionStats, 'deserialize');
+  return { data: prepared };
+};
+
+/**
+ * Parse a prepared workflow argument or successful step/hook payload using the
+ * current workflow VM's globals and revivers. Each call intentionally creates
+ * a fresh object graph so mutations cannot leak across replay iterations.
+ */
+export function deserializePreparedReplayPayload(
+  prepared: PreparedReplayPayload,
+  global: Record<string, any> = globalThis,
+  extraRevivers: Record<string, (value: any) => any> = {}
+): any {
+  return workflowModule.deserialize(prepared.data, {
+    global,
+    extraRevivers: {
+      ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
+      ...extraRevivers,
+    },
+  });
+}
+
+/**
+ * Parse a prepared step error using the current workflow VM's class revivers.
+ * This preserves thrown-value identity without sharing objects between VMs.
+ */
+export function deserializePreparedStepError(
+  prepared: PreparedReplayPayload,
+  global: Record<string, any> = globalThis,
+  extraRevivers: Record<string, (value: any) => any> = {}
+): unknown {
+  const { data } = prepared;
+  if (!(data instanceof Uint8Array)) {
+    return unflatten(data as any[], {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
+  }
+
+  const { format, payload } = decodeFormatPrefix(data);
+  if (format === SerializationFormat.DEVALUE_V1) {
+    const str = new TextDecoder().decode(payload);
+    return parse(str, {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
+  }
+
+  throw new Error(`Unsupported serialization format: ${format}`);
+}
+
 // ============================================================================
 // Dehydrate / Hydrate Functions
 // ============================================================================
@@ -2608,28 +3021,22 @@ export async function dehydrateWorkflowArguments(
 
 /**
  * Called from workflow execution environment to hydrate the workflow
- * arguments from the database at the start of workflow execution.
+ * arguments from the database at the start of workflow execution. A prepared
+ * payload skips host-side decrypt/decompress but always performs VM revival.
  */
 export async function hydrateWorkflowArguments(
   value: Uint8Array | unknown,
   _runId: string,
   key: CryptoKey | undefined,
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  prepared?: PreparedReplayPayload
 ): Promise<any> {
-  const compressionStats: CompressionStats = {};
-  const inflated = await decompress(
-    await maybeDecrypt(value, key),
-    compressionStats
-  );
-  await recordCompression(compressionStats, 'deserialize');
-  return workflowModule.deserialize(inflated, {
+  return deserializePreparedReplayPayload(
+    prepared ?? (await prepareReplayPayload(value, key)),
     global,
-    extraRevivers: {
-      ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
-      ...extraRevivers,
-    },
-  });
+    extraRevivers
+  );
 }
 
 /**
@@ -2890,6 +3297,7 @@ export async function dehydrateStepError(
  * @param key - Encryption key (undefined to skip decryption)
  * @param global - Global object for deserialization context
  * @param extraRevivers - Additional revivers for custom types
+ * @param prepared - Optional cached decrypt/decompress result
  * @returns The hydrated thrown value, ready to reject the step promise
  */
 export async function hydrateStepError(
@@ -2897,42 +3305,14 @@ export async function hydrateStepError(
   _runId: string,
   key: CryptoKey | undefined,
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  prepared?: PreparedReplayPayload
 ): Promise<unknown> {
-  const compressionStats: CompressionStats = {};
-  const decrypted = await decompress(
-    await maybeDecrypt(value, key),
-    compressionStats
+  return deserializePreparedStepError(
+    prepared ?? (await prepareReplayPayload(value, key)),
+    global,
+    extraRevivers
   );
-  await recordCompression(compressionStats, 'deserialize');
-
-  if (!(decrypted instanceof Uint8Array)) {
-    // Treated as a devalue "flattened" array. In production this branch is
-    // exercised by legacy code paths that bypassed `dehydrateStepError`; the
-    // SDK version is pinned per workflow run via skew protection, so a
-    // current-version producer always emits a Uint8Array here. If a
-    // misshapen value reaches us, `unflatten` throws — that's intentional:
-    // the higher-level hydration helpers (`hydrateStepIO`,
-    // `hydrateResourceIO`) already wrap us in a try/catch that leaves the
-    // field un-hydrated for o11y display, and surfacing the throw to logs
-    // is more debuggable than silently masking the unsupported shape.
-    return unflatten(decrypted as any[], {
-      ...getWorkflowRevivers(global),
-      ...extraRevivers,
-    });
-  }
-
-  const { format, payload } = decodeFormatPrefix(decrypted);
-
-  if (format === SerializationFormat.DEVALUE_V1) {
-    const str = new TextDecoder().decode(payload);
-    return parse(str, {
-      ...getWorkflowRevivers(global),
-      ...extraRevivers,
-    });
-  }
-
-  throw new Error(`Unsupported serialization format: ${format}`);
 }
 
 /**
@@ -3002,7 +3382,7 @@ export async function hydrateRunError(
 ): Promise<unknown> {
   const compressionStats: CompressionStats = {};
   const decrypted = await decompress(
-    await maybeDecrypt(value, key),
+    await decrypt(value, key),
     compressionStats
   );
   await recordCompression(compressionStats, 'deserialize');
@@ -3041,6 +3421,7 @@ export async function hydrateRunError(
  * @param key - Encryption key (undefined to skip decryption)
  * @param global - Global object for deserialization context
  * @param extraRevivers - Additional revivers for custom types
+ * @param prepared - Optional cached decrypt/decompress result
  * Called from the workflow handler when replaying the event log
  * of a `step_completed` event.
  */
@@ -3049,21 +3430,14 @@ export async function hydrateStepReturnValue(
   _runId: string,
   key: CryptoKey | undefined,
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  prepared?: PreparedReplayPayload
 ): Promise<any> {
-  const compressionStats: CompressionStats = {};
-  const inflated = await decompress(
-    await maybeDecrypt(value, key),
-    compressionStats
-  );
-  await recordCompression(compressionStats, 'deserialize');
-  return workflowModule.deserialize(inflated, {
+  return deserializePreparedReplayPayload(
+    prepared ?? (await prepareReplayPayload(value, key)),
     global,
-    extraRevivers: {
-      ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
-      ...extraRevivers,
-    },
-  });
+    extraRevivers
+  );
 }
 
 // ---- Helpers to extract stream/Request/Response reducers and revivers ----
