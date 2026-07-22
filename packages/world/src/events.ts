@@ -448,6 +448,8 @@ export interface EventResult {
   cursor?: string | null;
   /** Whether additional event pages are available for `events`. */
   hasMore?: boolean;
+  /** Server-owned max event count for the run (run-lifecycle responses); the runtime enforces it. */
+  maxEvents?: number;
 }
 
 export interface GetEventParams {

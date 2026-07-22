@@ -106,6 +106,11 @@ export interface CreateEventV4Result {
     events?: unknown[];
     cursor?: string | null;
     hasMore?: boolean;
+    /**
+     * Server-owned per-run event ceiling, returned on run-lifecycle responses.
+     * Absent from older servers. Threaded into EventResult.maxEvents.
+     */
+    maxEvents?: number;
   };
 }
 

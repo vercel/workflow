@@ -1,6 +1,7 @@
 import {
   CorruptedEventLogError,
   EntityConflictError,
+  MaxEventsExceededError,
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   RunExpiredError,
@@ -26,6 +27,7 @@ import { importKey } from './encryption.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
+  getMaxEventsOverride,
   MAX_QUEUE_DELIVERIES,
   REPLAY_DIVERGENCE_MAX_RETRIES,
   REPLAY_TIMEOUT_MAX_RETRIES,
@@ -99,6 +101,20 @@ export {
   getWorldHandlers,
   setWorld,
 } from './runtime/world.js';
+
+/**
+ * Apply the optional client-side event-limit override.
+ * `WORKFLOW_MAX_EVENTS_OVERRIDE`, when set to a positive integer, clamps the
+ * server-supplied per-run event ceiling to a smaller value so enforcement can
+ * be exercised without a server-side change. Clamp-down only: it never raises
+ * the server's limit, and it takes effect even when the server returns none.
+ * Unset ⇒ server value passes through unchanged.
+ */
+function clampMaxEvents(serverValue: number | undefined): number | undefined {
+  const override = getMaxEventsOverride();
+  if (override === undefined) return serverValue;
+  return serverValue === undefined ? override : Math.min(serverValue, override);
+}
 
 function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
   const terminalEvent = events.find(
@@ -299,6 +315,9 @@ export function workflowEntrypoint(
 
                 let workflowStartedAt = -1;
                 let workflowRun: WorkflowRun | undefined;
+                // Server-supplied per-run event ceiling from the run_started
+                // response. Undefined ⇒ no enforcement (older servers).
+                let maxEventsLimit: number | undefined;
                 // Pre-loaded events from the run_started response.
                 // When present, we skip the events.list call.
                 let preloadedEvents: Event[] | undefined;
@@ -347,6 +366,7 @@ export function workflowEntrypoint(
                     );
                   }
                   workflowRun = result.run;
+                  maxEventsLimit = clampMaxEvents(result.maxEvents);
 
                   // If the response includes events, use them to skip
                   // the initial events.list call and reduce TTFB.
@@ -693,6 +713,20 @@ export function workflowEntrypoint(
                 // must propagate to the queue handler for automatic retry.
                 let workflowResult: unknown;
                 try {
+                  // Event-limit guard: fail a runaway run once its log
+                  // reaches the server-supplied ceiling (undefined ⇒ no
+                  // enforcement). The throw is caught below and written as
+                  // run_failed / MAX_EVENTS_EXCEEDED.
+                  if (
+                    maxEventsLimit !== undefined &&
+                    events.length >= maxEventsLimit
+                  ) {
+                    throw new MaxEventsExceededError(
+                      events.length,
+                      maxEventsLimit
+                    );
+                  }
+
                   workflowResult = await trace(
                     'workflow.replay',
                     {},

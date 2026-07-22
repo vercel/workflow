@@ -670,5 +670,9 @@ async function createWorkflowRunEventInner(
       : undefined,
     cursor: body.cursor ?? undefined,
     hasMore: body.hasMore,
+    // Server-supplied per-run event ceiling; absent from older servers.
+    ...(typeof body.maxEvents === 'number'
+      ? { maxEvents: body.maxEvents }
+      : {}),
   };
 }
