@@ -1200,6 +1200,7 @@ export function workflowEntrypoint(
                       runInput,
                       parentSpan: span,
                       maxEventsLimit,
+                      deliveryAttempt: metadata.attempt,
                     });
                     if (quickjsResult?.timeoutSeconds !== undefined) {
                       // Use `reinvoke` rather than returning
