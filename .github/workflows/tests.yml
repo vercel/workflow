@@ -247,10 +247,16 @@ jobs:
           APP_NAME: "nextjs-turbopack"
 
   vitest-plugin:
-    name: Vitest Plugin Tests
+    name: Vitest Plugin Tests (${{ matrix.vm }})
     runs-on: ubuntu-latest
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Workflow VM engines: node:vm (default) and the opt-in QuickJS
+        # WASM engine (WORKFLOW_VM=quickjs).
+        vm: [node, quickjs]
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -271,6 +277,8 @@ jobs:
       - name: Run Vitest Plugin Tests
         run: pnpm test
         working-directory: workbench/vitest
+        env:
+          WORKFLOW_VM: ${{ matrix.vm }}
 
   e2e-package-build:
     name: Build Shared E2E Packages
@@ -682,6 +690,7 @@ jobs:
           DEV_TEST_CONFIG: ${{ toJSON(matrix.app) }}
           WORKFLOW_DEV_HMR_LOGS: "1"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
+          WORKFLOW_VM: ${{ matrix.app.vm || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -770,6 +779,7 @@ jobs:
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
+          WORKFLOW_VM: ${{ matrix.app.vm || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -878,6 +888,7 @@ jobs:
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
+          WORKFLOW_VM: ${{ matrix.app.vm || '' }}
 
       - name: Generate E2E summary
         if: always()
