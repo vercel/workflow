@@ -721,3 +721,83 @@ describe('AbortController (hook-backed)', () => {
     expect(value.timeoutThrew).toBe(true);
   });
 });
+
+describe('hook payload buffering', () => {
+  it('buffers payloads containing String.replace special patterns verbatim', async () => {
+    // Regression: the buffered-payload path injects the JSON-serialized
+    // payload via String.replace('%PAYLOAD%', ...). With a string
+    // replacement, `$&`/`$'`/"$\`" sequences in the payload would be
+    // expanded as replacement patterns, corrupting the injected code.
+    const code = `
+      var prime = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//prime");
+      async function workflow() {
+        var hook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")]({ token: "tok" });
+        // Await a step first so the hook payload arrives with no resolver
+        // registered and takes the buffered path.
+        await prime(1);
+        var payload = await hook;
+        return payload;
+      }
+      workflow.workflowId = "workflow//test//workflow";
+      globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+    `;
+    const run = makeRun();
+
+    const r1 = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [],
+    });
+    const ops = r1.suspended!.pendingOperations;
+    const stepCid = ops.find((o) => o.type === 'step')!.correlationId;
+    const hookCid = ops.find((o) => o.type === 'hook')!.correlationId;
+
+    const trickyPayload = { msg: "$& $' $` $1 $$", nested: { v: '$&' } };
+    const r2 = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [
+        runCreatedEvent(run),
+        {
+          eventId: 'evnt_001',
+          runId: run.runId,
+          eventType: 'hook_created',
+          correlationId: hookCid,
+          eventData: { token: 'tok', isWebhook: false },
+          createdAt: new Date('2025-01-01T00:00:01Z'),
+        },
+        {
+          eventId: 'evnt_002',
+          runId: run.runId,
+          eventType: 'step_created',
+          correlationId: stepCid,
+          eventData: { stepName: 'step//test//prime' },
+          createdAt: new Date('2025-01-01T00:00:02Z'),
+        },
+        // The hook payload lands BEFORE the step completes, so no
+        // resolver exists yet and the payload is buffered in the VM heap.
+        {
+          eventId: 'evnt_003',
+          runId: run.runId,
+          eventType: 'hook_received',
+          correlationId: hookCid,
+          eventData: { payload: trickyPayload },
+          createdAt: new Date('2025-01-01T00:00:03Z'),
+        },
+        {
+          eventId: 'evnt_004',
+          runId: run.runId,
+          eventType: 'step_completed',
+          correlationId: stepCid,
+          eventData: { result: 1 },
+          createdAt: new Date('2025-01-01T00:00:04Z'),
+        },
+      ],
+    });
+
+    expect(r2.completed).toBeDefined();
+    expect(unwrapResult(r2.completed!.result)).toEqual(trickyPayload);
+  });
+});
