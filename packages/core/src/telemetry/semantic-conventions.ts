@@ -122,6 +122,11 @@ export const QuickJSPendingOpsCount = SemanticConvention<number>(
   'workflow.vm.pending_ops_count'
 );
 
+/** Number of steps executed inline (live-VM continuation) this invocation */
+export const QuickJSInlineSteps = SemanticConvention<number>(
+  'quickjs.inline_steps'
+);
+
 /** Active trace-correlation mode for this invocation (linked or continuous) */
 export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
   'workflow.trace.mode'

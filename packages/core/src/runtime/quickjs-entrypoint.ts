@@ -25,6 +25,7 @@ import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
   type HookInput,
+  ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
@@ -45,6 +46,7 @@ import {
 import { remapErrorStack, stripInlineSourceMap } from '../source-map.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
+import { getMaxInlineSteps } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { getWorkflowQueueName, queueMessage } from './helpers.js';
 import {
@@ -54,8 +56,12 @@ import {
   type PendingOperation,
   type PendingStep,
   type PendingWait,
-  runQuickJSWorkflow,
+  startQuickJSWorkflow,
 } from './quickjs-runtime.js';
+import { ReplayBudget } from './replay-budget.js';
+import { executeStep, type StepExecutionResult } from './step-executor.js';
+import { runStepSingleFlight } from './step-single-flight.js';
+import { getWaitContinuationDispatch } from './wait-continuation.js';
 import { getWorld } from './world.js';
 
 /** Tiny ms timer using performance.now() — already monotonic on Node. */
@@ -92,17 +98,53 @@ export function isFirstInvocation(
 }
 
 /**
+ * Queue a step for background execution via the unified workflow queue
+ * (V2 architecture). The combined handler in runtime.ts dispatches
+ * messages with `stepId` to executeStep, which works for both VM engines.
+ * `delaySeconds` supports retry/throttle backoff.
+ */
+async function queueStepMessage(params: {
+  world: Awaited<ReturnType<typeof getWorld>>;
+  runId: string;
+  workflowRun: WorkflowRun;
+  step: PendingStep;
+  delaySeconds?: number;
+  wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
+}): Promise<void> {
+  const { world, runId, workflowRun, step, delaySeconds, wfdiag } = params;
+  const traceCarrier = await serializeTraceCarrier();
+  await queueMessage(
+    world,
+    getWorkflowQueueName(workflowRun.workflowName),
+    {
+      runId,
+      stepId: step.correlationId,
+      stepName: step.stepId,
+      traceCarrier,
+      requestedAt: new Date(),
+    },
+    {
+      idempotencyKey: step.correlationId,
+      ...(delaySeconds && delaySeconds > 0 ? { delaySeconds } : {}),
+    }
+  );
+  wfdiag('step_queued', {
+    stepId: step.stepId,
+    correlationId: step.correlationId,
+    delaySeconds: delaySeconds ?? 0,
+  });
+}
+
+/**
  * Dispatch durable side effects for a set of pending VM operations:
  * step_created (+ optional queueing), hook_created / hook_received (aborts),
  * attr_set, hook_disposed, and wait_created events.
  *
- * Used in two modes:
- *  - suspension (queueSteps: true): normal suspension processing; new steps
- *    are queued for execution.
- *  - terminal drain (queueSteps: false): flush leftover side effects when
- *    the workflow completed or failed — mirrors the node:vm engine's
- *    drainPendingQueueItems. Steps are created but NOT queued, and the run
- *    is never requeued.
+ * Steps are created but never queued here — queueing (or inline
+ * execution) is the caller's decision. Used both for suspension
+ * processing (the inline loop) and for the terminal drain (flushing
+ * leftover side effects when the workflow completed or failed, mirroring
+ * the node:vm engine's drainPendingQueueItems).
  */
 async function dispatchPendingOps(params: {
   world: Awaited<ReturnType<typeof getWorld>>;
@@ -110,7 +152,6 @@ async function dispatchPendingOps(params: {
   workflowRun: WorkflowRun;
   encryptionKey: RunPayloadKeys | undefined;
   pendingOperations: PendingOperation[];
-  queueSteps: boolean;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<{
   createdAttributeEvent: boolean;
@@ -345,35 +386,9 @@ async function dispatchPendingOps(params: {
             throw err;
           }
 
-          // Queue the step execution via the unified workflow queue
-          // (V2 architecture). The combined handler in runtime.ts
-          // dispatches messages with `stepId` to executeStep, which
-          // works for both VM engines — so the QuickJS engine reuses
-          // the same step execution path as the node:vm engine
-          // instead of needing a separate step route. Skipped in
-          // terminal-drain mode (the workflow already finished; the
-          // event is the durable record, matching the node:vm drain).
-          if (params.queueSteps) {
-            const traceCarrier = await serializeTraceCarrier();
-            await queueMessage(
-              world,
-              getWorkflowQueueName(workflowRun.workflowName),
-              {
-                runId,
-                stepId: step.correlationId,
-                stepName: step.stepId,
-                traceCarrier,
-                requestedAt: new Date(),
-              },
-              {
-                idempotencyKey: step.correlationId,
-              }
-            );
-            wfdiag('step_queued', {
-              stepId: step.stepId,
-              correlationId: step.correlationId,
-            });
-          }
+          // NOTE: step queueing is the caller's decision — the inline
+          // loop executes fresh steps in the live VM and only queues the
+          // overflow / retry / backstop cases (see queueStepMessage).
         })()
       );
     } else if (op.type === 'attribute' && !op.hasCreatedEvent) {
@@ -488,6 +503,13 @@ export async function runWorkflowWithQuickJS(params: {
    * still receives it. See the same-named field in `QueueMessageSchema`.
    */
   hookInput?: HookInput;
+  /**
+   * Queue delivery attempt of the message driving this invocation (from
+   * the queue handler's metadata; 1 = first delivery). Redeliveries
+   * (attempt > 1) trigger backstop queue messages for pending steps that
+   * an earlier crashed invocation may have orphaned mid-inline-execution.
+   */
+  deliveryAttempt?: number;
 }): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
@@ -498,6 +520,7 @@ export async function runWorkflowWithQuickJS(params: {
     parentSpan,
     maxEventsLimit,
     hookInput,
+    deliveryAttempt,
   } = params;
   const world = await getWorld();
   const runId = workflowRun.runId;
@@ -760,7 +783,7 @@ export async function runWorkflowWithQuickJS(params: {
     eventCount: events.length,
   });
 
-  const result = await runQuickJSWorkflow({
+  const session = await startQuickJSWorkflow({
     // Pass the STRIPPED bundle to the VM so the inline source map
     // doesn't end up in the QuickJS heap. The original (unstripped)
     // `workflowCode` is still kept in this host-side scope and is used
@@ -773,6 +796,7 @@ export async function runWorkflowWithQuickJS(params: {
     port,
     runInput,
   });
+  let result = session.result;
 
   runtimeLogger.debug('QuickJS runtime: VM returned', {
     workflowRunId: runId,
@@ -801,6 +825,332 @@ export async function runWorkflowWithQuickJS(params: {
     failureName: result.failed?.name,
   });
 
+  // ---- Inline continuation loop ----
+  //
+  // While the workflow is suspended, this loop keeps the VM alive and
+  // makes as much forward progress as possible within one invocation:
+  //
+  //   1. Dispatch durable side effects for the suspension's pending ops
+  //      (step_created / hook_created / attr_set / wait_created /
+  //      hook_received for aborts) and complete elapsed waits.
+  //   2. Feed all newly recorded events (attr_set, hook_created, elapsed
+  //      wait_completed, terminals written by concurrent invocations, ...)
+  //      into the LIVE VM via session.continueWithEvents — resuming
+  //      execution exactly where it left off, no fresh-VM re-replay.
+  //      Cheap progress is fed BEFORE running step bodies so promise
+  //      chains that are not gated on steps (hook.getConflict(),
+  //      setAttributes(), racing sleeps) advance first and can surface
+  //      additional pending steps for the same inline batch.
+  //   3. Once no cheap progress remains, execute up to
+  //      getMaxInlineSteps() steps created by THIS invocation inline (no
+  //      queue round-trip), in parallel, with the replay budget paused
+  //      during step bodies — mirroring the node:vm engine's inline
+  //      replay loop. Overflow and retry/throttled steps are queued for
+  //      background execution. A delayed wait-continuation message is
+  //      enqueued for the soonest pending wait first, so racing timers
+  //      fire on time (in a separate invocation) while step bodies block
+  //      this one.
+  //
+  // The loop exits when the workflow settles, no forward progress is
+  // possible in-process, the replay budget is exhausted, or the run is
+  // gone.
+  const seenEventIds = new Set<string>();
+  for (const e of events) {
+    if (e.eventId) seenEventIds.add(e.eventId);
+  }
+  // Step cids whose step_created THIS invocation wrote — these are safe
+  // inline candidates (no other invocation can own them; a concurrent
+  // creator would have lost the events.create race).
+  const stepsCreatedByUs = new Set<string>();
+  // Step cids already executed inline by this invocation.
+  const executedStepIds = new Set<string>();
+  // Steps for which THIS invocation already sent a queue message.
+  const queuedStepIds = new Set<string>();
+  // Aborts THIS invocation already recorded (hook_received written) —
+  // guards against re-recording when the VM-side flag has not been
+  // cleared yet within the same iteration.
+  const recordedAbortIds = new Set<string>();
+  // Waits for which THIS invocation already completed/scheduled work.
+  const completedWaitIds2 = new Set<string>();
+  const scheduledWaitContinuations = new Set<string>();
+  const maxInlineSteps = getMaxInlineSteps();
+  const budget = new ReplayBudget();
+  const workflowStartedAt = workflowRun.startedAt
+    ? +workflowRun.startedAt
+    : Date.now();
+  const rootRunId =
+    (workflowRun.attributes as Record<string, string> | undefined)?.[
+      ROOT_RUN_ID_ATTRIBUTE
+    ] ?? runId;
+  let inlineStepsExecuted = 0;
+  let runGone = false;
+
+  /** Fetch all events not yet processed by the live VM (log order). */
+  const fetchUnseenEvents = async (): Promise<Event[]> => {
+    const unseen: Event[] = [];
+    let cursor: string | null = null;
+    let hasMore = true;
+    while (hasMore) {
+      const response = await world.events.list({
+        runId,
+        pagination: {
+          sortOrder: 'asc',
+          cursor: cursor ?? undefined,
+          limit: 1000,
+        },
+      });
+      for (const e of response.data) {
+        if (e.eventId && seenEventIds.has(e.eventId)) continue;
+        if (e.eventId) seenEventIds.add(e.eventId);
+        unseen.push(e);
+      }
+      if (response.cursor) cursor = response.cursor;
+      hasMore = response.data.length > 0 && response.cursor != null;
+    }
+    return unseen;
+  };
+
+  try {
+    let iteration = 0;
+    while (result.suspended && !runGone && !budget.isExhausted()) {
+      iteration++;
+      const pendingOperations = result.suspended.pendingOperations;
+
+      // 1. Durable side effects for this suspension's pending ops. Record
+      // which steps we created (before dispatch marks are fed back).
+      for (const op of pendingOperations) {
+        if (op.type === 'step' && !op.hasCreatedEvent) {
+          stepsCreatedByUs.add(op.correlationId);
+        }
+      }
+      const opsToDispatch = pendingOperations.map((op) =>
+        op.type === 'hook' &&
+        (op as PendingHook).abortRequested &&
+        recordedAbortIds.has(op.correlationId)
+          ? ({ ...op, abortRequested: false } as PendingOperation)
+          : op
+      );
+      for (const op of pendingOperations) {
+        if (op.type === 'hook' && (op as PendingHook).abortRequested) {
+          recordedAbortIds.add(op.correlationId);
+        }
+      }
+      await dispatchPendingOps({
+        world,
+        runId,
+        workflowRun,
+        encryptionKey,
+        pendingOperations: opsToDispatch,
+        wfdiag,
+      });
+
+      // Complete elapsed waits so their wait_completed events are picked
+      // up by the feed below (instead of a queue re-invocation).
+      const waitCompletePromises: Promise<void>[] = [];
+      for (const op of pendingOperations) {
+        if (op.type !== 'wait') continue;
+        const wait = op as PendingWait;
+        if (completedWaitIds2.has(wait.correlationId)) continue;
+        if (new Date(wait.resumeAt).getTime() - Date.now() > 0) continue;
+        completedWaitIds2.add(wait.correlationId);
+        waitCompletePromises.push(
+          (async () => {
+            try {
+              await world.events.create(runId, {
+                eventType: 'wait_completed',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: wait.correlationId,
+              });
+            } catch (err) {
+              if (EntityConflictError.is(err)) return;
+              throw err;
+            }
+          })()
+        );
+      }
+      if (waitCompletePromises.length > 0) {
+        await Promise.all(waitCompletePromises);
+      }
+
+      // 2. Cheap progress first: feed newly recorded events into the live
+      // VM before blocking on step bodies.
+      {
+        const newEvents = await fetchUnseenEvents();
+        if (newEvents.length > 0) {
+          result = await session.continueWithEvents(newEvents);
+          wfdiag('inline_iteration', {
+            iteration,
+            phase: 'feed',
+            fedEvents: newEvents.length,
+            outcome: result.completed
+              ? 'completed'
+              : result.failed
+                ? 'failed'
+                : 'suspended',
+          });
+          continue;
+        }
+      }
+
+      // 3. No cheap progress left — execute steps inline.
+      const stepOps = pendingOperations.filter(
+        (op): op is PendingStep => op.type === 'step'
+      );
+      const ourSteps = stepOps.filter(
+        (op) =>
+          stepsCreatedByUs.has(op.correlationId) &&
+          !executedStepIds.has(op.correlationId) &&
+          !queuedStepIds.has(op.correlationId)
+      );
+      // Steps created by an EARLIER invocation that are still pending.
+      // On a redelivery (attempt > 1) the original invocation may have
+      // crashed mid-inline-execution, orphaning the step (no queue
+      // message exists on the inline path) — send a backstop message.
+      // The queue's idempotency key dedups repeats and executeStep
+      // resolves already-completed steps as 'skipped'. First deliveries
+      // skip this: the step is most likely executing in a live
+      // invocation, and a backstop would routinely double-run bodies.
+      if ((deliveryAttempt ?? 1) > 1) {
+        for (const step of stepOps) {
+          if (stepsCreatedByUs.has(step.correlationId)) continue;
+          if (queuedStepIds.has(step.correlationId)) continue;
+          queuedStepIds.add(step.correlationId);
+          await queueStepMessage({ world, runId, workflowRun, step, wfdiag });
+        }
+      }
+
+      const inlineCandidates =
+        maxInlineSteps <= 0 ? [] : ourSteps.slice(0, maxInlineSteps);
+      const overflowSteps = ourSteps.slice(inlineCandidates.length);
+      for (const step of overflowSteps) {
+        queuedStepIds.add(step.correlationId);
+        await queueStepMessage({ world, runId, workflowRun, step, wfdiag });
+      }
+
+      if (inlineCandidates.length === 0) {
+        // No in-process progress possible — the run awaits an external
+        // stimulus (hook payload, queued step, wait timer).
+        break;
+      }
+
+      // Racing timers must fire on time while step bodies block this
+      // invocation: enqueue a delayed continuation for the soonest
+      // pending wait (a separate invocation writes its wait_completed at
+      // the right log position — same mechanism as the node:vm engine's
+      // wait-continuation dispatch).
+      let soonestWait: { correlationId: string; seconds: number } | undefined;
+      for (const op of pendingOperations) {
+        if (op.type !== 'wait') continue;
+        const wait = op as PendingWait;
+        if (scheduledWaitContinuations.has(wait.correlationId)) continue;
+        const resumeMs = new Date(wait.resumeAt).getTime() - Date.now();
+        if (resumeMs <= 0) continue;
+        const seconds = Math.max(1, Math.ceil(resumeMs / 1000));
+        if (!soonestWait || seconds < soonestWait.seconds) {
+          soonestWait = { correlationId: wait.correlationId, seconds };
+        }
+      }
+      if (soonestWait) {
+        scheduledWaitContinuations.add(soonestWait.correlationId);
+        await queueMessage(
+          world,
+          getWorkflowQueueName(workflowRun.workflowName),
+          {
+            runId,
+            traceCarrier: await serializeTraceCarrier(),
+            requestedAt: new Date(),
+          },
+          getWaitContinuationDispatch(
+            soonestWait.seconds,
+            soonestWait.correlationId
+          )
+        );
+        wfdiag('wait_continuation_scheduled', {
+          correlationId: soonestWait.correlationId,
+          delaySeconds: soonestWait.seconds,
+        });
+      }
+
+      // Execute the inline batch in parallel. The replay budget is
+      // paused while step bodies run — step duration is bounded by the
+      // platform function duration, not the replay timeout.
+      budget.pause();
+      let outcomes: StepExecutionResult[];
+      try {
+        outcomes = await Promise.all(
+          inlineCandidates.map((step) =>
+            runStepSingleFlight(runId, step.correlationId, () =>
+              executeStep({
+                world,
+                workflowRunId: runId,
+                workflowDeploymentId: workflowRun.deploymentId,
+                workflowName: workflowRun.workflowName,
+                workflowStartedAt,
+                rootRunId,
+                stepId: step.correlationId,
+                stepName: step.stepId,
+                encryptionKey,
+                runSpecVersion: workflowRun.specVersion,
+              })
+            )
+          )
+        );
+      } finally {
+        budget.resume();
+      }
+      inlineStepsExecuted += inlineCandidates.length;
+
+      for (let i = 0; i < inlineCandidates.length; i++) {
+        const step = inlineCandidates[i];
+        const outcome = outcomes[i];
+        executedStepIds.add(step.correlationId);
+        if (outcome.type === 'retry' || outcome.type === 'throttled') {
+          // Hand the step to the queue with the requested backoff —
+          // background delivery drives the retry from here.
+          queuedStepIds.add(step.correlationId);
+          await queueStepMessage({
+            world,
+            runId,
+            workflowRun,
+            step,
+            delaySeconds: outcome.timeoutSeconds,
+            wfdiag,
+          });
+        } else if (outcome.type === 'gone') {
+          runGone = true;
+        }
+      }
+      wfdiag('inline_steps_executed', {
+        iteration,
+        count: inlineCandidates.length,
+        outcomes: outcomes.map((o) => o.type),
+      });
+
+      // Feed the inline batch's terminal events into the live VM.
+      const newEvents = await fetchUnseenEvents();
+      if (newEvents.length === 0) break;
+      result = await session.continueWithEvents(newEvents);
+
+      wfdiag('inline_iteration', {
+        iteration,
+        phase: 'steps',
+        fedEvents: newEvents.length,
+        outcome: result.completed
+          ? 'completed'
+          : result.failed
+            ? 'failed'
+            : 'suspended',
+        budgetExhausted: budget.isExhausted(),
+      });
+    }
+  } finally {
+    session.dispose();
+  }
+
+  parentSpan?.setAttributes({
+    ...Attribute.QuickJSInlineSteps(inlineStepsExecuted),
+  });
+
   if (result.completed) {
     // Workflow completed
     runtimeLogger.info('QuickJS runtime: workflow completed', {
@@ -823,7 +1173,6 @@ export async function runWorkflowWithQuickJS(params: {
           workflowRun,
           encryptionKey,
           pendingOperations: result.completed.drainOperations,
-          queueSteps: false,
           wfdiag,
         });
       } catch (err) {
@@ -868,24 +1217,21 @@ export async function runWorkflowWithQuickJS(params: {
       throw err;
     }
   } else if (result.suspended) {
-    // Workflow suspended
+    // Workflow still suspended after the inline loop. All durable side
+    // effects for the final suspension state were already dispatched by
+    // the loop; what remains is deciding how the run gets re-invoked.
     const { pendingOperations } = result.suspended;
 
     runtimeLogger.info('QuickJS runtime: workflow suspended', {
       workflowRunId: runId,
+      inlineStepsExecuted,
       pendingSteps: pendingOperations.filter((p) => p.type === 'step').length,
       pendingWaits: pendingOperations.filter((p) => p.type === 'wait').length,
       pendingOps: pendingOperations.map((p) => ({
         type: p.type,
         correlationId: p.correlationId,
         hasCreatedEvent: p.hasCreatedEvent,
-        ...(p.type === 'step'
-          ? {
-              stepId: (p as PendingStep).stepId,
-              inputType: typeof (p as PendingStep).input,
-              inputIsUint8Array: (p as PendingStep).input instanceof Uint8Array,
-            }
-          : {}),
+        ...(p.type === 'step' ? { stepId: (p as PendingStep).stepId } : {}),
       })),
     });
 
@@ -894,53 +1240,35 @@ export async function runWorkflowWithQuickJS(params: {
       ...Attribute.QuickJSPendingOpsCount(pendingOperations.length),
     });
 
-    // Build per-pending-op promises so events.create + queueMessage
-    // calls fan out in parallel rather than serially. This mirrors
-    // the node:vm engine's `Promise.all(ops)` pattern in
-    // suspension-handler.ts and significantly reduces wall-clock time
-    // on cloud worlds (e.g. Vercel) where each storage call is a
-    // network round-trip.
-    let minTimeoutSeconds: number | undefined;
-    const { createdAttributeEvent, createdGetConflictHook } =
-      await dispatchPendingOps({
-        world,
-        runId,
-        workflowRun,
-        encryptionKey,
-        pendingOperations,
-        queueSteps: true,
-        wfdiag,
-      });
+    if (runGone) {
+      // The run no longer exists (expired / deleted) — nothing to drive.
+      wfdiag('exit_suspended', { action: 'run_gone' });
+      return;
+    }
 
-    // Handle pending waits — both newly created and still-pending from
-    // earlier invocations. For each wait, either create a wait_completed
-    // event (if elapsed) or schedule a timeout for re-queuing.
-    let needsRequeue = false;
-    const waitCompletePromises: Promise<void>[] = [];
+    if (budget.isExhausted()) {
+      // The loop stopped on the replay budget with progress still
+      // possible — continue in a fresh invocation.
+      wfdiag('exit_suspended', {
+        action: 'budget_exhausted_requeue',
+        timeoutSeconds: 0,
+      });
+      return { timeoutSeconds: 0 };
+    }
+
+    // Schedule a timer for the earliest pending wait. A wait that elapsed
+    // in the window since the loop's last check requeues immediately (its
+    // wait_completed is written by the next invocation's elapsed-wait
+    // sweep).
+    let minTimeoutSeconds: number | undefined;
+    let hasElapsedWait = false;
     for (const op of pendingOperations) {
       if (op.type !== 'wait') continue;
       const wait = op as PendingWait;
       const resumeMs = new Date(wait.resumeAt).getTime() - Date.now();
-
       if (resumeMs <= 0) {
-        // Wait has elapsed — create wait_completed and re-queue.
-        waitCompletePromises.push(
-          (async () => {
-            try {
-              await world.events.create(runId, {
-                eventType: 'wait_completed',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: wait.correlationId,
-              });
-              needsRequeue = true;
-            } catch (err) {
-              if (EntityConflictError.is(err)) return;
-              throw err;
-            }
-          })()
-        );
+        hasElapsedWait = true;
       } else {
-        // Wait hasn't elapsed yet — schedule a timeout
         const timeoutSeconds = Math.max(1, Math.ceil(resumeMs / 1000));
         if (
           minTimeoutSeconds === undefined ||
@@ -950,20 +1278,10 @@ export async function runWorkflowWithQuickJS(params: {
         }
       }
     }
-    if (waitCompletePromises.length > 0) {
-      await Promise.all(waitCompletePromises);
-    }
 
-    if (needsRequeue || createdAttributeEvent || createdGetConflictHook) {
-      // An elapsed wait was completed, a new attr_set event was written,
-      // or a getConflict()-awaited hook was created — re-queue immediately
-      // so the next invocation can process the new event.
+    if (hasElapsedWait) {
       wfdiag('exit_suspended', {
-        action: needsRequeue
-          ? 'wait_elapsed_requeue'
-          : createdAttributeEvent
-            ? 'attr_set_requeue'
-            : 'get_conflict_requeue',
+        action: 'wait_elapsed_requeue',
         timeoutSeconds: 0,
       });
       return { timeoutSeconds: 0 };
@@ -1029,7 +1347,6 @@ export async function runWorkflowWithQuickJS(params: {
           workflowRun,
           encryptionKey,
           pendingOperations: result.failed.drainOperations,
-          queueSteps: false,
           wfdiag,
         });
       } catch (err) {

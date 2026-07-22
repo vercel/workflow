@@ -1643,6 +1643,7 @@ export function workflowEntrypoint(
                       runInput,
                       parentSpan: span,
                       maxEventsLimit,
+                      deliveryAttempt: metadata.attempt,
                       // Resilient resume (see the node block below): the
                       // QuickJS entrypoint materializes the missing
                       // hook_received from this payload itself.
