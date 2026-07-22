@@ -62,6 +62,13 @@ interface FastDiscoverEntriesOptions {
   state: DiscoveredEntries;
   defaultTsconfigPath: string | undefined;
   workingDir: string;
+  /**
+   * Whether files located under `node_modules` may be registered as workflows
+   * or steps. When `false`, third-party workflow/step files are skipped so
+   * their code is neither transformed nor bundled. Import traversal and serde
+   * discovery are unaffected. Defaults to `true`.
+   */
+  discoverWorkflowsInNodeModules?: boolean;
 }
 
 interface PackageInfo {
@@ -638,6 +645,7 @@ export async function fastDiscoverEntries({
   state,
   defaultTsconfigPath,
   workingDir,
+  discoverWorkflowsInNodeModules = true,
 }: FastDiscoverEntriesOptions): Promise<void> {
   const readLimit = createLimiter(FAST_DISCOVERY_READ_CONCURRENCY);
   const resolveLimit = createLimiter(FAST_DISCOVERY_RESOLVE_CONCURRENCY);
@@ -960,10 +968,17 @@ export async function fastDiscoverEntries({
     }
 
     const patterns = detectWorkflowPatterns(source);
-    if (patterns.hasUseWorkflow) {
+    // When node_modules discovery is opted out, files under node_modules are
+    // not registered as workflows or steps (so third-party workflow code is
+    // neither transformed nor bundled). Serde registration and import
+    // traversal below are intentionally left intact — the SDK seeds its own
+    // runtime serde entry point, which lives in node_modules.
+    const registerWorkflowsAndSteps =
+      discoverWorkflowsInNodeModules || !isNodeModulesPath(filePath);
+    if (patterns.hasUseWorkflow && registerWorkflowsAndSteps) {
       state.discoveredWorkflows.add(filePath);
     }
-    if (patterns.hasUseStep) {
+    if (patterns.hasUseStep && registerWorkflowsAndSteps) {
       state.discoveredSteps.add(filePath);
     }
     if (patterns.hasSerde && hasLikelySerdeClass(source)) {

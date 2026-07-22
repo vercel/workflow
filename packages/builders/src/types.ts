@@ -97,6 +97,25 @@ interface BaseWorkflowConfig {
    * config wins over env var, env var wins over the default.
    */
   sourcemap?: SourcemapMode;
+
+  /**
+   * Whether to discover workflow (`"use workflow"`) and step (`"use step"`)
+   * files inside `node_modules`. Defaults to `true`: workflow/step files
+   * shipped by dependencies that declare a `workflow`/`@workflow/*` dependency
+   * are discovered and compiled into the app's bundles.
+   *
+   * Set to `false` to opt out — files located under `node_modules` are no
+   * longer registered as workflows or steps, so third-party workflow code is
+   * neither transformed nor bundled. Useful when a dependency ships workflow
+   * code you don't want compiled into your app, or trips discovery with
+   * `"use workflow"`/`"use step"` strings you don't intend to run. Serde class
+   * discovery (including the SDK's own runtime classes) is unaffected.
+   *
+   * Can also be set via the `WORKFLOW_DISCOVER_NODE_MODULES` environment
+   * variable (`0`/`false` to disable); config wins over env var, env var wins
+   * over the default.
+   */
+  discoverWorkflowsInNodeModules?: boolean;
 }
 
 /**

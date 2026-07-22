@@ -47,7 +47,10 @@ function writeFile(path: string, contents: string): void {
   writeFileSync(path, contents, 'utf-8');
 }
 
-function createBuilder(workingDir: string): TestBuilder {
+function createBuilder(
+  workingDir: string,
+  overrides?: Partial<StandaloneConfig>
+): TestBuilder {
   const config: StandaloneConfig = {
     buildTarget: 'standalone',
     workingDir,
@@ -55,6 +58,7 @@ function createBuilder(workingDir: string): TestBuilder {
     stepsBundlePath: join(workingDir, 'steps.js'),
     workflowsBundlePath: join(workingDir, 'workflows.js'),
     webhookBundlePath: join(workingDir, 'webhook.js'),
+    ...overrides,
   };
   return new TestBuilder(config);
 }
@@ -165,6 +169,73 @@ describe('fast workflow discovery', () => {
     expect(
       parentHasChild(normalize(packageIndex), normalize(packageWorkflow))
     ).toBe(true);
+  });
+
+  it('skips node_modules workflow files when discoverWorkflowsInNodeModules is false', async () => {
+    const entryFile = join(testRoot, 'src', 'entry.ts');
+    const localWorkflow = join(testRoot, 'src', 'local-workflow.ts');
+    const packageRoot = join(testRoot, 'node_modules', 'workflow-pkg');
+    const packageIndex = join(packageRoot, 'index.js');
+    const packageWorkflow = join(packageRoot, 'workflow.js');
+    const packageStep = join(packageRoot, 'step.js');
+
+    writeFile(
+      entryFile,
+      `import './local-workflow';\nimport { run } from 'workflow-pkg';\nvoid run;\n`
+    );
+    writeFile(
+      localWorkflow,
+      `export async function localRun() {
+  'use workflow';
+  return 'ok';
+}
+`
+    );
+    writeFile(
+      join(packageRoot, 'package.json'),
+      JSON.stringify({
+        name: 'workflow-pkg',
+        version: '1.0.0',
+        main: 'index.js',
+        dependencies: {
+          workflow: '^1.0.0',
+        },
+      })
+    );
+    writeFile(
+      packageIndex,
+      `export { run } from './workflow.js';\nexport { doWork } from './step.js';\n`
+    );
+    writeFile(
+      packageWorkflow,
+      `export async function run() {
+  "use workflow";
+  return "ok";
+}
+`
+    );
+    writeFile(
+      packageStep,
+      `export async function doWork() {
+  "use step";
+  return "done";
+}
+`
+    );
+
+    const discovered = await createBuilder(testRoot, {
+      discoverWorkflowsInNodeModules: false,
+    }).discoverEntriesPublic([entryFile], join(testRoot, 'out'));
+
+    // Local (non-node_modules) workflow is still discovered.
+    expect(discovered.discoveredWorkflows).toEqual(
+      new Set([normalize(localWorkflow)])
+    );
+    // The node_modules workflow and step are not registered.
+    expect(discovered.discoveredWorkflows.has(normalize(packageWorkflow))).toBe(
+      false
+    );
+    expect(discovered.discoveredSteps.has(normalize(packageStep))).toBe(false);
   });
 
   it('discovers files reached through tsconfig path aliases', async () => {
