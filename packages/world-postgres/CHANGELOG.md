@@ -1,5 +1,22 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.28
+
+### Minor Changes
+
+- [#2915](https://github.com/vercel/workflow/pull/2915) [`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3) Thanks [@joeyhotz](https://github.com/joeyhotz)! - Add `runs.getMany()` for retrieving ordered workflow run snapshots in one storage operation.
+
+### Patch Changes
+
+- [#2987](https://github.com/vercel/workflow/pull/2987) [`850777a`](https://github.com/vercel/workflow/commit/850777a03bc1ad85fa7333d5e15a55a353ed6d23) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Reject `hook_received` on terminal runs, including when the termination commits concurrently (cross-process) and for legacy (pre-event-sourcing) runs.
+
+- [#2983](https://github.com/vercel/workflow/pull/2983) [`3ddf42e`](https://github.com/vercel/workflow/commit/3ddf42ed5faa34f6f860060a29a8f57239731182) Thanks [@joeyhotz](https://github.com/joeyhotz)! - Throw `EntityConflictError` when a `run_created` event targets a run that already exists, instead of resolving with no run. This matches `world-local` and `world-vercel`, and stops `start()` from throwing `Missing 'run' in server response for 'run_created' event` when the resilient start path wins the race.
+
+- Updated dependencies [[`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3), [`fe12b84`](https://github.com/vercel/workflow/commit/fe12b847291912cf9e47143ee10c73828dbdf1a1), [`a5e6f11`](https://github.com/vercel/workflow/commit/a5e6f1167aa07f36b49777d3c020282d11a0abf2), [`850777a`](https://github.com/vercel/workflow/commit/850777a03bc1ad85fa7333d5e15a55a353ed6d23), [`eb8fdb9`](https://github.com/vercel/workflow/commit/eb8fdb979748f54a94289530ee7ac155feddddcc), [`bb773e9`](https://github.com/vercel/workflow/commit/bb773e950786b15100a8058407cbfcba23a44ebc)]:
+  - @workflow/world@5.0.0-beta.22
+  - @workflow/world-local@5.0.0-beta.30
+  - @workflow/errors@5.0.0-beta.12
+
 ## 5.0.0-beta.27
 
 ### Patch Changes

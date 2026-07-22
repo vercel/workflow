@@ -1,5 +1,21 @@
 # @workflow/world
 
+## 5.0.0-beta.22
+
+### Minor Changes
+
+- [#2915](https://github.com/vercel/workflow/pull/2915) [`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3) Thanks [@joeyhotz](https://github.com/joeyhotz)! - Add `runs.getMany()` for retrieving ordered workflow run snapshots in one storage operation.
+
+- [#2865](https://github.com/vercel/workflow/pull/2865) [`a5e6f11`](https://github.com/vercel/workflow/commit/a5e6f1167aa07f36b49777d3c020282d11a0abf2) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Add `experimental_minRetention` for keeping a Hook token unavailable after its run ends, and require supporting Worlds to advertise the `hookRetention` capability.
+
+- [#2970](https://github.com/vercel/workflow/pull/2970) [`bb773e9`](https://github.com/vercel/workflow/commit/bb773e950786b15100a8058407cbfcba23a44ebc) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optional `capabilities?: WorldCapabilities` field to the World interface so implementations can declare backend feature support (`preconditionGuard`, `maxConcurrency`) instead of the runtime inferring it from environment variables; the Vercel World declares both.
+
+### Patch Changes
+
+- [#2986](https://github.com/vercel/workflow/pull/2986) [`fe12b84`](https://github.com/vercel/workflow/commit/fe12b847291912cf9e47143ee10c73828dbdf1a1) Thanks [@shalabhc](https://github.com/shalabhc)! - Enforce a server-supplied per-run event limit (default 25K)
+
+- [#2946](https://github.com/vercel/workflow/pull/2946) [`eb8fdb9`](https://github.com/vercel/workflow/commit/eb8fdb979748f54a94289530ee7ac155feddddcc) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - The `WORKFLOW_PRECONDITION_GUARD` event-creation guard is now on by default; opt out with `WORKFLOW_PRECONDITION_GUARD=0`.
+
 ## 5.0.0-beta.21
 
 ### Minor Changes
