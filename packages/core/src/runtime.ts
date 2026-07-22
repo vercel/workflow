@@ -1771,6 +1771,12 @@ export function workflowEntrypoint(
                       workflowRunId: runId,
                       loopIteration,
                     });
+                    // Under turbo, run_started is backgrounded. The QuickJS
+                    // entrypoint fetches the event log and writes events
+                    // directly, so wait for the run to be durably started
+                    // first — it does not thread the turbo runReadyBarrier
+                    // the way handleSuspension does.
+                    await awaitRunReady();
                     const quickjsResult = await runWorkflowWithQuickJS({
                       workflowCode,
                       workflowName,
@@ -1780,7 +1786,15 @@ export function workflowEntrypoint(
                       parentSpan: span,
                     });
                     if (quickjsResult?.timeoutSeconds !== undefined) {
-                      return { timeoutSeconds: quickjsResult.timeoutSeconds };
+                      // Use `reinvoke` rather than returning
+                      // `{ timeoutSeconds }` directly: under turbo the
+                      // current message carries `runInput` and a reschedule
+                      // would re-engage turbo on redelivery (replaying
+                      // against a stale preloaded log and wedging the run —
+                      // see the reinvoke() docs above). reinvoke enqueues an
+                      // explicit continuation without `runInput` in that
+                      // case.
+                      return await reinvoke(quickjsResult.timeoutSeconds);
                     }
                     return;
                   }

@@ -85,6 +85,21 @@ export interface PendingHook {
   isWebhook: boolean;
   metadata?: unknown;
   hasCreatedEvent: boolean;
+  /**
+   * True for internal system hooks (e.g. AbortController's hook), which
+   * are exempt from user-hook token namespace conflict checks.
+   */
+  isSystem?: boolean;
+  /**
+   * Set when the workflow called AbortController.abort() during this
+   * invocation. The host must record the abort: create a hook_received
+   * event carrying `abortPayload` and write/close the abort stream.
+   */
+  abortRequested?: boolean;
+  /** VM-serialized `{ aborted: true, reason }` payload for the abort. */
+  abortPayload?: Uint8Array;
+  /** Set by the completion drain when a system hook is implicitly disposed. */
+  disposed?: boolean;
 }
 
 export interface PendingAttribute {
@@ -112,7 +127,17 @@ export type PendingOperation =
 
 export interface QuickJSRuntimeResult {
   /** The workflow completed — result is format-prefixed devalue bytes */
-  completed?: { result: Uint8Array };
+  completed?: {
+    result: Uint8Array;
+    /**
+     * Leftover pending operations that still need durable side effects at
+     * completion: abort recordings, system-hook disposals, fire-and-forget
+     * attribute/hook/step events. Mirrors the node:vm engine's
+     * drainPendingQueueItems. The entrypoint dispatches these WITHOUT
+     * queueing steps or requeuing the run.
+     */
+    drainOperations?: PendingOperation[];
+  };
   /** The workflow suspended with pending operations */
   suspended?: {
     pendingOperations: PendingOperation[];
@@ -122,6 +147,8 @@ export interface QuickJSRuntimeResult {
     message: string;
     stack?: string;
     name?: string;
+    /** See completed.drainOperations — same semantics on failure. */
+    drainOperations?: PendingOperation[];
     /**
      * Format-prefixed devalue bytes of the original thrown value
      * (Error subclass with cause chain, plain object, primitive, etc.).
@@ -502,6 +529,164 @@ globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")] = function(changes, options) {
   });
 };
 
+// ---- AbortController / AbortSignal (hook-backed) ----
+// Port of workflow/abort-controller.ts to the VM pending-op model:
+// the controller registers a system hook; abort() flips the signal
+// synchronously and marks the pending op so the host records the abort
+// (hook_received event + stream packet). On replay, the recorded
+// hook_received event calls _setAborted during event processing and the
+// workflow's own abort() call becomes a no-op.
+var __ABORT_STREAM_NAME = Symbol.for("WORKFLOW_ABORT_STREAM_NAME");
+var __ABORT_HOOK_TOKEN = Symbol.for("WORKFLOW_ABORT_HOOK_TOKEN");
+
+function __makeAbortError() {
+  if (typeof DOMException !== "undefined") {
+    return new DOMException("The operation was aborted.", "AbortError");
+  }
+  var e = new Error("The operation was aborted.");
+  e.name = "AbortError";
+  return e;
+}
+
+function WorkflowAbortSignal(streamName, hookToken) {
+  this.aborted = false;
+  this.reason = undefined;
+  this[__ABORT_STREAM_NAME] = streamName;
+  this[__ABORT_HOOK_TOKEN] = hookToken;
+  this.__listeners = [];
+  this.__onabort = null;
+}
+Object.defineProperty(WorkflowAbortSignal.prototype, "onabort", {
+  get: function() { return this.__onabort; },
+  set: function(handler) {
+    this.__onabort = handler;
+    if (handler && this.aborted) handler.call(this);
+  },
+});
+WorkflowAbortSignal.prototype._setAborted = function(reason) {
+  if (this.aborted) return;
+  this.aborted = true;
+  this.reason = reason;
+  if (this.__onabort) this.__onabort.call(this);
+  var listeners = this.__listeners;
+  this.__listeners = [];
+  for (var i = 0; i < listeners.length; i++) listeners[i]();
+};
+WorkflowAbortSignal.prototype.addEventListener = function(type, listener) {
+  if (type !== "abort") return;
+  if (this.aborted) {
+    // Fire synchronously (not on a microtask) for deterministic replay —
+    // matches the node:vm engine's WorkflowAbortSignal.
+    listener();
+    return;
+  }
+  this.__listeners.push(listener);
+};
+WorkflowAbortSignal.prototype.removeEventListener = function(type, listener) {
+  if (type !== "abort") return;
+  this.__listeners = this.__listeners.filter(function(l) { return l !== listener; });
+};
+WorkflowAbortSignal.prototype.throwIfAborted = function() {
+  if (this.aborted) {
+    throw this.reason !== undefined && this.reason !== null
+      ? this.reason
+      : __makeAbortError();
+  }
+};
+// Expose for the serde bundle's revivers (evaluated before this bootstrap;
+// they look the class up lazily at revive time).
+globalThis.__WorkflowAbortSignal = WorkflowAbortSignal;
+
+// Registry of live abort signals keyed by their hook correlationId. The
+// host delivers hook_received events for these ids as _setAborted calls.
+globalThis.__abortSignals = {};
+
+globalThis.AbortController = function WorkflowAbortController() {
+  var id = globalThis.__generateUlid();
+  var streamName = "strm_" + id + "_system_abort";
+  var hookToken = "abrt_" + id;
+  this[__ABORT_STREAM_NAME] = streamName;
+  this[__ABORT_HOOK_TOKEN] = hookToken;
+  this.signal = new WorkflowAbortSignal(streamName, hookToken);
+  var correlationId = "hook_" + globalThis.__generateUlid();
+  // Register an internal system hook. isSystem prevents token namespace
+  // conflicts with user hooks.
+  globalThis.__pending.push({
+    type: "hook",
+    correlationId: correlationId,
+    token: hookToken,
+    isWebhook: false,
+    isSystem: true,
+    hasCreatedEvent: false,
+  });
+  globalThis.__abortSignals[correlationId] = this.signal;
+};
+globalThis.AbortController.prototype.abort = function(reason) {
+  if (this.signal.aborted) return; // already aborted (e.g. from replay)
+  this.signal._setAborted(reason);
+  // Mark the pending hook op so the host records the abort. The payload
+  // is serialized in the VM so the reason crosses the boundary with
+  // type fidelity (Errors, DOMException, custom values).
+  var token = this[__ABORT_HOOK_TOKEN];
+  for (var i = 0; i < globalThis.__pending.length; i++) {
+    var item = globalThis.__pending[i];
+    if (item.type === "hook" && item.token === token) {
+      item.abortRequested = true;
+      item.abortPayload = globalThis[Symbol.for("workflow-serialize")]({
+        aborted: true,
+        reason: reason,
+      });
+      break;
+    }
+  }
+};
+
+globalThis.AbortSignal = {
+  abort: function(reason) {
+    var s = new WorkflowAbortSignal("", "");
+    s._setAborted(reason !== undefined ? reason : __makeAbortError());
+    return s;
+  },
+  any: function(signals) {
+    var composite = new WorkflowAbortSignal("", "");
+    var arr = Array.from(signals);
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i].aborted) {
+        composite._setAborted(arr[i].reason);
+        return composite;
+      }
+    }
+    var listeners = [];
+    var cleanup = function() {
+      for (var j = 0; j < listeners.length; j++) {
+        if (listeners[j].signal.removeEventListener) {
+          listeners[j].signal.removeEventListener("abort", listeners[j].listener);
+        }
+      }
+      listeners.length = 0;
+    };
+    arr.forEach(function(signal) {
+      if (!signal.addEventListener) return;
+      var listener = function() {
+        if (!composite.aborted) {
+          composite._setAborted(signal.reason);
+          cleanup();
+        }
+      };
+      listeners.push({ signal: signal, listener: listener });
+      signal.addEventListener("abort", listener);
+    });
+    return composite;
+  },
+  timeout: function() {
+    throw new Error(
+      "AbortSignal.timeout() is not supported in workflow functions. " +
+        "Use sleep() with an AbortController instead. " +
+        "See: /docs/errors/abort-signal-timeout-in-workflow"
+    );
+  },
+};
+
 // WORKFLOW_GET_STREAM_ID — generates a stream ID for a workflow run.
 // Replicates getWorkflowRunStreamId() from util.ts inside the QuickJS VM.
 // Uses the built-in btoa() for base64url encoding.
@@ -586,10 +771,16 @@ export async function runQuickJSWorkflow(
   // the world's per-(runId, correlationId) uniqueness turns the duplicate
   // `events.create` into an EntityConflictError that the entrypoint
   // swallows.
+  //
+  // The seed inputs MUST be stable across invocations. Notably
+  // `startedAt` is NOT: under turbo the first invocation runs against a
+  // synthesized run object whose timestamps differ from the durably
+  // stored ones that later invocations load. Matches the node:vm
+  // engine's seed (workflow.ts).
   const seed = [
     workflowRun.runId,
     workflowRun.workflowName,
-    String(startedAt),
+    workflowRun.deploymentId,
   ].join(':');
   const rng = seedrandom(seed);
 
@@ -637,9 +828,12 @@ export async function runQuickJSWorkflow(
   // produce IDENTICAL correlationIds (the random portion also matches
   // because the PRNG is seeded the same way) and the world's
   // EntityConflictError on `events.create` dedups one of each pair.
-  // Use `startedAt` (constant per-run) so the prefix is stable across
-  // replay invocations too.
-  vm.evalCode(`globalThis.__ulidTimestamp = ${startedAt};`).dispose();
+  // Derived from the runId's embedded ULID (stable across invocations by
+  // construction — unlike `startedAt`, which differs between turbo's
+  // synthesized run object and the durably stored run).
+  vm.evalCode(
+    `globalThis.__ulidTimestamp = ${runIdCreatedAt(workflowRun.runId) ?? (+workflowRun.createdAt || startedAt)};`
+  ).dispose();
 
   // Execute the workflow bundle — use the workflowId as the eval filename
   // so QuickJS stack traces reference the workflow name, enabling source map
@@ -999,6 +1193,53 @@ async function processEvents(
           markCreated(vm, escapedCid);
           break;
         }
+
+        // Abort delivery: hook_received for an AbortController's system
+        // hook flips the registered signal instead of resolving a promise.
+        // The payload is the dehydrated `{ aborted: true, reason }` object.
+        const isAbortHook = vm.dump(
+          vm.evalCode(
+            `!!(globalThis.__abortSignals && globalThis.__abortSignals["${escapedCid}"])`
+          )
+        );
+        if (isAbortHook) {
+          const rawAbortPayload = eventData?.payload;
+          if (rawAbortPayload instanceof Uint8Array) {
+            const decrypted = await prepareBytesForVM(
+              rawAbortPayload,
+              encryptionKey
+            );
+            const bytesHandle = vm.newUint8Array(decrypted);
+            vm.setProp(vm.global, '__tmp_abort', bytesHandle);
+            bytesHandle.dispose();
+            vm.evalCode(
+              `(function(){` +
+                `var p=globalThis[Symbol.for("workflow-deserialize")](globalThis.__tmp_abort);` +
+                `delete globalThis.__tmp_abort;` +
+                `globalThis.__abortSignals["${escapedCid}"]._setAborted(p&&typeof p==="object"?p.reason:undefined);` +
+                `})()`
+            ).dispose();
+          } else {
+            vm.evalCode(
+              `globalThis.__abortSignals["${escapedCid}"]._setAborted(undefined);`
+            ).dispose();
+          }
+          if (event.eventId) {
+            vm.evalCode(
+              `(globalThis.__hookPayloadBuffer.__processedEventIds = globalThis.__hookPayloadBuffer.__processedEventIds || {})[${JSON.stringify(event.eventId)}] = true;`
+            ).dispose();
+          }
+          {
+            resolved = true;
+            let b: number;
+            do {
+              b = vm.executePendingJobs();
+            } while (b > 0);
+          }
+          markCreated(vm, escapedCid);
+          break;
+        }
+
         const hasResolver = vm.dump(
           vm.evalCode(`!!globalThis.__resolvers["${escapedCid}"]`)
         );
@@ -1151,14 +1392,58 @@ function markCreated(vm: QuickJS, escapedCid: string, opType?: string): void {
 
 // ---- State Checking ----
 
+/**
+ * Collect leftover pending operations that need durable side effects when
+ * the workflow reaches a terminal state. Mirrors the node:vm engine's
+ * drainPendingQueueItems (workflow.ts): still-alive system hooks
+ * (AbortController) without an abort in flight are implicitly disposed so
+ * they don't leak hook rows; ops without created events (fire-and-forget
+ * attributes/hooks/steps/waits) and pending abort recordings are surfaced
+ * for the entrypoint to flush.
+ */
+function collectDrainOperations(vm: QuickJS): PendingOperation[] {
+  using h = vm.evalCode(`(function(){
+    var toDispose = [];
+    globalThis.__pending.forEach(function(p){
+      if (p.type === "hook" && p.isSystem && !p.abortRequested && !p.disposed) {
+        p.disposed = true;
+        // Only dispose hooks that were durably created; a hook that never
+        // reached storage has nothing to clean up.
+        if (p.hasCreatedEvent) {
+          toDispose.push({
+            type: "hook_dispose",
+            correlationId: p.correlationId,
+            hasCreatedEvent: false,
+          });
+        }
+      }
+    });
+    toDispose.forEach(function(d){ globalThis.__pending.push(d); });
+    return globalThis.__pending.filter(function(p){
+      if (p.abortRequested) return true;
+      if (p.hasCreatedEvent) return false;
+      // Skip system hooks that were disposed before ever being created.
+      if (p.type === "hook" && p.disposed) return false;
+      return true;
+    });
+  })()`);
+  return vm.dump(h) as PendingOperation[];
+}
+
 function checkWorkflowState(vm: QuickJS): QuickJSRuntimeResult {
   // Check completed — __workflowResult is a format-prefixed Uint8Array
   {
     using h = vm.evalCode('globalThis.__workflowResult');
     if (!h.isUndefined) {
       const resultBytes = h.toUint8Array();
+      const drainOperations = collectDrainOperations(vm);
       vm.dispose();
-      return { completed: { result: resultBytes } };
+      return {
+        completed: {
+          result: resultBytes,
+          ...(drainOperations.length > 0 ? { drainOperations } : {}),
+        },
+      };
     }
   }
 
@@ -1188,8 +1473,14 @@ function checkWorkflowState(vm: QuickJS): QuickJSRuntimeResult {
         errorName: failed.name,
         errorStack: failed.stack,
       });
+      const drainOperations = collectDrainOperations(vm);
       vm.dispose();
-      return { failed };
+      return {
+        failed: {
+          ...failed,
+          ...(drainOperations.length > 0 ? { drainOperations } : {}),
+        },
+      };
     }
   }
 
@@ -1202,7 +1493,10 @@ function checkWorkflowState(vm: QuickJS): QuickJSRuntimeResult {
     );
     if (vm.dump(h)) {
       using pendingH = vm.evalCode(
-        `globalThis.__pending.filter(function(p){return!!globalThis.__resolvers[p.correlationId] || !p.hasCreatedEvent;})`
+        // Ops with an active resolver or without a created event are
+        // pending; abort-requested hooks are also surfaced (even when
+        // already created and unawaited) so the host records the abort.
+        `globalThis.__pending.filter(function(p){return!!globalThis.__resolvers[p.correlationId] || !p.hasCreatedEvent || p.abortRequested;})`
       );
       const pendingOps = vm.dump(pendingH) as PendingOperation[];
       vm.dispose();
