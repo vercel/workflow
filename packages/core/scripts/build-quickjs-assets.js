@@ -43,6 +43,24 @@ let output = `/**
  */
 import type { ExtensionDescriptor } from 'quickjs-wasi';
 
+/**
+ * Decode base64 without a hard dependency on Node's Buffer, so this
+ * module also loads on WASM-only platforms (e.g. Cloudflare Workers)
+ * where only atob() is available. Node's Buffer path is preferred when
+ * present — it is significantly faster for multi-hundred-KB payloads.
+ */
+function decodeBase64(b64: string): Uint8Array {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(b64, 'base64');
+  }
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
 `;
 
 let totalSize = 0;
@@ -51,7 +69,7 @@ for (const [name, filePath] of Object.entries(files)) {
   const buf = readFileSync(filePath);
   const b64 = buf.toString('base64');
   totalSize += buf.length;
-  output += `const ${name} = Buffer.from('${b64}', 'base64');\n\n`;
+  output += `const ${name} = decodeBase64('${b64}');\n\n`;
 }
 
 output += `export { quickjsWasm };\n\n`;

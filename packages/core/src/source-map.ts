@@ -9,7 +9,7 @@ import { originalPositionFor, TraceMap } from '@jridgewell/trace-mapping';
  * lookups.
  */
 const INLINE_SOURCE_MAP_COMMENT_RE =
-  /\/\/# sourceMappingURL=data:application\/json;base64,[A-Za-z0-9+/=]+\s*$/m;
+  /\/\/# sourceMappingURL=data:application\/json;base64,[A-Za-z0-9+/=]+\s*$/;
 
 /**
  * Strip the trailing `//# sourceMappingURL=data:…` comment from a JS

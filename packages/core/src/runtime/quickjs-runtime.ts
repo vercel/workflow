@@ -1372,10 +1372,14 @@ async function processEvents(
             const bytesHandle = vm.newUint8Array(decryptedPayload);
             vm.setProp(vm.global, '__tmp_result', bytesHandle);
             bytesHandle.dispose();
+            // NOTE: replacement is a function so `$`-sequences in the
+            // substituted JS never get interpreted as String.replace
+            // special replacement patterns.
             vm.evalCode(
               bufferAndTrack.replace(
                 '%PAYLOAD%',
-                'globalThis[Symbol.for("workflow-deserialize")](globalThis.__tmp_result)'
+                () =>
+                  'globalThis[Symbol.for("workflow-deserialize")](globalThis.__tmp_result)'
               ) + 'delete globalThis.__tmp_result;'
             ).dispose();
           } else {
@@ -1383,8 +1387,11 @@ async function processEvents(
               rawPayload !== undefined
                 ? JSON.stringify(rawPayload)
                 : 'undefined';
+            // Function replacement: a JSON-serialized payload can contain
+            // `$&`, `$'`, `$\``, ... which String.replace would otherwise
+            // expand, silently corrupting the injected code.
             vm.evalCode(
-              bufferAndTrack.replace('%PAYLOAD%', serialized)
+              bufferAndTrack.replace('%PAYLOAD%', () => serialized)
             ).dispose();
           }
         }
