@@ -18,10 +18,87 @@ import {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+// ---- AbortController / AbortSignal (workflow VM context) ----
+// Mirrors the node:vm engine's workflow-context abort reducers/revivers in
+// serialization.ts: reduce by reading the stream/hook symbols stamped at
+// controller construction; revive to the bootstrap's WorkflowAbortSignal
+// class (looked up lazily on globalThis — the serde bundle is evaluated
+// before the bootstrap defines it).
+const ABORT_STREAM_NAME = Symbol.for('WORKFLOW_ABORT_STREAM_NAME');
+const ABORT_HOOK_TOKEN = Symbol.for('WORKFLOW_ABORT_HOOK_TOKEN');
+
+type AbortSerialized = {
+  streamName: string;
+  hookToken: string;
+  aborted: boolean;
+  reason?: unknown;
+};
+
+function reduceAbortBySymbol(
+  signal: { aborted: boolean; reason?: unknown },
+  holder: any
+): AbortSerialized {
+  const streamName =
+    holder[ABORT_STREAM_NAME] ?? holder.signal?.[ABORT_STREAM_NAME];
+  const hookToken =
+    holder[ABORT_HOOK_TOKEN] ?? holder.signal?.[ABORT_HOOK_TOKEN];
+  if (!streamName) {
+    throw new Error('AbortController/AbortSignal stream name is not set');
+  }
+  return {
+    streamName,
+    hookToken,
+    aborted: signal.aborted,
+    reason: signal.aborted ? signal.reason : undefined,
+  };
+}
+
+function reviveAbortSignalVM(value: AbortSerialized) {
+  const Cls = (globalThis as any).__WorkflowAbortSignal;
+  if (typeof Cls !== 'function') {
+    throw new Error(
+      'WorkflowAbortSignal is not registered in the VM (bootstrap not evaluated)'
+    );
+  }
+  const signal = new Cls(value.streamName, value.hookToken);
+  if (value.aborted) signal._setAborted(value.reason);
+  return signal;
+}
+
+function getAbortReducersVM(): Partial<Reducers> {
+  return {
+    AbortController: (value) => {
+      if (!value || typeof value !== 'object' || !value.signal) return false;
+      const hasAbortSymbol =
+        value[ABORT_STREAM_NAME] ?? value.signal?.[ABORT_STREAM_NAME];
+      if (hasAbortSymbol === undefined) return false;
+      return reduceAbortBySymbol(value.signal, value);
+    },
+    AbortSignal: (value) => {
+      if (!value || typeof value !== 'object') return false;
+      if ((value as any)[ABORT_STREAM_NAME] === undefined) return false;
+      return reduceAbortBySymbol(value as any, value);
+    },
+  };
+}
+
+function getAbortReviversVM(): Partial<Revivers> {
+  return {
+    AbortController: (value: AbortSerialized) => ({
+      [ABORT_STREAM_NAME]: value.streamName,
+      [ABORT_HOOK_TOKEN]: value.hookToken,
+      signal: reviveAbortSignalVM(value),
+      abort: () => {},
+    }),
+    AbortSignal: (value: AbortSerialized) => reviveAbortSignalVM(value),
+  };
+}
+
 function getReducersForMode(mode: SerializationMode): Partial<Reducers> {
   switch (mode) {
     case 'workflow':
       return {
+        ...getAbortReducersVM(),
         ...getClassReducers(),
         ...getStepFunctionReducer(),
         ...getCommonReducers(),
@@ -43,6 +120,7 @@ function getReviversForMode(mode: SerializationMode): Partial<Revivers> {
   switch (mode) {
     case 'workflow':
       return {
+        ...getAbortReviversVM(),
         ...getClassRevivers(),
         ...getStepFunctionReviver(),
         ...getCommonRevivers(),

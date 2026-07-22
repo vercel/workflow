@@ -555,3 +555,169 @@ describe('deterministic replay clock', () => {
     expect(unwrapResult(r3.completed!.result)).toEqual(result);
   });
 });
+
+describe('AbortController (hook-backed)', () => {
+  it('registers a system hook and surfaces abort requests at suspension', async () => {
+    const run = makeRun();
+    const result = await runQuickJSWorkflow({
+      workflowCode: `
+        var slowStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//slow");
+        async function workflow() {
+          var controller = new AbortController();
+          var p = slowStep(controller.signal);
+          controller.abort(new Error("stop it"));
+          return await p;
+        }
+        workflow.workflowId = "workflow//test//workflow";
+        globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+      `,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [],
+    });
+
+    expect(result.suspended).toBeDefined();
+    const ops = result.suspended!.pendingOperations;
+    const hookOp = ops.find((o) => o.type === 'hook') as any;
+    expect(hookOp).toBeDefined();
+    expect(hookOp.isSystem).toBe(true);
+    expect(hookOp.token).toMatch(/^abrt_/);
+    expect(hookOp.abortRequested).toBe(true);
+    expect(hookOp.abortPayload).toBeInstanceOf(Uint8Array);
+    // The aborted signal was serialized into the step input by symbol.
+    const stepOp = ops.find((o) => o.type === 'step');
+    expect(stepOp).toBeDefined();
+  });
+
+  it('delivers a recorded abort to the signal on replay', async () => {
+    const code = `
+      var checkStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//check");
+      async function workflow() {
+        var controller = new AbortController();
+        var observed = [];
+        controller.signal.addEventListener("abort", function() {
+          observed.push("listener:" + (controller.signal.reason && controller.signal.reason.message));
+        });
+        await checkStep(1);
+        // On replay, the recorded hook_received flips the signal during
+        // event processing, so this abort() is a no-op.
+        controller.abort(new Error("stop it"));
+        return {
+          aborted: controller.signal.aborted,
+          reason: controller.signal.reason && controller.signal.reason.message,
+          observed: observed,
+        };
+      }
+      workflow.workflowId = "workflow//test//workflow";
+      globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+    `;
+    const run = makeRun();
+
+    const r1 = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [],
+    });
+    const ops1 = r1.suspended!.pendingOperations;
+    const hookOp = ops1.find((o) => o.type === 'hook') as any;
+    const stepOp = ops1.find((o) => o.type === 'step') as any;
+
+    // Simulate the entrypoint having recorded step completion, the hook
+    // creation, and the abort (hook_received with serialized payload from
+    // a prior invocation's abortPayload).
+    const { serialize } = await import('../serialization/workflow-vm.js');
+    const abortPayload = serialize({
+      aborted: true,
+      reason: new Error('stop it'),
+    });
+
+    const r2 = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [
+        runCreatedEvent(run),
+        {
+          eventId: 'evnt_001',
+          runId: run.runId,
+          eventType: 'hook_created',
+          correlationId: hookOp.correlationId,
+          eventData: { token: hookOp.token, isWebhook: false, isSystem: true },
+          createdAt: new Date('2025-01-01T00:00:01Z'),
+        },
+        {
+          eventId: 'evnt_002',
+          runId: run.runId,
+          eventType: 'step_created',
+          correlationId: stepOp.correlationId,
+          eventData: { stepName: 'step//test//check' },
+          createdAt: new Date('2025-01-01T00:00:02Z'),
+        },
+        {
+          eventId: 'evnt_003',
+          runId: run.runId,
+          eventType: 'step_completed',
+          correlationId: stepOp.correlationId,
+          eventData: { result: 1 },
+          createdAt: new Date('2025-01-01T00:00:03Z'),
+        },
+        {
+          eventId: 'evnt_004',
+          runId: run.runId,
+          eventType: 'hook_received',
+          correlationId: hookOp.correlationId,
+          eventData: { token: hookOp.token, payload: abortPayload },
+          createdAt: new Date('2025-01-01T00:00:04Z'),
+        },
+      ],
+    });
+
+    const value = unwrapResult(r2.completed!.result) as {
+      aborted: boolean;
+      reason?: string;
+      observed: string[];
+    };
+    expect(value.aborted).toBe(true);
+    expect(value.reason).toBe('stop it');
+    expect(value.observed).toEqual(['listener:stop it']);
+  });
+
+  it('AbortSignal statics work in the VM', async () => {
+    const result = await runQuickJSWorkflow({
+      workflowCode: `
+        async function workflow() {
+          var pre = AbortSignal.abort(new Error("pre"));
+          var composite = AbortSignal.any([pre]);
+          var live = new AbortController();
+          var mixed = AbortSignal.any([live.signal]);
+          live.abort(new Error("live"));
+          var timeoutThrew = false;
+          try { AbortSignal.timeout(1000); } catch (e) { timeoutThrew = true; }
+          return {
+            pre: pre.aborted && pre.reason.message,
+            composite: composite.aborted && composite.reason.message,
+            mixed: mixed.aborted && mixed.reason.message,
+            timeoutThrew: timeoutThrew,
+          };
+        }
+        workflow.workflowId = "workflow//test//workflow";
+        globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+      `,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: makeRun(),
+      events: [],
+    });
+
+    // The workflow aborts a live controller, so it suspends with the abort
+    // request pending... unless it completes first — the return happens
+    // synchronously after abort(), so the workflow completes and the
+    // abort request is moot. Either outcome must expose the values.
+    expect(result.completed).toBeDefined();
+    const value = unwrapResult(result.completed!.result) as any;
+    expect(value.pre).toBe('pre');
+    expect(value.composite).toBe('pre');
+    expect(value.mixed).toBe('live');
+    expect(value.timeoutThrew).toBe(true);
+  });
+});
