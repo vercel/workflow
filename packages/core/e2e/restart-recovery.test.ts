@@ -73,7 +73,10 @@ function log(msg: string): void {
   console.error(`[restart-recovery +${Date.now() - T0}ms] ${msg}`);
 }
 
-function spawnServer(command: 'start' | 'dev' = 'start'): ChildProcess {
+function spawnServer(
+  command: 'start' | 'dev' = 'start',
+  extraEnv?: Record<string, string>
+): ChildProcess {
   const child = spawn('pnpm', [command], {
     cwd: getWorkbenchAppPath(),
     // detached so we can SIGKILL the whole process group (`next start` may
@@ -84,6 +87,7 @@ function spawnServer(command: 'start' | 'dev' = 'start'): ChildProcess {
       ...process.env,
       PORT: String(port),
       WORKFLOW_PUBLIC_MANIFEST: '1',
+      ...extraEnv,
     },
   });
   return child;
@@ -427,12 +431,20 @@ describe.skipIf(!enabled)('restart recovery', () => {
     },
     async () => {
       // Unlike the sleeping case (a delayed, unlocked queue job), this kills the
-      // server WHILE A STEP IS EXECUTING — so the step's queue job is held/locked
-      // by the worker at crash time. For postgres this exercises whether boot
-      // recovery can re-drive a run whose step job is still locked (graphile's
-      // stale-lock), since the re-dispatched step reuses the same correlationId
-      // job key. See https://github.com/vercel/workflow/issues/679.
-      server = spawnServer();
+      // server WHILE A STEP IS EXECUTING. The step runs inline in the flow
+      // invocation and its latest step_started carries the owning message ID
+      // (inline ownership, workflow#2780), so after the restart the boot
+      // recovery replay finds a step whose owner it cannot distinguish from a
+      // live invocation on another instance. It defers to the ownership lease:
+      // it arms a delayed backstop wake and only re-dispatches the step once
+      // the lease expires. The default lease (860s) is sized for Vercel's
+      // function ceiling and far exceeds this test's budget, so shorten it —
+      // the test then exercises the FULL recovery path (boot re-enqueue →
+      // lease-gated backstop → step requeue → re-execution) instead of timing
+      // out on a delay that is pure configuration.
+      // See https://github.com/vercel/workflow/issues/679.
+      const leaseEnv = { WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS: '30' };
+      server = spawnServer('start', leaseEnv);
       await waitForServerReady(server);
       log('server #1 ready');
       const runId = await startWorkflowOnServer(
@@ -443,15 +455,16 @@ describe.skipIf(!enabled)('restart recovery', () => {
       log(`started run ${runId}`);
 
       await waitForStepStarted(runId);
-      // Give the worker a beat to actually lock the step job and enter the step.
+      // Give the worker a beat to enter the step body (the step is now
+      // inline-owned by the invocation we are about to kill).
       await sleep(1_000);
-      log('run is mid-step (step job locked)');
+      log('run is mid-step (inline-owned by server #1)');
 
       await killServer(server);
       server = undefined;
       log('server #1 killed (port free)');
 
-      server = spawnServer();
+      server = spawnServer('start', leaseEnv);
       await waitForServerReady(server);
       log('server #2 ready');
 
@@ -682,11 +695,14 @@ describe.skipIf(!multiWorkerEnabled)('multi-worker recovery (postgres)', () => {
       log(`step body executed ${executions} time(s)`);
 
       // Exactly-once guarantee: boot-time recovery must NOT re-run a step that
-      // is healthily in-flight on another worker. This holds because the step is
-      // dispatched under its `correlationId` idempotency key — graphile-worker
-      // does not run a concurrent duplicate of a locked job, and by the time any
-      // re-dispatch could run, the original step has completed and the step's
-      // terminal-state guard skips re-execution.
+      // is healthily in-flight on another worker. The step executes inline in
+      // B's flow invocation, so A's boot replay sees it inline-owned (its
+      // latest step_started carries B's message ID) with a live ownership
+      // lease — A defers to a delayed backstop instead of re-dispatching
+      // (workflow#2780). By the time any later dispatch could run, the step
+      // has completed on B and the terminal-state guard skips re-execution.
+      // (Queue-dispatched attempts are additionally deduped under their
+      // `correlationId` idempotency key — graphile-worker's job-key.)
       expect(executions).toBe(1);
     }
   );
