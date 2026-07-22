@@ -6,7 +6,6 @@
  */
 
 import { parse, stringify, unflatten } from 'devalue';
-import { SerializationFormat, type Reducers, type Revivers } from './types.js';
 import type { Codec, SerializationMode } from './codec.js';
 import { getClassReducers, getClassRevivers } from './reducers/class.js';
 import { getCommonReducers, getCommonRevivers } from './reducers/common-vm.js';
@@ -14,6 +13,7 @@ import {
   getStepFunctionReducer,
   getStepFunctionReviver,
 } from './reducers/step-function.js';
+import { type Reducers, type Revivers, SerializationFormat } from './types.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
