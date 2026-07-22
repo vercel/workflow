@@ -1,20 +1,20 @@
 {
-  "lastUpdated": "2026-07-22T00:42:08.358Z",
-  "commit": "fe12b847291912cf9e47143ee10c73828dbdf1a1",
+  "lastUpdated": "2026-07-22T17:16:05.213Z",
+  "commit": "1225258b5da66be40749c17d12c4e24d32197aa2",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
-      "status": "passing",
+      "status": "partial",
       "total": 4466,
-      "passed": 3908,
-      "failed": 0,
+      "passed": 3907,
+      "failed": 1,
       "skipped": 558,
       "frameworks": {
         "astro": {
           "total": 308,
-          "passed": 256,
-          "failed": 0
+          "passed": 255,
+          "failed": 1
         },
         "express": {
           "total": 308,
@@ -62,7 +62,7 @@
           "failed": 0
         }
       },
-      "progress": 88
+      "progress": 87
     },
     "postgres": {
       "status": "passing",
@@ -127,19 +127,19 @@
     "vercel": {
       "status": "partial",
       "total": 2002,
-      "passed": 1696,
-      "failed": 11,
+      "passed": 1703,
+      "failed": 4,
       "skipped": 295,
       "frameworks": {
         "astro": {
           "total": 154,
-          "passed": 124,
-          "failed": 2
+          "passed": 126,
+          "failed": 0
         },
         "express": {
           "total": 154,
-          "passed": 124,
-          "failed": 2
+          "passed": 126,
+          "failed": 0
         },
         "fastify": {
           "total": 154,
@@ -148,8 +148,8 @@
         },
         "hono": {
           "total": 154,
-          "passed": 125,
-          "failed": 1
+          "passed": 126,
+          "failed": 0
         },
         "nextjs-turbopack": {
           "total": 154,
@@ -158,8 +158,8 @@
         },
         "nextjs-webpack": {
           "total": 154,
-          "passed": 150,
-          "failed": 1
+          "passed": 151,
+          "failed": 0
         },
         "nitro": {
           "total": 154,
@@ -173,8 +173,8 @@
         },
         "sveltekit": {
           "total": 154,
-          "passed": 144,
-          "failed": 1
+          "passed": 145,
+          "failed": 0
         },
         "vite": {
           "total": 154,
