@@ -310,6 +310,8 @@ jobs:
             packages/*/dist
             packages/*/.well-known
             packages/*/src/version.ts
+            packages/core/src/runtime/vm-serde-bundle.generated.ts
+            packages/core/src/runtime/quickjs-assets.generated.ts
             packages/swc-plugin-workflow/swc_plugin_workflow.wasm
             packages/swc-plugin-workflow/build-hash.json
           include-hidden-files: true
