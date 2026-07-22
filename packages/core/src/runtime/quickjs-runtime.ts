@@ -284,6 +284,21 @@ globalThis[Symbol.for("WORKFLOW_USE_STEP")] = function(stepId, closureVarsFn) {
   // serialize step function references (e.g. when passed as arguments).
   fn.stepId = stepId;
   if (closureVarsFn) fn.__closureVarsFn = closureVarsFn;
+  // Override .bind so a bound step proxy (e.g. the SWC plugin's
+  // useStep(...).bind(this) for lexical-this arrow steps) keeps its
+  // stepId and records the bound receiver / prefilled args — the native
+  // bind drops own properties, which would make the StepFunction
+  // reducer fail to recognize the proxy when it crosses a serialization
+  // boundary. Mirrors the node:vm engine's override in step.ts.
+  fn.bind = function(thisArg) {
+    var partialArgs = Array.prototype.slice.call(arguments, 1);
+    var bound = Function.prototype.bind.apply(this, [thisArg].concat(partialArgs));
+    bound.stepId = stepId;
+    if (closureVarsFn) bound.__closureVarsFn = closureVarsFn;
+    bound.__boundThis = thisArg;
+    if (partialArgs.length > 0) bound.__boundArgs = partialArgs;
+    return bound;
+  };
   return fn;
 };
 

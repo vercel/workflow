@@ -292,6 +292,11 @@ export function getCommonReducers(): Partial<Reducers> {
         const s: any = { name };
         const type = value[Symbol.for('WORKFLOW_STREAM_TYPE')];
         if (type) s.type = type;
+        // Preserve wire framing so the step-side reviver can unframe
+        // byte streams (framed-v1) — dropping it turns a framed webhook
+        // body into raw length-prefixed bytes for the consumer.
+        const framing = value[Symbol.for('WORKFLOW_STREAM_FRAMING')];
+        if (framing) s.framing = framing;
         return s;
       }
       return { name: '__empty' };
@@ -541,6 +546,9 @@ export function getCommonRevivers(): Partial<Revivers> {
         // but not consumed directly.
         stream[Symbol.for('WORKFLOW_STREAM_NAME')] = value.name;
         if (value.type) stream[Symbol.for('WORKFLOW_STREAM_TYPE')] = value.type;
+        if (value.framing) {
+          stream[Symbol.for('WORKFLOW_STREAM_FRAMING')] = value.framing;
+        }
       }
       return stream;
     },
