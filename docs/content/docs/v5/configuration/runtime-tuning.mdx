@@ -109,6 +109,18 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - How long after an inline step's latest `step_started` other invocations assume its owner may still be executing the body. Within the lease they defer the step's backstop message; past it they enqueue immediately.
 - Raise this on self-hosted multi-instance deployments whose inline steps run longer than the default (the default is sized for Vercel's function duration ceiling).
 
+## Workflow VM engine
+
+### `WORKFLOW_VM`
+
+- Default: `node`
+- Values: `node` or `quickjs`
+- Selects the sandboxed VM engine that executes workflow functions (`"use workflow"`). Step functions are unaffected — they always run with full Node.js access.
+- `node` (default) runs workflow code in a [`node:vm`](https://nodejs.org/api/vm.html) context.
+- `quickjs` (experimental) runs workflow code in a [QuickJS](https://github.com/quickjs-ng/quickjs) VM compiled to WebAssembly (via [`quickjs-wasi`](https://github.com/vercel-labs/quickjs-wasi)). Both engines implement the same event-replay execution model and are interchangeable per run. The QuickJS engine is intended for platforms that do not implement `node:vm`, and is the foundation for future VM-memory snapshotting.
+- The engine choice is stamped into the run's `executionContext` when the run starts, so a run keeps executing on the engine it started on even if the deployment's `WORKFLOW_VM` changes. Runs without a stamped engine use the handler's `WORKFLOW_VM` value.
+- Unknown values throw at startup.
+
 ## Compression and tracing
 
 ### `WORKFLOW_DISABLE_COMPRESSION`

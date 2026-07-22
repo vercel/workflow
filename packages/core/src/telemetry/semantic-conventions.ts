@@ -92,6 +92,36 @@ export const WorkflowTracePropagated = SemanticConvention<boolean>(
   'workflow.trace.propagated'
 );
 
+// QuickJS VM engine attributes
+
+/** The VM engine executing the workflow function for this invocation */
+export const WorkflowVm = SemanticConvention<'node' | 'quickjs'>('workflow.vm');
+
+/** Outcome of a QuickJS VM workflow invocation */
+export const QuickJSOutcome = SemanticConvention<
+  'completed' | 'suspended' | 'failed'
+>('quickjs.outcome');
+
+/** Whether preloaded events from `events.create('run_started')` were used */
+export const QuickJSEventsPreloaded = SemanticConvention<boolean>(
+  'quickjs.events.preloaded'
+);
+
+/** Total number of events fetched from the world for this invocation */
+export const QuickJSEventsFetchedCount = SemanticConvention<number>(
+  'quickjs.events.fetched_count'
+);
+
+/** Number of pages required to fetch all events */
+export const QuickJSEventsFetchedPages = SemanticConvention<number>(
+  'quickjs.events.fetched_pages'
+);
+
+/** Number of pending VM operations captured at suspension */
+export const QuickJSPendingOpsCount = SemanticConvention<number>(
+  'quickjs.pending_ops_count'
+);
+
 /** Active trace-correlation mode for this invocation (linked or continuous) */
 export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
   'workflow.trace.mode'
