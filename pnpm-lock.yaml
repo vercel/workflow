@@ -1422,9 +1422,6 @@ importers:
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
-      '@workflow/world-local':
-        specifier: workspace:*
-        version: link:../world-local
       cbor-x:
         specifier: 1.6.0
         version: 1.6.0

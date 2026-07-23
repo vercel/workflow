@@ -1,5 +1,4 @@
 import { getWorkflowPort } from '@workflow/utils/get-port';
-import { createWorld as createLocalTestWorld } from '@workflow/world-local';
 import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,9 +11,7 @@ import {
 } from './storage.js';
 
 vi.mock('graphile-worker', () => ({
-  Logger: class Logger {
-    constructor(_: unknown) {}
-  },
+  Logger: class Logger {},
   makeWorkerUtils: vi.fn(),
   run: vi.fn(),
 }));
@@ -31,15 +28,6 @@ vi.mock('pg', () => ({
 vi.mock('@workflow/utils/get-port', () => ({
   getWorkflowPort: vi.fn(),
 }));
-
-vi.mock('@workflow/world-local', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@workflow/world-local')>();
-  return {
-    ...actual,
-    createWorld: vi.fn(actual.createWorld),
-  };
-});
-
 vi.mock('./storage.js', () => ({
   createRunsStorage: vi.fn(),
   createEventsStorage: vi.fn(),
@@ -68,10 +56,6 @@ describe('re-enqueue active runs on start', () => {
     migrate: vi.fn(),
     release: vi.fn(),
   } as unknown as WorkerUtils;
-  const runnerMock = { stop: vi.fn() };
-  const localWorldClose = vi.fn();
-  const wrappedHandler = vi.fn(async () => Response.json({ ok: true }));
-  const createQueueHandler = vi.fn(() => wrappedHandler);
   const pool = {
     query: vi.fn(async () => ({ rows: [{ exists: false }] })),
     end: vi.fn(),
@@ -101,11 +85,7 @@ describe('re-enqueue active runs on start', () => {
     vi.clearAllMocks();
     vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
     vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
-    vi.mocked(run).mockResolvedValue(runnerMock as any);
-    vi.mocked(createLocalTestWorld).mockReturnValue({
-      createQueueHandler,
-      close: localWorldClose,
-    } as any);
+    vi.mocked(run).mockResolvedValue({ stop: vi.fn() } as any);
     vi.mocked(createEventsStorage).mockReturnValue({} as any);
     vi.mocked(createHooksStorage).mockReturnValue({} as any);
     vi.mocked(createStepsStorage).mockReturnValue({} as any);
@@ -149,7 +129,6 @@ describe('re-enqueue active runs on start', () => {
 
     await world.close();
   });
-
   it('re-enqueues active runs via graphile-worker on start', async () => {
     mockRunsList({
       pending: [{ runId: 'wrun_AAA', workflowName: 'wfA' }],
@@ -170,6 +149,7 @@ describe('re-enqueue active runs on start', () => {
       expect.objectContaining({ id: 'wfB' }),
       expect.anything()
     );
+    expect(run).toHaveBeenCalledTimes(1);
 
     await world.close();
   });

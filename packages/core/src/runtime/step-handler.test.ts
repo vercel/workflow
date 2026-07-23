@@ -192,9 +192,8 @@ import {
 } from './get-port-lazy.js';
 import { executeStep } from './step-executor.js';
 // Import the module AFTER all mocks are set up
-// Since getWorldHandlers is now async, we need to call stepEntrypoint
-// to trigger createQueueHandler and populate capturedHandlerRef
-import { stepEntrypoint } from './step-handler.js';
+// Importing the module eagerly creates the queue handler.
+import './step-handler.js';
 import { getWorld } from './world.js';
 
 const mockPortResolver = vi.fn(async () => 3000);
@@ -245,10 +244,9 @@ function createMessage(overrides: Record<string, unknown> = {}) {
 }
 
 describe('step-handler 409 handling', () => {
-  // Trigger the lazy handler initialization by calling stepEntrypoint once.
-  // This invokes getWorldHandlers() which calls createQueueHandler and captures the handler.
+  // Wait for eager queue-handler initialization to capture the handler.
   beforeAll(async () => {
-    await stepEntrypoint(new Request('http://localhost'));
+    await vi.waitFor(() => expect(capturedHandlerRef.current).not.toBeNull());
   });
 
   beforeEach(() => {

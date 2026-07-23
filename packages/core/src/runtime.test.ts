@@ -141,11 +141,67 @@ describe('workflowEntrypoint replay guards', () => {
   afterEach(() => {
     setWorld(undefined);
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   const getWorkflowTransformCode = (workflowName: string) =>
     `;globalThis.__private_workflows = new Map();
     globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${workflowName});`;
+
+  it('registers the workflow queue handler before the first request', async () => {
+    const createQueueHandler = vi.fn(
+      (
+        _prefix: string,
+        _handler: (message: unknown, metadata: unknown) => Promise<unknown>
+      ) =>
+        async () =>
+          new Response(null, { status: 204 })
+    );
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler,
+    } as any);
+
+    workflowEntrypoint(
+      `async function workflow() {
+        return 'done';
+      }${getWorkflowTransformCode('workflow')}`
+    );
+
+    await vi.waitFor(() => {
+      expect(createQueueHandler).toHaveBeenCalledWith(
+        '__wkf_workflow_',
+        expect.any(Function)
+      );
+    });
+  });
+
+  it('retries workflow queue handler registration after a failure', async () => {
+    const createQueueHandler = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('not ready');
+      })
+      .mockImplementation(
+        () => async () => new Response(null, { status: 204 })
+      );
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler,
+    } as any);
+
+    const entrypoint = workflowEntrypoint(
+      `async function workflow() {
+        return 'done';
+      }${getWorkflowTransformCode('workflow')}`
+    );
+    await vi.waitFor(() => expect(createQueueHandler).toHaveBeenCalledOnce());
+
+    const response = await entrypoint(new Request('https://example.test'));
+
+    expect(response.status).toBe(204);
+    expect(createQueueHandler).toHaveBeenCalledTimes(2);
+  });
 
   it('records run_failed when run_started response schema validation fails', async () => {
     const createdEvents: unknown[] = [];

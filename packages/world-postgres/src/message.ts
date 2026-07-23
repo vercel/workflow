@@ -8,7 +8,11 @@ import { Base64Buffer } from './zod.js';
  * maybe later we can have a `blobs` table for larger payloads
  */
 export const MessageData = z.object({
-  attempt: z.number().describe('The attempt number of the message'),
+  attempt: z
+    .number()
+    .int()
+    .positive()
+    .describe('The first logical attempt represented by this Graphile job'),
   messageId: MessageId.describe('The unique ID of the message'),
   idempotencyKey: z.string().optional(),
   headers: z.record(z.string(), z.string()).optional(),

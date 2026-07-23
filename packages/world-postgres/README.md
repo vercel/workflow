@@ -139,7 +139,7 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 ## Features
 
 - **Durable Storage**: Stores workflow runs, events, steps, hooks, and webhooks in PostgreSQL
-- **Queue Processing**: Uses graphile-worker as the durable queue and executes jobs over the workflow HTTP routes
+- **Queue Processing**: Uses graphile-worker as the durable queue and executes registered queue handlers in-process
 - **Durable Delays**: Re-schedules waits and retries in PostgreSQL
 - **Streaming**: Real-time event streaming capabilities
 - **Health Checks**: Built-in connection health monitoring
@@ -151,7 +151,10 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 - Graphile jobs are acknowledged only after the workflow or step execution finishes, or after the worker durably schedules a delayed follow-up job
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
-- Workflow and step execution is sent through `/.well-known/workflow/v1/flow` and `/.well-known/workflow/v1/step`
+- `world.start()` initializes Graphile utilities and migrations before re-enqueueing active runs
+- Graphile workers start after migrations; each job resolves its handler at execution time, so later registrations are picked up without a restart
+- Jobs whose route has not registered yet probe its health endpoint; unavailable routes are durably deferred, while healthy routes remain available as an HTTP compatibility fallback
+- The generated HTTP routes still accept queue-shaped requests, and explicit `WORKFLOW_LOCAL_BASE_URL` worker processes always use those routes as their remote executor
 
 ## Development
 
