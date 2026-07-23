@@ -171,6 +171,24 @@ describe('createContext', () => {
     expect(err?.message).toContain('not available inside a workflow function');
   });
 
+  it('rejects the remaining async `crypto.subtle` methods immediately', async () => {
+    // These would settle on host threadpool timing (breaking the quiescence
+    // invariant a retained VM relies on), so they must stay unreachable:
+    // through the crypto proxy the receiver is not a real SubtleCrypto and
+    // the brand check rejects before any crypto work is scheduled.
+    const { context } = createContext({ seed, fixedTimestamp });
+    for (const call of [
+      'crypto.subtle.importKey("raw", new Uint8Array(16), { name: "AES-GCM" }, false, ["encrypt"])',
+      'crypto.subtle.encrypt({ name: "AES-GCM" }, {}, new Uint8Array(4))',
+      'crypto.subtle.sign("HMAC", {}, new Uint8Array(4))',
+      'crypto.subtle.deriveBits({ name: "PBKDF2" }, {}, 128)',
+    ]) {
+      await expect(vm.runInContext(call, context)).rejects.toThrow(
+        /must be of type SubtleCrypto/
+      );
+    }
+  });
+
   it('should call `onWorkflowError` when a workflow error occurs', async () => {
     const { context } = createContext({ seed, fixedTimestamp });
 
