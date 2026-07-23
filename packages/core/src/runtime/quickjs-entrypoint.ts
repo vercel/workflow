@@ -16,6 +16,8 @@
 import type { Span } from '@opentelemetry/api';
 import {
   EntityConflictError,
+  HookNotFoundError,
+  MaxEventsExceededError,
   RunExpiredError,
   WorkflowNotRegisteredError,
 } from '@workflow/errors';
@@ -43,6 +45,7 @@ import { getWorkflowQueueName, queueMessage } from './helpers.js';
 import {
   type PendingAttribute,
   type PendingHook,
+  type PendingHookDispose,
   type PendingOperation,
   type PendingStep,
   type PendingWait,
@@ -122,6 +125,194 @@ async function dispatchPendingOps(params: {
   let createdAttributeEvent = false;
   const opsPromises: Promise<void>[] = [];
 
+  const processHookOp = async (hook: PendingHook): Promise<void> => {
+    runtimeLogger.debug('QuickJS runtime: processing hook op', {
+      workflowRunId: runId,
+      correlationId: hook.correlationId,
+      token: hook.token,
+      tokenType: typeof hook.token,
+      isWebhook: hook.isWebhook,
+      isSystem: hook.isSystem,
+      hasCreatedEvent: hook.hasCreatedEvent,
+      abortRequested: hook.abortRequested,
+    });
+
+    if (!hook.hasCreatedEvent) {
+      // `hook.metadata` is the format-prefixed devalue bytes
+      // produced by `globalThis[Symbol.for('workflow-serialize')]
+      // (options.metadata)` inside the VM. Encrypt on the host
+      // side before writing — matches the node:vm engine's
+      // `dehydrateStepArguments` flow.
+      //
+      // No pre-check via hooks.list: with deterministic correlationIds
+      // (same VM seed across replays) and per-(runId, correlationId)
+      // uniqueness in worlds, the storage layer rejects duplicates as
+      // EntityConflictError, which we swallow below. This drops one
+      // network round-trip per pending hook.
+      try {
+        const encryptedMetadata =
+          typeof hook.metadata === 'undefined'
+            ? undefined
+            : await encryptSerializedData(hook.metadata, encryptionKey);
+        const result = await world.events.create(runId, {
+          eventType: 'hook_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: hook.correlationId,
+          eventData: {
+            token: hook.token,
+            metadata: encryptedMetadata,
+            // Always include isWebhook explicitly. Worlds default it to
+            // `true` when absent, which would break the public webhook
+            // endpoint's 404 guard for hooks created via createHook().
+            isWebhook: hook.isWebhook,
+            // System hooks (AbortController) are exempt from user
+            // token namespace conflict checks.
+            ...(hook.isSystem ? { isSystem: true } : {}),
+          } as any,
+        });
+
+        // If storage detected a real token conflict with another
+        // workflow's hook, re-queue so the workflow handler can
+        // process the conflict event and fail gracefully.
+        if (result.event?.eventType === 'hook_conflict') {
+          await queueMessage(
+            world,
+            getWorkflowQueueName(workflowRun.workflowName),
+            {
+              runId,
+            },
+            { idempotencyKey: `hook_conflict_${hook.correlationId}` }
+          );
+        }
+      } catch (err) {
+        // Already created by a concurrent invocation — fall through
+        // to abort processing below (if any) instead of bailing.
+        if (!EntityConflictError.is(err)) throw err;
+      }
+      if (hook.hasGetConflictAwaiter) {
+        createdGetConflictHook = true;
+      }
+    }
+
+    if (hook.abortRequested) {
+      // Record the abort durably: a hook_received event carrying
+      // the VM-serialized `{ aborted: true, reason }` payload,
+      // plus a best-effort stream packet for real-time step
+      // propagation. Mirrors the node:vm engine's suspension
+      // handler (hooksNeedingAbort).
+      const abortPayload =
+        hook.abortPayload instanceof Uint8Array
+          ? ((await encryptSerializedData(
+              hook.abortPayload,
+              encryptionKey
+            )) as Uint8Array)
+          : undefined;
+      try {
+        await world.events.create(runId, {
+          eventType: 'hook_received',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: hook.correlationId,
+          eventData: {
+            token: hook.token,
+            payload: abortPayload,
+          } as any,
+        });
+      } catch (err) {
+        if (!EntityConflictError.is(err)) throw err;
+      }
+      // streamName is derived from the abort hook token
+      // (`abrt_{id}` → `strm_{id}_system_abort`).
+      if (hook.token.startsWith('abrt_') && abortPayload) {
+        const streamName = `strm_${hook.token.slice('abrt_'.length)}_system_abort`;
+        try {
+          await world.streams.write(runId, streamName, abortPayload);
+          await world.streams.close(runId, streamName);
+        } catch {
+          // Best-effort — the hook event provides the durable
+          // fallback.
+          runtimeLogger.debug(
+            'QuickJS runtime: failed to write abort stream packet',
+            {
+              workflowRunId: runId,
+              correlationId: hook.correlationId,
+            }
+          );
+        }
+      }
+      wfdiag('abort_recorded', {
+        correlationId: hook.correlationId,
+        token: hook.token,
+      });
+    }
+  };
+
+  const processHookDisposeOp = async (
+    op: PendingHookDispose
+  ): Promise<void> => {
+    try {
+      await world.events.create(runId, {
+        eventType: 'hook_disposed',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: op.correlationId,
+      });
+    } catch (err) {
+      if (EntityConflictError.is(err)) return;
+      // Disposing a hook whose entity no longer (or never) exists is an
+      // idempotent no-op: the entity may have been torn down by a
+      // concurrent run cancellation, or the hook may have lost its
+      // token claim to a conflict. There is nothing left to release.
+      if (HookNotFoundError.is(err)) return;
+      throw err;
+    }
+  };
+
+  // Hook operations are grouped by token and processed SEQUENTIALLY in
+  // code order within each group, mirroring the node:vm suspension
+  // handler (hookItemsByToken): a dispose() of an earlier hook must
+  // release the token before a later same-token hook's creation is
+  // validated by the world — parallel dispatch would otherwise record a
+  // spurious hook_conflict against the run's own disposed hook (e.g. a
+  // dispose→recreate loop reusing one token). Different tokens have no
+  // claim interaction, so token groups run in parallel with each other
+  // and with the non-hook ops below.
+  const hookOpsByToken = new Map<
+    string,
+    (PendingHook | PendingHookDispose)[]
+  >();
+  for (const op of pendingOperations) {
+    let key: string | undefined;
+    if (
+      op.type === 'hook' &&
+      (!op.hasCreatedEvent || (op as PendingHook).abortRequested)
+    ) {
+      key = (op as PendingHook).token;
+    } else if (op.type === 'hook_dispose' && !op.hasCreatedEvent) {
+      // Per-op fallback group when the token is unknown — no ordering
+      // guarantees, matching the previous parallel behavior.
+      key = (op as PendingHookDispose).token ?? `__cid:${op.correlationId}`;
+    }
+    if (key === undefined) continue;
+    const group = hookOpsByToken.get(key);
+    if (group) {
+      group.push(op as PendingHook | PendingHookDispose);
+    } else {
+      hookOpsByToken.set(key, [op as PendingHook | PendingHookDispose]);
+    }
+  }
+  for (const group of hookOpsByToken.values()) {
+    opsPromises.push(
+      (async () => {
+        for (const op of group) {
+          if (op.type === 'hook') {
+            await processHookOp(op);
+          } else {
+            await processHookDisposeOp(op);
+          }
+        }
+      })()
+    );
+  }
+
   for (const op of pendingOperations) {
     if (op.type === 'step' && !op.hasCreatedEvent) {
       const step = op as PendingStep;
@@ -180,133 +371,6 @@ async function dispatchPendingOps(params: {
           }
         })()
       );
-    } else if (
-      op.type === 'hook' &&
-      (!op.hasCreatedEvent || (op as PendingHook).abortRequested)
-    ) {
-      const hook = op as PendingHook;
-      runtimeLogger.debug('QuickJS runtime: processing hook op', {
-        workflowRunId: runId,
-        correlationId: hook.correlationId,
-        token: hook.token,
-        tokenType: typeof hook.token,
-        isWebhook: hook.isWebhook,
-        isSystem: hook.isSystem,
-        hasCreatedEvent: hook.hasCreatedEvent,
-        abortRequested: hook.abortRequested,
-      });
-
-      opsPromises.push(
-        (async () => {
-          if (!hook.hasCreatedEvent) {
-            // `hook.metadata` is the format-prefixed devalue bytes
-            // produced by `globalThis[Symbol.for('workflow-serialize')]
-            // (options.metadata)` inside the VM. Encrypt on the host
-            // side before writing — matches the node:vm engine's
-            // `dehydrateStepArguments` flow.
-            //
-            // No pre-check via hooks.list: with deterministic correlationIds
-            // (same VM seed across replays) and per-(runId, correlationId)
-            // uniqueness in worlds, the storage layer rejects duplicates as
-            // EntityConflictError, which we swallow below. This drops one
-            // network round-trip per pending hook.
-            try {
-              const encryptedMetadata =
-                typeof hook.metadata === 'undefined'
-                  ? undefined
-                  : await encryptSerializedData(hook.metadata, encryptionKey);
-              const result = await world.events.create(runId, {
-                eventType: 'hook_created',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: hook.correlationId,
-                eventData: {
-                  token: hook.token,
-                  metadata: encryptedMetadata,
-                  // Always include isWebhook explicitly. Worlds default it to
-                  // `true` when absent, which would break the public webhook
-                  // endpoint's 404 guard for hooks created via createHook().
-                  isWebhook: hook.isWebhook,
-                  // System hooks (AbortController) are exempt from user
-                  // token namespace conflict checks.
-                  ...(hook.isSystem ? { isSystem: true } : {}),
-                } as any,
-              });
-
-              // If storage detected a real token conflict with another
-              // workflow's hook, re-queue so the workflow handler can
-              // process the conflict event and fail gracefully.
-              if (result.event?.eventType === 'hook_conflict') {
-                await queueMessage(
-                  world,
-                  getWorkflowQueueName(workflowRun.workflowName),
-                  {
-                    runId,
-                  },
-                  { idempotencyKey: `hook_conflict_${hook.correlationId}` }
-                );
-              }
-            } catch (err) {
-              // Already created by a concurrent invocation — fall through
-              // to abort processing below (if any) instead of bailing.
-              if (!EntityConflictError.is(err)) throw err;
-            }
-            if (hook.hasGetConflictAwaiter) {
-              createdGetConflictHook = true;
-            }
-          }
-
-          if (hook.abortRequested) {
-            // Record the abort durably: a hook_received event carrying
-            // the VM-serialized `{ aborted: true, reason }` payload,
-            // plus a best-effort stream packet for real-time step
-            // propagation. Mirrors the node:vm engine's suspension
-            // handler (hooksNeedingAbort).
-            const abortPayload =
-              hook.abortPayload instanceof Uint8Array
-                ? ((await encryptSerializedData(
-                    hook.abortPayload,
-                    encryptionKey
-                  )) as Uint8Array)
-                : undefined;
-            try {
-              await world.events.create(runId, {
-                eventType: 'hook_received',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: hook.correlationId,
-                eventData: {
-                  token: hook.token,
-                  payload: abortPayload,
-                } as any,
-              });
-            } catch (err) {
-              if (!EntityConflictError.is(err)) throw err;
-            }
-            // streamName is derived from the abort hook token
-            // (`abrt_{id}` → `strm_{id}_system_abort`).
-            if (hook.token.startsWith('abrt_') && abortPayload) {
-              const streamName = `strm_${hook.token.slice('abrt_'.length)}_system_abort`;
-              try {
-                await world.streams.write(runId, streamName, abortPayload);
-                await world.streams.close(runId, streamName);
-              } catch {
-                // Best-effort — the hook event provides the durable
-                // fallback.
-                runtimeLogger.debug(
-                  'QuickJS runtime: failed to write abort stream packet',
-                  {
-                    workflowRunId: runId,
-                    correlationId: hook.correlationId,
-                  }
-                );
-              }
-            }
-            wfdiag('abort_recorded', {
-              correlationId: hook.correlationId,
-              token: hook.token,
-            });
-          }
-        })()
-      );
     } else if (op.type === 'attribute' && !op.hasCreatedEvent) {
       const attr = op as PendingAttribute;
       opsPromises.push(
@@ -332,21 +396,6 @@ async function dispatchPendingOps(params: {
               createdAttributeEvent = true;
               return;
             }
-            throw err;
-          }
-        })()
-      );
-    } else if (op.type === 'hook_dispose' && !op.hasCreatedEvent) {
-      opsPromises.push(
-        (async () => {
-          try {
-            await world.events.create(runId, {
-              eventType: 'hook_disposed',
-              specVersion: SPEC_VERSION_CURRENT,
-              correlationId: op.correlationId,
-            });
-          } catch (err) {
-            if (EntityConflictError.is(err)) return;
             throw err;
           }
         })()
