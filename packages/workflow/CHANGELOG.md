@@ -1,5 +1,21 @@
 # workflow
 
+## 4.6.2
+
+### Patch Changes
+
+- Updated dependencies [[`58fb594`](https://github.com/vercel/workflow/commit/58fb594768abc0c05f6327193867b908e8a60ef4)]:
+  - @workflow/next@4.1.2
+  - @workflow/core@4.6.2
+  - @workflow/cli@4.3.2
+  - @workflow/nitro@4.1.4
+  - @workflow/typescript-plugin@4.0.3
+  - @workflow/astro@4.0.13
+  - @workflow/nest@4.0.14
+  - @workflow/rollup@4.0.13
+  - @workflow/sveltekit@4.0.13
+  - @workflow/nuxt@4.0.14
+
 ## 4.6.1
 
 ### Patch Changes
