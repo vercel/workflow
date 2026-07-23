@@ -42,7 +42,7 @@ import {
 import * as Attribute from './telemetry/semantic-conventions.js';
 import { applyWorkflowSuspensionToSpan, trace } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
-import { createContext, freezeSerializationIntrinsics } from './vm/index.js';
+import { createContext } from './vm/index.js';
 import { runCachedWorkflowScript } from './vm/script-cache.js';
 import {
   createAbortSignalStatics,
@@ -1025,10 +1025,6 @@ async function createWorkflowSession({
   // Script rather than the line just past the end of the bundle. That path
   // is rare (it requires the lookup `?.get(...)` expression to throw) and
   // does not affect the workflow function or replay determinism.
-  // All SDK globals are installed; pin the serialization-consulted
-  // intrinsics before any workflow code can run.
-  freezeSerializationIntrinsics(vmGlobalThis);
-
   runCachedWorkflowScript(workflowCode, filename, context);
   const workflowFn = runCachedWorkflowScript(
     `globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,

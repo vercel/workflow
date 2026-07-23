@@ -40,7 +40,7 @@
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "postcss": "^8.5",
+    "postcss": "^8.5.12",
     "tailwindcss": "^4.1.9",
     "tw-animate-css": "^1.3.3",
     "typescript": "^5"
