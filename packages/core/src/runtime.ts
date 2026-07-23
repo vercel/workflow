@@ -36,6 +36,7 @@ import {
 import { describeError } from './describe-error.js';
 import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
+import { getStepFunction } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import {
   getMaxEventsOverride,
@@ -67,7 +68,6 @@ import {
   DEFAULT_STEP_MAX_RETRIES,
   executeStep,
 } from './runtime/step-executor.js';
-import { getStepFunction } from './private.js';
 import { computeStepLatencyTracking } from './runtime/step-latency.js';
 import {
   backstopIdempotencyKey,
@@ -267,24 +267,70 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
 }
 
 /**
- * Number of `step_started` events already recorded for a step, used as the
- * authoritative attempt count for the inline retry ceiling. Each real attempt
- * writes exactly one `step_started` (the atomic create-claim / single-flight
- * prevents concurrent double-starts from inflating this), so the count equals
- * the number of attempts that have begun.
+ * Ownership filter for {@link countStepStartedEvents}:
+ * - `{ type: 'ownedBy', messageId }` counts only starts whose
+ *   `eventData.ownerMessageId` matches — i.e. attempts performed by that
+ *   owning queue message (inline lazy starts and owned-recovery re-stamps).
+ * - `{ type: 'unowned' }` counts only starts with no `ownerMessageId` — i.e.
+ *   bare starts written by queue-dispatched background step deliveries.
  */
-function countStepStartedEvents(
+export type StepStartOwnerFilter =
+  | { type: 'ownedBy'; messageId: string }
+  | { type: 'unowned' };
+
+/**
+ * Number of `step_started` events already recorded for a step, used as the
+ * authoritative attempt count for the retry ceiling.
+ *
+ * IMPORTANT: the raw (unfiltered) count is NOT a reliable attempt number.
+ * Concurrent invocations racing on the same pending batch (stale replays,
+ * wake replays, a step message dispatched by a replay that lost the
+ * create-claim race, ...) can each write a `step_started` for the same
+ * logical attempt — worlds without an atomic start guard (world-local) let
+ * all of them through. Counting those duplicates as "attempts" made the
+ * maxRetries ceiling fire on healthy runs and fail them with a false
+ * "exceeded max retries" (see workflow#3048 CI flake).
+ *
+ * Callers must therefore scope the count to the starts their ceiling is
+ * actually about via `ownerFilter`:
+ * - the inline owned-recovery ceiling counts only THIS message's starts
+ *   (`ownedBy`) — each real (re)delivery of the owning message stamps its
+ *   `ownerMessageId` on the start it writes, while racing invocations stamp
+ *   their own IDs (or none), so they no longer inflate the count;
+ * - the background-step ceiling counts only bare starts (`unowned`) — the
+ *   background path never stamps ownership, so inline racers' stamped
+ *   starts are excluded, and throttle/too-early redeliveries (which write
+ *   no start at all) stay excluded as before.
+ */
+export function countStepStartedEvents(
   events: Event[] | null | undefined,
-  stepId: string
+  stepId: string,
+  ownerFilter?: StepStartOwnerFilter
 ): number {
   if (!events) {
     return 0;
   }
   let count = 0;
   for (const e of events) {
-    if (e.eventType === 'step_started' && e.correlationId === stepId) {
-      count++;
+    if (e.eventType !== 'step_started' || e.correlationId !== stepId) {
+      continue;
     }
+    if (ownerFilter !== undefined) {
+      const owner =
+        'eventData' in e &&
+        e.eventData &&
+        'ownerMessageId' in e.eventData &&
+        typeof e.eventData.ownerMessageId === 'string'
+          ? e.eventData.ownerMessageId
+          : undefined;
+      if (ownerFilter.type === 'ownedBy' && owner !== ownerFilter.messageId) {
+        continue;
+      }
+      if (ownerFilter.type === 'unowned' && owner !== undefined) {
+        continue;
+      }
+    }
+    count++;
   }
   return count;
 }
@@ -778,13 +824,17 @@ export function workflowEntrypoint(
                       // step cannot be exhausted, so proceed without touching the
                       // log. Only once it crosses the ceiling do we load the full
                       // event log and derive the authoritative attempt from the
-                      // recorded `step_started` count — the count only real
-                      // attempts write, so throttle/too-early redeliveries are
-                      // excluded. This still bounds timeouts, which write no error
-                      // for the post-body guard to catch. The load also primes the
-                      // replay's `cachedEvents`/`eventsCursor` (the post-step
-                      // continuation below refreshes them once the step's terminal
-                      // event lands).
+                      // recorded `step_started` count — scoped to UNOWNED (bare)
+                      // starts, which only this path's real deliveries write:
+                      // throttle/too-early redeliveries write no start at all,
+                      // and racing inline invocations stamp their ownerMessageId
+                      // (counting their duplicate starts here falsely exhausted
+                      // healthy steps — see countStepStartedEvents). This still
+                      // bounds timeouts, which write no error for the post-body
+                      // guard to catch. The load also primes the replay's
+                      // `cachedEvents`/`eventsCursor` (the post-step
+                      // continuation below refreshes them once the step's
+                      // terminal event lands).
                       let bgAuthoritativeAttempt = metadata.attempt;
                       const bgMaxRetries =
                         getStepFunction(incomingStepName)?.maxRetries ??
@@ -794,8 +844,9 @@ export function workflowEntrypoint(
                         cachedEvents = loaded.events;
                         eventsCursor = loaded.cursor;
                         bgAuthoritativeAttempt =
-                          countStepStartedEvents(cachedEvents, incomingStepId) +
-                          1;
+                          countStepStartedEvents(cachedEvents, incomingStepId, {
+                            type: 'unowned',
+                          }) + 1;
                       }
 
                       // Pause the replay budget while the step body runs —
@@ -2353,23 +2404,37 @@ export function workflowEntrypoint(
                                 stepName: s.stepName,
                                 runSpecVersion: workflowRun.specVersion,
                                 // Attempt number = prior step_started count + 1
-                                // (this execution's start). A lazy step is
-                                // brand-new by construction (it enters the batch
-                                // only when it has no step_created yet), so it
-                                // has zero prior starts and is always attempt 1 —
-                                // skip the log scan entirely. Only an
-                                // owned-recovery re-run (this message re-executing
-                                // a step it crashed/timed out on) can have prior
-                                // starts, and that path is uncommon, so reserve
-                                // the O(n) scan for it rather than walking the
-                                // growing log for every inline step (which would
-                                // be O(n²) across a long sequential workflow).
+                                // (this execution's start), counting only THIS
+                                // message's own starts: the owned-recovery
+                                // ceiling bounds how many times this owning
+                                // message re-runs a step it crashed/timed out
+                                // on, and each of those (re)starts stamps
+                                // metadata.messageId. Starts written by racing
+                                // invocations (stale/wake replays, a step
+                                // message dispatched off a lost create-claim)
+                                // carry other IDs — or none — and must not
+                                // count, or the ceiling falsely exhausts a
+                                // healthy step (see countStepStartedEvents).
+                                // A lazy step is brand-new by construction (it
+                                // enters the batch only when it has no
+                                // step_created yet), so it has zero prior
+                                // starts and is always attempt 1 — skip the
+                                // log scan entirely. Only an owned-recovery
+                                // re-run can have prior starts, and that path
+                                // is uncommon, so reserve the O(n) scan for it
+                                // rather than walking the growing log for
+                                // every inline step (which would be O(n²)
+                                // across a long sequential workflow).
                                 authoritativeAttempt:
                                   s.lazyStepInput !== undefined
                                     ? 1
                                     : countStepStartedEvents(
                                         cachedEvents,
-                                        s.correlationId
+                                        s.correlationId,
+                                        {
+                                          type: 'ownedBy',
+                                          messageId: metadata.messageId,
+                                        }
                                       ) + 1,
                                 // Lazy inline start: send the deferred step's
                                 // input on step_started so the world creates
