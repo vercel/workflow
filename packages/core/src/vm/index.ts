@@ -127,7 +127,7 @@ export function createContext(options: CreateContextOptions) {
   // timing or host state: after this block, every promise a workflow can
   // create settles either from the event log or within its own microtask
   // cascade, so a suspended VM is fully quiescent and can be retained across
-  // inline steps (see `canRetainWorkflowSession`).
+  // inline steps.
   //
   // - `Atomics.waitAsync` is a wall-clock timer (via SharedArrayBuffer).
   // - The async `WebAssembly` entry points resolve on compile-thread timing;
@@ -135,6 +135,16 @@ export function createContext(options: CreateContextOptions) {
   // - `WeakRef.deref()` and finalizer callbacks observe GC timing.
   // - Dynamic `import()` settles within a microtask (rejected: no
   //   `importModuleDynamically`), so it needs no handling.
+  // - The remaining async `crypto.subtle` methods (`encrypt`, `sign`,
+  //   `importKey`, …) would settle on host threadpool timing, but none of
+  //   them are usable: invoked through the crypto proxy below the receiver
+  //   is not a real SubtleCrypto, so the brand check rejects immediately
+  //   ("Value of 'this' must be of type SubtleCrypto") before any crypto
+  //   work is scheduled — a deterministic microtask rejection. Only the
+  //   deterministic overrides (`digest`, `getRandomValues`, `randomUUID`)
+  //   and the explicit `generateKey` error do real work — locked in by a
+  //   test. Do not "fix" those methods by binding them to the host subtle:
+  //   that would hand workflows a host-timing promise.
   const intrinsics = g as unknown as Record<string, Record<string, unknown>>;
   delete intrinsics.Atomics.waitAsync;
   delete intrinsics.WebAssembly.compile;
