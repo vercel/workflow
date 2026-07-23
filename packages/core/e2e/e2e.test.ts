@@ -1395,13 +1395,18 @@ describe('e2e', () => {
 
           expect(result.finalAttempt).toBe(3);
 
+          // Poll on attempt too: the analytics-backed listing can serve the
+          // terminal status before the attempt column is ingested (attempt is
+          // optional in the analytics schema), so a completed row may briefly
+          // report attempt as undefined.
           const steps = await cliInspectJsonUntil(
             `steps --runId ${run.runId}`,
             (json) =>
               json.some(
                 (s: any) =>
                   s.stepName.includes('retryUntilAttempt3') &&
-                  s.status === 'completed'
+                  s.status === 'completed' &&
+                  s.attempt === 3
               )
           );
           const step = steps.find((s: any) =>
@@ -1427,13 +1432,15 @@ describe('e2e', () => {
           // (which inspect the value inside the SWC-instrumented workflow).
           // Here we only assert step lifecycle behavior.
 
+          // Poll on attempt too — see the retry-success test above.
           const steps = await cliInspectJsonUntil(
             `steps --runId ${run.runId}`,
             (json) =>
               json.some(
                 (s: any) =>
                   s.stepName.includes('throwFatalError') &&
-                  s.status === 'failed'
+                  s.status === 'failed' &&
+                  s.attempt === 1
               )
           );
           const step = steps.find((s: any) =>
