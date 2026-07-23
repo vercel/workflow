@@ -8,12 +8,14 @@ const WorldCachePromise = Symbol.for('@workflow/world//cachePromise');
 const StubbedWorldCachePromise = Symbol.for(
   '@workflow/world//stubbedCachePromise'
 );
+const WorldStartPromise = Symbol.for('@workflow/world//startPromise');
 
 const globalSymbols: typeof globalThis & {
   [WorldCache]?: World;
   [StubbedWorldCache]?: World;
   [WorldCachePromise]?: Promise<World>;
   [StubbedWorldCachePromise]?: Promise<World>;
+  [WorldStartPromise]?: Promise<void>;
 } = globalThis;
 
 export type WorldFactoryModule = {
@@ -136,6 +138,68 @@ export const getWorld = async (): Promise<World> => {
 };
 
 /**
+ * Ensure the World's background tasks are started exactly once per process,
+ * and that boot-time recovery (`reenqueueActiveRuns` for queue-backed Worlds)
+ * runs. Framework integrations call this at server startup — e.g. a Next.js
+ * `instrumentation.ts`, a Nitro server plugin, a SvelteKit `init` hook — so
+ * that in-flight runs resume after a restart WITHOUT requiring a workflow
+ * operation to wake the process.
+ *
+ * Idempotent: the start promise is cached on `globalThis` and reused, so
+ * repeated calls (e.g. Next.js invoking `register()` for multiple runtimes)
+ * start the World only once. Safe to call regardless of the target World — for
+ * push-based Worlds (Vercel) `world.start()` is a no-op.
+ *
+ * Development vs production: in production, in-flight runs are recovered
+ * (re-enqueued). In development they are **cancelled** instead — the workflow
+ * code has likely changed since they started, so replaying them would diverge.
+ * Pass `options.dev` from your framework's authoritative dev flag (e.g. Nitro's
+ * `nitro.options.dev`, SvelteKit's `$app/environment` `dev`, Astro's
+ * `import.meta.env.DEV`); when omitted it falls back to
+ * `process.env.NODE_ENV === 'development'`. Set `WORKFLOW_RECOVER_IN_DEV=1` to
+ * force recovery even in development (e.g. to debug recovery itself).
+ *
+ * Fail-open: this never throws. Boot-time recovery is best-effort, so a
+ * transient failure (e.g. the database is briefly unreachable at startup) must
+ * not prevent the server from coming up — runs are durable and will be
+ * recovered on a later start() or, for queue-backed Worlds, the next enqueue.
+ * Failures are logged and the cached promise is cleared so a subsequent call
+ * retries rather than reusing the rejection. Callers (and the docs samples)
+ * can therefore `await ensureWorldStarted()` unguarded.
+ */
+export interface EnsureWorldStartedOptions {
+  /**
+   * Whether this is a development server. In dev, in-flight runs from a previous
+   * session are cancelled rather than recovered (their workflow code may have
+   * changed). Defaults to `process.env.NODE_ENV === 'development'`.
+   */
+  dev?: boolean;
+}
+
+export const ensureWorldStarted = async (
+  options?: EnsureWorldStartedOptions
+): Promise<void> => {
+  const isDev = options?.dev ?? process.env.NODE_ENV === 'development';
+  const recoverInDev = process.env.WORKFLOW_RECOVER_IN_DEV === '1';
+  const onRestart = isDev && !recoverInDev ? 'cancel' : 'recover';
+  if (!globalSymbols[WorldStartPromise]) {
+    globalSymbols[WorldStartPromise] = (async () => {
+      const world = await getWorld();
+      await world.start?.({ onRestart });
+    })().catch((err) => {
+      globalSymbols[WorldStartPromise] = undefined;
+      console.error(
+        '[workflow] Failed to start the World for boot-time recovery. ' +
+          'In-flight runs may not resume until the next successful start; ' +
+          'this is non-fatal and the server will continue to start.',
+        err
+      );
+    });
+  }
+  await globalSymbols[WorldStartPromise];
+};
+
+/**
  * Reset the cached world instance. This should be called when environment
  * variables change and you need to reinitialize the world with new config.
  */
@@ -144,6 +208,10 @@ export const setWorld = (world: World | undefined): void => {
   globalSymbols[StubbedWorldCache] = world;
   globalSymbols[WorldCachePromise] = undefined;
   globalSymbols[StubbedWorldCachePromise] = undefined;
+  // Clear the start guard too: a freshly injected world has not been started,
+  // so a subsequent ensureWorldStarted() should start it rather than no-op on
+  // the previous world's cached promise.
+  globalSymbols[WorldStartPromise] = undefined;
 };
 
 // Register getWorld on globalThis so getWorldLazy can call it directly when

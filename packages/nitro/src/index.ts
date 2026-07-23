@@ -343,6 +343,20 @@ export default {
         'workflow/workflows.mjs'
       );
 
+      // Start the World once at server boot (Nitro server plugin) so in-flight
+      // runs recover after a restart without needing a workflow operation.
+      // Covers self-hosted Nitro apps (Nitro v2/v3, Nuxt). Skipped on Vercel:
+      // the Vercel World's start() is a no-op (push-based — VQS redelivers).
+      //
+      // Note: this gates on the *deploy target*, not the configured World. A
+      // (rare, non-default) Postgres-World-on-Vercel-via-Nitro deployment would
+      // therefore get no boot-time recovery here and would rely on queue
+      // redelivery / the next enqueue instead. Out of scope for the default
+      // Vercel path, which uses the push-based Vercel World.
+      if (!isVercelDeploy) {
+        addStartupPlugin(nitro);
+      }
+
       // Nitro v3+ Vercel deploy: configure function rules for the combined
       // flow handler so it gets the queue triggers + max duration that the
       // workflow runtime needs. Workflow-required fields (`maxDuration`,
@@ -405,6 +419,56 @@ export default {
     }
   },
 } satisfies NitroModule;
+
+const STARTUP_PLUGIN_VIRTUAL_ID = '#workflow/start-world-plugin';
+
+/**
+ * Auto-register a Nitro server plugin that starts the World once at app boot,
+ * so boot-time recovery (`reenqueueActiveRuns` for queue-backed self-hosted
+ * Worlds) runs after a restart without requiring a workflow operation to wake
+ * the process.
+ *
+ * Registered as a *virtual* module (not a file on disk) so it is bundled into
+ * the server output by every framework — including Nuxt, whose standalone
+ * `.output` build does not copy stray `buildDir` files and would otherwise
+ * crash on a missing-module import at boot.
+ *
+ * It imports `workflow/runtime` via a plain bare dynamic import that the bundler
+ * resolves and inlines — sharing the *same* runtime module the flow handler
+ * uses (one instance). It must NOT be `@vite-ignore`d: leaving it external makes
+ * Node load a second runtime copy from `node_modules` at runtime, which collides
+ * with the bundled copy and throws `ERR_INTERNAL_ASSERTION` ("imported again
+ * after being required") in `createWorld` — crashing world start AND the flow
+ * handler (500). `ensureWorldStarted()` caches its start promise on `globalThis`,
+ * so the World is started exactly once even though the flow handler also reaches
+ * the runtime.
+ *
+ * Not registered for Vercel deploys (the Vercel World's start() is a no-op, and
+ * there is nothing to recover at boot for a push-based world).
+ *
+ * The dev flag is baked in from `nitro.options.dev` at build time — Nitro's
+ * authoritative dev/prod signal — so `ensureWorldStarted()` cancels previous
+ * in-flight runs in `nitro dev` (their workflow code likely changed) and
+ * recovers them in a production build, with zero configuration.
+ */
+function addStartupPlugin(nitro: Nitro) {
+  const dev = nitro.options.dev === true;
+  nitro.options.virtual ||= {};
+  nitro.options.virtual[STARTUP_PLUGIN_VIRTUAL_ID] = /* js */ `
+    export default () => {
+      import('workflow/runtime')
+        .then(({ ensureWorldStarted }) => ensureWorldStarted({ dev: ${dev} }))
+        .catch((error) => {
+          console.error('[workflow] Failed to start World on server startup:', error);
+        });
+    };
+  `;
+
+  nitro.options.plugins ||= [];
+  if (!nitro.options.plugins.includes(STARTUP_PLUGIN_VIRTUAL_ID)) {
+    nitro.options.plugins.push(STARTUP_PLUGIN_VIRTUAL_ID);
+  }
+}
 
 const DASHBOARD_VIRTUAL_ID = '#workflow/dashboard-handler';
 

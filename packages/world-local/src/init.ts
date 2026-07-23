@@ -329,6 +329,17 @@ export async function initDataDir(dataDir: string): Promise<void> {
   await ensureDataDir(dataDir);
 
   const packageInfo = await getPackageInfo();
+
+  // In bundled contexts (e.g. a framework's server bundle) the package version
+  // can't be read and `getPackageInfo()` returns the 'bundled' sentinel, which
+  // isn't a parseable semver. Version-compatibility enforcement isn't
+  // meaningful without a real version, so skip it. Without this guard,
+  // `world.start()` (called at server startup via `ensureWorldStarted()`)
+  // would throw "Invalid version string: \"bundled\"" and crash boot.
+  if (packageInfo.version === 'bundled') {
+    return;
+  }
+
   const currentVersion = parseVersion(packageInfo.version);
 
   // Read existing version file

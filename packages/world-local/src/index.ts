@@ -1,8 +1,12 @@
 import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
-import type { QueuePrefix, World } from '@workflow/world';
-import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
+import type { QueuePrefix, StartOptions, World } from '@workflow/world';
+import {
+  cancelActiveRuns,
+  reenqueueActiveRuns,
+  SPEC_VERSION_CURRENT,
+} from '@workflow/world';
 import type { Config } from './config.js';
 import { config, resolveRecoverActiveRuns } from './config.js';
 import {
@@ -78,9 +82,14 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         streamFlushIntervalMs: mergedConfig.streamFlushIntervalMs,
       }),
     }),
-    async start() {
+    async start(options?: StartOptions) {
       await initDataDir(mergedConfig.dataDir);
-      if (!recoverActiveRuns) {
+      // Explicit caller mode (ensureWorldStarted passes 'recover'/'cancel')
+      // wins; otherwise fall back to the construction-time `recoverActiveRuns`
+      // flag (the vitest harness sets it false → 'ignore').
+      const onRestart =
+        options?.onRestart ?? (recoverActiveRuns ? 'recover' : 'ignore');
+      if (onRestart === 'ignore') {
         return;
       }
       // Scope recovery to this world's own files. A tagged world recovers only
@@ -101,6 +110,10 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
             fileIdFilter,
           })) as typeof storage.runs.list,
       };
+      if (onRestart === 'cancel') {
+        await cancelActiveRuns(recoveryRuns, storage.events, 'world-local');
+        return;
+      }
       await reenqueueActiveRuns(recoveryRuns, queue.queue, 'world-local');
     },
     async close() {

@@ -360,4 +360,70 @@ describe('re-enqueue active runs on start', () => {
 
     await world.close();
   });
+
+  it('cancels active runs (and does not re-enqueue) with start({ onRestart: "cancel" })', async () => {
+    // Phase 1: seed runs in various states.
+    const world1 = createWorld({ dataDir });
+    await world1.start();
+
+    const pendingRun = await createRun(world1, {
+      deploymentId: 'dpl_1',
+      workflowName: 'myWorkflow',
+      input: new Uint8Array([1]),
+    });
+    const runningRun = await createRun(world1, {
+      deploymentId: 'dpl_1',
+      workflowName: 'otherWorkflow',
+      input: new Uint8Array([2]),
+    });
+    await updateRun(world1, runningRun.runId, 'run_started');
+    const completedRun = await createRun(world1, {
+      deploymentId: 'dpl_1',
+      workflowName: 'myWorkflow',
+      input: new Uint8Array([3]),
+    });
+    await updateRun(world1, completedRun.runId, 'run_started');
+    await updateRun(world1, completedRun.runId, 'run_completed', {
+      output: new Uint8Array([4]),
+    });
+
+    await world1.close();
+
+    // Phase 2: restart in "cancel" mode (the dev-server behavior). The handler
+    // must NOT be called — active runs are cancelled, not re-enqueued.
+    const world2 = createWorld({ dataDir });
+    const receivedRunIds: string[] = [];
+    world2.registerHandler('__wkf_workflow_', async (req) => {
+      const body = await req.json();
+      receivedRunIds.push(body.runId);
+      return Response.json({ ok: true });
+    });
+
+    await world2.start({ onRestart: 'cancel' });
+
+    await vi.waitFor(async () => {
+      expect((await world2.runs.get(pendingRun.runId)).status).toBe(
+        'cancelled'
+      );
+      expect((await world2.runs.get(runningRun.runId)).status).toBe(
+        'cancelled'
+      );
+    });
+
+    // Completed runs are untouched, and nothing was re-enqueued.
+    expect((await world2.runs.get(completedRun.runId)).status).toBe(
+      'completed'
+    );
+    expect(receivedRunIds).toHaveLength(0);
+
+    // The cancellation reason is recorded on the run_cancelled event.
+    const { data: events } = await world2.events.list({
+      runId: pendingRun.runId,
+    });
+    const cancelledEvent = events.find((e) => e.eventType === 'run_cancelled');
+    expect(cancelledEvent).toBeDefined();
+    expect(JSON.stringify(cancelledEvent)).toContain('dev server restart');
+
+    await world2.close();
+  });
 });

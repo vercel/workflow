@@ -206,6 +206,46 @@ export async function sleepingWorkflow(durationMs = 10_000) {
   return { startTime, endTime };
 }
 
+// A workflow whose only work is one long-running STEP (not a workflow sleep).
+// While the step runs, its queue job is held/locked by the worker — used by the
+// restart-recovery e2e to simulate a crash mid-step (a locked job).
+async function longRunningStep(durationMs: number) {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, durationMs));
+  return durationMs;
+}
+
+export async function longStepWorkflow(durationMs = 12_000) {
+  'use workflow';
+  const startTime = Date.now();
+  await longRunningStep(durationMs);
+  const endTime = Date.now();
+  return { startTime, endTime };
+}
+
+// A long step that records EACH execution of its body to a shared side-effect
+// log (one line per execution) before sleeping. Used by the multi-worker
+// recovery e2e to detect duplicate step execution: the body recording the side
+// effect lets the test count how many times the (non-idempotent) step actually
+// ran. The append happens before the sleep so both executions are observable by
+// the time the run completes.
+async function recordExecutionThenSleep(durationMs: number) {
+  'use step';
+  const logPath = process.env.WORKFLOW_SIDE_EFFECT_LOG;
+  if (logPath) {
+    const { appendFileSync } = await import('node:fs');
+    appendFileSync(logPath, 'exec\n');
+  }
+  await new Promise((resolve) => setTimeout(resolve, durationMs));
+  return durationMs;
+}
+
+export async function sideEffectStepWorkflow(durationMs = 20_000) {
+  'use workflow';
+  await recordExecutionThenSleep(durationMs);
+  return { done: true };
+}
+
 export async function parallelSleepWorkflow() {
   'use workflow';
   const startTime = Date.now();

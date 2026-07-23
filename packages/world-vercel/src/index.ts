@@ -54,6 +54,13 @@ export function createWorld(config?: APIConfig): World {
     // `process.exit(1)` is an acceptable response to an exhausted replay
     // budget.
     processExitTriggersQueueRedelivery: true,
+    // No-op for interface compliance. On Vercel, delivery is push-based: the
+    // queue (VQS) holds in-flight continuations and redelivers them via fresh
+    // function invocations, so there is no long-lived process to "start" and no
+    // boot-time recovery to perform (cf. `processExitTriggersQueueRedelivery`).
+    // Framework integrations call `world.start()` unconditionally at startup; on
+    // Vercel this is intentionally a no-op rather than re-enqueuing active runs.
+    async start() {},
     ...createQueue(config),
     ...createStorage(config),
     analytics: createAnalytics(config),

@@ -4,6 +4,8 @@ import '@workflow/core/runtime/world-init';
 
 export {
   createWorld,
+  ensureWorldStarted,
+  type EnsureWorldStartedOptions,
   getWorld,
   getWorldHandlers,
   type HealthCheckEndpoint,

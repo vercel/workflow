@@ -1040,11 +1040,114 @@ jobs:
       services: ${{ matrix.world.services }}
     secrets: inherit
 
+  # Restart recovery: prove an in-flight (sleeping) run resumes after a hard
+  # restart with NO workflow operation — i.e. server startup wiring
+  # (instrumentation.ts -> ensureWorldStarted) runs boot-time recovery. Unlike
+  # the other e2e jobs, this one does NOT pre-start the server; the test owns
+  # the server lifecycle (spawn, SIGKILL, respawn). Covers local + postgres on
+  # nextjs-turbopack.
+  e2e-restart-recovery:
+    name: E2E Restart Recovery (nextjs-turbopack - ${{ matrix.world }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, e2e-package-build]
+    strategy:
+      fail-fast: false
+      matrix:
+        world: [local, postgres]
+
+    # Defined unconditionally; the local matrix entry simply does not use it.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: world
+          POSTGRES_PASSWORD: world
+          POSTGRES_DB: world
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
+      APP_NAME: nextjs-turbopack
+      RESTART_RECOVERY_TEST: '1'
+      DEPLOYMENT_URL: 'http://localhost:3000'
+      # Empty for the local matrix entry -> resolveWorkflowTargetWorld() falls
+      # back to the local world.
+      WORKFLOW_TARGET_WORLD: ${{ matrix.world == 'postgres' && '@workflow/world-postgres' || '' }}
+      WORKFLOW_POSTGRES_URL: ${{ matrix.world == 'postgres' && 'postgres://world:world@localhost:5432/world' || '' }}
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          install-dependencies: 'false'
+          build-packages: 'false'
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download shared package builds
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-package-build-artifacts
+          path: packages
+
+      - name: Setup PostgreSQL Database
+        if: ${{ matrix.world == 'postgres' }}
+        run: ./packages/world-postgres/bin/setup.js
+
+      - name: Prepare workbench path
+        id: prepare-workbench
+        uses: ./.github/actions/prepare-workbench-path
+        with:
+          app-name: nextjs-turbopack
+
+      - name: Build workbench
+        run: pnpm vitest run packages/core/e2e/local-build.test.ts
+        env:
+          APP_NAME: nextjs-turbopack
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
+
+      - name: Run Restart Recovery Test
+        run: |
+          pnpm vitest run packages/core/e2e/restart-recovery.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-restart-recovery-${{ matrix.world }}.json
+        env:
+          NODE_OPTIONS: "--enable-source-maps"
+          APP_NAME: nextjs-turbopack
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
+
+      - name: Generate E2E summary
+        if: always()
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Restart Recovery (nextjs-turbopack - ${{ matrix.world }})" >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Upload E2E results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results-restart-recovery-${{ matrix.world }}
+          path: e2e-restart-recovery-${{ matrix.world }}.json
+          retention-days: 7
+          if-no-files-found: ignore
+
   # Final job: Aggregate all E2E results and update PR comment
   summary:
     name: E2E Summary
     runs-on: ubuntu-latest
-    needs: [ci-scope, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
+    needs: [ci-scope, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-restart-recovery, e2e-windows]
     if: always() && !cancelled() && needs.ci-scope.outputs.fast-path != 'true'
     timeout-minutes: 10
 
@@ -1075,14 +1178,19 @@ jobs:
           LOCAL_DEV_STATUS="${{ needs.e2e-local-dev.result }}"
           LOCAL_PROD_STATUS="${{ needs.e2e-local-prod.result }}"
           POSTGRES_STATUS="${{ needs.e2e-local-postgres.result }}"
+          RESTART_RECOVERY_STATUS="${{ needs.e2e-restart-recovery.result }}"
           WINDOWS_STATUS="${{ needs.e2e-windows.result }}"
 
           echo "vercel=$VERCEL_STATUS" >> $GITHUB_OUTPUT
           echo "local-dev=$LOCAL_DEV_STATUS" >> $GITHUB_OUTPUT
           echo "local-prod=$LOCAL_PROD_STATUS" >> $GITHUB_OUTPUT
           echo "postgres=$POSTGRES_STATUS" >> $GITHUB_OUTPUT
+          echo "restart-recovery=$RESTART_RECOVERY_STATUS" >> $GITHUB_OUTPUT
           echo "windows=$WINDOWS_STATUS" >> $GITHUB_OUTPUT
 
+          # e2e-restart-recovery is intentionally excluded while it soaks:
+          # it is non-blocking in the required check, so it should not flag
+          # the PR comment as failed either.
           if [[ "$VERCEL_STATUS" == "failure" || "$LOCAL_DEV_STATUS" == "failure" || "$LOCAL_PROD_STATUS" == "failure" || "$POSTGRES_STATUS" == "failure" || "$WINDOWS_STATUS" == "failure" ]]; then
             echo "has_failures=true" >> $GITHUB_OUTPUT
           else
@@ -1119,7 +1227,7 @@ jobs:
   e2e-required-check:
     name: E2E Required Check
     runs-on: ubuntu-latest
-    needs: [ci-scope, unit, e2e-package-build, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
+    needs: [ci-scope, unit, e2e-package-build, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-restart-recovery, e2e-windows]
     if: always()
     timeout-minutes: 5
 
@@ -1132,6 +1240,7 @@ jobs:
           LOCAL_DEV_STATUS: ${{ needs.e2e-local-dev.result }}
           LOCAL_PROD_STATUS: ${{ needs.e2e-local-prod.result }}
           POSTGRES_STATUS: ${{ needs.e2e-local-postgres.result }}
+          RESTART_RECOVERY_STATUS: ${{ needs.e2e-restart-recovery.result }}
           WINDOWS_STATUS: ${{ needs.e2e-windows.result }}
           FAST_PATH: ${{ needs.ci-scope.outputs.fast-path }}
           VALIDATION_FAST_PATH: ${{ needs.ci-scope.outputs.validation-fast-path }}
@@ -1159,6 +1268,7 @@ jobs:
             [[ "$LOCAL_DEV_STATUS" == "skipped" ]] || echo "Warning: e2e-local-dev was not skipped ($LOCAL_DEV_STATUS)"
             [[ "$LOCAL_PROD_STATUS" == "skipped" ]] || echo "Warning: e2e-local-prod was not skipped ($LOCAL_PROD_STATUS)"
             [[ "$POSTGRES_STATUS" == "skipped" ]] || echo "Warning: e2e-local-postgres was not skipped ($POSTGRES_STATUS)"
+            [[ "$RESTART_RECOVERY_STATUS" == "skipped" ]] || echo "Warning: e2e-restart-recovery was not skipped ($RESTART_RECOVERY_STATUS)"
             [[ "$WINDOWS_STATUS" == "skipped" ]] || echo "Warning: e2e-windows was not skipped ($WINDOWS_STATUS)"
           else
             echo "Standard PR - checking all jobs"
@@ -1168,6 +1278,13 @@ jobs:
             [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
             [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
             [[ "$POSTGRES_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-postgres ($POSTGRES_STATUS)")
+            # Soaking as NON-REQUIRED: e2e-restart-recovery is a process-spawn /
+            # SIGKILL / port-reclaim test (the class most prone to CI flake), so a
+            # failure here must NOT block every merge while we build confidence in
+            # its stability. The job still runs and reports its own status for
+            # signal. Promote it back into FAILED_JOBS once it has run green for a
+            # sustained period.
+            [[ "$RESTART_RECOVERY_STATUS" == "success" ]] || echo "::warning::e2e-restart-recovery did not succeed ($RESTART_RECOVERY_STATUS) — non-blocking while soaking"
             [[ "$WINDOWS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-windows ($WINDOWS_STATUS)")
           fi
 

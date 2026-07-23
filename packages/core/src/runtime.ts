@@ -36,6 +36,7 @@ import {
 import { describeError } from './describe-error.js';
 import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
+import { getStepFunction } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import {
   getMaxEventsOverride,
@@ -67,7 +68,6 @@ import {
   DEFAULT_STEP_MAX_RETRIES,
   executeStep,
 } from './runtime/step-executor.js';
-import { getStepFunction } from './private.js';
 import { computeStepLatencyTracking } from './runtime/step-latency.js';
 import {
   backstopIdempotencyKey,
@@ -147,6 +147,8 @@ export {
 export {
   createWorld,
   createWorldFromModule,
+  type EnsureWorldStartedOptions,
+  ensureWorldStarted,
   getWorld,
   getWorldHandlers,
   setWorld,

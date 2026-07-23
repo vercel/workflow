@@ -6,15 +6,20 @@ import { setWorld } from 'workflow/runtime';
 import { AppModule } from './app.module.js';
 
 async function bootstrap() {
-  // Start the Postgres World if configured
+  // Explicitly construct the Postgres World when configured so it is
+  // statically bundled; ensureWorldStarted() below picks it up and starts it.
   if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
-    const world = await createPostgresWorld();
-    setWorld(world);
-    if (world.start) {
-      console.log('Starting World workers...');
-      await world.start();
-    }
+    setWorld(await createPostgresWorld());
   }
+
+  // Start the World once at server boot so in-flight runs are recovered after a
+  // restart without needing a workflow operation. No-op on the Vercel World;
+  // runs recovery for the local/postgres worlds. NestJS exposes no build-time
+  // dev/prod flag, so derive `dev` from NODE_ENV explicitly: in dev, previous
+  // in-flight runs are cancelled rather than recovered (their workflow code may
+  // have changed); in production they are recovered. Ensure NODE_ENV is set.
+  const { ensureWorldStarted } = await import('workflow/runtime');
+  await ensureWorldStarted({ dev: process.env.NODE_ENV !== 'production' });
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bodyParser: false,

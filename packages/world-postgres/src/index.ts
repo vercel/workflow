@@ -1,5 +1,9 @@
-import type { Storage, World } from '@workflow/world';
-import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
+import type { StartOptions, Storage, World } from '@workflow/world';
+import {
+  cancelActiveRuns,
+  reenqueueActiveRuns,
+  SPEC_VERSION_CURRENT,
+} from '@workflow/world';
 import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
@@ -46,7 +50,7 @@ export function createWorld(
       parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '50', 10) ||
       50,
   }
-): World & { start(): Promise<void> } {
+): World & { start(options?: StartOptions): Promise<void> } {
   const maxPoolSize = config.maxPoolSize ?? getDefaultMaxPoolSize();
   const pool =
     config.pool ||
@@ -68,14 +72,26 @@ export function createWorld(
     ...(config.streamFlushIntervalMs !== undefined && {
       streamFlushIntervalMs: config.streamFlushIntervalMs,
     }),
-    async start() {
+    async start(options?: StartOptions) {
+      const onRestart = options?.onRestart ?? 'recover';
+      if (onRestart === 'cancel') {
+        // Cancel BEFORE booting the worker so it can't begin draining a run we
+        // are about to cancel. Old durable jobs that later fire will find the
+        // run terminal and no-op. Then start the worker so NEW (dev) runs still
+        // process.
+        await cancelActiveRuns(storage.runs, storage.events, 'world-postgres');
+        await queue.start();
+        return;
+      }
       await queue.start();
-      await reenqueueActiveRuns(
-        storage.runs,
-        queue.queue,
-        'world-postgres',
-        config.namespace
-      );
+      if (onRestart === 'recover') {
+        await reenqueueActiveRuns(
+          storage.runs,
+          queue.queue,
+          'world-postgres',
+          config.namespace
+        );
+      }
     },
     async close() {
       await streamer.close();

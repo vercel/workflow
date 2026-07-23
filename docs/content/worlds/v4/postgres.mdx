@@ -73,82 +73,15 @@ The migration is idempotent and can safely be run as a post-deployment lifecycle
 
 ## Starting the World
 
-To subscribe to the graphile-worker queue, your workflow app needs to start the world on server start. Here are examples for a few frameworks:
+The Postgres World runs a graphile-worker queue and performs boot-time recovery of in-flight runs, so your app **must start the World once at server startup**:
 
-<Tabs items={["Next.js", "SvelteKit", "Nitro"]}>
+```ts
+import { ensureWorldStarted } from 'workflow/runtime';
 
-<Tab value="Next.js">
-
-Create an `instrumentation.ts` file in your project root:
-
-```ts title="instrumentation.ts" lineNumbers
-export async function register() {
-  if (process.env.NEXT_RUNTIME !== "edge") {
-    const { getWorld } = await import("workflow/runtime");
-    const world = await getWorld();
-    await world.start?.();
-  }
-}
+await ensureWorldStarted();
 ```
 
-<Callout type="info">
-Learn more about [Next.js Instrumentation](https://nextjs.org/docs/app/guides/instrumentation).
-</Callout>
-
-</Tab>
-
-<Tab value="SvelteKit">
-
-Create a `src/hooks.server.ts` file:
-
-```ts title="src/hooks.server.ts" lineNumbers
-import type { ServerInit } from "@sveltejs/kit";
-
-export const init: ServerInit = async () => {
-  const { getWorld } = await import("workflow/runtime");
-  const world = await getWorld();
-  await world.start?.();
-};
-```
-
-<Callout type="info">
-Learn more about [SvelteKit Hooks](https://svelte.dev/docs/kit/hooks).
-</Callout>
-
-</Tab>
-
-<Tab value="Nitro">
-
-Create a plugin to start the world on server initialization:
-
-```ts title="plugins/start-pg-world.ts" lineNumbers
-import { defineNitroPlugin } from "nitro/~internal/runtime/plugin";
-
-export default defineNitroPlugin(async () => {
-  const { getWorld } = await import("workflow/runtime");
-  const world = await getWorld();
-  await world.start?.();
-});
-```
-
-Register the plugin in your config:
-
-```ts title="nitro.config.ts"
-import { defineNitroConfig } from "nitropack";
-
-export default defineNitroConfig({
-  modules: ["workflow/nitro"],
-  plugins: ["plugins/start-pg-world.ts"],
-});
-```
-
-<Callout type="info">
-Learn more about [Nitro Plugins](https://v3.nitro.build/docs/plugins).
-</Callout>
-
-</Tab>
-
-</Tabs>
+Where to call this depends on your framework (Next.js `instrumentation.ts`, SvelteKit `init`, etc.; Nitro and Nuxt apps start it automatically) — see [Recovering in-flight runs](/worlds/recovering-in-flight-runs).
 
 <Callout type="info">
 The Postgres World requires a long-lived worker process that polls the database for jobs. This does not work on serverless environments. For Vercel deployments, use the [Vercel World](/worlds/vercel) instead.

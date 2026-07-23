@@ -77,7 +77,11 @@ export {
   ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from './queue.js';
-export { reenqueueActiveRuns } from './recovery.js';
+export {
+  cancelActiveRuns,
+  DEV_RESTART_CANCEL_REASON,
+  reenqueueActiveRuns,
+} from './recovery.js';
 export type * from './runs.js';
 export {
   isTerminalWorkflowRunStatus,

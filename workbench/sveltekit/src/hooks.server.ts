@@ -2,6 +2,7 @@ import type { ServerInit } from '@sveltejs/kit';
 import { registerOTel } from '@vercel/otel';
 import { createWorld as createPostgresWorld } from '@workflow/world-postgres';
 import { setWorld } from 'workflow/runtime';
+import { dev } from '$app/environment';
 
 registerOTel({
   serviceName: 'example-sveltekit',
@@ -21,14 +22,18 @@ registerOTel({
 });
 
 export const init: ServerInit = async () => {
-  // Start the Postgres World
-  // Needed since we test this in CI
+  // Explicitly construct the Postgres World when configured so it is
+  // statically bundled; ensureWorldStarted() below picks it up and starts it.
   if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
-    const world = await createPostgresWorld();
-    setWorld(world);
-    if (world.start) {
-      console.log('Starting World workers...');
-      await world.start();
-    }
+    setWorld(await createPostgresWorld());
   }
+
+  // Start the World once at server boot so in-flight runs are recovered after a
+  // restart without needing a workflow operation. No-op on the Vercel World;
+  // runs recovery for the local/postgres worlds. `dev` comes from SvelteKit's
+  // `$app/environment` (its authoritative dev/prod flag): in dev, previous
+  // in-flight runs are cancelled rather than recovered (their code may have
+  // changed); in a production build they are recovered.
+  const { ensureWorldStarted } = await import('workflow/runtime');
+  await ensureWorldStarted({ dev });
 };

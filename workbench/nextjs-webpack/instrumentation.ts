@@ -1,6 +1,6 @@
 import { registerOTel } from '@vercel/otel';
 
-export function register() {
+export async function register() {
   registerOTel({
     serviceName: 'nextjs-webpack',
     instrumentationConfig: {
@@ -17,4 +17,15 @@ export function register() {
       },
     },
   });
+  // Start the workflow World once at server boot so in-flight runs are recovered
+  // (production) or cancelled (development — their workflow code may have
+  // changed) after a restart, without needing a workflow operation. Only in the
+  // Node.js runtime (the Edge runtime can't load the world modules and doesn't
+  // own the queue/recovery loop). No-op on the Vercel World. Next reliably sets
+  // NODE_ENV, which `ensureWorldStarted()` uses to detect dev vs prod, so no
+  // explicit `dev` flag is needed here.
+  if (process.env.NEXT_RUNTIME === 'nodejs') {
+    const { ensureWorldStarted } = await import('workflow/runtime');
+    await ensureWorldStarted();
+  }
 }
