@@ -2375,21 +2375,12 @@ describe('e2e', () => {
       // Verify that exactly 2 steps were executed:
       // 1. stepWithStepFunctionArg(doubleNumber)
       //   (doubleNumber(10) is run inside the stepWithStepFunctionArg step)
-      // The events listing prefers the analytics store, which ingests
-      // asynchronously — a read issued immediately after completion can
-      // miss the freshest events. Poll briefly until they land.
-      let stepCompletedEvents: unknown[] = [];
-      const eventsDeadline = Date.now() + 20_000;
-      while (Date.now() < eventsDeadline) {
-        const { json: eventsData } = await cliInspectJson(
-          `events --run ${run.runId} --json`
-        );
-        stepCompletedEvents = eventsData.filter(
-          (event) => event.eventType === 'step_completed'
-        );
-        if (stepCompletedEvents.length > 0) break;
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
-      }
+      const { json: eventsData } = await cliInspectJson(
+        `events --run ${run.runId} --json`
+      );
+      const stepCompletedEvents = eventsData.filter(
+        (event) => event.eventType === 'step_completed'
+      );
       expect(stepCompletedEvents).toHaveLength(1);
     }
   );
