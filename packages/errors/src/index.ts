@@ -899,7 +899,7 @@ export class RunNotSupportedError extends WorkflowError {
  * Any error can opt into the non-retry behavior by setting a `fatal: true`
  * own property. This is how structured error classes that aren't direct
  * `FatalError` subclasses (e.g. context-violation errors) signal to the
- * step handler that retrying will never help — the user's code is calling
+ * step executor that retrying will never help — the user's code is calling
  * a workflow-only API from the wrong context, or similar — and burning
  * retry attempts just produces a wall of duplicated log output.
  */

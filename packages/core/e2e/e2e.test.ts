@@ -1298,7 +1298,7 @@ describe('e2e', () => {
             expect(failedStep.status).toBe('failed');
             // The CLI hydrates `step.error` from the serialization pipeline.
             // Errors thrown from steps are wrapped in `FatalError` by the
-            // step handler, which serializes via the Instance reducer
+            // step executor, which serializes via the Instance reducer
             // (`{ classId, data }`); the CLI surfaces unregistered class
             // instances as placeholders with the original `data` payload.
             const errorData = failedStep.error.data ?? failedStep.error;
@@ -2544,7 +2544,7 @@ describe('e2e', () => {
 
   // This test requires direct HTTP access and works when running locally.
   // For production use on Vercel with Deployment Protection enabled, use the
-  // queue-based `healthCheck(world, endpoint, options)` function instead, which
+  // queue-based `healthCheck(world, options)` function instead, which
   // bypasses protection by sending messages through the Queue infrastructure.
   test.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow endpoint responds to __health query parameter',
@@ -2554,7 +2554,7 @@ describe('e2e', () => {
       // This approach requires direct HTTP access and works when running locally (for port detection)
       //
       // For production use on Vercel with Deployment Protection enabled, use the
-      // queue-based `healthCheck(world, endpoint, options)` function instead, which
+      // queue-based `healthCheck(world, options)` function instead, which
       // bypasses protection by sending messages through the Queue infrastructure.
 
       // Test the flow endpoint health check (V2: combined handler for both workflow + step)
@@ -2591,7 +2591,7 @@ describe('e2e', () => {
       const world = await getWorld();
 
       // Test workflow endpoint health check (V2: combined handler)
-      const workflowResult = await healthCheck(world, 'workflow', {
+      const workflowResult = await healthCheck(world, {
         timeout: 30000,
       });
       expect(workflowResult.healthy).toBe(true);
@@ -2610,10 +2610,7 @@ describe('e2e', () => {
       // queue-based health check under the hood. The CLI provides a convenient
       // way to check endpoint health from the command line.
 
-      // V2: Only check the workflow endpoint since the combined handler
-      // replaces the separate step route.
       const result = await cliHealthJson({
-        endpoint: 'workflow',
         timeout: 30000,
       });
       expect(result.json.allHealthy).toBe(true);
@@ -3673,7 +3670,7 @@ describe('e2e', () => {
         const returnValue = await run.returnValue;
 
         // The step calls throwIfAborted() on an already-aborted signal.
-        // The DOMException is wrapped in FatalError by the step handler.
+        // The DOMException is wrapped in FatalError by the step executor.
         expect(returnValue.threw).toBe(true);
         expect(returnValue.isFatal).toBe(true);
       }
@@ -3820,7 +3817,7 @@ describe('e2e', () => {
         const returnValue = await run.returnValue;
 
         // The polling step's throwIfAborted() throws a DOMException once the
-        // abort fires mid-flight. The step handler wraps that as FatalError
+        // abort fires mid-flight. The step executor wraps that as FatalError
         // (no retries). A `result: 'completed'` would mean the abort never
         // reached the polling step.
         expect(returnValue.threw).toBe(true);

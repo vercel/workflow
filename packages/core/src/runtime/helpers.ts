@@ -117,18 +117,15 @@ function generateHealthCheckRunId(correlationId: string): string {
  * The caller can listen to this stream to get the health check response.
  *
  * @param healthCheck - The parsed health check payload
- * @param endpoint - Which endpoint is responding ('workflow' or 'step')
  */
 export async function handleHealthCheckMessage(
   healthCheck: HealthCheckPayload,
-  endpoint: 'workflow' | 'step',
   worldSpecVersion?: number
 ): Promise<void> {
   const world = await getWorldLazy();
   const streamName = getHealthCheckStreamName(healthCheck.correlationId);
   const response = JSON.stringify({
     healthy: true,
-    endpoint,
     correlationId: healthCheck.correlationId,
     specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
     workflowCoreVersion,
@@ -140,8 +137,6 @@ export async function handleHealthCheckMessage(
   await world.streams.write(fakeRunId, streamName, response);
   await world.streams.close(fakeRunId, streamName);
 }
-
-export type HealthCheckEndpoint = 'workflow' | 'step';
 
 export interface HealthCheckOptions {
   /** Timeout in milliseconds to wait for health check response. Default: 30000 (30s) */
@@ -162,13 +157,12 @@ export interface HealthCheckOptions {
 
 /**
  * Performs a health check by sending a message through the queue pipeline
- * and verifying it is processed by the specified endpoint.
+ * and verifying it is processed by the combined workflow endpoint.
  *
  * This function bypasses Deployment Protection on Vercel because it goes
  * through the queue infrastructure rather than direct HTTP.
  *
  * @param world - The World instance to use for the health check
- * @param endpoint - Which endpoint to health check: 'workflow' or 'step'
  * @param options - Optional configuration for the health check
  * @returns Promise resolving to health check result
  */
@@ -291,7 +285,6 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
 
 export async function healthCheck(
   world: World,
-  endpoint: HealthCheckEndpoint,
   options?: HealthCheckOptions
 ): Promise<HealthCheckResult> {
   const timeout = options?.timeout ?? DEFAULT_HEALTH_CHECK_TIMEOUT;
@@ -307,7 +300,7 @@ export async function healthCheck(
   const streamName = getHealthCheckStreamName(correlationId);
 
   const queueName =
-    `${getQueueTopicPrefix(endpoint, resolveQueueNamespace(options?.namespace))}health_check` as ValidQueueName;
+    `${getQueueTopicPrefix('workflow', resolveQueueNamespace(options?.namespace))}health_check` as ValidQueueName;
 
   const startTime = Date.now();
 

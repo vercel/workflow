@@ -46,7 +46,7 @@ Directory for storing workflow data as JSON files. Default: `.workflow-data/`
 
 ### `PORT`
 
-The application dev server port. Used to enqueue steps and workflows. Default: auto-detected
+The application dev server port. Used to deliver workflow queue messages to the combined flow route. Default: auto-detected
 
 ### `WORKFLOW_LOCAL_BASE_URL`
 
@@ -97,7 +97,7 @@ WORKFLOW_TARGET_WORLD="./my-world.ts"
 
 The local world is designed for development, not production:
 
-- **In-memory queue** - Steps are queued in memory and do not persist across server restarts
+- **In-memory queue** - Workflow messages, including queued step invocations, do not persist across server restarts
 - **Filesystem storage** - Data is stored in local JSON files
 - **Single instance** - Cannot handle distributed deployments
 - **No authentication** - Suitable only for local development

@@ -25,7 +25,7 @@ describe('composeLogLine', () => {
         'Step add (./workflows/x) threw a FatalError — bubbling up to parent workflow',
         'FatalError: User threw a FatalError',
         '    at maybeFailingStep (./workflows/x.ts:15:11)',
-        '    at <unknown> (../../packages/core/src/runtime/step-handler.ts:535:32)',
+        '    at <unknown> (../../packages/core/src/runtime/step-executor.ts:535:32)',
       ].join('\n'),
       {
         workflowRunId: 'wrun_01ABC',
@@ -43,7 +43,7 @@ describe('composeLogLine', () => {
         step   step_01XYZ · add (./workflows/x)
       FatalError: User threw a FatalError
           at maybeFailingStep (./workflows/x.ts:15:11)
-          at <unknown> (../../packages/core/src/runtime/step-handler.ts:535:32)"
+          at <unknown> (../../packages/core/src/runtime/step-executor.ts:535:32)"
     `);
   });
 
@@ -51,7 +51,7 @@ describe('composeLogLine', () => {
     const stack = [
       'FatalError: boom',
       '    at userStep (./workflows/x.ts:15:11)',
-      '    at <unknown> (../../packages/core/src/runtime/step-handler.ts:535:32)',
+      '    at <unknown> (../../packages/core/src/runtime/step-executor.ts:535:32)',
       '    at <unknown> (.../node_modules/.pnpm/next@16.2.1/dist/server/base-server.js:1454:9)',
       '    at <unknown> (.../node_modules/.pnpm/next@16.2.1/dist/server/dev/next-dev-server.js:394:20)',
       '    at <unknown> (.../node_modules/.pnpm/@opentelemetry+api@1.9.1/build/src/api/trace.js:160:25)',
@@ -64,7 +64,7 @@ describe('composeLogLine', () => {
       "[workflow-sdk] Step blew up
       FatalError: boom
           at userStep (./workflows/x.ts:15:11)
-          at <unknown> (../../packages/core/src/runtime/step-handler.ts:535:32)
+          at <unknown> (../../packages/core/src/runtime/step-executor.ts:535:32)
               … 3 more frames in framework internals
           at <unknown> (../../packages/core/src/runtime/helpers.ts:414:12)
               … 2 more frames in framework internals"

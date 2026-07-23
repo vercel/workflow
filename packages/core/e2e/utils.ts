@@ -796,18 +796,12 @@ export function writeDiagnosticsSidecar() {
   fs.writeFileSync(filePath, JSON.stringify(diagnostics, null, 2));
 }
 
-export const cliHealthJson = async (options?: {
-  endpoint?: 'workflow' | 'step' | 'both';
-  timeout?: number;
-}) => {
+export const cliHealthJson = async (options?: { timeout?: number }) => {
   const cliAppPath = getWorkbenchAppPath();
   const cliArgs = splitArgs(getCliArgs());
 
   const args = ['./node_modules/workflow/bin/run.js', 'health', '--json'];
 
-  if (options?.endpoint) {
-    args.push(`--endpoint=${options.endpoint}`);
-  }
   if (options?.timeout) {
     args.push(`--timeout=${options.timeout}`);
   }

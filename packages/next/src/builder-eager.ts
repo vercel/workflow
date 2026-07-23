@@ -5,6 +5,7 @@ import {
   mkdir,
   readdir,
   realpath,
+  rm,
   stat,
   writeFile,
 } from 'node:fs/promises';
@@ -59,6 +60,13 @@ export async function getNextBuilderEager(
 
       // Ensure output directories exist
       await mkdir(workflowGeneratedDir, { recursive: true });
+      if (!this.config.watch) {
+        // Production build caches may still contain the retired step route.
+        await rm(join(workflowGeneratedDir, 'step'), {
+          recursive: true,
+          force: true,
+        });
+      }
       await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
 
       const inputFiles = await this.getInputFiles();

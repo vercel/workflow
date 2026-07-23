@@ -61,8 +61,7 @@ const handlers = {
   resumeHook: (p: any) => resumeHook(p.worldEnv ?? {}, p.token, p.payload),
   fetchStreams: (p: any) => fetchStreams(p.worldEnv ?? {}, p.runId),
   fetchWorkflowsManifest: (p: any) => fetchWorkflowsManifest(p.worldEnv ?? {}),
-  runHealthCheck: (p: any) =>
-    runHealthCheck(p.worldEnv ?? {}, p.endpoint, p.options),
+  runHealthCheck: (p: any) => runHealthCheck(p.worldEnv ?? {}, p.options),
   getEncryptionKeyForRun: (p: any) =>
     getEncryptionKeyForRun(p.worldEnv ?? {}, p.runId),
   getPublicServerConfig: () => getPublicServerConfig(),

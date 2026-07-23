@@ -11,7 +11,6 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import * as workflowRunHelpers from '@workflow/core/runtime';
 import {
-  type HealthCheckEndpoint,
   type HealthCheckResult,
   healthCheck,
 } from '@workflow/core/runtime/helpers';
@@ -1400,17 +1399,15 @@ export async function fetchWorkflowsManifest(
  * verify the endpoint is healthy.
  *
  * @param worldEnv - Environment configuration for the World
- * @param endpoint - Which endpoint to check: 'workflow' or 'step'
  * @param options - Optional configuration (timeout in ms)
  */
 export async function runHealthCheck(
   worldEnv: EnvMap,
-  endpoint: HealthCheckEndpoint,
   options?: { timeout?: number }
 ): Promise<ServerActionResult<HealthCheckResult>> {
   try {
     const world = await getWorldFromEnv(worldEnv);
-    const result = await healthCheck(world, endpoint, options);
+    const result = await healthCheck(world, options);
     return createResponse({
       ...result,
     });
