@@ -59,6 +59,22 @@
       "requiresDeployment": true
     },
     {
+      "id": "rivet",
+      "type": "community",
+      "package": "@rivet-dev/vercel-world",
+      "name": "Rivet",
+      "description": "A Vercel World powered by Rivet Actors.",
+      "repository": "https://github.com/rivet-dev/rivet/tree/main/integrations/vercel-world",
+      "docs": "https://rivet.dev/integrations/vercel-workflows/",
+      "example": "https://github.com/rivet-dev/rivet/tree/main/examples/vercel-workflow",
+      "features": [],
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@rivet-dev/vercel-world",
+        "WORKFLOW_RUNTIME_URL": "http://127.0.0.1:3000"
+      },
+      "services": []
+    },
+    {
       "id": "turso",
       "type": "community",
       "package": "@workflow-worlds/turso",
