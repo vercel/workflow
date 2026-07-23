@@ -61,6 +61,27 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const worldFromPool = createWorld({ pool });
 ```
 
+### Application-managed Shutdown
+
+By default, Graphile Worker responds automatically when the application is asked to shut down. If your application already coordinates shutdown, set `applicationManagedShutdown: true` and await `world.close()` from your shutdown path. This prevents Graphile Worker from terminating the process as soon as its queue stops, before your application finishes closing dependent resources:
+
+```typescript
+import { createWorld } from '@workflow/world-postgres';
+
+const world = createWorld({
+  connectionString: process.env.DATABASE_URL!,
+  applicationManagedShutdown: true,
+});
+
+await world.start();
+```
+
+Use this option only when your application or framework has its own shutdown hook. Handle cleanup errors there and await `world.close()` first, then close the workflow HTTP server and any caller-owned `pg.Pool`.
+
+Closing the world stops the queue from accepting new jobs and waits for active jobs. After Graphile Worker's graceful-shutdown timeout (5 seconds by default), it aborts any workflow HTTP request that is still pending. Graphile Worker then unlocks the same row through its normal failure handling. Graphile counts a delivery attempt when it claims the row, so the aborted delivery consumes that attempt and is retried only if its Graphile attempt budget remains. A one-attempt or final-attempt job is unlocked but not retried. The shutdown handler does not create a replacement row.
+
+An aborted HTTP request does not guarantee that its server-side handler stopped, so workflow and step handlers must continue to tolerate at-least-once execution. Keep the workflow HTTP routes and any caller-owned pool available until `world.close()` resolves.
+
 ## Configuration Options
 
 | Option             | Type      | Default                                                                                | Description                                                                                          |
@@ -70,6 +91,7 @@ const worldFromPool = createWorld({ pool });
 | `pool`             | `pg.Pool` | —                                                                                      | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
 | `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
 | `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. Must be high enough to cover any parent→child workflow polling in flight — each `Run#returnValue` await holds a worker slot until the child run terminates. |
+| `applicationManagedShutdown` | `boolean` | `false`                                                                                | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
 
 ## Environment Variables
 
@@ -146,7 +168,6 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 - **Configurable Concurrency**: Adjustable worker concurrency for queue processing
 
 ## Queue Behavior
-
 
 - Graphile jobs are acknowledged only after the workflow or step execution finishes, or after the worker durably schedules a delayed follow-up job
 - Backlog stays in PostgreSQL when all execution slots are busy

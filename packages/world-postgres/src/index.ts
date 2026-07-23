@@ -59,6 +59,7 @@ export function createWorld(
   const queue = createQueue(config, pool);
   const storage = createStorage(drizzle);
   const streamer = createStreamer(pool, drizzle);
+  let closePromise: Promise<void> | undefined;
 
   return {
     specVersion: SPEC_VERSION_CURRENT,
@@ -77,12 +78,15 @@ export function createWorld(
         config.namespace
       );
     },
-    async close() {
-      await streamer.close();
-      await queue.close();
-      if (pool !== config.pool) {
-        await pool.end();
-      }
+    close() {
+      closePromise ??= (async () => {
+        await queue.close();
+        await streamer.close();
+        if (pool !== config.pool) {
+          await pool.end();
+        }
+      })();
+      return closePromise;
     },
   };
 }
