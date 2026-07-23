@@ -144,3 +144,32 @@ console.log(literal);
     expect(stripped).not.toMatch(/\/\/# sourceMappingURL/);
   });
 });
+
+describe('stripInlineSourceMap on webpack-dev-shaped bundles', () => {
+  it('handles huge bundles with many embedded per-module inline maps', () => {
+    // Webpack dev-server bundles embed one inline source map comment per
+    // module inside eval strings — hundreds of non-trailing occurrences
+    // across tens of MB. The previous regex implementation blew V8's
+    // call stack on such inputs ("Maximum call stack size exceeded"),
+    // wedging every QuickJS workflow invocation on webpack dev.
+    let code = '';
+    for (let i = 0; i < 100; i++) {
+      code += `eval("var m${i} = 1;\\n//# sourceMappingURL=data:application/json;base64,${'A'.repeat(256 * 1024)}\\n");\n`;
+    }
+    const trailingPayload = 'B'.repeat(1024 * 1024);
+    code += `//# sourceMappingURL=data:application/json;base64,${trailingPayload}\n`;
+
+    const stripped = stripInlineSourceMap(code);
+    // Only the trailing comment is stripped; the embedded ones stay.
+    expect(stripped).not.toContain(trailingPayload);
+    expect(stripped).toContain('m99');
+    expect(stripped.length).toBeLessThan(code.length);
+    expect(stripped.match(/sourceMappingURL/g)?.length ?? 0).toBe(100);
+  });
+
+  it('leaves a non-trailing last occurrence untouched', () => {
+    const code =
+      'a;\n//# sourceMappingURL=data:application/json;base64,Zm9v\nconst tail = 1;\n';
+    expect(stripInlineSourceMap(code)).toBe(code);
+  });
+});

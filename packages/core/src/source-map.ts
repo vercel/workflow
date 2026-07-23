@@ -1,19 +1,13 @@
 import { originalPositionFor, TraceMap } from '@jridgewell/trace-mapping';
 
-/**
- * Pattern matching the trailing inline source map comment that bundlers
- * (esbuild, etc.) emit. The comment is purely host-side metadata for
- * `remapErrorStack` — the VM never needs it. Stripping it before
- * passing the bundle to `vm.evalCode` materially reduces the QuickJS
- * heap, because QuickJS retains source text for stack-trace line
- * lookups.
- */
-const INLINE_SOURCE_MAP_COMMENT_RE =
-  /\/\/# sourceMappingURL=data:application\/json;base64,[A-Za-z0-9+/=]+\s*$/;
+/** Marker prefix of an inline source map comment emitted by bundlers. */
+const INLINE_SOURCE_MAP_MARKER =
+  '//# sourceMappingURL=data:application/json;base64,';
 
 /**
  * Strip the trailing `//# sourceMappingURL=data:…` comment from a JS
- * bundle. Returns the input unchanged if no inline map is present.
+ * bundle. Returns the input unchanged if no trailing inline map is
+ * present.
  *
  * Use this on the host side before evaluating workflow bundles inside
  * the QuickJS VM — the inline map can account for several MB of bundle
@@ -21,9 +15,35 @@ const INLINE_SOURCE_MAP_COMMENT_RE =
  * bundle), and the VM never needs it; only host-side `remapErrorStack`
  * reads the map (and it can do so against the original, unstripped
  * string).
+ *
+ * Implemented as a linear `lastIndexOf` + character scan rather than a
+ * regex: on webpack dev-server bundles (tens of MB, with hundreds of
+ * per-module inline map comments embedded in eval strings) a
+ * `String.replace` regex over the bundle blows V8's call stack
+ * ("RangeError: Maximum call stack size exceeded"), wedging every
+ * workflow invocation on that framework.
  */
 export function stripInlineSourceMap(workflowCode: string): string {
-  return workflowCode.replace(INLINE_SOURCE_MAP_COMMENT_RE, '');
+  const idx = workflowCode.lastIndexOf(INLINE_SOURCE_MAP_MARKER);
+  if (idx === -1) return workflowCode;
+  // Only strip when the comment is the TRAILING content: everything
+  // after the marker must be base64 payload followed by optional
+  // whitespace. A mid-bundle occurrence (e.g. inside a string literal)
+  // is left untouched.
+  let i = idx + INLINE_SOURCE_MAP_MARKER.length;
+  const payloadStart = i;
+  const n = workflowCode.length;
+  while (i < n && isBase64Char(workflowCode.charCodeAt(i))) i++;
+  if (i === payloadStart) return workflowCode;
+  while (i < n) {
+    const c = workflowCode.charCodeAt(i);
+    // space, tab, newline, carriage return
+    if (c !== 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d) {
+      return workflowCode;
+    }
+    i++;
+  }
+  return workflowCode.slice(0, idx);
 }
 
 function isBase64Char(code: number): boolean {
