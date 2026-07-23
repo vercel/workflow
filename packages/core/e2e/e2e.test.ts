@@ -37,6 +37,7 @@ import {
   cliCancel,
   cliHealthJson,
   cliInspectJson,
+  cliInspectJsonUntil,
   fetchManifest,
   getCollectedRunIds,
   getWorkflowMetadata,
@@ -1394,8 +1395,14 @@ describe('e2e', () => {
 
           expect(result.finalAttempt).toBe(3);
 
-          const { json: steps } = await cliInspectJson(
-            `steps --runId ${run.runId}`
+          const steps = await cliInspectJsonUntil(
+            `steps --runId ${run.runId}`,
+            (json) =>
+              json.some(
+                (s: any) =>
+                  s.stepName.includes('retryUntilAttempt3') &&
+                  s.status === 'completed'
+              )
           );
           const step = steps.find((s: any) =>
             s.stepName.includes('retryUntilAttempt3')
@@ -1420,8 +1427,14 @@ describe('e2e', () => {
           // (which inspect the value inside the SWC-instrumented workflow).
           // Here we only assert step lifecycle behavior.
 
-          const { json: steps } = await cliInspectJson(
-            `steps --runId ${run.runId}`
+          const steps = await cliInspectJsonUntil(
+            `steps --runId ${run.runId}`,
+            (json) =>
+              json.some(
+                (s: any) =>
+                  s.stepName.includes('throwFatalError') &&
+                  s.status === 'failed'
+              )
           );
           const step = steps.find((s: any) =>
             s.stepName.includes('throwFatalError')
@@ -1654,8 +1667,14 @@ describe('e2e', () => {
           expect(runData.status).toBe('completed');
 
           // Verify the step itself failed
-          const { json: steps } = await cliInspectJson(
-            `steps --runId ${run.runId}`
+          const steps = await cliInspectJsonUntil(
+            `steps --runId ${run.runId}`,
+            (json) =>
+              json.some(
+                (s: any) =>
+                  s.stepName.includes('nonExistentStep') &&
+                  s.status === 'failed'
+              )
           );
           const ghostStep = steps.find((s: any) =>
             s.stepName.includes('nonExistentStep')
@@ -2377,8 +2396,11 @@ describe('e2e', () => {
       // Verify that exactly 2 steps were executed:
       // 1. stepWithStepFunctionArg(doubleNumber)
       //   (doubleNumber(10) is run inside the stepWithStepFunctionArg step)
-      const { json: eventsData } = await cliInspectJson(
-        `events --run ${run.runId} --json`
+      const eventsData = await cliInspectJsonUntil(
+        `events --run ${run.runId} --json`,
+        (json) =>
+          json.filter((event: any) => event.eventType === 'step_completed')
+            .length >= 1
       );
       const stepCompletedEvents = eventsData.filter(
         (event) => event.eventType === 'step_completed'
@@ -2839,8 +2861,26 @@ describe('e2e', () => {
       // - 2 lexical-`this` arrow steps from `makeAdder` (direct + via-step)
       // - 1 invokeAdderFromStep wrapper (which itself triggers another
       //   makeAdder arrow step inside it)
-      const { json: steps } = await cliInspectJson(
-        `steps --runId ${run.runId}`
+      const steps = await cliInspectJsonUntil(
+        `steps --runId ${run.runId}`,
+        (json) => {
+          const byName = (needle: string) =>
+            json.filter((s: any) => s.stepName.includes(needle));
+          const counter = json.filter(
+            (s: any) =>
+              s.stepName.includes('Counter#add') ||
+              s.stepName.includes('Counter#multiply') ||
+              s.stepName.includes('Counter#describe')
+          );
+          return (
+            counter.length === 4 &&
+            counter.every((s: any) => s.status === 'completed') &&
+            byName('_anonymousStep').length === 1 &&
+            byName('_anonymousStep')[0].status === 'completed' &&
+            byName('invokeAdderFromStep').length === 1 &&
+            byName('invokeAdderFromStep')[0].status === 'completed'
+          );
+        }
       );
       // Filter to only Counter instance method steps
       const counterSteps = steps.filter(
