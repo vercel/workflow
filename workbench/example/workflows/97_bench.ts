@@ -16,6 +16,12 @@
 //   stream, and the workflow returns both the writer's `writtenAt` and the
 //   reader's `readAt` so SL (`readAt - writtenAt`) excludes the client read
 //   path.
+// - `benchSoWorkflow` measures stream overhead (SO), reusing the SL setup but
+//   streaming a realistic LLM-shaped workload: a writer emits fake 4-byte
+//   tokens paced at a fixed rate for a fixed duration while a parallel reader
+//   drains the whole stream. The workflow returns the writer's `writtenAt` and
+//   the reader's `doneAt`; the runner subtracts the modelled generation window
+//   from `doneAt - writtenAt`, leaving the stream's overhead/backpressure.
 
 import { createHook, getWorkflowMetadata, getWritable } from 'workflow';
 import { getRun } from 'workflow/api';
@@ -40,6 +46,15 @@ export interface BenchStreamLatency {
   readAt: number;
 }
 
+export interface BenchStreamOverhead {
+  /** Date.now() in the writer step just before the paced write loop begins */
+  writtenAt: number;
+  /** Date.now() in the reader step when the whole stream had been consumed */
+  doneAt: number;
+  /** Number of chunks the reader received (validated against the request) */
+  received: number;
+}
+
 // Dedicated stream for the SL scenario, kept off the default output stream so
 // it never interacts with the default-stream lifecycle.
 const SL_STREAM_NAMESPACE = 'bench-sl';
@@ -50,6 +65,15 @@ const SL_STREAM_NAMESPACE = 'bench-sl';
 // rather than being retained for a reader that started late — which a fixed
 // sleep could not guarantee under scheduler delay or load.
 const SL_READY_NAMESPACE = 'bench-sl-ready';
+
+// Dedicated streams for the SO scenario (its own namespaces so it never
+// interacts with the SL streams or the default output stream), plus the same
+// reader-ready barrier pattern SL uses.
+const SO_STREAM_NAMESPACE = 'bench-so';
+const SO_READY_NAMESPACE = 'bench-so-ready';
+// Payload for each SO chunk: 4 ASCII bytes, modelling ~one LLM token. Kept as a
+// tiny string so per-chunk framing (not payload size) dominates the overhead.
+const SO_CHUNK_PAYLOAD = 'aaaa';
 
 async function timedNoopStep(index: number): Promise<BenchStepTiming> {
   'use step';
@@ -212,4 +236,106 @@ export async function benchSlWorkflow(): Promise<{ sl: BenchStreamLatency }> {
   'use workflow';
   const [sl] = await Promise.all([slReaderStep(), slWriterStep()]);
   return { sl };
+}
+
+/** Reader half of the SO scenario. Same attach/ready handshake as
+ * {@link slReaderStep}, but instead of stamping on the first chunk it drains
+ * the whole stream and stamps `doneAt` once the writer has closed it, so the
+ * measured window covers writing *and* consuming every chunk. */
+async function soReaderStep(): Promise<{ doneAt: number; received: number }> {
+  'use step';
+  const { workflowRunId } = getWorkflowMetadata();
+  const reader = getRun<string>(workflowRunId)
+    .getReadable<string>({ namespace: SO_STREAM_NAMESPACE })
+    .getReader();
+  try {
+    // Initiate the read BEFORE signalling ready so the stream GET is in flight
+    // by the time the writer starts (identical to the SL handshake).
+    const firstRead = reader.read();
+
+    const ready = getWritable<{ ready: true }>({
+      namespace: SO_READY_NAMESPACE,
+    });
+    const readyWriter = ready.getWriter();
+    await readyWriter.write({ ready: true });
+    readyWriter.releaseLock();
+    await ready.close();
+
+    let received = 0;
+    let result = await firstRead;
+    while (!result.done) {
+      received++;
+      result = await reader.read();
+    }
+    return { doneAt: Date.now(), received };
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+}
+
+/** Writer half of the SO scenario: blocks on the reader-ready marker (as in
+ * {@link slWriterStep}), then streams `chunkCount` fixed-size chunks paced to
+ * one every `intervalMs`. `writtenAt` is stamped just before the loop, and each
+ * write is scheduled at `writtenAt + (i + 1) * intervalMs`, so the write phase
+ * spans `chunkCount * intervalMs` by construction — the modelled generation
+ * window. Pacing only sleeps while ahead of schedule; if backpressure puts the
+ * writer behind, it writes immediately and that lost time surfaces as SO. */
+async function soWriterStep(
+  chunkCount: number,
+  intervalMs: number
+): Promise<{ writtenAt: number }> {
+  'use step';
+  const { workflowRunId } = getWorkflowMetadata();
+  const readyReader = getRun<{ ready: true }>(workflowRunId)
+    .getReadable<{ ready: true }>({ namespace: SO_READY_NAMESPACE })
+    .getReader();
+  try {
+    await readyReader.read();
+  } finally {
+    readyReader.cancel().catch(() => {});
+  }
+
+  const writable = getWritable<string>({ namespace: SO_STREAM_NAMESPACE });
+  const writer = writable.getWriter();
+  const writtenAt = Date.now();
+  for (let i = 0; i < chunkCount; i++) {
+    const delay = writtenAt + (i + 1) * intervalMs - Date.now();
+    if (delay > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    await writer.write(SO_CHUNK_PAYLOAD);
+  }
+  writer.releaseLock();
+  await writable.close();
+  return { writtenAt };
+}
+
+/**
+ * Scenario 6: stream overhead (SO), measured entirely on the deployment.
+ *
+ * Reuses the SL scenario's dedicated-stream + reader-ready-barrier setup, but
+ * models a realistic LLM streaming workload: the writer emits `chunkCount`
+ * 4-byte chunks paced at one every `intervalMs` (e.g. 300 chunks at 10ms ≈ a
+ * haiku-size LLM streaming ~100 tokens/s for 3s) while the reader drains the
+ * whole stream in parallel. The workflow returns the writer's `writtenAt` and
+ * the reader's `doneAt`; the runner subtracts the modelled generation window
+ * (`chunkCount * intervalMs`) from `doneAt - writtenAt`, so SO isolates the
+ * stream's write+consume overhead/backpressure on top of the token rate.
+ */
+export async function benchSoWorkflow(
+  chunkCount: number,
+  intervalMs: number
+): Promise<{ so: BenchStreamOverhead }> {
+  'use workflow';
+  const [reader, writer] = await Promise.all([
+    soReaderStep(),
+    soWriterStep(chunkCount, intervalMs),
+  ]);
+  return {
+    so: {
+      writtenAt: writer.writtenAt,
+      doneAt: reader.doneAt,
+      received: reader.received,
+    },
+  };
 }
