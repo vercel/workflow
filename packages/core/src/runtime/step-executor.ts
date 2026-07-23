@@ -929,10 +929,11 @@ export async function executeStep(
       });
 
       // Flush pending ops (stream writes, etc.) with a short inline wait.
-      // Now that WorkflowServerWritableStream flushes synchronously on
-      // each write (not via setTimeout), the flushablePipe's pendingOps
-      // accurately reflects whether data has reached the server. Most ops
-      // settle within ~200ms (100ms lock-release polling + HTTP flush).
+      // WorkflowServerWritableStream acks writes on buffer entry
+      // (group-commit batching); durability is enforced by its drain
+      // barrier, which the flushable state's completion awaits after
+      // lock release. Most ops settle within ~200ms (lock-release
+      // polling + one batched HTTP flush).
       // If ops don't settle in 500ms (e.g., WritableStream kept open
       // across steps), waitUntil handles the rest.
       if (ops.length > 0) {

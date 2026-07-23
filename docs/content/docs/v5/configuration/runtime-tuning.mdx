@@ -149,6 +149,11 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - Default: `1048576` (1 MiB)
 - Wire limit: maximum cumulative bytes in a single coalesced multi-write, so large chunks don't produce a request body that platform limits reject. A single chunk larger than this is still sent on its own.
 
+### `WORKFLOW_STREAM_MAX_BUFFERED_BYTES`
+
+- Default: `8388608` (8 MiB)
+- Flow-control bound: maximum cumulative bytes accepted into the stream writer's group-commit buffer before `write()` applies backpressure. The byte-denominated counterpart of `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS`; distinct from `WORKFLOW_STREAM_MAX_BYTES_PER_BATCH`, which only splits how much goes out in one request.
+
 ### `WORKFLOW_FRAMED_STREAM_MAX_RECONNECTS`
 
 - Default: `50`
