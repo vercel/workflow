@@ -56,6 +56,15 @@ interface FastDiscoverEntriesOptions {
   state: DiscoveredEntries;
   defaultTsconfigPath: string | undefined;
   workingDir: string;
+  /**
+   * Whether workflow discovery descends into `node_modules`. When `false`,
+   * imports from application code that resolve into `node_modules` are not
+   * followed, so no dependency file is read, scanned, or registered — third
+   * party workflow/step/serde code is neither transformed nor bundled. Imports
+   * *within* `node_modules` are still followed, so the SDK's own seeded runtime
+   * serde entry keeps discovering its transitive classes. Defaults to `true`.
+   */
+  discoverWorkflowsInNodeModules?: boolean;
 }
 
 interface PackageInfo {
@@ -510,6 +519,7 @@ export async function fastDiscoverEntries({
   state,
   defaultTsconfigPath,
   workingDir,
+  discoverWorkflowsInNodeModules = true,
 }: FastDiscoverEntriesOptions): Promise<void> {
   const readLimit = createLimiter(FAST_DISCOVERY_READ_CONCURRENCY);
   const resolveLimit = createLimiter(FAST_DISCOVERY_RESOLVE_CONCURRENCY);
@@ -804,6 +814,20 @@ export async function fastDiscoverEntries({
 
     const resolved = await resolveImport(filePath, specifier);
     if (!resolved) {
+      return;
+    }
+
+    // Opt-out: don't descend into node_modules from application code. This
+    // stops workflow discovery from reading, scanning, or following any
+    // third-party dependency's file graph. Imports *within* node_modules are
+    // still followed (importer already under node_modules), so the SDK's own
+    // seeded runtime serde entry point keeps discovering its transitive
+    // classes (e.g. `Run`) even though it lives under node_modules.
+    if (
+      !discoverWorkflowsInNodeModules &&
+      isNodeModulesPath(resolved) &&
+      !isNodeModulesPath(filePath)
+    ) {
       return;
     }
 

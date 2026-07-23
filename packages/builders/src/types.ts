@@ -58,6 +58,30 @@ interface BaseWorkflowConfig {
 
   // Node.js runtime version for Vercel Functions (e.g., "nodejs22.x", "nodejs24.x")
   runtime?: string;
+
+  /**
+   * Whether workflow discovery descends into `node_modules`. Defaults to
+   * `true`: workflow/step/serde files shipped by dependencies that declare a
+   * `workflow`/`@workflow/*` dependency are discovered and compiled into the
+   * app's bundles.
+   *
+   * Set to `false` to opt out — imports from your application code that resolve
+   * into `node_modules` are not followed, so the build never reads, scans, or
+   * descends into dependency file graphs. This skips the cost of scanning
+   * `node_modules` and stops third-party workflow/step/serde code from being
+   * discovered. Useful when a dependency ships workflow code you don't want
+   * compiled into your app, or trips discovery with `"use workflow"`/`"use
+   * step"` strings you don't intend to run.
+   *
+   * The SDK's own runtime serde classes (e.g. `Run`) stay registered: they are
+   * reached through a seeded entry point that lives under `node_modules`, and
+   * imports *within* `node_modules` are still followed.
+   *
+   * Can also be set via the `WORKFLOW_DISCOVER_NODE_MODULES` environment
+   * variable (`0`/`false` to disable); config wins over env var, env var wins
+   * over the default.
+   */
+  discoverWorkflowsInNodeModules?: boolean;
 }
 
 /**
