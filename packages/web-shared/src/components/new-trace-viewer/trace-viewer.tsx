@@ -213,8 +213,8 @@ function NewTraceViewerContent({
 
   const viewDuration = viewport.end - viewport.start;
 
-  // Keep a ref to the live viewport so the reveal callback can read the current
-  // zoom without being recreated on every pan (which would bust TimelineBar's
+  // Keep a ref to the live viewport so zoom callbacks can read the current
+  // range without being recreated on every pan (which would bust TimelineBar's
   // memo and re-render every row each animation frame).
   const viewportRef = useRef(viewport);
   viewportRef.current = viewport;
@@ -254,19 +254,17 @@ function NewTraceViewerContent({
 
   const zoomBy = useCallback(
     (factor: number) => {
-      setViewport((prev) => {
-        const center = (prev.start + prev.end) / 2;
-        const newDuration = Math.max(
-          MIN_VIEWPORT_MS,
-          (prev.end - prev.start) * factor
-        );
-        return clampToRoot({
+      const { start, end } = viewportRef.current;
+      const center = (start + end) / 2;
+      const newDuration = Math.max(MIN_VIEWPORT_MS, (end - start) * factor);
+      animateTo(
+        clampToRoot({
           start: center - newDuration / 2,
           end: center + newDuration / 2,
-        });
-      });
+        })
+      );
     },
-    [setViewport, clampToRoot]
+    [animateTo, clampToRoot]
   );
 
   const zoomIn = useCallback(() => zoomBy(ZOOM_FACTOR), [zoomBy]);
