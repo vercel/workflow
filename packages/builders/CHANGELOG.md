@@ -1,5 +1,17 @@
 # @workflow/builders
 
+## 5.0.0-beta.36
+
+### Patch Changes
+
+- [#2963](https://github.com/vercel/workflow/pull/2963) [`927b61a`](https://github.com/vercel/workflow/commit/927b61ab419e98c027c077af81273e73650cb94f) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Resolve dotted tsconfig path aliases during fast workflow discovery.
+
+- Updated dependencies [[`6d1d700`](https://github.com/vercel/workflow/commit/6d1d7006cf442c715c464ec2b8c80a21d1c90b01), [`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3), [`d8071bb`](https://github.com/vercel/workflow/commit/d8071bb49a42b65cc412691050fcf35489f97b57), [`fe12b84`](https://github.com/vercel/workflow/commit/fe12b847291912cf9e47143ee10c73828dbdf1a1), [`6f032d7`](https://github.com/vercel/workflow/commit/6f032d73fee8103b6cfcd69713f3e87cf8e19140), [`a5e6f11`](https://github.com/vercel/workflow/commit/a5e6f1167aa07f36b49777d3c020282d11a0abf2), [`850777a`](https://github.com/vercel/workflow/commit/850777a03bc1ad85fa7333d5e15a55a353ed6d23), [`bb773e9`](https://github.com/vercel/workflow/commit/bb773e950786b15100a8058407cbfcba23a44ebc), [`457e671`](https://github.com/vercel/workflow/commit/457e671ca9205ef439c1a155cee3b59486c9c067), [`268fede`](https://github.com/vercel/workflow/commit/268fede627b3a83dbabcff9d35fd946132bf9a06), [`eb8fdb9`](https://github.com/vercel/workflow/commit/eb8fdb979748f54a94289530ee7ac155feddddcc), [`9078126`](https://github.com/vercel/workflow/commit/9078126c43c3ac68d3396294cfaab5ff4ef11d6b), [`9177ba8`](https://github.com/vercel/workflow/commit/9177ba83d3168866d13ff34ca3d651312d1d87d2), [`59c1369`](https://github.com/vercel/workflow/commit/59c13697c9919a4a96c012182e1adc0c58114ba5), [`6353c8c`](https://github.com/vercel/workflow/commit/6353c8c6cf5afe6cbd8e4a08e93e339b3b6f81f7), [`bb773e9`](https://github.com/vercel/workflow/commit/bb773e950786b15100a8058407cbfcba23a44ebc), [`4ecbe7e`](https://github.com/vercel/workflow/commit/4ecbe7ecf54bebcea1e7459c1b0d4b94cbe27d4a)]:
+  - @workflow/core@5.0.0-beta.36
+  - @workflow/world-local@5.0.0-beta.30
+  - @workflow/world-vercel@5.0.0-beta.32
+  - @workflow/errors@5.0.0-beta.12
+
 ## 5.0.0-beta.35
 
 ### Patch Changes
