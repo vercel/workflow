@@ -1393,12 +1393,12 @@ describe('e2e', () => {
 
           expect(result.finalAttempt).toBe(3);
 
-          // Poll on attempt too: the analytics-backed listing can serve the
-          // terminal status before the attempt column is ingested (attempt is
-          // optional in the analytics schema), so a completed row may briefly
-          // report attempt as undefined.
+          // --withData forces the storage-backed listing: the analytics
+          // listing may omit the attempt column entirely (it is optional in
+          // the analytics schema), so only the durable step entity can be
+          // asserted on. Poll because rows for a just-finished run can lag.
           const steps = await cliInspectJsonUntil(
-            `steps --runId ${run.runId}`,
+            `steps --runId ${run.runId} --withData`,
             (json) =>
               json.some(
                 (s: any) =>
@@ -1430,9 +1430,10 @@ describe('e2e', () => {
           // (which inspect the value inside the SWC-instrumented workflow).
           // Here we only assert step lifecycle behavior.
 
-          // Poll on attempt too — see the retry-success test above.
+          // --withData forces the storage-backed listing — see the
+          // retry-success test above.
           const steps = await cliInspectJsonUntil(
-            `steps --runId ${run.runId}`,
+            `steps --runId ${run.runId} --withData`,
             (json) =>
               json.some(
                 (s: any) =>
