@@ -214,6 +214,10 @@ Maximum size of the internal `pg.Pool` used when `createWorld()` constructs the 
 
 For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` to `10` or `queueConcurrency + 2`, whichever is larger.
 
+### `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN`
+
+Set to `1` when the application or framework coordinates shutdown and awaits `world.close()` before closing its workflow HTTP server and any caller-owned pool. Default: unset (`false`).
+
 ### `WORKFLOW_QUEUE_NAMESPACE`
 
 Queue topic namespace shared by build output and the Postgres World. Default: unset.
@@ -252,7 +256,7 @@ WORKFLOW_TARGET_WORLD="./my-world.ts"
 
 ### Application-managed shutdown
 
-Graphile Worker responds automatically when the application is asked to shut down. If your application or framework already coordinates a broader shutdown sequence, set `applicationManagedShutdown: true` and use its normal shutdown hook. This prevents Graphile Worker's default handler from terminating the process as soon as its queue stops. The hook must handle cleanup errors and await resources in this order:
+Graphile Worker responds automatically when the application is asked to shut down. If your application or framework already coordinates a broader shutdown sequence, set `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` when selecting the package directly with `WORKFLOW_TARGET_WORLD`, or set `applicationManagedShutdown: true` in a programmatic World. Use the application's normal shutdown hook. This prevents Graphile Worker's default handler from terminating the process as soon as its queue stops. The hook must handle cleanup errors and await resources in this order:
 
 1. `world.close()`
 2. The workflow HTTP server

@@ -38,6 +38,9 @@ export WORKFLOW_POSTGRES_WORKER_CONCURRENCY="10"
 
 # Optional: Internal pg.Pool max size (default: 10)
 export WORKFLOW_POSTGRES_MAX_POOL_SIZE="10"
+
+# Optional: Let the application coordinate shutdown (default: false)
+export WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN="1"
 ```
 
 ### Programmatic Usage
@@ -63,7 +66,7 @@ const worldFromPool = createWorld({ pool });
 
 ### Application-managed Shutdown
 
-By default, Graphile Worker responds automatically when the application is asked to shut down. If your application already coordinates shutdown, set `applicationManagedShutdown: true` and await `world.close()` from your shutdown path. This prevents Graphile Worker from terminating the process as soon as its queue stops, before your application finishes closing dependent resources:
+By default, Graphile Worker responds automatically when the application is asked to shut down. If your application already coordinates shutdown, set `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` when selecting the package with `WORKFLOW_TARGET_WORLD`, or set `applicationManagedShutdown: true` when calling `createWorld()` directly. Await `world.close()` from your shutdown path so Graphile Worker cannot terminate the process as soon as its queue stops, before your application finishes closing dependent resources:
 
 ```typescript
 import { createWorld } from '@workflow/world-postgres';
@@ -91,7 +94,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `pool`             | `pg.Pool` | —                                                                                      | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
 | `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
 | `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. Must be high enough to cover any parent→child workflow polling in flight — each `Run#returnValue` await holds a worker slot until the child run terminates. |
-| `applicationManagedShutdown` | `boolean` | `false`                                                                                | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
+| `applicationManagedShutdown` | `boolean` | `false`; `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` enables it for the default package configuration | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
 
 ## Environment Variables
 
@@ -102,6 +105,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `WORKFLOW_POSTGRES_JOB_PREFIX`         | Prefix for queue job names                                   | -                                               |
 | `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers                                 | `50`                                            |
 | `WORKFLOW_POSTGRES_MAX_POOL_SIZE`      | Internal `pg.Pool` max size                                  | `10`                                            |
+| `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` | Set to `1` when the application coordinates shutdown and awaits `world.close()` | unset (`false`) |
 
 When `pool` is omitted, `maxPoolSize` precedence is: `createWorld({ maxPoolSize })`, then `WORKFLOW_POSTGRES_MAX_POOL_SIZE`, then the `pg.Pool` default.
 

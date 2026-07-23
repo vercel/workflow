@@ -121,6 +121,7 @@ describe('re-enqueue active runs on start', () => {
 
   afterEach(async () => {
     delete process.env.WORKFLOW_LOCAL_BASE_URL;
+    delete process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN;
     delete process.env.WORKFLOW_POSTGRES_URL;
     delete process.env.DATABASE_URL;
     delete process.env.PORT;
@@ -150,6 +151,30 @@ describe('re-enqueue active runs on start', () => {
       expect.objectContaining({
         connectionString: 'postgres://workflow-postgres-url',
       })
+    );
+
+    await world.close();
+  });
+
+  it('keeps automatic shutdown in createWorld() by default', async () => {
+    const world = createWorld();
+    await world.start();
+
+    expect(run).toHaveBeenCalledWith(
+      expect.not.objectContaining({ noHandleSignals: true })
+    );
+
+    await world.close();
+  });
+
+  it('lets createWorld() environment configuration use application-managed shutdown', async () => {
+    process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN = '1';
+
+    const world = createWorld();
+    await world.start();
+
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({ noHandleSignals: true })
     );
 
     await world.close();

@@ -130,7 +130,7 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 
 ### `applicationManagedShutdown`
 
-- Environment variable: none
+- Environment variable: `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` (`1` enables)
 - Default: `false`
 - Whether the application coordinates shutdown instead of Graphile Worker responding automatically.
 - Set to `true` only when the application awaits `world.close()` before closing its workflow HTTP server and caller-owned pool.
