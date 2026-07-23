@@ -3,6 +3,7 @@ import { inspect } from 'node:util';
 import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
+  PreconditionFailedError,
   RunExpiredError,
   ThrottleError,
   TooEarlyError,
@@ -618,6 +619,11 @@ export async function makeRequest<T>({
           }
           if (response.status === 410) {
             throwWithTrace(new RunExpiredError(defaultMessage));
+          }
+          if (response.status === 412) {
+            throwWithTrace(
+              new PreconditionFailedError(defaultMessage, { retryAfter })
+            );
           }
           if (response.status === 425) {
             throwWithTrace(new TooEarlyError(defaultMessage, { retryAfter }));

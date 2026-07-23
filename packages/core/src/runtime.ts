@@ -1,6 +1,7 @@
 import {
   CorruptedEventLogError,
   EntityConflictError,
+  PreconditionFailedError,
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   RunExpiredError,
@@ -36,9 +37,12 @@ import {
   getWorkflowQueueName,
   getWorkflowRunEvents,
   handleHealthCheckMessage,
+  type MutableEventLog,
   parseHealthCheckPayload,
   queueMessage,
+  stateUpdatedAtForCreate,
   withHealthCheck,
+  withPreconditionRetry,
 } from './runtime/helpers.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld, getWorldHandlers } from './runtime/world.js';
@@ -612,10 +616,20 @@ export function workflowEntrypoint(
 
                 // Create all wait_completed events
                 for (const waitEvent of waitsToComplete) {
+                  const waitLog: MutableEventLog = {
+                    events,
+                    cursor: eventsCursor ?? null,
+                  };
                   try {
-                    await world.events.create(runId, waitEvent, {
-                      requestId,
-                    });
+                    await withPreconditionRetry(
+                      runId,
+                      waitLog,
+                      (stateUpdatedAt) =>
+                        world.events.create(runId, waitEvent, {
+                          requestId,
+                          stateUpdatedAt,
+                        })
+                    );
                   } catch (err) {
                     if (EntityConflictError.is(err)) {
                       runtimeLogger.info('Wait already completed, skipping', {
@@ -625,6 +639,9 @@ export function workflowEntrypoint(
                       continue;
                     }
                     throw err;
+                  } finally {
+                    // Reloads inside the guard may have advanced the cursor.
+                    eventsCursor = waitLog.cursor;
                   }
                 }
 
@@ -721,13 +738,37 @@ export function workflowEntrypoint(
                       runtimeLogger.debug(suspensionMessage);
                     }
 
-                    const result = await handleSuspension({
-                      suspension: err,
-                      world,
-                      run: workflowRun,
-                      span,
-                      requestId,
-                    });
+                    // Each event creation inside handleSuspension carries the
+                    // loaded snapshot's `stateUpdatedAt`; on a stale (412)
+                    // rejection the guard reloads this log in place and retries.
+                    const suspensionLog: MutableEventLog = {
+                      events,
+                      cursor: eventsCursor ?? null,
+                    };
+                    let result: Awaited<ReturnType<typeof handleSuspension>>;
+                    try {
+                      result = await handleSuspension({
+                        suspension: err,
+                        world,
+                        run: workflowRun,
+                        span,
+                        requestId,
+                        eventLog: suspensionLog,
+                      });
+                    } catch (suspensionError) {
+                      // The guard exhausted its reloads on a stale event
+                      // creation. Schedule an explicit immediate re-invocation
+                      // (a rethrow relies on queue redelivery) so a fresh
+                      // replay observes the newer event.
+                      if (PreconditionFailedError.is(suspensionError)) {
+                        runtimeLogger.info(
+                          'Suspension event creation exhausted precondition retries; re-invoking with a fresh replay',
+                          { workflowRunId: runId }
+                        );
+                        return { timeoutSeconds: 0 };
+                      }
+                      throw suspensionError;
+                    }
 
                     if (result.timeoutSeconds !== undefined) {
                       return { timeoutSeconds: result.timeoutSeconds };
@@ -913,6 +954,17 @@ export function workflowEntrypoint(
                 // --- Infrastructure: complete the run ---
                 // This is outside the user-code try/catch so that failures
                 // here (e.g., network errors) propagate to the queue handler.
+                // run_completed carries the loaded snapshot's `stateUpdatedAt`,
+                // but is intentionally NOT retried in place (no
+                // withPreconditionRetry) on a stale (412) rejection: `result`
+                // was computed by this replay, so a newer out-of-band event
+                // landing after the snapshot must force a *fresh replay*
+                // (which may observe it and produce a different result), not
+                // re-commit the stale result. On 412 the catch below schedules
+                // an explicit immediate re-invocation instead.
+                // (run_failed is deliberately left unguarded and fails open:
+                // a spurious re-run is safe, a spurious completion is not, and
+                // the loaded event log is not in scope on that catch path.)
                 try {
                   await world.events.create(
                     runId,
@@ -923,9 +975,19 @@ export function workflowEntrypoint(
                         output: workflowResult,
                       },
                     },
-                    { requestId }
+                    {
+                      requestId,
+                      stateUpdatedAt: stateUpdatedAtForCreate(events),
+                    }
                   );
                 } catch (err) {
+                  if (PreconditionFailedError.is(err)) {
+                    runtimeLogger.info(
+                      'run_completed rejected as stale; re-invoking with a fresh replay',
+                      { workflowRunId: runId }
+                    );
+                    return { timeoutSeconds: 0 };
+                  }
                   if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
                     runtimeLogger.info(
                       'Tried completing workflow run, but run has already finished.',
