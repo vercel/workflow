@@ -45,7 +45,7 @@
     "@types/node": "catalog:",
     "@types/semver": "7.7.1",
     "@workflow/tsconfig": "workspace:*",
-    "next": "16.2.10",
+    "next": "16.2.11",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
