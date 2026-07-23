@@ -38,6 +38,10 @@ overrides:
   rfc6902: 5.1.2
   devalue: 5.8.1
   '@sveltejs/acorn-typescript': 1.0.10
+  # postcss < 8.5.12 is vulnerable to CVE-2026-45623 (arbitrary file read via
+  # attacker-controlled sourceMappingURL). Forces transitive pins (e.g.
+  # next.js's postcss@8.4.31) onto a patched version.
+  'postcss@<8.5.12': 8.5.16
 
 savePrefix: ""
 
