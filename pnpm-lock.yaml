@@ -2075,7 +2075,7 @@ importers:
     dependencies:
       '@monaco-editor/react':
         specifier: latest
-        version: 4.7.0(monaco-editor@0.56.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+        version: 4.7.0(monaco-editor@0.55.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@vercel/analytics':
         specifier: latest
         version: 2.0.1(aa281db593ebd0b65a957b35af0c8c9c)
@@ -2104,11 +2104,11 @@ importers:
         specifier: ^0.454.0
         version: 0.454.0(react@19.2.4)
       monaco-editor:
-        specifier: latest
-        version: 0.56.0
+        specifier: 0.55.1
+        version: 0.55.1
       monaco-vim:
         specifier: 0.4.4
-        version: 0.4.4(monaco-editor@0.56.0)
+        version: 0.4.4(monaco-editor@0.55.1)
       next:
         specifier: 16.2.11
         version: 16.2.11(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -9651,11 +9651,11 @@ packages:
     resolution: {integrity: sha512-cgwlv/1iFQiFnU96XXgROh8xTeetsnJiDsTc7TYCLFd9+/WNkIqPTxiM/8pSd8VIrhXGTf1Ny1q1hquVqDJB5w==}
     engines: {node: '>= 4'}
 
+  dompurify@3.2.7:
+    resolution: {integrity: sha512-WhL/YuveyGXJaerVlMYGWhvQswa7myDG17P7Vu65EWC05o8vfeNbvNf4d/BOvH99+ZW+LlQsc1GDKMa1vNK6dw==}
+
   dompurify@3.3.0:
     resolution: {integrity: sha512-r+f6MYR1gGN1eJv0TVQbhA7if/U7P87cdPl3HN5rikqaBSBxLiCb/b9O+2eG0cxz0ghyU+mU1QkbsOwERMYlWQ==}
-
-  dompurify@3.4.8:
-    resolution: {integrity: sha512-yb1cEmaOum7wFvOCSQxyfgVlv5D47Rc30iZWoMpbDIWTnJ6grDDQyu2KFJzB2k7u0pMuJcQ1zphH//fFnw2tjQ==}
 
   domutils@3.2.2:
     resolution: {integrity: sha512-6kZKyUajlDuqlHKVX1w7gyslj9MPIXzIFiz/rGu35uC1wMi+kMhQwGhl4lt9unC9Vb9INnY9Z3/ZA3+FhASLaw==}
@@ -11776,8 +11776,8 @@ packages:
   module-details-from-path@1.0.4:
     resolution: {integrity: sha512-EGWKgxALGMgzvxYF1UyGTy0HXX/2vHLkw6+NvDKW2jypWbHpjQuj4UMcqQWXHERJhVGKikolT06G3bcKe4fi7w==}
 
-  monaco-editor@0.56.0:
-    resolution: {integrity: sha512-sXboRm3BeBeLm938eaiyLMe0OxzfXIlZvbv4ir/jVgQy1zDhWjgmny0WoN45fuDKhCCQsYMbBJrv/A6jd8aCUg==}
+  monaco-editor@0.55.1:
+    resolution: {integrity: sha512-jz4x+TJNFHwHtwuV9vA9rMujcZRb0CEilTEwG2rRSpe/A7Jdkuj8xPKttCgOh+v/lkHy7HsZ64oj+q3xoAFl9A==}
 
   monaco-vim@0.4.4:
     resolution: {integrity: sha512-LNChAb//WEm/W+eyeHG/0+pdVEHotk2hLTN+M3sQZx5E8cAlSWSgqcxpcRuQnxDybSln7pfHF9i63HmbIQvrWw==}
@@ -17103,10 +17103,10 @@ snapshots:
     dependencies:
       state-local: 1.0.7
 
-  '@monaco-editor/react@4.7.0(monaco-editor@0.56.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
+  '@monaco-editor/react@4.7.0(monaco-editor@0.55.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
     dependencies:
       '@monaco-editor/loader': 1.7.0
-      monaco-editor: 0.56.0
+      monaco-editor: 0.55.1
       react: 19.2.4
       react-dom: 19.2.4(react@19.2.4)
 
@@ -24412,11 +24412,11 @@ snapshots:
     dependencies:
       domelementtype: 2.3.0
 
-  dompurify@3.3.0:
+  dompurify@3.2.7:
     optionalDependencies:
       '@types/trusted-types': 2.0.7
 
-  dompurify@3.4.8:
+  dompurify@3.3.0:
     optionalDependencies:
       '@types/trusted-types': 2.0.7
 
@@ -26864,14 +26864,14 @@ snapshots:
 
   module-details-from-path@1.0.4: {}
 
-  monaco-editor@0.56.0:
+  monaco-editor@0.55.1:
     dependencies:
-      dompurify: 3.4.8
+      dompurify: 3.2.7
       marked: 14.0.0
 
-  monaco-vim@0.4.4(monaco-editor@0.56.0):
+  monaco-vim@0.4.4(monaco-editor@0.55.1):
     dependencies:
-      monaco-editor: 0.56.0
+      monaco-editor: 0.55.1
 
   motion-dom@12.29.0:
     dependencies:
