@@ -121,6 +121,11 @@ export interface PendingAttribute {
 export interface PendingHookDispose {
   type: 'hook_dispose';
   correlationId: string;
+  /**
+   * Token of the hook being disposed. Used by the entrypoint to order
+   * same-token hook operations sequentially in code order.
+   */
+  token?: string;
   hasCreatedEvent: boolean;
 }
 
@@ -497,12 +502,25 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   function disposeHook() {
     if (isDisposed) return;
     isDisposed = true;
-    // Signal to the entrypoint to create a hook_disposed event
-    globalThis.__pending.push({
-      type: "hook_dispose",
-      correlationId: correlationId,
-      hasCreatedEvent: false,
-    });
+    // A conflicted hook was never created (the world rejected its claim
+    // — the token belongs to another run), so there is no entity to
+    // dispose. Mirrors the node:vm engine, where hook_conflict removes
+    // the invocation-queue item before dispose can mark it. Emitting a
+    // hook_disposed here would be rejected by the world's
+    // hook-existence validation.
+    var state = globalThis.__hooks[correlationId];
+    if (!state || !state.conflict) {
+      // Signal to the entrypoint to create a hook_disposed event. The
+      // token is carried so the entrypoint can order same-token hook
+      // operations sequentially (a dispose must release the token before
+      // a later same-token hook's creation is validated).
+      globalThis.__pending.push({
+        type: "hook_dispose",
+        correlationId: correlationId,
+        token: token,
+        hasCreatedEvent: false,
+      });
+    }
     // If there's a pending resolver, resolve it with undefined to break the iterator
     if (globalThis.__resolvers[correlationId]) {
       globalThis.__resolvers[correlationId].resolve(undefined);
