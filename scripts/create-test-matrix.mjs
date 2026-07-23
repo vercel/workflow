@@ -164,21 +164,20 @@ matrix.app.push({
   ...DEV_TEST_CONFIGS['tanstack-start'],
 });
 
-// QuickJS WASM VM engine leg (opt-in via WORKFLOW_VM=quickjs). One app is
-// enough while the engine is experimental — nextjs-turbopack is the most
-// feature-complete workbench. The `vm` field is surfaced to the workflow
-// dev server via the WORKFLOW_VM env var in tests.yml.
-matrix.app.push(
-  createMatrixEntry(
-    'nextjs-turbopack',
-    'example-nextjs-workflow-turbopack',
-    DEV_TEST_CONFIGS['nextjs-turbopack'],
-    {
-      vm: 'quickjs',
-      runLabel: 'quickjs',
-      artifactSuffix: 'quickjs',
-    }
-  )
+// Cross-product with the workflow VM engine axis: every app is tested
+// against both the default node:vm engine and the opt-in QuickJS WASM
+// engine (WORKFLOW_VM=quickjs). Each engine gets its own artifactSuffix
+// and runLabel so CI artifacts and job names are unique. The `vm` field
+// is surfaced to the workflow dev server via the WORKFLOW_VM env var in
+// tests.yml.
+const VMS = ['node', 'quickjs'];
+matrix.app = matrix.app.flatMap((app) =>
+  VMS.map((vm) => ({
+    ...app,
+    vm,
+    runLabel: [app.runLabel, vm].filter(Boolean).join(' '),
+    artifactSuffix: [app.artifactSuffix, vm].filter(Boolean).join('-'),
+  }))
 );
 
 console.log(JSON.stringify(matrix));
