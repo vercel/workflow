@@ -211,8 +211,8 @@ const checks = [
     run: () => assertHtmlMeta('/worlds/building-a-world', '/og/worlds'),
   },
   {
-    name: 'HTML meta - world vercel (v5)',
-    run: () => assertHtmlMeta('/v5/worlds/vercel', '/og/worlds/vercel'),
+    name: 'HTML meta - world vercel (v4)',
+    run: () => assertHtmlMeta('/v4/worlds/vercel', '/og/worlds/vercel'),
   },
   {
     name: 'OG docs page image',

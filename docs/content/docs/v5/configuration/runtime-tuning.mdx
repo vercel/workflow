@@ -79,7 +79,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 ### `WORKFLOW_INLINE_OWNERSHIP`
 
 - Default: enabled
-- Records which queue message owns each inline step execution, so a wake (hook resume, elapsed wait) that replays the run mid-step schedules a delayed backstop instead of immediately re-dispatching — and re-executing — the step. See [Inline step message ownership](/v5/docs/changelog/step-message-ownership).
+- Records which queue message owns each inline step execution, so a wake (hook resume, elapsed wait) that replays the run mid-step schedules a delayed backstop instead of immediately re-dispatching — and re-executing — the step. See [Inline step message ownership](/docs/changelog/step-message-ownership).
 - Set `0` or `false` to revert to the previous unconditional immediate re-dispatch.
 
 ### `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`

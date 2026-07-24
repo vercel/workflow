@@ -5,41 +5,57 @@ export interface DocsVersion {
   label: string;
   subtitle: string;
   prefix: string;
-  preRelease: boolean;
+  /**
+   * True for a version that is no longer the current release line. Maintenance
+   * docs are served under a route prefix and excluded from search indexing.
+   */
+  maintenance: boolean;
 }
 
 export const VERSIONS: DocsVersion[] = [
   {
     id: 'v5',
-    label: 'v5 (Pre-release)',
+    label: 'v5 (Latest)',
     subtitle: 'Workflow 5.x',
-    prefix: '/v5',
-    preRelease: true,
+    prefix: '',
+    maintenance: false,
   },
   {
     id: 'v4',
-    label: 'v4 (Latest)',
+    label: 'v4 (Maintenance)',
     subtitle: 'Workflow 4.x',
-    prefix: '',
-    preRelease: false,
+    prefix: '/v4',
+    maintenance: true,
   },
 ];
 
-export const PRE_RELEASE_VERSION: DocsVersion = VERSIONS[0];
-export const LATEST_VERSION: DocsVersion = VERSIONS[1];
+export const LATEST_VERSION: DocsVersion = VERSIONS[0];
+export const MAINTENANCE_VERSION: DocsVersion = VERSIONS[1];
 
 /**
- * Derive the active docs version from a pathname. Matches `/v5/...` (or
- * `/<lang>/v5/...` once locale prefix is applied) against the pre-release
- * prefix; everything else is v4.
+ * Route segment the maintenance version is served under (`v4`). The latest
+ * version has no prefix, so this is the only version segment in the URL space.
+ */
+export const MAINTENANCE_SEGMENT = MAINTENANCE_VERSION.prefix.replace(
+  /^\//,
+  ''
+);
+
+/**
+ * Derive the active docs version from a pathname. Matches `/v4/...` (or
+ * `/<lang>/v4/...` once locale prefix is applied) against the maintenance
+ * prefix; everything else is the latest version.
  */
 export function getVersionFromPathname(pathname: string): DocsVersion {
-  // The v5 segment sits either at the root (default locale hidden) or right
-  // after a locale segment — both cases are covered by checking positions
-  // 0 and 1.
+  // The version segment sits either at the root (default locale hidden) or
+  // right after a locale segment — both cases are covered by checking
+  // positions 0 and 1.
   const segments = pathname.split('/').filter(Boolean);
-  if (segments[0] === 'v5' || segments[1] === 'v5') {
-    return PRE_RELEASE_VERSION;
+  if (
+    segments[0] === MAINTENANCE_SEGMENT ||
+    segments[1] === MAINTENANCE_SEGMENT
+  ) {
+    return MAINTENANCE_VERSION;
   }
   return LATEST_VERSION;
 }
@@ -54,7 +70,7 @@ export function getVersionFromPathname(pathname: string): DocsVersion {
  * `usePathname()` can return either `/docs/...` (default locale hidden by
  * the i18n middleware) or `/<locale>/docs/...` (non-default locale shown).
  * We detect the locale segment by checking whether segment 0 is a
- * structural path token (`docs` or `v5`) rather than assuming position.
+ * structural path token (`docs` or `v4`) rather than assuming position.
  */
 export function buildVersionUrl(
   pathname: string,
@@ -63,7 +79,10 @@ export function buildVersionUrl(
   const segments = pathname.split('/').filter(Boolean);
   // Structural segments are path tokens that are never locale prefixes.
   const isStructural = (s: string | undefined) =>
-    s === 'docs' || s === 'v5' || s === 'cookbook' || s === 'worlds';
+    s === 'docs' ||
+    s === MAINTENANCE_SEGMENT ||
+    s === 'cookbook' ||
+    s === 'worlds';
 
   // Versioned routes carry a structural token at the root or right after a
   // locale segment; everything else is shared and returned unchanged.
@@ -74,7 +93,7 @@ export function buildVersionUrl(
   const localeSegments =
     segments[0] && !isStructural(segments[0]) ? segments.slice(0, 1) : [];
   let rest = segments.slice(localeSegments.length);
-  if (rest[0] === 'v5') rest = rest.slice(1);
+  if (rest[0] === MAINTENANCE_SEGMENT) rest = rest.slice(1);
   const prefixSegments = targetVersion.prefix
     ? [targetVersion.prefix.replace(/^\//, '')]
     : [];

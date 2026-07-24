@@ -9,7 +9,7 @@ type DocsTreeNode = DocsTree['children'][number];
 
 const SIDEBAR_ITEM_BADGES: Array<{ suffix: string; label: string }> = [
   { suffix: '/docs/getting-started/python', label: 'Beta' },
-  { suffix: '/v5/docs/getting-started/python', label: 'Beta' },
+  { suffix: '/v4/docs/getting-started/python', label: 'Beta' },
 ];
 
 const getSidebarBadge = (url?: string) =>
