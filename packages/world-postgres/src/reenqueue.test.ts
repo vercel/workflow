@@ -312,30 +312,25 @@ describe('re-enqueue active runs on start', () => {
     expect(workerUtilsMock.release).toHaveBeenCalledOnce();
   });
 
-  it('coalesces concurrent and repeated close requests', async () => {
-    let resolveRunnerStop!: () => void;
-    runnerMock.stop.mockReturnValueOnce(
-      new Promise<void>((resolve) => {
-        resolveRunnerStop = resolve;
-      })
-    );
+  it('allows close to be retried after queue cleanup fails', async () => {
+    localWorldClose
+      .mockRejectedValueOnce(new Error('transient local shutdown error'))
+      .mockResolvedValueOnce(undefined);
     const world = createWorld({ connectionString: 'postgres://test' });
     await world.start();
     const streamer = vi.mocked(createStreamer).mock.results.at(-1)?.value;
     const internalPool = vi.mocked(Pool).mock.results.at(-1)?.value;
 
-    const closePromises = [world.close(), world.close(), world.close()];
-    await vi.waitFor(() => {
-      expect(runnerMock.stop).toHaveBeenCalledOnce();
-    });
+    await expect(world.close()).rejects.toThrow(
+      'transient local shutdown error'
+    );
+    expect(streamer?.close).not.toHaveBeenCalled();
+    expect(internalPool?.end).not.toHaveBeenCalled();
 
-    resolveRunnerStop();
-    await Promise.all(closePromises);
-    await world.close();
-
+    await expect(world.close()).resolves.toBeUndefined();
     expect(runnerMock.stop).toHaveBeenCalledOnce();
     expect(workerUtilsMock.release).toHaveBeenCalledOnce();
-    expect(localWorldClose).toHaveBeenCalledOnce();
+    expect(localWorldClose).toHaveBeenCalledTimes(2);
     expect(streamer?.close).toHaveBeenCalledOnce();
     expect(internalPool?.end).toHaveBeenCalledOnce();
   });
