@@ -1119,19 +1119,32 @@ export function createReconnectingFramedStream(
 }
 
 /**
- * Default flush interval in milliseconds for buffered stream writes.
- * Chunks are accumulated and flushed together to reduce network overhead.
+ * Default group-commit window for the LEADING chunk of an idle stream.
+ *
+ * 0 = dispatch the first chunk immediately. Measured production producer
+ * rates (most agents: ~1.2 chunks per flush, >70% of chunks arriving more
+ * than 10ms after the previous request already finished) show a fixed
+ * leading-edge window taxes isolated-chunk delivery (~+20% on a ~50ms RTT)
+ * while batching almost nothing for slow producers — fast producers get
+ * their batching from in-flight accumulation regardless. Setting a positive
+ * interval (env or `world.streamFlushIntervalMs`) opts a deployment into
+ * windowed leading-edge batching, trading first-chunk latency for larger
+ * groups.
  */
-const STREAM_FLUSH_INTERVAL_MS = 10;
+const STREAM_FLUSH_INTERVAL_MS = 0;
 
 /**
- * Effective default stream-flush interval (a `world.streamFlushIntervalMs`
- * still takes precedence). Override: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`.
+ * `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`, when set, overrides
+ * `world.streamFlushIntervalMs`; when unset the World option (or the
+ * default) governs. Returns `undefined` for unset/invalid values so the
+ * caller can fall through to the World option.
  */
-const getStreamFlushIntervalMs = (): number =>
-  envNumber('WORKFLOW_STREAM_FLUSH_INTERVAL_MS', STREAM_FLUSH_INTERVAL_MS, {
+const getEnvStreamFlushIntervalMs = (): number | undefined => {
+  const value = envNumber('WORKFLOW_STREAM_FLUSH_INTERVAL_MS', Number.NaN, {
     integer: true,
   });
+  return Number.isNaN(value) ? undefined : value;
+};
 
 /** The sink behavior the WritableStream delegates to, chosen per world. */
 interface StreamSink {
@@ -1206,8 +1219,15 @@ function createBatchSink(
    * failure at the durability barrier — the contract of an early-ack sink.
    */
   let sinkError: unknown;
+  // Group-commit window for the LEADING chunk of an idle sink.
+  // `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`, when set, overrides the World
+  // option; otherwise `world.streamFlushIntervalMs` governs (default 0).
+  // Resolved eagerly — unlike the constructor, this sink is only built once
+  // the world is already resolved, so no deferred resolution is needed.
   const flushIntervalMs =
-    world.streamFlushIntervalMs ?? getStreamFlushIntervalMs();
+    getEnvStreamFlushIntervalMs() ??
+    world.streamFlushIntervalMs ??
+    STREAM_FLUSH_INTERVAL_MS;
   const maxChunksPerRequest = getMaxChunksPerBatch();
   const maxBytesPerRequest = getMaxBytesPerBatch();
   const maxBufferedChunks = getMaxInflightChunks();
@@ -1360,9 +1380,25 @@ function createBatchSink(
     );
   };
 
-  /** Arm the group-commit window unless a dispatch is already running. */
+  /**
+   * Leading-edge dispatch policy for an idle sink:
+   * - window <= 0 (the default): dispatch the leading chunk immediately.
+   *   Fast producers still batch via in-flight accumulation — chunks
+   *   arriving during the request form the next group. The trade for an
+   *   idle burst is one extra request (a 30-chunk burst ships as 1 + 29
+   *   instead of one 30-chunk group under a positive window) in exchange for
+   *   zero fixed first-chunk delay, which matches measured producer
+   *   behaviour, where isolated chunks dominate.
+   * - window > 0 (explicitly configured): arm the group-commit timer so the
+   *   leading chunk waits up to the window collecting a group — the opt-in
+   *   trade for slow-but-steady producers.
+   */
   const scheduleGroupCommit = (): void => {
     if (flushTimer || inFlight) return;
+    if (flushIntervalMs <= 0) {
+      startDispatch();
+      return;
+    }
     flushTimer = setTimeout(() => {
       flushTimer = null;
       startDispatch();

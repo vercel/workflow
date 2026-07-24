@@ -79,17 +79,14 @@ describe('WorkflowServerWritableStream', () => {
   });
 
   describe('group-commit write behavior', () => {
-    it('write() resolves on buffer entry; the chunk reaches the server after the commit window', async () => {
+    it('write() resolves on buffer entry; the leading chunk dispatches immediately (no window tax)', async () => {
       const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
       const writer = stream.getWriter();
 
       await writer.write(new Uint8Array([1, 2, 3]));
 
-      // write() acked on buffer entry — nothing has gone to the server yet.
-      expect(mockStreams.write).not.toHaveBeenCalled();
-      expect(mockStreams.writeMulti).not.toHaveBeenCalled();
-
-      // The group-commit window fires and dispatches the chunk.
+      // Default window is 0: the leading chunk of an idle sink goes out
+      // right away — no fixed delay for sparse producers.
       await waitFor(() => expect(mockStreams.write).toHaveBeenCalledTimes(1));
       expect(mockStreams.write).toHaveBeenCalledWith(
         'run-123',
@@ -111,21 +108,32 @@ describe('WorkflowServerWritableStream', () => {
       expect(mockStreams.writeMulti).not.toHaveBeenCalled();
     });
 
-    it('coalesces rapid awaited writes into one writeMulti group', async () => {
+    it('coalesces rapid awaited writes: leading chunk immediate, rest ride the in-flight window', async () => {
+      // Leading-edge dispatch sends chunk 0 at once; the awaited per-chunk
+      // loop keeps producing while that request is in flight, so the rest
+      // accumulate into one writeMulti group — batching without any fixed
+      // leading delay.
+      let releaseFirst!: () => void;
+      const firstInFlight = new Promise<void>((r) => {
+        releaseFirst = r;
+      });
+      mockStreams.write.mockImplementationOnce(async () => {
+        await firstInFlight;
+      });
+
       const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
       const writer = stream.getWriter();
 
-      // Each write resolves on buffer entry, so an awaited per-chunk loop —
-      // the previously-unbatchable pattern — lands in one commit window.
       for (let i = 0; i < 5; i++) {
         await writer.write(new Uint8Array([i]));
       }
+      releaseFirst();
       await writer.close();
 
+      expect(mockStreams.write).toHaveBeenCalledTimes(1); // leading [0]
       expect(mockStreams.writeMulti).toHaveBeenCalledTimes(1);
       const [, , group] = mockStreams.writeMulti.mock.calls[0];
-      expect(group.map((c: Uint8Array) => c[0])).toEqual([0, 1, 2, 3, 4]);
-      expect(mockStreams.write).not.toHaveBeenCalled();
+      expect(group.map((c: Uint8Array) => c[0])).toEqual([1, 2, 3, 4]);
     });
 
     it('should fall back to sequential writes when writeMulti is unavailable', async () => {
@@ -582,8 +590,7 @@ describe('WorkflowServerWritableStream', () => {
       await writer.close();
     });
 
-    it('should fall back to default interval when streamFlushIntervalMs is undefined', async () => {
-      // mockWorld has no streamFlushIntervalMs set — uses default 10ms
+    it('dispatches immediately by default (no world interval, default window 0)', async () => {
       delete mockWorld.streamFlushIntervalMs;
 
       const stream = new WorkflowServerWritableStream('s', 'run-1');
@@ -595,28 +602,65 @@ describe('WorkflowServerWritableStream', () => {
       await writer.close();
     });
 
-    it('should respect a custom non-zero flush interval', async () => {
+    it('a positive env window delays the LEADING chunk (opt-in batching)', async () => {
+      process.env.WORKFLOW_STREAM_FLUSH_INTERVAL_MS = '60';
+      vi.useFakeTimers();
+      try {
+        const stream = new WorkflowServerWritableStream('s', 'run-1');
+        const writer = stream.getWriter();
+
+        await writer.write(new Uint8Array([1]));
+        // Inside the 60ms window: nothing dispatched yet.
+        await vi.advanceTimersByTimeAsync(20);
+        expect(mockStreams.write).not.toHaveBeenCalled();
+        // The window elapses and the leading group goes out.
+        await vi.advanceTimersByTimeAsync(45);
+        expect(mockStreams.write).toHaveBeenCalledTimes(1);
+
+        vi.useRealTimers();
+        await writer.close();
+      } finally {
+        vi.useRealTimers();
+        delete process.env.WORKFLOW_STREAM_FLUSH_INTERVAL_MS;
+      }
+    });
+
+    it('a positive world streamFlushIntervalMs delays the LEADING chunk', async () => {
       mockWorld.streamFlushIntervalMs = 50;
+      vi.useFakeTimers();
+      try {
+        const stream = new WorkflowServerWritableStream('s', 'run-1');
+        const writer = stream.getWriter();
 
-      const stream = new WorkflowServerWritableStream('s', 'run-1');
-      const writer = stream.getWriter();
+        // The World option governs from the very first chunk.
+        await writer.write(new Uint8Array([1]));
+        await vi.advanceTimersByTimeAsync(25);
+        expect(mockStreams.write).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(30);
+        expect(mockStreams.write).toHaveBeenCalledTimes(1);
 
-      // The interval is learned from the world during the first dispatch
-      // (same lazy resolution as before this rework) — prime it with a
-      // drained first group so the window under test uses 50ms.
-      await writer.write(new Uint8Array([0]));
-      await waitFor(() => expect(mockStreams.write).toHaveBeenCalledTimes(1));
+        vi.useRealTimers();
+        await writer.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
 
-      await writer.write(new Uint8Array([1]));
+    it('env WORKFLOW_STREAM_FLUSH_INTERVAL_MS overrides world.streamFlushIntervalMs', async () => {
+      process.env.WORKFLOW_STREAM_FLUSH_INTERVAL_MS = '0';
+      mockWorld.streamFlushIntervalMs = 50;
+      try {
+        const stream = new WorkflowServerWritableStream('s', 'run-1');
+        const writer = stream.getWriter();
 
-      // Well past the 10ms default, inside the 50ms window: not dispatched.
-      await new Promise((r) => setTimeout(r, 25));
-      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+        // env 0 beats the world's 50ms window: immediate dispatch.
+        await writer.write(new Uint8Array([1]));
+        await waitFor(() => expect(mockStreams.write).toHaveBeenCalledTimes(1));
 
-      // The 50ms window elapses and the second group goes out.
-      await waitFor(() => expect(mockStreams.write).toHaveBeenCalledTimes(2));
-
-      await writer.close();
+        await writer.close();
+      } finally {
+        delete process.env.WORKFLOW_STREAM_FLUSH_INTERVAL_MS;
+      }
     });
   });
 

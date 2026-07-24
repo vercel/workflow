@@ -931,12 +931,12 @@ export async function fastDiscoverEntries({
   const processImportSpecifier = async (
     filePath: string,
     specifier: string,
-    forceFollowImports: boolean
+    shouldFollow: boolean
   ): Promise<void> => {
     if (NODE_BUILTIN_SPECIFIERS.has(specifier)) {
       return;
     }
-    if (!(await shouldFollowImportsFromFile(filePath, forceFollowImports))) {
+    if (!shouldFollow) {
       return;
     }
 
@@ -995,10 +995,11 @@ export async function fastDiscoverEntries({
     }
 
     const forceFollowImports = patterns.hasDirective || patterns.hasSerde;
-    if (
-      !forceFollowImports &&
-      !(await shouldFollowImportsFromFile(filePath, false))
-    ) {
+    const shouldFollow = await shouldFollowImportsFromFile(
+      filePath,
+      forceFollowImports
+    );
+    if (!shouldFollow) {
       return;
     }
 
@@ -1009,7 +1010,7 @@ export async function fastDiscoverEntries({
 
     await Promise.all(
       specifiers.map((specifier) =>
-        processImportSpecifier(filePath, specifier, forceFollowImports)
+        processImportSpecifier(filePath, specifier, shouldFollow)
       )
     );
   };

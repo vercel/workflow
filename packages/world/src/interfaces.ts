@@ -52,13 +52,15 @@ export interface StreamWriteOptions {
 
 export interface Streamer {
   /**
-   * Override the default flush interval (in milliseconds) for buffered stream writes.
-   * Chunks are accumulated in a buffer and flushed together on this interval.
+   * Number of milliseconds a stream waits for additional chunks to arrive
+   * before flushing to the underlying transport.
    *
-   * The default is 10ms, which is appropriate for HTTP-based backends where
-   * each flush is a network round-trip. For backends with sub-millisecond writes
-   * (e.g., Redis, local filesystem), a lower value (or 0 for immediate flushing) reduces
-   * end-to-end stream latency.
+   * Default `0`: the first chunk dispatches immediately, and chunks
+   * arriving while a request is in flight coalesce into the next group.
+   * Setting this to > 0 trades first-chunk latency for fewer requests.
+   *
+   * The `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` environment variable, when
+   * set, overrides this option.
    *
    * Not supported by all worlds.
    */
