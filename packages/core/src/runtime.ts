@@ -361,9 +361,11 @@ function openHookAndWaitState(events: Event[]): {
 }
 
 /**
- * Retain only pure step boundaries with no out-of-band continuation source.
- * Attributes require replay; hooks and waits can wake another invocation.
- * `WORKFLOW_RETAINED_VM=0` disables retention entirely.
+ * Retain only pure step boundaries (every suspension item is a step — any
+ * other item type, present or future, is unretainable by default) with no
+ * out-of-band continuation source: attributes require replay; hooks and
+ * waits can wake another invocation. `WORKFLOW_RETAINED_VM=0` disables
+ * retention entirely.
  *
  * Quiescence assumes workflow code stays inside the sandbox's determinism
  * contract. Escaping to the host realm (e.g. recovering the host `Function`
@@ -373,21 +375,15 @@ function openHookAndWaitState(events: Event[]): {
  */
 function canRetainWorkflowSession(
   suspension: WorkflowSuspension,
-  events: Event[]
+  openHookWaitState: { openHook: boolean; openWait: boolean }
 ): boolean {
-  if (
-    !isVmRetentionEnabled() ||
-    suspension.stepCount === 0 ||
-    suspension.hookCount > 0 ||
-    suspension.waitCount > 0 ||
-    suspension.attributeCount > 0 ||
-    suspension.hookDisposedCount > 0 ||
-    suspension.abortCount > 0
-  ) {
-    return false;
-  }
-  const { openHook, openWait } = openHookAndWaitState(events);
-  return !openHook && !openWait;
+  return (
+    isVmRetentionEnabled() &&
+    suspension.steps.length > 0 &&
+    suspension.steps.every((item) => item.type === 'step') &&
+    !openHookWaitState.openHook &&
+    !openHookWaitState.openWait
+  );
 }
 
 /**
@@ -1603,12 +1599,11 @@ export function workflowEntrypoint(
                       // point and the inline executeStep mutates eventsCursor.
                       preInlineWriteCursor = eventsCursor;
 
-                      let executionMode = workflowExecution.type;
                       runtimeLogger.debug('Starting workflow execution', {
                         workflowRunId: runId,
                         loopIteration,
                         eventCount: events.length,
-                        executionMode,
+                        executionMode: workflowExecution.type,
                       });
                       replayStart = Date.now();
                       let workflowResult: WorkflowExecutionResult =
@@ -1621,7 +1616,6 @@ export function workflowEntrypoint(
                           : { type: 'replay' };
 
                       if (workflowResult.type === 'replay') {
-                        executionMode = 'replay';
                         workflowExecution = { type: 'replay' };
                         // Start every missing decrypt/decompress operation
                         // before VM setup. Web Crypto work can overlap bundle
@@ -1648,15 +1642,13 @@ export function workflowEntrypoint(
                       }
 
                       if (workflowResult.type === 'suspended') {
-                        workflowExecution = canRetainWorkflowSession(
-                          workflowResult.suspension,
-                          events
-                        )
-                          ? {
-                              type: 'retained',
-                              session: workflowResult.session,
-                            }
-                          : { type: 'replay' };
+                        // Park the live session; the suspension catch below
+                        // makes the one retention decision — keep it for the
+                        // next iteration or discard it for a fresh replay.
+                        workflowExecution = {
+                          type: 'retained',
+                          session: workflowResult.session,
+                        };
                         throw workflowResult.suspension;
                       }
 
@@ -1665,7 +1657,7 @@ export function workflowEntrypoint(
                         workflowRunId: runId,
                         loopIteration,
                         replayMs: Date.now() - replayStart,
-                        executionMode,
+                        executionMode: workflowExecution.type,
                       });
 
                       // Workflow completed. Send the snapshot but do NOT
@@ -1790,15 +1782,7 @@ export function workflowEntrypoint(
                             requestId,
                             eventLog: suspensionLog,
                             runReadyBarrier,
-                            prepareForRetention:
-                              workflowExecution.type === 'retained',
                           });
-                          if (
-                            workflowExecution.type === 'retained' &&
-                            !suspensionResult.retainedStepInputsSafe
-                          ) {
-                            workflowExecution = { type: 'replay' };
-                          }
                         } catch (suspensionError) {
                           // A suspension create whose stale (412) rejection
                           // survived the in-guard reload retries: schedule an
@@ -1889,6 +1873,28 @@ export function workflowEntrypoint(
                           return;
                         }
                         eventsCursor = suspensionLog.cursor;
+
+                        // Open hooks/waits in the cumulative log (this
+                        // suspension's writes are already merged in), computed
+                        // once for the retention decision here and the
+                        // delta/turbo gates below.
+                        const openHookWaitState =
+                          openHookAndWaitState(cachedEvents);
+
+                        // The single retention decision: keep the parked
+                        // session only across a pure step boundary with no
+                        // out-of-band continuation source and provably
+                        // passive step inputs.
+                        if (
+                          workflowExecution.type === 'retained' &&
+                          !(
+                            canRetainWorkflowSession(err, openHookWaitState) &&
+                            suspensionResult.retainedStepInputsSafe
+                          )
+                        ) {
+                          workflowExecution = { type: 'replay' };
+                        }
+
                         preStepBlockingMs += suspensionResult.hookCreationMs;
                         if (
                           suspensionResult.hasAttributeEvents &&
@@ -2209,12 +2215,6 @@ export function workflowEntrypoint(
                         // this the replay-budget check at the top of the
                         // next loop iteration would (incorrectly) charge
                         // the step body against the budget.
-                        // Open hooks/waits in the cumulative log, computed
-                        // once for the two gates below.
-                        const openHookWaitState = openHookAndWaitState(
-                          cachedEvents ?? []
-                        );
-
                         // Inline-delta fast path gate. We request the delta —
                         // and on the next iteration consume it in place of the
                         // events.list — only when ALL hold:

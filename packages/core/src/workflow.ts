@@ -1060,10 +1060,13 @@ async function createWorkflowSession({
 
   const failWorkflow = async (error: unknown): Promise<never> => {
     // Control-flow signals are handled by the runtime and do not mean the
-    // workflow has terminally failed. `onWorkflowError` already moved the
-    // state machine (e.g. to `replay` on divergence, so a later resume falls
-    // back instead of throwing) — leave it alone.
+    // workflow has terminally failed. `onWorkflowError` usually already moved
+    // the state machine, but a divergence can also arrive via a step
+    // promise's direct rejection (bypassing `onWorkflowError`) — demote so
+    // every control-flow path converges on `replay` and a later resume falls
+    // back instead of throwing.
     if (WorkflowSuspension.is(error) || ReplayDivergenceError.is(error)) {
+      if (state.type === 'running') state = { type: 'replay' };
       throw error;
     }
     state = { type: 'completed' };

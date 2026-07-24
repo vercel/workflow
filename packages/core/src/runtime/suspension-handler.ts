@@ -69,11 +69,6 @@ export interface SuspensionHandlerParams {
    * where `run_started` was already awaited up front.
    */
   runReadyBarrier?: Promise<unknown>;
-  /**
-   * Prepare new step inputs without traversing workflow-owned objects during
-   * serialization. Enabled only while the caller is holding a retained VM.
-   */
-  prepareForRetention?: boolean;
 }
 
 /**
@@ -225,7 +220,6 @@ export async function handleSuspension({
   requestId,
   eventLog,
   runReadyBarrier,
-  prepareForRetention = false,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -519,20 +513,13 @@ export async function handleSuspension({
   // standard built-ins. If any input in the batch is not provably passive,
   // the caller demotes the session so the side effects land in a VM that is
   // about to be discarded, exactly like the pre-retention runtime.
-  let retainedStepInputsSafe = true;
-  if (prepareForRetention) {
-    for (const queueItem of stepItems) {
-      if (!stepsNeedingCreation.has(queueItem.correlationId)) continue;
-      if (
-        queueItem.thisVal !== undefined ||
-        queueItem.closureVars !== undefined ||
-        !queueItem.args.every(isPrimitiveStepArgument)
-      ) {
-        retainedStepInputsSafe = false;
-        break;
-      }
-    }
-  }
+  const retainedStepInputsSafe = stepItems.every(
+    (item) =>
+      !stepsNeedingCreation.has(item.correlationId) ||
+      (item.thisVal === undefined &&
+        item.closureVars === undefined &&
+        item.args.every(isPrimitiveStepArgument))
+  );
 
   // Lazy inline start: defer the step_created write for up to
   // `getMaxInlineSteps()` steps the caller will run inline (in parallel). Each
