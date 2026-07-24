@@ -23,6 +23,7 @@
 
 import {
   EntityConflictError,
+  PreconditionFailedError,
   RunExpiredError,
   ThrottleError,
   TooEarlyError,
@@ -84,6 +85,14 @@ export interface CreateEventV4Input {
   /** Arbitrary structured map; rides as a native CBOR object in the
    *  frame meta. Bounded by the server at 2 KB encoded. */
   executionContext?: Record<string, unknown>;
+  /**
+   * Epoch ms (the ULID time of the latest event the runtime has loaded
+   * during replay). Sent by replay-context creates so the backend can
+   * reject the event when a newer out-of-band event was recorded after this
+   * snapshot, enabling an optimistic-concurrency guard. Omitted by callers
+   * without a loaded event log; older servers ignore it entirely.
+   */
+  stateUpdatedAt?: number;
 }
 
 export interface CreateEventV4Result {
@@ -141,6 +150,9 @@ function buildPostFrameMeta(
   if (input.executionContext !== undefined) {
     meta.executionContext = input.executionContext;
   }
+  if (input.stateUpdatedAt !== undefined) {
+    meta.stateUpdatedAt = input.stateUpdatedAt;
+  }
   return meta;
 }
 
@@ -151,6 +163,8 @@ function buildPostFrameMeta(
  *
  *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
  *   - 410 → RunExpiredError (runtime exits without retrying)
+ *   - 412 → PreconditionFailedError (stale event-log snapshot; the runtime
+ *     reloads + retries, then re-invokes)
  *   - 425 → TooEarlyError + retryAfter (step retry pacing — see #1806 for
  *     what happens when a 425 degrades into an untyped error)
  *   - 429 → ThrottleError + retryAfter
@@ -187,6 +201,8 @@ export function throwForErrorResponse(
 
   if (statusCode === 409) throw new EntityConflictError(message);
   if (statusCode === 410) throw new RunExpiredError(message);
+  if (statusCode === 412)
+    throw new PreconditionFailedError(message, { retryAfter });
   if (statusCode === 425) throw new TooEarlyError(message, { retryAfter });
   if (statusCode === 429) {
     // A firewall-challenge 429 is routed to the retryable transport path (not
