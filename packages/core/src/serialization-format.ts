@@ -23,16 +23,17 @@ import { parse, unflatten } from 'devalue';
  * `encryption.ts` and `sealed-box.ts` are all free of Node dependencies.
  */
 export {
+  type DecryptionKey,
   decrypt as decryptEnvelope,
   deriveRunPayloadKeys,
   encrypt as encryptEnvelope,
   isRunPayloadKeys,
   isSealTarget,
   type PayloadKey,
-  runPayloadKeys,
   type RunPayloadKeys,
-  sealTo,
+  runPayloadKeys,
   type SealTarget,
+  sealTo,
 } from './serialization/encryption.js';
 
 // ---------------------------------------------------------------------------
@@ -419,11 +420,13 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
  * @param key - The run's key material. Pass `RunPayloadKeys` (from
  *   `deriveRunPayloadKeys`) to open both symmetric (`encr`) and sealed
  *   (`encp`) payloads; a bare `CryptoKey` opens only the symmetric ones.
+ *   Typed as a read capability so a write-only seal target — which could open
+ *   neither scheme — is rejected at compile time rather than failing here.
  */
 export async function hydrateDataWithKey(
   value: unknown,
   revivers: Revivers,
-  key: import('./serialization/encryption.js').PayloadKey | undefined
+  key: import('./serialization/encryption.js').DecryptionKey | undefined
 ): Promise<unknown> {
   let data = value;
   if (data instanceof Uint8Array && isEncryptedData(data) && key) {

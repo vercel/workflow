@@ -98,6 +98,17 @@ export interface RunPayloadKeys {
 export type PayloadKey = CryptoKey | SealTarget | RunPayloadKeys;
 
 /**
+ * The subset of {@link PayloadKey} that can actually *read* a payload.
+ *
+ * Excludes {@link SealTarget}, which is write-only by construction: it holds a
+ * public key, so it can open neither `encp` (needs the private scalar) nor
+ * `encr` (needs the symmetric key). Decrypt-side signatures should take this
+ * rather than `PayloadKey`, so passing a seal target is a compile error instead
+ * of a guaranteed runtime failure.
+ */
+export type DecryptionKey = CryptoKey | RunPayloadKeys;
+
+/**
  * Build a write-only seal capability for a recipient run's public key.
  *
  * @param recipientPublicKey - The recipient run's raw 32-byte X25519 public key
