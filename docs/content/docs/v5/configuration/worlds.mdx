@@ -95,8 +95,8 @@ The Local World is the default outside Vercel and is intended for development.
 ### `streamFlushIntervalMs`
 
 - Environment variable fallback: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
-- Default: `10`
-- Flush interval for buffered stream writes. The World option wins when set.
+- Default: `0` (dispatch the leading chunk of an idle stream immediately)
+- Group-commit window for the leading chunk of an idle stream; a positive value trades first-chunk latency for larger groups. The `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` environment variable, when set, overrides this option; otherwise the World option governs, including the very first chunk.
 
 ## Postgres World
 
@@ -151,8 +151,8 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 ### `streamFlushIntervalMs`
 
 - Environment variable fallback: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
-- Default: `10`
-- Flush interval for buffered stream writes. The World option wins when set.
+- Default: `0` (dispatch the leading chunk of an idle stream immediately)
+- Group-commit window for the leading chunk of an idle stream; a positive value trades first-chunk latency for larger groups. The `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` environment variable, when set, overrides this option; otherwise the World option governs, including the very first chunk.
 
 ## Vercel World
 

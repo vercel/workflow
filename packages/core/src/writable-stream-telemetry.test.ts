@@ -104,21 +104,31 @@ describe('WorkflowServerWritableStream write-flush telemetry', () => {
     expect(durationMs).toBeGreaterThanOrEqual(dwell as number);
   });
 
-  it('emits one span per dispatched group (group commit coalesces rapid writes)', async () => {
+  it('emits one span per dispatched group (leading single + in-flight group)', async () => {
+    let releaseFirst!: () => void;
+    const firstInFlight = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    mockStreams.write.mockImplementationOnce(async () => {
+      await firstInFlight;
+    });
     const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
     const writer = stream.getWriter();
 
-    // Rapid awaited writes ack on buffer entry and land in one commit
-    // window: ONE group, ONE flush span covering all three chunks.
+    // Leading chunk dispatches immediately (its own span); the two writes
+    // that arrive during its request coalesce into one grouped span.
     await writer.write(new Uint8Array([1]));
     await writer.write(new Uint8Array([2]));
     await writer.write(new Uint8Array([3]));
+    releaseFirst();
     await writer.close();
 
-    const spans = await waitForSpans('workflow.stream.flush', 1);
-    expect(spans).toHaveLength(1);
-    expect(spans[0].attributes['workflow.stream.flush.chunks']).toBe(3);
-    expect(spans[0].attributes['workflow.stream.flush.bytes']).toBe(3);
+    const spans = await waitForSpans('workflow.stream.flush', 2);
+    expect(spans).toHaveLength(2);
+    const chunkCounts = spans
+      .map((s) => s.attributes['workflow.stream.flush.chunks'])
+      .sort();
+    expect(chunkCounts).toEqual([1, 2]);
   });
 
   it('emits separate spans for groups separated by a commit window', async () => {

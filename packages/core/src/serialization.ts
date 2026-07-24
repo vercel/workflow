@@ -957,19 +957,32 @@ export function createReconnectingFramedStream(
 }
 
 /**
- * Default flush interval in milliseconds for buffered stream writes.
- * Chunks are accumulated and flushed together to reduce network overhead.
+ * Default group-commit window for the LEADING chunk of an idle stream.
+ *
+ * 0 = dispatch the first chunk immediately. Measured production producer
+ * rates (most agents: ~1.2 chunks per flush, >70% of chunks arriving more
+ * than 10ms after the previous request already finished) show a fixed
+ * leading-edge window taxes isolated-chunk delivery (~+20% on a ~50ms RTT)
+ * while batching almost nothing for slow producers — fast producers get
+ * their batching from in-flight accumulation regardless. Setting a positive
+ * interval (env or `world.streamFlushIntervalMs`) opts a deployment into
+ * windowed leading-edge batching, trading first-chunk latency for larger
+ * groups.
  */
-const STREAM_FLUSH_INTERVAL_MS = 10;
+const STREAM_FLUSH_INTERVAL_MS = 0;
 
 /**
- * Effective default stream-flush interval (a `world.streamFlushIntervalMs`
- * still takes precedence). Override: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`.
+ * `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`, when set, overrides
+ * `world.streamFlushIntervalMs`; when unset the World option (or the
+ * default) governs. Returns `undefined` for unset/invalid values so the
+ * caller can fall through to the World option.
  */
-const getStreamFlushIntervalMs = (): number =>
-  envNumber('WORKFLOW_STREAM_FLUSH_INTERVAL_MS', STREAM_FLUSH_INTERVAL_MS, {
+const getEnvStreamFlushIntervalMs = (): number | undefined => {
+  const value = envNumber('WORKFLOW_STREAM_FLUSH_INTERVAL_MS', Number.NaN, {
     integer: true,
   });
+  return Number.isNaN(value) ? undefined : value;
+};
 
 /**
  * Emit the client-observed span for one flushed batch of stream writes: first
@@ -1112,7 +1125,14 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
      * early-ack sink.
      */
     let sinkError: unknown;
-    let resolvedFlushIntervalMs: number | undefined;
+    // Group-commit window. The env var, when set, overrides the World
+    // option; otherwise `world.streamFlushIntervalMs` governs (default 0) —
+    // including the very first chunk. When it must come from the world,
+    // `scheduleGroupCommit` waits for `worldPromise` before deciding, which
+    // costs nothing: no request can leave before `sendGroup`'s own world
+    // await either.
+    let resolvedFlushIntervalMs = getEnvStreamFlushIntervalMs();
+    let flushIntervalResolution: Promise<void> | null = null;
     // Per-request wire limits (server caps) and the buffer bound. The bound
     // uses the same knobs the coalescing pipe used, so producer backpressure
     // behavior is unchanged: once a request-worth of chunks (or the byte
@@ -1166,8 +1186,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
      * behavior, now independent of how the producer pipes.
      */
     /**
-     * Send one group to the server: gate on run readiness, resolve the flush
-     * interval from the world (lazy, first dispatch only), then one
+     * Send one group to the server: gate on run readiness, then one
      * `writeMulti` (or sequential `write`s when the world lacks it). Emits
      * the write-flush span; dwell is measured up to just before the RPC so a
      * turbo run-ready barrier wait counts as buffer dwell, matching the
@@ -1180,10 +1199,6 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     ): Promise<void> => {
       await ensureRunReady();
       const world = await worldPromise;
-      if (resolvedFlushIntervalMs === undefined) {
-        resolvedFlushIntervalMs =
-          world.streamFlushIntervalMs ?? getStreamFlushIntervalMs();
-      }
       const dispatchAt = Date.now();
       if (typeof world.streams.writeMulti === 'function' && group.length > 1) {
         await world.streams.writeMulti(runId, name, group);
@@ -1276,13 +1291,58 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       );
     };
 
-    /** Arm the group-commit window unless a dispatch is already running. */
+    /**
+     * Leading-edge dispatch policy for an idle sink:
+     * - window <= 0 (the default): dispatch the leading chunk immediately.
+     *   Fast producers still batch via in-flight accumulation — chunks
+     *   arriving during the request form the next group. The trade for an
+     *   idle burst is one extra request (a 30-chunk burst ships as 1 + 29
+     *   instead of one 30-chunk group under a positive window) in exchange
+     *   for zero fixed first-chunk delay — which matches measured producer
+     *   behavior, where isolated chunks dominate.
+     * - window > 0 (explicitly configured): arm the group-commit timer so
+     *   the leading chunk waits up to the window collecting a group —
+     *   the opt-in trade for slow-but-steady producers.
+     * Window resolution: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`, when set,
+     * overrides `world.streamFlushIntervalMs`; otherwise the World option
+     * (default 0) governs — including the very first chunk. Deciding may
+     * have to wait for the world to resolve; that adds no latency because
+     * `sendGroup` awaits the same promise before any request leaves.
+     */
     const scheduleGroupCommit = (): void => {
       if (flushTimer || inFlight) return;
+      if (resolvedFlushIntervalMs === undefined) {
+        // Promise.resolve: everywhere else the world is only ever awaited,
+        // which tolerates a synchronous value (tests stub getWorldLazy that
+        // way); .then() must be given a real promise.
+        flushIntervalResolution ??= Promise.resolve(worldPromise)
+          .then(
+            (world) => {
+              resolvedFlushIntervalMs =
+                world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS;
+            },
+            () => {
+              // World resolution failure surfaces on dispatch; fall back to
+              // the default so buffered chunks still reach the dispatch path
+              // (where the error poisons the sink).
+              resolvedFlushIntervalMs = STREAM_FLUSH_INTERVAL_MS;
+            }
+          )
+          .then(() => {
+            // Re-evaluate: the buffer may have been dispatched by drain()
+            // or a full-request fast path while the world resolved.
+            if (buffer.length > 0) scheduleGroupCommit();
+          });
+        return;
+      }
+      if (resolvedFlushIntervalMs <= 0) {
+        startDispatch();
+        return;
+      }
       flushTimer = setTimeout(() => {
         flushTimer = null;
         startDispatch();
-      }, resolvedFlushIntervalMs ?? getStreamFlushIntervalMs());
+      }, resolvedFlushIntervalMs);
     };
 
     /**
