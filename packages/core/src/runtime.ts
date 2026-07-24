@@ -45,6 +45,7 @@ import {
   isInlineOwnershipEnabled,
   isTurboEnabled,
 } from './runtime/constants.js';
+import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -264,75 +265,6 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
     eventId: terminalRunEvent.eventId,
   });
   return true;
-}
-
-/**
- * Ownership filter for {@link countStepStartedEvents}:
- * - `{ type: 'ownedBy', messageId }` counts only starts whose
- *   `eventData.ownerMessageId` matches — i.e. attempts performed by that
- *   owning queue message (inline lazy starts and owned-recovery re-stamps).
- * - `{ type: 'unowned' }` counts only starts with no `ownerMessageId` — i.e.
- *   bare starts written by queue-dispatched background step deliveries.
- */
-export type StepStartOwnerFilter =
-  | { type: 'ownedBy'; messageId: string }
-  | { type: 'unowned' };
-
-/**
- * Number of `step_started` events already recorded for a step, used as the
- * authoritative attempt count for the retry ceiling.
- *
- * IMPORTANT: the raw (unfiltered) count is NOT a reliable attempt number.
- * Concurrent invocations racing on the same pending batch (stale replays,
- * wake replays, a step message dispatched by a replay that lost the
- * create-claim race, ...) can each write a `step_started` for the same
- * logical attempt — worlds without an atomic start guard (world-local) let
- * all of them through. Counting those duplicates as "attempts" made the
- * maxRetries ceiling fire on healthy runs and fail them with a false
- * "exceeded max retries" (see workflow#3048 CI flake).
- *
- * Callers must therefore scope the count to the starts their ceiling is
- * actually about via `ownerFilter`:
- * - the inline owned-recovery ceiling counts only THIS message's starts
- *   (`ownedBy`) — each real (re)delivery of the owning message stamps its
- *   `ownerMessageId` on the start it writes, while racing invocations stamp
- *   their own IDs (or none), so they no longer inflate the count;
- * - the background-step ceiling counts only bare starts (`unowned`) — the
- *   background path never stamps ownership, so inline racers' stamped
- *   starts are excluded, and throttle/too-early redeliveries (which write
- *   no start at all) stay excluded as before.
- */
-export function countStepStartedEvents(
-  events: Event[] | null | undefined,
-  stepId: string,
-  ownerFilter?: StepStartOwnerFilter
-): number {
-  if (!events) {
-    return 0;
-  }
-  let count = 0;
-  for (const e of events) {
-    if (e.eventType !== 'step_started' || e.correlationId !== stepId) {
-      continue;
-    }
-    if (ownerFilter !== undefined) {
-      const owner =
-        'eventData' in e &&
-        e.eventData &&
-        'ownerMessageId' in e.eventData &&
-        typeof e.eventData.ownerMessageId === 'string'
-          ? e.eventData.ownerMessageId
-          : undefined;
-      if (ownerFilter.type === 'ownedBy' && owner !== ownerFilter.messageId) {
-        continue;
-      }
-      if (ownerFilter.type === 'unowned' && owner !== undefined) {
-        continue;
-      }
-    }
-    count++;
-  }
-  return count;
 }
 
 /**
@@ -824,14 +756,18 @@ export function workflowEntrypoint(
                       // step cannot be exhausted, so proceed without touching the
                       // log. Only once it crosses the ceiling do we load the full
                       // event log and derive the authoritative attempt from the
-                      // recorded `step_started` count — scoped to UNOWNED (bare)
-                      // starts, which only this path's real deliveries write:
-                      // throttle/too-early redeliveries write no start at all,
-                      // and racing inline invocations stamp their ownerMessageId
-                      // (counting their duplicate starts here falsely exhausted
-                      // healthy steps — see countStepStartedEvents). This still
-                      // bounds timeouts, which write no error for the post-body
-                      // guard to catch. The load also primes the replay's
+                      // recorded `step_started` count — scoped to the lifecycle
+                      // attempt total (bare starts plus the largest single
+                      // owner's starts): throttle/too-early redeliveries write
+                      // no start at all, racing invocations' one-off stamped
+                      // duplicates don't accumulate (counting them falsely
+                      // exhausted healthy steps — see countStepStartedEvents),
+                      // and attempts burned under a prior inline-ownership
+                      // phase still count, so a step that times out under
+                      // owned recovery and then transitions to queued/bare
+                      // retries trips the combined ceiling. This still bounds
+                      // timeouts, which write no error for the post-body guard
+                      // to catch. The load also primes the replay's
                       // `cachedEvents`/`eventsCursor` (the post-step
                       // continuation below refreshes them once the step's
                       // terminal event lands).
@@ -845,7 +781,7 @@ export function workflowEntrypoint(
                         eventsCursor = loaded.cursor;
                         bgAuthoritativeAttempt =
                           countStepStartedEvents(cachedEvents, incomingStepId, {
-                            type: 'unowned',
+                            type: 'totalAttempts',
                           }) + 1;
                       }
 
@@ -1950,8 +1886,9 @@ export function workflowEntrypoint(
                         //   - Inline-owned, owner === this message  →
                         //     execute in THIS invocation (owned recovery: a
                         //     redelivery of the owning message re-executes
-                        //     the step it crashed on, via a re-stamped bare
-                        //     step_started).
+                        //     the step it crashed on, via a payload-less
+                        //     step_started re-stamped with its
+                        //     ownerMessageId — not a bare start).
                         //   - Inline-owned, owner !== this message  →
                         //     ensure a DELAYED backstop wake exists
                         //     (delaySeconds = ownership lease remaining)
@@ -2104,8 +2041,11 @@ export function workflowEntrypoint(
                         // steps (this message's redelivery re-executing a
                         // step it crashed on — no lazyStepInput; the input
                         // hydrates from the step entity like the background
-                        // path, and the bare step_started re-stamps
-                        // ownership).
+                        // path, and the payload-less step_started re-stamps
+                        // ownership — unlike the background path's start it
+                        // is NOT bare: it carries this message's
+                        // ownerMessageId, which is also what the
+                        // owned-recovery retry ceiling counts).
                         const inlineExecutions: Array<{
                           correlationId: string;
                           stepName: string;

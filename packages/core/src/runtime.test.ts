@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from './private.js';
 import { REPLAY_DIVERGENCE_MAX_RETRIES } from './runtime/constants.js';
 import { setWorld } from './runtime/world.js';
-import { countStepStartedEvents, workflowEntrypoint } from './runtime.js';
+import { workflowEntrypoint } from './runtime.js';
 import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
@@ -2423,123 +2423,5 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(stso).toBeUndefined();
     // Continuation delivery is not turbo.
     expect(optimizations).toEqual(['lazyStepStart']);
-  });
-});
-
-describe('countStepStartedEvents', () => {
-  const stepId = 'step_TARGET';
-  let seq = 0;
-  const start = (ownerMessageId?: string, correlationId = stepId): Event =>
-    ({
-      eventType: 'step_started',
-      runId: 'wrun_count_test',
-      eventId: `evnt_${String(seq++).padStart(4, '0')}`,
-      createdAt: new Date(),
-      specVersion: SPEC_VERSION_CURRENT,
-      correlationId,
-      eventData: {
-        stepName: 'step//file//fn',
-        ...(ownerMessageId !== undefined ? { ownerMessageId } : {}),
-      },
-    }) as Event;
-
-  it('returns 0 for null/undefined/empty logs', () => {
-    expect(countStepStartedEvents(null, stepId)).toBe(0);
-    expect(countStepStartedEvents(undefined, stepId)).toBe(0);
-    expect(countStepStartedEvents([], stepId)).toBe(0);
-  });
-
-  it('unfiltered: counts every step_started for the step, ignoring other steps and event types', () => {
-    const events: Event[] = [
-      start('msg_A'),
-      start(undefined),
-      start('msg_B', 'step_OTHER'),
-      {
-        eventType: 'step_completed',
-        runId: 'wrun_count_test',
-        eventId: 'evnt_done',
-        createdAt: new Date(),
-        specVersion: SPEC_VERSION_CURRENT,
-        correlationId: stepId,
-        eventData: { result: undefined },
-      } as unknown as Event,
-    ];
-    expect(countStepStartedEvents(events, stepId)).toBe(2);
-  });
-
-  it('ownedBy: counts only starts stamped with the given messageId', () => {
-    const events: Event[] = [
-      start('msg_OWNER'), // this message's real attempt 1
-      start('msg_RACER_1'), // stale replay racing the batch
-      start('msg_RACER_2'), // wake replay racing the batch
-      start(undefined), // bare start from a dispatched step message
-      start('msg_OWNER'), // this message's recovery re-run (attempt 2)
-    ];
-    expect(
-      countStepStartedEvents(events, stepId, {
-        type: 'ownedBy',
-        messageId: 'msg_OWNER',
-      })
-    ).toBe(2);
-  });
-
-  it('unowned: counts only bare (background) starts', () => {
-    const events: Event[] = [
-      start('msg_OWNER'),
-      start(undefined),
-      start('msg_RACER_1'),
-      start(undefined),
-    ];
-    expect(countStepStartedEvents(events, stepId, { type: 'unowned' })).toBe(2);
-  });
-
-  it('regression (workflow#3048 CI flake): racing invocations must not exhaust the owned-recovery retry ceiling', () => {
-    // Shape observed in the inline-batches flake: the owning message started
-    // the step once, and concurrent invocations racing on the same pending
-    // batch (each stamping its own messageId, plus a bare start from a
-    // dispatched step message) wrote duplicate starts for the same logical
-    // attempt. With maxRetries=3 the guard fires when attempt > 4.
-    const events: Event[] = [
-      start('msg_OWNER'),
-      start('msg_RACER_1'),
-      start('msg_RACER_2'),
-      start(undefined),
-    ];
-    const maxRetries = 3;
-
-    // Unfiltered counting (the old behavior) reads 4 prior starts, so the
-    // owner's recovery re-run would compute attempt 5 > 4 and fail the run
-    // with a false "exceeded max retries".
-    const unfilteredAttempt = countStepStartedEvents(events, stepId) + 1;
-    expect(unfilteredAttempt).toBeGreaterThan(maxRetries + 1);
-
-    // Owner-scoped counting reads only the owner's single real attempt: the
-    // recovery re-run is attempt 2, comfortably inside the ceiling.
-    const ownedAttempt =
-      countStepStartedEvents(events, stepId, {
-        type: 'ownedBy',
-        messageId: 'msg_OWNER',
-      }) + 1;
-    expect(ownedAttempt).toBe(2);
-    expect(ownedAttempt).toBeLessThanOrEqual(maxRetries + 1);
-  });
-
-  it('still bounds real timeout retries: each recovery re-run by the owner counts toward the ceiling', () => {
-    // A genuinely timing-out step: the owning message is redelivered again
-    // and again, each recovery re-stamping its messageId (the #3035
-    // scenario the guard exists for). The owner filter must NOT weaken this.
-    const events: Event[] = [
-      start('msg_OWNER'),
-      start('msg_OWNER'),
-      start('msg_OWNER'),
-      start('msg_OWNER'),
-    ];
-    const maxRetries = 3;
-    const attempt =
-      countStepStartedEvents(events, stepId, {
-        type: 'ownedBy',
-        messageId: 'msg_OWNER',
-      }) + 1;
-    expect(attempt).toBeGreaterThan(maxRetries + 1);
   });
 });

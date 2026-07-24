@@ -108,9 +108,10 @@ export interface StepExecutorParams {
    * Inline step ownership: the queue message ID of the invocation this
    * executeStep call runs in (from the queue handler's meta). When set, the
    * `step_started` this call sends is stamped with it — on the lazy paths
-   * (where `lazyStepInput` is present) and on the owned-recovery bare start
-   * (where it is not; the re-stamp keeps a recovered step readable as owned
-   * by this message, since ownership derives from the LATEST start). Wake
+   * (where `lazyStepInput` is present) and on the owned-recovery
+   * payload-less start (where it is not; the re-stamp keeps a recovered
+   * step readable as owned by this message, since ownership derives from
+   * the LATEST start — so a recovery start is never bare). Wake
    * replays that observe an actively-owned step suppress the immediate
    * requeue and enqueue a delayed backstop instead. Omitted on the
    * background-step path, whose bare start intentionally clears ownership
@@ -592,11 +593,12 @@ export async function executeStep(
       // step_started (step already created, no payload).
       try {
         // Inline-ownership stamp: present on the lazy paths AND on the
-        // owned-recovery bare start (a redelivery of the owning message
-        // re-executing its step must re-stamp — ownership derives from the
-        // latest start, so an unstamped recovery start would read as
-        // "unowned" to a later wake). The background-step path passes no
-        // ownerMessageId, so its bare start clears ownership as intended.
+        // owned-recovery payload-less start (a redelivery of the owning
+        // message re-executing its step must re-stamp — ownership derives
+        // from the latest start, so an unstamped recovery start would read
+        // as "unowned" to a later wake). Only the background-step path
+        // passes no ownerMessageId: its start is the bare one, clearing
+        // ownership as intended.
         const ownershipStamp =
           params.ownerMessageId !== undefined
             ? { ownerMessageId: params.ownerMessageId }
