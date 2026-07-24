@@ -11,6 +11,8 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { decrypt, encrypt, importKey } from './encryption.js';
 import { getStepFunction, registerStepFunction } from './private.js';
+import { deriveRunKeyPair } from './sealed-box.js';
+import { runPayloadKeys, sealTo } from './serialization/encryption.js';
 import {
   cancelAbortReaders,
   decodeFormatPrefix,
@@ -5027,6 +5029,220 @@ describe('stream encryption round-trip', () => {
 
     expect(results).toHaveLength(1);
     expect(results[0]).toEqual(largeArray);
+  });
+});
+
+describe('stream sealing round-trip (encp)', () => {
+  const K = new Uint8Array(32).fill(0x33);
+  const reducers = {} as any;
+  const revivers = getCommonRevivers(globalThis) as any;
+
+  let keyPair: Awaited<ReturnType<typeof deriveRunKeyPair>>;
+  let runKeys: ReturnType<typeof runPayloadKeys>;
+  beforeAll(async () => {
+    keyPair = await deriveRunKeyPair(K);
+    runKeys = runPayloadKeys(await importKey(K), keyPair);
+  });
+
+  /** Drive a serialize stream with the given key, collecting frames. */
+  async function serializeWith(
+    key: Parameters<typeof getSerializeStream>[1],
+    values: unknown[]
+  ): Promise<Uint8Array[]> {
+    const serialize = getSerializeStream(reducers, key);
+    const results: Uint8Array[] = [];
+    const readPromise = (async () => {
+      const reader = serialize.readable.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        results.push(value);
+      }
+    })();
+    const writer = serialize.writable.getWriter();
+    for (const value of values) await writer.write(value);
+    await writer.close();
+    await readPromise;
+    return results;
+  }
+
+  async function deserializeWith(
+    key: Parameters<typeof getDeserializeStream>[1],
+    chunks: Uint8Array[]
+  ): Promise<unknown[]> {
+    const deserialize = getDeserializeStream(revivers, key);
+    const results: unknown[] = [];
+    const readPromise = (async () => {
+      const reader = deserialize.readable.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        results.push(value);
+      }
+    })();
+    const writer = deserialize.writable.getWriter();
+    for (const chunk of chunks) await writer.write(chunk);
+    await writer.close();
+    await readPromise;
+    return results;
+  }
+
+  it('emits encp-prefixed frames with the length header in the clear', async () => {
+    const frames = await serializeWith(sealTo(keyPair.publicKey), [
+      { hello: 'world' },
+    ]);
+    expect(frames).toHaveLength(1);
+
+    const frame = frames[0];
+    const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+    // Frame boundaries must stay readable without any key so a reader can
+    // still find them regardless of transport chunking.
+    expect(view.getUint32(0, false)).toBe(frame.length - 4);
+    expect(new TextDecoder().decode(frame.subarray(4, 8))).toBe('encp');
+  });
+
+  it('round-trips: cross-run writer seals frames, owning run opens them', async () => {
+    const original = [
+      { message: 'secret', count: 42 },
+      [1, 2, 3],
+      'plain',
+      null,
+    ];
+    const sealed = await serializeWith(sealTo(keyPair.publicKey), original);
+    expect(await deserializeWith(runKeys, sealed)).toEqual(original);
+  });
+
+  it('handles sealed frames coalesced into one transport chunk', async () => {
+    const sealed = await serializeWith(sealTo(keyPair.publicKey), [
+      { a: 1 },
+      { b: 2 },
+      { c: 3 },
+    ]);
+    const total = sealed.reduce((sum, c) => sum + c.length, 0);
+    const concatenated = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of sealed) {
+      concatenated.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    expect(await deserializeWith(runKeys, [concatenated])).toEqual([
+      { a: 1 },
+      { b: 2 },
+      { c: 3 },
+    ]);
+  });
+
+  it('handles a sealed frame split across transport chunks', async () => {
+    const sealed = await serializeWith(sealTo(keyPair.publicKey), [
+      { data: 'split me' },
+    ]);
+    const frame = sealed[0];
+    const mid = Math.floor(frame.length / 2);
+
+    expect(
+      await deserializeWith(runKeys, [frame.slice(0, mid), frame.slice(mid)])
+    ).toEqual([{ data: 'split me' }]);
+  });
+
+  it('never repeats a (content key, nonce) pair across frames', async () => {
+    // Regression guard for the nonce-reuse hazard: every frame carries
+    // identical plaintext, so any reuse of a (key, nonce) pair would show up
+    // as byte-identical ciphertext. Under AES-GCM that leaks the plaintext
+    // XOR and the auth subkey, which would let anyone with read access forge
+    // frames.
+    const frames = await serializeWith(
+      sealTo(keyPair.publicKey),
+      Array.from({ length: 100 }, () => ({ same: 'payload' }))
+    );
+
+    const bodies = new Set(frames.map((f) => Array.from(f).join(',')));
+    expect(bodies.size).toBe(100);
+  });
+
+  it('never reuses a content key across writers, so reconnects and replays are safe', async () => {
+    // Each stream instance is a fresh writer — modelling a reconnect or a
+    // durable replay. Every incarnation must derive its own content key, so
+    // that restarting frame numbering at zero can never collide.
+    const runs = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        serializeWith(sealTo(keyPair.publicKey), [{ frame: 0 }])
+      )
+    );
+
+    // The ephemeral public key sits right after the 4-byte length header and
+    // the 4-byte 'encp' prefix.
+    const ephemeralKeys = new Set(
+      runs.map((frames) => Array.from(frames[0].subarray(8, 40)).join(','))
+    );
+    expect(ephemeralKeys.size).toBe(10);
+
+    // Every replay still decodes correctly.
+    for (const frames of runs) {
+      expect(await deserializeWith(runKeys, frames)).toEqual([{ frame: 0 }]);
+    }
+  });
+
+  it('errors when sealed frames arrive without a run keypair', async () => {
+    const sealed = await serializeWith(sealTo(keyPair.publicKey), [
+      { secret: true },
+    ]);
+
+    // A bare symmetric key cannot open sealed frames.
+    const deserialize = getDeserializeStream(revivers, await importKey(K));
+    const readPromise = (async () => {
+      const reader = deserialize.readable.getReader();
+      for (;;) {
+        const { done } = await reader.read();
+        if (done) break;
+      }
+    })();
+    const writer = deserialize.writable.getWriter();
+    for (const chunk of sealed) await writer.write(chunk).catch(() => {});
+    await writer.close().catch(() => {});
+
+    const error = await readPromise.catch((e) => e);
+    expect(RuntimeDecryptionError.is(error)).toBe(true);
+    expect(error.message).toMatch(/no run keypair is available/);
+    expect(error.context).toMatchObject({
+      operation: 'decrypt',
+      formatPrefix: 'encp',
+    });
+  });
+
+  it('errors with the encp prefix in context when a sealed frame is tampered', async () => {
+    const sealed = await serializeWith(sealTo(keyPair.publicKey), [
+      { secret: true },
+    ]);
+    const tampered = new Uint8Array(sealed[0]);
+    tampered[tampered.length - 1] ^= 0xff;
+
+    const deserialize = getDeserializeStream(revivers, runKeys);
+    const readPromise = (async () => {
+      const reader = deserialize.readable.getReader();
+      for (;;) {
+        const { done } = await reader.read();
+        if (done) break;
+      }
+    })();
+    const writer = deserialize.writable.getWriter();
+    await writer.write(tampered).catch(() => {});
+    await writer.close().catch(() => {});
+
+    const error = await readPromise.catch((e) => e);
+    expect(RuntimeDecryptionError.is(error)).toBe(true);
+    expect(error.context).toMatchObject({
+      operation: 'decrypt',
+      formatPrefix: 'encp',
+    });
+  });
+
+  it("still writes symmetric frames for a run's own stream", async () => {
+    // Same-run streams keep using `encr` even though the holder of
+    // RunPayloadKeys could seal — see the PayloadKey docs.
+    const frames = await serializeWith(runKeys, [{ own: true }]);
+    expect(new TextDecoder().decode(frames[0].subarray(4, 8))).toBe('encr');
+    expect(await deserializeWith(runKeys, frames)).toEqual([{ own: true }]);
   });
 });
 

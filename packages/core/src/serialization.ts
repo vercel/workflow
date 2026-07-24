@@ -6,12 +6,7 @@ import {
 import { envNumber } from '@workflow/world';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
-import {
-  decrypt as aesGcmDecrypt,
-  encrypt as aesGcmEncrypt,
-  type CryptoKey,
-  importKey,
-} from './encryption.js';
+import { type CryptoKey, importKey } from './encryption.js';
 import {
   createFlushableState,
   flushablePipe,
@@ -37,9 +32,12 @@ import {
   decompress,
 } from './serialization/compression.js';
 import {
+  aesKeyOf,
   decrypt,
   type EncryptionKeyParam,
   encrypt,
+  isRunPayloadKeys,
+  type PayloadKey,
   resolveEncryptionKey,
 } from './serialization/encryption.js';
 import {
@@ -221,7 +219,10 @@ export function getSerializeStream(
   // Note: if resolving cryptoKey rejects (e.g., network error fetching
   // the derived key), the rejection won't surface until the first chunk
   // is processed — not at stream construction time.
-  const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
+  const keyState = {
+    resolved: false,
+    key: undefined as PayloadKey | undefined,
+  };
   const stream = new TransformStream<any, Uint8Array>({
     async transform(chunk, controller) {
       try {
@@ -239,12 +240,13 @@ export function getSerializeStream(
         // Encrypt the frame payload if a key is provided.
         // The length header remains in the clear so the deserializer can
         // find frame boundaries regardless of transport chunking.
+        //
+        // Each frame gets its own random nonce (and, on the sealed path, its
+        // own ephemeral keypair). Never switch this to a counter: a stream
+        // reconnect or a durable replay restarts the writer, which would
+        // repeat `(key, nonce)` and catastrophically break AES-GCM.
         if (keyState.key) {
-          const encrypted = await aesGcmEncrypt(keyState.key, prefixed);
-          prefixed = encodeWithFormatPrefix(
-            SerializationFormat.ENCRYPTED,
-            encrypted
-          ) as Uint8Array;
+          prefixed = (await encrypt(prefixed, keyState.key)) as Uint8Array;
         }
 
         // Write length-prefixed frame: [4-byte length][prefixed data]
@@ -280,7 +282,10 @@ export function getDeserializeStream(
   const decoder = new TextDecoder();
   let buffer = new Uint8Array(0);
   // Resolve the key input once on first use and cache the result.
-  const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
+  const keyState = {
+    resolved: false,
+    key: undefined as PayloadKey | undefined,
+  };
 
   function appendToBuffer(data: Uint8Array) {
     const newBuffer = new Uint8Array(buffer.length + data.length);
@@ -318,20 +323,33 @@ export function getDeserializeStream(
 
       let { format, payload } = decodeFormatPrefix(frameData);
 
-      // If the frame payload is encrypted, decrypt it first to reveal
-      // the inner format-prefixed data (e.g., 'devl' + serialized text),
-      // then fall through to the normal deserialization path.
-      if (format === SerializationFormat.ENCRYPTED) {
-        if (!keyState.key) {
+      // If the frame payload is encrypted or sealed, recover it first to
+      // reveal the inner format-prefixed data (e.g., 'devl' + serialized
+      // text), then fall through to the normal deserialization path.
+      if (
+        format === SerializationFormat.ENCRYPTED ||
+        format === SerializationFormat.SEALED
+      ) {
+        const sealed = format === SerializationFormat.SEALED;
+        // A sealed frame needs the run's keypair; a symmetric frame needs an
+        // AES key. Report the shortfall precisely — "no key at all" and "the
+        // wrong kind of key" have very different causes.
+        const usable = sealed
+          ? isRunPayloadKeys(keyState.key)
+          : aesKeyOf(keyState.key) !== undefined;
+        if (!usable) {
           controller.error(
             new RuntimeDecryptionError(
-              'Encrypted stream data encountered but no encryption key is available. ' +
-                'Encryption is not configured or no key was provided for this run.',
+              sealed
+                ? 'Sealed stream data encountered but no run keypair is available. ' +
+                    "Opening a sealed frame requires the run's own encryption key material."
+                : 'Encrypted stream data encountered but no encryption key is available. ' +
+                    'Encryption is not configured or no key was provided for this run.',
               {
                 context: {
                   operation: 'decrypt',
                   byteLength: payload.byteLength,
-                  formatPrefix: 'encr',
+                  formatPrefix: sealed ? 'encp' : 'encr',
                 },
               }
             )
@@ -340,12 +358,14 @@ export function getDeserializeStream(
         }
         let decrypted: Uint8Array;
         try {
-          decrypted = await aesGcmDecrypt(keyState.key, payload);
+          // Delegate to the shared envelope layer so the two schemes stay in
+          // lockstep with the one-shot path.
+          decrypted = (await decrypt(frameData, keyState.key)) as Uint8Array;
         } catch (error) {
-          // The low-level AES layer only sees the stripped payload, so it
-          // cannot record the outer envelope prefix. We peeked it here
-          // (`encr`), so enrich the diagnostic context with the real format
-          // prefix before propagating — mirroring serialization/encryption.ts.
+          // The low-level crypto layer only sees the stripped payload, so it
+          // cannot record the outer envelope prefix. We peeked it here, so
+          // enrich the diagnostic context with the real format prefix before
+          // propagating — mirroring serialization/encryption.ts.
           if (RuntimeDecryptionError.is(error) && error.context) {
             error.context.formatPrefix = format;
           }
@@ -3044,7 +3064,7 @@ function getStepRevivers(
  */
 export async function maybeEncrypt(
   data: Uint8Array,
-  key: CryptoKey | undefined
+  key: PayloadKey | undefined
 ): Promise<Uint8Array> {
   return (await encrypt(data, key)) as Uint8Array;
 }
@@ -3056,7 +3076,7 @@ export async function maybeEncrypt(
  */
 export async function maybeDecrypt(
   data: Uint8Array | unknown,
-  key: CryptoKey | undefined
+  key: PayloadKey | undefined
 ): Promise<Uint8Array | unknown> {
   return decrypt(data, key);
 }
@@ -3084,7 +3104,7 @@ export interface PreparedReplayPayload {
  */
 export type ReplayPayloadPreparer = (
   value: unknown,
-  key: CryptoKey | undefined
+  key: PayloadKey | undefined
 ) => PreparedReplayPayload | Promise<PreparedReplayPayload>;
 
 /**
@@ -3179,7 +3199,7 @@ export function deserializePreparedStepError(
 export async function dehydrateWorkflowArguments(
   value: unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
   v1Compat = false,
@@ -3223,7 +3243,7 @@ export async function dehydrateWorkflowArguments(
 export async function hydrateWorkflowArguments(
   value: Uint8Array | unknown,
   _runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
@@ -3241,7 +3261,7 @@ export async function hydrateWorkflowArguments(
 export async function dehydrateWorkflowReturnValue(
   value: unknown,
   _runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false,
   compression = false
@@ -3277,7 +3297,7 @@ export async function dehydrateWorkflowReturnValue(
 export async function hydrateWorkflowReturnValue(
   value: Uint8Array | unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
@@ -3304,7 +3324,7 @@ export async function hydrateWorkflowReturnValue(
 export async function dehydrateStepArguments(
   value: unknown,
   _runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false,
   compression = false
@@ -3337,7 +3357,7 @@ export async function dehydrateStepArguments(
 export async function hydrateStepArguments(
   value: Uint8Array | unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
@@ -3378,7 +3398,7 @@ export async function hydrateStepArguments(
 export async function dehydrateStepReturnValue(
   value: unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
   v1Compat = false,
@@ -3451,7 +3471,7 @@ export async function dehydrateStepReturnValue(
 export async function dehydrateStepError(
   value: unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
   compression = false
@@ -3499,7 +3519,7 @@ export async function dehydrateStepError(
 export async function hydrateStepError(
   value: Uint8Array | unknown,
   _runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
@@ -3525,7 +3545,7 @@ export async function hydrateStepError(
 export async function dehydrateRunError(
   value: unknown,
   _runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   compression = false
 ): Promise<Uint8Array> {
@@ -3571,7 +3591,7 @@ export async function dehydrateRunError(
 export async function hydrateRunError(
   value: Uint8Array | unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
@@ -3624,7 +3644,7 @@ export async function hydrateRunError(
 export async function hydrateStepReturnValue(
   value: Uint8Array | unknown,
   _runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
