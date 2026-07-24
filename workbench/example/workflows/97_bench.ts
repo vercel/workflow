@@ -17,11 +17,14 @@
 //   reader's `readAt` so SL (`readAt - writtenAt`) excludes the client read
 //   path.
 // - `benchSoWorkflow` measures stream overhead (SO), reusing the SL setup but
-//   streaming a realistic LLM-shaped workload: a writer emits fake 4-byte
-//   tokens paced at a fixed rate for a fixed duration while a parallel reader
-//   drains the whole stream. The workflow returns the writer's `writtenAt` and
-//   the reader's `doneAt`; the runner subtracts the modelled generation window
-//   from `doneAt - writtenAt`, leaving the stream's overhead/backpressure.
+//   streaming a realistic LLM-shaped workload: a writer emits deterministic
+//   variable-length token deltas paced at a fixed rate for a fixed duration
+//   while a parallel reader drains the whole stream. The workflow returns the
+//   writer's `writtenAt` and the reader's `doneAt`; the runner subtracts the
+//   modelled generation window from `doneAt - writtenAt`, leaving the stream's
+//   overhead/backpressure. Two payload shapes are supported so the runner can
+//   isolate serialization cost: `'text'` (raw string fragments) and
+//   `'structured'` (AI-SDK-style `{ type: 'text-delta', id, text }` objects).
 
 import { createHook, getWorkflowMetadata, getWritable } from 'workflow';
 import { getRun } from 'workflow/api';
@@ -55,6 +58,21 @@ export interface BenchStreamOverhead {
   received: number;
 }
 
+/** AI-SDK-style structured text delta streamed by the SO structured variant. */
+export interface BenchTextDelta {
+  type: 'text-delta';
+  id: string;
+  text: string;
+}
+
+/** A single SO chunk: either a raw text fragment or a structured delta. */
+export type BenchStreamDelta = string | BenchTextDelta;
+
+/** SO payload shape. `'text'` streams raw string fragments; `'structured'`
+ * wraps each fragment in a {@link BenchTextDelta}, so the two scenarios differ
+ * only in payload shape (same fragments, count, and pacing). */
+export type BenchStreamOverheadMode = 'text' | 'structured';
+
 // Dedicated stream for the SL scenario, kept off the default output stream so
 // it never interacts with the default-stream lifecycle.
 const SL_STREAM_NAMESPACE = 'bench-sl';
@@ -71,9 +89,37 @@ const SL_READY_NAMESPACE = 'bench-sl-ready';
 // reader-ready barrier pattern SL uses.
 const SO_STREAM_NAMESPACE = 'bench-so';
 const SO_READY_NAMESPACE = 'bench-so-ready';
-// Payload for each SO chunk: 4 ASCII bytes, modelling ~one LLM token. Kept as a
-// tiny string so per-chunk framing (not payload size) dominates the overhead.
-const SO_CHUNK_PAYLOAD = 'aaaa';
+// Deterministic, variable-length text fragments cycled to approximate real
+// token-stream traffic (≈4.5 UTF-8 bytes on average, including punctuation and
+// newline "tokens") while keeping every run byte-for-byte reproducible.
+const SO_TEXT_FRAGMENTS = [
+  'The',
+  ' quick',
+  ' brown',
+  ' fox',
+  ' jumps',
+  ' over',
+  ' the',
+  ' lazy',
+  ' dog',
+  '.\n',
+];
+// AI-SDK text-delta events for a single text block share one id, so the
+// structured variant keeps `id` constant and only varies `text`.
+const SO_STRUCTURED_DELTA_ID = '0';
+
+/** Builds the `index`-th SO chunk in the requested shape. Both shapes cycle the
+ * same fragment list, so `'text'` vs `'structured'` isolates serialization
+ * cost and nothing else. */
+function soChunk(
+  mode: BenchStreamOverheadMode,
+  index: number
+): BenchStreamDelta {
+  const text = SO_TEXT_FRAGMENTS[index % SO_TEXT_FRAGMENTS.length];
+  return mode === 'structured'
+    ? { type: 'text-delta', id: SO_STRUCTURED_DELTA_ID, text }
+    : text;
+}
 
 async function timedNoopStep(index: number): Promise<BenchStepTiming> {
   'use step';
@@ -245,8 +291,10 @@ export async function benchSlWorkflow(): Promise<{ sl: BenchStreamLatency }> {
 async function soReaderStep(): Promise<{ doneAt: number; received: number }> {
   'use step';
   const { workflowRunId } = getWorkflowMetadata();
-  const reader = getRun<string>(workflowRunId)
-    .getReadable<string>({ namespace: SO_STREAM_NAMESPACE })
+  // The reader only counts chunks and stamps the drain time, so it is agnostic
+  // to the payload shape the writer chose.
+  const reader = getRun<BenchStreamDelta>(workflowRunId)
+    .getReadable<BenchStreamDelta>({ namespace: SO_STREAM_NAMESPACE })
     .getReader();
   try {
     // Initiate the read BEFORE signalling ready so the stream GET is in flight
@@ -274,15 +322,17 @@ async function soReaderStep(): Promise<{ doneAt: number; received: number }> {
 }
 
 /** Writer half of the SO scenario: blocks on the reader-ready marker (as in
- * {@link slWriterStep}), then streams `chunkCount` fixed-size chunks paced to
- * one every `intervalMs`. `writtenAt` is stamped just before the loop, and each
- * write is scheduled at `writtenAt + (i + 1) * intervalMs`, so the write phase
- * spans `chunkCount * intervalMs` by construction — the modelled generation
- * window. Pacing only sleeps while ahead of schedule; if backpressure puts the
- * writer behind, it writes immediately and that lost time surfaces as SO. */
+ * {@link slWriterStep}), then streams `chunkCount` token deltas (in the given
+ * `mode`) paced to one every `intervalMs`. `writtenAt` is stamped just before
+ * the loop, and each write is scheduled at `writtenAt + (i + 1) * intervalMs`,
+ * so the write phase spans `chunkCount * intervalMs` by construction — the
+ * modelled generation window. Pacing only sleeps while ahead of schedule; if
+ * backpressure puts the writer behind, it writes immediately and that lost time
+ * surfaces as SO. */
 async function soWriterStep(
   chunkCount: number,
-  intervalMs: number
+  intervalMs: number,
+  mode: BenchStreamOverheadMode
 ): Promise<{ writtenAt: number }> {
   'use step';
   const { workflowRunId } = getWorkflowMetadata();
@@ -295,7 +345,9 @@ async function soWriterStep(
     readyReader.cancel().catch(() => {});
   }
 
-  const writable = getWritable<string>({ namespace: SO_STREAM_NAMESPACE });
+  const writable = getWritable<BenchStreamDelta>({
+    namespace: SO_STREAM_NAMESPACE,
+  });
   const writer = writable.getWriter();
   const writtenAt = Date.now();
   for (let i = 0; i < chunkCount; i++) {
@@ -303,7 +355,7 @@ async function soWriterStep(
     if (delay > 0) {
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
-    await writer.write(SO_CHUNK_PAYLOAD);
+    await writer.write(soChunk(mode, i));
   }
   writer.releaseLock();
   await writable.close();
@@ -315,21 +367,24 @@ async function soWriterStep(
  *
  * Reuses the SL scenario's dedicated-stream + reader-ready-barrier setup, but
  * models a realistic LLM streaming workload: the writer emits `chunkCount`
- * 4-byte chunks paced at one every `intervalMs` (e.g. 300 chunks at 10ms ≈ a
- * haiku-size LLM streaming ~100 tokens/s for 3s) while the reader drains the
- * whole stream in parallel. The workflow returns the writer's `writtenAt` and
- * the reader's `doneAt`; the runner subtracts the modelled generation window
- * (`chunkCount * intervalMs`) from `doneAt - writtenAt`, so SO isolates the
- * stream's write+consume overhead/backpressure on top of the token rate.
+ * variable-length token deltas (shape chosen by `mode`) paced at one every
+ * `intervalMs` (e.g. 300 chunks at 10ms ≈ a haiku-size LLM streaming ~100
+ * tokens/s for 3s) while the reader drains the whole stream in parallel. The
+ * workflow returns the writer's `writtenAt` and the reader's `doneAt`; the
+ * runner subtracts the modelled generation window (`chunkCount * intervalMs`)
+ * from `doneAt - writtenAt`, so SO isolates the stream's write+consume
+ * overhead/backpressure on top of the token rate. Running it in both `'text'`
+ * and `'structured'` mode isolates serialization cost.
  */
 export async function benchSoWorkflow(
   chunkCount: number,
-  intervalMs: number
+  intervalMs: number,
+  mode: BenchStreamOverheadMode = 'text'
 ): Promise<{ so: BenchStreamOverhead }> {
   'use workflow';
   const [reader, writer] = await Promise.all([
     soReaderStep(),
-    soWriterStep(chunkCount, intervalMs),
+    soWriterStep(chunkCount, intervalMs, mode),
   ]);
   return {
     so: {

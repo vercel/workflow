@@ -49,12 +49,15 @@
  *          the old client-observed metric included.
  * - SO    (stream overhead): end-to-end write+consume time in excess of a
  *          modelled generation window, measured on the deployment by
- *          `benchSoWorkflow`. A writer streams fake 4-byte LLM-token chunks at
- *          a fixed rate for a fixed duration while a parallel reader drains the
- *          whole stream; SO is `(doneAt - writtenAt) - chunkCount*intervalMs`,
- *          i.e. the overhead/backpressure the stream adds on top of the token
- *          rate. Same setup as SL, but the reader stamps `doneAt` after the
- *          last chunk rather than `readAt` on the first.
+ *          `benchSoWorkflow`. A writer streams deterministic variable-length
+ *          LLM-token deltas at a fixed rate for a fixed duration while a
+ *          parallel reader drains the whole stream; SO is
+ *          `(doneAt - writtenAt) - chunkCount*intervalMs`, i.e. the
+ *          overhead/backpressure the stream adds on top of the token rate. Same
+ *          setup as SL, but the reader stamps `doneAt` after the last chunk
+ *          rather than `readAt` on the first. Measured for two payload shapes
+ *          (raw text vs AI-SDK-style structured deltas) so the SO delta between
+ *          them isolates serialization cost.
  *
  * Scenarios (defined in workbench/example/workflows/97_bench.ts):
  *
@@ -64,6 +67,7 @@
  * 4. benchSequentialStepsWorkflow — 1020 trivial sequential steps → STSO + WO
  * 5. benchSlWorkflow              — parallel reader/writer steps → SL
  * 6. benchSoWorkflow              — paced LLM-shaped stream, drained → SO
+ *                                   (run in text and structured payload modes)
  *
  * Each scenario runs many iterations (env-tunable, see BENCH_* below) so the
  * percentiles are computed from real samples.
@@ -389,10 +393,13 @@ async function runSlIteration(): Promise<SlIterationResult> {
   }
 }
 
-async function runSoIteration(): Promise<SoIterationResult> {
+async function runSoIteration(
+  mode: 'text' | 'structured'
+): Promise<SoIterationResult> {
   const { runId } = await triggerBenchRun('benchSoWorkflow', [
     SO_CHUNK_COUNT,
     SO_INTERVAL_MS,
+    mode,
   ]);
   try {
     const returnValue = await withTimeout(
@@ -400,7 +407,7 @@ async function runSoIteration(): Promise<SoIterationResult> {
       // The writer streams for the whole generation window before the run can
       // complete, so extend the guard past the base run timeout by that window.
       RUN_TIMEOUT_MS + SO_NOMINAL_DURATION_MS,
-      `benchSoWorkflow returnValue (run ${runId})`
+      `benchSoWorkflow (${mode}) returnValue (run ${runId})`
     );
     const so = (returnValue as { so?: BenchStreamOverhead } | undefined)?.so;
     if (
@@ -575,7 +582,12 @@ const SCENARIO_TURBO_STREAM = 'stream';
 const SCENARIO_HOOK_STREAM = 'hook + stream';
 const SCENARIO_SEQUENTIAL = `${SEQUENTIAL_STEP_COUNT} steps`;
 const SCENARIO_STREAM_LATENCY = 'stream latency';
-const SCENARIO_STREAM_OVERHEAD = 'stream overhead';
+// Two SO scenarios differing only in payload shape. The labels are distinct
+// from the pre-existing 'stream overhead' baseline key, so the payload change
+// doesn't diff against the old fixed-'aaaa' numbers — the SO deltas start blank
+// and re-baseline on the next `main` run.
+const SCENARIO_STREAM_OVERHEAD_TEXT = 'stream overhead (text)';
+const SCENARIO_STREAM_OVERHEAD_STRUCTURED = 'stream overhead (structured)';
 const SCENARIO_DESCRIPTIONS = [
   {
     name: SCENARIO_STEP,
@@ -602,8 +614,12 @@ const SCENARIO_DESCRIPTIONS = [
       'parallel reader/writer steps on a dedicated stream; SL is the in-deployment write->read propagation (readAt - writtenAt)',
   },
   {
-    name: SCENARIO_STREAM_OVERHEAD,
-    description: `writer streams ${SO_CHUNK_COUNT} 4-byte chunks paced at ${SO_CHUNK_RATE_PER_SEC}/s for ${SO_DURATION_SECONDS}s (a haiku-size LLM's token throughput) while a parallel reader drains the whole stream; SO is the end-to-end write+consume time beyond the ${SO_DURATION_SECONDS}s generation window (overhead/backpressure)`,
+    name: SCENARIO_STREAM_OVERHEAD_TEXT,
+    description: `writer streams ${SO_CHUNK_COUNT} variable-length text token deltas paced at ${SO_CHUNK_RATE_PER_SEC}/s for ${SO_DURATION_SECONDS}s (a haiku-size LLM's token throughput) while a parallel reader drains the whole stream; SO is the end-to-end write+consume time beyond the ${SO_DURATION_SECONDS}s generation window (overhead/backpressure)`,
+  },
+  {
+    name: SCENARIO_STREAM_OVERHEAD_STRUCTURED,
+    description: `same workload as ${SCENARIO_STREAM_OVERHEAD_TEXT}, but each delta is an AI-SDK-style structured object ({ type: 'text-delta', id, text }) instead of a raw string, so the SO gap vs the text scenario is the added serialization cost`,
   },
 ];
 
@@ -696,19 +712,41 @@ describe('workflow benchmarks', () => {
     );
   });
 
-  test('scenario: stream overhead', { timeout: 30 * 60_000 }, async () => {
-    const results = await runScenario(
-      SCENARIO_STREAM_OVERHEAD,
-      SO_ITERATIONS,
-      () => runSoIteration()
-    );
-    recordMetric(
-      'so',
-      SCENARIO_STREAM_OVERHEAD,
-      results.map((r) => r.soMs),
-      SO_TARGETS
-    );
-  });
+  test(
+    'scenario: stream overhead (text)',
+    { timeout: 30 * 60_000 },
+    async () => {
+      const results = await runScenario(
+        SCENARIO_STREAM_OVERHEAD_TEXT,
+        SO_ITERATIONS,
+        () => runSoIteration('text')
+      );
+      recordMetric(
+        'so',
+        SCENARIO_STREAM_OVERHEAD_TEXT,
+        results.map((r) => r.soMs),
+        SO_TARGETS
+      );
+    }
+  );
+
+  test(
+    'scenario: stream overhead (structured)',
+    { timeout: 30 * 60_000 },
+    async () => {
+      const results = await runScenario(
+        SCENARIO_STREAM_OVERHEAD_STRUCTURED,
+        SO_ITERATIONS,
+        () => runSoIteration('structured')
+      );
+      recordMetric(
+        'so',
+        SCENARIO_STREAM_OVERHEAD_STRUCTURED,
+        results.map((r) => r.soMs),
+        SO_TARGETS
+      );
+    }
+  );
 
   test('scenario: sequential steps', { timeout: 60 * 60_000 }, async () => {
     const results = await runScenario(
