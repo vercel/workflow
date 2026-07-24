@@ -64,7 +64,6 @@ export { HookSchema } from './hooks.js';
 export type * from './interfaces.js';
 export type * from './queue.js';
 export {
-  getQueuePrefixKind,
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   MessageId,
@@ -73,7 +72,6 @@ export {
   QueuePrefix,
   RunInputSchema,
   resolveQueueNamespace,
-  StepInvokePayloadSchema,
   ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from './queue.js';
@@ -122,6 +120,7 @@ export {
   TERMINAL_STEP_STATUSES,
   TerminalStepStatusSchema,
 } from './steps.js';
+export type { WorkflowRunId } from './ulid.js';
 export {
   DEFAULT_TIMESTAMP_THRESHOLD_FUTURE_MS,
   DEFAULT_TIMESTAMP_THRESHOLD_MS,
@@ -130,6 +129,5 @@ export {
   validateUlidTimestamp,
   workflowRunIdSchema,
 } from './ulid.js';
-export type { WorkflowRunId } from './ulid.js';
 export type * from './waits.js';
 export { WaitSchema, WaitStatusSchema } from './waits.js';

@@ -22,7 +22,7 @@ describe('contextStorage singleton', () => {
 
   it('preserves context from run() when getStore() is called from a separately-constructed reference', async () => {
     // This simulates the dual-module-instance problem:
-    // step-handler sets context via one reference, user code reads via another.
+    // step executor sets context via one reference, user code reads via another.
     // With the Symbol.for() singleton fix, both references point to the same instance.
     const { contextStorage } = await import('./context-storage.js');
     const globalInstance = (globalThis as any)[

@@ -953,7 +953,7 @@ jobs:
           # workbench's workflows are symlinks into workbench/example, and
           # Windows/Turbopack can rebuild from the symlink path while still
           # serving the previous module contents from the realpath cache.
-          DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/flow/__step_registrations.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000,"testWorkflowFile":"96_many_steps.ts"}'
+          DEV_TEST_CONFIG: '{"generatedStepRegistrationPath":"app/.well-known/workflow/v1/flow/__step_registrations.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000,"testWorkflowFile":"96_many_steps.ts"}'
           DEV_SERVER_LOG_PATH: "${{ github.workspace }}/nextjs-server.log"
           WORKFLOW_DEV_HMR_LOGS: "1"
 

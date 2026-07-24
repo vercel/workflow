@@ -325,7 +325,7 @@ export async function start<TArgs extends unknown[], TResult>(
         framedByteStreams = false;
         targetSupportsCompression = false;
       } else {
-        const probe = await healthCheck(world, 'workflow', {
+        const probe = await healthCheck(world, {
           deploymentId,
           timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
           namespace: opts.namespace,

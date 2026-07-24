@@ -76,7 +76,7 @@ export type StepContext = {
  *
  * Uses `Symbol.for()` on globalThis to guarantee a single instance even when
  * bundlers (e.g. Vercel's production bundler) create multiple copies of this
- * module. Without this, `contextStorage.run()` in the step handler and
+ * module. Without this, `contextStorage.run()` in the step executor and
  * `contextStorage.getStore()` in user code (via getWorkflowMetadata /
  * getStepMetadata) can reference different AsyncLocalStorage instances,
  * causing the store to appear empty.

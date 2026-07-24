@@ -2194,7 +2194,7 @@ function setupAbortStreamReader(
           try {
             // Hydrate via the same machinery the writer used so the reason
             // round-trips with full type fidelity. Encryption key (if any)
-            // comes from the step context — set up by the step handler before
+            // comes from the step context — set up by the step executor before
             // this reader runs. Fallback to undefined for external-context
             // revives (the hydrate path is encryption-key-tolerant).
             const ctxForKey = contextStorage.getStore();
@@ -3331,7 +3331,7 @@ export async function dehydrateStepArguments(
 }
 
 /**
- * Called from the step handler to hydrate the arguments of a step
+ * Called from the step executor to hydrate the arguments of a step
  * from the database at the start of the step execution.
  */
 export async function hydrateStepArguments(
@@ -3359,7 +3359,7 @@ export async function hydrateStepArguments(
 }
 
 /**
- * Called from the step handler when a step has completed.
+ * Called from the step executor when a step has completed.
  * Dehydrates values from within the step execution environment
  * into a format that can be saved to the database.
  *
@@ -3433,7 +3433,7 @@ export async function dehydrateStepReturnValue(
 }
 
 /**
- * Called from the step handler when a step throws. Dehydrates the thrown
+ * Called from the step executor when a step throws. Dehydrates the thrown
  * value from within the step execution environment into a format that can
  * be saved to the database in a `step_failed` or `step_retrying` event.
  *

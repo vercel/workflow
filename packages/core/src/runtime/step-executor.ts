@@ -236,7 +236,7 @@ export type StepExecutionResult =
  * runs the step function, creates step_completed/step_failed/step_retrying events.
  *
  * Does NOT queue workflow continuation messages — the caller decides what to do next.
- * Used by both the V1 step handler and the V2 combined handler.
+ * Used by the combined workflow handler for step execution.
  */
 export async function executeStep(
   params: StepExecutorParams
@@ -273,7 +273,7 @@ export async function executeStep(
     const stepFn = getStepFunction(stepName);
     if (!stepFn || typeof stepFn !== 'function') {
       // Step function not registered — fail the step immediately (not the run).
-      // This matches the V1 step handler pattern: create step_failed event so
+      // Create a step_failed event so
       // the workflow can handle it gracefully via try/catch in user code.
       const errorMessage = `Step "${stepName}" is not registered in the current deployment. This usually indicates a build or bundling issue that caused the step to not be included in the deployment.`;
       runtimeLogger.error('Step function not registered, failing step', {
@@ -657,7 +657,7 @@ export async function executeStep(
 
     // Check max retries AFTER step_started (attempt was just incremented).
     // Only enforce when the step has a previous error — this distinguishes
-    // actual retries (failed → retry) from concurrent starts (V2 inline
+    // actual retries (failed → retry) from concurrent inline starts
     // execution loop can cause multiple handlers to step_started the same
     // step simultaneously, inflating the attempt counter without any failure).
     if (step.attempt > maxRetries + 1 && step.error) {
@@ -891,7 +891,6 @@ export async function executeStep(
       // settles, so the `ops` flush below always loses the 500ms race and the
       // step reports `hasPendingOps` — forcing the inline loop to queue a
       // continuation and paying a full round-trip per signal-bearing step.
-      // The non-inline `step-handler` path already does this after user code.
       // Runs unconditionally (success or failure) so a throwing step doesn't
       // leak the reader.
       cancelAbortReaders(...args, thisVal, hydratedInput.closureVars);
@@ -1312,7 +1311,7 @@ export async function executeStep(
         opsCount: ops.length,
       });
     }
-    // hasPendingOps signals the V2 handler to break the loop
+    // hasPendingOps signals the combined handler to break the loop
     // and queue a continuation so waitUntil can flush them.
     return { type: 'completed', hasPendingOps: !opsSettled, inlineDelta };
   });

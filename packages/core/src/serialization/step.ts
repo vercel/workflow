@@ -1,7 +1,7 @@
 /**
  * Step mode serialization.
  *
- * Used by the step handler for serializing step return values and
+ * Used by the step executor for serializing step return values and
  * deserializing step arguments. Supports encryption as a composable layer.
  */
 

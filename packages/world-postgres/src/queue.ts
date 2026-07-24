@@ -9,7 +9,6 @@ import {
 } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
-  getQueuePrefixKind,
   getQueueTopicPrefix,
   MessageId,
   parseQueueName,
@@ -75,14 +74,7 @@ type RunnerStart = { controller: AbortController; promise: Promise<void> };
 type LoopbackTarget = { hosts: string[]; port: number };
 
 /**
- * The Postgres queue works by creating two job types in graphile-worker:
- * - `workflow` for workflow jobs
- *   - `step` for step jobs
- *
- * When a message is queued, it is sent to graphile-worker with the appropriate job type.
- * When a job is processed, it is deserialized and then re-queued into the _local world_, showing that
- * we can reuse the local world, mix and match worlds to build
- * hybrid architectures, and even migrate between worlds.
+ * The Postgres queue stores messages under one graphile-worker flow task.
  */
 export type PostgresQueue = Queue & {
   start(): Promise<void>;
@@ -131,12 +123,9 @@ export function createQueue(
   };
   const generateMessageId = monotonicFactory();
 
-  function getJobQueueName(queuePrefix: QueuePrefix): string {
+  function getJobQueueName(): string {
     const jobPrefix = config.jobPrefix || 'workflow_';
-
-    return getQueuePrefixKind(queuePrefix) === 'workflow'
-      ? `${jobPrefix}flows`
-      : `${jobPrefix}steps`;
+    return `${jobPrefix}flows`;
   }
 
   const createQueueHandler = localWorld.createQueueHandler;
@@ -169,7 +158,6 @@ export function createQueue(
   }
 
   async function addGraphileJob({
-    queuePrefix,
     queueId,
     body,
     messageId,
@@ -179,7 +167,6 @@ export function createQueue(
     delaySeconds,
     jobKey,
   }: {
-    queuePrefix: QueuePrefix;
     queueId: string;
     body: Buffer | Uint8Array;
     messageId: MessageId;
@@ -200,7 +187,7 @@ export function createQueue(
         : undefined;
 
     await utils.addJob(
-      getJobQueueName(queuePrefix),
+      getJobQueueName(),
       MessageData.encode({
         id: queueId,
         data: Buffer.from(body),
@@ -337,10 +324,6 @@ export function createQueue(
     runnerStart = { controller, promise };
   }
 
-  function getQueueRoute(queueName: ValidQueueName): 'flow' | 'step' {
-    return parseQueueName(queueName).kind === 'workflow' ? 'flow' : 'step';
-  }
-
   async function executeMessageOverHttp({
     queueName,
     messageId,
@@ -367,10 +350,8 @@ export function createQueue(
     if (!baseUrl) {
       throw new Error('Unable to resolve base URL for workflow queue.');
     }
-    const pathname = getQueueRoute(queueName);
-
     const response = await fetch(
-      createWorkflowUrl(baseUrl, { type: pathname }),
+      createWorkflowUrl(baseUrl, { type: 'flow' }),
       {
         method: 'POST',
         duplex: 'half',
@@ -508,11 +489,10 @@ export function createQueue(
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
     await start();
-    const { prefix: queuePrefix, id: queueId } = parseQueueName(queue);
+    const { id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
     await addGraphileJob({
-      queuePrefix,
       queueId,
       body,
       messageId,
@@ -525,9 +505,12 @@ export function createQueue(
     return { messageId };
   };
 
-  function createTaskHandler(queue: QueuePrefix) {
-    const queueKind = getQueuePrefixKind(queue);
+  async function deserializeMessageBody(data: Buffer): Promise<unknown> {
+    const bodyStream = Stream.Readable.toWeb(Stream.Readable.from([data]));
+    return transport.deserialize(bodyStream as ReadableStream<Uint8Array>);
+  }
 
+  function createTaskHandler(queue: QueuePrefix) {
     return async (payload: unknown, helpers: unknown) => {
       const messageData = MessageData.parse(payload);
       const graphileHelpers = GraphileHelpers.safeParse(helpers);
@@ -535,23 +518,12 @@ export function createQueue(
         ? graphileHelpers.data.job.attempts
         : messageData.attempt;
       const queueName = `${queue}${messageData.id}` as ValidQueueName;
-      const bodyStream = Stream.Readable.toWeb(
-        Stream.Readable.from([messageData.data])
-      );
-      const body = await transport.deserialize(
-        bodyStream as ReadableStream<Uint8Array>
-      );
+      const body = await deserializeMessageBody(messageData.data);
       QueuePayloadSchema.parse(body);
+      const workflowInvoke = WorkflowInvokePayloadSchema.safeParse(body);
       const workflowRunSerializationKey =
-        queueKind === 'workflow'
-          ? (() => {
-              const workflowInvoke =
-                WorkflowInvokePayloadSchema.safeParse(body);
-              if (!workflowInvoke.success) {
-                return undefined;
-              }
-              return `workflow:${workflowInvoke.data.runId}`;
-            })()
+        workflowInvoke.success && !workflowInvoke.data.stepId
+          ? `workflow:${workflowInvoke.data.runId}`
           : undefined;
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
         const result = await executeMessageOverHttp({
@@ -573,7 +545,6 @@ export function createQueue(
           // Schedule the follow-up job before we return so a crash cannot
           // lose the wake-up request.
           await addGraphileJob({
-            queuePrefix: queue,
             queueId: messageData.id,
             body: messageData.data,
             messageId: messageData.messageId,
@@ -650,10 +621,7 @@ export function createQueue(
     > = {};
     const namespace = resolveQueueNamespace(config.namespace);
     const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
-    const stepPrefix = getQueueTopicPrefix('step', namespace);
-    taskList[getJobQueueName(workflowPrefix)] =
-      createTaskHandler(workflowPrefix);
-    taskList[getJobQueueName(stepPrefix)] = createTaskHandler(stepPrefix);
+    taskList[getJobQueueName()] = createTaskHandler(workflowPrefix);
 
     runner = await run({
       pgPool: pool,

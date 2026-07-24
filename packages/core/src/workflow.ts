@@ -67,7 +67,7 @@ import { createSleep } from './workflow/sleep.js';
  *
  * NOTE: drain commits native attribute events and the `*_created` events; it
  * does NOT enqueue step
- * bodies for execution. The platform's step worker rejects `step_started`
+ * bodies for execution. The combined runtime handler rejects `step_started`
  * for runs that have already transitioned to terminal (`RunExpiredError`),
  * so a step queued here would be skipped anyway. Fire-and-forget step calls
  * with side effects therefore work only when followed by some later `await`

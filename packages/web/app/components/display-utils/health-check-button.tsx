@@ -8,16 +8,7 @@ import {
   TooltipTrigger,
 } from '~/components/ui/tooltip';
 import { runHealthCheck } from '~/lib/rpc-client';
-import type {
-  EnvMap,
-  HealthCheckEndpoint,
-  HealthCheckResult,
-} from '~/lib/types';
-
-interface EndpointResult {
-  endpoint: HealthCheckEndpoint;
-  result: HealthCheckResult;
-}
+import type { EnvMap } from '~/lib/types';
 
 export function HealthCheckButton() {
   const [isChecking, setIsChecking] = useState(false);
@@ -26,44 +17,19 @@ export function HealthCheckButton() {
   const runChecks = useCallback(async () => {
     setIsChecking(true);
 
-    const endpoints: HealthCheckEndpoint[] = ['workflow', 'step'];
-    const results: EndpointResult[] = [];
-
     try {
-      for (const endpoint of endpoints) {
-        const response = await runHealthCheck(env, endpoint, {
-          timeout: 30000,
-        });
-        // runHealthCheck always returns success: true, with healthy: false on errors
-        // but we still need the check for TypeScript type narrowing
-        if (response.success) {
-          results.push({ endpoint, result: response.data });
-        }
+      const response = await runHealthCheck(env, { timeout: 30000 });
+      if (!response.success) {
+        throw new Error(response.error.message);
       }
 
-      const allHealthy = results.every((r) => r.result.healthy);
-      const anyHealthy = results.some((r) => r.result.healthy);
-
-      if (allHealthy) {
-        const totalLatency = results.reduce(
-          (sum, r) => sum + (r.result.latencyMs ?? 0),
-          0
-        );
-        toast.success('All endpoints healthy', {
-          description: `Workflow and Step endpoints are responding (${totalLatency}ms total)`,
-        });
-      } else if (anyHealthy) {
-        const healthy = results.filter((r) => r.result.healthy);
-        const unhealthy = results.filter((r) => !r.result.healthy);
-        toast.warning('Partial health check success', {
-          description: `${healthy.map((r) => r.endpoint).join(', ')} OK; ${unhealthy.map((r) => `${r.endpoint}: ${r.result.error || 'failed'}`).join(', ')}`,
+      if (response.data.healthy) {
+        toast.success('Workflow endpoint healthy', {
+          description: `The queue-based check completed in ${response.data.latencyMs ?? 0}ms.`,
         });
       } else {
-        const errors = results
-          .map((r) => `${r.endpoint}: ${r.result.error || 'failed'}`)
-          .join('; ');
         toast.error('Health check failed', {
-          description: errors,
+          description: response.data.error || 'Workflow endpoint is unhealthy.',
         });
       }
     } catch (error) {
@@ -98,7 +64,7 @@ export function HealthCheckButton() {
       </TooltipTrigger>
       <TooltipContent>
         <p>
-          Run a queue-based health check on workflow and step endpoints.
+          Run a queue-based health check on the workflow endpoint.
           <br />
           This bypasses Deployment Protection.
         </p>

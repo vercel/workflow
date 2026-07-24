@@ -166,7 +166,7 @@ describe('healthCheck response parsing', () => {
       })
     );
 
-    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+    const result = await healthCheck(world, { timeout: 1000 });
 
     expect(result.healthy).toBe(true);
     expect(result.specVersion).toBe(3);
@@ -187,7 +187,7 @@ describe('healthCheck response parsing', () => {
       })
     );
 
-    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+    const result = await healthCheck(world, { timeout: 1000 });
 
     expect(result.healthy).toBe(true);
     expect(result.specVersion).toBe(3);
@@ -207,7 +207,7 @@ describe('healthCheck response parsing', () => {
       })
     );
 
-    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+    const result = await healthCheck(world, { timeout: 1000 });
 
     expect(result.healthy).toBe(true);
     expect(result.workflowCoreVersion).toBeUndefined();
@@ -221,7 +221,7 @@ describe('healthCheck response parsing', () => {
       'Workflow SDK "workflow" endpoint is healthy'
     );
 
-    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+    const result = await healthCheck(world, { timeout: 1000 });
 
     expect(result.healthy).toBe(true);
     expect(result.specVersion).toBeUndefined();
@@ -233,7 +233,7 @@ describe('healthCheck response parsing', () => {
       JSON.stringify({ healthy: true, endpoint: 'workflow' })
     );
 
-    await healthCheck(world, 'workflow', { timeout: 1000 });
+    await healthCheck(world, { timeout: 1000 });
 
     expect(world.queue).toHaveBeenCalledWith(
       '__wkf_workflow_health_check',
@@ -247,7 +247,7 @@ describe('healthCheck response parsing', () => {
       JSON.stringify({ healthy: true, endpoint: 'workflow' })
     );
 
-    const result = await healthCheck(world, 'workflow', {
+    const result = await healthCheck(world, {
       timeout: 1000,
       namespace: 'eve',
     });
@@ -271,7 +271,7 @@ describe('healthCheck response parsing', () => {
       },
     } as unknown as World;
 
-    const result = await healthCheck(world, 'workflow', { timeout: 300 });
+    const result = await healthCheck(world, { timeout: 300 });
 
     expect(result.healthy).toBe(false);
     expect(result.error).toMatch(/timed out/);

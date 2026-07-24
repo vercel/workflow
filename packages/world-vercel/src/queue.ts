@@ -181,9 +181,6 @@ function getRunIdFromPayload(payload: QueuePayload): string | undefined {
   if ('runId' in payload && typeof payload.runId === 'string') {
     return payload.runId;
   }
-  if ('workflowRunId' in payload && typeof payload.workflowRunId === 'string') {
-    return payload.workflowRunId;
-  }
   return undefined;
 }
 
@@ -249,9 +246,6 @@ function getHeadersFromPayload(
   if ('runId' in payload && typeof payload.runId === 'string') {
     headers['x-vercel-workflow-run-id'] = payload.runId;
   }
-  if ('workflowRunId' in payload && typeof payload.workflowRunId === 'string') {
-    headers['x-vercel-workflow-run-id'] = payload.workflowRunId;
-  }
   if ('stepId' in payload && typeof payload.stepId === 'string') {
     headers['x-vercel-workflow-step-id'] = payload.stepId;
   }
@@ -276,8 +270,6 @@ function getHeadersFromPayload(
  *   same step serialize.
  * - Health checks get a per-probe topic (their correlation id) so concurrent
  *   probes never queue behind one shared `…_health_check` slot.
- *
- * Legacy `*_wkf_step_*` topics are intentionally excluded.
  *
  * The flow-topic match allows an optional queue namespace prefix
  * (`__<namespace>_wkf_workflow_`, see `@workflow/builders` constants) so the

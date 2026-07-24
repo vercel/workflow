@@ -1,6 +1,6 @@
 ---
 title: Queue
-description: Low-level queue interface for dispatching workflow and step invocations.
+description: Low-level queue interface for dispatching workflow invocations.
 type: reference
 summary: "Methods: getDeploymentId(), queue(), createQueueHandler(). Internal queue dispatch — normally handled by the SDK."
 prerequisites:
@@ -17,10 +17,10 @@ keywords:
   - queue dispatch
 ---
 
-Queue methods live directly on the `world` object (not nested). They dispatch internal workflow and step invocations to the queue backend.
+Queue methods live directly on the `world` object (not nested). They dispatch internal workflow invocations, including queued step work, to the queue backend.
 
 <Callout type="warn">
-  These methods are used internally by the Workflow SDK to dispatch execution. You do not need to call them in normal operations — use [`start()`](/docs/api-reference/workflow-api/start) to trigger workflows instead. Direct queue access is only needed if you programmatically create a run via `world.events.create()` with a `run_created` event and need to kick off its initial execution, or for debugging resumption of a flow or step route.
+  These methods are used internally by the Workflow SDK to dispatch execution. You do not need to call them in normal operations — use [`start()`](/docs/api-reference/workflow-api/start) to trigger workflows instead. Direct queue access is only needed if you programmatically create a run via `world.events.create()` with a `run_created` event and need to kick off its initial execution, or for debugging flow resumption.
 </Callout>
 
 ## Import
@@ -46,7 +46,7 @@ const deploymentId = await world.getDeploymentId(); // [!code highlight]
 
 ### queue()
 
-Dispatch a message to a named queue. The message payload is an internal SDK type (`WorkflowInvokePayload`, `StepInvokePayload`, or `HealthCheckPayload`).
+Dispatch a message to a named queue. The message payload is an internal SDK type (`WorkflowInvokePayload` or `HealthCheckPayload`). Queued steps use `WorkflowInvokePayload` with `stepId` and `stepName`.
 
 ```typescript lineNumbers
 const { messageId } = await world.queue(queueName, payload, opts); // [!code highlight]

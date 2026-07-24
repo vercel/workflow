@@ -681,7 +681,7 @@ describe('createUseStep', () => {
 
   it('should preserve Error subclass identity and stack through serialization round-trip', async () => {
     // Build a real Error with a specific stack and serialize it through the
-    // same pipeline that the step handler uses on write.
+    // same pipeline that the step executor uses on write.
     const originalError = new FatalError('Custom error message');
     originalError.stack =
       'Error: Custom error message\n    at someFunction (file.js:10:5)';

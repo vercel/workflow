@@ -1382,7 +1382,7 @@ export async function errorStepThrowNonErrorValue() {
     await throwNonErrorFromStep();
     return { caught: false } as any;
   } catch (err: any) {
-    // After max retries the step handler wraps the underlying thrown value
+    // After max retries the step executor wraps the underlying thrown value
     // as `cause` on a FatalError. The wrapping FatalError is what reaches
     // the workflow's catch; the original non-Error object is on `err.cause`.
     return {
@@ -1548,7 +1548,7 @@ export class ChainableService {
     'use workflow';
     // When calling static methods via ClassName.method(), `this` inside the step
     // will be the class constructor (ChainableService). The class constructor
-    // is serialized with its classId and passed to the step handler.
+    // is serialized with its classId and passed to the step executor.
     //
     // NOTE: We use `ChainableService.method()` here instead of `this.method()` because
     // the `this` argument is not currently passed through when invoking a workflow via
@@ -1811,7 +1811,7 @@ export class Counter {
   /**
    * Instance method step: returns the sum of the counter's value and the given amount.
    * The `this` context (the Counter instance) is serialized and passed
-   * to the step handler, then deserialized before the method is called.
+   * to the step executor, then deserialized before the method is called.
    */
   async add(amount: number): Promise<number> {
     'use step';
@@ -2636,7 +2636,7 @@ async function stepThatFetchesWithSignal(signal: AbortSignal) {
   'use step';
   // This will throw AbortError because the signal is already aborted.
   // The error should NOT be caught here — it propagates to the workflow
-  // as a FatalError (wrapped by the step handler).
+  // as a FatalError (wrapped by the step executor).
   const response = await globalThis.fetch('https://example.com', { signal });
   return response.status;
 }
