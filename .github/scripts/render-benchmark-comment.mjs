@@ -12,8 +12,8 @@
  * Usage:
  *   node render-benchmark-comment.mjs \
  *     --status running|completed|failed \
- *     [--results-dir <dir>]        # dir with bench-results-*.json files
- *     [--baseline-dir <dir>]       # main-branch results to diff averages against
+ *     [--results-dir <dir>]        # dir with run 2's bench-results-*.json files
+ *     [--baseline-dir <dir>]       # run 1's results (same commit) to diff against
  *     [--previous-body <file>]     # previous comment body to carry history from
  *     [--commit <sha>] [--run-url <url>] \
  *     [--output <file>]            # defaults to stdout
@@ -166,14 +166,13 @@ function formatMs(value) {
 
 /**
  * Annotates each metric row with the matching baseline values (best, p75, p90,
- * p99) from the most recent main-branch run, keyed by
+ * p99) from the paired baseline run — run 1 of the same commit, run
+ * back-to-back with the "current" run (run 2) in the same job — keyed by
  * methodologyVersion/backend/app/metric/scenario. The methodology version is
  * part of the key so a change to the measurement window (e.g. the switch to
- * the in-deployment trigger) does not diff incomparable numbers: an old
- * baseline won't match the new run, and the delta stays blank until `main` has
- * produced a same-methodology baseline. The annotations are stored on the entry
- * so history re-renders keep showing the deltas each run was originally
- * compared against.
+ * the in-deployment trigger) does not diff incomparable numbers. The
+ * annotations are stored on the entry so history re-renders keep showing the
+ * deltas each run was originally compared against.
  */
 // Which run field each baseline annotation is compared against, and where the
 // baseline value is read from (best falls back to a pre-rename baseline's min).
@@ -211,13 +210,14 @@ export function annotateWithBaseline(results, baseline) {
   }));
 }
 
-// Deltas beyond ±this vs main get a directional marker: 🔻 for a regression,
+// Deltas beyond ±this vs the paired baseline run get a directional marker: 🔻 for a regression,
 // 💚 for an improvement. Smaller moves show the percentage alone.
 const DELTA_MARK_THRESHOLD_PCT = 15;
 
 /**
- * Formats a vs-main delta, e.g. " (+4.2%)"; empty without a baseline. Moves
- * worse than +15% are flagged 🔻 and moves better than -15% are flagged 💚.
+ * Formats a delta vs the paired baseline run, e.g. " (+4.2%)"; empty without a
+ * baseline. Moves worse than +15% are flagged 🔻 and moves better than -15%
+ * are flagged 💚.
  */
 function formatDelta(current, baseline) {
   if (
@@ -273,7 +273,7 @@ function renderResultTable(result) {
     // Abbreviations only — the definitions live in the comment footer.
     const name = label ? `**${label.name}**` : row.metric;
     const targets = row.targets ?? {};
-    // Deltas vs main are shown on Best/P75/P90/P99.
+    // Deltas vs the paired baseline run are shown on Best/P75/P90/P99.
     lines.push(
       `| ${name} | ${row.scenario} | ${formatMs(row.best)}${formatDelta(row.best, row.baselineBest)} | ${formatCell(row.p75, targets.p75)}${formatDelta(row.p75, row.baselineP75)} | ${formatCell(row.p90, targets.p90)}${formatDelta(row.p90, row.baselineP90)} | ${formatCell(row.p99, targets.p99)}${formatDelta(row.p99, row.baselineP99)} | ${row.samples} |`
     );
@@ -355,7 +355,7 @@ function renderFooter(entries) {
   const smallprint = [
     ...(hasBaseline
       ? [
-          '<sub>Best/P75/P90/P99 deltas compare against the most recent benchmark run on `main` at the time of this run. 🔻 flags a delta worse than +15%, 💚 one better than −15%.</sub>',
+          '<sub>Best/P75/P90/P99 deltas compare two back-to-back runs of this same commit against the same deployment, so they reflect run-to-run benchmark noise rather than a change vs `main`. 🔻 flags a delta worse than +15%, 💚 one better than −15%.</sub>',
           '',
         ]
       : []),

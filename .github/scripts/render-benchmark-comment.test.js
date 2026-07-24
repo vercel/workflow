@@ -233,7 +233,7 @@ test('renders best/p75/p90/p99 deltas with 🔻/💚 threshold marks and embeds 
   assert.match(body, /\| 900 \|/);
   assert.match(
     body,
-    /Best\/P75\/P90\/P99 deltas compare against the most recent benchmark run on `main`/
+    /Best\/P75\/P90\/P99 deltas compare two back-to-back runs of this same commit/
   );
   assert.match(body, /💚 one better than/);
   // The annotations are embedded so history re-renders keep the deltas

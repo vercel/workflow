@@ -6,9 +6,10 @@ name: Performance Benchmarks
 # the same comment; previous results stay available in a collapsed history
 # section (state is embedded in the comment body itself).
 #
-# Runs on pushes to main (against the production deployment) purely to produce
-# baseline artifacts; PR runs download the most recent main baseline and show
-# avg-latency deltas against it in the comment.
+# The benchmark job runs the suite twice back-to-back against the same
+# deployment; the comment shows run 2 diffed against run 1 (same commit, same
+# deployment) so the delta reflects benchmark noise rather than an actual perf
+# change vs main.
 
 on:
   pull_request:
@@ -148,7 +149,14 @@ jobs:
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
-      - name: Run benchmarks
+      # Two back-to-back runs of the same commit against the same deployment,
+      # rather than one run diffed against a separate main-branch baseline run
+      # (different commit, different time). This isolates benchmark noise
+      # (run-to-run variance) from real perf deltas: the PR comment compares
+      # run 2 against run 1, so a flagged regression means "this run was
+      # slower than the other run of the exact same code," not "this commit
+      # is slower than whatever main happened to measure."
+      - name: Run benchmarks (run 1)
         env:
           DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
           APP_NAME: ${{ matrix.target.app }}
@@ -165,16 +173,40 @@ jobs:
           # ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN env vars (auto-set when
           # `permissions: id-token: write` is on the job).
           # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
+          BENCH_OUTPUT_FILE: bench-results-run1-${{ matrix.target.app }}-${{ matrix.target.world }}.json
         run: |
           pnpm vitest run packages/core/e2e/benchmark.test.ts
 
-      - name: Upload benchmark results
+      - name: Run benchmarks (run 2)
+        env:
+          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
+          APP_NAME: ${{ matrix.target.app }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
+          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
+          WORKFLOW_VERCEL_PROJECT: ${{ matrix.target.project-id }}
+          WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.target.project-slug }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BENCH_OUTPUT_FILE: bench-results-run2-${{ matrix.target.app }}-${{ matrix.target.world }}.json
+        run: |
+          pnpm vitest run packages/core/e2e/benchmark.test.ts
+
+      - name: Upload run 1 results
         # Partial results are still useful when a scenario failed
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bench-results-${{ matrix.target.app }}-${{ matrix.target.world }}
-          path: bench-results-*.json
+          name: bench-results-run1-${{ matrix.target.app }}-${{ matrix.target.world }}
+          path: bench-results-run1-*.json
+          if-no-files-found: ignore
+
+      - name: Upload run 2 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-run2-${{ matrix.target.app }}-${{ matrix.target.world }}
+          path: bench-results-run2-*.json
           if-no-files-found: ignore
 
   # Phase 3: Update the PR comment with the results (collapsing history)
@@ -192,43 +224,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download benchmark results
+      # Run 2 is "current" (results-dir) and run 1 is the "baseline" for the
+      # delta columns — both are the same commit, run back-to-back in the
+      # benchmark job above, so the delta shows run-to-run noise rather than a
+      # perf comparison against main.
+      - name: Download run 2 results
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          pattern: bench-results-*
+          pattern: bench-results-run2-*
           path: benchmark-results
           merge-multiple: true
 
-      # Baseline for the avg-delta column: results from the most recent
-      # successful run of this workflow on main. Uses gh (first-party) rather
-      # than a third-party cross-run artifact action. Filtering to push /
-      # workflow_dispatch events matters for more than tidiness: it excludes
-      # artifacts uploaded by fork PR runs, whose head branch can also be
-      # named "main" (artifact poisoning).
-      - name: Download baseline results from main
+      - name: Download run 1 results
         continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          run_id=$(gh run list \
-            --repo "$GITHUB_REPOSITORY" \
-            --workflow benchmarks.yml \
-            --branch main \
-            --status success \
-            --limit 20 \
-            --json databaseId,event \
-            --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")][0].databaseId // empty')
-          if [ -z "$run_id" ]; then
-            echo "No successful benchmark run found on main; skipping baseline"
-            exit 0
-          fi
-          echo "Using baseline artifacts from run $run_id"
-          gh run download "$run_id" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern 'bench-results-*' \
-            --dir baseline-results \
-            || echo "Run $run_id has no benchmark artifacts; skipping baseline"
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bench-results-run1-*
+          path: baseline-results
+          merge-multiple: true
 
       - name: Find existing benchmark comment
         uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3.1.0

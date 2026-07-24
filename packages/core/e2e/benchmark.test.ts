@@ -160,6 +160,13 @@ const RUN_TIMEOUT_MS = envInt('BENCH_RUN_TIMEOUT_MS', 120_000);
 // Preflight guard: a trivial 1-step run must complete within this window
 // before any scenario spends its attempt budget (see beforeAll below).
 const PREFLIGHT_TIMEOUT_MS = envInt('BENCH_PREFLIGHT_TIMEOUT_MS', 180_000);
+// Pre-warm: after the correctness preflight, fire this many concurrent
+// trivial-step runs (see beforeAll below) to spin up multiple warm instances
+// before any scenario starts timing. Best-effort — reduces variance, doesn't
+// verify correctness.
+const PREWARM_CONCURRENCY = envInt('BENCH_PREWARM_CONCURRENCY', 5);
+const PREWARM_STEP_COUNT = envInt('BENCH_PREWARM_STEP_COUNT', 10);
+const PREWARM_TIMEOUT_MS = envInt('BENCH_PREWARM_TIMEOUT_MS', 180_000);
 // An iteration can flake on transient network errors; grant each scenario a
 // bounded fraction of spare (retry) attempts on top of its iteration count.
 const MAX_FAILURE_RATIO = 0.2;
@@ -630,25 +637,53 @@ describe('workflow benchmarks', () => {
   // delivering to the deployment) makes every iteration of every scenario wait
   // out RUN_TIMEOUT_MS, and the job dies at its time limit without a useful
   // error.
-  beforeAll(async () => {
-    const { runId } = await triggerBenchRun(
-      'benchSequentialStepsWorkflow',
-      [1]
-    );
-    try {
-      const returnValue = await withTimeout(
-        getReturnValue(runId),
-        PREFLIGHT_TIMEOUT_MS,
-        `preflight run (run ${runId})`
+  beforeAll(
+    async () => {
+      const { runId } = await triggerBenchRun(
+        'benchSequentialStepsWorkflow',
+        [1]
       );
-      timingsFromReturnValue(returnValue, runId);
-      console.log(`[bench] preflight ok (run ${runId})`);
-    } catch (error) {
-      throw new Error(
-        `Benchmark preflight failed — the deployment accepted the run but did not execute it to completion; aborting all scenarios. ${(error as Error).message}`
-      );
-    }
-  }, PREFLIGHT_TIMEOUT_MS + 60_000);
+      try {
+        const returnValue = await withTimeout(
+          getReturnValue(runId),
+          PREFLIGHT_TIMEOUT_MS,
+          `preflight run (run ${runId})`
+        );
+        timingsFromReturnValue(returnValue, runId);
+        console.log(`[bench] preflight ok (run ${runId})`);
+      } catch (error) {
+        throw new Error(
+          `Benchmark preflight failed — the deployment accepted the run but did not execute it to completion; aborting all scenarios. ${(error as Error).message}`
+        );
+      }
+
+      // Pre-warm: fire PREWARM_CONCURRENCY concurrent runs of trivial sequential
+      // steps to spin up multiple warm instances before any scenario starts
+      // timing. Best-effort — a failure here doesn't abort the benchmark, since
+      // the preflight run above already proved the deployment works.
+      try {
+        await Promise.all(
+          Array.from({ length: PREWARM_CONCURRENCY }, async () => {
+            const { runId } = await triggerBenchRun(
+              'benchSequentialStepsWorkflow',
+              [PREWARM_STEP_COUNT]
+            );
+            return withTimeout(
+              getReturnValue(runId),
+              PREWARM_TIMEOUT_MS,
+              `prewarm run (run ${runId})`
+            );
+          })
+        );
+        console.log(
+          `[bench] prewarm ok (${PREWARM_CONCURRENCY} concurrent runs)`
+        );
+      } catch (error) {
+        console.warn('[bench] prewarm failed (continuing anyway):', error);
+      }
+    },
+    PREFLIGHT_TIMEOUT_MS + PREWARM_TIMEOUT_MS + 60_000
+  );
 
   test('scenario: 1 no-op step (turbo)', { timeout: 30 * 60_000 }, async () => {
     const results = await runScenario(SCENARIO_STEP, STREAM_ITERATIONS, () =>
