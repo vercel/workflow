@@ -130,9 +130,9 @@ These variables are primarily for tests, debugging, or unusual deployments.
 
 ### `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
 
-- Default: `10`
-- Stream write buffering interval.
-- Also available as `streamFlushIntervalMs` on Worlds that expose it.
+- Default: `0` (dispatch the first chunk of an idle stream immediately)
+- Group-commit window for the *leading* chunk of an idle stream. `0` sends it at once; a positive value holds it up to that many milliseconds to collect a group — an opt-in trade of first-chunk latency for larger batches, useful for slow-but-steady producers. Chunks arriving while a request is already in flight always coalesce into the next group regardless of this setting.
+- Also available as `streamFlushIntervalMs` on Worlds that expose it (applies from the second group; the env var governs from the first chunk).
 
 ### `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS`
 

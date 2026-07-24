@@ -36,13 +36,18 @@ import type {
 
 export interface Streamer {
   /**
-   * Override the default flush interval (in milliseconds) for buffered stream writes.
-   * Chunks are accumulated in a buffer and flushed together on this interval.
+   * Group-commit window (in milliseconds) for the LEADING chunk of an idle
+   * stream. Default `0`: the first chunk dispatches immediately, and chunks
+   * arriving while a request is in flight coalesce into the next group —
+   * batching without a fixed first-chunk delay. A positive value holds the
+   * leading chunk up to that long to collect a group, trading first-chunk
+   * latency for fewer requests (useful for slow-but-steady producers on
+   * HTTP backends where each flush is a network round trip).
    *
-   * The default is 10ms, which is appropriate for HTTP-based backends where
-   * each flush is a network round-trip. For backends with sub-millisecond writes
-   * (e.g., Redis, local filesystem), a lower value (or 0 for immediate flushing) reduces
-   * end-to-end stream latency.
+   * Resolution note: this World option is read lazily on the first
+   * dispatch, so it takes effect from the second idle group onward; the
+   * `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` environment variable governs from
+   * the very first chunk.
    *
    * Not supported by all worlds.
    */

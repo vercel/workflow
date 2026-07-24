@@ -957,10 +957,19 @@ export function createReconnectingFramedStream(
 }
 
 /**
- * Default flush interval in milliseconds for buffered stream writes.
- * Chunks are accumulated and flushed together to reduce network overhead.
+ * Default group-commit window for the LEADING chunk of an idle stream.
+ *
+ * 0 = dispatch the first chunk immediately. Measured production producer
+ * rates (most agents: ~1.2 chunks per flush, >70% of chunks arriving more
+ * than 10ms after the previous request already finished) show a fixed
+ * leading-edge window taxes isolated-chunk delivery (~+20% on a ~50ms RTT)
+ * while batching almost nothing for slow producers — fast producers get
+ * their batching from in-flight accumulation regardless. Setting a positive
+ * interval (env or `world.streamFlushIntervalMs`) opts a deployment into
+ * windowed leading-edge batching, trading first-chunk latency for larger
+ * groups.
  */
-const STREAM_FLUSH_INTERVAL_MS = 10;
+const STREAM_FLUSH_INTERVAL_MS = 0;
 
 /**
  * Effective default stream-flush interval (a `world.streamFlushIntervalMs`
@@ -1276,13 +1285,33 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       );
     };
 
-    /** Arm the group-commit window unless a dispatch is already running. */
+    /**
+     * Leading-edge dispatch policy for an idle sink:
+     * - window <= 0 (the default): dispatch the leading chunk immediately.
+     *   Fast producers still batch via in-flight accumulation — chunks
+     *   arriving during the request form the next group. The trade for an
+     *   idle burst is one extra request (a 30-chunk burst ships as 1 + 29
+     *   instead of one 30-chunk group under a positive window) in exchange
+     *   for zero fixed first-chunk delay — which matches measured producer
+     *   behavior, where isolated chunks dominate.
+     * - window > 0 (explicitly configured): arm the group-commit timer so
+     *   the leading chunk waits up to the window collecting a group —
+     *   the opt-in trade for slow-but-steady producers.
+     * The world's `streamFlushIntervalMs` is learned lazily on the first
+     * dispatch, so a WORLD-configured window applies from the second group
+     * on; the env var governs from the very first chunk.
+     */
     const scheduleGroupCommit = (): void => {
       if (flushTimer || inFlight) return;
+      const windowMs = resolvedFlushIntervalMs ?? getStreamFlushIntervalMs();
+      if (windowMs <= 0) {
+        startDispatch();
+        return;
+      }
       flushTimer = setTimeout(() => {
         flushTimer = null;
         startDispatch();
-      }, resolvedFlushIntervalMs ?? getStreamFlushIntervalMs());
+      }, windowMs);
     };
 
     /**
