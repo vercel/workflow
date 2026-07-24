@@ -3,7 +3,6 @@
   "extends": ["//"],
   "tasks": {
     "build": {
-      "env": ["WORKFLOW_PUBLIC_MANIFEST"],
       "outputs": [".output/**", ".nitro/**", ".tanstack/**"]
     }
   }

@@ -1,17 +1,21 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
+  createWorkflowBasePathRuntimeCode,
   ensureWorkflowTargetWorldEnv,
+  normalizeWorkflowBasePath,
   resolveWorkflowCoreRuntimeAlias,
+  setWorkflowBasePath,
   WORKFLOW_NODE_COMPAT_BANNER,
   WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
   WORKFLOW_QUEUE_TRIGGER,
+  WORKFLOW_ROUTE_BASE,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
-import { join } from 'pathe';
+import { dirname, join } from 'pathe';
 import { LocalBuilder, VercelBuilder } from './builders.js';
 import type { ModuleOptions } from './types';
 
@@ -274,6 +278,20 @@ export default {
     // `.vercel/output/config.json`. This path is independent of nitro's own
     // bundle and is only used for nitropack v2 (e.g. Nuxt 4 still uses it).
     const useLegacyVercelBuild = isVercelDeploy && isNitroV2(nitro);
+    // Set the workflow base path global (read by runtime URL generation:
+    // queue delivery, webhook URLs) in this process, and — when a base path
+    // is configured — in the built server via a plugin that runs before any
+    // user code. Nuxt lowers `app.baseURL` into `baseURL` natively.
+    const basePath = normalizeWorkflowBasePath(nitro.options.baseURL);
+    setWorkflowBasePath(basePath);
+    if (basePath) {
+      nitro.options.plugins ||= [];
+      nitro.options.plugins.unshift(BASE_PATH_VIRTUAL_ID);
+      nitro.options.virtual[BASE_PATH_VIRTUAL_ID] = /* js */ `
+        ${createWorkflowBasePathRuntimeCode(basePath)}
+        export default () => {};
+      `;
+    }
 
     if (useLegacyVercelBuild) {
       nitro.hooks.hook('compiled', async () => {
@@ -359,6 +377,16 @@ export default {
         nitro.options.vercel ??= {};
         nitro.options.vercel.functionRules ??= {};
 
+        // With a baseURL, move the flow function below the base path and put
+        // the dynamic webhook rewrite before filesystem matching. Vercel then
+        // reaches both dedicated functions instead of missing post-filesystem
+        // rewrites. Root-relative URLs need no special handling.
+        if (basePath) {
+          nitro.hooks.hook('compiled', () => {
+            patchNativeVercelWorkflowRoutes(nitro, basePath);
+          });
+        }
+
         const runtime = nitro.options.workflow?.runtime;
         const rules = nitro.options.vercel.functionRules;
 
@@ -407,6 +435,7 @@ export default {
 } satisfies NitroModule;
 
 const DASHBOARD_VIRTUAL_ID = '#workflow/dashboard-handler';
+const BASE_PATH_VIRTUAL_ID = '#workflow/base-path';
 
 function addDashboardHandler(nitro: Nitro) {
   const route = '/_workflow';
@@ -734,4 +763,61 @@ export default fromWebHandler(() => new Response("Manifest not found", { status:
 `;
     writeFileSync(handlerPath, fallback);
   }
+}
+
+function patchNativeVercelWorkflowRoutes(nitro: Nitro, basePath: string) {
+  const outputDir = join(nitro.options.rootDir, '.vercel/output');
+  const configPath = join(outputDir, 'config.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf-8')) as {
+    routes: Array<{ src?: string; dest?: string; handle?: string }>;
+  };
+  const workflowPrefix = `${basePath}${WORKFLOW_ROUTE_BASE}`;
+  const flowRoutes = config.routes.filter(
+    (route) => route.src === `${workflowPrefix}/flow`
+  );
+  const webhookRoutes = config.routes.filter((route) =>
+    route.src?.startsWith(`${workflowPrefix}/webhook/`)
+  );
+  if (flowRoutes.length === 0) {
+    throw new Error('Missing Nitro workflow flow route');
+  }
+  const [webhookRoute] = webhookRoutes;
+  if (!webhookRoute) {
+    throw new Error('Missing Nitro workflow webhook route');
+  }
+  if (webhookRoutes.some((route) => route.dest !== webhookRoute.dest)) {
+    throw new Error('Nitro emitted conflicting workflow webhook routes');
+  }
+  config.routes = config.routes.filter(
+    (route) => !flowRoutes.includes(route) && !webhookRoutes.includes(route)
+  );
+
+  // The relocated flow function is an exact filesystem match, so its rewrites
+  // are unnecessary. The dynamic webhook still needs a rewrite; place it
+  // before filesystem matching so it resolves to its configured route function
+  // instead of bypassing that function through the catch-all server.
+  const filesystemIndex = config.routes.findIndex(
+    (route) => route.handle === 'filesystem'
+  );
+  if (filesystemIndex === -1) {
+    throw new Error('Missing Nitro filesystem handler');
+  }
+  config.routes.splice(filesystemIndex, 0, webhookRoute);
+
+  writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+  // Move the flow function below the base path: queue triggers invoke a
+  // function at its function-directory path, and the Nitro server inside
+  // only serves the base-prefixed route. HTTP traffic reaches the relocated
+  // function directly through filesystem matching.
+  const flowFuncPath = `${WORKFLOW_ROUTE_BASE}/flow.func`;
+  const source = join(outputDir, 'functions', flowFuncPath);
+  const destination = join(
+    outputDir,
+    'functions',
+    basePath.slice(1),
+    flowFuncPath
+  );
+  mkdirSync(dirname(destination), { recursive: true });
+  renameSync(source, destination);
 }

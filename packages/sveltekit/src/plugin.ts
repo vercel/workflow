@@ -2,8 +2,10 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   createBuildQueue,
+  createWorkflowBasePathRuntimeCode,
   ensureWorkflowTargetWorldEnv,
   resolveWorkflowTargetWorldAlias,
+  setWorkflowBasePath,
   WORKFLOW_NODE_COMPAT_BANNER,
   WORKFLOW_NODE_FILENAME_BANNER,
   WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
@@ -13,7 +15,7 @@ import {
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Plugin } from 'vite';
-import { SvelteKitBuilder } from './builder.js';
+import { loadSvelteKitConfig, SvelteKitBuilder } from './builder.js';
 
 export interface WorkflowPluginOptions {
   /**
@@ -80,11 +82,16 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
       // functional `require`, not a broken stub. The behavior to watch for is a
       // bundled lib that, on seeing `require`, does `require()` of an ESM-only
       // dependency on a Node version without `require(ESM)` support.
-      configResolved(config) {
+      async configResolved(config) {
+        const { basePath, routesDir } = await loadSvelteKitConfig(config.root);
+        setWorkflowBasePath(basePath);
+
         if (config.command === 'serve') {
           builder = new SvelteKitBuilder({
             workingDir: config.root,
             sourcemap: options.sourcemap,
+            basePath,
+            routesDir,
           });
         }
 
@@ -92,7 +99,9 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
           return;
         }
 
-        const banner = WORKFLOW_NODE_COMPAT_BANNER;
+        // Base path first (when configured) so the runtime global is set
+        // before any bundled code runs.
+        const banner = `${basePath ? `${createWorkflowBasePathRuntimeCode(basePath)}\n` : ''}${WORKFLOW_NODE_COMPAT_BANNER}`;
         const rollupOptions = config.build.rollupOptions;
         rollupOptions.output ??= {};
         const output = rollupOptions.output;

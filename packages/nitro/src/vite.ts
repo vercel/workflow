@@ -3,6 +3,7 @@ import {
   ensureWorkflowTargetWorldEnv,
   resolveWorkflowTargetWorldAlias,
   WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
+  WORKFLOW_ROUTE_BASE,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
@@ -103,8 +104,10 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         // Add middleware to intercept 404s on workflow routes before Vite's SPA fallback
         return () => {
           server.middlewares.use((req, res, next) => {
-            // Only handle workflow webhook routes
-            if (!req.url?.startsWith('/.well-known/workflow/v1/')) {
+            // Only handle workflow routes. With a baseURL, Nitro dev serves
+            // them at both the root-relative and base-prefixed paths, so
+            // match the workflow marker anywhere in the path.
+            if (!req.url?.includes(`${WORKFLOW_ROUTE_BASE}/`)) {
               return next();
             }
 

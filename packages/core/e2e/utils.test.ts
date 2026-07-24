@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'vitest';
-import { hasStepSourceMaps } from './utils';
+import { getDeploymentUrl, hasStepSourceMaps } from './utils';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -22,6 +22,15 @@ function setStepSourceMapEnv({
 
 afterEach(() => {
   process.env = { ...ORIGINAL_ENV };
+});
+
+test('joins app routes below the E2E base path', () => {
+  process.env.DEPLOYMENT_URL = 'http://localhost:3000';
+  process.env.WORKFLOW_E2E_BASE_PATH = '/app';
+
+  expect(getDeploymentUrl('/api/chat')).toBe(
+    'http://localhost:3000/app/api/chat'
+  );
 });
 
 describe('hasStepSourceMaps', () => {

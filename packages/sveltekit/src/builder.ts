@@ -15,6 +15,7 @@ import {
   BaseBuilder,
   createBaseBuilderConfig,
   NORMALIZE_REQUEST_CODE,
+  normalizeWorkflowBasePath,
   resolveProjectRoot,
   type SvelteKitConfig,
 } from '@workflow/builders';
@@ -57,6 +58,8 @@ export class SvelteKitBuilder extends BaseBuilder {
       projectRoot,
       moduleSpecifierRoot: config.moduleSpecifierRoot ?? workingDir,
       externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
+      // `undefined` (not '') when unset so generated routes carry no basePath
+      basePath: normalizeWorkflowBasePath(config.basePath) || undefined,
     });
     this.#routesDir = routesDir;
   }
@@ -195,15 +198,16 @@ export const OPTIONS = createSvelteKitHandler('OPTIONS');`
 
   private async loadRoutesDirectory(): Promise<string> {
     const routesDir =
-      this.#routesDir ?? (await loadSvelteKitRoutesDir(this.config.workingDir));
+      this.#routesDir ??
+      (await loadSvelteKitConfig(this.config.workingDir)).routesDir;
     await assertDirectory(routesDir);
     return routesDir;
   }
 }
 
-export async function loadSvelteKitRoutesDir(
+export async function loadSvelteKitConfig(
   workingDir: string
-): Promise<string> {
+): Promise<{ basePath: string; routesDir: string }> {
   const require = createRequire(join(workingDir, 'package.json'));
   const packageJsonPath = require.resolve('@sveltejs/kit/package.json');
   const loaderPath = join(dirname(packageJsonPath), 'src/core/config/index.js');
@@ -217,12 +221,15 @@ export async function loadSvelteKitRoutesDir(
       ? await configModule.load_svelte_config(workingDir)
       : await configModule.load_config({ cwd: workingDir });
   const routesDir = config.kit?.files?.routes;
-  if (routesDir == null || typeof routesDir !== 'string') {
+  if (typeof routesDir !== 'string') {
     throw new Error(
       'Expected SvelteKit config loader to return kit.files.routes as a string.'
     );
   }
-  return routesDir;
+  return {
+    basePath: normalizeWorkflowBasePath(config.kit?.paths?.base),
+    routesDir,
+  };
 }
 
 async function assertDirectory(path: string): Promise<void> {

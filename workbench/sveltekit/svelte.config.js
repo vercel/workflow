@@ -4,6 +4,8 @@ import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 
 // Node adapter needed for ci tests
 const adapter = process.env.VERCEL_DEPLOYMENT_ID ? vercel() : node();
+// E2E-only: mount the app below a base path (WORKFLOW_E2E_BASE_PATH=/app)
+const e2eBasePath = process.env.WORKFLOW_E2E_BASE_PATH?.replace(/\/+$/, '');
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
@@ -17,6 +19,7 @@ const config = {
     // In production, specify only trusted origins or remove this configuration
     // to use SvelteKit's default CSRF protection.
     csrf: { trustedOrigins: ['*'] },
+    paths: e2eBasePath ? { base: e2eBasePath } : undefined,
     alias: {
       '@repo/*': '../../*',
     },

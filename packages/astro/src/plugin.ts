@@ -3,8 +3,11 @@ import { fileURLToPath } from 'node:url';
 import {
   type AstroConfig,
   createBuildQueue,
+  createWorkflowBasePathRuntimeCode,
   ensureWorkflowTargetWorldEnv,
+  normalizeWorkflowBasePath,
   resolveWorkflowTargetWorldAlias,
+  setWorkflowBasePath,
   WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
@@ -38,12 +41,18 @@ export function workflowPlugin(
         updateConfig,
       }: HookParameters<'astro:config:setup'>) => {
         const srcDir = fileURLToPath(config.srcDir);
+        const basePath = normalizeWorkflowBasePath(config.base);
+        setWorkflowBasePath(basePath);
         builderOptions = {
           workingDir: fileURLToPath(config.root),
           dirs: [join(srcDir, 'pages'), join(srcDir, 'workflows')],
           sourcemap: options.sourcemap,
+          basePath,
         };
         const vitePlugins = [workflowTransformPlugin()];
+        if (basePath) {
+          vitePlugins.unshift(workflowBasePathPlugin(basePath));
+        }
         const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
         const workflowTargetWorldAlias = resolveWorkflowTargetWorldAlias({
           workingDir: process.cwd(),
@@ -89,6 +98,44 @@ export function workflowPlugin(
           await vercelBuilder.build();
         }
       },
+    },
+  };
+}
+
+/**
+ * Injects the base path global into SSR build output so runtime URL
+ * generation (queue delivery, webhook URLs) includes the base path.
+ *
+ * This is just `setWorkflowBasePath(basePath)` delivered into a server
+ * bundle we don't own the entry point of: Astro has no boot hook or
+ * runtime plugin concept for the compiled server, so a rollup banner is
+ * the supported way to run one statement before anything else. A runtime
+ * env var would be a second user-facing config that can drift from
+ * `config.base`, and a build-time `define` wouldn't reach the read sites:
+ * `@workflow/utils` is externalized (not bundled) in Astro's SSR output,
+ * so only process-wide state set at boot reliably reaches every reader.
+ */
+function workflowBasePathPlugin(basePath: string) {
+  return {
+    name: 'workflow:astro-base-path',
+    enforce: 'post',
+    configResolved(config: any) {
+      if (config.command !== 'build' || !config.build?.ssr) return;
+      const banner = createWorkflowBasePathRuntimeCode(basePath);
+      const rollupOptions = config.build.rollupOptions;
+      rollupOptions.output ??= {};
+      const outputs = Array.isArray(rollupOptions.output)
+        ? rollupOptions.output
+        : [rollupOptions.output];
+      for (const output of outputs) {
+        const existing = output.banner;
+        output.banner =
+          existing == null
+            ? banner
+            : typeof existing === 'function'
+              ? async (chunk: unknown) => `${banner}\n${await existing(chunk)}`
+              : `${banner}\n${existing}`;
+      }
     },
   };
 }

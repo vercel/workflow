@@ -1,4 +1,10 @@
 export const WORKFLOW_ROUTE_BASE = '/.well-known/workflow/v1';
+// Canonical definition of the runtime base path global. The symbol string is
+// duplicated in two places that cannot import this module and must stay in
+// sync: `@workflow/next` (CJS, has a local `setWorkflowBasePath` copy) and
+// `createWorkflowBasePathRuntimeCode` in `@workflow/builders` (emits the
+// assignment as generated code into framework server bundles). If the string
+// drifts, base path propagation silently breaks with no build/type error.
 const BASE_PATH_SYMBOL = Symbol.for('@workflow/core/basePath');
 const globalConfig = globalThis as typeof globalThis &
   Record<symbol, string | undefined>;

@@ -37,6 +37,7 @@ import {
   cliInspectJson,
   fetchManifest,
   getCollectedRunIds,
+  getDeploymentUrl,
   getWorkflowMetadata,
   hasNestedStepStackFrames,
   hasStepSourceMaps,
@@ -48,10 +49,7 @@ import {
   writeDiagnosticsSidecar,
 } from './utils';
 
-const deploymentUrl = process.env.DEPLOYMENT_URL;
-if (!deploymentUrl) {
-  throw new Error('`DEPLOYMENT_URL` environment variable is not set');
-}
+const deploymentUrl = getDeploymentUrl();
 
 const DISTRIBUTED_CLOCK_TOLERANCE_MS = 1_000;
 const RACE_WINNER_MAX_DURATION_MS = 5_000;
@@ -251,7 +249,7 @@ async function startWorkflowViaHttp(
   args: any[],
   endpoint: string
 ): Promise<Run<any>> {
-  const url = new URL(endpoint, deploymentUrl);
+  const url = new URL(getDeploymentUrl(endpoint));
   const workflowFn =
     typeof workflow === 'string' ? workflow : workflow.workflowFn;
   const workflowFile =
@@ -1685,7 +1683,7 @@ describe('e2e', () => {
     { timeout: 60_000 },
     async () => {
       // Call the API route that directly calls a step function (no workflow context)
-      const url = new URL('/api/test-direct-step-call', deploymentUrl);
+      const url = new URL(getDeploymentUrl('/api/test-direct-step-call'));
       const res = await fetch(url, {
         method: 'POST',
         headers: {
@@ -2558,19 +2556,17 @@ describe('e2e', () => {
       // bypasses protection by sending messages through the Queue infrastructure.
 
       // Test the flow endpoint health check (V2: combined handler for both workflow + step)
-      const flowRes = await fetch(
-        createWorkflowUrl(deploymentUrl, { type: 'health' }),
-        {
-          method: 'POST',
-          headers: await getTrustedSourcesHeaders(),
-        }
-      );
+      const healthUrl = createWorkflowUrl(deploymentUrl, { type: 'health' });
+      const flowRes = await fetch(healthUrl, {
+        method: 'POST',
+        headers: await getTrustedSourcesHeaders(),
+      });
       expect(flowRes.status).toBe(200);
       expect(flowRes.headers.get('Content-Type')).toBe('application/json');
       const flowBody = await flowRes.json();
       expect(flowBody).toEqual({
         healthy: true,
-        endpoint: '/.well-known/workflow/v1/flow',
+        endpoint: new URL(healthUrl).pathname,
         // specVersion comes from the World's declared specVersion (e.g. 3
         // for world-vercel) or falls back to SPEC_VERSION_CURRENT (2).
         specVersion: expect.any(Number),

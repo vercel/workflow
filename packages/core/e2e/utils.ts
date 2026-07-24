@@ -121,6 +121,29 @@ export function isLocalDeployment(): boolean {
 }
 
 /**
+ * `DEPLOYMENT_URL` (an origin) plus the app's base path when the run opts
+ * into base path testing via `WORKFLOW_E2E_BASE_PATH` — so the whole suite
+ * exercises the base-path deployment without dedicated tests.
+ */
+export function getDeploymentUrl(pathname = ''): string {
+  const deploymentUrl = process.env.DEPLOYMENT_URL;
+  if (!deploymentUrl) {
+    throw new Error('`DEPLOYMENT_URL` environment variable is not set');
+  }
+  const basePath = process.env.WORKFLOW_E2E_BASE_PATH?.replace(
+    /^\/+|\/+$/g,
+    ''
+  );
+  if (!basePath && !pathname) {
+    return deploymentUrl;
+  }
+  const routePath = [basePath, pathname.replace(/^\/+/, '')]
+    .filter(Boolean)
+    .join('/');
+  return new URL(`/${routePath}`, deploymentUrl).toString();
+}
+
+/**
  * Checks if step error source maps are expected to work in the current test environment.
  * TODO: ideally it should work consistently everywhere and we should fix the issues and
  *       get rid of this strange matrix
@@ -819,7 +842,7 @@ export const cliHealthJson = async (options?: {
   // For local deployments, set WORKFLOW_LOCAL_BASE_URL from DEPLOYMENT_URL
   // since different frameworks use different default ports (Astro: 4321, SvelteKit: 5173, etc.)
   if (isLocalDeployment() && process.env.DEPLOYMENT_URL) {
-    envOverrides.WORKFLOW_LOCAL_BASE_URL = process.env.DEPLOYMENT_URL;
+    envOverrides.WORKFLOW_LOCAL_BASE_URL = getDeploymentUrl();
   }
 
   const result = await awaitCommand(

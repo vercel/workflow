@@ -4,21 +4,12 @@ import {
   type AstroConfig,
   BaseBuilder,
   createBaseBuilderConfig,
+  createBuildOutputApiWebhookRoute,
   NORMALIZE_REQUEST_CODE,
+  normalizeWorkflowBasePath,
   resolveProjectRoot,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
-
-const WORKFLOW_ROUTES = [
-  {
-    src: '^/\\.well-known/workflow/v1/flow/?$',
-    dest: '/.well-known/workflow/v1/flow',
-  },
-  {
-    src: '^/\\.well-known/workflow/v1/webhook/([^/]+?)/?$',
-    dest: '/.well-known/workflow/v1/webhook/[token]',
-  },
-];
 
 export class LocalBuilder extends BaseBuilder {
   #pagesDir: string;
@@ -39,6 +30,8 @@ export class LocalBuilder extends BaseBuilder {
       projectRoot: config.projectRoot,
       moduleSpecifierRoot: options.moduleSpecifierRoot ?? config.workingDir,
       debugFilePrefix: '_', // Prefix with underscore so Astro ignores debug files
+      // `undefined` (not '') when unset so generated routes carry no basePath
+      basePath: normalizeWorkflowBasePath(options.basePath) || undefined,
     });
     this.#pagesDir = config.pagesDir;
   }
@@ -189,6 +182,8 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
       projectRoot: config.projectRoot,
       moduleSpecifierRoot: options.moduleSpecifierRoot ?? config.workingDir,
       debugFilePrefix: '_',
+      // `undefined` (not '') when unset so generated routes carry no basePath
+      basePath: normalizeWorkflowBasePath(options.basePath) || undefined,
     });
   }
 
@@ -207,21 +202,23 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         !route.src?.includes('.well-known/workflow')
     );
 
-    // Find the index right after the "filesystem" handler and "continue: true" routes
-    let insertIndex = config.routes.findIndex(
-      (route: any) => route.handle === 'filesystem'
+    // Insert the webhook route BEFORE `handle: filesystem`: it maps public
+    // webhook URLs onto the dynamic `[token]` function, and post-filesystem
+    // rewrites don't re-check the filesystem (observed as platform 404s on
+    // preview deployments).
+    const filesystemIndex = config.routes.findIndex(
+      (route: { handle?: string }) => route.handle === 'filesystem'
     );
-
-    // Move past any routes with "continue: true" (like _astro cache headers)
-    while (
-      insertIndex < config.routes.length - 1 &&
-      config.routes[insertIndex + 1]?.continue === true
-    ) {
-      insertIndex++;
+    if (filesystemIndex === -1) {
+      throw new Error(
+        'Expected Astro Vercel output to contain a filesystem handler'
+      );
     }
-
-    // Insert workflow routes right after
-    config.routes.splice(insertIndex + 1, 0, ...WORKFLOW_ROUTES);
+    config.routes.splice(
+      filesystemIndex,
+      0,
+      createBuildOutputApiWebhookRoute(this.config.basePath)
+    );
 
     // Bundles workflows for vercel
     await super.build();

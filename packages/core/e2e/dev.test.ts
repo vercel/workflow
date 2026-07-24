@@ -3,7 +3,12 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, assert, beforeAll, describe, expect, test } from 'vitest';
 import { start } from '../src/runtime';
-import { getWorkbenchAppPath, getWorkflowMetadata, setupWorld } from './utils';
+import {
+  getDeploymentUrl,
+  getWorkbenchAppPath,
+  getWorkflowMetadata,
+  setupWorld,
+} from './utils';
 
 export interface DevTestConfig {
   generatedStepPath: string;
@@ -53,7 +58,9 @@ export function createDevTests(config?: DevTestConfig) {
     // can't hang indefinitely, so a generous budget is safe.
     const CLEANUP_HOOK_TIMEOUT_MS = PREWARM_FETCH_TIMEOUT_MS * 4;
     const appPath = getWorkbenchAppPath();
-    const deploymentUrl = process.env.DEPLOYMENT_URL;
+    const deploymentUrl = process.env.DEPLOYMENT_URL
+      ? getDeploymentUrl()
+      : undefined;
     const generatedStep = path.join(appPath, finalConfig.generatedStepPath);
     const generatedWorkflow = path.join(
       appPath,
@@ -158,7 +165,7 @@ export function createDevTests(config?: DevTestConfig) {
         return Promise.resolve();
       }
 
-      return fetch(new URL(pathname, deploymentUrl), {
+      return fetch(getDeploymentUrl(pathname), {
         signal: AbortSignal.timeout(PREWARM_FETCH_TIMEOUT_MS),
       });
     };

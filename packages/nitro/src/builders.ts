@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
+  normalizeWorkflowBasePath,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 import type { Nitro } from 'nitro/types';
@@ -18,6 +19,7 @@ import { join } from 'pathe';
  * returns undefined.
  */
 type NitroV2ExternalsOptions = { externals?: { external?: unknown[] } };
+
 function getNitroStringExternals(nitro: Nitro): string[] | undefined {
   const external = (nitro.options as NitroV2ExternalsOptions).externals
     ?.external;
@@ -45,6 +47,9 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         runtime: nitro.options.workflow?.runtime,
         sourcemap: nitro.options.workflow?.sourcemap,
         externalPackages: getNitroStringExternals(nitro),
+        // Nuxt lowers `app.baseURL` into `baseURL` natively. `undefined`
+        // (not '') when unset so generated routes carry no basePath.
+        basePath: normalizeWorkflowBasePath(nitro.options.baseURL) || undefined,
       }),
       buildTarget: 'vercel-build-output-api',
     });
@@ -74,6 +79,9 @@ export class LocalBuilder extends BaseBuilder {
         dirs: getNitroWorkflowDirs(nitro),
         sourcemap: nitro.options.workflow?.sourcemap,
         externalPackages: getNitroStringExternals(nitro),
+        // Nuxt lowers `app.baseURL` into `baseURL` natively. `undefined`
+        // (not '') when unset so generated routes carry no basePath.
+        basePath: normalizeWorkflowBasePath(nitro.options.baseURL) || undefined,
       }),
       buildTarget: 'next', // Placeholder, not actually used
     });

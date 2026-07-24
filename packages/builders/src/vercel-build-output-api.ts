@@ -1,13 +1,41 @@
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { WORKFLOW_ROUTE_BASE } from '@workflow/utils';
 import { BaseBuilder } from './base-builder.js';
+import { normalizeWorkflowBasePath } from './base-path.js';
 import { getWorkflowQueueTrigger } from './constants.js';
+import { escapeRegExp } from './node-module-esbuild-plugin.js';
+
+const WORKFLOW_ROUTE_DIR = WORKFLOW_ROUTE_BASE.slice(1);
+
+/**
+ * Route mapping public webhook URLs onto the dynamic `[token]` function.
+ * This is the only route the workflow output needs: the flow function is an
+ * exact static path that Vercel serves via filesystem matching (functions
+ * live below the base path, so the public URL is the function path — and
+ * root-relative URLs match nothing, mirroring Next.js basePath behavior).
+ * The webhook needs a route because `[token]` is a dynamic segment that
+ * arbitrary token URLs can't filesystem-match.
+ */
+export function createBuildOutputApiWebhookRoute(basePath: string | undefined) {
+  const base = normalizeWorkflowBasePath(basePath);
+  return {
+    src: `^${escapeRegExp(`${base}${WORKFLOW_ROUTE_BASE}`)}/webhook/([^/]+?)/?$`,
+    dest: `${base}${WORKFLOW_ROUTE_BASE}/webhook/[token]`,
+  };
+}
 
 export class VercelBuildOutputAPIBuilder extends BaseBuilder {
   async build(): Promise<void> {
     const outputDir = resolve(this.config.workingDir, '.vercel/output');
     const functionsDir = join(outputDir, 'functions');
-    const workflowGeneratedDir = join(functionsDir, '.well-known/workflow/v1');
+    // Functions live below the base path so the public URLs (and the paths
+    // Vercel queue triggers invoke functions at) match the function paths.
+    const workflowGeneratedDir = join(
+      functionsDir,
+      normalizeWorkflowBasePath(this.config.basePath).slice(1),
+      WORKFLOW_ROUTE_DIR
+    );
 
     // Ensure output directories exist
     await mkdir(workflowGeneratedDir, { recursive: true });
@@ -61,7 +89,9 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     if (this.shouldExposePublicManifest && manifestJson) {
       const staticManifestDir = join(
         outputDir,
-        'static/.well-known/workflow/v1'
+        'static',
+        normalizeWorkflowBasePath(this.config.basePath).slice(1),
+        WORKFLOW_ROUTE_DIR
       );
       await mkdir(staticManifestDir, { recursive: true });
       if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
@@ -107,12 +137,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     // Create config.json for Build Output API
     const buildOutputConfig = {
       version: 3,
-      routes: [
-        {
-          src: '^\\/\\.well-known\\/workflow\\/v1\\/webhook\\/([^\\/]+)$',
-          dest: '/.well-known/workflow/v1/webhook/[token]',
-        },
-      ],
+      routes: [createBuildOutputApiWebhookRoute(this.config.basePath)],
     };
 
     await writeFile(
@@ -120,12 +145,13 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       JSON.stringify(buildOutputConfig, null, 2)
     );
 
+    const base = normalizeWorkflowBasePath(this.config.basePath);
     this.logBaseBuilderInfo(`Build Output API created at ${outputDir}`);
     this.logBaseBuilderInfo(
-      'Combined function available at /.well-known/workflow/v1/flow'
+      `Combined function available at ${base}${WORKFLOW_ROUTE_BASE}/flow`
     );
     this.logBaseBuilderInfo(
-      'Webhook function available at /.well-known/workflow/v1/webhook/[token]'
+      `Webhook function available at ${base}${WORKFLOW_ROUTE_BASE}/webhook/[token]`
     );
   }
 }
