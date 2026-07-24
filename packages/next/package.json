@@ -39,6 +39,7 @@
     "@workflow/core": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "chokidar": "4.0.3",
+    "ignore": "7.0.5",
     "semver": "catalog:"
   },
   "devDependencies": {

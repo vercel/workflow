@@ -60,3 +60,11 @@ Accepted values:
 - Default: disabled
 - Set `1` to log workflow rebuild activity during `next dev`.
 - Useful for diagnosing watch and HMR issues.
+
+### `WORKFLOW_DEV_WATCH_IGNORED_PATHS`
+
+- Default: unset
+- Dev-mode only (`next dev`). Comma-separated list of path fragments the file watcher should never watch, in addition to the built-in ignores and your project's `.gitignore`.
+- Each entry is matched as a substring of the absolute path (e.g. `/fixtures/,/generated/`).
+- The watcher already respects `.gitignore` (walking from the app directory up to the workspace root). Use this variable only for large directories you cannot or do not want to add to `.gitignore`.
+- Useful when a project has thousands of non-ignored directories and `next dev` fails with `EMFILE: too many open files, watch`.
