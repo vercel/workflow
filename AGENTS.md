@@ -213,8 +213,10 @@ This repository uses a dual-branch release model with [changesets](https://githu
 
 ### Branch Model
 
-- **`main`** — Bleeding-edge / beta channel. Changesets are in pre-release mode (`beta` tag). Published packages get the `beta` npm dist-tag (e.g. `5.0.0-beta.3`).
-- **`stable`** — GA / production channel. Changesets are in regular mode. Published packages get the `latest` npm dist-tag (e.g. `4.2.1`).
+- **`main`** — Current GA line (5.x). Changesets are in regular mode; published packages get the `latest` npm dist-tag (e.g. `5.0.0`). `main` re-enters pre-release mode only while a new major is baking, and publishes `beta`/`rc` dist-tags for as long as it stays there.
+- **`stable`** — 4.x maintenance line. Changesets are in regular mode; published packages get the `previous` npm dist-tag (`ci:publish` passes `--tag previous`), so a 4.x patch never moves `latest` off 5.x. The tag is not version-numbered because npm rejects tag names that parse as a semver range (`v4`, `4.x`).
+
+Before 5.0.0 this was inverted: `main` was the beta channel and `stable` owned `latest`.
 
 Both branches trigger the release workflow (`.github/workflows/release.yml`) on push. The changesets action creates a "Version Packages" PR on each branch when there are pending changesets.
 
@@ -227,13 +229,13 @@ When backporting changes to `stable`, any conflicts involving docs app files (ou
 
 ### Changesets
 
-- `workflow` and `@workflow/core` use changesets' "fixed" versioning strategy — they always have the same version number
+- `workflow`, `@workflow/core`, and `@workflow/world-vercel` use changesets' "fixed" versioning strategy — they always have the same version number. `@workflow/world-vercel` joined the group at 5.0.0 so the Vercel adapter version reported to the backend is unambiguously the SDK version; a changeset touching only one of the three still republishes all of them.
 - Every PR requires a changeset to be included before it will be merged
 - To check if one is needed, run `pnpm changeset status --since=main >/dev/null 2>&1 && echo "no changeset needed" || echo "changeset needed"`
 - Create a changeset using `pnpm changeset add`
   - All changed packages should be included in the changeset. Never include unchanged packages.
   - Use the correct semver bump type: `patch` for bug fixes, `minor` for new features, `major` for breaking changes
-  - On `main` (pre-release mode), the bump type doesn't affect beta numbering (it always increments `beta.N`) but it **does matter** when changes are backported to `stable`
+  - The bump type determines the released version on both branches. While `main` is in pre-release mode it only increments `beta.N`, but the type is still recorded and applies when pre mode exits and when changes are backported to `stable`
 - Remember to always build any packages that get changed before running downstream tests like e2e tests in the workbench
 - Remember that changes made to one workbench should propagate to all other workbenches. The workflows should typically only be written once inside the example workbench and symlinked into all the other workbenches
 - When writing changesets (via `pnpm changeset add` from the repo root, as noted above), keep the description terse — one sentence, or two at most. Try to make changesets that are specific to each modified package so they are targeted.
@@ -260,7 +262,7 @@ When in doubt, AI is told to lean toward recommending a backport — a human rev
 
 ### Pre-release Lifecycle
 
-The `main` branch uses changesets' [pre-release mode](https://github.com/changesets/changesets/blob/main/docs/prereleases.md) to publish beta versions.
+`main` is **not** in pre-release mode today — it ships GA 5.x versions straight to the `latest` dist-tag. The steps below apply when baking the next major, at which point `main` uses changesets' [pre-release mode](https://github.com/changesets/changesets/blob/main/docs/prereleases.md) to publish beta versions.
 
 **Starting a new pre-release cycle:**
 1. Create a changeset with the desired base bump (e.g. `major` for a new major version)
@@ -271,10 +273,11 @@ The `main` branch uses changesets' [pre-release mode](https://github.com/changes
 - Merge PRs with changesets to `main` as normal
 - Each "Version Packages (beta)" PR merge publishes the next `beta.N` increment
 
-**Graduating to stable:**
+**Graduating to GA:**
 1. (Optional) Transition to release candidates: `pnpm changeset pre enter rc` (publishes `X.Y.Z-rc.N`)
 2. Exit pre-release mode: `pnpm changeset pre exit`
-3. The next "Version Packages" PR will publish the final stable version to npm
+3. The next "Version Packages" PR will publish the final GA version to npm under the `latest` dist-tag
+4. Move the outgoing major to a maintenance branch and pin its `ci:publish` to a dedicated dist-tag (e.g. `previous`) so its patches never reclaim `latest`. The tag must not parse as a semver range — npm rejects `v4`/`4.x`.
 
 ## Common Patterns
 
