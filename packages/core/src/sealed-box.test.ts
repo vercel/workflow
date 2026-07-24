@@ -5,6 +5,8 @@ import {
   encrypt as aesGcmEncrypt,
 } from './encryption.js';
 import {
+  base64ToBytes,
+  bytesToBase64,
   decapsulate,
   deriveRunKeyPair,
   encapsulate,
@@ -426,5 +428,40 @@ describe('sealed-box', () => {
         RuntimeDecryptionError
       );
     });
+  });
+});
+
+describe('base64 helpers', () => {
+  it('matches node:crypto Buffer encoding for random byte strings', () => {
+    // Hand-rolled because the module must run in the browser and the VM; that
+    // makes an independent cross-check worthwhile.
+    for (const length of [0, 1, 2, 3, 4, 31, 32, 33, 64, 255]) {
+      const bytes = new Uint8Array(length);
+      globalThis.crypto.getRandomValues(bytes);
+      const expected = Buffer.from(bytes).toString('base64');
+      expect(bytesToBase64(bytes)).toBe(expected);
+      expect(base64ToBytes(expected)).toEqual(bytes);
+    }
+  });
+
+  it('round-trips a derived public key', async () => {
+    const { publicKey } = await deriveRunKeyPair(K);
+    const encoded = bytesToBase64(publicKey);
+    // 32 bytes -> 44 base64 chars including padding.
+    expect(encoded).toHaveLength(44);
+    expect(base64ToBytes(encoded)).toEqual(publicKey);
+  });
+
+  it('returns undefined for malformed base64 rather than throwing', () => {
+    // A corrupt public key read from storage must degrade to "no usable key"
+    // (falling back to the symmetric path), not crash a resumption.
+    expect(base64ToBytes('not valid base64!!')).toBeUndefined();
+    expect(base64ToBytes('****')).toBeUndefined();
+  });
+
+  it('tolerates missing padding', () => {
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+    const padded = bytesToBase64(bytes);
+    expect(base64ToBytes(padded.replace(/=+$/, ''))).toEqual(bytes);
   });
 });

@@ -50,9 +50,9 @@ import {
   jsonReviver,
   listJSONFiles,
   paginatedFileSystemQuery,
+  promoteExclusive,
   readJSON,
   readJSONWithFallback,
-  promoteExclusive,
   resolveWithinBase,
   taggedPath,
   write,
@@ -70,8 +70,8 @@ import {
   mintRunDominantEventKey,
   monotonicUlid,
   pendingHookEventPath,
-  releaseHookTokenClaimIfOwnedBy,
   reapPendingHookEvents,
+  releaseHookTokenClaimIfOwnedBy,
   runTerminalMarkerPath,
 } from './helpers.js';
 import {
@@ -1140,6 +1140,7 @@ export function createEventsStorage(
             executionContext?: Record<string, any>;
             attributes?: Record<string, string>;
             allowReservedAttributes?: true;
+            encryptionPublicKey?: string;
           };
           validateAttributeChanges(
             Object.entries(runData.attributes ?? {}).map(([key, value]) => ({
@@ -1164,6 +1165,7 @@ export function createEventsStorage(
             startedAt: undefined,
             completedAt: undefined,
             attributes: runData.attributes ?? {},
+            encryptionPublicKey: runData.encryptionPublicKey,
             createdAt: now,
             updatedAt: now,
           };

@@ -276,8 +276,67 @@ function importPublicKey(publicKey: Uint8Array): Promise<CryptoKey> {
   );
 }
 
+const BASE64_CHARS =
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
 const BASE64URL_CHARS =
   'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+/**
+ * Encode bytes as standard (padded) base64.
+ *
+ * Hand-rolled for the same reason as {@link base64UrlToBytes}: this module
+ * runs in the browser (o11y decryption) and inside the workflow VM, so neither
+ * `Buffer` nor `btoa` can be assumed. Used for the wire encoding of run public
+ * keys, matching the base64 convention already used for `VERCEL_DEPLOYMENT_KEY`
+ * and the `run-key` API response.
+ */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < bytes.length ? bytes[i + 1] : 0;
+    const b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+
+    out += BASE64_CHARS[(b0 >> 2) & 0x3f];
+    out += BASE64_CHARS[((b0 & 0x03) << 4) | ((b1 >> 4) & 0x0f)];
+    out +=
+      i + 1 < bytes.length
+        ? BASE64_CHARS[((b1 & 0x0f) << 2) | ((b2 >> 6) & 0x03)]
+        : '=';
+    out += i + 2 < bytes.length ? BASE64_CHARS[b2 & 0x3f] : '=';
+  }
+  return out;
+}
+
+/**
+ * Decode standard base64 (padding optional) to bytes.
+ *
+ * Returns `undefined` for malformed input rather than throwing: callers decode
+ * public keys that arrive from storage or over the wire, where a corrupt value
+ * should degrade to "this run has no usable public key" (and fall back to the
+ * symmetric path) rather than crash a resumption.
+ */
+export function base64ToBytes(value: string): Uint8Array | undefined {
+  let accumulator = 0;
+  let bitCount = 0;
+  const bytes: number[] = [];
+
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i];
+    if (char === '=') break;
+    const index = BASE64_CHARS.indexOf(char);
+    if (index === -1) return undefined;
+    accumulator = (accumulator << 6) | index;
+    bitCount += 6;
+    if (bitCount >= 8) {
+      bitCount -= 8;
+      bytes.push((accumulator >> bitCount) & 0xff);
+    }
+  }
+
+  return new Uint8Array(bytes);
+}
 
 /**
  * Decode a base64url string (JWK encoding) to bytes.
