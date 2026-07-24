@@ -12,7 +12,6 @@ import { registerSerializationClass } from './class-serialization.js';
 import { decrypt, encrypt, importKey } from './encryption.js';
 import { getStepFunction, registerStepFunction } from './private.js';
 import { bytesToBase64, deriveRunKeyPair } from './sealed-box.js';
-import { hydrateData } from './serialization-format.js';
 import {
   decrypt as decryptEnvelope,
   runPayloadKeys,
@@ -43,6 +42,7 @@ import {
   maybeEncrypt,
   SerializationFormat,
 } from './serialization.js';
+import { hydrateData } from './serialization-format.js';
 import {
   ABORT_HOOK_TOKEN,
   ABORT_READER_CANCEL,
@@ -747,34 +747,49 @@ describe('workflow arguments', () => {
     }
   });
 
-  it('gives every sealed frame its own key, so replays cannot reuse a nonce', async () => {
-    // Each frame is sealed independently (fresh ephemeral keypair AND fresh
-    // nonce), so there is no long-lived content key that a stream reconnect
-    // or a durable replay could restart a counter against.
+  it('keeps nonces unique across sealed frames sharing one content key', async () => {
+    // The KEM is amortized per writer, so all frames of one stream share an
+    // ephemeral key and content key. Safety therefore rests entirely on the
+    // per-frame random nonce: identical plaintext must still produce distinct
+    // ciphertext. A counter here would repeat `(key, nonce)` after a reconnect
+    // or a durable replay.
     const ownerKeyPair = await deriveRunKeyPair(new Uint8Array(32).fill(0x3c));
-    const target = sealTo(ownerKeyPair.publicKey);
 
-    const frames: Uint8Array[] = [];
-    const serialize = getSerializeStream({} as any, target);
-    const read = (async () => {
-      const reader = serialize.readable.getReader();
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        frames.push(value);
-      }
-    })();
-    const writer = serialize.writable.getWriter();
-    for (let i = 0; i < 20; i++) await writer.write('identical');
-    await writer.close();
-    await read;
+    async function writeFrames(count: number): Promise<Uint8Array[]> {
+      const frames: Uint8Array[] = [];
+      const serialize = getSerializeStream(
+        {} as any,
+        sealTo(ownerKeyPair.publicKey)
+      );
+      const read = (async () => {
+        const reader = serialize.readable.getReader();
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          frames.push(value);
+        }
+      })();
+      const writer = serialize.writable.getWriter();
+      for (let i = 0; i < count; i++) await writer.write('identical');
+      await writer.close();
+      await read;
+      return frames;
+    }
 
-    // Ephemeral public key sits after [4-byte length][encp].
+    const frames = await writeFrames(20);
+    // Ephemeral public key sits after [4-byte length][encp]: one per stream.
     const ephemerals = new Set(
       frames.map((f) => Array.from(f.subarray(8, 40)).join(','))
     );
-    expect(ephemerals.size).toBe(20);
+    expect(ephemerals.size).toBe(1);
+    // But every frame is still distinct, i.e. no nonce was reused.
     expect(new Set(frames.map((f) => Array.from(f).join(','))).size).toBe(20);
+
+    // A second writer incarnation — a reconnect or a replay — must not inherit
+    // the first one's content key, so its ephemeral key differs.
+    const replayed = await writeFrames(20);
+    const replayEphemeral = Array.from(replayed[0].subarray(8, 40)).join(',');
+    expect(ephemerals.has(replayEphemeral)).toBe(false);
   });
 
   it('loads the owner run for forwarded descriptors from older deployments', async () => {
