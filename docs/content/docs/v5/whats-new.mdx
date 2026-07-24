@@ -11,43 +11,34 @@ related:
 
 Workflow SDK v5 is out now, and Workflow SDK v4 has moved to maintenance status: it stays installable as `workflow@4`, receives stability fixes only, and its documentation lives at [/v4/docs](/v4/docs).
 
-We recommend upgrading to v5 to get all of the performance, cost, and feature improvements listed below.
-
-Breaking changes are mainly limited to programmatic use of the core APIs, and third-party worlds.
+We recommend upgrading to v5 to get all of the performance, cost, and feature improvements listed below. It's as simple as installing the migration skill and telling your agent to your app from Workflow SDK v4 to v5.
 
 ```bash
 npm install workflow@latest
-# Use the included migration skill:
 npx skills add https://github.com/vercel/workflow --skill migrating-workflow-v4-to-v5
 ```
 
-Most 4.x application code compiles and runs unchanged. The workflow and step programming model, the `"use workflow"` / `"use step"` directives, `start()`, hooks, webhooks, streams, and the event log are all the same. The breaking changes below are concentrated in low-level runtime APIs and build integrations.
-
-Several of the features below shipped during the v5 beta and were announced separately; they are now generally available, and the linked changelogs have the details.
 
 ## Highlights
 
 ### Faster and cheaper runs
 
-The largest change in v5 has no API surface: the runtime does far less work per unit of progress. Three mechanisms compound.
+The largest change in v5 has no API surface: the runtime does far less work per unit of progress. The time between calling `start()` and your first step body executing is now less than half of what it was in v4. This is made possible by many smaller optimizations:
 
-**A workflow invocation now does as much as it can in a single pass.** In 4.x, progress was largely deferred to the queue: an invocation would execute a step, hand back to the queue, and let a fresh invocation pick up the next one. v5 creates and executes steps inline — several per suspension, in parallel (`WORKFLOW_MAX_INLINE_STEPS`, default 3) — and only returns to the queue when it genuinely has to: a wait, a hook, or the function approaching its timeout. You pay network and cold-start overhead at those boundaries instead of at every step.
+**A workflow invocation now does as much as it can in a single pass.** In 4.x, progress was largely deferred to the queue: an invocation would execute a step, hand back to the queue, and let a fresh invocation pick up the next one. v5 creates and executes steps inline — several per suspension, in parallel, and only uses the queue when it really has to: a wait, a hook, or the function is approaching its timeout.
 
-**The runtime avoids waiting on the persistence layer where it can determine that is safe for your workload.** Turbo mode backgrounds the `run_started` write and skips the initial event-log load on a run's first invocation. Step creation is folded into step execution rather than being its own round trip. The inline loop consumes the event-log delta from the previous step's write instead of re-listing events. Each optimization is gated on runtime conditions, and each can be turned off — see [Runtime tuning](/docs/configuration/runtime-tuning).
+**The runtime avoids waiting on the persistence layer where it can determine that is safe for your workload.** Many API calls are now simply skipped when not needed, like requesting the event-log on a run's first invocation. Step creation is folded into step execution rather than being its own round trip. The inline loop consumes the event-log delta from the previous step's write instead of re-listing events. Each optimization is gated on specific runtime conditions, and can be turned off individually — see [Runtime tuning](/docs/configuration/runtime-tuning).
 
-**Payloads are compressed** before encryption — zstd where available, gzip as a portable fallback. Repetitive payloads compress heavily; AI token streams average around 80% smaller. That is less stored data and less to move over the network.
+**Payloads are compressed** before they are encrypted and sent to the API. Repetitive payloads compress heavily; AI token streams average around 80% smaller. That is less stored data and less to move over the network.
 
 Together, time to first step — from `start()` to your first step body executing — is about half of what it was in v4.
 
-On [Vercel Workflows](/worlds/vercel) we expect compute cost to fall by up to 80% for workflows made of many small steps, and storage cost by up to 70%, depending on the workload. The mechanisms are not Vercel-specific: fewer function invocations, fewer queue messages, fewer round trips to storage, and fewer stored bytes reduce the bill on any [World](/worlds), against whatever your own infrastructure charges for them.
+On [Vercel Workflows](/worlds/vercel) these benefits compound to reduce compute costs by up to 80% for workflows made of many small steps, and storage cost by up to 70%, depending on the workload. Depending on your setup, you may see similar gains using self-hosted or third-party Worlds.
 
-See [Turbo mode](/docs/changelog/turbo-mode), [Lazy event creation](/docs/changelog/lazy-event-creation), [Eager processing](/docs/changelog/eager-processing), and the [payload compression changelog](https://vercel.com/changelog/workflow-sdk-now-compresses-run-and-step-payloads).
+### Multi-region support
 
-### Run state can live in any region
-
-`World.createRunId()` and the `region` option on queue dispatch let a World mint its own run IDs and route a run's messages to a specific region, so run state can live next to the compute that produces it.
-
-`@workflow/world-vercel` implements this: [Vercel Workflows now serves data and traffic in every Vercel region](https://vercel.com/changelog/vercel-workflows-global-4Dgx1gL3NAuSqGhjRIMFpo), colocating run data where the run starts, which removes a cross-region hop for every run that does not start in `iad1`.
+Workflow run IDs are now tagged with the compute region they were created in, or the region specified when calling `start()`. Worlds can use this to pin execution to that region.
+This is now the default when deploying to Vercel, and run data will automatically be co-located with the compute region that the run was started in.
 
 ### Cooperative cancellation
 
