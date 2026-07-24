@@ -1,15 +1,15 @@
 {
-  "lastUpdated": "2026-07-24T22:00:42.633Z",
-  "commit": "bc53e5a31b89af5d8bc50365796646d4de596005",
+  "lastUpdated": "2026-07-24T22:31:32.800Z",
+  "commit": "3069b4918edb82f12a45d2014dc465aee03e9c39",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
-      "status": "partial",
-      "total": 4312,
-      "passed": 3772,
-      "failed": 1,
-      "skipped": 539,
+      "status": "passing",
+      "total": 4466,
+      "passed": 3908,
+      "failed": 0,
+      "skipped": 558,
       "frameworks": {
         "astro": {
           "total": 308,
@@ -37,9 +37,9 @@
           "failed": 0
         },
         "nextjs-webpack": {
-          "total": 462,
-          "passed": 442,
-          "failed": 1
+          "total": 616,
+          "passed": 578,
+          "failed": 0
         },
         "nitro": {
           "total": 308,
@@ -62,7 +62,7 @@
           "failed": 0
         }
       },
-      "progress": 87
+      "progress": 88
     },
     "postgres": {
       "status": "passing",
@@ -119,51 +119,6 @@
         "vite": {
           "total": 154,
           "passed": 128,
-          "failed": 0
-        }
-      },
-      "progress": 87
-    },
-    "vercel": {
-      "status": "passing",
-      "total": 1386,
-      "passed": 1203,
-      "failed": 0,
-      "skipped": 183,
-      "frameworks": {
-        "fastify": {
-          "total": 154,
-          "passed": 126,
-          "failed": 0
-        },
-        "hono": {
-          "total": 154,
-          "passed": 126,
-          "failed": 0
-        },
-        "nextjs-turbopack": {
-          "total": 154,
-          "passed": 151,
-          "failed": 0
-        },
-        "nextjs-webpack": {
-          "total": 154,
-          "passed": 151,
-          "failed": 0
-        },
-        "nuxt": {
-          "total": 154,
-          "passed": 126,
-          "failed": 0
-        },
-        "sveltekit": {
-          "total": 154,
-          "passed": 145,
-          "failed": 0
-        },
-        "vite": {
-          "total": 154,
-          "passed": 126,
           "failed": 0
         }
       },
