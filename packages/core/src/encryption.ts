@@ -68,17 +68,27 @@ export async function importKey(
  *
  * @param key - CryptoKey from `importKey()`
  * @param data - Plaintext to encrypt
+ * @param aad - Optional additional authenticated data. Not encrypted, but
+ *   covered by the GCM auth tag: decryption fails unless the exact same
+ *   bytes are supplied. Used by the sealed-box layer to bind ciphertext to
+ *   a `projectId|runId` context. Omit for no AAD (the legacy behavior).
  * @returns `[nonce (12 bytes)][ciphertext + GCM auth tag]`
  */
 export async function encrypt(
   key: CryptoKey,
-  data: Uint8Array
+  data: Uint8Array,
+  aad?: Uint8Array
 ): Promise<Uint8Array> {
   const nonce = globalThis.crypto.getRandomValues(new Uint8Array(NONCE_LENGTH));
   let ciphertext: ArrayBuffer;
   try {
     ciphertext = await globalThis.crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv: nonce, tagLength: TAG_LENGTH },
+      {
+        name: 'AES-GCM',
+        iv: nonce,
+        tagLength: TAG_LENGTH,
+        ...(aad ? { additionalData: aad } : {}),
+      },
       key,
       data
     );
@@ -123,11 +133,15 @@ export async function encrypt(
  *
  * @param key - CryptoKey from `importKey()`
  * @param data - `[nonce (12 bytes)][ciphertext + GCM auth tag]`
+ * @param aad - Optional additional authenticated data. Must match the bytes
+ *   passed to {@link encrypt} exactly, otherwise the GCM tag fails to verify
+ *   and a {@link RuntimeDecryptionError} is thrown.
  * @returns Decrypted plaintext
  */
 export async function decrypt(
   key: CryptoKey,
-  data: Uint8Array
+  data: Uint8Array,
+  aad?: Uint8Array
 ): Promise<Uint8Array> {
   const minLength = NONCE_LENGTH + TAG_LENGTH / 8; // nonce + auth tag
   if (data.byteLength < minLength) {
@@ -146,7 +160,12 @@ export async function decrypt(
   let plaintext: ArrayBuffer;
   try {
     plaintext = await globalThis.crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: nonce, tagLength: TAG_LENGTH },
+      {
+        name: 'AES-GCM',
+        iv: nonce,
+        tagLength: TAG_LENGTH,
+        ...(aad ? { additionalData: aad } : {}),
+      },
       key,
       ciphertext
     );
