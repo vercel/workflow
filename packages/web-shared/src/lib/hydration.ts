@@ -497,9 +497,14 @@ export async function hydrateResourceIOAsync<T>(
     './zstd-browser-decoder.js'
   );
   ensureZstdDecoderRegistered();
+  // Resolve the *full* key capability, not just the symmetric key: a run's
+  // event log can contain sealed ('encp') payloads that another run wrote to
+  // it (a cross-deployment hook resumption, say), and opening those needs the
+  // run's X25519 scalar in addition to its AES key. Both are derived from the
+  // same 32 bytes the key-retrieval endpoint returns.
   const cryptoKey = key
-    ? await import('@workflow/core/encryption').then(({ importKey }) =>
-        importKey(key)
+    ? await import('@workflow/core/serialization-format').then(
+        ({ deriveRunPayloadKeys }) => deriveRunPayloadKeys(key)
       )
     : undefined;
   const revivers = getRevivers();
