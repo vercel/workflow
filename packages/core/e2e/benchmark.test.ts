@@ -47,6 +47,14 @@
  *          the writer's `writtenAt` and the reader's `readAt`. SL is
  *          `readAt - writtenAt`, so it excludes the api.vercel.com read path
  *          the old client-observed metric included.
+ * - SO    (stream overhead): end-to-end write+consume time in excess of a
+ *          modelled generation window, measured on the deployment by
+ *          `benchSoWorkflow`. A writer streams fake 4-byte LLM-token chunks at
+ *          a fixed rate for a fixed duration while a parallel reader drains the
+ *          whole stream; SO is `(doneAt - writtenAt) - chunkCount*intervalMs`,
+ *          i.e. the overhead/backpressure the stream adds on top of the token
+ *          rate. Same setup as SL, but the reader stamps `doneAt` after the
+ *          last chunk rather than `readAt` on the first.
  *
  * Scenarios (defined in workbench/example/workflows/97_bench.ts):
  *
@@ -55,6 +63,7 @@
  * 3. benchHookStreamWorkflow      — hook + 1 step, non-turbo → TTFS (non-turbo)
  * 4. benchSequentialStepsWorkflow — 1020 trivial sequential steps → STSO + WO
  * 5. benchSlWorkflow              — parallel reader/writer steps → SL
+ * 6. benchSoWorkflow              — paced LLM-shaped stream, drained → SO
  *
  * Each scenario runs many iterations (env-tunable, see BENCH_* below) so the
  * percentiles are computed from real samples.
@@ -100,6 +109,7 @@ const envInt = (name: string, fallback: number, min = 1): number => {
 // iteration, so a single long run already provides solid percentiles.
 const STREAM_ITERATIONS = envInt('BENCH_STREAM_ITERATIONS', 30);
 const SL_ITERATIONS = envInt('BENCH_SL_ITERATIONS', STREAM_ITERATIONS);
+const SO_ITERATIONS = envInt('BENCH_SO_ITERATIONS', STREAM_ITERATIONS);
 const SEQUENTIAL_ITERATIONS = envInt('BENCH_SEQUENTIAL_ITERATIONS', 1);
 const SEQUENTIAL_STEP_COUNT = envInt('BENCH_SEQUENTIAL_STEP_COUNT', 1020);
 const WARMUP_ITERATIONS = envInt('BENCH_WARMUP_ITERATIONS', 2, 0);
@@ -117,6 +127,20 @@ const BENCH_METHODOLOGY_VERSION = 2;
 // re-tightened once a few in-deployment baselines land.
 const TTFS_TARGETS = { p75: 200, p90: 300, p99: 600 };
 const SL_TARGETS = { p75: 50, p90: 60, p99: 125 };
+
+// SO scenario: model a haiku-size LLM streaming tokens — ~100 tokens/sec, each
+// token a 4-byte chunk, for 3 seconds (300 chunks). The writer paces itself so
+// the write phase spans exactly `SO_CHUNK_COUNT * SO_INTERVAL_MS` ms; SO is the
+// end-to-end write+consume time beyond that window (see runSoIteration). These
+// derive `SO_NOMINAL_DURATION_MS`, the single value subtracted from the
+// measured span, so the workflow's write span and the subtraction never drift.
+const SO_CHUNK_RATE_PER_SEC = envInt('BENCH_SO_CHUNK_RATE', 100);
+const SO_DURATION_SECONDS = envInt('BENCH_SO_DURATION_SECONDS', 3);
+const SO_CHUNK_COUNT = SO_CHUNK_RATE_PER_SEC * SO_DURATION_SECONDS;
+const SO_INTERVAL_MS = 1000 / SO_CHUNK_RATE_PER_SEC;
+const SO_NOMINAL_DURATION_MS = SO_CHUNK_COUNT * SO_INTERVAL_MS;
+// Provisional, like TTFS/SL above: re-tighten once in-deployment baselines land.
+const SO_TARGETS = { p75: 250, p90: 500, p99: 1000 };
 
 // STSO percentiles are reported for sampled step-index windows: the gap
 // between steps k and k+1 counts toward the window where `from <= k < to`.
@@ -151,6 +175,12 @@ interface BenchStreamLatency {
   readAt: number;
 }
 
+interface BenchStreamOverhead {
+  writtenAt: number;
+  doneAt: number;
+  received: number;
+}
+
 interface StreamIterationResult {
   runId: string;
   /** `steps[0].start - clientStart`, both deployment-side clocks. */
@@ -169,6 +199,12 @@ interface SlIterationResult {
   runId: string;
   /** `readAt - writtenAt`, both deployment-side step-body clocks. */
   slMs: number;
+}
+
+interface SoIterationResult {
+  runId: string;
+  /** `(doneAt - writtenAt) - SO_NOMINAL_DURATION_MS`, deployment-side clocks. */
+  soMs: number;
 }
 
 /** Response shape of the in-deployment `POST /api/bench` trigger route. */
@@ -353,6 +389,46 @@ async function runSlIteration(): Promise<SlIterationResult> {
   }
 }
 
+async function runSoIteration(): Promise<SoIterationResult> {
+  const { runId } = await triggerBenchRun('benchSoWorkflow', [
+    SO_CHUNK_COUNT,
+    SO_INTERVAL_MS,
+  ]);
+  try {
+    const returnValue = await withTimeout(
+      getReturnValue(runId),
+      // The writer streams for the whole generation window before the run can
+      // complete, so extend the guard past the base run timeout by that window.
+      RUN_TIMEOUT_MS + SO_NOMINAL_DURATION_MS,
+      `benchSoWorkflow returnValue (run ${runId})`
+    );
+    const so = (returnValue as { so?: BenchStreamOverhead } | undefined)?.so;
+    if (
+      !so ||
+      typeof so.writtenAt !== 'number' ||
+      typeof so.doneAt !== 'number'
+    ) {
+      throw new Error(
+        `Run ${runId} returned no stream-overhead sample: ${JSON.stringify(returnValue)?.slice(0, 200)}`
+      );
+    }
+    if (so.received !== SO_CHUNK_COUNT) {
+      throw new Error(
+        `Run ${runId} consumed ${so.received} chunks, expected ${SO_CHUNK_COUNT}`
+      );
+    }
+    // Both timestamps are deployment-side; subtract the modelled generation
+    // window and clamp to absorb tiny intra-Vercel skew.
+    return {
+      runId,
+      soMs: Math.max(0, so.doneAt - so.writtenAt - SO_NOMINAL_DURATION_MS),
+    };
+  } catch (error) {
+    (error as Error).message += ` (run ${runId})`;
+    throw error;
+  }
+}
+
 /**
  * Runs recorded iterations (plus warmups) sequentially — concurrency would
  * contend on the same deployment and skew latencies. Failed iterations are
@@ -499,6 +575,7 @@ const SCENARIO_TURBO_STREAM = 'stream';
 const SCENARIO_HOOK_STREAM = 'hook + stream';
 const SCENARIO_SEQUENTIAL = `${SEQUENTIAL_STEP_COUNT} steps`;
 const SCENARIO_STREAM_LATENCY = 'stream latency';
+const SCENARIO_STREAM_OVERHEAD = 'stream overhead';
 const SCENARIO_DESCRIPTIONS = [
   {
     name: SCENARIO_STEP,
@@ -523,6 +600,10 @@ const SCENARIO_DESCRIPTIONS = [
     name: SCENARIO_STREAM_LATENCY,
     description:
       'parallel reader/writer steps on a dedicated stream; SL is the in-deployment write->read propagation (readAt - writtenAt)',
+  },
+  {
+    name: SCENARIO_STREAM_OVERHEAD,
+    description: `writer streams ${SO_CHUNK_COUNT} 4-byte chunks paced at ${SO_CHUNK_RATE_PER_SEC}/s for ${SO_DURATION_SECONDS}s (a haiku-size LLM's token throughput) while a parallel reader drains the whole stream; SO is the end-to-end write+consume time beyond the ${SO_DURATION_SECONDS}s generation window (overhead/backpressure)`,
   },
 ];
 
@@ -615,6 +696,20 @@ describe('workflow benchmarks', () => {
     );
   });
 
+  test('scenario: stream overhead', { timeout: 30 * 60_000 }, async () => {
+    const results = await runScenario(
+      SCENARIO_STREAM_OVERHEAD,
+      SO_ITERATIONS,
+      () => runSoIteration()
+    );
+    recordMetric(
+      'so',
+      SCENARIO_STREAM_OVERHEAD,
+      results.map((r) => r.soMs),
+      SO_TARGETS
+    );
+  });
+
   test('scenario: sequential steps', { timeout: 60 * 60_000 }, async () => {
     const results = await runScenario(
       SCENARIO_SEQUENTIAL,
@@ -676,6 +771,10 @@ describe('workflow benchmarks', () => {
       config: {
         streamIterations: STREAM_ITERATIONS,
         slIterations: SL_ITERATIONS,
+        soIterations: SO_ITERATIONS,
+        soChunkCount: SO_CHUNK_COUNT,
+        soChunkRatePerSec: SO_CHUNK_RATE_PER_SEC,
+        soDurationSeconds: SO_DURATION_SECONDS,
         sequentialIterations: SEQUENTIAL_ITERATIONS,
         sequentialStepCount: SEQUENTIAL_STEP_COUNT,
         warmupIterations: WARMUP_ITERATIONS,

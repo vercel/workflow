@@ -108,6 +108,11 @@ test('renders a completed run with a table and embedded history', async () => {
   assert.match(body, /\| 320 \| 398 🔴 \|/);
   // Metric definitions live in the footer, not in the table rows
   assert.doesNotMatch(body, /\| \*\*TTFS\*\* <sub>/);
+  // The smallprint footer is collapsed into a dropdown, like "Previous results"
+  assert.match(
+    body,
+    /<details>\n<summary>ℹ️ Metric definitions & methodology<\/summary>/
+  );
   assert.match(body, /<sub>Metrics — \*\*TTFS\*\*: time to first step body/);
   assert.match(body, /\*\*SL\*\*: stream latency/);
   // Scenario legend from the runner-provided descriptions
@@ -133,6 +138,45 @@ test('renders a completed run with a table and embedded history', async () => {
   assert.strictEqual(history.length, 1);
   assert.strictEqual(history[0].commit, 'abcdef1234567890');
   assert.strictEqual(history[0].results[0].metrics.length, 4);
+});
+
+test('renders the SO metric row and its footer definition', async () => {
+  const { renderComment } = await loadModule();
+  const result = sampleResult({
+    scenarios: [
+      {
+        name: 'stream overhead',
+        description: 'paced LLM-shaped stream, drained',
+      },
+    ],
+    metrics: [
+      {
+        metric: 'so',
+        scenario: 'stream overhead',
+        unit: 'ms',
+        best: 40,
+        avg: 120,
+        p75: 110,
+        p90: 220,
+        p99: 380,
+        samples: 30,
+        targets: { p75: 250, p90: 500, p99: 1000 },
+      },
+    ],
+  });
+  const body = renderComment({
+    status: 'completed',
+    results: [result],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+
+  // SO renders as a table row and is defined in the (collapsed) footer.
+  assert.match(body, /\| \*\*SO\*\* \| stream overhead \|/);
+  assert.match(body, /\*\*SO\*\*: stream overhead/);
+  // Within target on every percentile → the SO row carries no 🔴 mark.
+  assert.doesNotMatch(body, /\| \*\*SO\*\* \|.*🔴/);
+  assert.match(body, /Targets \(p75\/p90\/p99, ms\) — SO 250\/500\/1000/);
 });
 
 test('renders best/p75/p90/p99 deltas with 🔻/💚 threshold marks and embeds them', async () => {
