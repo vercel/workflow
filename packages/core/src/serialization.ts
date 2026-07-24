@@ -1252,6 +1252,16 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       inFlight = dispatchLoop().then(
         () => {
           inFlight = null;
+          // A write can land in the microtask gap between the loop's
+          // empty-buffer exit and this reaction. scheduleGroupCommit saw
+          // inFlight still set and armed no timer, so without this check
+          // the chunk would sit stranded until a later write/close/drain.
+          // Treat it like an in-request arrival: dispatch immediately (the
+          // new chain settles the drain waiters when it finishes).
+          if (buffer.length > 0) {
+            startDispatch();
+            return;
+          }
           // Fully idle (the loop only exits with an empty buffer): settle
           // the durability barrier.
           const settled = drainWaiters;

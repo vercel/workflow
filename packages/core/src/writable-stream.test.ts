@@ -348,6 +348,50 @@ describe('WorkflowServerWritableStream', () => {
     });
   });
 
+  describe('dispatch settle race', () => {
+    it('does not strand a chunk written in the settle gap of the previous request', async () => {
+      // A write can land in the microtask window between the dispatch
+      // loop's empty-buffer exit and the reaction that clears the in-flight
+      // marker. In that window no group-commit timer is armed (the marker
+      // is still set), so without the settle-gap re-dispatch the chunk
+      // would never flush on an open stream. The mock lands the second
+      // write a few microtasks after the first request resolves to aim at
+      // exactly that gap; the assertion holds wherever it lands.
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+      const writer = stream.getWriter();
+
+      let landed = false;
+      mockStreams.write.mockImplementationOnce(async () => {
+        void Promise.resolve()
+          .then(() => undefined)
+          .then(() => {
+            void writer.write(new Uint8Array([2])).then(() => {
+              landed = true;
+            });
+          });
+      });
+
+      await writer.write(new Uint8Array([1]));
+
+      // Well past the 10ms commit window: BOTH chunks must have dispatched
+      // without any close/drain nudge. A stranded chunk has no timer and
+      // would never arrive.
+      await new Promise((r) => setTimeout(r, 60));
+      expect(landed).toBe(true);
+      const delivered = [
+        ...mockStreams.write.mock.calls.map(
+          (call: unknown[]) => (call[2] as Uint8Array)[0]
+        ),
+        ...mockStreams.writeMulti.mock.calls.flatMap((call: unknown[]) =>
+          (call[2] as Uint8Array[]).map((c) => c[0])
+        ),
+      ];
+      expect(delivered.sort()).toEqual([1, 2]);
+
+      await writer.close();
+    });
+  });
+
   describe('close behavior', () => {
     it('should call close on close', async () => {
       const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
