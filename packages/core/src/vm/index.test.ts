@@ -171,11 +171,9 @@ describe('createContext', () => {
     expect(err?.message).toContain('not available inside a workflow function');
   });
 
-  it('rejects the remaining async `crypto.subtle` methods immediately', async () => {
+  it('throws for the remaining async `crypto.subtle` methods', () => {
     // These would settle on host threadpool timing (breaking the quiescence
-    // invariant a retained VM relies on), so they must stay unreachable:
-    // through the crypto proxy the receiver is not a real SubtleCrypto and
-    // the brand check rejects before any crypto work is scheduled.
+    // invariant a retained VM relies on), so they must stay unreachable.
     const { context } = createContext({ seed, fixedTimestamp });
     for (const call of [
       'crypto.subtle.importKey("raw", new Uint8Array(16), { name: "AES-GCM" }, false, ["encrypt"])',
@@ -183,8 +181,8 @@ describe('createContext', () => {
       'crypto.subtle.sign("HMAC", {}, new Uint8Array(4))',
       'crypto.subtle.deriveBits({ name: "PBKDF2" }, {}, 128)',
     ]) {
-      await expect(vm.runInContext(call, context)).rejects.toThrow(
-        /must be of type SubtleCrypto/
+      expect(() => vm.runInContext(call, context)).toThrow(
+        /not available inside a workflow function/
       );
     }
   });
@@ -300,6 +298,18 @@ describe('host-timed async', () => {
       'function'
     );
   });
+
+  it('does not expose WeakRef or FinalizationRegistry', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    expect(vm.runInContext('typeof WeakRef', context)).toBe('undefined');
+    expect(vm.runInContext('typeof FinalizationRegistry', context)).toBe(
+      'undefined'
+    );
+    // WeakMap/WeakSet do not expose GC state and stay available.
+    expect(vm.runInContext('typeof WeakMap', context)).toBe('function');
+    expect(vm.runInContext('typeof WeakSet', context)).toBe('function');
+  });
 });
 
 describe('crypto.subtle.digest', () => {
@@ -358,23 +368,7 @@ describe('crypto.subtle.digest', () => {
       vm.runInContext('crypto.subtle.digest("MD5", new Uint8Array(1))', context)
     ).rejects.toMatchObject({ name: 'NotSupportedError' });
   });
-});
 
-describe('GC observation', () => {
-  it('does not expose WeakRef or FinalizationRegistry', () => {
-    const { context } = createContext({ seed, fixedTimestamp });
-
-    expect(vm.runInContext('typeof WeakRef', context)).toBe('undefined');
-    expect(vm.runInContext('typeof FinalizationRegistry', context)).toBe(
-      'undefined'
-    );
-    // WeakMap/WeakSet do not expose GC state and stay available.
-    expect(vm.runInContext('typeof WeakMap', context)).toBe('function');
-    expect(vm.runInContext('typeof WeakSet', context)).toBe('function');
-  });
-});
-
-describe('crypto.subtle.digest input validation', () => {
   it.each([
     ['a number', '2000000000'],
     ['a plain object', '({})'],
@@ -387,9 +381,7 @@ describe('crypto.subtle.digest input validation', () => {
       vm.runInContext(`crypto.subtle.digest("SHA-256", ${expression})`, context)
     ).rejects.toThrow(TypeError);
   });
-});
 
-describe('crypto.subtle.digest SharedArrayBuffer rejection', () => {
   it('rejects SharedArrayBuffer-backed views like WebCrypto does', async () => {
     const { context } = createContext({ seed, fixedTimestamp });
 
@@ -400,9 +392,7 @@ describe('crypto.subtle.digest SharedArrayBuffer rejection', () => {
       )
     ).rejects.toThrow(TypeError);
   });
-});
 
-describe('crypto.subtle.digest view metadata', () => {
   it('reads view ranges from internal slots, ignoring shadowed properties', async () => {
     const { context } = createContext({ seed, fixedTimestamp });
 
