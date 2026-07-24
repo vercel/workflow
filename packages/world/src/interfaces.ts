@@ -36,13 +36,12 @@ import type {
 
 export interface Streamer {
   /**
-   * Group-commit window (in milliseconds) for the LEADING chunk of an idle
-   * stream. Default `0`: the first chunk dispatches immediately, and chunks
-   * arriving while a request is in flight coalesce into the next group —
-   * batching without a fixed first-chunk delay. A positive value holds the
-   * leading chunk up to that long to collect a group, trading first-chunk
-   * latency for fewer requests (useful for slow-but-steady producers on
-   * HTTP backends where each flush is a network round trip).
+   * Number of milliseconds a stream waits for additional chunks to arrive
+   * before flushing to the underlying transport.
+   * 
+   * Default `0`: the first chunk dispatches immediately, and chunks
+   * arriving while a request is in flight coalesce into the next group.
+   * Settings this to >0 will trade first chunk latency for for fewer requests.
    *
    * Resolution note: this World option is read lazily on the first
    * dispatch, so it takes effect from the second idle group onward; the
