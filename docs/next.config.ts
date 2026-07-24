@@ -258,6 +258,11 @@ const config: NextConfig = {
       //
       // Pages that exist only in v5 (v5 -> v4 switch):
       {
+        source: '/v4/docs/whats-new',
+        destination: '/v4/docs',
+        permanent: false,
+      },
+      {
         source: '/v4/docs/api-reference/workflow/set-attributes',
         destination: '/v4/docs/api-reference/workflow',
         permanent: false,

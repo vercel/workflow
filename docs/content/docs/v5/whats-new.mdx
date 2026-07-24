@@ -1,0 +1,157 @@
+---
+title: What's new in v5?
+description: Workflow SDK 5.0 highlights, breaking changes, and how to upgrade from 4.x.
+type: guide
+summary: See what changed in Workflow SDK 5.0 and how to move an app from 4.x.
+related:
+  - /docs/getting-started
+  - /docs/configuration
+  - /docs/foundations/cancellation
+---
+
+Workflow SDK 5.0 is the current release. `npm install workflow` installs 5.x, and these docs describe it.
+
+Workflow 4.x is in maintenance: it stays installable as `workflow@4`, receives stability fixes only, and its documentation lives at [/v4/docs](/v4/docs).
+
+```bash
+npm install workflow@latest
+```
+
+Most 4.x application code compiles and runs unchanged. The workflow and step programming model, the `"use workflow"` / `"use step"` directives, `start()`, hooks, webhooks, streams, and the event log are all the same. The breaking changes below are concentrated in low-level runtime APIs and build integrations.
+
+## Highlights
+
+### Faster time to first step
+
+The runtime does less work before your first step executes. Turbo mode (on by default, disable with `WORKFLOW_TURBO=0`) backgrounds the `run_started` event and skips the initial event-log load on a run's first invocation. Step creation is folded into step execution instead of being a separate round trip, and inline execution now runs several steps per suspension in parallel (`WORKFLOW_MAX_INLINE_STEPS`, default 3).
+
+See [Turbo mode](/docs/changelog/turbo-mode), [Lazy event creation](/docs/changelog/lazy-event-creation), and [Eager processing](/docs/changelog/eager-processing).
+
+### Cooperative cancellation
+
+`AbortController` and `AbortSignal` are serializable. A controller created inside a workflow function survives suspensions, and its signal can be passed into steps, into `fetch()`, and into child runs — so a workflow can abandon in-flight work without waiting for it to finish.
+
+```typescript lineNumbers
+import { sleep } from "workflow";
+
+export async function raceWithTimeout() {
+  "use workflow";
+
+  const controller = new AbortController(); // [!code highlight]
+
+  const result = await Promise.race([
+    fetchData(controller.signal), // [!code highlight]
+    sleep("10s").then(() => null),
+  ]);
+
+  if (result === null) {
+    controller.abort(); // [!code highlight]
+  }
+
+  return result;
+}
+
+async function fetchData(signal: AbortSignal) {
+  "use step";
+  const response = await fetch("https://api.example.com/data", { signal });
+  return response.json();
+}
+```
+
+See [Cancellation](/docs/foundations/cancellation) and [How cancellation works](/docs/how-it-works/cancellation).
+
+### Run attributes
+
+Attach string metadata to a run with [`setAttributes()`](/docs/api-reference/workflow/set-attributes), or seed it at creation with the `attributes` option of [`start()`](/docs/api-reference/workflow-api/start), then filter runs by `key=value` in the observability UI. The feature graduated out of `experimental_` — `experimental_setAttributes` remains as a deprecated alias.
+
+See [Attributes](/docs/observability/attributes).
+
+### `start()` from inside a workflow
+
+`start()` can be called directly in a workflow function to spawn a child run or hand off to a new run, instead of wrapping it in a step.
+
+```typescript lineNumbers
+import { start } from "workflow";
+
+declare function dailyDigest(state: { lastSentAt: number }): Promise<void>; // @setup
+declare const state: { lastSentAt: number }; // @setup
+
+export async function parent() {
+  "use workflow";
+
+  const run = await start(dailyDigest, [state], { deploymentId: "latest" }); // [!code highlight]
+  return { continuedAs: run.runId };
+}
+```
+
+See [Starting workflows](/docs/foundations/starting-workflows) and [Versioning](/docs/foundations/versioning).
+
+### Stronger hook coordination
+
+`hook.getConflict()` now resolves with the conflicting [`Run`](/docs/api-reference/workflow-api/get-run) itself rather than a bare `{ runId }`, so a duplicate run can inspect `await conflict.status`, wait on `await conflict.returnValue`, or `await conflict.cancel()` without threading the ID through a step. `createHook()` also accepts `experimental_minRetention` to keep a token unavailable to late duplicates after its run ends.
+
+See [`createHook()`](/docs/api-reference/workflow/create-hook) and [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+
+### Errors keep their type
+
+Run and step errors travel through the same serialization pipeline as step payloads, so `WorkflowRunFailedError.cause` preserves the original class identity and cause chain — including `FatalError`, `RetryableError`, built-in `Error` subclasses, and your own error classes.
+
+See [Serialization](/docs/foundations/serialization).
+
+### Tracing and analytics
+
+OpenTelemetry tracing has a new `linked` default: each workflow and step invocation is its own trace root with span links to the enqueue site and the run origin. Set `WORKFLOW_TRACE_MODE=continuous` to restore the 4.x single-trace-per-run shape. `world.analytics` adds metadata-only listings for runs, steps, events, hooks, waits, and attributes.
+
+See [Tracing](/docs/observability/tracing) and [`world.analytics`](/docs/api-reference/workflow-runtime/world/analytics).
+
+### Configuration reference
+
+Every `WORKFLOW_*` environment variable, framework plugin option, and CLI flag is now documented in one place, including the runtime knobs for replay, inline execution, queue delivery, compression, and tracing.
+
+See [Configuration](/docs/configuration) and [Runtime tuning](/docs/configuration/runtime-tuning).
+
+### More frameworks
+
+[React Router](/docs/getting-started/react-router) (v7 and v8, via Nitro) and [NestJS](/docs/getting-started/nestjs) have first-class guides, and [Python](/docs/getting-started/python) workflows are available in beta.
+
+## Breaking changes
+
+| Change | What to do |
+| --- | --- |
+| `getWorld()` and `createWorld()` are async | `await getWorld()`. This already worked in 4.x, so it is safe to write before upgrading. See [`getWorld`](/docs/api-reference/workflow-runtime/get-world). |
+| Stream methods moved to `world.streams.*`, with `runId` first | `writeToStream(name, runId, chunk)` becomes `streams.write(runId, name, chunk)`; likewise `writeToStreamMulti` → `streams.writeMulti`, `closeStream` → `streams.close`, `readFromStream` → `streams.get`, `getStreamChunks` → `streams.getChunks`, `listStreamsByRunId` → `streams.list`. |
+| `world.steps.get()` requires `runId` | The first argument is no longer `string \| undefined` — pass the run ID that owns the step. |
+| `hook.getConflict()` resolves with a `Run` | Replace `conflict.runId` round trips through `getRun()` inside a step with the accessors on `conflict` directly. `conflict.runId` still works. |
+| `runStep` removed from `workflow/api` | Call your step function directly; the compiler routes it through the step runtime. |
+| `stepEntrypoint` removed from `workflow/runtime` | Framework integrations generate step routes; use `getWorldHandlers()` for custom hosts. |
+| `workflow/internal/private` and `@workflow/core/private` removed | These were never public API. The compiler no longer emits imports from them, so regenerate build output rather than importing them yourself. |
+| `NestLocalBuilder` moved out of `@workflow/nest` root | Import it from `workflow/nest/builder`, so `WorkflowModule` no longer pulls the build toolchain into the runtime bundle. `NestVercelBuilder` lives at `workflow/nest/vercel-builder`. |
+| Default trace mode is `linked` | Update dashboards that assume one trace per run, or set `WORKFLOW_TRACE_MODE=continuous`. |
+| Event creation is guarded by default | Stale-snapshot writes are rejected with [`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error). Opt out with `WORKFLOW_PRECONDITION_GUARD=0`. |
+| Custom `World` implementations need updating | The `World` interface gained analytics, attributes, and capability advertisement alongside the stream changes above. See [Building a World](/worlds/building-a-world). |
+
+Runs created on 4.x keep executing on the deployment that created them, so upgrading a deployment does not migrate in-flight runs. One exception is worth knowing about: failed runs stored by `@workflow/world-postgres` before the upgrade read back with `error: undefined`, because the payload lives in the legacy `error` text column rather than `errorJson`.
+
+## Migrating from V4
+
+An agent skill automates the mechanical parts of the upgrade — the renamed World methods, the removed exports, the Nest builder subpath, and the `getConflict()` shape — and flags the places that need a human decision.
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-workflow-v4-to-v5
+```
+
+Then ask your agent to migrate the project, for example: *"Upgrade this app from Workflow SDK 4.x to 5.0."* The skill reads the code, applies the rules above, and reports what it changed and what it could not.
+
+## Staying on 4.x
+
+4.x remains installable as `workflow@4` and receives stability fixes. Pin it explicitly if you are not ready to upgrade:
+
+```json
+{
+  "dependencies": {
+    "workflow": "^4.6.0"
+  }
+}
+```
+
+The 4.x documentation is at [/v4/docs](/v4/docs), and the version switcher at the top of the sidebar moves between the two.

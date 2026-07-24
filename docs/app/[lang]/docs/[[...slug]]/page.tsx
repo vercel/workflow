@@ -17,7 +17,7 @@ const docsPage = createDocsPage({
     ...config,
     github: config.github && {
       ...config.github,
-      editPath: 'docs/content/docs/v4/{path}',
+      editPath: 'docs/content/docs/v5/{path}',
     },
   },
   source: geistdocsSource,

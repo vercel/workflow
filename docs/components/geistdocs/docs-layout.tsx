@@ -88,12 +88,49 @@ const withFallbackFolderIndex = (nodes: DocsTreeNode[]): DocsTreeNode[] =>
     };
   });
 
+// `/docs` permanently redirects here, so this is the page every bare link to
+// the documentation lands on.
+const DOCS_HOME_SECTION = 'getting-started';
+
+/**
+ * geistdocs' sidebar has two panes: the top-level menu, and a section pane it
+ * drills into for the first root folder containing the active page. On the docs
+ * home that drill-in is unhelpful — arriving from a `/docs` link would replace
+ * the top-level menu with the framework list, hiding the rest of the docs.
+ *
+ * `findActiveRootSection` only matches folders that have children, so emptying
+ * the section's children on its own landing page keeps the root menu visible
+ * with the row highlighted as the current page. Nothing is lost: the page body
+ * is a card grid of exactly those children, and every other page in the section
+ * still drills in normally.
+ */
+const collapseDocsHomeSection = (
+  tree: DocsTree,
+  activeSlug?: string[]
+): DocsTree => {
+  if (activeSlug?.join('/') !== DOCS_HOME_SECTION) {
+    return tree;
+  }
+
+  return {
+    ...tree,
+    children: tree.children.map((node) =>
+      node.type === 'folder' &&
+      node.index?.url.endsWith(`/docs/${DOCS_HOME_SECTION}`)
+        ? { ...node, children: [] }
+        : node
+    ),
+  };
+};
+
 const addSidebarBadgesToTree = (tree: DocsTree): DocsTree => ({
   ...tree,
   children: addSidebarBadges(withFallbackFolderIndex(tree.children)),
 });
 
 interface DocsLayoutProps {
+  /** Slug of the active page, used to tune sidebar drill-in behavior. */
+  activeSlug?: string[];
   children: ReactNode;
   currentVersion?: string;
   lang: string;
@@ -101,6 +138,7 @@ interface DocsLayoutProps {
 }
 
 export const DocsLayout = ({
+  activeSlug,
   tree,
   currentVersion = config.versions?.current,
   lang,
@@ -123,7 +161,7 @@ export const DocsLayout = ({
         />
       ) : null
     }
-    tree={addSidebarBadgesToTree(tree)}
+    tree={collapseDocsHomeSection(addSidebarBadgesToTree(tree), activeSlug)}
   >
     {children}
   </PackageDocsLayout>
