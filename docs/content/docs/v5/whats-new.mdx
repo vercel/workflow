@@ -9,12 +9,16 @@ related:
   - /docs/foundations/cancellation
 ---
 
-Workflow SDK 5.0 is the current release. `npm install workflow` installs 5.x, and these docs describe it.
+Workflow SDK v5 is out now, and Workflow SDK v4 has moved to maintenance status: it stays installable as `workflow@4`, receives stability fixes only, and its documentation lives at [/v4/docs](/v4/docs).
 
-Workflow 4.x is in maintenance: it stays installable as `workflow@4`, receives stability fixes only, and its documentation lives at [/v4/docs](/v4/docs).
+We recommend upgrading to v5 to get all of the performance, cost, and feature improvements listed below.
+
+Breaking changes are mainly limited to programmatic use of the core APIs, and third-party worlds.
 
 ```bash
 npm install workflow@latest
+# Use the included migration skill:
+npx skills add https://github.com/vercel/workflow --skill migrating-workflow-v4-to-v5
 ```
 
 Most 4.x application code compiles and runs unchanged. The workflow and step programming model, the `"use workflow"` / `"use step"` directives, `start()`, hooks, webhooks, streams, and the event log are all the same. The breaking changes below are concentrated in low-level runtime APIs and build integrations.
