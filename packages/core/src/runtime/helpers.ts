@@ -20,7 +20,10 @@ import {
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 
-import { type CryptoKey, importKey } from '../encryption.js';
+import {
+  deriveRunPayloadKeys,
+  type PayloadKey,
+} from '../serialization/encryption.js';
 import { runtimeLogger } from '../logger.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
@@ -816,8 +819,8 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
 export function memoizeEncryptionKey(
   world: World,
   runOrId: WorkflowRun | string
-): () => Promise<CryptoKey | undefined> {
-  let cached: Promise<CryptoKey | undefined> | undefined;
+): () => Promise<PayloadKey | undefined> {
+  let cached: Promise<PayloadKey | undefined> | undefined;
   return () => {
     if (!cached) {
       cached = (async () => {
@@ -828,7 +831,11 @@ export function memoizeEncryptionKey(
           typeof runOrId === 'string'
             ? await world.getEncryptionKeyForRun?.(runOrId)
             : await world.getEncryptionKeyForRun?.(runOrId);
-        return rawKey ? await importKey(rawKey) : undefined;
+        // Resolve the *full* capability, not just the symmetric key: a run
+        // reading its own event log may encounter sealed (`encp`) payloads
+        // that another run wrote to it, and opening those needs the run's
+        // X25519 scalar as well.
+        return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
       })();
     }
     return cached;

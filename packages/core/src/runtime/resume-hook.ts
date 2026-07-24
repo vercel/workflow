@@ -14,11 +14,15 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { getRunCapabilities } from '../capabilities.js';
-import { type CryptoKey, importKey } from '../encryption.js';
+import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
+import { decodeRunPublicKey } from '../sealed-box.js';
+import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
+  type PayloadKey,
+  sealTo,
   SerializationFormat,
 } from '../serialization.js';
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
@@ -41,11 +45,11 @@ async function getHookAndRun(token: string): Promise<{
 
 async function getHookByTokenWithKey(token: string): Promise<{
   hook: Hook;
-  encryptionKey: CryptoKey | undefined;
+  encryptionKey: PayloadKey | undefined;
 }> {
   const { hook, run } = await getHookAndRun(token);
   const rawKey = await (await getWorldLazy()).getEncryptionKeyForRun?.(run);
-  const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+  const encryptionKey = rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
   if (typeof hook.metadata !== 'undefined') {
     hook.metadata = await hydrateStepArguments(
       hook.metadata as any,
@@ -103,7 +107,7 @@ export async function getHookByToken(token: string): Promise<Hook> {
 export async function resumeHook<T = any>(
   tokenOrHook: string | Hook,
   payload: T,
-  encryptionKeyOverride?: CryptoKey
+  encryptionKeyOverride?: PayloadKey
 ): Promise<Hook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
@@ -131,12 +135,6 @@ export async function resumeHook<T = any>(
           throw new HookNotFoundError(hook.token);
         }
 
-        let encryptionKey = encryptionKeyOverride;
-        if (!encryptionKey) {
-          const rawKey = await world.getEncryptionKeyForRun?.(workflowRun);
-          encryptionKey = rawKey ? await importKey(rawKey) : undefined;
-        }
-
         // Check the target run's capabilities to ensure we encode the
         // payload in a format the run's deployment can decode. For example,
         // runs created before encryption support was added cannot decode
@@ -146,8 +144,47 @@ export async function resumeHook<T = any>(
         const capabilities = getRunCapabilities(
           typeof rawVersion === 'string' ? rawVersion : undefined
         );
-        if (!capabilities.supportedFormats.has(SerializationFormat.ENCRYPTED)) {
-          encryptionKey = undefined;
+
+        // Resolve how to encrypt the payload for the target run.
+        //
+        // Preferred path: the run published an X25519 public key, so seal to
+        // it. This needs nothing beyond the run entity we already fetched —
+        // no `getEncryptionKeyForRun`, which for a cross-deployment resume
+        // means a ~350ms `run-key` API round trip. That call dominates
+        // cross-deployment hook resumption latency, and sealing removes it.
+        //
+        // Sealing also drops privilege: the resumer ends up able to write a
+        // payload for the run without being able to read anything of the
+        // run's, where fetching the symmetric key grants both.
+        //
+        // Deliberately NOT gated on `capabilities.supportedFormats` the way
+        // `encr` is above: presence of the public key is itself the gate. A
+        // run only carries one if the runtime that created it could also open
+        // a sealed payload, and runs are pinned to their creating deployment,
+        // so presence is a more reliable attestation than a version compare
+        // — and it stays correct even when package versions drift.
+        let payloadKey: PayloadKey | undefined;
+        const runPublicKey = encryptionKeyOverride
+          ? // The caller already holds the symmetric key (resumeWebhook had
+            // to fetch it to hydrate hook metadata), so sealing would add an
+            // ECDH for no saved round trip. Reuse what it resolved.
+            undefined
+          : decodeRunPublicKey(workflowRun.encryptionPublicKey);
+
+        if (runPublicKey) {
+          payloadKey = sealTo(runPublicKey);
+        } else {
+          let encryptionKey = encryptionKeyOverride;
+          if (!encryptionKey) {
+            const rawKey = await world.getEncryptionKeyForRun?.(workflowRun);
+            encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+          }
+          if (
+            !capabilities.supportedFormats.has(SerializationFormat.ENCRYPTED)
+          ) {
+            encryptionKey = undefined;
+          }
+          payloadKey = encryptionKey;
         }
 
         // Compress only when the target run and its deployment support the
@@ -162,7 +199,7 @@ export async function resumeHook<T = any>(
         const dehydratedPayload = await dehydrateStepReturnValue(
           payload,
           hook.runId,
-          encryptionKey,
+          payloadKey,
           ops,
           globalThis,
           v1Compat,
