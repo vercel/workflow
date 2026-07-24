@@ -128,6 +128,14 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Number of concurrent workers polling for jobs.
 - Also bounds concurrent parent-to-child workflow return-value polls.
 
+### `applicationManagedShutdown`
+
+- Environment variable: `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` (`1` enables)
+- Default: `false`
+- Whether the application coordinates shutdown instead of Graphile Worker responding automatically.
+- Set to `true` only when the application awaits `world.close()` before closing its workflow HTTP server and caller-owned pool.
+- Prevents Graphile Worker's default handler from terminating the process before the application's remaining cleanup finishes.
+
 ### `maxPoolSize`
 
 - Environment variable: `WORKFLOW_POSTGRES_MAX_POOL_SIZE`
