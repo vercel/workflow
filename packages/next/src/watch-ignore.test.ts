@@ -104,6 +104,38 @@ describe('createWatchIgnorePredicate', () => {
     expect(isIgnored(p('app/other.log'))).toBe(true);
   });
 
+  test('child .gitignore re-includes the contents of a dir the root excluded', () => {
+    // Verified against real git: `git check-ignore` reports
+    // `generated/x.ts` IGNORED but `app/generated/x.ts` NOT ignored.
+    write('.gitignore', 'generated/\n');
+    write('app/.gitignore', '!generated/\n');
+
+    const isIgnored = createWatchIgnorePredicate({
+      workingDir: p('app'),
+      projectRoot: root,
+    });
+
+    expect(isIgnored(p('generated/x.ts'))).toBe(true);
+    expect(isIgnored(p('app/generated'))).toBe(false);
+    expect(isIgnored(p('app/generated/x.ts'))).toBe(false);
+  });
+
+  test('re-including a dir does not disable the root file rules inside it', () => {
+    // Verified against real git: `app/generated/a.secret` stays IGNORED even
+    // though `app/generated/` itself was re-included, because `*.secret`
+    // matches the file on its own.
+    write('.gitignore', 'generated/\n*.secret\n');
+    write('app/.gitignore', '!generated/\n');
+
+    const isIgnored = createWatchIgnorePredicate({
+      workingDir: p('app'),
+      projectRoot: root,
+    });
+
+    expect(isIgnored(p('app/generated/x.ts'))).toBe(false);
+    expect(isIgnored(p('app/generated/a.secret'))).toBe(true);
+  });
+
   test('built-in fragments win over a gitignore negation', () => {
     // A stray `!node_modules` must not drag dependencies into the watch set.
     write('.gitignore', '!node_modules\n');

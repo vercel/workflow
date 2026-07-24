@@ -51,6 +51,34 @@ interface GitignoreMatcher {
   /** POSIX absolute directory the `.gitignore` lives in (no trailing slash). */
   dir: string;
   matcher: Ignore;
+  /** Raw pattern lines, used to rebuild the matcher without a neutralized rule. */
+  lines: string[];
+  /** Whether this file contains any `!` re-inclusion rule. */
+  hasNegation: boolean;
+  /** Matchers rebuilt with some rules dropped, keyed by the dropped set. */
+  filtered: Map<string, Ignore>;
+}
+
+/**
+ * Rebuild a matcher with `dropped` pattern lines removed. Used when a rule
+ * excluded a directory that a deeper `.gitignore` re-included: that rule must
+ * stop applying to the subtree, while every *other* rule in the same file
+ * (e.g. a `*.secret` that still matches a file inside) keeps applying.
+ */
+function matcherWithout(entry: GitignoreMatcher, dropped: Set<string>): Ignore {
+  if (dropped.size === 0) {
+    return entry.matcher;
+  }
+  const key = [...dropped].sort().join('\n');
+  const cached = entry.filtered.get(key);
+  if (cached) {
+    return cached;
+  }
+  const rebuilt = ignore().add(
+    entry.lines.filter((line) => !dropped.has(line.trim()))
+  );
+  entry.filtered.set(key, rebuilt);
+  return rebuilt;
 }
 
 /**
@@ -64,14 +92,6 @@ interface GitignoreMatcher {
  *
  * Nested `.gitignore` files *below* `workingDir` are intentionally not read —
  * the {@link WATCH_IGNORED_PATHS_ENV} env var backstops anything they'd cover.
- *
- * Known deviation from git: a deeper file can re-include an individual path
- * (`!keep.log`), but it cannot re-include the *contents* of a directory its
- * parent excluded (root `generated/` + app `!generated/` leaves
- * `app/generated/x.ts` pruned, where git would watch it). Matching git there
- * requires its per-directory-entry walk; `ignore` re-claims nested paths for
- * a directory pattern. Use {@link WATCH_IGNORED_PATHS_ENV}'s counterpart —
- * narrowing the parent rule — if you hit this.
  */
 function loadGitignoreMatchers(
   workingDir: string,
@@ -89,7 +109,14 @@ function loadGitignoreMatchers(
       content = undefined;
     }
     if (content) {
-      matchers.push({ dir: current, matcher: ignore().add(content) });
+      const lines = content.split('\n');
+      matchers.push({
+        dir: current,
+        matcher: ignore().add(content),
+        lines,
+        hasNegation: lines.some((line) => line.trim().startsWith('!')),
+        filtered: new Map(),
+      });
     }
 
     if (current === stopAt) {
@@ -156,6 +183,119 @@ export function createWatchIgnorePredicate(
     options.workingDir,
     projectRoot
   );
+  // Re-inclusion is only possible when some file has a `!` rule. Without one,
+  // the cheap flat scan below is equivalent to the full per-directory walk.
+  const anyNegation = gitignoreMatchers.some((entry) => entry.hasNegation);
+  const outermostDir = gitignoreMatchers[0]?.dir;
+
+  /** Test one path against one matcher, as both a file and a directory node. */
+  const testEntry = (
+    entry: GitignoreMatcher,
+    rel: string,
+    dropped: Set<string> | undefined
+  ) => {
+    const matcher = dropped ? matcherWithout(entry, dropped) : entry.matcher;
+    // Test the trailing-slash form too so a directory node itself matches a
+    // `dir/` gitignore rule (not just its children) — this lets the walk and
+    // chokidar prune the directory instead of descending into it.
+    const asFile = matcher.test(rel);
+    const asDir = matcher.test(`${rel}/`);
+    if (asFile.ignored) {
+      return { ignored: true, pattern: asFile.rule?.pattern };
+    }
+    if (asDir.ignored) {
+      return { ignored: true, pattern: asDir.rule?.pattern };
+    }
+    if (asFile.unignored || asDir.unignored) {
+      return { ignored: false, pattern: undefined };
+    }
+    return undefined;
+  };
+
+  /**
+   * Resolve one path level against every applicable `.gitignore`, deepest file
+   * last so it wins. Returns the level's verdict plus the rules that voted to
+   * exclude it, which the caller neutralizes if the level is re-included.
+   */
+  const decideLevel = (
+    prefix: string,
+    neutralized: Map<number, Set<string>>
+  ) => {
+    let decision: boolean | undefined;
+    let excludedBy: Array<{ index: number; pattern: string }> = [];
+
+    for (let index = 0; index < gitignoreMatchers.length; index++) {
+      const entry = gitignoreMatchers[index];
+      const rel = posix.relative(entry.dir, prefix);
+      // Empty means the path *is* the gitignore dir; a `..` prefix means it is
+      // outside. `ignore` only accepts relative, in-tree paths.
+      if (rel === '' || rel === '..' || rel.startsWith('../')) {
+        continue;
+      }
+      const result = testEntry(entry, rel, neutralized.get(index));
+      if (!result) {
+        continue;
+      }
+      if (!result.ignored) {
+        decision = false;
+        continue;
+      }
+      if (decision !== true) {
+        excludedBy = [];
+      }
+      decision = true;
+      if (result.pattern) {
+        excludedBy.push({ index, pattern: result.pattern });
+      }
+    }
+
+    return { decision, excludedBy };
+  };
+
+  /**
+   * Walk the path one directory segment at a time, the way git does. At each
+   * level the deepest `.gitignore` with an opinion wins; if that verdict is
+   * "ignored" git stops descending, so we can return immediately.
+   *
+   * When a level is re-included after a shallower file excluded it, the rule
+   * that did the excluding is neutralized for the rest of the walk. That is
+   * what lets root `generated/` + app `!generated/` watch `app/generated/x.ts`
+   * while a sibling root rule such as `*.secret` still excludes
+   * `app/generated/a.secret`.
+   */
+  const walkGitignore = (normalizedPath: string): boolean => {
+    if (!outermostDir) {
+      return false;
+    }
+    const relToBase = posix.relative(outermostDir, normalizedPath);
+    if (relToBase === '' || relToBase === '..' || relToBase.startsWith('../')) {
+      return false;
+    }
+
+    const neutralized = new Map<number, Set<string>>();
+    let prefix = outermostDir;
+
+    for (const segment of relToBase.split('/')) {
+      prefix = `${prefix}/${segment}`;
+      const { decision, excludedBy } = decideLevel(prefix, neutralized);
+
+      if (decision === true) {
+        // Git does not descend into an excluded directory.
+        return true;
+      }
+      if (decision === false) {
+        // This level was re-included; the rules that excluded it must not
+        // resurrect for anything beneath it.
+        for (const { index, pattern } of excludedBy) {
+          const dropped = neutralized.get(index) ?? new Set<string>();
+          dropped.add(pattern);
+          neutralized.set(index, dropped);
+        }
+      }
+    }
+
+    return false;
+  };
 
   return (normalizedPath: string): boolean => {
     // Built-in and env-var fragments are hard excludes: they are deliberately
@@ -167,30 +307,20 @@ export function createWatchIgnorePredicate(
       }
     }
 
-    // Fold the gitignore matchers outermost-first so a deeper `.gitignore`
-    // overrides a shallower one, matching git. Carrying the unignored result
-    // (not just ignored) is what lets a child `!keep.log` re-include a file
-    // that the workspace-root `*.log` excluded.
-    let ignored = false;
-    for (const { dir, matcher } of gitignoreMatchers) {
-      const rel = posix.relative(dir, normalizedPath);
-      // Empty means the path *is* the gitignore dir; a `..` prefix means it is
-      // outside that dir. `ignore` only accepts relative, in-tree paths.
-      if (rel === '' || rel === '..' || rel.startsWith('../')) {
-        continue;
+    if (!anyNegation) {
+      // Fast path: no re-inclusion anywhere, so the first match decides.
+      for (const entry of gitignoreMatchers) {
+        const rel = posix.relative(entry.dir, normalizedPath);
+        if (rel === '' || rel === '..' || rel.startsWith('../')) {
+          continue;
+        }
+        if (entry.matcher.ignores(rel) || entry.matcher.ignores(`${rel}/`)) {
+          return true;
+        }
       }
-      // Test the trailing-slash form too so a directory node itself matches a
-      // `dir/` gitignore rule (not just its children) — this lets the walk and
-      // chokidar prune the directory instead of descending into it.
-      const asFile = matcher.test(rel);
-      const asDir = matcher.test(`${rel}/`);
-      if (asFile.ignored || asDir.ignored) {
-        ignored = true;
-      } else if (asFile.unignored || asDir.unignored) {
-        ignored = false;
-      }
+      return false;
     }
 
-    return ignored;
+    return walkGitignore(normalizedPath);
   };
 }
