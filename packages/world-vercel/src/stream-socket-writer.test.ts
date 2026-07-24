@@ -58,7 +58,7 @@ class FakeConnection {
 /** Deterministic harness: manual timers, recorded connections. */
 function makeHarness(
   config?: Partial<SocketWriterConfig>,
-  opts?: { fin?: boolean }
+  opts?: { fin?: boolean; random?: () => number }
 ) {
   const connections: FakeConnection[] = [];
   let failNextConnects = 0;
@@ -86,6 +86,7 @@ function makeHarness(
         const i = timers.indexOf(handle as { fn: () => void; ms: number });
         if (i >= 0) timers.splice(i, 1);
       },
+      ...(opts?.random ? { random: opts.random } : {}),
     },
     config
   );
@@ -248,6 +249,26 @@ describe('StreamSocketWriter', () => {
     expect(h.connections[0].closedByWriter).toBe(true);
     expect(h.connections).toHaveLength(2);
     expect(h.connections[1].sent.map((f) => f[0])).toEqual([1, 2]);
+  });
+
+  it('jitters the reconnect backoff so shed writers do not march back in lockstep', async () => {
+    // Writers are shed in correlated groups (instance pressure, or a shared
+    // per-tenant server rate window), so an unjittered fixed backoff would
+    // reconnect them all at the same instant and rebuild the same burst.
+    const delaysFor = async (random: () => number) => {
+      const h = makeHarness({ reconnectBackoffMs: [1000] }, { random });
+      await h.writer.write(frame(1));
+      await tick();
+      h.connections[0].die();
+      await tick();
+      return h.timers.map((t) => t.ms);
+    };
+
+    // Full jitter over [base/2, base): the spread is what breaks lockstep.
+    expect(await delaysFor(() => 0)).toContain(500);
+    expect(await delaysFor(() => 0.999)).toContain(1000);
+    // Never zero, so a pathological random can't turn into a hot loop.
+    expect((await delaysFor(() => 0)).every((ms) => ms >= 1)).toBe(true);
   });
 
   it('fails the writer after the consecutive-reconnect budget', async () => {

@@ -103,6 +103,12 @@ export interface SocketWriterDeps {
   /** Injectable timer hooks so tests control recycle/backoff deterministically. */
   setTimer?(fn: () => void, ms: number): unknown;
   clearTimer?(handle: unknown): void;
+  /**
+   * Source of reconnect jitter in [0, 1). Injectable so tests can pin it;
+   * defaults to `Math.random`. Transport-level only — this never runs inside
+   * the workflow VM, so it cannot perturb replay determinism.
+   */
+  random?(): number;
   /** Telemetry hooks; both optional and fire-and-forget. */
   observer?: {
     /** An unclean channel end that will be retried (fires before the backoff). */
@@ -796,8 +802,16 @@ export class StreamSocketWriter {
     });
 
     const backoffs = this.config.reconnectBackoffMs;
-    const delay =
+    const base =
       backoffs[Math.min(this.consecutiveReconnects - 1, backoffs.length - 1)];
+    // Jitter the backoff (full jitter over [base/2, base)). Writers are shed
+    // in correlated groups — an instance-pressure shed, or a server rate
+    // window that every writer of one tenant shares, ends them at nearly the
+    // same instant. Reconnecting on an identical fixed schedule marches them
+    // back in lockstep and re-creates the same burst; spreading them out is
+    // what stops a shed from becoming a reconnect storm.
+    const random = this.deps.random ?? Math.random;
+    const delay = Math.max(1, Math.round(base * (0.5 + random() * 0.5)));
     this.reconnectTimer = this.setT(() => {
       this.reconnectTimer = null;
       this.pump();
