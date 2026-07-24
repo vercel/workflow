@@ -146,6 +146,17 @@ export type HealthCheckPayload = z.infer<typeof HealthCheckPayloadSchema>;
 export const HealthCheckPayloadSchema = z.object({
   __healthCheck: z.literal(true),
   correlationId: z.string(),
+  /**
+   * The run id the caller is about to create, when the probe is being used to
+   * prepare a cross-deployment `start()`.
+   *
+   * The responder runs inside the target deployment, so it can derive that
+   * run's public key locally from its own key material and return it in the
+   * probe response. That lets the caller seal the workflow arguments without
+   * a separate key lookup. Absent for probes issued for other reasons (CLI
+   * health command, dashboard), in which case no key is returned.
+   */
+  runId: z.string().optional(),
 });
 
 export const QueuePayloadSchema = z.union([
