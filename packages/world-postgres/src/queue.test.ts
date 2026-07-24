@@ -48,6 +48,7 @@ describe('postgres queue http execution', () => {
   } as unknown as WorkerUtils;
   const runnerMock = {
     stop: vi.fn(),
+    promise: Promise.resolve(),
   };
   const wrappedHandler = vi.fn(async () => Response.json({ ok: true }));
   const localWorldClose = vi.fn();

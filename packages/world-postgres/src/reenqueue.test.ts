@@ -312,6 +312,30 @@ describe('re-enqueue active runs on start', () => {
     expect(workerUtilsMock.release).toHaveBeenCalledOnce();
   });
 
+  it('continues cleanup when the Graphile runner finishes with an error', async () => {
+    runnerMock.stop.mockResolvedValueOnce(undefined);
+    let rejectRunnerFinished!: (error: Error) => void;
+    runnerMock.promise = new Promise<void>((_resolve, reject) => {
+      rejectRunnerFinished = reject;
+    });
+    const world = createWorld({ connectionString: 'postgres://test' });
+    await world.start();
+    const streamer = vi.mocked(createStreamer).mock.results.at(-1)?.value;
+    const internalPool = vi.mocked(Pool).mock.results.at(-1)?.value;
+
+    const closePromise = world.close();
+    await vi.waitFor(() => {
+      expect(runnerMock.stop).toHaveBeenCalledOnce();
+    });
+    rejectRunnerFinished(new Error('worker failed'));
+
+    await expect(closePromise).resolves.toBeUndefined();
+    expect(workerUtilsMock.release).toHaveBeenCalledOnce();
+    expect(localWorldClose).toHaveBeenCalledOnce();
+    expect(streamer?.close).toHaveBeenCalledOnce();
+    expect(internalPool?.end).toHaveBeenCalledOnce();
+  });
+
   it('allows close to be retried after queue cleanup fails', async () => {
     localWorldClose
       .mockRejectedValueOnce(new Error('transient local shutdown error'))

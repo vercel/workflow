@@ -701,7 +701,7 @@ export function createQueue(
             throw error;
           }
         }
-        await activeRunner.promise;
+        await activeRunner.promise.catch(() => {});
         runner = null;
       }
       if (workerUtils) {
