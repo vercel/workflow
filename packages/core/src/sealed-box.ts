@@ -3,6 +3,8 @@ import {
   decrypt as aesGcmDecrypt,
   encrypt as aesGcmEncrypt,
   type CryptoKey,
+  NONCE_LENGTH,
+  TAG_BYTES,
 } from './encryption.js';
 
 /**
@@ -79,15 +81,19 @@ import {
  * One-shot {@link seal} generates a fresh ephemeral keypair — and therefore a
  * fresh content key — for every call, so nonce reuse is impossible.
  *
- * Streaming callers amortize the KEM across many frames via
- * {@link encapsulate}, which makes the content key long-lived and nonce
- * discipline *their* responsibility. Frames MUST use a fresh random nonce
- * each (which `aesGcmEncrypt` does) rather than a counter: a counter would
- * restart at zero after a stream reconnect or a durable replay, reusing
- * `(contentKey, nonce)` and catastrophically breaking AES-GCM. Callers must
- * additionally re-run {@link encapsulate} per connection attempt so that
- * replayed or reconnected writers never share a content key with a previous
- * incarnation. See `getSerializeStream` for the enforcement.
+ * Callers that amortize the KEM across many frames via {@link encapsulate}
+ * take on nonce discipline themselves, because the content key then outlives a
+ * single message. Two rules apply:
+ *
+ * 1. Every frame MUST use a fresh random nonce (which `aesGcmEncrypt` does).
+ *    Never a counter: a counter restarts at zero after a stream reconnect or a
+ *    durable replay, reusing `(contentKey, nonce)` — which under AES-GCM leaks
+ *    the plaintext XOR of the two frames and the GCM auth subkey.
+ * 2. A writer must not inherit a previous incarnation's content key, so
+ *    {@link encapsulate} is re-run per writer instance.
+ *
+ * Nothing in this module enforces either rule; it is the streaming caller's
+ * contract.
  */
 
 /** Length of an X25519 private scalar and public key, in bytes. */
@@ -230,7 +236,16 @@ async function derivePublicKeyFromScalar(
       'X25519 JWK export did not include a public key component ("x")'
     );
   }
-  return base64UrlToBytes(jwk.x);
+  const publicKey = base64UrlToBytes(jwk.x);
+  // Guard the one step in this module that trusts an external encoding. A
+  // short or malformed value here would otherwise flow onward and fail much
+  // later, inside key agreement, with a far less obvious message.
+  if (publicKey.byteLength !== X25519_KEY_LENGTH) {
+    throw new WorkflowRuntimeError(
+      `X25519 JWK export produced a ${publicKey.byteLength}-byte public key, expected ${X25519_KEY_LENGTH}`
+    );
+  }
+  return publicKey;
 }
 
 async function importScalar(
@@ -513,8 +528,8 @@ export async function open(
   sealed: Uint8Array,
   aad?: Uint8Array
 ): Promise<Uint8Array> {
-  // 32-byte ephemeral public key + 12-byte nonce + 16-byte GCM tag.
-  const minLength = X25519_KEY_LENGTH + 12 + 16;
+  // Ephemeral public key + AES-GCM nonce + AES-GCM tag.
+  const minLength = X25519_KEY_LENGTH + NONCE_LENGTH + TAG_BYTES;
   if (sealed.byteLength < minLength) {
     throw new RuntimeDecryptionError(
       `Sealed payload too short: expected at least ${minLength} bytes, got ${sealed.byteLength}`,

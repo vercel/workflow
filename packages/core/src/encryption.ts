@@ -23,8 +23,12 @@ import { RuntimeDecryptionError, WorkflowRuntimeError } from '@workflow/errors';
 // so consumers can reference it without adding `dom` lib.
 export type CryptoKey = import('node:crypto').webcrypto.CryptoKey;
 
-const NONCE_LENGTH = 12;
-const TAG_LENGTH = 128; // bits
+/** AES-GCM nonce length in bytes. */
+export const NONCE_LENGTH = 12;
+/** AES-GCM authentication tag length in bits. */
+export const TAG_LENGTH = 128;
+/** AES-GCM authentication tag length in bytes. */
+export const TAG_BYTES = TAG_LENGTH / 8;
 const KEY_LENGTH = 32; // bytes (AES-256)
 
 /**

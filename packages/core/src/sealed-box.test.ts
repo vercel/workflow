@@ -1,5 +1,5 @@
 import { RuntimeDecryptionError, WorkflowRuntimeError } from '@workflow/errors';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   decrypt as aesGcmDecrypt,
   encrypt as aesGcmEncrypt,
@@ -51,6 +51,32 @@ describe('sealed-box', () => {
       expect(scalar).not.toEqual(K);
       expect(publicKey).not.toEqual(K);
       expect(publicKey).not.toEqual(scalar);
+    });
+
+    it('validates the length of the JWK-derived public key', async () => {
+      // The public key is read out of a JWK export, the one place this module
+      // trusts an external encoding. A short value must be rejected here
+      // rather than surfacing later inside key agreement.
+      const subtle = globalThis.crypto.subtle;
+      const realExport = subtle.exportKey.bind(subtle);
+      const spy = vi
+        .spyOn(subtle, 'exportKey')
+        .mockImplementation(async (format: any, key: any) => {
+          const jwk = await realExport(format, key);
+          if (format === 'jwk') {
+            // 31 bytes of base64url instead of 32.
+            (jwk as { x?: string }).x = 'A'.repeat(41);
+          }
+          return jwk;
+        });
+
+      try {
+        await expect(deriveRunKeyPair(K)).rejects.toThrow(
+          /produced a \d+-byte public key, expected 32/
+        );
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('rejects run key material that is not exactly 32 bytes', async () => {
