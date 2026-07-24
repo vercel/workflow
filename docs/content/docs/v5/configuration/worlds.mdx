@@ -98,6 +98,11 @@ The Local World is the default outside Vercel and is intended for development.
 - Default: `0` (dispatch the leading chunk of an idle stream immediately)
 - Group-commit window for the leading chunk of an idle stream; a positive value trades first-chunk latency for larger groups. The `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` environment variable, when set, overrides this option; otherwise the World option governs, including the very first chunk.
 
+### `WORKFLOW_MAX_EVENTS`
+
+- Default: `25000`
+- Per-run event ceiling reported to the runtime. A run whose event log reaches it fails with `MAX_EVENTS_EXCEEDED`, bounding a runaway loop. See [`WORKFLOW_MAX_EVENTS_OVERRIDE`](/docs/configuration/runtime-tuning#workflow_max_events_override) for the runtime-side clamp.
+
 ## Postgres World
 
 The Postgres World is a self-hosted durable backend for long-running server processes.

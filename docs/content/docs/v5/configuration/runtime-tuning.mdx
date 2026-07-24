@@ -185,3 +185,12 @@ These variables are primarily for tests, debugging, or unusual deployments.
 
 - Default: `10`
 - Poll interval for detecting stream lock release.
+
+## Limits
+
+### `WORKFLOW_MAX_EVENTS_OVERRIDE`
+
+- Default: unset
+- Lowers the per-run event ceiling supplied by the World. A run whose event log reaches the ceiling fails with `MAX_EVENTS_EXCEEDED`, which stops a runaway loop from growing its log without bound.
+- Clamp-down only: it never raises the World's limit, and it applies even when the World supplies none. With no World limit and no override, nothing is enforced.
+- The Local and Vercel Worlds both supply a limit; the Local World defaults to 25,000 and is configurable with [`WORKFLOW_MAX_EVENTS`](/docs/configuration/worlds#workflow_max_events).

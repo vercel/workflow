@@ -1,9 +1,9 @@
 ---
 name: migrating-workflow-v4-to-v5
-description: Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, or `NestLocalBuilder` imported from `@workflow/nest`.
+description: Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, `experimental_setAttributes`, `NestLocalBuilder` imported from `@workflow/nest`, or an SWC transform invoked with `mode: 'client'`.
 metadata:
   author: Vercel Inc.
-  version: '0.1.0'
+  version: '0.2.0'
 ---
 
 # Migrating Workflow SDK 4.x to 5.0
@@ -27,8 +27,10 @@ Before editing, establish:
 3. **Whether the app implements a custom World.** Grep for `implements World`, `: World`, `createLocalWorld`, `startWorkflowWorld`.
 4. **Which framework integration is in use.** `@workflow/next`, `@workflow/nest`, `@workflow/nitro`, `@workflow/sveltekit`, `@workflow/vite`, `@workflow/nuxt`, `@workflow/astro`, or the CLI.
 5. **Whether `hook.getConflict()` is used.** Grep for `getConflict`.
+6. **Whether the app calls the compiler directly.** Grep for `mode: 'client'`, `transformSync`, `swc-plugin-workflow`. Only custom build integrations do this.
+7. **Whether `experimental_setAttributes` is used.** Grep for `experimental_setAttributes`.
 
-Report anything in 2–5 that the app does not use as "not applicable" rather than silently skipping it.
+Report anything in 2–7 that the app does not use as "not applicable" rather than silently skipping it.
 
 ## Step 1 — bump the dependencies
 
@@ -132,6 +134,22 @@ if (conflict) {
 
 `await conflict.status` and `await conflict.cancel()` are available on the same handle. Do not remove the `if (conflict)` null check — `getConflict()` still resolves `null` when the token was claimed cleanly.
 
+### `experimental_setAttributes` renamed to `setAttributes`
+
+```ts
+// v4
+import { experimental_setAttributes } from 'workflow';
+
+// v5
+import { setAttributes } from 'workflow';
+```
+
+The old name is a deprecated alias, so this rewrite is safe but not urgent. The `attributes` option on `start()` is unchanged.
+
+### `mode: 'client'` removed from the SWC transform
+
+Only relevant to a custom build integration that calls the compiler itself. The `client` mode merged into `step`, which now absorbs hoisted variable references and dead-code elimination. Pass `mode: 'step'`.
+
 ### `NestLocalBuilder` moved out of the `@workflow/nest` root
 
 ```ts
@@ -152,8 +170,14 @@ These are not code edits. Report each one that applies, and do not "fix" them si
 - **Event creation is guarded by default.** Replay-context writes carry a `stateUpdatedAt` snapshot and a supporting backend can reject stale writes with `PreconditionFailedError`. Backends without guard support ignore the snapshot. `WORKFLOW_PRECONDITION_GUARD=0` opts out.
 - **Turbo mode is on by default.** The first invocation of a run backgrounds `run_started` and skips the initial event-log load. `WORKFLOW_TURBO=0` disables it.
 - **Errors keep their type.** `WorkflowRunFailedError.cause` now preserves the original class identity and cause chain. Code that pattern-matched on `error.message` because the class was flattened in 4.x can use `instanceof` — but flag it rather than rewriting error handling unprompted.
+- **A per-run event limit is enforced.** The World supplies the ceiling (25,000 events on the Local and Vercel Worlds) and a run that reaches it fails with `MAX_EVENTS_EXCEEDED`. Flag any workflow with an unbounded loop; the fix is a child run per batch, which is a design change, not a migration edit.
+- **Stream writes flush the leading chunk immediately.** The flush window default went from 10ms to 0. An app that relied on the window to coalesce a burst of tiny chunks can set `streamFlushIntervalMs` or `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`.
+- **`lazyDiscovery: true` is the default** for `withWorkflow` on Next.js ≥ 16.2.0-canary.48. Older Next.js versions fall back to eager discovery automatically, so this needs no edit — mention it only if the build's discovery behavior changes visibly.
+- **Generated step, workflow and webhook bundles are ESM** (the VM-executed workflow bundle stays CJS). Only matters for a host that post-processes build output.
+- **Duplicate step or workflow IDs now fail the build.** In 4.x, two identically named non-exported functions across workspace files collided last-write-wins. If the build fails on this, rename one of them — do not suppress the check.
 - **`world-postgres` rows written before the upgrade.** Failed runs stored by 4.x read back with `error: undefined`, because the payload lives in the legacy `error` text column rather than `errorJson`. There is no data migration; recent-history dashboards may show blank errors for pre-upgrade failures.
-- **In-flight runs do not migrate.** Runs created on a 4.x deployment keep executing on that deployment, so a deploy is not a cutover. Do not add code to "drain" or re-target them.
+- **`world-local` stream chunks moved** to `streams/chunks/<streamName>/`. Files in the old flat layout are not read back and stale files are left in place — local development state, so deleting the data directory is fine.
+- **In-flight runs do not migrate, and must not.** Runs created on a 4.x deployment keep executing on that deployment. Beyond the usual skew-protection reason, deterministic seed derivation changed in v5 (`runId:workflowName:deploymentId`, clock seeded from the run ID's ULID timestamp), so replaying a pre-upgrade run on v5 produces a different sequence of correlation IDs and random values. Let 4.x runs finish where they started; do not add code to "drain" or re-target them.
 
 ## Step 4 — custom `World` implementations
 
@@ -163,6 +187,13 @@ Only if the app implements `World` itself. Beyond the stream and step signatures
 - `analytics` — metadata-only listings for runs, steps, events, hooks, waits, and attributes.
 - attribute support on runs, including `experimentalSetAttributes`.
 - capability advertisement, so the runtime can gate optimizations. Unadvertised capabilities fail closed, which means an incomplete World stays correct but slower — advertise a capability only once it is genuinely implemented.
+- an optional per-run event ceiling returned on run reads, which the runtime enforces.
+- optional `createRunId()` and a `region` on queue options, for worlds that place run state regionally.
+
+Two contract changes affect existing implementations:
+
+- **Suspension and dispatch.** The asymmetric `{ timeoutSeconds }` return contract for waits is gone. Waits are ordinary queue continuations carrying `delaySeconds`, and wait plus step dispatch is unified into one parallel batch per suspension. A World that special-cased the old wait return needs rewriting against the current interface.
+- **World resolution happens at build time.** Worlds are statically injected into host bundles rather than selected dynamically at runtime, and first-party World packages expose a `createWorld()` factory. A custom or community World must be resolvable by the build; verify the app still boots against it rather than assuming a runtime lookup.
 
 Optional methods may be omitted; the runtime falls back. Point the user at the "Building a World" guide for the full interface rather than inventing method bodies.
 
@@ -204,6 +235,8 @@ Fail the migration if any of these are true:
 - [ ] `streams.get` was called without a `runId`
 - [ ] `world.steps.get` was called with `undefined` as its first argument
 - [ ] `NestLocalBuilder` is imported from `@workflow/nest` instead of `workflow/nest/builder`
+- [ ] a compiler call still passes `mode: 'client'`
+- [ ] a pre-upgrade run was replayed on the upgraded deployment
 - [ ] a behavior change from step 3 was silently "fixed" instead of reported
 - [ ] workflow or step bodies were restructured beyond the rules above
 - [ ] generated output under `.well-known/workflow/v1/` was hand-edited
