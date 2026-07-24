@@ -855,18 +855,20 @@ export function workflowEntrypoint(
                         stepResult.type === 'failed' ||
                         stepResult.type === 'skipped'
                       ) {
-                        // Load events to check if all parallel steps are done.
-                        // Use cursor-based loading so the main loop can continue
-                        // incrementally from here.
-                        const loaded = await loadWorkflowRunEvents(runId);
-                        cachedEvents = loaded.events;
-                        eventsCursor = loaded.cursor;
+                        // This coordination check only needs event metadata.
+                        // Avoid resolving payload refs for handlers that will
+                        // return because another parallel step is still pending.
+                        const eventMetadata = await loadWorkflowRunEvents(
+                          runId,
+                          undefined,
+                          'none'
+                        );
 
                         // Check for pending steps: any step_created without
                         // a matching step_completed or step_failed.
                         const stepCreatedIds = new Set<string | undefined>();
                         const stepTerminalIds = new Set<string | undefined>();
-                        for (const e of cachedEvents) {
+                        for (const e of eventMetadata.events) {
                           if (e.eventType === 'step_created') {
                             stepCreatedIds.add(e.correlationId);
                           } else if (
@@ -895,7 +897,7 @@ export function workflowEntrypoint(
                           if (
                             isInlineOwnershipEnabled() &&
                             hasPendingStepOwnedByMessage(
-                              cachedEvents,
+                              eventMetadata.events,
                               pendingStepIds,
                               metadata.messageId
                             )
@@ -915,6 +917,12 @@ export function workflowEntrypoint(
                             return;
                           }
                         }
+
+                        // This invocation will continue into replay, which
+                        // requires resolved payloads and a reusable cursor.
+                        const loaded = await loadWorkflowRunEvents(runId);
+                        cachedEvents = loaded.events;
+                        eventsCursor = loaded.cursor;
 
                         // All steps done — fall through to the main replay loop.
                         // Set up shared state so the loop can continue.

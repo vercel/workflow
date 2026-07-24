@@ -6,6 +6,7 @@ import {
 import type {
   Event,
   HealthCheckPayload,
+  ResolveData,
   ValidQueueName,
   WorkflowRun,
   World,
@@ -460,10 +461,12 @@ function shouldRetryWithoutEventCursor(
  *   returned (incremental load). If omitted, all events are returned.
  *   The returned cursor can be passed back in on a subsequent call for
  *   incremental loading.
+ * @param resolveData - Whether event payloads should be resolved.
  */
 export async function loadWorkflowRunEvents(
   runId: string,
-  afterCursor?: string
+  afterCursor?: string,
+  resolveData?: ResolveData
 ): Promise<{ events: Event[]; cursor: string | null }> {
   const incremental = afterCursor !== undefined;
   return trace(
@@ -495,6 +498,7 @@ export async function loadWorkflowRunEvents(
         try {
           response = await world.events.list({
             runId,
+            ...(resolveData ? { resolveData } : {}),
             pagination: {
               sortOrder: 'asc',
               cursor: requestedCursor ?? undefined,
