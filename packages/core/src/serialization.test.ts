@@ -5145,6 +5145,27 @@ describe('stream sealing round-trip (encp)', () => {
     ).toEqual([{ data: 'split me' }]);
   });
 
+  it('amortizes one KEM across all frames of a stream', async () => {
+    // Sealing per frame would mean a keygen + ECDH + HKDF per chunk. The
+    // session reuses one encapsulation, so every frame carries the same
+    // ephemeral public key — that is the observable signal of amortization.
+    const frames = await serializeWith(
+      sealTo(keyPair.publicKey),
+      Array.from({ length: 25 }, (_, i) => ({ i }))
+    );
+
+    // Ephemeral public key sits after [4-byte length][encp].
+    const ephemerals = new Set(
+      frames.map((f) => Array.from(f.subarray(8, 40)).join(','))
+    );
+    expect(ephemerals.size).toBe(1);
+
+    // ...and it still round-trips.
+    expect(await deserializeWith(runKeys, frames)).toEqual(
+      Array.from({ length: 25 }, (_, i) => ({ i }))
+    );
+  });
+
   it('never repeats a (content key, nonce) pair across frames', async () => {
     // Regression guard for the nonce-reuse hazard: every frame carries
     // identical plaintext, so any reuse of a (key, nonce) pair would show up
@@ -5181,6 +5202,60 @@ describe('stream sealing round-trip (encp)', () => {
     for (const frames of runs) {
       expect(await deserializeWith(runKeys, frames)).toEqual([{ frame: 0 }]);
     }
+  });
+
+  it('decodes frames from multiple writers despite the single-entry cache', async () => {
+    // The reader caches one decapsulation, keyed by ephemeral public key. Two
+    // writers on one stream means alternating keys and therefore cache
+    // eviction on every frame — correctness must not depend on hit rate.
+    const a = await serializeWith(sealTo(keyPair.publicKey), [
+      { writer: 'a', n: 1 },
+      { writer: 'a', n: 2 },
+    ]);
+    const b = await serializeWith(sealTo(keyPair.publicKey), [
+      { writer: 'b', n: 1 },
+      { writer: 'b', n: 2 },
+    ]);
+
+    // Sanity: the two writers really did use different ephemeral keys.
+    expect(Array.from(a[0].subarray(8, 40)).join(',')).not.toBe(
+      Array.from(b[0].subarray(8, 40)).join(',')
+    );
+
+    // Interleave them so the cache is evicted on each frame.
+    const interleaved = [a[0], b[0], a[1], b[1]];
+    expect(await deserializeWith(runKeys, interleaved)).toEqual([
+      { writer: 'a', n: 1 },
+      { writer: 'b', n: 1 },
+      { writer: 'a', n: 2 },
+      { writer: 'b', n: 2 },
+    ]);
+  });
+
+  it('keeps decoding after a corrupt sealed frame poisons nothing', async () => {
+    // A failed decapsulation must not leave a broken entry cached, or one bad
+    // frame would take out every later frame from the same writer.
+    const good = await serializeWith(sealTo(keyPair.publicKey), [{ ok: true }]);
+    const corrupt = new Uint8Array(good[0]);
+    // Corrupt the ephemeral key into a low-order point so decapsulation fails
+    // (as opposed to merely failing the auth tag).
+    corrupt.fill(0, 8, 40);
+
+    const deserialize = getDeserializeStream(revivers, runKeys);
+    const readPromise = (async () => {
+      const reader = deserialize.readable.getReader();
+      for (;;) {
+        const { done } = await reader.read();
+        if (done) break;
+      }
+    })();
+    const writer = deserialize.writable.getWriter();
+    await writer.write(corrupt).catch(() => {});
+    await writer.close().catch(() => {});
+    await expect(readPromise).rejects.toThrow(RuntimeDecryptionError);
+
+    // A fresh reader with the same keys still works.
+    expect(await deserializeWith(runKeys, good)).toEqual([{ ok: true }]);
   });
 
   it('errors when sealed frames arrive without a run keypair', async () => {

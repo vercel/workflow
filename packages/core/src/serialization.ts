@@ -25,6 +25,7 @@ import { getStepFunction } from './private.js';
 // "Turbopack NFT Tracing Errors in V2 Combined Flow Route" section of
 // `docs/content/docs/changelog/eager-processing.mdx`.
 import { getWorldLazy } from './runtime/get-world-lazy.js';
+import { createOpenSession, createSealSession } from './sealed-box.js';
 import * as clientModule from './serialization/client.js';
 import {
   type CompressionStats,
@@ -37,6 +38,7 @@ import {
   type EncryptionKeyParam,
   encrypt,
   isRunPayloadKeys,
+  isSealTarget,
   type PayloadKey,
   resolveEncryptionKey,
 } from './serialization/encryption.js';
@@ -223,12 +225,21 @@ export function getSerializeStream(
     resolved: false,
     key: undefined as PayloadKey | undefined,
   };
+  // Set when the resolved key is a seal target; amortizes the KEM across all
+  // frames this stream instance writes.
+  let sealSession: ReturnType<typeof createSealSession> | undefined;
   const stream = new TransformStream<any, Uint8Array>({
     async transform(chunk, controller) {
       try {
         if (!keyState.resolved) {
           keyState.key = await resolveEncryptionKey(cryptoKey);
           keyState.resolved = true;
+          if (isSealTarget(keyState.key)) {
+            sealSession = createSealSession(
+              keyState.key.recipientPublicKey,
+              keyState.key.aad
+            );
+          }
         }
         const serialized = stringify(chunk, reducers);
         const payload = encoder.encode(serialized);
@@ -241,11 +252,22 @@ export function getSerializeStream(
         // The length header remains in the clear so the deserializer can
         // find frame boundaries regardless of transport chunking.
         //
-        // Each frame gets its own random nonce (and, on the sealed path, its
-        // own ephemeral keypair). Never switch this to a counter: a stream
-        // reconnect or a durable replay restarts the writer, which would
-        // repeat `(key, nonce)` and catastrophically break AES-GCM.
-        if (keyState.key) {
+        // Every frame gets a fresh random nonce. Never switch this to a
+        // counter: a stream reconnect or a durable replay restarts the writer,
+        // which would repeat `(key, nonce)` and catastrophically break
+        // AES-GCM.
+        //
+        // On the sealed path the KEM is amortized across the stream via a
+        // session (one ECDH per writer instead of one per frame). That is safe
+        // precisely because the nonces stay random, and because the session is
+        // scoped to this stream instance — a replayed or reconnected writer
+        // builds a new one and never inherits a previous content key.
+        if (sealSession) {
+          prefixed = encodeWithFormatPrefix(
+            SerializationFormat.SEALED,
+            await sealSession.seal(prefixed)
+          ) as Uint8Array;
+        } else if (keyState.key) {
           prefixed = (await encrypt(prefixed, keyState.key)) as Uint8Array;
         }
 
@@ -286,6 +308,10 @@ export function getDeserializeStream(
     resolved: false,
     key: undefined as PayloadKey | undefined,
   };
+  // Mirror of the writer's seal session: every frame from one writer carries
+  // the same ephemeral public key, so this turns an ECDH per frame into an
+  // ECDH per writer.
+  let openSession: ReturnType<typeof createOpenSession> | undefined;
 
   function appendToBuffer(data: Uint8Array) {
     const newBuffer = new Uint8Array(buffer.length + data.length);
@@ -301,6 +327,9 @@ export function getDeserializeStream(
     if (!keyState.resolved) {
       keyState.key = await resolveEncryptionKey(cryptoKey);
       keyState.resolved = true;
+      if (isRunPayloadKeys(keyState.key)) {
+        openSession = createOpenSession(keyState.key.keyPair, keyState.key.aad);
+      }
     }
 
     // Try to extract complete length-prefixed frames
@@ -358,9 +387,13 @@ export function getDeserializeStream(
         }
         let decrypted: Uint8Array;
         try {
-          // Delegate to the shared envelope layer so the two schemes stay in
-          // lockstep with the one-shot path.
-          decrypted = (await decrypt(frameData, keyState.key)) as Uint8Array;
+          // Sealed frames go through the session so repeated frames from one
+          // writer reuse a single decapsulation. Everything else delegates to
+          // the shared envelope layer, keeping the two schemes in lockstep
+          // with the one-shot path.
+          decrypted = sealed
+            ? await openSession!.open(decodeFormatPrefix(frameData).payload)
+            : ((await decrypt(frameData, keyState.key)) as Uint8Array);
         } catch (error) {
           // The low-level crypto layer only sees the stripped payload, so it
           // cannot record the outer envelope prefix. We peeked it here, so
