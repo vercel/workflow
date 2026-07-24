@@ -39,6 +39,8 @@ export function createWorld(
     queueConcurrency:
       parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '10', 10) ||
       10,
+    applicationManagedShutdown:
+      process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN === '1',
   }
 ): World & { start(): Promise<void> } {
   const maxPoolSize = config.maxPoolSize ?? getDefaultMaxPoolSize();
@@ -69,8 +71,8 @@ export function createWorld(
       await reenqueueActiveRuns(storage.runs, queue.queue, 'world-postgres');
     },
     async close() {
-      await streamer.close();
       await queue.close();
+      await streamer.close();
       if (pool !== config.pool) {
         await pool.end();
       }
