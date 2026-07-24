@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { WorkflowRunSchema } from '@workflow/world';
 import chalk, { type ChalkInstance } from 'chalk';
@@ -55,9 +56,31 @@ export async function startServer(opts: {
       ...(opts.env ?? {}),
     },
   });
-  onTestFinished(() => {
-    proc.kill();
-    void rm(dataDir, { recursive: true, force: true });
+  onTestFinished(async () => {
+    // Wait for the child to actually exit before removing its data directory:
+    // `kill()` only requests termination, and on Windows `rm()` fails with
+    // EPERM/EBUSY while the server still holds file handles in `dataDir`.
+    if (proc.exitCode === null && proc.signalCode === null) {
+      const exited = new Promise<void>((resolve) => {
+        proc.once('exit', () => resolve());
+      });
+      proc.kill();
+      // Bounded, so a child that refuses to die can't hang test teardown.
+      await Promise.race([
+        exited,
+        setTimeout(5_000, undefined, { ref: false }),
+      ]);
+    }
+    // Windows can hold the handles for a moment past exit, hence the retries.
+    // A leaked temp dir is not worth failing an otherwise passing test over.
+    await rm(dataDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    }).catch((err) => {
+      console.warn(`Failed to remove test data dir ${dataDir}:`, err);
+    });
   });
 
   const stdio = [] as { stream: ChalkInstance; chunk: string }[];
