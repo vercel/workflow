@@ -753,6 +753,7 @@ export function createEventsStorage(
               executionContext?: Record<string, any>;
               attributes?: Record<string, string>;
               allowReservedAttributes?: true;
+              encryptionPublicKey?: string;
             };
             if (
               runInputData.deploymentId &&
@@ -785,6 +786,10 @@ export function createEventsStorage(
                 startedAt: undefined,
                 completedAt: undefined,
                 attributes: runInputData.attributes ?? {},
+                // Must be mirrored here too: this is the path that recreates a
+                // run from the queued message, which is exactly when the key
+                // would otherwise be lost for the rest of the run's life.
+                encryptionPublicKey: runInputData.encryptionPublicKey,
                 createdAt: now,
                 updatedAt: now,
               };
@@ -811,6 +816,7 @@ export function createEventsStorage(
                     attributes: runInputData.attributes,
                     allowReservedAttributes:
                       runInputData.allowReservedAttributes,
+                    encryptionPublicKey: runInputData.encryptionPublicKey,
                   },
                 };
                 await storeEvent(runCreatedEvent);
@@ -1215,6 +1221,7 @@ export function createEventsStorage(
                 startedAt: currentRun.startedAt ?? now,
                 updatedAt: now,
                 attributes: currentRun.attributes,
+                encryptionPublicKey: currentRun.encryptionPublicKey,
               }
             );
           }
@@ -1242,6 +1249,7 @@ export function createEventsStorage(
                 completedAt: now,
                 updatedAt: now,
                 attributes: currentRun.attributes,
+                encryptionPublicKey: currentRun.encryptionPublicKey,
               }
             );
             await Promise.all([
@@ -1280,6 +1288,7 @@ export function createEventsStorage(
                 completedAt: now,
                 updatedAt: now,
                 attributes: currentRun.attributes,
+                encryptionPublicKey: currentRun.encryptionPublicKey,
               }
             );
             await Promise.all([
@@ -1310,6 +1319,7 @@ export function createEventsStorage(
                 completedAt: now,
                 updatedAt: now,
                 attributes: currentRun.attributes,
+                encryptionPublicKey: currentRun.encryptionPublicKey,
               }
             );
             await Promise.all([

@@ -459,6 +459,41 @@ describe('base64 helpers', () => {
     expect(base64ToBytes('****')).toBeUndefined();
   });
 
+  it('rejects malformed shapes instead of returning a truncated key', () => {
+    // A lenient decoder is worse than a throwing one here: silently returning
+    // a short key makes a corrupt value look *present*, so the caller seals to
+    // garbage rather than taking the symmetric fallback.
+    for (const bad of [
+      'AAAAA', // length % 4 === 1: the trailing char encodes no byte
+      'AA=A', // padding in the middle
+      'A=AA',
+      'AAA=A', // characters after padding
+      'AB', // final quantum with non-zero unused bits
+      'AAB',
+      'AAAA=', // padding that does not land on a 4-char boundary
+    ]) {
+      expect(
+        base64ToBytes(bad),
+        `expected ${bad} to be rejected`
+      ).toBeUndefined();
+    }
+  });
+
+  it('accepts every canonical encoding Buffer produces', () => {
+    // Guard against the strictness overshooting into false negatives.
+    for (let length = 0; length <= 48; length++) {
+      const bytes = new Uint8Array(length);
+      globalThis.crypto.getRandomValues(bytes);
+      const encoded = Buffer.from(bytes).toString('base64');
+      expect(base64ToBytes(encoded), `length ${length}`).toEqual(bytes);
+      // Unpadded form must decode identically.
+      expect(
+        base64ToBytes(encoded.replace(/=+$/, '')),
+        `length ${length}`
+      ).toEqual(bytes);
+    }
+  });
+
   it('tolerates missing padding', () => {
     const bytes = new Uint8Array([1, 2, 3, 4, 5]);
     const padded = bytesToBase64(bytes);
