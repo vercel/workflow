@@ -7,6 +7,28 @@ import {
   WorkflowServerWritableStream,
 } from './serialization.js';
 
+/**
+ * Poll until the expectation passes — replaces fixed sleeps for
+ * "dispatch has happened" assertions, which flake on slow CI runners
+ * where the 10ms commit window and scheduler jitter exceed a fixed wait.
+ */
+async function waitFor(
+  assertion: () => void,
+  timeoutMs = 3000,
+  intervalMs = 5
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      assertion();
+      return;
+    } catch (err) {
+      if (Date.now() >= deadline) throw err;
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  }
+}
+
 describe('WorkflowServerWritableStream', () => {
   let mockStreams: {
     write: ReturnType<typeof vi.fn>;
@@ -68,8 +90,7 @@ describe('WorkflowServerWritableStream', () => {
       expect(mockStreams.writeMulti).not.toHaveBeenCalled();
 
       // The group-commit window fires and dispatches the chunk.
-      await new Promise((r) => setTimeout(r, 25));
-      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(mockStreams.write).toHaveBeenCalledTimes(1));
       expect(mockStreams.write).toHaveBeenCalledWith(
         'run-123',
         'test-stream',
@@ -142,8 +163,7 @@ describe('WorkflowServerWritableStream', () => {
 
       await writer.write(new Uint8Array([1]));
       // Let the commit window fire and the first request go in flight.
-      await new Promise((r) => setTimeout(r, 25));
-      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(mockStreams.write).toHaveBeenCalledTimes(1));
 
       await writer.write(new Uint8Array([2]));
       await writer.write(new Uint8Array([3]));
@@ -180,8 +200,7 @@ describe('WorkflowServerWritableStream', () => {
       const piped = source.pipeTo(stream);
 
       controller.enqueue(new Uint8Array([1]));
-      await new Promise((r) => setTimeout(r, 25));
-      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(mockStreams.write).toHaveBeenCalledTimes(1));
 
       // pipeTo pulls the next chunk as soon as write() acks (buffer entry),
       // so these accumulate during the in-flight request.
@@ -289,8 +308,8 @@ describe('WorkflowServerWritableStream', () => {
       const writer = stream.getWriter();
 
       await writer.write(new Uint8Array([1]));
-      await new Promise((r) => setTimeout(r, 25)); // request in flight
-      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+      // request in flight
+      await waitFor(() => expect(mockStreams.write).toHaveBeenCalledTimes(1));
 
       // buffered(1) + inFlight(1) == bound → this write must block.
       let secondResolved = false;
@@ -330,8 +349,7 @@ describe('WorkflowServerWritableStream', () => {
       const writer = stream.getWriter();
 
       await writer.write(new Uint8Array(6)); // in the active request: 6 bytes
-      await new Promise((r) => setTimeout(r, 25));
-      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(mockStreams.write).toHaveBeenCalledTimes(1));
 
       // inFlight(6B) + buffered(6B) ≥ 8B bound → blocks until the request lands.
       let secondResolved = false;
@@ -373,11 +391,16 @@ describe('WorkflowServerWritableStream', () => {
 
       await writer.write(new Uint8Array([1]));
 
-      // Well past the 10ms commit window: BOTH chunks must have dispatched
-      // without any close/drain nudge. A stranded chunk has no timer and
-      // would never arrive.
-      await new Promise((r) => setTimeout(r, 60));
-      expect(landed).toBe(true);
+      // Both chunks must dispatch without any close/drain nudge. A
+      // stranded chunk has no timer and would never arrive, so the poll
+      // (bounded well above the 10ms commit window) discriminates cleanly.
+      await waitFor(() => expect(landed).toBe(true));
+      await waitFor(() =>
+        expect(
+          mockStreams.write.mock.calls.length +
+            mockStreams.writeMulti.mock.calls.length
+        ).toBeGreaterThanOrEqual(2)
+      );
       const delivered = [
         ...mockStreams.write.mock.calls.map(
           (call: unknown[]) => (call[2] as Uint8Array)[0]
@@ -508,7 +531,8 @@ describe('WorkflowServerWritableStream', () => {
 
       await writer.write(new Uint8Array([1]));
       // Let the commit window dispatch and fail.
-      await new Promise((r) => setTimeout(r, 25));
+      await waitFor(() => expect(mockStreams.write).toHaveBeenCalledTimes(1));
+      await new Promise((r) => setTimeout(r, 5));
 
       await expect(writer.write(new Uint8Array([2]))).rejects.toThrow(
         'write error'
@@ -536,8 +560,7 @@ describe('WorkflowServerWritableStream', () => {
       const writer = stream.getWriter();
 
       await writer.write(new Uint8Array([1, 2, 3]));
-      await new Promise((r) => setTimeout(r, 25));
-      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(mockStreams.write).toHaveBeenCalledTimes(1));
 
       await writer.write(new Uint8Array([4, 5, 6]));
       await expect(writer.close()).rejects.toThrow('flush error on close');
@@ -554,8 +577,7 @@ describe('WorkflowServerWritableStream', () => {
 
       // With interval=0, the commit window fires on the next timer tick.
       await writer.write(new Uint8Array([1]));
-      await new Promise((r) => setTimeout(r, 25));
-      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(mockStreams.write).toHaveBeenCalledTimes(1));
 
       await writer.close();
     });
@@ -568,8 +590,7 @@ describe('WorkflowServerWritableStream', () => {
       const writer = stream.getWriter();
 
       await writer.write(new Uint8Array([1]));
-      await new Promise((r) => setTimeout(r, 25));
-      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(mockStreams.write).toHaveBeenCalledTimes(1));
 
       await writer.close();
     });
@@ -584,8 +605,7 @@ describe('WorkflowServerWritableStream', () => {
       // (same lazy resolution as before this rework) — prime it with a
       // drained first group so the window under test uses 50ms.
       await writer.write(new Uint8Array([0]));
-      await new Promise((r) => setTimeout(r, 25));
-      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(mockStreams.write).toHaveBeenCalledTimes(1));
 
       await writer.write(new Uint8Array([1]));
 
@@ -594,8 +614,7 @@ describe('WorkflowServerWritableStream', () => {
       expect(mockStreams.write).toHaveBeenCalledTimes(1);
 
       // The 50ms window elapses and the second group goes out.
-      await new Promise((r) => setTimeout(r, 40));
-      expect(mockStreams.write).toHaveBeenCalledTimes(2);
+      await waitFor(() => expect(mockStreams.write).toHaveBeenCalledTimes(2));
 
       await writer.close();
     });
