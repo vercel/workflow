@@ -48,7 +48,17 @@ import {
   validateUlidTimestamp,
   WorkflowRunSchema,
 } from '@workflow/world';
-import { and, asc, desc, eq, gt, lt, notInArray, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  lt,
+  notInArray,
+  sql,
+} from 'drizzle-orm';
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
@@ -119,6 +129,32 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
       const resolveData = params?.resolveData ?? 'all';
       return filterRunData(parsed, resolveData);
     }) as Storage['runs']['get'],
+    getMany: (async (ids, params) => {
+      const uniqueIds = [...new Set(ids)];
+      if (uniqueIds.length === 0) {
+        return [];
+      }
+
+      const values = await drizzle
+        .select()
+        .from(runs)
+        .where(inArray(runs.runId, uniqueIds));
+      const resolveData = params?.resolveData ?? 'all';
+      const runsById = new Map(
+        values.map((value) => {
+          value.output ||= value.outputJson;
+          value.input ||= value.inputJson;
+          value.executionContext ||= value.executionContextJson;
+          value.error ||= parseErrorJson(value.errorJson);
+          const parsed = WorkflowRunSchema.parse(
+            deserializeRunError(compact(value))
+          );
+          return [value.runId, filterRunData(parsed, resolveData)] as const;
+        })
+      );
+
+      return ids.map((id) => runsById.get(id) ?? null);
+    }) as NonNullable<Storage['runs']['getMany']>,
     list: (async (params) => {
       const limit = params?.pagination?.limit ?? 20;
       const fromCursor = params?.pagination?.cursor;
@@ -305,17 +341,46 @@ async function handleLegacyEventPostgres(
       // Legacy: Store event only (no entity mutation)
       // - wait_completed: for replay purposes
       // - hook_received: hooks exist via old system, just record the event
-      const [insertedEvent] = await drizzle
-        .insert(Schema.events)
-        .values({
-          runId,
-          eventId,
-          correlationId: data.correlationId,
-          eventType: data.eventType,
-          eventData: 'eventData' in data ? data.eventData : undefined,
-          specVersion: SPEC_VERSION_CURRENT,
-        })
-        .returning({ createdAt: Schema.events.createdAt });
+      //
+      // hook_received additionally guards against a concurrent (or already
+      // committed) terminal transition, mirroring the current-spec
+      // hook_received transaction below: `FOR UPDATE` takes the run row
+      // lock, blocking until any in-flight terminal UPDATE (including the
+      // legacy run_cancelled path above) commits, then observes the
+      // post-commit status.
+      const insertLegacyEvent = (tx: Pick<Drizzle, 'insert'>) =>
+        tx
+          .insert(Schema.events)
+          .values({
+            runId,
+            eventId,
+            correlationId: data.correlationId,
+            eventType: data.eventType,
+            eventData: 'eventData' in data ? data.eventData : undefined,
+            specVersion: SPEC_VERSION_CURRENT,
+          })
+          .returning({ createdAt: Schema.events.createdAt });
+
+      const [insertedEvent] =
+        data.eventType === 'hook_received'
+          ? await drizzle.transaction(async (tx) => {
+              const [runRow] = await tx
+                .select({ status: Schema.runs.status })
+                .from(Schema.runs)
+                .where(eq(Schema.runs.runId, runId))
+                .for('update')
+                .limit(1);
+              if (!runRow) {
+                throw new WorkflowRunNotFoundError(runId);
+              }
+              if (isTerminalWorkflowRunStatus(runRow.status)) {
+                throw new RunExpiredError(
+                  `Workflow run "${runId}" is already in terminal state "${runRow.status}"`
+                );
+              }
+              return insertLegacyEvent(tx);
+            })
+          : await insertLegacyEvent(drizzle);
 
       const event = EventSchema.parse({
         ...data,
@@ -783,9 +848,17 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           })
           .onConflictDoNothing()
           .returning();
-        if (runValue) {
-          run = deserializeRunError(compact(runValue));
+        // No row back means the run already exists: the resilient start path
+        // (run_started on a non-existent run) won a TOCTOU race and created
+        // it. Surface the conflict rather than returning `{ run: undefined }`
+        // — start() already treats EntityConflictError as benign, and falling
+        // through would append a duplicate run_created event to the log.
+        if (!runValue) {
+          throw new EntityConflictError(
+            `Workflow run "${effectiveRunId}" already exists`
+          );
         }
+        run = deserializeRunError(compact(runValue));
       }
 
       // Handle run_started event: update run status
@@ -1525,6 +1598,63 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             `Hook "${data.correlationId}" already disposed`
           );
         }
+      }
+
+      // Handle hook_received event: append the event only if the run has
+      // not reached a terminal state. hook_received has no branch in the
+      // terminal-run guard above (it doesn't transition the run or create
+      // an entity), so without this, the generic INSERT further below
+      // could append a hook_received event after a concurrent
+      // run_completed / run_failed / run_cancelled has already committed.
+      // `FOR UPDATE` takes the run row lock inside this transaction: it
+      // blocks until any in-flight terminal transition — whose own
+      // conditional UPDATE takes the same row lock — commits, then
+      // observes the post-commit status. That linearizes this insert
+      // against the run's terminal transition the same way step_started's
+      // guarded UPDATE linearizes against a concurrent terminal step
+      // event.
+      if (data.eventType === 'hook_received') {
+        value = await drizzle.transaction(async (tx) => {
+          const [runRow] = await tx
+            .select({ status: Schema.runs.status })
+            .from(Schema.runs)
+            .where(eq(Schema.runs.runId, effectiveRunId))
+            .for('update')
+            .limit(1);
+          if (!runRow) {
+            throw new WorkflowRunNotFoundError(effectiveRunId);
+          }
+          if (isTerminalWorkflowRunStatus(runRow.status)) {
+            throw new RunExpiredError(
+              `Workflow run "${effectiveRunId}" is already in terminal state "${runRow.status}"`
+            );
+          }
+
+          // Allocate the ULID only after the row lock is acquired,
+          // matching step_started's ordering guarantee: a writer blocked
+          // on the run row must not carry an older event id into a later
+          // insert.
+          const hookReceivedEventId = `wevt_${ulid()}`;
+          eventId = hookReceivedEventId;
+          const [eventValue] = await tx
+            .insert(events)
+            .values({
+              runId: effectiveRunId,
+              eventId: hookReceivedEventId,
+              correlationId: data.correlationId,
+              eventType: data.eventType,
+              eventData: storedEventData,
+              specVersion: effectiveSpecVersion,
+            })
+            .returning({ createdAt: events.createdAt });
+
+          if (!eventValue) {
+            throw new EntityConflictError(
+              `Event ${hookReceivedEventId} could not be created`
+            );
+          }
+          return eventValue;
+        });
       }
 
       // Handle wait_created event: create wait entity

@@ -15,6 +15,10 @@ import {
 import {
   createFlushableState,
   flushablePipe,
+  getMaxBufferedBytes,
+  getMaxBytesPerBatch,
+  getMaxChunksPerBatch,
+  getMaxInflightChunks,
   pollReadableLock,
   pollWritableLock,
 } from './flushable-stream.js';
@@ -84,6 +88,7 @@ import {
   ABORT_STREAM_NAME,
   BODY_INIT_SYMBOL,
   STABLE_ULID,
+  STREAM_DRAIN_SYMBOL,
   STREAM_FRAMING_SYMBOL,
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
@@ -1133,6 +1138,14 @@ interface StreamSink {
   write(chunk: Uint8Array): Promise<void>;
   close(): Promise<void>;
   abort(reason?: unknown): void | Promise<void>;
+  /**
+   * Durability barrier: resolves when every accepted chunk has reached the
+   * world and nothing is buffered or in flight. `write()` acks on buffer
+   * entry (group commit), so this is what makes "step completed" still imply
+   * "stream data durable" — the constructor exposes it via
+   * {@link STREAM_DRAIN_SYMBOL} for `flushablePipe`'s lock-release completion.
+   */
+  drain(): Promise<void>;
 }
 
 /**
@@ -1154,142 +1167,294 @@ function createBatchSink(
   ensureRunReady: () => Promise<void>,
   retransmitSafe: boolean
 ): StreamSink {
+  // ------------------------------------------------------------------
+  // Group-commit buffering (from #3078, path-independent stream batching).
+  //
+  // `write()` resolves as soon as the chunk enters this bounded buffer —
+  // NOT when it is durable. That is the property that makes batching
+  // path-independent: a native `readable.pipeTo(serverWritable)` pulls the
+  // next chunk the moment `write()` resolves, so chunks accumulate here
+  // during the flush-timer window and while a server request is in flight,
+  // and each accumulated group goes out as one `writeMulti`.
+  //
+  // Durability has a dedicated barrier instead: `drain()` resolves only when
+  // the buffer is empty and no request is in flight. `close()` awaits it
+  // before closing the world stream, and the flushable-stream lock-release
+  // completion awaits it (via {@link STREAM_DRAIN_SYMBOL}) before letting a
+  // step finish — so "step completed" still implies "stream data durable".
+  //
+  // How a group is delivered is the world's concern: framed-v2 frames with
+  // per-writer markers (`retransmitSafe`) may ride a transport that resends
+  // unconfirmed chunks across reconnects (world-vercel's acknowledged
+  // WebSocket channel), because the markers let readers deduplicate overlap.
+  // Encryption/decryption is handled at the framing level.
+  // ------------------------------------------------------------------
   let buffer: Uint8Array[] = [];
+  let bufferBytes = 0;
+  // The group currently inside a world request. Counted against the buffer
+  // bound so `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS` keeps its documented
+  // meaning — an upper bound across ALL read-but-not-durable chunks.
+  let inFlightChunks = 0;
+  let inFlightBytes = 0;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
-  let flushPromise: Promise<void> | null = null;
+  /** The in-flight dispatch chain. At most one, preserving chunk order. */
+  let inFlight: Promise<void> | null = null;
+  /**
+   * Sticky failure: once a dispatch fails, the failed group is re-queued and
+   * every subsequent `write()`, `close()` and `drain()` rejects with the
+   * original error. Chunks whose `write()` already resolved surface their
+   * failure at the durability barrier — the contract of an early-ack sink.
+   */
+  let sinkError: unknown;
   const flushIntervalMs =
     world.streamFlushIntervalMs ?? getStreamFlushIntervalMs();
-  let flushWaiters: Array<{
-    resolve: () => void;
-    reject: (err: unknown) => void;
-  }> = [];
-  // Client-observed write-batch timing: stamped at `write()` entry for the
-  // first chunk of a batch — before the backpressure wait on any in-flight
-  // flush — so the emitted span covers the full app-perceived latency
-  // (queueing + flush-timer dwell + RPC). Cleared when a flush takes the
-  // batch; restored on write failure so a retried batch keeps its true t0.
-  let batchStartAt: number | undefined;
+  const maxChunksPerRequest = getMaxChunksPerBatch();
+  const maxBytesPerRequest = getMaxBytesPerBatch();
+  const maxBufferedChunks = getMaxInflightChunks();
+  const maxBufferedBytes = getMaxBufferedBytes();
+  // Client-observed write-batch timing: stamped when the buffer goes
+  // empty→non-empty, consumed by the group that carries that chunk out.
+  let bufferT0: number | undefined;
 
-  const flush = async (): Promise<void> => {
-    if (flushTimer) {
-      clearTimeout(flushTimer);
-      flushTimer = null;
+  type Waiter = { resolve: () => void; reject: (err: unknown) => void };
+  /** write() calls blocked on the buffer bound. */
+  let capacityWaiters: Waiter[] = [];
+  /** drain() calls waiting for full durability. */
+  let drainWaiters: Waiter[] = [];
+
+  const rejectWaiters = (err: unknown): void => {
+    const all = [...capacityWaiters, ...drainWaiters];
+    capacityWaiters = [];
+    drainWaiters = [];
+    for (const w of all) w.reject(err);
+  };
+
+  /**
+   * Take the largest leading group that fits one request: at most
+   * `maxChunksPerRequest` chunks and `maxBytesPerRequest` cumulative bytes
+   * (a single oversized chunk still goes out alone).
+   */
+  const takeGroup = (): { group: Uint8Array[]; bytes: number } => {
+    let count = 0;
+    let bytes = 0;
+    for (const chunk of buffer) {
+      if (count >= maxChunksPerRequest) break;
+      if (count > 0 && bytes + chunk.byteLength > maxBytesPerRequest) break;
+      count++;
+      bytes += chunk.byteLength;
     }
-    if (buffer.length === 0) return;
+    const group = buffer.slice(0, count);
+    buffer = buffer.slice(count);
+    bufferBytes -= bytes;
+    return { group, bytes };
+  };
+
+  /**
+   * Send one group to the world: gate on run readiness, then one `writeMulti`
+   * (or sequential `write`s when the world lacks it). A `retransmitSafe`
+   * (framed-v2) group always goes through `writeMulti` so its per-writer
+   * markers reach the acknowledged transport even when the group is a single
+   * chunk. Emits the write-flush span; dwell is measured up to just before the
+   * RPC so a turbo run-ready barrier wait counts as buffer dwell.
+   */
+  const sendGroup = async (
+    group: Uint8Array[],
+    bytes: number,
+    groupT0: number | undefined
+  ): Promise<void> => {
     await ensureRunReady();
-    // Copy chunks to flush, but don't clear the buffer until the write
-    // succeeds — this prevents data loss if the write operation fails.
-    const chunksToFlush = buffer.slice();
-    const batchStart = batchStartAt;
-    batchStartAt = undefined;
     const dispatchAt = Date.now();
-    const rpcStartAt = Date.now();
-    try {
-      if (
-        typeof world.streams.writeMulti === 'function' &&
-        (chunksToFlush.length > 1 || retransmitSafe)
-      ) {
-        await world.streams.writeMulti(
-          runId,
-          name,
-          chunksToFlush,
-          retransmitSafe ? { retransmitSafe } : undefined
-        );
-      } else {
-        for (const chunk of chunksToFlush) {
-          await world.streams.write(runId, name, chunk);
-        }
+    if (
+      typeof world.streams.writeMulti === 'function' &&
+      (group.length > 1 || retransmitSafe)
+    ) {
+      await world.streams.writeMulti(
+        runId,
+        name,
+        group,
+        retransmitSafe ? { retransmitSafe } : undefined
+      );
+    } else {
+      // Fall back to sequential writes
+      for (const chunk of group) {
+        await world.streams.write(runId, name, chunk);
       }
-    } catch (error) {
-      // The batch stays buffered for retry — restore its original t0 (the
-      // oldest, if a newer write stamped one meanwhile) so the eventually
-      // successful flush reports the full dwell.
-      if (batchStart !== undefined) {
-        batchStartAt =
-          batchStartAt === undefined
-            ? batchStart
-            : Math.min(batchStartAt, batchStart);
-      }
-      throw error;
     }
-    if (batchStart !== undefined) {
+    if (groupT0 !== undefined) {
       recordStreamWriteFlush(
-        batchStart,
+        groupT0,
         dispatchAt,
         runId,
         name,
-        chunksToFlush.length,
-        chunksToFlush.reduce((sum, c) => sum + c.byteLength, 0),
-        Date.now() - rpcStartAt
+        group.length,
+        bytes,
+        Date.now() - dispatchAt
       );
     }
-    buffer = [];
   };
 
-  const scheduleFlush = (): void => {
-    if (flushTimer) return;
+  const dispatchLoop = async (): Promise<void> => {
+    while (buffer.length > 0) {
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      const groupT0 = bufferT0;
+      const groupTakenAt = Date.now();
+      const { group, bytes } = takeGroup();
+      inFlightChunks = group.length;
+      inFlightBytes = bytes;
+      bufferT0 = buffer.length > 0 ? groupTakenAt : undefined;
+
+      try {
+        await sendGroup(group, bytes, groupT0);
+        inFlightChunks = 0;
+        inFlightBytes = 0;
+      } catch (error) {
+        // Retain the failed group (and its original t0) at the front of the
+        // buffer, poison the sink, and surface the failure to every blocked
+        // writer and drain waiter.
+        buffer = group.concat(buffer);
+        bufferBytes += bytes;
+        inFlightChunks = 0;
+        inFlightBytes = 0;
+        bufferT0 =
+          groupT0 !== undefined && bufferT0 !== undefined
+            ? Math.min(groupT0, bufferT0)
+            : (groupT0 ?? bufferT0);
+        throw error;
+      }
+
+      // This group is durable: relieve writers blocked on the bound (they
+      // re-check it and may block again).
+      const relieved = capacityWaiters;
+      capacityWaiters = [];
+      for (const w of relieved) w.resolve();
+    }
+  };
+
+  /** Start (or join) the dispatch chain. Never leaves an unhandled rejection. */
+  const startDispatch = (): void => {
+    if (inFlight || sinkError !== undefined || buffer.length === 0) return;
+    inFlight = dispatchLoop().then(
+      () => {
+        inFlight = null;
+        // A write can land in the microtask gap between the loop's
+        // empty-buffer exit and this reaction. scheduleGroupCommit saw
+        // inFlight still set and armed no timer, so without this check the
+        // chunk would sit stranded until a later write/close/drain.
+        if (buffer.length > 0) {
+          startDispatch();
+          return;
+        }
+        // Fully idle: settle the durability barrier.
+        const settled = drainWaiters;
+        drainWaiters = [];
+        for (const w of settled) w.resolve();
+      },
+      (error) => {
+        inFlight = null;
+        sinkError ??= error;
+        rejectWaiters(sinkError);
+      }
+    );
+  };
+
+  /** Arm the group-commit window unless a dispatch is already running. */
+  const scheduleGroupCommit = (): void => {
+    if (flushTimer || inFlight) return;
     flushTimer = setTimeout(() => {
       flushTimer = null;
-      const currentWaiters = flushWaiters;
-      flushWaiters = [];
-      flushPromise = flush().then(
-        () => {
-          for (const w of currentWaiters) w.resolve();
-        },
-        (err) => {
-          for (const w of currentWaiters) w.reject(err);
-        }
-      );
+      startDispatch();
     }, flushIntervalMs);
+  };
+
+  /**
+   * Durability barrier: resolves when every accepted chunk has reached the
+   * world and nothing is buffered or in flight; rejects with the sink's
+   * sticky error if any dispatch failed. Flushes a pending group-commit
+   * window immediately rather than waiting out the timer.
+   */
+  const drain = async (): Promise<void> => {
+    while (true) {
+      if (sinkError !== undefined) throw sinkError;
+      if (buffer.length === 0 && !inFlight) return;
+      startDispatch();
+      await new Promise<void>((resolve, reject) => {
+        drainWaiters.push({ resolve, reject });
+      });
+    }
   };
 
   return {
     async write(chunk) {
-      // Batch t0 for the write-flush span: at entry, before the
-      // backpressure wait below, so queueing behind an in-flight flush
-      // counts toward the app-perceived dwell.
-      if (batchStartAt === undefined) batchStartAt = Date.now();
-      if (flushPromise) {
-        await flushPromise;
-        flushPromise = null;
-      }
+      if (sinkError !== undefined) throw sinkError;
+      if (bufferT0 === undefined) bufferT0 = Date.now();
       buffer.push(chunk);
-      scheduleFlush();
-      // Resolve only when the scheduled flush's writeMulti resolves, so
-      // callers (flushablePipe) never decrement pendingOps ahead of the
-      // world accepting the batch. What "accepted" means is the world's
-      // writeMulti contract: without retransmitSafe the batch is durable on
-      // the server; with it the world may confirm durability asynchronously
-      // (resend-until-acked), in which case close() below is the durability
-      // barrier and any unrecoverable delivery failure surfaces there.
-      await new Promise<void>((resolve, reject) => {
-        flushWaiters.push({ resolve, reject });
-      });
+      bufferBytes += chunk.byteLength;
+
+      if (
+        buffer.length >= maxChunksPerRequest ||
+        bufferBytes >= maxBytesPerRequest
+      ) {
+        // The buffered group already fills a request: no point dwelling in
+        // the commit window.
+        startDispatch();
+      } else {
+        scheduleGroupCommit();
+      }
+
+      // Bounded buffer: accept the chunk (never drop), then block until the
+      // read-but-not-durable population — buffered AND in the active request
+      // — is back under the bound. Each durably-sent group relieves this.
+      while (
+        sinkError === undefined &&
+        (buffer.length + inFlightChunks >= maxBufferedChunks ||
+          bufferBytes + inFlightBytes >= maxBufferedBytes)
+      ) {
+        startDispatch();
+        await new Promise<void>((resolve, reject) => {
+          capacityWaiters.push({ resolve, reject });
+        });
+      }
+      if (sinkError !== undefined) throw sinkError;
     },
     async close() {
-      if (flushPromise) {
-        await flushPromise;
-        flushPromise = null;
-      }
-      await flush();
-      // A close with an empty buffer skips flush()'s write (and its barrier),
-      // but can itself be the first write to a brand-new stream — gate it too.
+      // Everything accepted must be durable before the world stream is closed
+      // — the server fences post-close writes.
+      await drain();
+
+      // A close with an empty buffer skips the dispatch path (and its
+      // barrier), but can itself be the first write to a brand-new stream —
+      // gate it too.
       await ensureRunReady();
+
       const closeStart = Date.now();
       await world.streams.close(runId, name);
       recordStreamClose(closeStart, runId, name);
     },
-    abort(reason) {
+    async abort(reason) {
+      // Buffered chunks were already ACKED to their writers (early-ack
+      // contract), and native pipeTo aborts this sink whenever its SOURCE
+      // errors — e.g. an AI stream that emits ten deltas and then throws.
+      // Discarding them outright would silently lose the accepted tail, so
+      // deliver what is buffered first; only the world stream close is
+      // skipped. A dispatch failure during this drain is already sticky and
+      // surfaces through the sink's error paths.
+      try {
+        await drain();
+      } catch {
+        // sinkError is set; accepted-but-undeliverable chunks surface it.
+      }
       if (flushTimer) {
         clearTimeout(flushTimer);
         flushTimer = null;
       }
       buffer = [];
-      // Reject pending waiters so write() promises settle and don't leak.
-      const waiters = flushWaiters;
-      flushWaiters = [];
-      const abortError = reason ?? new Error('Stream aborted');
-      for (const w of waiters) w.reject(abortError);
+      bufferBytes = 0;
+      sinkError ??= reason ?? new Error('Stream aborted');
+      // Reject blocked writers and drain waiters so nothing leaks or hangs.
+      rejectWaiters(sinkError);
       // Tear down any transport-level write state the world holds for this
       // stream. For a `retransmitSafe` transport (world-vercel's long-lived
       // acknowledged WebSocket channel) this is essential: without it, an
@@ -1297,8 +1462,9 @@ function createBatchSink(
       // resending unconfirmed frames — delivering data for a stream that was
       // never meant to complete. Worlds that hold no per-stream state omit
       // the method (feature-detected), leaving abort a purely local discard.
-      return world.streams.abort?.(runId, name, reason);
+      await world.streams.abort?.(runId, name, reason);
     },
+    drain,
   };
 }
 
@@ -1425,6 +1591,14 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       return sinkPromise;
     };
 
+    // Durability barrier for owners that complete without closing the stream
+    // (exposed via STREAM_DRAIN_SYMBOL below). The sink owns the group-commit
+    // buffer, so delegate to it; if no chunk was ever written the sink was
+    // never created and there is nothing buffered to drain.
+    const drain = async (): Promise<void> => {
+      if (sinkPromise) await (await sinkPromise).drain();
+    };
+
     super({
       async write(chunk) {
         await (await getSink()).write(chunk);
@@ -1441,6 +1615,16 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // settles into its aborted state.
         if (sinkPromise) await (await sinkPromise).abort(reason);
       },
+    });
+
+    // Durability barrier for owners that complete without closing the
+    // stream: `flushablePipe`'s lock-release completion awaits this so a
+    // step cannot finish (and the function suspend) while accepted chunks
+    // are still client-buffered or in flight.
+    Object.defineProperty(this, STREAM_DRAIN_SYMBOL, {
+      value: drain,
+      enumerable: false,
+      writable: false,
     });
   }
 }
@@ -3145,6 +3329,97 @@ export async function maybeDecrypt(
   return decrypt(data, key);
 }
 
+/**
+ * Replay hydration has two stages:
+ *
+ * 1. Host-side preparation decrypts and decompresses persisted data. That work
+ *    is independent of a workflow VM and can be cached across replay VMs.
+ * 2. Deserialization revives the prepared representation against the current
+ *    VM's globals. It must run again for every VM to produce fresh object graphs
+ *    and correctly scoped Workflow objects.
+ *
+ * `data` is the boundary between those stages. For current-format payloads it
+ * is still format-prefixed serialized bytes, not a live JavaScript value.
+ */
+export interface PreparedReplayPayload {
+  readonly data: unknown;
+}
+
+/**
+ * Swappable implementation of the host-side preparation stage. Supporting
+ * both direct and promised results lets a future synchronous Node decryptor use
+ * the same cache contract as today's asynchronous Web Crypto implementation.
+ */
+export type ReplayPayloadPreparer = (
+  value: unknown,
+  key: CryptoKey | undefined
+) => PreparedReplayPayload | Promise<PreparedReplayPayload>;
+
+/**
+ * Decrypt and decompress persisted data without parsing it into JavaScript.
+ * Legacy non-binary values pass through unchanged for their consumer to revive.
+ */
+export const prepareReplayPayload: ReplayPayloadPreparer = async (
+  value,
+  key
+) => {
+  const compressionStats: CompressionStats = {};
+  const prepared = await decompress(
+    await decrypt(value, key),
+    compressionStats
+  );
+  await recordCompression(compressionStats, 'deserialize');
+  return { data: prepared };
+};
+
+/**
+ * Parse a prepared workflow argument or successful step/hook payload using the
+ * current workflow VM's globals and revivers. Each call intentionally creates
+ * a fresh object graph so mutations cannot leak across replay iterations.
+ */
+export function deserializePreparedReplayPayload(
+  prepared: PreparedReplayPayload,
+  global: Record<string, any> = globalThis,
+  extraRevivers: Record<string, (value: any) => any> = {}
+): any {
+  return workflowModule.deserialize(prepared.data, {
+    global,
+    extraRevivers: {
+      ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
+      ...extraRevivers,
+    },
+  });
+}
+
+/**
+ * Parse a prepared step error using the current workflow VM's class revivers.
+ * This preserves thrown-value identity without sharing objects between VMs.
+ */
+export function deserializePreparedStepError(
+  prepared: PreparedReplayPayload,
+  global: Record<string, any> = globalThis,
+  extraRevivers: Record<string, (value: any) => any> = {}
+): unknown {
+  const { data } = prepared;
+  if (!(data instanceof Uint8Array)) {
+    return unflatten(data as any[], {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
+  }
+
+  const { format, payload } = decodeFormatPrefix(data);
+  if (format === SerializationFormat.DEVALUE_V1) {
+    const str = new TextDecoder().decode(payload);
+    return parse(str, {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
+  }
+
+  throw new Error(`Unsupported serialization format: ${format}`);
+}
+
 // ============================================================================
 // Dehydrate / Hydrate Functions
 // ============================================================================
@@ -3222,28 +3497,22 @@ export async function dehydrateWorkflowArguments(
 
 /**
  * Called from workflow execution environment to hydrate the workflow
- * arguments from the database at the start of workflow execution.
+ * arguments from the database at the start of workflow execution. A prepared
+ * payload skips host-side decrypt/decompress but always performs VM revival.
  */
 export async function hydrateWorkflowArguments(
   value: Uint8Array | unknown,
   _runId: string,
   key: CryptoKey | undefined,
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  prepared?: PreparedReplayPayload
 ): Promise<any> {
-  const compressionStats: CompressionStats = {};
-  const inflated = await decompress(
-    await maybeDecrypt(value, key),
-    compressionStats
-  );
-  await recordCompression(compressionStats, 'deserialize');
-  return workflowModule.deserialize(inflated, {
+  return deserializePreparedReplayPayload(
+    prepared ?? (await prepareReplayPayload(value, key)),
     global,
-    extraRevivers: {
-      ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
-      ...extraRevivers,
-    },
-  });
+    extraRevivers
+  );
 }
 
 /**
@@ -3509,6 +3778,7 @@ export async function dehydrateStepError(
  * @param key - Encryption key (undefined to skip decryption)
  * @param global - Global object for deserialization context
  * @param extraRevivers - Additional revivers for custom types
+ * @param prepared - Optional cached decrypt/decompress result
  * @returns The hydrated thrown value, ready to reject the step promise
  */
 export async function hydrateStepError(
@@ -3516,42 +3786,14 @@ export async function hydrateStepError(
   _runId: string,
   key: CryptoKey | undefined,
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  prepared?: PreparedReplayPayload
 ): Promise<unknown> {
-  const compressionStats: CompressionStats = {};
-  const decrypted = await decompress(
-    await maybeDecrypt(value, key),
-    compressionStats
+  return deserializePreparedStepError(
+    prepared ?? (await prepareReplayPayload(value, key)),
+    global,
+    extraRevivers
   );
-  await recordCompression(compressionStats, 'deserialize');
-
-  if (!(decrypted instanceof Uint8Array)) {
-    // Treated as a devalue "flattened" array. In production this branch is
-    // exercised by legacy code paths that bypassed `dehydrateStepError`; the
-    // SDK version is pinned per workflow run via skew protection, so a
-    // current-version producer always emits a Uint8Array here. If a
-    // misshapen value reaches us, `unflatten` throws — that's intentional:
-    // the higher-level hydration helpers (`hydrateStepIO`,
-    // `hydrateResourceIO`) already wrap us in a try/catch that leaves the
-    // field un-hydrated for o11y display, and surfacing the throw to logs
-    // is more debuggable than silently masking the unsupported shape.
-    return unflatten(decrypted as any[], {
-      ...getWorkflowRevivers(global),
-      ...extraRevivers,
-    });
-  }
-
-  const { format, payload } = decodeFormatPrefix(decrypted);
-
-  if (format === SerializationFormat.DEVALUE_V1) {
-    const str = new TextDecoder().decode(payload);
-    return parse(str, {
-      ...getWorkflowRevivers(global),
-      ...extraRevivers,
-    });
-  }
-
-  throw new Error(`Unsupported serialization format: ${format}`);
 }
 
 /**
@@ -3621,7 +3863,7 @@ export async function hydrateRunError(
 ): Promise<unknown> {
   const compressionStats: CompressionStats = {};
   const decrypted = await decompress(
-    await maybeDecrypt(value, key),
+    await decrypt(value, key),
     compressionStats
   );
   await recordCompression(compressionStats, 'deserialize');
@@ -3660,6 +3902,7 @@ export async function hydrateRunError(
  * @param key - Encryption key (undefined to skip decryption)
  * @param global - Global object for deserialization context
  * @param extraRevivers - Additional revivers for custom types
+ * @param prepared - Optional cached decrypt/decompress result
  * Called from the workflow handler when replaying the event log
  * of a `step_completed` event.
  */
@@ -3668,21 +3911,14 @@ export async function hydrateStepReturnValue(
   _runId: string,
   key: CryptoKey | undefined,
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  prepared?: PreparedReplayPayload
 ): Promise<any> {
-  const compressionStats: CompressionStats = {};
-  const inflated = await decompress(
-    await maybeDecrypt(value, key),
-    compressionStats
-  );
-  await recordCompression(compressionStats, 'deserialize');
-  return workflowModule.deserialize(inflated, {
+  return deserializePreparedReplayPayload(
+    prepared ?? (await prepareReplayPayload(value, key)),
     global,
-    extraRevivers: {
-      ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
-      ...extraRevivers,
-    },
-  });
+    extraRevivers
+  );
 }
 
 // ---- Helpers to extract stream/Request/Response reducers and revivers ----

@@ -204,6 +204,23 @@ describe('createWorkflowRunEvent stateUpdatedAt wire field', () => {
  * actually reach the frame meta with the right values and renames.
  */
 describe('splitEventDataForV4 attribute fields', () => {
+  it('carries a Hook retention deadline in the frame meta', () => {
+    const tokenRetentionUntil = new Date('2026-07-10T12:00:00.000Z');
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'hook_created',
+      correlationId: 'hook_1',
+      specVersion: 5,
+      eventData: {
+        token: 'order:123',
+        tokenRetentionUntil,
+      },
+    } as AnyEventRequest);
+
+    expect(payload).toBeUndefined();
+    expect(meta.hookToken).toBe('order:123');
+    expect(meta.hookTokenRetentionUntil).toEqual(tokenRetentionUntil);
+  });
+
   it('carries attr_set changes/writer/allowReservedAttributes in the frame meta', () => {
     const { payload, meta } = splitEventDataForV4({
       eventType: 'attr_set',
@@ -380,11 +397,15 @@ describe('splitEventDataForV4 attribute fields', () => {
         workflowName: 'wf',
         result: new TextEncoder().encode('"ok"'),
         ttfs: 123,
+        rsfs: 88,
+        finalSchedulingReplay: 12,
         optimizations: ['turbo', 'lazyStepStart'],
       },
     } as AnyEventRequest);
     expect(completed.meta.ttfs).toBe(123);
     expect(completed.meta.stso).toBeUndefined();
+    expect(completed.meta.rsfs).toBe(88);
+    expect(completed.meta.finalSchedulingReplay).toBe(12);
     expect(completed.meta.optimizations).toEqual(['turbo', 'lazyStepStart']);
 
     const failed = splitEventDataForV4({
@@ -415,12 +436,16 @@ describe('splitEventDataForV4 attribute fields', () => {
         stepName: 's',
         result: new TextEncoder().encode('"ok"'),
         ttfs: 'fast',
+        rsfs: 'fast',
+        finalSchedulingReplay: 'fast',
         stepCount: 0,
         eventCount: 2.5,
         optimizations: [1, 2],
       },
     } as unknown as AnyEventRequest);
     expect(malformed.meta.ttfs).toBeUndefined();
+    expect(malformed.meta.rsfs).toBeUndefined();
+    expect(malformed.meta.finalSchedulingReplay).toBeUndefined();
     expect(malformed.meta.stepCount).toBeUndefined();
     expect(malformed.meta.eventCount).toBeUndefined();
     expect(malformed.meta.optimizations).toBeUndefined();
@@ -792,6 +817,84 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     ).eventData;
     expect(eventData?.input).toEqual(body);
     agent.assertNoPendingInterceptors();
+  });
+});
+
+describe('getWorkflowRunEvents legacy structured-error compatibility', () => {
+  const structuredErrorEventTypes = [
+    'run_failed',
+    'step_failed',
+    'step_retrying',
+  ] as const;
+
+  function listResponse(
+    eventType: (typeof structuredErrorEventTypes)[number],
+    body: Uint8Array
+  ): Buffer {
+    return Buffer.concat([
+      encodeFrame(
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          eventType,
+          ...(eventType === 'run_failed' ? {} : { correlationId: 'step_1' }),
+          createdAt: '2026-06-10T00:00:00.000Z',
+          eventData: {},
+        },
+        body
+      ),
+      encodeFrame({ _end: 1 }, new Uint8Array(0)),
+    ]);
+  }
+
+  async function readError(
+    eventType: (typeof structuredErrorEventTypes)[number],
+    body: Uint8Array
+  ): Promise<unknown> {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: { remoteRefBehavior: 'resolve' },
+      })
+      .reply(200, listResponse(eventType, body), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const result = await getWorkflowRunEvents(
+      { runId: 'wrun_1', resolveData: 'all' },
+      { token: 'test-token', dispatcher: agent }
+    );
+    agent.assertNoPendingInterceptors();
+    return (result.data[0] as { eventData?: Record<string, unknown> }).eventData
+      ?.error;
+  }
+
+  it.each(
+    structuredErrorEventTypes
+  )('decodes a stable-line CBOR error for %s', async (eventType) => {
+    const structuredError = {
+      message: 'boom',
+      stack: 'Error: boom\n    at fn (/app/step.js:10:5)',
+    };
+
+    await expect(
+      readError(eventType, new Uint8Array(encode(structuredError)))
+    ).resolves.toEqual(structuredError);
+  });
+
+  it.each([
+    ['devalue', new TextEncoder().encode('devlserialized-error')],
+    ['encrypted', new TextEncoder().encode('encrciphertext')],
+  ])('preserves current %s error bytes', async (_name, body) => {
+    await expect(readError('step_retrying', body)).resolves.toEqual(body);
+  });
+
+  it('leaves CBOR that is not a StructuredError as bytes', async () => {
+    const body = new Uint8Array(encode({ value: 'not an error' }));
+    await expect(readError('step_retrying', body)).resolves.toEqual(body);
   });
 });
 

@@ -1,5 +1,31 @@
 # @workflow/world-local
 
+## 5.0.0-beta.30
+
+### Minor Changes
+
+- [#2915](https://github.com/vercel/workflow/pull/2915) [`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3) Thanks [@joeyhotz](https://github.com/joeyhotz)! - Add `runs.getMany()` for retrieving ordered workflow run snapshots in one storage operation.
+
+### Patch Changes
+
+- [#2987](https://github.com/vercel/workflow/pull/2987) [`850777a`](https://github.com/vercel/workflow/commit/850777a03bc1ad85fa7333d5e15a55a353ed6d23) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Reject `hook_received` on terminal runs, including when the termination commits concurrently (cross-process) and for legacy (pre-event-sourcing) runs.
+
+- Updated dependencies [[`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3), [`fe12b84`](https://github.com/vercel/workflow/commit/fe12b847291912cf9e47143ee10c73828dbdf1a1), [`a5e6f11`](https://github.com/vercel/workflow/commit/a5e6f1167aa07f36b49777d3c020282d11a0abf2), [`eb8fdb9`](https://github.com/vercel/workflow/commit/eb8fdb979748f54a94289530ee7ac155feddddcc), [`bb773e9`](https://github.com/vercel/workflow/commit/bb773e950786b15100a8058407cbfcba23a44ebc)]:
+  - @workflow/world@5.0.0-beta.22
+  - @workflow/errors@5.0.0-beta.12
+
+## 5.0.0-beta.29
+
+### Minor Changes
+
+- [#2914](https://github.com/vercel/workflow/pull/2914) [`f72184d`](https://github.com/vercel/workflow/commit/f72184dc836cb5e04ae689e99802f6fa869f487a) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var as a fallback for the `recoverActiveRuns` option, so re-enqueueing of pending/running runs on startup can be disabled without a custom world module.
+
+### Patch Changes
+
+- Updated dependencies [[`a00d169`](https://github.com/vercel/workflow/commit/a00d16947085f8e94cf191c4d8850121cf201a94), [`1933e29`](https://github.com/vercel/workflow/commit/1933e294cf938fb2314f45047033f8720ccf442b), [`6b8efd5`](https://github.com/vercel/workflow/commit/6b8efd58ce4829648f410e483bf42935dc5dcd1e)]:
+  - @workflow/world@5.0.0-beta.21
+  - @workflow/errors@5.0.0-beta.11
+
 ## 5.0.0-beta.28
 
 ### Patch Changes

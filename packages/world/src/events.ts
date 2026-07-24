@@ -268,6 +268,17 @@ const stepLatencyTelemetryFields = {
   // stso.
   stepCount: z.number().int().positive().optional(),
   eventCount: z.number().int().positive().optional(),
+  // Run-started-to-first-step: milliseconds from the `run_started` response
+  // landing (or, under turbo, the local run synthesis instant) until this
+  // step's start POST was issued. A sub-window of ttfs. Only reported
+  // alongside the same eligibility as ttfs.
+  rsfs: z.number().optional(),
+  // Synchronous workflow-function replay duration of only the FINAL replay
+  // pass within the rsfs window (the pass that scheduled the first step),
+  // excluding awaited network I/O — not accumulated across earlier
+  // pre-first-step passes, so it is not "the replay portion of rsfs". Only
+  // present alongside rsfs, and only for the run's first step.
+  finalSchedulingReplay: z.number().optional(),
   // Names of the runtime's optional startup-latency optimizations that were
   // active for this measurement (e.g. 'turbo', 'lazyStepStart',
   // 'optimisticStart'), so latency metrics can be segmented by them.
@@ -383,6 +394,7 @@ export const HookCreatedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z.object({
     token: z.string(),
+    tokenRetentionUntil: z.coerce.date().optional(),
     metadata: SerializedDataSchema.optional(),
     isWebhook: z.boolean().optional(),
     isSystem: z.boolean().optional(),
@@ -686,6 +698,16 @@ export interface CreateEventParams {
    * when a newer out-of-band event was recorded after this snapshot, enabling
    * an optimistic-concurrency guard. Omitted by callers without a loaded event
    * log.
+   *
+   * Backend contract (for World implementers who want to support the guard):
+   * maintain a per-run marker holding the ULID time of the most recent
+   * *externally-originated* event — a `hook_received` or `step_completed`
+   * created **without** a `stateUpdatedAt` (replay-origin events carry one and
+   * must not advance the marker). On a create that carries `stateUpdatedAt`,
+   * reject with 412 when `stateUpdatedAt < marker` (strictly older); an equal
+   * timestamp must pass (anti-livelock, so an up-to-date client is never
+   * rejected). A backend that ignores this field simply disables the guard —
+   * the client falls open and behaves as before.
    */
   stateUpdatedAt?: number;
   /**
@@ -783,6 +805,8 @@ export interface EventResult {
    * the safe default (treated as "not the lazy creator").
    */
   stepCreated?: boolean;
+  /** Server-owned max event count for the run (run-lifecycle responses); the runtime enforces it. */
+  maxEvents?: number;
 }
 
 export interface GetEventParams {

@@ -1,6 +1,79 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
 import { envNumber } from '@workflow/world';
+import { STREAM_DRAIN_SYMBOL } from './symbols.js';
+
+/**
+ * A durability barrier a sink may expose under {@link STREAM_DRAIN_SYMBOL}:
+ * resolves once every chunk the sink has accepted is durably written, rejects
+ * if any server write failed. See `WorkflowServerWritableStream`.
+ */
+type DrainBarrier = () => Promise<void>;
+
+/**
+ * Flow-control knob: upper bound on chunks read-but-not-yet-durably-written
+ * while coalescing. Once this many chunks are outstanding the producer stops
+ * reading until the consumer drains a batch, so a fast producer paired with a
+ * slow server can't grow the in-memory queue without bound. Override:
+ * `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS`.
+ *
+ * This is deliberately distinct from the per-request batch caps below: this
+ * bounds how much is *buffered*, those bound how much goes out in one
+ * `writeMulti`. Raising this must never let a single request exceed a wire
+ * limit — batch sizing enforces that independently.
+ */
+export const MAX_INFLIGHT_CHUNKS = 1000;
+
+export const getMaxInflightChunks = (): number =>
+  envNumber('WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS', MAX_INFLIGHT_CHUNKS, {
+    integer: true,
+    min: 1,
+  });
+
+/**
+ * Wire limit: maximum number of chunks in a single coalesced `writeMulti`.
+ * The server enforces a per-multi-write chunk cap (1,000 today); a batch is
+ * split at this bound so it can never be rejected wholesale, independently of
+ * the backpressure knob above. Override: `WORKFLOW_STREAM_MAX_CHUNKS_PER_BATCH`.
+ */
+export const MAX_CHUNKS_PER_BATCH = 1000;
+
+export const getMaxChunksPerBatch = (): number =>
+  envNumber('WORKFLOW_STREAM_MAX_CHUNKS_PER_BATCH', MAX_CHUNKS_PER_BATCH, {
+    integer: true,
+    min: 1,
+  });
+
+/**
+ * Wire limit: maximum cumulative bytes in a single coalesced `writeMulti`.
+ * Chunk *count* alone is not enough — 1,000 small chunks are ~100KB but 1,000
+ * file-sized chunks can be hundreds of MB, which platform request-body limits
+ * reject long before the count cap matters. A batch is split once adding the
+ * next chunk would exceed this (a single chunk larger than the cap still goes
+ * out alone). Default 1 MiB. Override: `WORKFLOW_STREAM_MAX_BYTES_PER_BATCH`.
+ */
+export const MAX_BYTES_PER_BATCH = 1024 * 1024;
+
+export const getMaxBytesPerBatch = (): number =>
+  envNumber('WORKFLOW_STREAM_MAX_BYTES_PER_BATCH', MAX_BYTES_PER_BATCH, {
+    integer: true,
+    min: 1,
+  });
+
+/**
+ * Buffer bound (bytes) for the server writable's group-commit buffer — the
+ * byte-denominated counterpart of {@link MAX_INFLIGHT_CHUNKS}. `write()`
+ * blocks once this much data is buffered-but-not-durable, so a fast producer
+ * of large chunks can't grow client memory without bound. Default 8 MiB
+ * (eight request-sized groups). Override: `WORKFLOW_STREAM_MAX_BUFFERED_BYTES`.
+ */
+export const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
+
+export const getMaxBufferedBytes = (): number =>
+  envNumber('WORKFLOW_STREAM_MAX_BUFFERED_BYTES', MAX_BUFFERED_BYTES, {
+    integer: true,
+    min: 1,
+  });
 
 /**
  * Polling interval (in ms) for lock release detection.
@@ -54,6 +127,13 @@ export interface FlushableStreamState extends PromiseWithResolvers<void> {
   writablePollingInterval?: ReturnType<typeof setInterval>;
   /** Interval ID for readable lock polling (if active) */
   readablePollingInterval?: ReturnType<typeof setInterval>;
+  /**
+   * Durability barrier of the pipe's sink, when it acks writes on buffer
+   * entry (see {@link STREAM_DRAIN_SYMBOL}). Lock-release completion awaits
+   * this before resolving so `pendingOps === 0` (fast, buffered acks) can't
+   * complete a step while data is still client-side.
+   */
+  drainBarrier?: DrainBarrier;
 }
 
 export function createFlushableState(): FlushableStreamState {
@@ -129,6 +209,27 @@ function isReadableUnlockedNotClosed(readable: ReadableStream): boolean {
 }
 
 /**
+ * Settle the flushable completion after the sink's durability barrier.
+ *
+ * Lock release means the producer is done *writing*; with a group-commit
+ * sink, accepted chunks may still be client-buffered or in a request that is
+ * in flight. Awaiting the barrier here keeps the completion's meaning —
+ * "everything written so far is durable" — identical to the pre-batching
+ * behavior where each write() was individually durable.
+ */
+function resolveAfterDrain(state: FlushableStreamState): void {
+  const barrier = state.drainBarrier;
+  if (!barrier) {
+    state.resolve();
+    return;
+  }
+  barrier().then(
+    () => state.resolve(),
+    (err) => state.reject(err)
+  );
+}
+
+/**
  * Polls a WritableStream to check if the user has released their lock.
  * Resolves the done promise when lock is released and no pending ops remain.
  *
@@ -158,9 +259,9 @@ export function pollWritableLock(
     // Check if lock is released (not closed) and no pending ops
     if (isWritableUnlockedNotClosed(writable) && state.pendingOps === 0) {
       state.doneResolved = true;
-      state.resolve();
       clearInterval(intervalId);
       state.writablePollingInterval = undefined;
+      resolveAfterDrain(state);
     }
   }, getLockPollIntervalMs());
 
@@ -197,9 +298,9 @@ export function pollReadableLock(
     // Check if lock is released (not closed) and no pending ops
     if (isReadableUnlockedNotClosed(readable) && state.pendingOps === 0) {
       state.doneResolved = true;
-      state.resolve();
       clearInterval(intervalId);
       state.readablePollingInterval = undefined;
+      resolveAfterDrain(state);
     }
   }, getLockPollIntervalMs());
 
@@ -217,7 +318,36 @@ export function pollReadableLock(
  * @param state - The flushable state tracker
  * @returns Promise that resolves when stream ends (not when done promise resolves)
  */
-export async function flushablePipe(
+export function flushablePipe(
+  source: ReadableStream,
+  sink: WritableStream,
+  state: FlushableStreamState
+): Promise<void> {
+  // Batching lives in the sink (`WorkflowServerWritableStream` group-commits
+  // its buffer), so this pipe is a plain per-chunk pump regardless of path —
+  // its only responsibilities are lock-release completion and durability
+  // tracking. Group-commit sinks ack write() on buffer entry; adopt their
+  // durability barrier so the lock-release completion still means
+  // "everything written is durable" (see resolveAfterDrain).
+  const drain = (sink as { [STREAM_DRAIN_SYMBOL]?: DrainBarrier })[
+    STREAM_DRAIN_SYMBOL
+  ];
+  if (typeof drain === 'function') {
+    state.drainBarrier = drain;
+  }
+  return flushablePipePerChunk(source, sink, state);
+}
+
+/**
+ * The pump behind {@link flushablePipe}: awaits each `writer.write()` before
+ * reading the next chunk. Against a group-commit sink, write() acks on buffer
+ * entry, so this loop feeds the sink as fast as the producer emits (bounded
+ * by the sink's buffer bound) and batching happens inside the sink; against a
+ * plain sink each write is individually durable, as before. The source-done
+ * path closes the sink, which drains it, so completion always implies
+ * durability.
+ */
+async function flushablePipePerChunk(
   source: ReadableStream,
   sink: WritableStream,
   state: FlushableStreamState
@@ -270,6 +400,15 @@ export async function flushablePipe(
   } catch (err) {
     state.streamEnded = true;
     cancelReason = err;
+    // Against an early-ack sink, chunks can still be buffered or in flight
+    // when the pipe fails (pendingOps only counts un-acked writes). Deliver
+    // that accepted prefix before settling the failure: once the state
+    // rejects, the step may persist its failure and the invocation finish,
+    // and anything still client-side would be lost. The original pipe error
+    // stays primary — a drain failure is already sticky on the sink.
+    if (state.drainBarrier) {
+      await state.drainBarrier().catch(() => {});
+    }
     if (!state.doneResolved) {
       state.doneResolved = true;
       state.reject(err);

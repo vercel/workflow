@@ -83,6 +83,8 @@ const REPLAY_TIMEOUT_HINT =
   'The workflow replay between step boundaries took too long. This bounds workflow-VM and event-log replay time only — step bodies (`"use step"` functions) are excluded. This usually means the event log is unusually large or the workflow function is doing heavy synchronous work in workflow code outside of step bodies. Override the default budget via the WORKFLOW_REPLAY_TIMEOUT_MS env var if needed.';
 const MAX_DELIVERIES_HINT =
   'The workflow queue exceeded its max-delivery budget. This usually indicates a persistent runtime failure — check the most recent stack traces for the underlying cause.';
+const MAX_EVENTS_HINT =
+  'The workflow exceeded the maximum number of events per run. This usually means unbounded work in the workflow function — e.g. a loop that keeps creating steps without terminating. Break long-running workflows into child workflows to stay under the limit.';
 const WORLD_CONTRACT_HINT =
   'The workflow backend returned data that violated the SDK contract. This is not retryable; please report it with the stack trace and runId.';
 
@@ -129,6 +131,9 @@ export function describeRunError(
   }
   if (errorCode === RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED) {
     return { attribution: 'sdk', errorCode, hint: MAX_DELIVERIES_HINT };
+  }
+  if (errorCode === RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED) {
+    return { attribution: 'user', errorCode, hint: MAX_EVENTS_HINT };
   }
   if (errorCode === RUN_ERROR_CODES.CORRUPTED_EVENT_LOG) {
     return {
@@ -225,6 +230,14 @@ export function describeError(
       attribution: 'sdk',
       errorCode: effectiveCode,
       hint: MAX_DELIVERIES_HINT,
+    };
+  }
+
+  if (effectiveCode === RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED) {
+    return {
+      attribution: 'user',
+      errorCode: effectiveCode,
+      hint: MAX_EVENTS_HINT,
     };
   }
 

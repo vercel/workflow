@@ -1,5 +1,6 @@
 import {
   CorruptedEventLogError,
+  MaxEventsExceededError,
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   type RunErrorCode,
@@ -114,6 +115,10 @@ export function classifyRunError(err: unknown): RunErrorCode {
 
   if (CorruptedEventLogError.is(err)) {
     return RUN_ERROR_CODES.CORRUPTED_EVENT_LOG;
+  }
+
+  if (MaxEventsExceededError.is(err)) {
+    return RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED;
   }
 
   // World-layer faults — both a malformed response (contract violation) and a

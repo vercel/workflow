@@ -1,5 +1,33 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.36
+
+### Minor Changes
+
+- [#2985](https://github.com/vercel/workflow/pull/2985) [`621b04e`](https://github.com/vercel/workflow/commit/621b04ed52b2ed9dcbff15d5ae46e530a249fe8c) Thanks [@mitul-s](https://github.com/mitul-s)! - Trace viewer: holding Alt with a span selected now measures the time delta between the selected span and any hovered span, Figma-style; the no-selection Alt gap overlay is restyled to the same measurement-line design.
+
+### Patch Changes
+
+- [#2968](https://github.com/vercel/workflow/pull/2968) [`1973317`](https://github.com/vercel/workflow/commit/197331748808b7c0d60ffaef7c485bcfd06d61c7) Thanks [@mitul-s](https://github.com/mitul-s)! - Adjust helper position on trace viewer
+
+- [#2962](https://github.com/vercel/workflow/pull/2962) [`774e12c`](https://github.com/vercel/workflow/commit/774e12c283dbc7704490d456abc01b841e374f7f) Thanks [@mitul-s](https://github.com/mitul-s)! - Show a delayed tooltip (Step, Hook, Sleep, Workflow) when hovering the icon on each row in the new trace viewer's event list.
+
+- Updated dependencies [[`6d1d700`](https://github.com/vercel/workflow/commit/6d1d7006cf442c715c464ec2b8c80a21d1c90b01), [`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3), [`d8071bb`](https://github.com/vercel/workflow/commit/d8071bb49a42b65cc412691050fcf35489f97b57), [`fe12b84`](https://github.com/vercel/workflow/commit/fe12b847291912cf9e47143ee10c73828dbdf1a1), [`a5e6f11`](https://github.com/vercel/workflow/commit/a5e6f1167aa07f36b49777d3c020282d11a0abf2), [`bb773e9`](https://github.com/vercel/workflow/commit/bb773e950786b15100a8058407cbfcba23a44ebc), [`268fede`](https://github.com/vercel/workflow/commit/268fede627b3a83dbabcff9d35fd946132bf9a06), [`eb8fdb9`](https://github.com/vercel/workflow/commit/eb8fdb979748f54a94289530ee7ac155feddddcc), [`9177ba8`](https://github.com/vercel/workflow/commit/9177ba83d3168866d13ff34ca3d651312d1d87d2), [`6353c8c`](https://github.com/vercel/workflow/commit/6353c8c6cf5afe6cbd8e4a08e93e339b3b6f81f7), [`bb773e9`](https://github.com/vercel/workflow/commit/bb773e950786b15100a8058407cbfcba23a44ebc)]:
+  - @workflow/core@5.0.0-beta.36
+  - @workflow/world@5.0.0-beta.22
+
+## 5.0.0-beta.35
+
+### Patch Changes
+
+- [#2950](https://github.com/vercel/workflow/pull/2950) [`0d5305b`](https://github.com/vercel/workflow/commit/0d5305b9df5658abe96c2d7efe07489b319cc77e) Thanks [@mitul-s](https://github.com/mitul-s)! - Use gray instead of amber for hook bars in the trace viewer.
+
+- [#2947](https://github.com/vercel/workflow/pull/2947) [`cbfe13b`](https://github.com/vercel/workflow/commit/cbfe13bb637d39cab9dea903975f52dda040a012) Thanks [@mitul-s](https://github.com/mitul-s)! - Give Metadata Token and Hook ID rows copy buttons with middle truncation.
+
+- Updated dependencies [[`a00d169`](https://github.com/vercel/workflow/commit/a00d16947085f8e94cf191c4d8850121cf201a94), [`1933e29`](https://github.com/vercel/workflow/commit/1933e294cf938fb2314f45047033f8720ccf442b), [`6b8efd5`](https://github.com/vercel/workflow/commit/6b8efd58ce4829648f410e483bf42935dc5dcd1e), [`fd107b9`](https://github.com/vercel/workflow/commit/fd107b9c33db397b513ef134f458a1083bde7d98)]:
+  - @workflow/core@5.0.0-beta.35
+  - @workflow/world@5.0.0-beta.21
+
 ## 5.0.0-beta.34
 
 ### Patch Changes

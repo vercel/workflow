@@ -589,13 +589,15 @@ export interface MutableEventLog {
 }
 
 /**
- * Whether the optimistic-concurrency guard for event creation is enabled
- * (`WORKFLOW_PRECONDITION_GUARD=1`, set where the runtime executes). Off by
- * default: replay-context creates only send a `stateUpdatedAt` snapshot (and
- * can therefore be rejected with 412 by the backend) when it is enabled.
+ * Whether the optimistic-concurrency guard for event creation is enabled.
+ * **On by default** where the runtime executes: replay-context creates send a
+ * `stateUpdatedAt` snapshot (and can be rejected with 412 by a supporting
+ * backend) unless `WORKFLOW_PRECONDITION_GUARD` is set to `0`. Backends without
+ * guard support ignore the snapshot, so enabling by default is
+ * backward-compatible.
  */
 export function isPreconditionGuardEnabled(): boolean {
-  return process.env.WORKFLOW_PRECONDITION_GUARD === '1';
+  return process.env.WORKFLOW_PRECONDITION_GUARD !== '0';
 }
 
 /**
@@ -620,7 +622,17 @@ export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
   const eventId = last.eventId;
   const underscore = eventId.lastIndexOf('_');
   const rawUlid = underscore === -1 ? eventId : eventId.slice(underscore + 1);
-  return ulidToDate(rawUlid)?.getTime() ?? undefined;
+  const time = ulidToDate(rawUlid)?.getTime();
+  if (time === undefined) {
+    // Fail open: a non-decodable id disarms the guard for this create (no
+    // snapshot sent). Log so a fleet-wide silent disarm is diagnosable.
+    runtimeLogger.debug(
+      'Precondition guard: latest event id is not a decodable ULID; sending no snapshot',
+      { eventId }
+    );
+    return undefined;
+  }
+  return time;
 }
 
 /**
@@ -678,6 +690,13 @@ export async function withPreconditionRetry<T>(
         new Set(log.events.map((e) => e.eventId)),
         loaded.events
       );
+      // When several creates share one `log` (e.g. hook creations under
+      // `Promise.all` in `handleSuspension`), concurrent 412s can reload
+      // concurrently. The event merge above is safe — `appendUniqueEvents`
+      // builds its dedup set synchronously right before appending — but this
+      // cursor write is last-write-wins, so an interleaved older reload can
+      // briefly regress the cursor. The only consequence is refetching a few
+      // already-deduped events on a later load; correctness is unaffected.
       log.cursor = loaded.cursor ?? log.cursor;
     }
   }

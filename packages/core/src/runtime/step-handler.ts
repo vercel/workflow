@@ -15,7 +15,6 @@ import {
   pluralize,
   stepDisplayName,
 } from '@workflow/utils';
-import { getPort } from '@workflow/utils/get-port';
 import {
   getQueueTopicPrefix,
   resolveQueueNamespace,
@@ -55,6 +54,7 @@ import {
 import { version as workflowCoreVersion } from '../version.js';
 
 import { getMaxQueueDeliveries } from './constants.js';
+import { getPortLazy } from './get-port-lazy.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -226,7 +226,7 @@ function createStepHandler(namespace?: string) {
 
         // Resolve local async values concurrently before entering the trace span
         const [port, spanKind] = await Promise.all([
-          isVercel ? undefined : getPort(),
+          isVercel ? undefined : getPortLazy(),
           getSpanKind('CONSUMER'),
         ]);
 

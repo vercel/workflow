@@ -46,23 +46,20 @@ showSections={['parameters']}
 
 ### Returns
 
+`defineHook()` returns a `TypedHook<TInput, TOutput>`:
+
 <TSDoc
 definition={`
-interface DefineHook<T> {
-  /**
-
-* Creates a new hook with the defined payload type.
-  */
-  create: (options?: HookOptions) => Hook<T>;
-
-  /**
-
-* Resumes a hook by sending a payload with the defined type.
-   */
-  resume: (token: string, payload: T) => Promise<HookEntity | null>;
+interface TypedHook<TInput, TOutput> {
+  /** Creates the hook. Call inside a "use workflow" function. */
+  create(options?: HookOptions): Hook<TOutput>;
+  /** Resumes the hook from runtime code. Resolves to the resumed hook; throws HookNotFoundError if the token does not match an active hook. */
+  resume(token: string, payload: TInput): Promise<HookEntity>;
 }
-export default DefineHook;`}
+export default TypedHook;`}
 />
+
+`create()` is called inside a `"use workflow"` function to create the hook; `resume()` is called from runtime code (an API route or server action). When a `schema` is provided, `resume()` accepts the raw input type (`TInput`) and the workflow receives the validated and possibly transformed output type (`TOutput`); without a schema, `TOutput` defaults to `TInput`. `resume()` throws [`HookNotFoundError`](/docs/api-reference/workflow-errors/hook-not-found-error) if the token does not match an active hook — it does not return `null`.
 
 ## Examples
 
@@ -93,24 +90,29 @@ export async function workflowWithApproval() {
 
 ### Resuming with Type Safety
 
-Hooks can be resumed using the same defined hook and a token. By using the same hook, you can ensure that the payload matches the defined type when resuming a hook.
+Hooks can be resumed using the same defined hook and a token. By using the same hook, you can ensure that the payload matches the defined type when resuming a hook. `resume()` resolves to the resumed hook and throws [`HookNotFoundError`](/docs/api-reference/workflow-errors/hook-not-found-error) if the token does not match an active hook.
 
 ```typescript lineNumbers
+import { HookNotFoundError } from "workflow/errors";
+
 // Use the same defined hook to resume
 export async function POST(request: Request) {
   const { token, approved, comment } = await request.json();
 
-  // Type-safe resumption - TypeScript ensures the payload matches
-  const result = await approvalHook.resume(token, { // [!code highlight]
-    approved, // [!code highlight]
-    comment, // [!code highlight]
-  }); // [!code highlight]
+  try {
+    // Type-safe resumption - TypeScript ensures the payload matches
+    const hook = await approvalHook.resume(token, { // [!code highlight]
+      approved, // [!code highlight]
+      comment, // [!code highlight]
+    }); // [!code highlight]
 
-  if (!result) {
-    return Response.json({ error: "Hook not found" }, { status: 404 });
+    return Response.json({ success: true, runId: hook.runId });
+  } catch (error) {
+    if (HookNotFoundError.is(error)) { // [!code highlight]
+      return Response.json({ error: "Hook not found" }, { status: 404 });
+    }
+    throw error;
   }
-
-  return Response.json({ success: true, runId: result.runId });
 }
 ```
 

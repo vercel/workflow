@@ -1,0 +1,66 @@
+---
+title: Comparisons
+description: How the Workflow SDK compares to other durable execution, workflow, and AI-agent frameworks — Temporal, Cloudflare Workflows, AWS Step Functions, AWS Bedrock AgentCore, Inngest, and trigger.dev.
+type: overview
+summary: Side-by-side comparisons of the Workflow SDK against Temporal, Cloudflare Workflows, AWS Step Functions, AWS Bedrock AgentCore, Inngest, and trigger.dev.
+related:
+  - /docs/foundations/workflows-and-steps
+  - /docs/how-it-works/event-sourcing
+  - /worlds/vercel
+---
+
+The Workflow SDK overlaps with several categories: durable execution engines, background-job platforms, managed orchestrators, and AI-agent runtimes. This section compares it against the most common alternatives, one deep dive per tool.
+
+## What makes the Workflow SDK different
+
+- **It's an open-source SDK, not a hosted product.** Your workflows are plain TypeScript in your existing app. Run them on the managed [Vercel World](/worlds/vercel), or self-host on the [Postgres World](/worlds/postgres) — the [World abstraction](/worlds/building-a-world) lets you own and swap the storage, queue, and streaming layers independently.
+- **Versioning is safe by default.** Runs are pinned to the immutable deployment that started them, so shipping new code never disturbs in-flight runs. Upgrading a run is explicit and opt-in. See [Versioning](/docs/comparisons/workflow-sdk-vs-temporal#versioning).
+- **Realtime durable streaming is built in.** Stream partial output (LLM tokens, progress) to clients with [streams](/docs/foundations/streaming) that survive reconnects, cold starts, and replays — essential for chat and agent UIs.
+- **First-class AI agents.** `WorkflowAgent` ships inside the [AI SDK](/docs/ai), turning an agent loop into a durable workflow with automatic step retries and human-in-the-loop pauses.
+
+## Snapshot
+
+<Callout type="info">
+These comparisons are compiled from each product's public documentation and are **not** based on head-to-head benchmarks — durable engines differ enough that a single number rarely compares cleanly. Treat them as directional and verify current pricing and limits against each vendor's docs.
+</Callout>
+
+| Tool | Category | Durability model | Open source / self-host | Language(s) |
+| --- | --- | --- | --- | --- |
+| **Workflow SDK** | Durable functions SDK | Event-log + deterministic replay | ✅ Apache-2.0 — self-host (Postgres) or Vercel | TypeScript (Python beta) |
+| [Temporal](/docs/comparisons/workflow-sdk-vs-temporal) | Durable execution platform | Event-sourced replay | ✅ MIT server — self-host or Temporal Cloud | Go, Java, TS, Python, .NET, PHP, Ruby |
+| [Cloudflare Workflows](/docs/comparisons/workflow-sdk-vs-cloudflare-workflows) | Durable execution engine | Step-result memoization + replay | ❌ Cloudflare-only | TypeScript (Python beta) |
+| [AWS Step Functions](/docs/comparisons/workflow-sdk-vs-aws-step-functions) | Managed state-machine orchestrator | Declarative ASL state machine | ❌ AWS-only | ASL JSON (tasks: any language) |
+| [AWS Bedrock AgentCore](/docs/comparisons/workflow-sdk-vs-aws-agentcore) | AI-agent hosting platform | Not durable execution (ephemeral sessions) | ❌ AWS-only | Python, Node.js |
+| [Inngest](/docs/comparisons/workflow-sdk-vs-inngest) | Durable functions / event platform | Step-result memoization | ◑ SSPL — self-host (community/best-effort) or SaaS | TypeScript (Python/Go pre-1.0) |
+| [trigger.dev](/docs/comparisons/workflow-sdk-vs-trigger-dev) | Durable task platform | Process checkpoint/restore (CRIU) | ✅ Apache-2.0 — self-host or Cloud | TypeScript only |
+
+## Deep dives
+
+<Cards>
+    <Card href="/docs/comparisons/workflow-sdk-vs-temporal" title="vs Temporal">
+        The mature, language-agnostic durable-execution platform. You run the workers; Workflow SDK runs in your app.
+    </Card>
+    <Card href="/docs/comparisons/workflow-sdk-vs-cloudflare-workflows" title="vs Cloudflare Workflows">
+        A durable engine on Workers + Durable Objects. Both replay; they handle versioning and encryption very differently.
+    </Card>
+    <Card href="/docs/comparisons/workflow-sdk-vs-aws-step-functions" title="vs AWS Step Functions">
+        Declarative ASL JSON state machines vs. plain TypeScript control flow.
+    </Card>
+    <Card href="/docs/comparisons/workflow-sdk-vs-aws-agentcore" title="vs AWS Bedrock AgentCore">
+        An AI-agent hosting platform — not a durable-execution engine. Different axis.
+    </Card>
+    <Card href="/docs/comparisons/workflow-sdk-vs-inngest" title="vs Inngest">
+        Event-driven durable functions that run on your own infra over HTTP.
+    </Card>
+    <Card href="/docs/comparisons/workflow-sdk-vs-trigger-dev" title="vs trigger.dev">
+        A TypeScript task platform that achieves durability by snapshotting the process (CRIU).
+    </Card>
+</Cards>
+
+<Callout type="info">
+Moving an existing system over? Each deep dive includes a concept-mapping section, and the Workflow SDK migration skill can translate code for you:
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
+```
+</Callout>

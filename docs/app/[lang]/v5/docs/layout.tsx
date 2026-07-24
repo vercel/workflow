@@ -10,6 +10,7 @@ const Layout = async ({ children, params }: LayoutProps<'/[lang]/v5/docs'>) => {
       <PreReleaseBanner pathname={`/${lang}/v5/docs`} />
       <DocsLayout
         currentVersion={PRE_RELEASE_VERSION.id}
+        lang={lang}
         tree={getDocsTreeForVersion(lang, PRE_RELEASE_VERSION)}
       >
         {children}

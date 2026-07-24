@@ -8,7 +8,10 @@ import {
 } from '@workflow/world';
 import { WebSocket as UndiciWebSocket } from 'undici';
 import { z } from 'zod';
-import { getStreamDispatcher } from './http-client.js';
+import {
+  getStreamCloseDispatcher,
+  getStreamDispatcher,
+} from './http-client.js';
 import { getVercelDiagnostics, instrumentedFetch } from './http-core.js';
 import {
   StreamSocketWriter,
@@ -698,7 +701,11 @@ export function createStreamer(config?: APIConfig): Streamer {
           method: 'PUT',
           url: url.toString(),
           headers: httpConfig.headers,
-          dispatcher: getStreamDispatcher(config),
+          // Close is idempotent (unlike chunk appends), so its dispatcher
+          // retries 5xx — required by the server's close-barrier protocol,
+          // which surfaces transient reconciliation states as retriable
+          // 503s with the stream left durably closing.
+          dispatcher: getStreamCloseDispatcher(config),
           timeoutMs: null,
           logLabel: url.pathname,
           spanName: 'workflow.stream.write',

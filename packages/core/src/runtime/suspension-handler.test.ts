@@ -30,6 +30,43 @@ function createWorld(eventsCreate: ReturnType<typeof vi.fn>): World {
 }
 
 describe('handleSuspension', () => {
+  it('persists the token retention deadline on hook_created', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const world = createWorld(eventsCreate);
+    const tokenRetentionUntil = new Date('2026-08-01T00:00:00.000Z');
+    const pending = new Map([
+      [
+        'hook_with_retention',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_with_retention',
+          token: 'order:123',
+          tokenRetentionUntil,
+        },
+      ],
+    ]);
+
+    await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+    });
+
+    expect(eventsCreate).toHaveBeenCalledWith(
+      run.runId,
+      expect.objectContaining({
+        eventType: 'hook_created',
+        eventData: expect.objectContaining({
+          token: 'order:123',
+          tokenRetentionUntil,
+        }),
+      }),
+      expect.anything()
+    );
+  });
+
   it('marks hook.getConflict()-awaited creations without converting them into wait timeouts', async () => {
     const eventsCreate = vi.fn().mockResolvedValue({
       event: {

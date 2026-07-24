@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
+import { ReplayPayloadCache } from '../replay-payload-cache.js';
 import { createContext } from '../vm/index.js';
 import { createSleep } from './sleep.js';
 
@@ -21,6 +22,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const ctx: WorkflowOrchestratorContext = {
     runId: 'wrun_test',
     encryptionKey: undefined,
+    replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     // ctx.onWorkflowError is accessed via closure — it's defined below on the same object
     eventsConsumer: new EventsConsumer(events, {

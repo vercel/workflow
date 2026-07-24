@@ -104,17 +104,34 @@ describe('WorkflowServerWritableStream write-flush telemetry', () => {
     expect(durationMs).toBeGreaterThanOrEqual(dwell as number);
   });
 
-  it('emits one span per flush cycle', async () => {
+  it('emits one span per dispatched group (group commit coalesces rapid writes)', async () => {
     const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
     const writer = stream.getWriter();
 
+    // Rapid awaited writes ack on buffer entry and land in one commit
+    // window: ONE group, ONE flush span covering all three chunks.
     await writer.write(new Uint8Array([1]));
     await writer.write(new Uint8Array([2]));
     await writer.write(new Uint8Array([3]));
     await writer.close();
 
-    const spans = await waitForSpans('workflow.stream.flush', 3);
-    expect(spans).toHaveLength(3);
+    const spans = await waitForSpans('workflow.stream.flush', 1);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].attributes['workflow.stream.flush.chunks']).toBe(3);
+    expect(spans[0].attributes['workflow.stream.flush.bytes']).toBe(3);
+  });
+
+  it('emits separate spans for groups separated by a commit window', async () => {
+    const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+    const writer = stream.getWriter();
+
+    await writer.write(new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 25)); // let the window fire
+    await writer.write(new Uint8Array([2]));
+    await writer.close();
+
+    const spans = await waitForSpans('workflow.stream.flush', 2);
+    expect(spans).toHaveLength(2);
     for (const span of spans) {
       expect(span.attributes['workflow.stream.flush.chunks']).toBe(1);
     }
@@ -133,11 +150,11 @@ describe('WorkflowServerWritableStream write-flush telemetry', () => {
     );
     const writer = stream.getWriter();
 
-    const writePromise = writer.write(new Uint8Array([1, 2, 3]));
-    // Hold the first flush on the barrier long enough to dominate the dwell.
+    await writer.write(new Uint8Array([1, 2, 3]));
+    // Hold the first dispatch on the barrier long enough to dominate the
+    // dwell (write() itself acks on buffer entry and does not wait).
     await new Promise((r) => setTimeout(r, 50));
     releaseBarrier();
-    await writePromise;
     await writer.close();
 
     const [span] = await waitForSpans('workflow.stream.flush', 1);

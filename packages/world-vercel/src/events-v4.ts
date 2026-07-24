@@ -126,6 +126,11 @@ export interface CreateEventV4Input {
    *  the step entity for premature-delivery pacing and observability. */
   retryAfter?: Date;
   hookToken?: string;
+  /**
+   * Earliest time another Hook can use the token after the owning run ends.
+   * An active run always retains its token beyond this time.
+   */
+  hookTokenRetentionUntil?: Date;
   hookIsWebhook?: boolean;
   hookIsSystem?: boolean;
   errorCode?: string;
@@ -162,6 +167,17 @@ export interface CreateEventV4Input {
   /** Progress counters taken when the STSO gap began. */
   stepCount?: number;
   eventCount?: number;
+  /** Client-measured run_started-to-first-step ms (the `run_started`
+   *  response landing → this step's start POST being issued), riding on the
+   *  run's first step_completed / step_failed. Consumed server-side for
+   *  latency metrics. */
+  rsfs?: number;
+  /** Client-measured synchronous replay-compute ms of only the FINAL replay
+   *  pass within the rsfs window (the pass that scheduled the first step),
+   *  excluding awaited network I/O — not accumulated across earlier
+   *  pre-first-step passes, so it is not "the replay portion of rsfs".
+   *  Only present alongside rsfs, and only for the run's first step. */
+  finalSchedulingReplay?: number;
   /** Runtime optimizations active for the ttfs/stso measurement
    *  (e.g. 'turbo', 'lazyStepStart', 'optimisticStart'). */
   optimizations?: string[];
@@ -214,6 +230,11 @@ export interface CreateEventV4Result {
      * creator). Threaded into EventResult.stepCreated by the events adapter.
      */
     stepCreated?: boolean;
+    /**
+     * Server-owned per-run event ceiling, returned on run-lifecycle responses.
+     * Absent from older servers. Threaded into EventResult.maxEvents.
+     */
+    maxEvents?: number;
   };
 }
 
@@ -240,6 +261,9 @@ function buildPostFrameMeta(
   if (input.resumeAt !== undefined) meta.resumeAt = input.resumeAt;
   if (input.retryAfter !== undefined) meta.retryAfter = input.retryAfter;
   if (input.hookToken !== undefined) meta.hookToken = input.hookToken;
+  if (input.hookTokenRetentionUntil !== undefined) {
+    meta.hookTokenRetentionUntil = input.hookTokenRetentionUntil;
+  }
   if (input.hookIsWebhook !== undefined)
     meta.hookIsWebhook = input.hookIsWebhook;
   if (input.hookIsSystem !== undefined) meta.hookIsSystem = input.hookIsSystem;
@@ -261,6 +285,10 @@ function buildPostFrameMeta(
   if (input.stso !== undefined) meta.stso = input.stso;
   if (input.stepCount !== undefined) meta.stepCount = input.stepCount;
   if (input.eventCount !== undefined) meta.eventCount = input.eventCount;
+  if (input.rsfs !== undefined) meta.rsfs = input.rsfs;
+  if (input.finalSchedulingReplay !== undefined) {
+    meta.finalSchedulingReplay = input.finalSchedulingReplay;
+  }
   if (input.optimizations !== undefined) {
     meta.optimizations = input.optimizations;
   }

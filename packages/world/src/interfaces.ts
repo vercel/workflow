@@ -192,10 +192,10 @@ export interface Streamer {
  * - run_cancelled event for run cancellation
  * - hook_disposed event for explicit hook disposal (optional)
  *
- * Note: Hooks are automatically disposed by the World implementation when a workflow
- * reaches a terminal state (run_completed, run_failed, run_cancelled). This releases
- * hook tokens for reuse by future workflows. The hook_disposed event is only needed
- * for explicit disposal before workflow completion.
+ * When a workflow reaches a terminal state, its Hooks can no longer be resumed.
+ * Worlds normally remove them and release their tokens. A Hook with minimum
+ * retention remains readable and keeps its token unavailable until its retention
+ * ends. A hook_disposed event always removes the Hook and releases its token.
  */
 export interface Storage {
   runs: {
@@ -211,6 +211,25 @@ export interface Storage {
       id: string,
       params?: GetWorkflowRunParams
     ): Promise<WorkflowRun | WorkflowRunWithoutData>;
+
+    /**
+     * Retrieves several runs as one snapshot. The result preserves the input
+     * order and contains `null` for run IDs that do not exist.
+     */
+    getMany?: {
+      (
+        ids: readonly string[],
+        params: GetWorkflowRunParams & { resolveData: 'none' }
+      ): Promise<(WorkflowRunWithoutData | null)[]>;
+      (
+        ids: readonly string[],
+        params?: GetWorkflowRunParams & { resolveData?: 'all' }
+      ): Promise<(WorkflowRun | null)[]>;
+      (
+        ids: readonly string[],
+        params?: GetWorkflowRunParams
+      ): Promise<(WorkflowRun | WorkflowRunWithoutData | null)[]>;
+    };
 
     list(
       params: ListWorkflowRunsParams & { resolveData: 'none' }
@@ -327,10 +346,67 @@ export interface Storage {
   };
 
   hooks: {
+    /**
+     * Returns a Hook by ID. A Hook kept by minimum retention remains readable
+     * after its run ends, but cannot be resumed.
+     */
     get(hookId: string, params?: GetHookParams): Promise<Hook>;
+    /**
+     * Returns the Hook that owns a token, including a Hook kept by minimum
+     * retention after its run ends.
+     */
     getByToken(token: string, params?: GetHookParams): Promise<Hook>;
+    /**
+     * Lists Hooks, including Hooks kept by minimum retention after their runs
+     * end.
+     */
     list(params: ListHooksParams): Promise<PaginatedResponse<Hook>>;
   };
+}
+
+/**
+ * Optional feature capabilities a World implementation declares so the core
+ * runtime can enable optimizations that depend on backend behavior, instead
+ * of inferring support from environment variables alone. Every capability
+ * defaults to "unsupported" when absent — runtime fast paths that rely on
+ * one must fail closed (keep their conservative behavior) unless the World
+ * explicitly declares it.
+ */
+export interface WorldCapabilities {
+  /**
+   * Supports `experimental_minRetention` for Hooks. Missing or inactive means
+   * the runtime rejects retained Hooks before registration.
+   */
+  hookRetention?: {
+    active: boolean;
+  };
+
+  /**
+   * The World enforces the optimistic-concurrency precondition guard: an
+   * event creation carrying a `stateUpdatedAt` snapshot is rejected with a
+   * `PreconditionFailedError` (412) when a newer out-of-band event (e.g. a
+   * received hook) was recorded after that snapshot. Worlds that accept but
+   * ignore `stateUpdatedAt` must leave this unset so runtime optimizations
+   * that rely on the 412 fence (see `WORKFLOW_PRECONDITION_GUARD`) are not
+   * enabled without an actual fence behind them.
+   */
+  preconditionGuard?: boolean;
+
+  /**
+   * The World's queue supports `maxConcurrency`-limited consumption — in
+   * particular the per-run flow topics consumed with `maxConcurrency: 1`
+   * that `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses to serialize a run's
+   * orchestrator invocations. Worlds whose queue has no concurrency-limit
+   * concept must leave this unset.
+   *
+   * Note this declares queue *support*, not deployed configuration: the
+   * serialization also requires the build-time half (a flow trigger emitted
+   * with `maxConcurrency: 1`), which a runtime process cannot verify today.
+   * The core runtime therefore does not yet take any fast path from this
+   * capability alone — it exists so a future build-verified signal can be
+   * combined with it (and so Worlds document the contract explicitly).
+   */
+  maxConcurrency?: boolean;
 }
 
 /**
@@ -354,6 +430,13 @@ export interface World extends Queue, Streamer, Storage {
    * `SPEC_VERSION_CURRENT` before they create or replay runs.
    */
   specVersion: number;
+
+  /**
+   * Feature capabilities this World implementation supports — see
+   * {@link WorldCapabilities}. Absent (or absent members) means
+   * "unsupported": runtime optimizations gated on a capability fail closed.
+   */
+  capabilities?: WorldCapabilities;
 
   /**
    * Whether calling `process.exit(1)` from a queue handler is observed by

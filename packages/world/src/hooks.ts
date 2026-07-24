@@ -27,7 +27,8 @@ export const HookSchema = z.object({
 });
 
 /**
- * Represents a hook that can be used to resume a paused workflow run.
+ * Represents a Hook. Hooks kept by minimum retention remain readable after
+ * their workflow runs end, but cannot be resumed.
  *
  * Note: metadata type is SerializedData to support both:
  * - specVersion >= 2: Uint8Array (binary devalue format)

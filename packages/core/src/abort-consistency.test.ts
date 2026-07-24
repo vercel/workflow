@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
 import type { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
 import {
   dehydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
@@ -36,6 +37,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   return {
     runId: 'wrun_test',
     encryptionKey: undefined,
+    replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent: () => {},
