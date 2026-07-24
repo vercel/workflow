@@ -88,6 +88,30 @@ describe('createWatchIgnorePredicate', () => {
     expect(isIgnored(p('app/src/keep.ts'))).toBe(false);
   });
 
+  test('child .gitignore negation overrides a parent rule', () => {
+    // Verified against real git: with root `*.log` and `app/.gitignore`
+    // containing `!keep.log`, `git check-ignore app/keep.log` reports the
+    // file as NOT ignored — the deeper file wins.
+    write('.gitignore', '*.log\n');
+    write('app/.gitignore', '!keep.log\n');
+
+    const isIgnored = createWatchIgnorePredicate({
+      workingDir: p('app'),
+      projectRoot: root,
+    });
+
+    expect(isIgnored(p('app/keep.log'))).toBe(false);
+    expect(isIgnored(p('app/other.log'))).toBe(true);
+  });
+
+  test('built-in fragments win over a gitignore negation', () => {
+    // A stray `!node_modules` must not drag dependencies into the watch set.
+    write('.gitignore', '!node_modules\n');
+    const isIgnored = createWatchIgnorePredicate({ workingDir: root });
+
+    expect(isIgnored(p('node_modules/pkg/index.js'))).toBe(true);
+  });
+
   test('built-in fragments are ignored without any .gitignore', () => {
     const isIgnored = createWatchIgnorePredicate({ workingDir: root });
 

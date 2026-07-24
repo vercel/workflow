@@ -54,12 +54,24 @@ interface GitignoreMatcher {
 }
 
 /**
- * Load `.gitignore` matchers walking from `workingDir` up to and including
+ * Load `.gitignore` matchers for `workingDir` up to and including
  * `projectRoot`. In a monorepo the largest ignored trees are typically listed
  * at the workspace root, and app-level `.gitignore` files are covered too.
  *
+ * Returned outermost-first (workspace root → app), which is the order git
+ * applies them: a rule in a deeper `.gitignore` overrides a conflicting rule
+ * from a shallower one.
+ *
  * Nested `.gitignore` files *below* `workingDir` are intentionally not read —
  * the {@link WATCH_IGNORED_PATHS_ENV} env var backstops anything they'd cover.
+ *
+ * Known deviation from git: a deeper file can re-include an individual path
+ * (`!keep.log`), but it cannot re-include the *contents* of a directory its
+ * parent excluded (root `generated/` + app `!generated/` leaves
+ * `app/generated/x.ts` pruned, where git would watch it). Matching git there
+ * requires its per-directory-entry walk; `ignore` re-claims nested paths for
+ * a directory pattern. Use {@link WATCH_IGNORED_PATHS_ENV}'s counterpart —
+ * narrowing the parent rule — if you hit this.
  */
 function loadGitignoreMatchers(
   workingDir: string,
@@ -90,7 +102,9 @@ function loadGitignoreMatchers(
     current = parent;
   }
 
-  return matchers;
+  // Collected innermost-first while walking up; git precedence is
+  // outermost-first, with deeper files winning.
+  return matchers.reverse();
 }
 
 export interface WatchIgnoreOptions {
@@ -144,12 +158,20 @@ export function createWatchIgnorePredicate(
   );
 
   return (normalizedPath: string): boolean => {
+    // Built-in and env-var fragments are hard excludes: they are deliberately
+    // not subject to gitignore negation, so a stray `!` rule cannot drag
+    // `node_modules` or the generated directory back into the watch set.
     for (const fragment of fragments) {
       if (normalizedPath.includes(fragment)) {
         return true;
       }
     }
 
+    // Fold the gitignore matchers outermost-first so a deeper `.gitignore`
+    // overrides a shallower one, matching git. Carrying the unignored result
+    // (not just ignored) is what lets a child `!keep.log` re-include a file
+    // that the workspace-root `*.log` excluded.
+    let ignored = false;
     for (const { dir, matcher } of gitignoreMatchers) {
       const rel = posix.relative(dir, normalizedPath);
       // Empty means the path *is* the gitignore dir; a `..` prefix means it is
@@ -160,11 +182,15 @@ export function createWatchIgnorePredicate(
       // Test the trailing-slash form too so a directory node itself matches a
       // `dir/` gitignore rule (not just its children) — this lets the walk and
       // chokidar prune the directory instead of descending into it.
-      if (matcher.ignores(rel) || matcher.ignores(`${rel}/`)) {
-        return true;
+      const asFile = matcher.test(rel);
+      const asDir = matcher.test(`${rel}/`);
+      if (asFile.ignored || asDir.ignored) {
+        ignored = true;
+      } else if (asFile.unignored || asDir.unignored) {
+        ignored = false;
       }
     }
 
-    return false;
+    return ignored;
   };
 }
