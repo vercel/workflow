@@ -1,15 +1,15 @@
 {
-  "lastUpdated": "2026-07-24T19:00:19.500Z",
-  "commit": "b406a04dfa86aae5d1482b71f18a8c7bfb1272ed",
+  "lastUpdated": "2026-07-24T20:00:18.194Z",
+  "commit": "fc81f4502fa6d8d9a7a5c48b44394dc39c141a86",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
       "status": "partial",
       "total": 4312,
-      "passed": 3753,
+      "passed": 3772,
       "failed": 1,
-      "skipped": 558,
+      "skipped": 539,
       "frameworks": {
         "astro": {
           "total": 308,
@@ -32,13 +32,13 @@
           "failed": 0
         },
         "nextjs-turbopack": {
-          "total": 616,
-          "passed": 578,
+          "total": 770,
+          "passed": 732,
           "failed": 0
         },
         "nextjs-webpack": {
-          "total": 616,
-          "passed": 577,
+          "total": 462,
+          "passed": 442,
           "failed": 1
         },
         "nitro": {
@@ -125,26 +125,41 @@
       "progress": 87
     },
     "vercel": {
-      "status": "passing",
-      "total": 1232,
-      "passed": 1077,
-      "failed": 0,
-      "skipped": 155,
+      "status": "partial",
+      "total": 1848,
+      "passed": 1577,
+      "failed": 4,
+      "skipped": 267,
       "frameworks": {
         "astro": {
           "total": 154,
           "passed": 126,
           "failed": 0
         },
+        "express": {
+          "total": 154,
+          "passed": 125,
+          "failed": 1
+        },
+        "fastify": {
+          "total": 154,
+          "passed": 125,
+          "failed": 1
+        },
         "nextjs-turbopack": {
           "total": 154,
-          "passed": 151,
-          "failed": 0
+          "passed": 150,
+          "failed": 1
         },
         "nextjs-webpack": {
           "total": 154,
           "passed": 151,
           "failed": 0
+        },
+        "nitro": {
+          "total": 154,
+          "passed": 125,
+          "failed": 1
         },
         "nuxt": {
           "total": 154,
@@ -162,7 +177,7 @@
           "failed": 0
         }
       },
-      "progress": 87
+      "progress": 85
     }
   }
 }
