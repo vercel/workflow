@@ -40,9 +40,9 @@ On [Vercel Workflows](/worlds/vercel) these benefits compound to reduce compute 
 Workflow run IDs are now tagged with the compute region they were created in, or the region specified when calling `start()`. Worlds can use this to pin execution to that region.
 This is now the default when deploying to Vercel, and run data will automatically be co-located with the compute region that the run was started in.
 
-### Cooperative cancellation
+### Inflight cancellation
 
-`AbortController` and `AbortSignal` are serializable. A controller created inside a workflow function survives suspensions, and its signal can be passed into steps, into `fetch()`, and into child runs — so a workflow can abandon in-flight work without waiting for it to finish.
+`AbortController` and `AbortSignal` are now serializable, and signals can be passed into steps, so a workflow can abandon in-flight work without waiting for a step to finish.
 
 ```typescript lineNumbers
 import { sleep } from "workflow";
@@ -85,24 +85,17 @@ See [Attributes](/docs/observability/attributes).
 
 ### A redesigned trace viewer, in the open-source package
 
-The trace viewer is a ground-up replacement: a minimap with pan, zoom and brush, alt-drag span-to-span time measurement, keyboard navigation, virtualization for large runs, inline decryption of encrypted payloads, and an attributes card.
+The trace viewer has been rebuilt from the ground-up, with an easily visible timeline, a minimap, pan, zoom, debug functionality, a new JSON viewer, keyboard navigation, and more.
 
-It has been available in Vercel Observability for a while — see the [redesign](https://vercel.com/changelog/redesigned-trace-viewer-for-vercel-workflows) and [minimap](https://vercel.com/changelog/vercel-workflows-trace-viewer-now-has-a-minimap) changelogs. v5 ships the same viewer to open-source users against any World:
+Vercel Observability uses this trace viewer for all runs, v4 included, but with v5, you get the same new design for self-hosted UI and local debugging. See [Observability](/docs/observability).
 
-```bash
-npx workflow inspect runs --web
-```
-
-See [Observability](/docs/observability).
 
 ### Also new in 5.0
 
 - **`start()` from inside a workflow.** Spawn a child run or hand off to a new run directly in a workflow function, without wrapping it in a step. See [Starting workflows](/docs/foundations/starting-workflows).
 - **Stronger hook coordination.** `hook.getConflict()` resolves with the conflicting [`Run`](/docs/api-reference/workflow-api/get-run) rather than a bare `{ runId }`, so a duplicate can `await conflict.status`, `await conflict.returnValue`, or `await conflict.cancel()` directly. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
 - **Errors keep their type.** `WorkflowRunFailedError.cause` preserves the original class identity and cause chain, including your own error classes. See [Serialization](/docs/foundations/serialization).
-- **Tracing and analytics.** Tracing defaults to `linked`, making each workflow and step invocation its own trace root with span links to the enqueue site and the run origin. `world.analytics` adds metadata-only listings for runs, steps, events, hooks, waits, and attributes. See [Tracing](/docs/observability/tracing).
-- **A configuration reference.** Every `WORKFLOW_*` environment variable, framework plugin option, and CLI flag is documented in one place. See [Configuration](/docs/configuration).
-- **More frameworks.** [React Router](/docs/getting-started/react-router) (v7 and v8, via Nitro) and [NestJS](/docs/getting-started/nestjs) have first-class guides, and [Python](/docs/getting-started/python) workflows are in beta.
+- **Support for more frameworks.** [React Router](/docs/getting-started/react-router) (v7 and v8, via Nitro) is now supported, and [NestJS](/docs/getting-started/nestjs) and [Python](/docs/getting-started/python) workflows are in beta.
 
 ## Breaking changes
 
@@ -141,26 +134,3 @@ On Next.js 16.2.0-canary.48 and newer, `withWorkflow` now defaults to `lazyDisco
 
 Runs created on 4.x keep executing on the deployment that created them, so upgrading a deployment does not migrate in-flight runs — and, given the seed change above, must not. One storage caveat is worth knowing about: failed runs stored by `@workflow/world-postgres` before the upgrade read back with `error: undefined`, because the payload lives in the legacy `error` text column rather than `errorJson`.
 
-## Migrating from V4
-
-An agent skill automates the mechanical parts of the upgrade — the renamed World methods, the removed exports, the Nest builder subpath, and the `getConflict()` shape — and flags the places that need a human decision.
-
-```bash
-npx skills add https://github.com/vercel/workflow --skill migrating-workflow-v4-to-v5
-```
-
-Then ask your agent to migrate the project, for example: *"Upgrade this app from Workflow SDK 4.x to 5.0."* The skill reads the code, applies the rules above, and reports what it changed and what it could not.
-
-## Staying on 4.x
-
-4.x remains installable as `workflow@4` and receives stability fixes. Pin it explicitly if you are not ready to upgrade:
-
-```json
-{
-  "dependencies": {
-    "workflow": "^4.6.0"
-  }
-}
-```
-
-The 4.x documentation is at [/v4/docs](/v4/docs), and the version switcher at the top of the sidebar moves between the two.
