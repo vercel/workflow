@@ -38,15 +38,13 @@ export interface Streamer {
   /**
    * Number of milliseconds a stream waits for additional chunks to arrive
    * before flushing to the underlying transport.
-   * 
+   *
    * Default `0`: the first chunk dispatches immediately, and chunks
    * arriving while a request is in flight coalesce into the next group.
-   * Settings this to >0 will trade first chunk latency for for fewer requests.
+   * Setting this to > 0 trades first-chunk latency for fewer requests.
    *
-   * Resolution note: this World option is read lazily on the first
-   * dispatch, so it takes effect from the second idle group onward; the
-   * `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` environment variable governs from
-   * the very first chunk.
+   * The `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` environment variable, when
+   * set, overrides this option.
    *
    * Not supported by all worlds.
    */
