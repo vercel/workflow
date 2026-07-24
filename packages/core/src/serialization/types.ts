@@ -215,6 +215,16 @@ export interface SerializableSpecial {
      * the parent's key without fetching the parent run first.
      */
     deploymentId?: string;
+    /**
+     * The owning run's X25519 public key (base64), when it has one.
+     *
+     * Lets the receiving run seal frames to the stream's owner with no
+     * lookup at all — neither a run fetch nor a key-API round trip. The
+     * owner derives this locally when it creates the stream, so including
+     * it here is free. Absent for runs created by older SDKs, in which
+     * case the receiver falls back to resolving the owner's symmetric key.
+     */
+    encryptionPublicKey?: string;
   };
   AbortController: {
     streamName: string;

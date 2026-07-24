@@ -6,7 +6,8 @@ import {
 import { envNumber } from '@workflow/world';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
-import { type CryptoKey, importKey } from './encryption.js';
+import { decodeRunPublicKey } from './sealed-box.js';
+import { importKey } from './encryption.js';
 import {
   createFlushableState,
   flushablePipe,
@@ -89,6 +90,7 @@ import {
   STREAM_FRAMING_SYMBOL,
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+  STREAM_SERVER_PUBLIC_KEY_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
@@ -1865,6 +1867,12 @@ export function getExternalReducers(
           name: existingName,
           runId: existingRunId,
         };
+        const existingPublicKey = (value as any)[
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL
+        ];
+        if (typeof existingPublicKey === 'string') {
+          descriptor.encryptionPublicKey = existingPublicKey;
+        }
         const existingDeploymentId = (value as any)[
           STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
         ];
@@ -1971,6 +1979,10 @@ export function getWorkflowReducers(
       const foreignDeploymentId = value[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL];
       if (typeof foreignDeploymentId === 'string') {
         s.deploymentId = foreignDeploymentId;
+      }
+      const foreignPublicKey = value[STREAM_SERVER_PUBLIC_KEY_SYMBOL];
+      if (typeof foreignPublicKey === 'string') {
+        s.encryptionPublicKey = foreignPublicKey;
       }
       return s;
     },
@@ -2121,6 +2133,10 @@ function getStepReducers(
 
       const s: SerializableSpecial['WritableStream'] = { name };
       if (typeof foreignRunId === 'string') s.runId = foreignRunId;
+      const foreignPublicKey = (value as any)[STREAM_SERVER_PUBLIC_KEY_SYMBOL];
+      if (typeof foreignPublicKey === 'string') {
+        s.encryptionPublicKey = foreignPublicKey;
+      }
       const foreignDeploymentId = (value as any)[
         STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
       ];
@@ -2479,14 +2495,31 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 }
 
 /**
- * Resolve the encrypt-only key needed when a child writes into another run's
- * stream. New descriptors include the owner's deployment ID; descriptors
- * created by older SDK versions fall back to loading the owning run.
+ * Resolve the write-only key a run needs when writing into another run's
+ * forwarded stream.
+ *
+ * Three tiers, cheapest first:
+ *
+ * 1. The descriptor carries the owner's X25519 public key — seal to it with
+ *    no I/O whatsoever. The owner published the key when it created the
+ *    stream, so this is the zero-round-trip path.
+ * 2. The descriptor carries the owner's deployment ID — resolve the owner's
+ *    symmetric key, which cross-deployment means a key-API round trip.
+ * 3. Neither (descriptors written by older SDKs) — load the owning run first,
+ *    then resolve its symmetric key.
+ *
+ * Tiers 2 and 3 import the key encrypt-only, which is an honor-system
+ * restriction: the same bytes could decrypt. Tier 1 makes it a cryptographic
+ * guarantee — a public key cannot read anything.
  */
 async function getForwardedWritableEncryptionKey(
   runId: string,
-  deploymentId: string | undefined
-): Promise<CryptoKey | undefined> {
+  deploymentId: string | undefined,
+  encryptionPublicKey: string | undefined
+): Promise<PayloadKey | undefined> {
+  const ownerPublicKey = decodeRunPublicKey(encryptionPublicKey);
+  if (ownerPublicKey) return sealTo(ownerPublicKey);
+
   const world = await getWorldLazy();
   if (!world.getEncryptionKeyForRun) return undefined;
 
@@ -2639,7 +2672,11 @@ export function getExternalRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(targetRunId, value.deploymentId);
+          : getForwardedWritableEncryptionKey(
+              targetRunId,
+              value.deploymentId,
+              value.encryptionPublicKey
+            );
 
       const serialize = getSerializeStream(
         getExternalReducers(global, ops, targetRunId, targetKey),
@@ -3042,7 +3079,11 @@ function getStepRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(targetRunId, targetDeploymentId);
+          : getForwardedWritableEncryptionKey(
+              targetRunId,
+              targetDeploymentId,
+              value.encryptionPublicKey
+            );
 
       const serialize = getSerializeStream(
         getStepReducers(global, ops, targetRunId, targetKey),
