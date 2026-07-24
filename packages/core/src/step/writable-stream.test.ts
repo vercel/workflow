@@ -4,6 +4,22 @@ import { LOCK_POLL_INTERVAL_MS } from '../flushable-stream.js';
 import { setWorld } from '../runtime/world.js';
 import { STREAM_SERVER_DEPLOYMENT_ID_SYMBOL } from '../symbols.js';
 
+// The framed-v2 gate compares the SDK's own version against the capability
+// cutoff, which is at/below the tree's version, so the gate is ON for these
+// tests by default. The version module is mocked with a pass-through getter
+// so individual tests can exercise the dormant (below-cutoff) path.
+const versionState = vi.hoisted(() => ({
+  override: undefined as string | undefined,
+}));
+vi.mock('../version.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../version.js')>();
+  return {
+    get version() {
+      return versionState.override ?? actual.version;
+    },
+  };
+});
+
 // Captures every chunk written to `world.streams.write` / `writeMulti`
 // in arrival order, so tests can assert the on-wire sequence after
 // going through the (de)serialize transforms.
@@ -184,7 +200,9 @@ describe('step-level getWritable', () => {
 
     // Decode the recorded server writes via the matching deserialize
     // stream and confirm chunks arrived in the order we wrote them.
-    const deserialize = getDeserializeStream({}, undefined);
+    // getWritable emits framed-v2 (the capability gate is on), so the
+    // deserializer must strip the per-writer markers.
+    const deserialize = getDeserializeStream({}, undefined, 'framed-v2');
     const decoded: string[] = [];
     const reader = deserialize.readable.getReader();
     const drain = (async () => {
@@ -239,5 +257,151 @@ describe('step-level getWritable', () => {
       'dpl_parent'
     );
     await Promise.all(ctx.ops);
+  });
+});
+
+describe('getWritable framed-v2 (version capability gate)', () => {
+  /** Options each writeMulti flush arrived with, in order. */
+  let writeMultiOptions: unknown[];
+
+  function installWorld() {
+    writeMultiOptions = [];
+    writeCalls = [];
+    const streams: any = {
+      write: vi.fn(async (_r: string, _n: string, chunk: Uint8Array) => {
+        writeCalls.push(chunk);
+      }),
+      writeMulti: vi.fn(
+        async (
+          _r: string,
+          _n: string,
+          chunks: Uint8Array[],
+          options: unknown
+        ) => {
+          writeCalls.push(...chunks);
+          writeMultiOptions.push(options);
+        }
+      ),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    setWorld({ specVersion: SPEC_VERSION_CURRENT, streams } as any);
+  }
+
+  afterEach(() => {
+    versionState.override = undefined;
+    setWorld(undefined);
+    vi.clearAllMocks();
+  });
+
+  async function writeThroughGetWritable(values: string[]) {
+    const { contextStorage } = await import('./context-storage.js');
+    const ctx = makeStepCtx();
+    const writable = await contextStorage.run(ctx, async () => {
+      const { getWritable } = await import('./writable-stream.js');
+      return getWritable<string>();
+    });
+    const writer = writable.getWriter();
+    for (const value of values) await writer.write(value);
+    await writer.close();
+    await Promise.all(ctx.ops as Promise<void>[]);
+    return writable;
+  }
+
+  it('sends marked frames with the retransmit grant and round-trips them', async () => {
+    installWorld();
+    const { FRAME_HEADER_SIZE, readFrameMarker } = await import(
+      '../serialization/frame-marker.js'
+    );
+    const { getDeserializeStream } = await import('../serialization.js');
+
+    const writable = await writeThroughGetWritable(['hello', 'world']);
+
+    // Marked frames always flush through writeMulti, each flush carrying the
+    // retransmit grant (the world may deliver over a resending transport).
+    expect(writeCalls).toHaveLength(2);
+    expect(writeMultiOptions.length).toBeGreaterThan(0);
+    for (const options of writeMultiOptions) {
+      expect(options).toEqual({ retransmitSafe: true });
+    }
+
+    // Every frame carries the SAME writerId with increasing seq.
+    const markers = writeCalls.map((f) =>
+      readFrameMarker(f.subarray(FRAME_HEADER_SIZE))
+    );
+    expect(markers[0].writerId).toEqual(markers[1].writerId);
+    expect(markers[1].seq).toBe(markers[0].seq + 1n);
+
+    // The forwarding tag matches, so descriptors reproduce the framing.
+    const { STREAM_FRAMING_SYMBOL } = await import('../symbols.js');
+    expect((writable as any)[STREAM_FRAMING_SYMBOL]).toBe('framed-v2');
+
+    // Frames round-trip through the framed-v2 deserializer back to values.
+    // Read concurrently with writing — the transform applies backpressure
+    // once its readable queue fills, so a write-everything-then-read pattern
+    // would deadlock.
+    const deserialize = getDeserializeStream({}, undefined, 'framed-v2');
+    const outPromise = (async () => {
+      const out: unknown[] = [];
+      const reader = deserialize.readable.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        out.push(value);
+      }
+      return out;
+    })();
+    const w = deserialize.writable.getWriter();
+    for (const frame of writeCalls) await w.write(frame);
+    await w.close();
+    expect(await outPromise).toEqual(['hello', 'world']);
+  });
+
+  it('still emits framed-v2 markers when the world has no writeMulti', async () => {
+    // Simulate a world with only sequential write() (no batch op).
+    const { FRAME_HEADER_SIZE, readFrameMarker } = await import(
+      '../serialization/frame-marker.js'
+    );
+    const streams: any = {
+      write: vi.fn(async (_r: string, _n: string, chunk: Uint8Array) => {
+        writeCalls.push(chunk);
+      }),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    setWorld({ specVersion: SPEC_VERSION_CURRENT, streams } as any);
+    writeCalls = [];
+
+    await writeThroughGetWritable(['solo']);
+
+    // The framing decision is independent of the delivery mechanism: frames
+    // went through plain write() but still carry markers (the ref/descriptor
+    // says framed-v2, so readers strip them).
+    expect(writeCalls.length).toBeGreaterThan(0);
+    const marker = readFrameMarker(writeCalls[0].subarray(FRAME_HEADER_SIZE));
+    expect(marker.writerId).toHaveLength(8);
+    expect(marker.seq).toBe(0n);
+  });
+
+  it('emits framed-v1 (no markers) when the SDK version is below the cutoff', async () => {
+    versionState.override = '5.0.0-beta.25';
+    installWorld();
+    const { getDeserializeStream } = await import('../serialization.js');
+
+    await writeThroughGetWritable(['legacy']);
+
+    // Dormant: version gate (SDK version < capability cutoff) keeps
+    // the writer on framed-v1 with no retransmit grant, and plain
+    // deserialization reads it — exactly the pre-flip behavior.
+    expect(writeMultiOptions.every((o) => o === undefined)).toBe(true);
+    expect(writeCalls.length).toBeGreaterThan(0);
+    const deserialize = getDeserializeStream({}, undefined);
+    const readPromise = (async () => {
+      const reader = deserialize.readable.getReader();
+      const { value } = await reader.read();
+      return value;
+    })();
+    const w = deserialize.writable.getWriter();
+    for (const frame of writeCalls) await w.write(frame);
+    await w.close();
+    expect(await readPromise).toBe('legacy');
   });
 });

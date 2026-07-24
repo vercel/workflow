@@ -23,6 +23,7 @@ import {
   type Step,
   StepInvokePayloadSchema,
 } from '@workflow/world';
+import { framedStreamMarkersEnabled } from '../capabilities.js';
 import { describeError } from '../describe-error.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
@@ -50,6 +51,7 @@ import {
   normalizeUnknownError,
   promoteAbortErrorToFatal,
 } from '../types.js';
+import { version as workflowCoreVersion } from '../version.js';
 
 import { getMaxQueueDeliveries } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
@@ -734,7 +736,9 @@ function createStepHandler(namespace?: string) {
                     // Step return values are consumed by the workflow VM
                     // running on this same deployment (version skew
                     // protection ensures it). Byte-stream framing is
-                    // therefore always safe here.
+                    // therefore always safe here; framed-v2 markers stay
+                    // behind their version gate so they only activate once
+                    // the release crosses the capability cutoff.
                     const dehydrated = await dehydrateStepReturnValue(
                       result,
                       workflowRunId,
@@ -743,7 +747,9 @@ function createStepHandler(namespace?: string) {
                       globalThis,
                       false,
                       true,
-                      compressionForStep()
+                      compressionForStep(),
+                      undefined,
+                      framedStreamMarkersEnabled(workflowCoreVersion)
                     );
                     const durationMs = Date.now() - startTime;
                     dehydrateSpan?.setAttributes({

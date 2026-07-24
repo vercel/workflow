@@ -3,7 +3,7 @@ import {
   SerializationError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { envNumber } from '@workflow/world';
+import { envNumber, type World } from '@workflow/world';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import {
@@ -52,6 +52,14 @@ import {
   isEncrypted,
   peekFormatPrefix,
 } from './serialization/format.js';
+import {
+  buildFramedV2Frame,
+  deriveWriterId,
+  FRAME_HEADER_SIZE,
+  FRAME_MARKER_SIZE,
+  readFrameMarker,
+  writerIdKey,
+} from './serialization/frame-marker.js';
 import {
   getClassReducers,
   getClassRevivers,
@@ -123,6 +131,39 @@ export type SerializationFormatType =
 const defaultUlid = monotonicFactory();
 
 /**
+ * The framing to hand `getDeserializeStream` for an object-stream ref: the
+ * ref's `framing` field when it says framed-v2, a PromiseLike as-is (the
+ * `getReadable` path resolves it from run metadata on first chunk), else
+ * undefined (legacy/framed-v1 object framing).
+ */
+function objectStreamFraming(value: {
+  framing?: unknown;
+}): 'framed-v2' | PromiseLike<'framed-v2' | undefined> | undefined {
+  const framing = value.framing;
+  if (framing === 'framed-v2') return framing;
+  if (
+    framing !== null &&
+    typeof framing === 'object' &&
+    typeof (framing as PromiseLike<unknown>).then === 'function'
+  ) {
+    return framing as PromiseLike<'framed-v2' | undefined>;
+  }
+  return undefined;
+}
+
+/**
+ * Mint a writerId for a framed-v2 stream writer. Seeded from the stable ULID
+ * source so it is replay-deterministic inside the workflow VM (and does not
+ * consume the VM's seeded RNG); outside the VM the fallback generator is fine
+ * because those writers are not replayed.
+ */
+export function newStableWriterId(
+  global: Record<string, any> = globalThis
+): Uint8Array {
+  return deriveWriterId(((global as any)[STABLE_ULID] || defaultUlid)());
+}
+
+/**
  * Detect if a readable stream is a byte stream.
  *
  * @param stream
@@ -142,9 +183,12 @@ export function getStreamType(stream: ReadableStream): 'bytes' | undefined {
  *
  * Each chunk is independently framed so the deserializer can find
  * chunk boundaries even when multiple chunks are concatenated or
- * split across transport reads.
+ * split across transport reads. `framed-v2` inserts a per-writer marker
+ * between the length and the payload (see `serialization/frame-marker.ts`).
+ *
+ * The length constant lives in `frame-marker.ts` so the framing and the
+ * marker codec share a single source of truth.
  */
-const FRAME_HEADER_SIZE = 4;
 
 /**
  * The mode-specific serializers (`./serialization/{client,step,workflow}.ts`)
@@ -214,9 +258,16 @@ async function recordCompression(
 
 export function getSerializeStream(
   reducers: Partial<Reducers>,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  // When provided, frames are framed-v2: a `[writerId][seq]` marker precedes
+  // the format-prefixed payload (see `serialization/frame-marker.ts`), so
+  // readers can deduplicate frames that a retransmitting write transport
+  // re-sent after they had in fact persisted. `seq` is per-writer monotonic
+  // from 0.
+  writerId?: Uint8Array
 ): TransformStream<any, Uint8Array> {
   const encoder = new TextEncoder();
+  let seq = 0n;
   // Resolve the key input once on first use and cache the result.
   // Note: if resolving cryptoKey rejects (e.g., network error fetching
   // the derived key), the rejection won't surface until the first chunk
@@ -238,13 +289,22 @@ export function getSerializeStream(
 
         // Encrypt the frame payload if a key is provided.
         // The length header remains in the clear so the deserializer can
-        // find frame boundaries regardless of transport chunking.
+        // find frame boundaries regardless of transport chunking. The writer
+        // marker (framed-v2) likewise stays in the clear — it is transport
+        // metadata, not user data.
         if (keyState.key) {
           const encrypted = await aesGcmEncrypt(keyState.key, prefixed);
           prefixed = encodeWithFormatPrefix(
             SerializationFormat.ENCRYPTED,
             encrypted
           ) as Uint8Array;
+        }
+
+        if (writerId) {
+          controller.enqueue(
+            buildFramedV2Frame(prefixed, { writerId, seq: seq++ })
+          );
+          return;
         }
 
         // Write length-prefixed frame: [4-byte length][prefixed data]
@@ -275,10 +335,28 @@ export function getSerializeStream(
 
 export function getDeserializeStream(
   revivers: Partial<Revivers>,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  // When 'framed-v2', each frame carries a `[writerId][seq]` marker before the
+  // format-prefixed payload; it is stripped here and used to drop frames that
+  // a reconnecting writer re-sent after they were already persisted. A
+  // PromiseLike defers the decision until the first chunk arrives — used by
+  // `getReadable`, which has no serialized ref to read the framing from and
+  // derives it from the run's metadata instead.
+  framing?: 'framed-v2' | PromiseLike<'framed-v2' | undefined>
 ): TransformStream<Uint8Array, any> {
   const decoder = new TextDecoder();
   let buffer = new Uint8Array(0);
+  let stripMarkers = framing === 'framed-v2';
+  let framingResolved = typeof framing !== 'object' || framing === null;
+  async function resolveFraming(): Promise<void> {
+    if (framingResolved) return;
+    stripMarkers =
+      (await (framing as PromiseLike<'framed-v2' | undefined>)) === 'framed-v2';
+    framingResolved = true;
+  }
+  // framed-v2 only: highest seq already delivered per writerId (see the byte
+  // unframer for the dedupe rationale). O(number of writers) memory.
+  const maxSeqByWriter = new Map<string, bigint>();
   // Resolve the key input once on first use and cache the result.
   const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
 
@@ -310,11 +388,34 @@ export function getDeserializeStream(
         break; // Incomplete frame, wait for more data
       }
 
-      const frameData = buffer.slice(
+      let frameData = buffer.slice(
         FRAME_HEADER_SIZE,
         FRAME_HEADER_SIZE + frameLength
       );
       buffer = buffer.slice(FRAME_HEADER_SIZE + frameLength);
+
+      if (stripMarkers) {
+        if (frameData.length < FRAME_MARKER_SIZE) {
+          controller.error(
+            new SerializationError(
+              `framed-v2 stream frame of ${frameData.length} bytes is smaller ` +
+                `than the ${FRAME_MARKER_SIZE}-byte writer marker.`
+            )
+          );
+          return;
+        }
+        const { writerId, seq } = readFrameMarker(frameData);
+        frameData = frameData.slice(FRAME_MARKER_SIZE);
+        // Drop replays: a frame whose seq we've already delivered for this
+        // writer was resent by the write transport's reconnect after it had
+        // in fact already persisted.
+        const key = writerIdKey(writerId);
+        const seen = maxSeqByWriter.get(key);
+        if (seen !== undefined && seq <= seen) {
+          continue;
+        }
+        maxSeqByWriter.set(key, seq);
+      }
 
       let { format, payload } = decodeFormatPrefix(frameData);
 
@@ -363,6 +464,15 @@ export function getDeserializeStream(
 
   const stream = new TransformStream<Uint8Array, any>({
     async transform(chunk, controller) {
+      // Lazy framing (getReadable) settles before the first byte is parsed.
+      await resolveFraming();
+      // framed-v2 is always length-prefixed (the writer opts in via the ref's
+      // `framing` field), so skip the legacy-vs-framed sniffing entirely.
+      if (stripMarkers) {
+        appendToBuffer(chunk);
+        await processFrames(controller);
+        return;
+      }
       // First, try to detect if this is length-prefixed framed data
       // by checking if the first 4 bytes form a plausible length.
       if (buffer.length === 0 && chunk.length >= FRAME_HEADER_SIZE) {
@@ -460,23 +570,43 @@ const MAX_FRAME_SIZE = 100_000_000;
  * `startIndex + consumedFrames` — the same arithmetic
  * `createReconnectingFramedStream` relies on for object streams. Do not
  * coalesce or split frames here without revisiting that resume logic.
+ *
+ * When `writerId` is provided the stream emits framed-v2 frames: each frame
+ * additionally carries a `[writerId][seq]` marker (see
+ * `serialization/frame-marker.ts`) so readers can deduplicate frames that a
+ * retransmitting write transport re-sent after they had in fact persisted.
+ * `seq` is a per-writer monotonic counter starting at 0; one framer instance
+ * backs one logical writer, so the counter spans the whole stream lifetime.
  */
-export function getByteFramingStream(): TransformStream<
-  Uint8Array,
-  Uint8Array
-> {
+export function getByteFramingStream(
+  writerId?: Uint8Array
+): TransformStream<Uint8Array, Uint8Array> {
+  let seq = 0n;
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       if (chunk.length === 0) return;
-      if (chunk.length > MAX_FRAME_SIZE) {
+      // The on-wire frame length the unframer validates against
+      // MAX_FRAME_SIZE covers everything after the length prefix: for
+      // framed-v2 that includes the FRAME_MARKER_SIZE-byte writer marker, so
+      // the largest user chunk we can emit is correspondingly smaller. Bound
+      // the chunk against the same effective limit the reader enforces so any
+      // chunk the framer accepts can always be decoded.
+      const maxChunkSize = writerId
+        ? MAX_FRAME_SIZE - FRAME_MARKER_SIZE
+        : MAX_FRAME_SIZE;
+      if (chunk.length > maxChunkSize) {
         controller.error(
           new WorkflowRuntimeError(
             `Byte-stream chunk of ${chunk.length} bytes exceeds the maximum ` +
-              `framed chunk size (${MAX_FRAME_SIZE}). Split the data into ` +
+              `framed chunk size (${maxChunkSize}). Split the data into ` +
               `smaller chunks before writing.`,
             { slug: 'serialization-failed' }
           )
         );
+        return;
+      }
+      if (writerId) {
+        controller.enqueue(buildFramedV2Frame(chunk, { writerId, seq: seq++ }));
         return;
       }
       const frame = new Uint8Array(FRAME_HEADER_SIZE + chunk.length);
@@ -501,11 +631,14 @@ export function getByteFramingStream(): TransformStream<
  * misframed wire (e.g. a raw byte stream being fed through this transform
  * by mistake) and we don't want to allocate an enormous buffer.
  */
-export function getByteUnframingStream(): TransformStream<
-  Uint8Array,
-  Uint8Array
-> {
+export function getByteUnframingStream(
+  framing: 'framed-v1' | 'framed-v2' = 'framed-v1'
+): TransformStream<Uint8Array, Uint8Array> {
   let buffer = new Uint8Array(0);
+  // framed-v2 only: highest seq already emitted per writerId, so a frame the
+  // write transport's reconnect resent after it had in fact already persisted
+  // is dropped rather than delivered twice. O(number of writers) memory.
+  const maxSeqByWriter = new Map<string, bigint>();
 
   function appendToBuffer(data: Uint8Array) {
     const next = new Uint8Array(buffer.length + data.length);
@@ -538,6 +671,35 @@ export function getByteUnframingStream(): TransformStream<
 
         const total = FRAME_HEADER_SIZE + frameLength;
         if (buffer.length < total) break;
+
+        if (framing === 'framed-v2') {
+          if (frameLength < FRAME_MARKER_SIZE) {
+            controller.error(
+              new WorkflowRuntimeError(
+                `Byte-stream framed-v2 frame of ${frameLength} bytes is smaller ` +
+                  `than the ${FRAME_MARKER_SIZE}-byte writer marker.`,
+                { slug: 'serialization-failed' }
+              )
+            );
+            return;
+          }
+          const body = buffer.subarray(FRAME_HEADER_SIZE, total);
+          const { writerId, seq } = readFrameMarker(body);
+          const payload = buffer.slice(
+            FRAME_HEADER_SIZE + FRAME_MARKER_SIZE,
+            total
+          );
+          buffer = buffer.slice(total);
+          // Drop replays: a frame whose seq we've already delivered for this
+          // writer was re-sent by recovery after it was already persisted.
+          const key = writerIdKey(writerId);
+          const seen = maxSeqByWriter.get(key);
+          if (seen === undefined || seq > seen) {
+            maxSeqByWriter.set(key, seq);
+            controller.enqueue(payload);
+          }
+          continue;
+        }
 
         controller.enqueue(buffer.slice(FRAME_HEADER_SIZE, total));
         buffer = buffer.slice(total);
@@ -984,6 +1146,364 @@ const getEnvStreamFlushIntervalMs = (): number | undefined => {
   return Number.isNaN(value) ? undefined : value;
 };
 
+/** The sink behavior the WritableStream delegates to, chosen per world. */
+interface StreamSink {
+  write(chunk: Uint8Array): Promise<void>;
+  close(): Promise<void>;
+  abort(reason?: unknown): void | Promise<void>;
+  /**
+   * Durability barrier: resolves when every accepted chunk has reached the
+   * world and nothing is buffered or in flight. `write()` acks on buffer
+   * entry (group commit), so this is what makes "step completed" still imply
+   * "stream data durable" — the constructor exposes it via
+   * {@link STREAM_DRAIN_SYMBOL} for `flushablePipe`'s lock-release completion.
+   */
+  drain(): Promise<void>;
+}
+
+/**
+ * The one write sink: buffer frames and flush on `STREAM_FLUSH_INTERVAL_MS`
+ * via the world's `writeMulti`. How a flush is delivered is the world's
+ * concern — when the frames carry framed-v2 per-writer markers
+ * (`retransmitSafe`), a world may carry them over a transport that resends
+ * unconfirmed chunks across reconnects (world-vercel uses a long-lived
+ * acknowledged WebSocket channel), because the markers let readers
+ * deduplicate the overlap. Without markers every world must use
+ * never-implicitly-retried delivery. `world` is already resolved;
+ * `ensureRunReady` orders the first write after the run exists (turbo
+ * optimistic start).
+ */
+function createBatchSink(
+  world: World,
+  runId: string,
+  name: string,
+  ensureRunReady: () => Promise<void>,
+  retransmitSafe: boolean
+): StreamSink {
+  // ------------------------------------------------------------------
+  // Group-commit buffering (from #3078, path-independent stream batching).
+  //
+  // `write()` resolves as soon as the chunk enters this bounded buffer —
+  // NOT when it is durable. That is the property that makes batching
+  // path-independent: a native `readable.pipeTo(serverWritable)` pulls the
+  // next chunk the moment `write()` resolves, so chunks accumulate here
+  // during the flush-timer window and while a server request is in flight,
+  // and each accumulated group goes out as one `writeMulti`.
+  //
+  // Durability has a dedicated barrier instead: `drain()` resolves only when
+  // the buffer is empty and no request is in flight. `close()` awaits it
+  // before closing the world stream, and the flushable-stream lock-release
+  // completion awaits it (via {@link STREAM_DRAIN_SYMBOL}) before letting a
+  // step finish — so "step completed" still implies "stream data durable".
+  //
+  // How a group is delivered is the world's concern: framed-v2 frames with
+  // per-writer markers (`retransmitSafe`) may ride a transport that resends
+  // unconfirmed chunks across reconnects (world-vercel's acknowledged
+  // WebSocket channel), because the markers let readers deduplicate overlap.
+  // Encryption/decryption is handled at the framing level.
+  // ------------------------------------------------------------------
+  let buffer: Uint8Array[] = [];
+  let bufferBytes = 0;
+  // The group currently inside a world request. Counted against the buffer
+  // bound so `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS` keeps its documented
+  // meaning — an upper bound across ALL read-but-not-durable chunks.
+  let inFlightChunks = 0;
+  let inFlightBytes = 0;
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The in-flight dispatch chain. At most one, preserving chunk order. */
+  let inFlight: Promise<void> | null = null;
+  /**
+   * Sticky failure: once a dispatch fails, the failed group is re-queued and
+   * every subsequent `write()`, `close()` and `drain()` rejects with the
+   * original error. Chunks whose `write()` already resolved surface their
+   * failure at the durability barrier — the contract of an early-ack sink.
+   */
+  let sinkError: unknown;
+  // Group-commit window for the LEADING chunk of an idle sink.
+  // `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`, when set, overrides the World
+  // option; otherwise `world.streamFlushIntervalMs` governs (default 0).
+  // Resolved eagerly — unlike the constructor, this sink is only built once
+  // the world is already resolved, so no deferred resolution is needed.
+  const flushIntervalMs =
+    getEnvStreamFlushIntervalMs() ??
+    world.streamFlushIntervalMs ??
+    STREAM_FLUSH_INTERVAL_MS;
+  const maxChunksPerRequest = getMaxChunksPerBatch();
+  const maxBytesPerRequest = getMaxBytesPerBatch();
+  const maxBufferedChunks = getMaxInflightChunks();
+  const maxBufferedBytes = getMaxBufferedBytes();
+  // Client-observed write-batch timing: stamped when the buffer goes
+  // empty→non-empty, consumed by the group that carries that chunk out.
+  let bufferT0: number | undefined;
+
+  type Waiter = { resolve: () => void; reject: (err: unknown) => void };
+  /** write() calls blocked on the buffer bound. */
+  let capacityWaiters: Waiter[] = [];
+  /** drain() calls waiting for full durability. */
+  let drainWaiters: Waiter[] = [];
+
+  const rejectWaiters = (err: unknown): void => {
+    const all = [...capacityWaiters, ...drainWaiters];
+    capacityWaiters = [];
+    drainWaiters = [];
+    for (const w of all) w.reject(err);
+  };
+
+  /**
+   * Take the largest leading group that fits one request: at most
+   * `maxChunksPerRequest` chunks and `maxBytesPerRequest` cumulative bytes
+   * (a single oversized chunk still goes out alone).
+   */
+  const takeGroup = (): { group: Uint8Array[]; bytes: number } => {
+    let count = 0;
+    let bytes = 0;
+    for (const chunk of buffer) {
+      if (count >= maxChunksPerRequest) break;
+      if (count > 0 && bytes + chunk.byteLength > maxBytesPerRequest) break;
+      count++;
+      bytes += chunk.byteLength;
+    }
+    const group = buffer.slice(0, count);
+    buffer = buffer.slice(count);
+    bufferBytes -= bytes;
+    return { group, bytes };
+  };
+
+  /**
+   * Send one group to the world: gate on run readiness, then one `writeMulti`
+   * (or sequential `write`s when the world lacks it). A `retransmitSafe`
+   * (framed-v2) group always goes through `writeMulti` so its per-writer
+   * markers reach the acknowledged transport even when the group is a single
+   * chunk. Emits the write-flush span; dwell is measured up to just before the
+   * RPC so a turbo run-ready barrier wait counts as buffer dwell.
+   */
+  const sendGroup = async (
+    group: Uint8Array[],
+    bytes: number,
+    groupT0: number | undefined
+  ): Promise<void> => {
+    await ensureRunReady();
+    const dispatchAt = Date.now();
+    if (
+      typeof world.streams.writeMulti === 'function' &&
+      (group.length > 1 || retransmitSafe)
+    ) {
+      await world.streams.writeMulti(
+        runId,
+        name,
+        group,
+        retransmitSafe ? { retransmitSafe } : undefined
+      );
+    } else {
+      // Fall back to sequential writes
+      for (const chunk of group) {
+        await world.streams.write(runId, name, chunk);
+      }
+    }
+    if (groupT0 !== undefined) {
+      recordStreamWriteFlush(
+        groupT0,
+        dispatchAt,
+        runId,
+        name,
+        group.length,
+        bytes,
+        Date.now() - dispatchAt
+      );
+    }
+  };
+
+  const dispatchLoop = async (): Promise<void> => {
+    while (buffer.length > 0) {
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      const groupT0 = bufferT0;
+      const groupTakenAt = Date.now();
+      const { group, bytes } = takeGroup();
+      inFlightChunks = group.length;
+      inFlightBytes = bytes;
+      bufferT0 = buffer.length > 0 ? groupTakenAt : undefined;
+
+      try {
+        await sendGroup(group, bytes, groupT0);
+        inFlightChunks = 0;
+        inFlightBytes = 0;
+      } catch (error) {
+        // Retain the failed group (and its original t0) at the front of the
+        // buffer, poison the sink, and surface the failure to every blocked
+        // writer and drain waiter.
+        buffer = group.concat(buffer);
+        bufferBytes += bytes;
+        inFlightChunks = 0;
+        inFlightBytes = 0;
+        bufferT0 =
+          groupT0 !== undefined && bufferT0 !== undefined
+            ? Math.min(groupT0, bufferT0)
+            : (groupT0 ?? bufferT0);
+        throw error;
+      }
+
+      // This group is durable: relieve writers blocked on the bound (they
+      // re-check it and may block again).
+      const relieved = capacityWaiters;
+      capacityWaiters = [];
+      for (const w of relieved) w.resolve();
+    }
+  };
+
+  /** Start (or join) the dispatch chain. Never leaves an unhandled rejection. */
+  const startDispatch = (): void => {
+    if (inFlight || sinkError !== undefined || buffer.length === 0) return;
+    inFlight = dispatchLoop().then(
+      () => {
+        inFlight = null;
+        // A write can land in the microtask gap between the loop's
+        // empty-buffer exit and this reaction. scheduleGroupCommit saw
+        // inFlight still set and armed no timer, so without this check the
+        // chunk would sit stranded until a later write/close/drain.
+        if (buffer.length > 0) {
+          startDispatch();
+          return;
+        }
+        // Fully idle: settle the durability barrier.
+        const settled = drainWaiters;
+        drainWaiters = [];
+        for (const w of settled) w.resolve();
+      },
+      (error) => {
+        inFlight = null;
+        sinkError ??= error;
+        rejectWaiters(sinkError);
+      }
+    );
+  };
+
+  /**
+   * Leading-edge dispatch policy for an idle sink:
+   * - window <= 0 (the default): dispatch the leading chunk immediately.
+   *   Fast producers still batch via in-flight accumulation — chunks
+   *   arriving during the request form the next group. The trade for an
+   *   idle burst is one extra request (a 30-chunk burst ships as 1 + 29
+   *   instead of one 30-chunk group under a positive window) in exchange for
+   *   zero fixed first-chunk delay, which matches measured producer
+   *   behaviour, where isolated chunks dominate.
+   * - window > 0 (explicitly configured): arm the group-commit timer so the
+   *   leading chunk waits up to the window collecting a group — the opt-in
+   *   trade for slow-but-steady producers.
+   */
+  const scheduleGroupCommit = (): void => {
+    if (flushTimer || inFlight) return;
+    if (flushIntervalMs <= 0) {
+      startDispatch();
+      return;
+    }
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      startDispatch();
+    }, flushIntervalMs);
+  };
+
+  /**
+   * Durability barrier: resolves when every accepted chunk has reached the
+   * world and nothing is buffered or in flight; rejects with the sink's
+   * sticky error if any dispatch failed. Flushes a pending group-commit
+   * window immediately rather than waiting out the timer.
+   */
+  const drain = async (): Promise<void> => {
+    while (true) {
+      if (sinkError !== undefined) throw sinkError;
+      if (buffer.length === 0 && !inFlight) return;
+      startDispatch();
+      await new Promise<void>((resolve, reject) => {
+        drainWaiters.push({ resolve, reject });
+      });
+    }
+  };
+
+  return {
+    async write(chunk) {
+      if (sinkError !== undefined) throw sinkError;
+      if (bufferT0 === undefined) bufferT0 = Date.now();
+      buffer.push(chunk);
+      bufferBytes += chunk.byteLength;
+
+      if (
+        buffer.length >= maxChunksPerRequest ||
+        bufferBytes >= maxBytesPerRequest
+      ) {
+        // The buffered group already fills a request: no point dwelling in
+        // the commit window.
+        startDispatch();
+      } else {
+        scheduleGroupCommit();
+      }
+
+      // Bounded buffer: accept the chunk (never drop), then block until the
+      // read-but-not-durable population — buffered AND in the active request
+      // — is back under the bound. Each durably-sent group relieves this.
+      while (
+        sinkError === undefined &&
+        (buffer.length + inFlightChunks >= maxBufferedChunks ||
+          bufferBytes + inFlightBytes >= maxBufferedBytes)
+      ) {
+        startDispatch();
+        await new Promise<void>((resolve, reject) => {
+          capacityWaiters.push({ resolve, reject });
+        });
+      }
+      if (sinkError !== undefined) throw sinkError;
+    },
+    async close() {
+      // Everything accepted must be durable before the world stream is closed
+      // — the server fences post-close writes.
+      await drain();
+
+      // A close with an empty buffer skips the dispatch path (and its
+      // barrier), but can itself be the first write to a brand-new stream —
+      // gate it too.
+      await ensureRunReady();
+
+      const closeStart = Date.now();
+      await world.streams.close(runId, name);
+      recordStreamClose(closeStart, runId, name);
+    },
+    async abort(reason) {
+      // Buffered chunks were already ACKED to their writers (early-ack
+      // contract), and native pipeTo aborts this sink whenever its SOURCE
+      // errors — e.g. an AI stream that emits ten deltas and then throws.
+      // Discarding them outright would silently lose the accepted tail, so
+      // deliver what is buffered first; only the world stream close is
+      // skipped. A dispatch failure during this drain is already sticky and
+      // surfaces through the sink's error paths.
+      try {
+        await drain();
+      } catch {
+        // sinkError is set; accepted-but-undeliverable chunks surface it.
+      }
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      buffer = [];
+      bufferBytes = 0;
+      sinkError ??= reason ?? new Error('Stream aborted');
+      // Reject blocked writers and drain waiters so nothing leaks or hangs.
+      rejectWaiters(sinkError);
+      // Tear down any transport-level write state the world holds for this
+      // stream. For a `retransmitSafe` transport (world-vercel's long-lived
+      // acknowledged WebSocket channel) this is essential: without it, an
+      // aborted stream leaks its socket writer and keeps reconnecting and
+      // resending unconfirmed frames — delivering data for a stream that was
+      // never meant to complete. Worlds that hold no per-stream state omit
+      // the method (feature-detected), leaving abort a purely local discard.
+      await world.streams.abort?.(runId, name, reason);
+    },
+    drain,
+  };
+}
+
 /**
  * Emit the client-observed span for one flushed batch of stream writes: first
  * `write()` of the batch (`startEpochMs`) → the server write settling. The
@@ -1054,8 +1574,19 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
    * and be rejected as run-not-found. Awaiting this once before the first
    * flush/close orders the write after the run's creation. `undefined` outside
    * turbo and on the await path, where the run was already durable.
+   * @param writerId When present (framed-v2), frames carry a per-writer marker,
+   * so the world may deliver frames over a transport that resends
+   * unconfirmed frames across reconnects (the marker lets readers
+   * deduplicate the overlap) — world-vercel uses a long-lived acknowledged
+   * WebSocket channel. Absent, every world uses never-implicitly-retried
+   * batch delivery.
    */
-  constructor(runId: string, name: string, runReadyBarrier?: Promise<unknown>) {
+  constructor(
+    runId: string,
+    name: string,
+    runReadyBarrier?: Promise<unknown>,
+    writerId?: Uint8Array
+  ) {
     if (typeof runId !== 'string') {
       throw new WorkflowRuntimeError(
         `"runId" must be a string, got "${typeof runId}"`
@@ -1082,367 +1613,43 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       }
     };
 
-    // ------------------------------------------------------------------
-    // Group-commit buffering.
-    //
-    // `write()` resolves as soon as the chunk enters this bounded buffer —
-    // NOT when it is durable. That is the property that makes batching
-    // path-independent: a native `readable.pipeTo(serverWritable)` pulls the
-    // next chunk the moment `write()` resolves, so chunks accumulate here
-    // during the flush-timer window and while a server request is in
-    // flight, and each accumulated group goes out as one `writeMulti`.
-    // (Previously `write()` resolved only after the timer AND the server
-    // round trip, so native piping serialized to one request per chunk and
-    // batching only worked through `flushablePipe`'s bespoke coalescing.)
-    //
-    // Durability has a dedicated barrier instead: `drain()` (exposed via
-    // {@link STREAM_DRAIN_SYMBOL}) resolves only when the buffer is empty
-    // and no request is in flight. `close()` awaits it before closing the
-    // server stream, and the flushable-stream lock-release completion
-    // awaits it before letting a step finish — so "step completed" still
-    // implies "stream data durable", exactly as before.
-    //
-    // Encryption/decryption is handled at the framing level by
-    // getSerializeStream/getDeserializeStream, not here.
-    // ------------------------------------------------------------------
-    let buffer: Uint8Array[] = [];
-    let bufferBytes = 0;
-    // The group currently inside a server request. Counted against the
-    // buffer bound so `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS` keeps its
-    // documented meaning — an upper bound across ALL read-but-not-durable
-    // chunks — not just the queued follow-up group.
-    let inFlightChunks = 0;
-    let inFlightBytes = 0;
-    let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    /** The in-flight dispatch chain. At most one, preserving chunk order. */
-    let inFlight: Promise<void> | null = null;
-    /**
-     * Sticky failure: once a dispatch fails, the failed group is re-queued
-     * (retained, exactly as the previous implementation retained its buffer)
-     * and every subsequent `write()`, `close()` and `drain()` rejects with
-     * the original error. Chunks whose `write()` already resolved surface
-     * their failure at the durability barrier — that is the contract of an
-     * early-ack sink.
-     */
-    let sinkError: unknown;
-    // Group-commit window. The env var, when set, overrides the World
-    // option; otherwise `world.streamFlushIntervalMs` governs (default 0) —
-    // including the very first chunk. When it must come from the world,
-    // `scheduleGroupCommit` waits for `worldPromise` before deciding, which
-    // costs nothing: no request can leave before `sendGroup`'s own world
-    // await either.
-    let resolvedFlushIntervalMs = getEnvStreamFlushIntervalMs();
-    let flushIntervalResolution: Promise<void> | null = null;
-    // Per-request wire limits (server caps) and the buffer bound. The bound
-    // uses the same knobs the coalescing pipe used, so producer backpressure
-    // behavior is unchanged: once a request-worth of chunks (or the byte
-    // bound) is buffered, `write()` blocks until a group lands durably.
-    const maxChunksPerRequest = getMaxChunksPerBatch();
-    const maxBytesPerRequest = getMaxBytesPerBatch();
-    const maxBufferedChunks = getMaxInflightChunks();
-    const maxBufferedBytes = getMaxBufferedBytes();
-    // Client-observed write-batch timing: stamped when the buffer goes
-    // empty→non-empty, consumed by the group that carries that chunk out.
-    let bufferT0: number | undefined;
-
-    type Waiter = { resolve: () => void; reject: (err: unknown) => void };
-    /** write() calls blocked on the buffer bound. */
-    let capacityWaiters: Waiter[] = [];
-    /** drain() calls waiting for full durability. */
-    let drainWaiters: Waiter[] = [];
-
-    const rejectWaiters = (err: unknown): void => {
-      const all = [...capacityWaiters, ...drainWaiters];
-      capacityWaiters = [];
-      drainWaiters = [];
-      for (const w of all) w.reject(err);
-    };
-
-    /**
-     * Take the largest leading group that fits one request: at most
-     * `maxChunksPerRequest` chunks and `maxBytesPerRequest` cumulative bytes
-     * (a single oversized chunk still goes out alone).
-     */
-    const takeGroup = (): { group: Uint8Array[]; bytes: number } => {
-      let count = 0;
-      let bytes = 0;
-      for (const chunk of buffer) {
-        if (count >= maxChunksPerRequest) break;
-        if (count > 0 && bytes + chunk.byteLength > maxBytesPerRequest) break;
-        count++;
-        bytes += chunk.byteLength;
-      }
-      const group = buffer.slice(0, count);
-      buffer = buffer.slice(count);
-      bufferBytes -= bytes;
-      return { group, bytes };
-    };
-
-    /**
-     * Dispatch loop: while chunks are buffered, send them group by group.
-     * Exactly one loop runs at a time (`inFlight`), so groups reach the
-     * server in write order. Chunks that arrive while a group's request is
-     * in flight accumulate and form the next group — the group-commit
-     * behavior, now independent of how the producer pipes.
-     */
-    /**
-     * Send one group to the server: gate on run readiness, then one
-     * `writeMulti` (or sequential `write`s when the world lacks it). Emits
-     * the write-flush span; dwell is measured up to just before the RPC so a
-     * turbo run-ready barrier wait counts as buffer dwell, matching the
-     * pre-group-commit telemetry.
-     */
-    const sendGroup = async (
-      group: Uint8Array[],
-      bytes: number,
-      groupT0: number | undefined
-    ): Promise<void> => {
-      await ensureRunReady();
-      const world = await worldPromise;
-      const dispatchAt = Date.now();
-      if (typeof world.streams.writeMulti === 'function' && group.length > 1) {
-        await world.streams.writeMulti(runId, name, group);
-      } else {
-        // Fall back to sequential writes
-        for (const chunk of group) {
-          await world.streams.write(runId, name, chunk);
-        }
-      }
-      if (groupT0 !== undefined) {
-        recordStreamWriteFlush(
-          groupT0,
-          dispatchAt,
-          runId,
-          name,
-          group.length,
-          bytes,
-          Date.now() - dispatchAt
-        );
-      }
-    };
-
-    const dispatchLoop = async (): Promise<void> => {
-      while (buffer.length > 0) {
-        if (flushTimer) {
-          clearTimeout(flushTimer);
-          flushTimer = null;
-        }
-        const groupT0 = bufferT0;
-        const groupTakenAt = Date.now();
-        const { group, bytes } = takeGroup();
-        inFlightChunks = group.length;
-        inFlightBytes = bytes;
-        bufferT0 = buffer.length > 0 ? groupTakenAt : undefined;
-
-        try {
-          await sendGroup(group, bytes, groupT0);
-          inFlightChunks = 0;
-          inFlightBytes = 0;
-        } catch (error) {
-          // Retain the failed group (and its original t0) at the front of
-          // the buffer, poison the sink, and surface the failure to every
-          // blocked writer and drain waiter.
-          buffer = group.concat(buffer);
-          bufferBytes += bytes;
-          inFlightChunks = 0;
-          inFlightBytes = 0;
-          bufferT0 =
-            groupT0 !== undefined && bufferT0 !== undefined
-              ? Math.min(groupT0, bufferT0)
-              : (groupT0 ?? bufferT0);
-          throw error;
-        }
-
-        // This group is durable: relieve writers blocked on the bound (they
-        // re-check it and may block again).
-        const relieved = capacityWaiters;
-        capacityWaiters = [];
-        for (const w of relieved) w.resolve();
-      }
-    };
-
-    /** Start (or join) the dispatch chain. Never leaves an unhandled rejection. */
-    const startDispatch = (): void => {
-      if (inFlight || sinkError !== undefined || buffer.length === 0) return;
-      inFlight = dispatchLoop().then(
-        () => {
-          inFlight = null;
-          // A write can land in the microtask gap between the loop's
-          // empty-buffer exit and this reaction. scheduleGroupCommit saw
-          // inFlight still set and armed no timer, so without this check
-          // the chunk would sit stranded until a later write/close/drain.
-          // Treat it like an in-request arrival: dispatch immediately (the
-          // new chain settles the drain waiters when it finishes).
-          if (buffer.length > 0) {
-            startDispatch();
-            return;
-          }
-          // Fully idle (the loop only exits with an empty buffer): settle
-          // the durability barrier.
-          const settled = drainWaiters;
-          drainWaiters = [];
-          for (const w of settled) w.resolve();
-        },
-        (error) => {
-          inFlight = null;
-          sinkError ??= error;
-          rejectWaiters(sinkError);
-        }
+    // The sink is created lazily on first use, once the world is resolved.
+    // Encryption is handled at the framing level (getSerializeStream), not here.
+    let sinkPromise: Promise<StreamSink> | null = null;
+    const getSink = (): Promise<StreamSink> => {
+      // Promise.resolve tolerates a world resolved synchronously (e.g. test
+      // mocks of getWorldLazy that return a plain object, not a promise).
+      sinkPromise ??= Promise.resolve(worldPromise).then((world) =>
+        // Frames with per-writer markers (framed-v2) may ride a transport
+        // that resends across reconnects; the world decides which.
+        createBatchSink(world, runId, name, ensureRunReady, Boolean(writerId))
       );
+      return sinkPromise;
     };
 
-    /**
-     * Leading-edge dispatch policy for an idle sink:
-     * - window <= 0 (the default): dispatch the leading chunk immediately.
-     *   Fast producers still batch via in-flight accumulation — chunks
-     *   arriving during the request form the next group. The trade for an
-     *   idle burst is one extra request (a 30-chunk burst ships as 1 + 29
-     *   instead of one 30-chunk group under a positive window) in exchange
-     *   for zero fixed first-chunk delay — which matches measured producer
-     *   behavior, where isolated chunks dominate.
-     * - window > 0 (explicitly configured): arm the group-commit timer so
-     *   the leading chunk waits up to the window collecting a group —
-     *   the opt-in trade for slow-but-steady producers.
-     * Window resolution: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`, when set,
-     * overrides `world.streamFlushIntervalMs`; otherwise the World option
-     * (default 0) governs — including the very first chunk. Deciding may
-     * have to wait for the world to resolve; that adds no latency because
-     * `sendGroup` awaits the same promise before any request leaves.
-     */
-    const scheduleGroupCommit = (): void => {
-      if (flushTimer || inFlight) return;
-      if (resolvedFlushIntervalMs === undefined) {
-        // Promise.resolve: everywhere else the world is only ever awaited,
-        // which tolerates a synchronous value (tests stub getWorldLazy that
-        // way); .then() must be given a real promise.
-        flushIntervalResolution ??= Promise.resolve(worldPromise)
-          .then(
-            (world) => {
-              resolvedFlushIntervalMs =
-                world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS;
-            },
-            () => {
-              // World resolution failure surfaces on dispatch; fall back to
-              // the default so buffered chunks still reach the dispatch path
-              // (where the error poisons the sink).
-              resolvedFlushIntervalMs = STREAM_FLUSH_INTERVAL_MS;
-            }
-          )
-          .then(() => {
-            // Re-evaluate: the buffer may have been dispatched by drain()
-            // or a full-request fast path while the world resolved.
-            if (buffer.length > 0) scheduleGroupCommit();
-          });
-        return;
-      }
-      if (resolvedFlushIntervalMs <= 0) {
-        startDispatch();
-        return;
-      }
-      flushTimer = setTimeout(() => {
-        flushTimer = null;
-        startDispatch();
-      }, resolvedFlushIntervalMs);
-    };
-
-    /**
-     * Durability barrier: resolves when every accepted chunk has reached the
-     * server and nothing is buffered or in flight; rejects with the sink's
-     * sticky error if any dispatch failed. Flushes a pending group-commit
-     * window immediately rather than waiting out the timer.
-     */
+    // Durability barrier for owners that complete without closing the stream
+    // (exposed via STREAM_DRAIN_SYMBOL below). The sink owns the group-commit
+    // buffer, so delegate to it; if no chunk was ever written the sink was
+    // never created and there is nothing buffered to drain.
     const drain = async (): Promise<void> => {
-      while (true) {
-        if (sinkError !== undefined) throw sinkError;
-        if (buffer.length === 0 && !inFlight) return;
-        startDispatch();
-        await new Promise<void>((resolve, reject) => {
-          drainWaiters.push({ resolve, reject });
-        });
-      }
+      if (sinkPromise) await (await sinkPromise).drain();
     };
 
     super({
       async write(chunk) {
-        if (sinkError !== undefined) throw sinkError;
-        if (bufferT0 === undefined) bufferT0 = Date.now();
-        buffer.push(chunk);
-        bufferBytes += chunk.byteLength;
-
-        if (
-          buffer.length >= maxChunksPerRequest ||
-          bufferBytes >= maxBytesPerRequest
-        ) {
-          // The buffered group already fills a request: no point dwelling in
-          // the commit window.
-          startDispatch();
-        } else {
-          scheduleGroupCommit();
-        }
-
-        // Bounded buffer: accept the chunk (never drop), then block until
-        // the read-but-not-durable population — buffered AND in the active
-        // request — is back under the bound. Each durably-sent group
-        // relieves this.
-        while (
-          sinkError === undefined &&
-          (buffer.length + inFlightChunks >= maxBufferedChunks ||
-            bufferBytes + inFlightBytes >= maxBufferedBytes)
-        ) {
-          startDispatch();
-          await new Promise<void>((resolve, reject) => {
-            capacityWaiters.push({ resolve, reject });
-          });
-        }
-        if (sinkError !== undefined) throw sinkError;
+        await (await getSink()).write(chunk);
       },
       async close() {
-        // Everything accepted must be durable before the server stream is
-        // closed — the server fences post-close writes.
-        await drain();
-
-        // A close with an empty buffer skips the dispatch path (and its
-        // barrier), but can itself be the first write to a brand-new
-        // stream — gate it too.
-        await ensureRunReady();
-
-        const world = await worldPromise;
-        const closeStart = Date.now();
-        await world.streams.close(runId, name);
-        recordStreamClose(closeStart, runId, name);
+        // getSink() even with no prior write, so an empty stream still sends
+        // the done marker (and orders after the run-ready barrier).
+        await (await getSink()).close();
       },
       async abort(reason) {
-        // Buffered chunks were already ACKED to their writers (early-ack
-        // contract), and native pipeTo aborts this sink whenever its SOURCE
-        // errors — e.g. an AI stream that emits ten deltas and then throws.
-        // Discarding here would silently lose the accepted tail of the
-        // prefix, so deliver it first; only the server stream close is
-        // skipped. A dispatch failure during this drain is already sticky
-        // and surfaces through the sink's error paths.
-        //
-        // Deliberately un-timeboxed (unlike the step-executor's 500ms
-        // inline flush): giving up early would drop acked chunks — the
-        // exact loss this path exists to prevent. It is still bounded in
-        // practice by the World transport's own timeout/retry budget: a
-        // stalled write ends in a terminal rejection after finite retries,
-        // which rejects the dispatch and lands in the catch below. The
-        // same catch absorbs the expected conflict when a teardown-driven
-        // abort drains into an already-terminal run.
-        try {
-          await drain();
-        } catch {
-          // sinkError is set; accepted-but-undeliverable chunks surface it.
-        }
-        if (flushTimer) {
-          clearTimeout(flushTimer);
-          flushTimer = null;
-        }
-        buffer = [];
-        bufferBytes = 0;
-        sinkError ??= reason ?? new Error('Stream aborted');
-        // Reject blocked writers and drain waiters so nothing leaks or
-        // hangs on a promise whose timer was just cleared.
-        rejectWaiters(sinkError);
+        // Only a sink that was actually created holds buffered state to discard.
+        // Await the sink's abort so any world-level teardown (e.g. tearing
+        // down a long-lived write channel) completes before the writable
+        // settles into its aborted state.
+        if (sinkPromise) await (await sinkPromise).abort(reason);
       },
     });
 
@@ -1716,7 +1923,12 @@ export function getExternalReducers(
   // first chunk can race `run_started`. Thread the run-ready barrier into that
   // sink so the write orders after the run exists. Undefined outside turbo /
   // on the await path.
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  // Whether the target run can decode framed-v2 (per-writer markers) — see
+  // `RunCapabilities.framedStreamMarkers`. Upgrades byte-stream framing from
+  // framed-v1 to framed-v2, which also grants the write path a
+  // retransmit-safe delivery (readers dedupe resent frames by marker).
+  framedStreamMarkers = false
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -1738,14 +1950,31 @@ export function getExternalReducers(
       const name = `strm_${streamId}`;
       const type = getStreamType(value);
 
+      // Best byte framing the target run can decode: framed-v2 (per-writer
+      // markers, so readers dedupe frames a retransmitting transport re-sent),
+      // else framed-v1 (reconnectable reads), else legacy raw bytes.
+      const framing: ByteStreamFraming | undefined =
+        type === 'bytes'
+          ? framedStreamMarkers
+            ? 'framed-v2'
+            : framedByteStreams
+              ? 'framed-v1'
+              : undefined
+          : undefined;
+      const writerId =
+        framing === 'framed-v2' ? newStableWriterId(global) : undefined;
+
       const writable = new WorkflowServerWritableStream(
         runId,
         name,
-        runReadyBarrier
+        runReadyBarrier,
+        writerId
       );
       if (type === 'bytes') {
-        if (framedByteStreams) {
-          ops.push(value.pipeThrough(getByteFramingStream()).pipeTo(writable));
+        if (framing) {
+          ops.push(
+            value.pipeThrough(getByteFramingStream(writerId)).pipeTo(writable)
+          );
         } else {
           ops.push(value.pipeTo(writable));
         }
@@ -1760,7 +1989,8 @@ export function getExternalReducers(
                   runId,
                   cryptoKey,
                   framedByteStreams,
-                  runReadyBarrier
+                  runReadyBarrier,
+                  framedStreamMarkers
                 ),
                 cryptoKey
               )
@@ -1771,7 +2001,7 @@ export function getExternalReducers(
 
       const s: SerializableSpecial['ReadableStream'] = { name };
       if (type) s.type = type;
-      if (type === 'bytes' && framedByteStreams) s.framing = 'framed-v1';
+      if (framing) s.framing = framing;
       return s;
     },
 
@@ -1802,6 +2032,12 @@ export function getExternalReducers(
         ];
         if (typeof existingDeploymentId === 'string') {
           descriptor.deploymentId = existingDeploymentId;
+        }
+        // Framing is per-stream, not per-writer: a receiver of this writable
+        // must frame exactly like the stream's creator (its frames interleave
+        // with everyone else's on one server stream).
+        if ((value as any)[STREAM_FRAMING_SYMBOL] === 'framed-v2') {
+          descriptor.framing = 'framed-v2';
         }
         return descriptor;
       }
@@ -1904,6 +2140,11 @@ export function getWorkflowReducers(
       if (typeof foreignDeploymentId === 'string') {
         s.deploymentId = foreignDeploymentId;
       }
+      // Per-stream framing survives the VM round-trip so the step-side
+      // writer frames like the stream's creator.
+      if (value[STREAM_FRAMING_SYMBOL] === 'framed-v2') {
+        s.framing = 'framed-v2';
+      }
       return s;
     },
 
@@ -1955,7 +2196,12 @@ function getStepReducers(
   // after the body but within the same op flush, so its first chunk can race
   // `run_started`. Thread the run-ready barrier into the sink so that write
   // orders after the run exists. Undefined outside turbo / on the await path.
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  // Whether the target run can decode framed-v2 (per-writer markers) — see
+  // `RunCapabilities.framedStreamMarkers`. Upgrades byte-stream framing from
+  // framed-v1 to framed-v2, which also grants the write path a
+  // retransmit-safe delivery (readers dedupe resent frames by marker).
+  framedStreamMarkers = false
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -1989,17 +2235,30 @@ function getStepReducers(
         const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
         type = getStreamType(value);
-        framing = type === 'bytes' && framedByteStreams ? 'framed-v1' : framing;
+        // Best byte framing the target run can decode (see the external
+        // reducer): framed-v2 with a fresh writerId, else framed-v1, else raw.
+        if (type === 'bytes') {
+          framing = framedStreamMarkers
+            ? 'framed-v2'
+            : framedByteStreams
+              ? 'framed-v1'
+              : framing;
+        }
+        const writerId =
+          type === 'bytes' && framing === 'framed-v2'
+            ? newStableWriterId(global)
+            : undefined;
 
         const writable = new WorkflowServerWritableStream(
           runId,
           name,
-          runReadyBarrier
+          runReadyBarrier,
+          writerId
         );
         if (type === 'bytes') {
-          if (framing === 'framed-v1') {
+          if (framing === 'framed-v1' || framing === 'framed-v2') {
             ops.push(
-              value.pipeThrough(getByteFramingStream()).pipeTo(writable)
+              value.pipeThrough(getByteFramingStream(writerId)).pipeTo(writable)
             );
           } else {
             ops.push(value.pipeTo(writable));
@@ -2015,7 +2274,8 @@ function getStepReducers(
                     runId,
                     cryptoKey,
                     framedByteStreams,
-                    runReadyBarrier
+                    runReadyBarrier,
+                    framedStreamMarkers
                   ),
                   cryptoKey
                 )
@@ -2058,6 +2318,11 @@ function getStepReducers(
       ];
       if (typeof foreignDeploymentId === 'string') {
         s.deploymentId = foreignDeploymentId;
+      }
+      // Per-stream framing: every writer of this stream must match its
+      // creator (see the external reducer's fast path).
+      if ((value as any)[STREAM_FRAMING_SYMBOL] === 'framed-v2') {
+        s.framing = 'framed-v2';
       }
       return s;
     },
@@ -2523,8 +2788,8 @@ export function getExternalRevivers(
 
         // Create an identity (or unframing) transform to give the user a readable
         const { readable: userReadable, writable } =
-          value.framing === 'framed-v1'
-            ? getByteUnframingStream()
+          value.framing === 'framed-v1' || value.framing === 'framed-v2'
+            ? getByteUnframingStream(value.framing)
             : new global.TransformStream();
 
         // Start the flushable pipe in the background
@@ -2547,7 +2812,8 @@ export function getExternalRevivers(
         );
         const transform = getDeserializeStream(
           getExternalRevivers(global, ops, runId, cryptoKey),
-          cryptoKey
+          cryptoKey,
+          objectStreamFraming(value)
         );
         const state = createFlushableState();
         ops.push(state.promise);
@@ -2573,13 +2839,21 @@ export function getExternalRevivers(
           ? cryptoKey
           : getForwardedWritableEncryptionKey(targetRunId, value.deploymentId);
 
+      // The stream's creator fixed its framing; a framed-v2 stream needs this
+      // writer to stamp markers under its own identity so readers can
+      // deduplicate its frames independently of the other writers'.
+      const framedV2 = value.framing === 'framed-v2';
+      const writerId = framedV2 ? newStableWriterId(global) : undefined;
       const serialize = getSerializeStream(
         getExternalReducers(global, ops, targetRunId, targetKey),
-        targetKey
+        targetKey,
+        writerId
       );
       const serverWritable = new WorkflowServerWritableStream(
         targetRunId,
-        value.name
+        value.name,
+        undefined,
+        writerId
       );
 
       // Create flushable state for this stream
@@ -2611,6 +2885,14 @@ export function getExternalRevivers(
             writable: false,
           }
         );
+      }
+      if (framedV2) {
+        // Keep the stream's framing on the handle so forwarding it onward
+        // (this writable serialized again) reproduces the same descriptor.
+        Object.defineProperty(serialize.writable, STREAM_FRAMING_SYMBOL, {
+          value: 'framed-v2',
+          writable: false,
+        });
       }
 
       return serialize.writable;
@@ -2724,6 +3006,12 @@ export function getWorkflowRevivers(
       if (typeof value.deploymentId === 'string') {
         descriptor[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL] = {
           value: value.deploymentId,
+          writable: false,
+        };
+      }
+      if (value.framing === 'framed-v2') {
+        descriptor[STREAM_FRAMING_SYMBOL] = {
+          value: 'framed-v2',
           writable: false,
         };
       }
@@ -2919,8 +3207,8 @@ function getStepRevivers(
 
         // Create an identity (or unframing) transform to give the user a readable
         const { readable: userReadable, writable } =
-          value.framing === 'framed-v1'
-            ? getByteUnframingStream()
+          value.framing === 'framed-v1' || value.framing === 'framed-v2'
+            ? getByteUnframingStream(value.framing)
             : new global.TransformStream();
 
         // Start the flushable pipe in the background
@@ -2935,7 +3223,8 @@ function getStepRevivers(
       } else {
         const transform = getDeserializeStream(
           getStepRevivers(global, ops, runId, cryptoKey, deploymentId),
-          cryptoKey
+          cryptoKey,
+          objectStreamFraming(value)
         );
         const state = createFlushableState();
         ops.push(state.promise);
@@ -2976,13 +3265,20 @@ function getStepRevivers(
           ? cryptoKey
           : getForwardedWritableEncryptionKey(targetRunId, targetDeploymentId);
 
+      // Match the stream creator's framing (see the external reviver): a
+      // framed-v2 stream gets markers under this writer's own identity.
+      const framedV2 = value.framing === 'framed-v2';
+      const writerId = framedV2 ? newStableWriterId(global) : undefined;
       const serialize = getSerializeStream(
         getStepReducers(global, ops, targetRunId, targetKey),
-        targetKey
+        targetKey,
+        writerId
       );
       const serverWritable = new WorkflowServerWritableStream(
         targetRunId,
-        value.name
+        value.name,
+        undefined,
+        writerId
       );
 
       // Create flushable state for this stream
@@ -3020,6 +3316,14 @@ function getStepRevivers(
             writable: false,
           }
         );
+      }
+      if (framedV2) {
+        // Keep the stream's framing on the handle so forwarding it onward
+        // (this writable serialized again) reproduces the same descriptor.
+        Object.defineProperty(serialize.writable, STREAM_FRAMING_SYMBOL, {
+          value: 'framed-v2',
+          writable: false,
+        });
       }
 
       return serialize.writable;
@@ -3184,7 +3488,11 @@ export async function dehydrateWorkflowArguments(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false
+  compression = false,
+  // Whether the target run can decode framed-v2 markers — see
+  // `RunCapabilities.framedStreamMarkers` (byte streams upgrade to framed-v2
+  // and their writes become retransmit-safe).
+  framedStreamMarkers = false
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -3198,7 +3506,15 @@ export async function dehydrateWorkflowArguments(
     const result = await clientModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(
-        getExternalReducers(global, ops, runId, key, framedByteStreams)
+        getExternalReducers(
+          global,
+          ops,
+          runId,
+          key,
+          framedByteStreams,
+          undefined,
+          framedStreamMarkers
+        )
       ),
       compression,
       compressionStats,
@@ -3387,7 +3703,11 @@ export async function dehydrateStepReturnValue(
   // Turbo optimistic start: order the first chunk of a returned stream after
   // the backgrounded `run_started`. Threaded into the step reducers' stream
   // sink. Undefined outside turbo / on the await path.
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  // Whether the target run can decode framed-v2 markers — see
+  // `RunCapabilities.framedStreamMarkers` (byte streams upgrade to framed-v2
+  // and their writes become retransmit-safe).
+  framedStreamMarkers = false
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -3414,7 +3734,8 @@ export async function dehydrateStepReturnValue(
           runId,
           key,
           framedByteStreams,
-          runReadyBarrier
+          runReadyBarrier,
+          framedStreamMarkers
         )
       ),
       compression,

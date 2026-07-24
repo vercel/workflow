@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { getRunCapabilities } from './capabilities.js';
+import {
+  framedStreamMarkersEnabled,
+  getRunCapabilities,
+} from './capabilities.js';
 import { SerializationFormat } from './serialization.js';
 
 describe('getRunCapabilities', () => {
@@ -101,6 +104,50 @@ describe('getRunCapabilities', () => {
       '6.0.0',
     ])('is true for post-framing version %s', (version) => {
       expect(getRunCapabilities(version).framedByteStreams).toBe(true);
+    });
+  });
+
+  describe('framedStreamMarkers (framed-v2 + streaming writes)', () => {
+    it('is false when version is undefined', () => {
+      expect(getRunCapabilities(undefined).framedStreamMarkers).toBe(false);
+    });
+
+    it.each([
+      // framed-v2 is newer than framed-v1 (beta.15), so anything at or below
+      // the framed-v1 cutoff must read as unsupported.
+      '4.2.0',
+      '5.0.0-beta.15',
+      '5.0.0-beta.25',
+    ])('is false for pre-framed-v2 version %s', (version) => {
+      expect(getRunCapabilities(version).framedStreamMarkers).toBe(false);
+    });
+
+    it('is true at the exact cutoff version (5.0.0-beta.26)', () => {
+      expect(getRunCapabilities('5.0.0-beta.26').framedStreamMarkers).toBe(
+        true
+      );
+    });
+
+    it.each([
+      '5.0.0-beta.27',
+      '5.0.0',
+      '5.1.0',
+      '6.0.0',
+    ])('is true for post-framed-v2 version %s', (version) => {
+      expect(getRunCapabilities(version).framedStreamMarkers).toBe(true);
+    });
+
+    it('does not enable framed-v2 while framed-v1 byte streams remain enabled below the cutoff', () => {
+      // A run between the two cutoffs can unframe framed-v1 but NOT framed-v2.
+      const caps = getRunCapabilities('5.0.0-beta.20');
+      expect(caps.framedByteStreams).toBe(true);
+      expect(caps.framedStreamMarkers).toBe(false);
+    });
+
+    it('framedStreamMarkersEnabled follows the capability', () => {
+      expect(framedStreamMarkersEnabled('5.0.0-beta.20')).toBe(false);
+      expect(framedStreamMarkersEnabled('5.0.0-beta.26')).toBe(true);
+      expect(framedStreamMarkersEnabled(undefined)).toBe(false);
     });
   });
 });

@@ -134,6 +134,66 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - Group-commit window for the *leading* chunk of an idle stream. `0` sends it at once; a positive value holds it up to that many milliseconds to collect a group — an opt-in trade of first-chunk latency for larger batches, useful for slow-but-steady producers. Chunks arriving while a request is already in flight always coalesce into the next group regardless of this setting.
 - Also available as `streamFlushIntervalMs` on Worlds that expose it (the env var, when set, takes precedence over the World option).
 
+### `WORKFLOW_STREAM_WRITE_TRANSPORT`
+
+- Default: `auto`
+- Transport for acknowledged stream writes on the Vercel World: `auto` uses the WebSocket write channel and falls back to batched PUT after a fatal channel failure; `put` forces batched PUT (kill switch); `websocket` forces the channel with no fallback.
+
+### `WORKFLOW_STREAM_WRITE_RECYCLE_MS`
+
+- Default: `110000`
+- How long one stream write channel connection is used before it is proactively rotated.
+- Minimum: `250`.
+
+### `WORKFLOW_STREAM_WRITE_MAX_IN_FLIGHT_FRAMES`
+
+- Default: `64`
+- Frame-count cap on a stream write channel's unacknowledged window (producer backpressure).
+
+### `WORKFLOW_STREAM_WRITE_MAX_IN_FLIGHT_BYTES`
+
+- Default: `4194304` (4MB)
+- Byte cap on a stream write channel's unacknowledged window (producer backpressure).
+
+### `WORKFLOW_STREAM_WRITE_MAX_CONSECUTIVE_RECONNECTS`
+
+- Default: `5`
+- Consecutive failed connections (without an acknowledgement in between) before a stream write channel gives up.
+
+### `WORKFLOW_STREAM_WRITE_MAX_TOTAL_RECONNECTS`
+
+- Default: `64`
+- Lifetime unclean-reconnect budget for one stream write channel writer.
+
+### `WORKFLOW_STREAM_WRITE_CONNECT_TIMEOUT_MS`
+
+- Default: `10000`
+- Deadline for the stream write channel's WebSocket upgrade handshake.
+
+### `WORKFLOW_STREAM_WRITE_ACK_DEADLINE_MS`
+
+- Default: `15000`
+- How long a sent chunk may sit unacknowledged before the connection is presumed half-open and replaced.
+- Minimum: `1000`.
+
+### `WORKFLOW_STREAM_WRITE_IDLE_CLOSE_MS`
+
+- Default: `10000`
+- How long a fully-drained stream write channel is kept open before it is released; the next write reconnects.
+- Minimum: `250`.
+
+### `WORKFLOW_STREAM_WRITE_FIN_ACK_TIMEOUT_MS`
+
+- Default: `10000`
+- How long stream completion waits for the server's finalization confirmation (FIN_ACK) before proceeding.
+- Minimum: `100`.
+
+### `WORKFLOW_STREAM_WRITE_FALLBACK_COOLDOWN_MS`
+
+- Default: `60000`
+- How long acknowledged stream writes stay on the batched PUT fallback after a fatal write-channel failure.
+- Minimum: `1000`.
+
 ### `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS`
 
 - Default: `1000`

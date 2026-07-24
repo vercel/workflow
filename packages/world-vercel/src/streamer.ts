@@ -4,7 +4,9 @@ import {
   type StreamChunksResponse,
   type Streamer,
   type StreamInfoResponse,
+  type StreamWriteOptions,
 } from '@workflow/world';
+import { WebSocket as UndiciWebSocket } from 'undici';
 import { z } from 'zod';
 import {
   getStreamCloseDispatcher,
@@ -12,6 +14,16 @@ import {
 } from './http-client.js';
 import { getVercelDiagnostics, instrumentedFetch } from './http-core.js';
 import {
+  StreamSocketWriter,
+  type StreamWriteChannel,
+  type StreamWriteChannelHandlers,
+} from './stream-socket-writer.js';
+import {
+  getSpanKind,
+  injectTraceContextIntoHeaders,
+  recordElapsedSpan,
+  trace,
+  UrlFull,
   WorkflowRunId,
   WorkflowStreamName,
   WorkflowStreamOperation,
@@ -23,6 +35,22 @@ import {
   type HttpConfig,
   makeRequest,
 } from './utils.js';
+
+/**
+ * Best-effort platform lifetime extension: keep the invocation alive until
+ * `promise` settles, via the ambient Vercel request context (the same hook
+ * `@vercel/functions`' `waitUntil` reads). No-op outside a Vercel function
+ * invocation (local dev, tests, CLI).
+ */
+function waitUntilAmbient(promise: Promise<unknown>): void {
+  const requestContext = (
+    globalThis as unknown as Record<
+      symbol,
+      { get?: () => { waitUntil?: (p: Promise<unknown>) => void } } | undefined
+    >
+  )[Symbol.for('@vercel/request-context')];
+  requestContext?.get?.()?.waitUntil?.(promise);
+}
 
 /**
  * Maximum number of chunks per request, matching the server-side
@@ -65,14 +93,19 @@ function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
   );
 }
 
-// The live-read (GET) endpoint is versioned at v3: on a max-duration timeout
-// (or a mid-stream connection drop) the server errors the response body
-// instead of closing it cleanly, which is what lets the reconnecting reader
-// (`createReconnectingFramedStream`) resume from the next chunk rather than
-// treating the timeout as end-of-stream. Reading from v2 would silently
-// truncate long-lived streams at the server's 2-minute limit. Only the live
-// read is affected by the timeout — writes, completion, and snapshot reads
-// (chunks/info/list) stay on v2.
+// Versioned at v3 for two reasons:
+//  - GET (live read): on a max-duration timeout (or a mid-stream connection
+//    drop) the server errors the response body instead of closing it
+//    cleanly, which is what lets the reconnecting reader
+//    (`createReconnectingFramedStream`) resume from the next chunk rather
+//    than treating the timeout as end-of-stream. Reading from v2 would
+//    silently truncate long-lived streams at the server's 2-minute limit.
+//  - GET .../ws (write channel): the only path a WebSocket upgrade exists
+//    on. Each binary message sent on it is one chunk, persisted + published
+//    on arrival and acked back on the same connection — the write path for
+//    framed-v2 streams.
+// Writes, completion, and snapshot reads (chunks/info/list) stay on v2 — see
+// getStreamUrl.
 function getStreamReadUrl(name: string, runId: string, httpConfig: HttpConfig) {
   return new URL(
     `${httpConfig.baseUrl}/v3/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
@@ -88,7 +121,7 @@ function getStreamReadUrl(name: string, runId: string, httpConfig: HttpConfig) {
 function streamSpanAttributes(args: {
   runId: string;
   name: string;
-  operation: 'write' | 'write_multi' | 'close' | 'read';
+  operation: 'write' | 'write_multi' | 'close' | 'read' | 'connect' | 'writer';
   startIndex?: number;
 }): Record<string, string | number> {
   return {
@@ -160,6 +193,17 @@ const StreamInfoResponseSchema = z.object({
 });
 
 /**
+ * One ack on the stream write channel: the 0-based ordinal of the chunk
+ * within the connection and the backend index it persisted under. Sent by the
+ * server as a JSON text message after each binary chunk message, in order.
+ * Tolerant of extra fields.
+ */
+const StreamWriteAckSchema = z.object({
+  index: z.number(),
+  chunkIndex: z.number(),
+});
+
+/**
  * Zod schema for the paginated stream chunks response from the server.
  * When using CBOR (the default for makeRequest), chunk data arrives as
  * native Uint8Array byte strings — no base64 decoding required.
@@ -176,8 +220,338 @@ const StreamChunksResponseSchema = z.object({
   done: z.boolean(),
 });
 
+/**
+ * Open one WebSocket write channel: upgrade on the dedicated v3 `.../ws`
+ * path, surface JSON acks via `handlers.onAck`, and guarantee `onClose`
+ * fires exactly once however the socket ends.
+ */
+async function openWriteChannel(
+  runId: string,
+  name: string,
+  handlers: StreamWriteChannelHandlers,
+  config?: APIConfig
+): Promise<StreamWriteChannel> {
+  const httpConfig = await getHttpConfig(config);
+  const url = getStreamReadUrl(name, runId, httpConfig);
+  url.pathname = `${url.pathname}/ws`;
+  url.protocol = 'wss:';
+
+  // The upgrade is a client span like every other request to the backend,
+  // and the W3C trace context rides its headers so the server parents the
+  // connection's spans to the caller. (Chunks sent later on the socket
+  // carry no per-message headers — the upgrade is the one place the trace
+  // link can be established.) It carries the same run/stream/operation
+  // attributes as the PUT write spans, and trace() records an error status
+  // when the handshake fails; the connection's lifetime outcome (close
+  // reason, reconnects, ack latency) is on the writer-summary span emitted
+  // at close/failure — a handshake span can't carry what hasn't happened.
+  return trace(
+    `WS ${url.pathname}`,
+    {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        ...UrlFull(url.toString()),
+        ...streamSpanAttributes({ runId, name, operation: 'connect' }),
+      },
+    },
+    async () => {
+      await injectTraceContextIntoHeaders(httpConfig.headers);
+      return openWriteSocket(url, httpConfig, handlers);
+    }
+  );
+}
+
+/** The raw socket construction behind {@link openWriteChannel}. */
+async function openWriteSocket(
+  url: URL,
+  httpConfig: HttpConfig,
+  handlers: StreamWriteChannelHandlers
+): Promise<StreamWriteChannel> {
+  // undici's WebSocket (unlike the WHATWG global) accepts custom
+  // headers on the upgrade request, so the channel authenticates
+  // exactly like every HTTP call (Authorization + the trusted-OIDC
+  // deployment-protection bypass, both already set by getHttpConfig).
+  // (Plain record: undici's WebSocketInit headers type doesn't accept a
+  // WHATWG Headers instance.)
+  const ws = new UndiciWebSocket(url, {
+    headers: Object.fromEntries(httpConfig.headers),
+  });
+
+  // onClose must fire exactly once, whether the socket errors, is
+  // closed by the server, or closed locally.
+  let closed = false;
+  const emitClose = (event: { code?: number; reason?: string }) => {
+    if (closed) return;
+    closed = true;
+    handlers.onClose(event);
+  };
+
+  ws.addEventListener('message', (event) => {
+    // Server messages are JSON text: per-chunk acks `{ index, chunkIndex }`
+    // (in order) and the FIN_ACK control frame `{ type: 'fin_ack' }`.
+    try {
+      const message: unknown = JSON.parse(String(event.data));
+      if (
+        typeof message === 'object' &&
+        message !== null &&
+        (message as { type?: unknown }).type === 'fin_ack'
+      ) {
+        handlers.onFinAck?.();
+        return;
+      }
+      handlers.onAck(StreamWriteAckSchema.parse(message));
+    } catch {
+      // An unparseable server message means the two sides disagree on
+      // the protocol — fail the channel rather than silently dropping
+      // what might have been an ack.
+      emitClose({ reason: 'unparseable ack from server' });
+      ws.close();
+    }
+  });
+  ws.addEventListener('close', (event) => {
+    emitClose({ code: event.code, reason: event.reason });
+  });
+  ws.addEventListener('error', () => {
+    // 'close' follows 'error' per spec, but emit defensively in case
+    // the socket never completes the close handshake.
+    emitClose({ reason: 'connection error' });
+  });
+
+  // The handshake gets an explicit deadline, and errors reject directly: a
+  // black-holed upgrade (SYN dropped, proxy hang) fires neither 'open' nor
+  // 'close', and without the deadline the connect promise — and the writer
+  // stuck in `connecting` behind it — would pend forever. All three
+  // listeners are `once` and the timer is cleared on the first settle.
+  const connectTimeoutMs = envNumber(
+    'WORKFLOW_STREAM_WRITE_CONNECT_TIMEOUT_MS',
+    10_000,
+    { integer: true, min: 100 }
+  );
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    const timer = setTimeout(() => {
+      settle(() => {
+        ws.close();
+        reject(
+          new Error(
+            `Stream write channel connect timed out after ${connectTimeoutMs}ms`
+          )
+        );
+      });
+    }, connectTimeoutMs);
+    timer.unref?.();
+    ws.addEventListener('open', () => settle(resolve), { once: true });
+    ws.addEventListener(
+      'error',
+      () =>
+        settle(() =>
+          reject(
+            new Error('Stream write channel failed to connect: socket error')
+          )
+        ),
+      { once: true }
+    );
+    ws.addEventListener(
+      'close',
+      (event) =>
+        settle(() =>
+          reject(
+            new Error(
+              `Stream write channel failed to connect: ` +
+                `${event.code ?? ''} ${event.reason ?? ''}`.trim()
+            )
+          )
+        ),
+      { once: true }
+    );
+  });
+
+  return {
+    send(chunk: Uint8Array) {
+      ws.send(chunk);
+    },
+    close() {
+      ws.close(1000, 'writer closing');
+    },
+    fin() {
+      // The FIN control frame rides a text message (binary = chunk).
+      ws.send(JSON.stringify({ type: 'fin' }));
+    },
+  };
+}
+
+/**
+ * Transport for retransmit-safe stream writes. `WORKFLOW_STREAM_WRITE_TRANSPORT`:
+ * - `auto` (default): the WebSocket write channel, with a circuit-breaker
+ *   fallback to batched PUT after a fatal channel failure.
+ * - `put`: force batched PUT — the operational kill switch for the WS
+ *   transport (server-version mismatch, proxy upgrade regression, …).
+ * - `websocket`: force WS with no fallback — for tests that must fail
+ *   loudly instead of silently degrading.
+ */
+type StreamWriteTransport = 'auto' | 'websocket' | 'put';
+function resolveStreamWriteTransport(): StreamWriteTransport {
+  const raw = process.env.WORKFLOW_STREAM_WRITE_TRANSPORT?.toLowerCase();
+  return raw === 'websocket' || raw === 'put' || raw === 'auto' ? raw : 'auto';
+}
+
 /** Creates the HTTP-backed streamer that talks to workflow-server. */
 export function createStreamer(config?: APIConfig): Streamer {
+  // One ack-driven socket writer per stream written with retransmit-safe
+  // chunks: `writeMulti` feeds it and `close` drains it before sending the
+  // done marker. Keyed per stream (not per caller) — concurrent writers in
+  // one process share a connection, and the server sequences arrivals the
+  // same either way. An entry whose writer failed fatally is dropped so a
+  // retry (a fresh step attempt re-writing the stream) starts over with a
+  // fresh connection and fresh budgets.
+  const socketWriters = new Map<string, StreamSocketWriter>();
+  const socketWriterKey = (runId: string, name: string) => `${runId}\n${name}`;
+  const getSocketWriter = (runId: string, name: string): StreamSocketWriter => {
+    const key = socketWriterKey(runId, name);
+    let writer = socketWriters.get(key);
+    if (!writer) {
+      writer = new StreamSocketWriter({
+        connect: (handlers) => openWriteChannel(runId, name, handlers, config),
+        observer: {
+          onReconnect: (info) => {
+            // Unclean reconnects are the WS transport's main health signal
+            // (rotations are silent); each one is expected to be rare.
+            console.warn(
+              `[workflow] stream write channel reconnecting (stream "${name}", run ${runId}): ` +
+                `${info.reason ?? 'connection lost'}${info.code ? ` (code ${info.code})` : ''} — ` +
+                `attempt ${info.consecutive}, lifetime ${info.total}`
+            );
+          },
+        },
+      });
+      socketWriters.set(key, writer);
+    }
+    return writer;
+  };
+
+  /**
+   * One retrospective span per WS writer lifetime, carrying the bounded
+   * aggregates the per-request PUT spans get for free: outcome, reconnects,
+   * frame/byte counts, peak queue depth, and chunk-to-ack latency.
+   */
+  const emitWriterSummary = (
+    runId: string,
+    name: string,
+    writer: StreamSocketWriter,
+    outcome: 'closed' | 'aborted' | 'ws_fallback'
+  ): void => {
+    const stats = writer.statsSnapshot();
+    void (async () => {
+      await recordElapsedSpan('workflow.stream.ws_writer', writer.createdAt, {
+        kind: await getSpanKind('CLIENT'),
+        attributes: {
+          ...streamSpanAttributes({ runId, name, operation: 'writer' }),
+          'workflow.stream.ws.outcome': outcome,
+          'workflow.stream.ws.frames_sent': stats.framesSent,
+          'workflow.stream.ws.frames_acked': stats.framesAcked,
+          'workflow.stream.ws.bytes_acked': stats.bytesAcked,
+          'workflow.stream.ws.reconnects': stats.reconnects,
+          'workflow.stream.ws.max_queue_depth': stats.maxQueueDepth,
+          'workflow.stream.ws.max_queue_bytes': stats.maxQueueBytes,
+          'workflow.stream.ws.ack_rtt_avg_ms':
+            stats.ackRttCount > 0
+              ? Math.round(stats.ackRttSumMs / stats.ackRttCount)
+              : 0,
+          'workflow.stream.ws.ack_rtt_max_ms': stats.ackRttMaxMs,
+          'workflow.stream.ws.pending_frames': stats.pendingFrames,
+        },
+      });
+    })();
+  };
+
+  // Circuit breaker for the WS transport: after a fatal channel failure
+  // (upgrade repeatedly refused, reconnect budget exhausted), retransmit-safe
+  // writes go over batched PUT for a cooldown instead of burning a fresh
+  // reconnect budget per flush. Scoped to this streamer (≈ this process).
+  let wsSuppressedUntil = 0;
+  const wsFallbackCooldownMs = envNumber(
+    'WORKFLOW_STREAM_WRITE_FALLBACK_COOLDOWN_MS',
+    60_000,
+    { integer: true, min: 1_000 }
+  );
+
+  /**
+   * Trip the breaker and emit the fallback telemetry. The frames the failed
+   * writer still held are the caller's to redeliver (takeAbandonedFrames).
+   */
+  const openFallbackBreaker = (
+    runId: string,
+    name: string,
+    writer: StreamSocketWriter,
+    error: unknown
+  ): void => {
+    wsSuppressedUntil = Date.now() + wsFallbackCooldownMs;
+    console.warn(
+      `[workflow] stream write channel failed; falling back to batched PUT ` +
+        `for ${wsFallbackCooldownMs}ms (stream "${name}", run ${runId}): ` +
+        `${error instanceof Error ? error.message : String(error)}`
+    );
+    emitWriterSummary(runId, name, writer, 'ws_fallback');
+  };
+
+  /**
+   * The batched PUT delivery path: the default for unmarked chunks, and the
+   * retransmit-safe fallback when the WS transport is unavailable (PUT
+   * delivery is never implicitly retried, so it is safe for any frames).
+   */
+  const writeMultiViaPut = async (
+    resolvedRunId: string,
+    name: string,
+    chunks: (string | Uint8Array)[]
+  ): Promise<void> => {
+    if (chunks.length === 0) return;
+    const httpConfig = await getHttpConfig(config);
+
+    // Signal to server that this is a multi-chunk batch
+    httpConfig.headers.set('X-Stream-Multi', 'true');
+
+    // Send in pages of MAX_CHUNKS_PER_REQUEST to stay within the
+    // server's per-batch limit (MAX_CHUNKS_PER_BATCH).
+    // Note: for batches spanning multiple pages, atomicity is relaxed —
+    // earlier pages may persist while a later page fails. The caller
+    // retains the full buffer on error, so chunks from successful pages
+    // will be re-sent on retry, producing duplicates. This is acceptable
+    // because the alternative (400 on all >1000 chunk flushes) is worse,
+    // and the scenario requires a network failure mid-batch.
+    const maxChunksPerRequest = getMaxChunksPerRequest();
+    for (let i = 0; i < chunks.length; i += maxChunksPerRequest) {
+      const batch = chunks.slice(i, i + maxChunksPerRequest);
+      const body = encodeMultiChunks(batch);
+      const url = getStreamUrl(name, resolvedRunId, httpConfig);
+      const response = await instrumentedFetch({
+        method: 'PUT',
+        url: url.toString(),
+        body,
+        headers: httpConfig.headers,
+        dispatcher: getStreamDispatcher(config),
+        timeoutMs: null,
+        logLabel: url.pathname,
+        spanName: 'workflow.stream.write',
+        durationAttribute: 'workflow.stream.write.chunk_rtt',
+        attributes: streamSpanAttributes({
+          runId: resolvedRunId,
+          name,
+          operation: 'write_multi',
+        }),
+        buildError: async (res) =>
+          createStreamRequestError('write', url, res, await res.text()),
+      });
+      // Drain so undici can release the pooled connection between pages.
+      await response.text();
+    }
+  };
+
   return {
     streams: {
       async write(
@@ -215,57 +589,110 @@ export function createStreamer(config?: APIConfig): Streamer {
       async writeMulti(
         runId: string | Promise<string>,
         name: string,
-        chunks: (string | Uint8Array)[]
+        chunks: (string | Uint8Array)[],
+        options?: StreamWriteOptions
       ) {
         if (chunks.length === 0) return;
 
         // Await runId if it's a promise to ensure proper flushing
         const resolvedRunId = await runId;
 
-        const httpConfig = await getHttpConfig(config);
-
-        // Signal to server that this is a multi-chunk batch
-        httpConfig.headers.set('X-Stream-Multi', 'true');
-
-        // Send in pages of MAX_CHUNKS_PER_REQUEST to stay within the
-        // server's per-batch limit (MAX_CHUNKS_PER_BATCH).
-        // Note: for batches spanning multiple pages, atomicity is relaxed —
-        // earlier pages may persist while a later page fails. The caller
-        // retains the full buffer on error, so chunks from successful pages
-        // will be re-sent on retry, producing duplicates. This is acceptable
-        // because the alternative (400 on all >1000 chunk flushes) is worse,
-        // and the scenario requires a network failure mid-batch.
-        const maxChunksPerRequest = getMaxChunksPerRequest();
-        for (let i = 0; i < chunks.length; i += maxChunksPerRequest) {
-          const batch = chunks.slice(i, i + maxChunksPerRequest);
-          const body = encodeMultiChunks(batch);
-          const url = getStreamUrl(name, resolvedRunId, httpConfig);
-          const response = await instrumentedFetch({
-            method: 'PUT',
-            url: url.toString(),
-            body,
-            headers: httpConfig.headers,
-            dispatcher: getStreamDispatcher(config),
-            timeoutMs: null,
-            logLabel: url.pathname,
-            spanName: 'workflow.stream.write',
-            durationAttribute: 'workflow.stream.write.chunk_rtt',
-            attributes: streamSpanAttributes({
-              runId: resolvedRunId,
-              name,
-              operation: 'write_multi',
-            }),
-            buildError: async (res) =>
-              createStreamRequestError('write', url, res, await res.text()),
-          });
-          // Drain so undici can release the pooled connection between pages.
-          await response.text();
+        // Retransmit-safe chunks (framed with per-writer markers, so readers
+        // deduplicate any resend overlap) go over the long-lived acked
+        // WebSocket channel: each chunk is persisted + published on arrival,
+        // and the writer resends unacknowledged chunks across reconnects.
+        // Resolving here means the chunks are accepted into the writer's
+        // bounded in-flight window (backpressure); durability of everything
+        // written is confirmed when `close` drains the writer.
+        const transport = resolveStreamWriteTransport();
+        // The WS→PUT circuit breaker (`wsSuppressedUntil`) is streamer-wide,
+        // but socket writers are per-(runId,name). A stream that already has a
+        // live writer must keep using it: diverting it to PUT mid-stream would
+        // race the writer's still-buffered lower-seq frames (writeMulti
+        // resolves on admission, not durability, so earlier frames stay
+        // buffered-and-unacked in the background) against the higher-seq PUT
+        // chunks. If PUT persists first, the reader's per-writerId dedup drops
+        // the later-arriving WS frames as replays → silent loss/reorder. So
+        // the breaker only suppresses opening a *new* writer; an existing one
+        // keeps carrying its stream and, if it too fails, falls back on its
+        // own in-order path (takeAbandonedFrames + remaining frames).
+        const existingWriter = socketWriters.get(
+          socketWriterKey(resolvedRunId, name)
+        );
+        const useChannel =
+          options?.retransmitSafe &&
+          transport !== 'put' &&
+          (transport === 'websocket' ||
+            existingWriter !== undefined ||
+            Date.now() >= wsSuppressedUntil);
+        if (useChannel) {
+          const writer = getSocketWriter(resolvedRunId, name);
+          const encoder = new TextEncoder();
+          const frames = chunks.map((chunk) =>
+            typeof chunk === 'string' ? encoder.encode(chunk) : chunk
+          );
+          let admitted = 0;
+          try {
+            for (const frame of frames) {
+              await writer.write(frame);
+              admitted++;
+            }
+          } catch (error) {
+            socketWriters.delete(socketWriterKey(resolvedRunId, name));
+            if (transport === 'websocket') throw error;
+            // Circuit-break to batched PUT: v2 PUT remains available when
+            // the WS transport isn't (server-version mismatch, proxy
+            // upgrade failure, regression). Frames the writer admitted
+            // earlier but never got acked are redelivered first — their
+            // framed-v2 markers dedupe any overlap with copies the dead
+            // channel did persist — so the fallback loses nothing.
+            openFallbackBreaker(resolvedRunId, name, writer, error);
+            await writeMultiViaPut(resolvedRunId, name, [
+              ...writer.takeAbandonedFrames(),
+              ...frames.slice(admitted),
+            ]);
+            return;
+          }
+          // Resolving on admission lets flushes pipeline, but the platform
+          // must not suspend the invocation while this batch is still
+          // awaiting durability confirmation — a frozen process can't
+          // resend frames whose connection died. Hold the invocation open
+          // until everything admitted so far is acked (never rejects).
+          waitUntilAmbient(writer.ackBarrier());
+          return;
         }
+
+        await writeMultiViaPut(resolvedRunId, name, chunks);
       },
 
       async close(runId: string | Promise<string>, name: string) {
         // Await runId if it's a promise to ensure proper flushing
         const resolvedRunId = await runId;
+
+        // Drain the stream's socket writer first: `close` must resolve only
+        // once every written chunk is durable, and the done marker must
+        // never race in-flight chunks — or the server's final accounting,
+        // which the writer's FIN/FIN_ACK exchange orders before this
+        // returns. A drain failure (reconnect budgets exhausted) falls back
+        // to redelivering the writer's unconfirmed frames over batched PUT
+        // before the done marker; only if that also fails does the close
+        // reject with the done marker unsent.
+        const writer = socketWriters.get(socketWriterKey(resolvedRunId, name));
+        if (writer) {
+          socketWriters.delete(socketWriterKey(resolvedRunId, name));
+          try {
+            await writer.close();
+            emitWriterSummary(resolvedRunId, name, writer, 'closed');
+          } catch (error) {
+            if (resolveStreamWriteTransport() === 'websocket') throw error;
+            openFallbackBreaker(resolvedRunId, name, writer, error);
+            await writeMultiViaPut(
+              resolvedRunId,
+              name,
+              writer.takeAbandonedFrames()
+            );
+          }
+        }
 
         const httpConfig = await getHttpConfig(config);
         httpConfig.headers.set('X-Stream-Done', 'true');
@@ -293,6 +720,29 @@ export function createStreamer(config?: APIConfig): Streamer {
         });
         // Drain the (empty) response so undici can release the pooled connection.
         await response.text();
+      },
+
+      async abort(
+        runId: string | Promise<string>,
+        name: string,
+        reason?: unknown
+      ) {
+        // Await runId if it's a promise to stay consistent with the other
+        // methods (a write may still be resolving it).
+        const resolvedRunId = await runId;
+
+        // Tear down the stream's socket writer, if any: abort abandons
+        // unconfirmed frames, clears the recycle timer, closes the WebSocket,
+        // and rejects in-flight waiters. Removing it from the map is what
+        // stops it from lingering (unbounded growth) and from reconnecting to
+        // resend frames for a stream that was aborted rather than completed.
+        const key = socketWriterKey(resolvedRunId, name);
+        const writer = socketWriters.get(key);
+        if (writer) {
+          socketWriters.delete(key);
+          writer.abort(reason);
+          emitWriterSummary(resolvedRunId, name, writer, 'aborted');
+        }
       },
 
       async get(runId: string, name: string, startIndex?: number) {

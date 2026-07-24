@@ -34,6 +34,22 @@ import type {
   StepWithoutData,
 } from './steps.js';
 
+/**
+ * Options for a stream write operation.
+ */
+export interface StreamWriteOptions {
+  /**
+   * The caller's chunk encoding lets readers deduplicate retransmitted
+   * chunks (e.g. per-writer frame markers), so the world may deliver the
+   * batch over a transport that resends chunks whose delivery was never
+   * confirmed — such as a long-lived acknowledged connection that replays
+   * unacknowledged chunks after a reconnect. Without this flag a world must
+   * only use delivery mechanisms that never implicitly retry a write, since
+   * a retransmitted chunk would be appended to the stream twice.
+   */
+  retransmitSafe?: boolean;
+}
+
 export interface Streamer {
   /**
    * Number of milliseconds a stream waits for additional chunks to arrive
@@ -64,17 +80,63 @@ export interface Streamer {
      *
      * If not implemented, the caller should fall back to sequential write() calls.
      *
+     * Durability contract: resolving means every chunk in the batch is
+     * accepted for durable, in-order delivery — not necessarily that it is
+     * durable yet. Without `options.retransmitSafe` the two coincide (the
+     * batch resolves once the server applied it). With `retransmitSafe` a
+     * world may resolve on admission to a bounded in-flight window and
+     * confirm durability asynchronously (e.g. per-chunk acks on a
+     * long-lived connection that resends unconfirmed chunks across
+     * reconnects — see {@link StreamWriteOptions}). A world that defers
+     * durability this way MUST (a) keep redelivering accepted chunks until
+     * confirmed, across transport failures, and (b) surface a delivery
+     * failure it can no longer recover from on a later `writeMulti` or
+     * `close` call for the same stream — `close` resolving is the caller's
+     * durability barrier for everything previously accepted.
+     *
+     * Sequential calls for the same stream are applied in call order.
+     *
      * @param runId - The run ID
      * @param name - The stream name
      * @param chunks - Array of chunks to write, in order
+     * @param options - Delivery options granted by the caller
      */
     writeMulti?(
       runId: string,
       name: string,
-      chunks: (string | Uint8Array)[]
+      chunks: (string | Uint8Array)[],
+      options?: StreamWriteOptions
     ): Promise<void>;
 
+    /**
+     * Complete the stream (append the done marker). Resolves only once
+     * every previously accepted write is durable — for a world that defers
+     * durability on `retransmitSafe` batches, this is where deferred
+     * delivery failures surface to the caller.
+     */
     close(runId: string, name: string): Promise<void>;
+
+    /**
+     * Abort a stream write in progress.
+     *
+     * Unlike `close` (which drains everything written and then marks the
+     * stream done), `abort` tears down any transport-level write state the
+     * world holds for this stream — abandoning unconfirmed chunks — without
+     * completing the stream. It is invoked when the writer is aborted rather
+     * than closed (e.g. `WritableStream.abort()`), so a world that keeps a
+     * long-lived, reconnecting write channel (see {@link StreamWriteOptions}
+     * `retransmitSafe`) must stop reconnecting and resending here; otherwise
+     * an aborted stream would keep a connection open and deliver data that
+     * was never meant to be committed.
+     *
+     * OPTIONAL: worlds that hold no per-stream write state (every write is a
+     * standalone request) can omit it — there is nothing to tear down.
+     *
+     * @param runId - The run ID
+     * @param name - The stream name
+     * @param reason - The abort reason, if any
+     */
+    abort?(runId: string, name: string, reason?: unknown): Promise<void>;
 
     /**
      * Read from a stream starting at the given chunk index.

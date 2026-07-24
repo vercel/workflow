@@ -234,6 +234,139 @@ describe('getByteUnframingStream', () => {
 });
 
 // ----------------------------------------------------------------------------
+// framed-v2: per-writer markers for the single-request streaming writer.
+// ----------------------------------------------------------------------------
+
+describe('framed-v2 byte framing', () => {
+  const WRITER_ID_SIZE = 8;
+  const FRAME_MARKER_SIZE = WRITER_ID_SIZE + 8;
+
+  function writerId(seed: number): Uint8Array {
+    const id = new Uint8Array(WRITER_ID_SIZE);
+    id[0] = seed;
+    return id;
+  }
+
+  it('round-trips payloads and strips the marker', async () => {
+    const id = writerId(0xab);
+    const chunks = [
+      new Uint8Array([1, 2, 3]),
+      new Uint8Array([4, 5]),
+      new Uint8Array([6]),
+    ];
+    const result = await readAll(
+      readableFromChunks(chunks)
+        .pipeThrough(getByteFramingStream(id))
+        .pipeThrough(getByteUnframingStream('framed-v2'))
+    );
+    expect(result).toEqual(chunks);
+  });
+
+  it('frames carry a parseable marker with a monotonic per-writer seq', async () => {
+    const id = writerId(0x07);
+    const frames = await readAll(
+      readableFromChunks([
+        new Uint8Array([10]),
+        new Uint8Array([20]),
+        new Uint8Array([30]),
+      ]).pipeThrough(getByteFramingStream(id))
+    );
+    frames.forEach((frame, i) => {
+      const view = new DataView(
+        frame.buffer,
+        frame.byteOffset,
+        frame.byteLength
+      );
+      const frameLength = view.getUint32(0, false);
+      expect(frameLength).toBe(FRAME_MARKER_SIZE + 1);
+      // writerId occupies the bytes right after the 4-byte length prefix.
+      expect(frame[FRAME_HEADER_SIZE]).toBe(0x07);
+      // seq is the 8-byte big-endian uint64 after the writerId.
+      const seq = view.getBigUint64(FRAME_HEADER_SIZE + WRITER_ID_SIZE, false);
+      expect(seq).toBe(BigInt(i));
+    });
+  });
+
+  it('dedupes a replayed frame (same writerId + seq) on the read side', async () => {
+    // One writer frames chunks 0..3 in order (seq 0..3). Recovery re-sends
+    // already-persisted frames 1 and 2 verbatim before the new frame 3, so the
+    // stored tail the reader sees is: 0,1,2, 1,2, 3.
+    const id = writerId(0x42);
+    const [f0, f1, f2, f3] = await readAll(
+      readableFromChunks([
+        new Uint8Array([0]),
+        new Uint8Array([1]),
+        new Uint8Array([2]),
+        new Uint8Array([3]),
+      ]).pipeThrough(getByteFramingStream(id))
+    );
+
+    const delivered = await readAll(
+      readableFromChunks([f0, f1, f2, f1, f2, f3]).pipeThrough(
+        getByteUnframingStream('framed-v2')
+      )
+    );
+
+    // Replays (seq 1, 2) are dropped; 0,1,2,3 each delivered exactly once.
+    expect(delivered).toEqual([
+      new Uint8Array([0]),
+      new Uint8Array([1]),
+      new Uint8Array([2]),
+      new Uint8Array([3]),
+    ]);
+  });
+
+  it('keeps interleaved frames from two writers apart (per-writer dedupe)', async () => {
+    // Concurrent writers on one stream are documented behavior — and a
+    // crashed invocation's writer (A) can interleave with its retry's
+    // writer (B). Seq spaces are per-writer: B's seq 0/1 must not collide
+    // with A's, and a replay of A's frame after B started is still deduped.
+    const idA = writerId(0xa1);
+    const idB = writerId(0xb2);
+    const [a0, a1] = await readAll(
+      readableFromChunks([
+        new Uint8Array([10]),
+        new Uint8Array([11]),
+      ]).pipeThrough(getByteFramingStream(idA))
+    );
+    const [b0, b1] = await readAll(
+      readableFromChunks([
+        new Uint8Array([20]),
+        new Uint8Array([21]),
+      ]).pipeThrough(getByteFramingStream(idB))
+    );
+
+    const delivered = await readAll(
+      readableFromChunks([a0, b0, a1, a1, b1]).pipeThrough(
+        getByteUnframingStream('framed-v2')
+      )
+    );
+
+    // Every unique frame from both writers delivered exactly once, in
+    // arrival order; only A's replayed frame is dropped.
+    expect(delivered).toEqual([
+      new Uint8Array([10]),
+      new Uint8Array([20]),
+      new Uint8Array([11]),
+      new Uint8Array([21]),
+    ]);
+  });
+
+  it('errors on a framed-v2 frame too small to hold a marker', async () => {
+    // A framed-v1-shaped frame (no marker) read as framed-v2 must be rejected
+    // rather than silently mis-stripping payload bytes as a marker.
+    const tooSmall = concat(header(2), new Uint8Array([0xaa, 0xbb]));
+    await expect(
+      readAll(
+        readableFromChunks([tooSmall]).pipeThrough(
+          getByteUnframingStream('framed-v2')
+        )
+      )
+    ).rejects.toThrow(/smaller than the .*writer marker/);
+  });
+});
+
+// ----------------------------------------------------------------------------
 // End-to-end: dehydrate + hydrate carries the framing decision through the
 // stream ref, and round-trips byte data correctly in both modes.
 // ----------------------------------------------------------------------------
@@ -447,6 +580,68 @@ describe('byte-stream framing end-to-end through dehydrate/hydrate', () => {
     );
 
     expect(userBytes).toEqual(expected);
+  });
+
+  it('round-trips a framed-v2 byte stream: frames carry per-writer markers that the unframer strips', async () => {
+    setWorld(makeMockWorld());
+    const { readFrameMarker } = await import('./serialization/frame-marker.js');
+
+    const original = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5])];
+    const expected = original.map((u) => new Uint8Array(u));
+    let i = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      type: 'bytes',
+      pull(c) {
+        if (i < original.length) {
+          c.enqueue(original[i++]);
+        } else {
+          c.close();
+        }
+      },
+    });
+
+    const ops: Promise<void>[] = [];
+    const dehydrated = await dehydrateStepReturnValue(
+      stream,
+      'wrun_test',
+      undefined,
+      ops,
+      globalThis,
+      false,
+      true,
+      false,
+      undefined,
+      // framedStreamMarkers: the target run can decode framed-v2
+      true
+    );
+    await Promise.all(ops);
+
+    // The ref records framed-v2, so the consumer picks the marker-stripping
+    // unframer.
+    const text = new TextDecoder().decode(dehydrated as Uint8Array);
+    expect(text).toContain('framed-v2');
+
+    const name = extractStreamName(dehydrated as Uint8Array);
+    const world = await (await import('./runtime/world.js')).getWorld();
+
+    // Every wire frame carries the same writerId with increasing seq.
+    const wire = await readBytes(await world.streams.get('wrun_test', name));
+    const markers = wire.map((f) =>
+      readFrameMarker(f.subarray(FRAME_HEADER_SIZE))
+    );
+    expect(markers[0].writerId).toEqual(markers[1].writerId);
+    expect(markers.map((m) => m.seq)).toEqual([0n, 1n]);
+
+    // The framed-v2 unframer strips the markers — and drops a frame the
+    // write transport resent (duplicate writerId+seq) instead of delivering
+    // it twice.
+    const replayed = [...wire, wire[wire.length - 1]];
+    const got = await readBytes(
+      readableFromChunks(replayed).pipeThrough(
+        getByteUnframingStream('framed-v2')
+      )
+    );
+    expect(got).toEqual(expected);
   });
 
   it('round-trips a raw byte stream: producer writes raw, consumer reads raw', async () => {

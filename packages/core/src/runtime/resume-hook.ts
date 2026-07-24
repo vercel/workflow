@@ -168,7 +168,9 @@ export async function resumeHook<T = any>(
           globalThis,
           v1Compat,
           capabilities.framedByteStreams,
-          compression
+          compression,
+          undefined,
+          capabilities.framedStreamMarkers
         );
         // These payload-stream ops are flushed in the background; the
         // promise handed to waitUntil must never reject (an unconsumed

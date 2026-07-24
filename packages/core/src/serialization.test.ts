@@ -4740,6 +4740,99 @@ describe('getSerializeStream', () => {
   });
 });
 
+describe('getSerializeStream / getDeserializeStream framed-v2', () => {
+  const reducers = {} as any;
+
+  function writerId(seed: number): Uint8Array {
+    const id = new Uint8Array(8);
+    id[0] = seed;
+    return id;
+  }
+
+  async function serializeValues(
+    values: unknown[],
+    id: Uint8Array
+  ): Promise<Uint8Array[]> {
+    const serialize = getSerializeStream(reducers, undefined, id);
+    const results: Uint8Array[] = [];
+    const readPromise = (async () => {
+      const reader = serialize.readable.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        results.push(value);
+      }
+    })();
+    const writer = serialize.writable.getWriter();
+    for (const value of values) await writer.write(value);
+    await writer.close();
+    await readPromise;
+    return results;
+  }
+
+  async function deserializeFramedV2(chunks: Uint8Array[]): Promise<unknown[]> {
+    const revivers = getCommonRevivers(globalThis) as any;
+    const deserialize = getDeserializeStream(revivers, undefined, 'framed-v2');
+    const results: unknown[] = [];
+    const readPromise = (async () => {
+      const reader = deserialize.readable.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        results.push(value);
+      }
+    })();
+    const writer = deserialize.writable.getWriter();
+    for (const chunk of chunks) await writer.write(chunk);
+    await writer.close();
+    await readPromise;
+    return results;
+  }
+
+  it('round-trips object values through a framed-v2 marker', async () => {
+    const id = writerId(0x11);
+    const original = [{ message: 'hi', n: 1 }, [1, 2], 'str', null];
+    const serialized = await serializeValues(original, id);
+
+    // Each frame carries the writerId right after the 4-byte length, and a
+    // monotonic seq after that.
+    serialized.forEach((frame, i) => {
+      const view = new DataView(
+        frame.buffer,
+        frame.byteOffset,
+        frame.byteLength
+      );
+      expect(frame[4]).toBe(0x11); // writerId[0]
+      expect(view.getBigUint64(4 + 8, false)).toBe(BigInt(i)); // seq
+    });
+
+    expect(await deserializeFramedV2(serialized)).toEqual(original);
+  });
+
+  it('dedupes replayed object frames (same writerId + seq)', async () => {
+    const id = writerId(0x22);
+    const [f0, f1, f2] = await serializeValues(
+      [{ a: 0 }, { a: 1 }, { a: 2 }],
+      id
+    );
+    // Tail with frame 1 re-sent by recovery before the new frame 2.
+    const results = await deserializeFramedV2([f0, f1, f1, f2]);
+    expect(results).toEqual([{ a: 0 }, { a: 1 }, { a: 2 }]);
+  });
+
+  it('round-trips across an arbitrary split mid-marker', async () => {
+    const id = writerId(0x33);
+    const [frame] = await serializeValues([{ key: 'value' }], id);
+    // Split inside the marker region to exercise cross-read buffering.
+    const split = 6; // within the 4-byte len + 8-byte writerId region
+    const results = await deserializeFramedV2([
+      frame.slice(0, split),
+      frame.slice(split),
+    ]);
+    expect(results).toEqual([{ key: 'value' }]);
+  });
+});
+
 describe('getDeserializeStream legacy fallback', () => {
   const revivers = getCommonRevivers(globalThis) as any;
 

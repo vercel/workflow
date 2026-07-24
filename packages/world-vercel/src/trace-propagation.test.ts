@@ -21,12 +21,40 @@ import { z } from 'zod';
 import { getWorkflowRunEventsV4 } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
-import { makeRequest } from './utils.js';
-import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
+import { makeRequest, WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 vi.mock('@vercel/oidc', () => ({
   getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
 }));
+
+/**
+ * Records every WS upgrade the stream write channel opens (url + init
+ * headers) and auto-completes the handshake, so the trace assertions below
+ * can read what actually rode the upgrade request.
+ */
+const wsUpgrades = vi.hoisted(
+  () => [] as { url: unknown; init: { headers: Record<string, string> } }[]
+);
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  class FakeWebSocket {
+    private listeners = new Map<string, ((event: unknown) => void)[]>();
+    constructor(url: unknown, init: never) {
+      wsUpgrades.push({ url, init });
+      queueMicrotask(() => {
+        for (const cb of this.listeners.get('open') ?? []) cb({});
+      });
+    }
+    addEventListener(type: string, cb: (event: unknown) => void) {
+      const list = this.listeners.get(type) ?? [];
+      list.push(cb);
+      this.listeners.set(type, list);
+    }
+    send() {}
+    close() {}
+  }
+  return { ...actual, WebSocket: FakeWebSocket };
+});
 
 const exporter = new InMemorySpanExporter();
 const provider = new BasicTracerProvider();
@@ -172,6 +200,48 @@ describe('v4 event requests (fetchV4) trace propagation', () => {
     );
     agent.assertNoPendingInterceptors();
     fetchSpy.mockRestore();
+  });
+});
+
+describe('stream write channel (WS upgrade) trace propagation', () => {
+  it('injects traceparent on the upgrade GET, parented to the WS client span', async () => {
+    wsUpgrades.length = 0;
+    const { createStreamer } = await import('./streamer.js');
+    const streamer = createStreamer({ token: 'test-token' });
+
+    const tracer = otelTrace.getTracer('test');
+    let traceId = '';
+    await tracer.startActiveSpan('flow-invocation', async (span) => {
+      traceId = span.spanContext().traceId;
+      // Admission resolves before the channel finishes connecting; wait for
+      // the (mocked) handshake so the client span has ended.
+      await streamer.streams.writeMulti?.('wrun_1', 'out', ['chunk'], {
+        retransmitSafe: true,
+      });
+      await vi.waitFor(() => expect(wsUpgrades).toHaveLength(1));
+      span.end();
+    });
+
+    // Chunks on the socket carry no per-message headers, so the upgrade is
+    // the one request that can (and must) carry the W3C trace context.
+    const sent = new Headers(wsUpgrades[0].init.headers);
+    const traceparent = sent.get('traceparent');
+    expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+
+    // Span name derives from the resolved URL (base URL may carry a path
+    // prefix or a branch override), so read the recorded upgrade URL.
+    const upgradePath = new URL(String(wsUpgrades[0].url)).pathname;
+    expect(upgradePath).toMatch(/\/v3\/runs\/wrun_1\/stream\/out\/ws$/);
+    await vi.waitFor(() => {
+      const clientSpan = exporter
+        .getFinishedSpans()
+        .find((s) => s.name === `WS ${upgradePath}`);
+      expect(clientSpan).toBeDefined();
+      expect(clientSpan?.spanContext().traceId).toBe(traceId);
+      expect(traceparent).toBe(
+        `00-${traceId}-${clientSpan?.spanContext().spanId}-01`
+      );
+    });
   });
 });
 

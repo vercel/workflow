@@ -270,7 +270,8 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
  */
 describe('getEventV4 over HTTP', () => {
   it('returns the first frame and stops reading the rest', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -507,7 +508,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
   });
 
   it('forwards stateUpdatedAt in the frame meta (precondition guard)', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -559,7 +561,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
   });
 
   it('omits stateUpdatedAt from the frame meta when not set', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 

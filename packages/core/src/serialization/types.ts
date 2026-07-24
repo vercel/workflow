@@ -49,8 +49,13 @@ export const SerializationFormat = {
  * - `'framed-v1'`: each chunk is wrapped in a 4-byte big-endian length
  *   prefix, allowing the reader to identify chunk boundaries and
  *   transparently reconnect on transient stream errors.
+ * - `'framed-v2'`: framed-v1 plus a per-writer marker (`writerId` + `seq`)
+ *   in each frame header (see `serialization/frame-marker.ts`), letting
+ *   readers deduplicate frames that a retransmitting write transport
+ *   re-sent after they had in fact persisted. Also recorded on object
+ *   streams, which otherwise carry no `framing` field.
  */
-export type ByteStreamFraming = 'raw' | 'framed-v1';
+export type ByteStreamFraming = 'raw' | 'framed-v1' | 'framed-v2';
 
 /**
  * Types that need specialized handling when serialized/deserialized.
@@ -205,6 +210,16 @@ export interface SerializableSpecial {
      * the parent's key without fetching the parent run first.
      */
     deploymentId?: string;
+    /**
+     * Wire framing of the underlying server stream. A writable's framing is
+     * chosen once, by the stream's creator, and every writer must follow it:
+     * frames from concurrent writers interleave on one server stream, and a
+     * reader applies a single framing to all of them. `'framed-v2'` means
+     * every frame carries a per-writer `writerId`+`seq` marker (a forwarded
+     * writer derives its own writerId). Absent means plain length-prefixed
+     * frames, as before markers existed.
+     */
+    framing?: 'framed-v2';
   };
   AbortController: {
     streamName: string;

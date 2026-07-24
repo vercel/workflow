@@ -4,6 +4,17 @@ export const WORKFLOW_CREATE_HOOK = Symbol.for('WORKFLOW_CREATE_HOOK');
 export const WORKFLOW_SLEEP = Symbol.for('WORKFLOW_SLEEP');
 export const WORKFLOW_CONTEXT = Symbol.for('WORKFLOW_CONTEXT');
 export const WORKFLOW_GET_STREAM_ID = Symbol.for('WORKFLOW_GET_STREAM_ID');
+/**
+ * VM global carrying the wire framing this run's streams use ('framed-v2'
+ * or undefined), computed host-side from the run's capability gate. The
+ * workflow-context `getWritable()` tags its handles with it so every writer
+ * that later revives the handle (step-side, external) frames exactly like
+ * the run's readers expect — the VM itself cannot import the capability
+ * table (that would pull the serialization module into the workflow bundle).
+ */
+export const WORKFLOW_DEFAULT_STREAM_FRAMING = Symbol.for(
+  'WORKFLOW_DEFAULT_STREAM_FRAMING'
+);
 export const STABLE_ULID = Symbol.for('WORKFLOW_STABLE_ULID');
 export const STREAM_NAME_SYMBOL = Symbol.for('WORKFLOW_STREAM_NAME');
 export const STREAM_TYPE_SYMBOL = Symbol.for('WORKFLOW_STREAM_TYPE');
