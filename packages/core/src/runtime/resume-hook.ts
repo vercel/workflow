@@ -22,8 +22,8 @@ import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
   type PayloadKey,
-  sealTo,
   SerializationFormat,
+  sealTo,
 } from '../serialization.js';
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -158,11 +158,12 @@ export async function resumeHook<T = any>(
         // run's, where fetching the symmetric key grants both.
         //
         // Deliberately NOT gated on `capabilities.supportedFormats` the way
-        // `encr` is above: presence of the public key is itself the gate. A
-        // run only carries one if the runtime that created it could also open
-        // a sealed payload, and runs are pinned to their creating deployment,
-        // so presence is a more reliable attestation than a version compare
-        // — and it stays correct even when package versions drift.
+        // the symmetric fallback below gates `encr`: presence of the public key
+        // is itself the gate. A run only carries one if the runtime that
+        // created it could also open a sealed payload, and runs are pinned to
+        // their creating deployment, so presence is a more reliable attestation
+        // than a version compare — and it stays correct even when package
+        // versions drift.
         let payloadKey: PayloadKey | undefined;
         const runPublicKey = encryptionKeyOverride
           ? // The caller already holds the symmetric key (resumeWebhook had
