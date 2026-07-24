@@ -1359,6 +1359,15 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // prefix, so deliver it first; only the server stream close is
         // skipped. A dispatch failure during this drain is already sticky
         // and surfaces through the sink's error paths.
+        //
+        // Deliberately un-timeboxed (unlike the step-executor's 500ms
+        // inline flush): giving up early would drop acked chunks — the
+        // exact loss this path exists to prevent. It is still bounded in
+        // practice by the World transport's own timeout/retry budget: a
+        // stalled write ends in a terminal rejection after finite retries,
+        // which rejects the dispatch and lands in the catch below. The
+        // same catch absorbs the expected conflict when a teardown-driven
+        // abort drains into an already-terminal run.
         try {
           await drain();
         } catch {
