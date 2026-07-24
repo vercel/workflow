@@ -55,6 +55,7 @@ function createGraphileLogger() {
 const graphileLogger = createGraphileLogger();
 const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
 const GraphileHelpers = z.object({
+  abortSignal: z.instanceof(AbortSignal).optional(),
   job: z.object({
     attempts: z.number().int().positive(),
   }),
@@ -346,12 +347,14 @@ export function createQueue(
     attempt,
     body,
     headers: extraHeaders,
+    abortSignal,
   }: {
     queueName: ValidQueueName;
     messageId: MessageId;
     attempt: number;
     body: Uint8Array;
     headers?: Record<string, string>;
+    abortSignal?: AbortSignal;
   }): Promise<HttpExecutionResult> {
     const headers: Record<string, string> = {
       ...extraHeaders,
@@ -373,6 +376,7 @@ export function createQueue(
         duplex: 'half',
         headers,
         body,
+        signal: abortSignal,
       } as any
     );
     const text = await response.text();
@@ -526,9 +530,9 @@ export function createQueue(
 
     return async (payload: unknown, helpers: unknown) => {
       const messageData = MessageData.parse(payload);
-      const graphileAttempt = GraphileHelpers.safeParse(helpers);
-      const attempt = graphileAttempt.success
-        ? graphileAttempt.data.job.attempts
+      const graphileHelpers = GraphileHelpers.safeParse(helpers);
+      const attempt = graphileHelpers.success
+        ? graphileHelpers.data.job.attempts
         : messageData.attempt;
       const queueName = `${queue}${messageData.id}` as ValidQueueName;
       const bodyStream = Stream.Readable.toWeb(
@@ -556,6 +560,9 @@ export function createQueue(
           attempt,
           body: messageData.data,
           headers: messageData.headers,
+          abortSignal: graphileHelpers.success
+            ? graphileHelpers.data.abortSignal
+            : undefined,
         });
 
         if (result.type === 'completed') {
@@ -661,6 +668,9 @@ export function createQueue(
       // docs/content/docs/changelog/eager-processing.mdx for context.
       concurrency: config.queueConcurrency || 50,
       logger: graphileLogger,
+      ...(config.applicationManagedShutdown === true && {
+        noHandleSignals: true,
+      }),
       pollInterval: 500, // 500ms = 0.5s (graphile-worker uses LISTEN/NOTIFY when available)
       taskList,
     });
@@ -679,8 +689,19 @@ export function createQueue(
         runnerStart = null;
       }
       await startPromise?.catch(() => {});
-      if (runner) {
-        await runner.stop();
+      const activeRunner = runner;
+      if (activeRunner) {
+        try {
+          await activeRunner.stop();
+        } catch (error) {
+          if (
+            !(error instanceof Error) ||
+            error.message !== 'Runner is already stopped'
+          ) {
+            throw error;
+          }
+        }
+        await activeRunner.promise.catch(() => {});
         runner = null;
       }
       if (workerUtils) {

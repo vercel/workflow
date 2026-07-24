@@ -56,7 +56,14 @@ export function createWorld(config?: APIConfig): World {
     processExitTriggersQueueRedelivery: true,
     ...createQueue(config),
     ...createStorage(config),
-    analytics: createAnalytics(config),
+    // Analytics list reads are served from an eventually-ingested store.
+    // Tooling that needs read-your-writes listings immediately after a
+    // write (e.g. deterministic e2e assertions) can force the CLI/world
+    // list paths back onto primary storage by disabling the namespace.
+    analytics:
+      process.env.WORKFLOW_DISABLE_ANALYTICS_READS === '1'
+        ? undefined
+        : createAnalytics(config),
     ...instrumentObject('world.streams', createStreamer(config)),
     createRunId,
     describeRun,
