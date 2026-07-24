@@ -1068,51 +1068,12 @@ jobs:
         run: |
           node .github/scripts/aggregate-e2e-results.js e2e-results --mode aggregate --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" | tee e2e-summary.md >> $GITHUB_STEP_SUMMARY
 
-      - name: Check E2E job statuses
-        id: check-status
-        run: |
-          VERCEL_STATUS="${{ needs.e2e-vercel-prod.result }}"
-          LOCAL_DEV_STATUS="${{ needs.e2e-local-dev.result }}"
-          LOCAL_PROD_STATUS="${{ needs.e2e-local-prod.result }}"
-          POSTGRES_STATUS="${{ needs.e2e-local-postgres.result }}"
-          WINDOWS_STATUS="${{ needs.e2e-windows.result }}"
-
-          echo "vercel=$VERCEL_STATUS" >> $GITHUB_OUTPUT
-          echo "local-dev=$LOCAL_DEV_STATUS" >> $GITHUB_OUTPUT
-          echo "local-prod=$LOCAL_PROD_STATUS" >> $GITHUB_OUTPUT
-          echo "postgres=$POSTGRES_STATUS" >> $GITHUB_OUTPUT
-          echo "windows=$WINDOWS_STATUS" >> $GITHUB_OUTPUT
-
-          if [[ "$VERCEL_STATUS" == "failure" || "$LOCAL_DEV_STATUS" == "failure" || "$LOCAL_PROD_STATUS" == "failure" || "$POSTGRES_STATUS" == "failure" || "$WINDOWS_STATUS" == "failure" ]]; then
-            echo "has_failures=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_failures=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Update PR comment with results
         if: github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
         with:
           header: e2e-test-results
           path: e2e-summary.md
-
-      - name: Append failure notice to PR comment
-        if: github.event_name == 'pull_request' && steps.check-status.outputs.has_failures == 'true'
-        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
-        with:
-          header: e2e-test-results
-          append: true
-          message: |
-
-            ---
-            ❌ **Some E2E test jobs failed:**
-            - Vercel Prod: ${{ needs.e2e-vercel-prod.result }}
-            - Local Dev: ${{ needs.e2e-local-dev.result }}
-            - Local Prod: ${{ needs.e2e-local-prod.result }}
-            - Local Postgres: ${{ needs.e2e-local-postgres.result }}
-            - Windows: ${{ needs.e2e-windows.result }}
-
-            Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
 
   # Final required check: passes only when unit + all E2E jobs succeed.
   # Community worlds are intentionally excluded — they are disabled on main.

@@ -47,7 +47,10 @@ function writeFile(path: string, contents: string): void {
   writeFileSync(path, contents, 'utf-8');
 }
 
-function createBuilder(workingDir: string): TestBuilder {
+function createBuilder(
+  workingDir: string,
+  overrides?: Partial<StandaloneConfig>
+): TestBuilder {
   const config: StandaloneConfig = {
     buildTarget: 'standalone',
     workingDir,
@@ -55,6 +58,7 @@ function createBuilder(workingDir: string): TestBuilder {
     stepsBundlePath: join(workingDir, 'steps.js'),
     workflowsBundlePath: join(workingDir, 'workflows.js'),
     webhookBundlePath: join(workingDir, 'webhook.js'),
+    ...overrides,
   };
   return new TestBuilder(config);
 }
@@ -161,6 +165,125 @@ describe('fast workflow discovery', () => {
 
     expect(discovered.discoveredWorkflows).toEqual(
       new Set([normalize(packageWorkflow)])
+    );
+    expect(
+      parentHasChild(normalize(packageIndex), normalize(packageWorkflow))
+    ).toBe(true);
+  });
+
+  it('does not descend into node_modules when discoverWorkflowsInNodeModules is false', async () => {
+    const entryFile = join(testRoot, 'src', 'entry.ts');
+    const localWorkflow = join(testRoot, 'src', 'local-workflow.ts');
+    const packageRoot = join(testRoot, 'node_modules', 'workflow-pkg');
+    const packageIndex = join(packageRoot, 'index.js');
+    const packageWorkflow = join(packageRoot, 'workflow.js');
+    const packageStep = join(packageRoot, 'step.js');
+
+    writeFile(
+      entryFile,
+      `import './local-workflow';\nimport { run } from 'workflow-pkg';\nvoid run;\n`
+    );
+    writeFile(
+      localWorkflow,
+      `export async function localRun() {
+  'use workflow';
+  return 'ok';
+}
+`
+    );
+    writeFile(
+      join(packageRoot, 'package.json'),
+      JSON.stringify({
+        name: 'workflow-pkg',
+        version: '1.0.0',
+        main: 'index.js',
+        dependencies: {
+          workflow: '^1.0.0',
+        },
+      })
+    );
+    writeFile(
+      packageIndex,
+      `export { run } from './workflow.js';\nexport { doWork } from './step.js';\n`
+    );
+    writeFile(
+      packageWorkflow,
+      `export async function run() {
+  "use workflow";
+  return "ok";
+}
+`
+    );
+    writeFile(
+      packageStep,
+      `export async function doWork() {
+  "use step";
+  return "done";
+}
+`
+    );
+
+    const discovered = await createBuilder(testRoot, {
+      discoverWorkflowsInNodeModules: false,
+    }).discoverEntriesPublic([entryFile], join(testRoot, 'out'));
+
+    // Local (non-node_modules) workflow is still discovered.
+    expect(discovered.discoveredWorkflows).toEqual(
+      new Set([normalize(localWorkflow)])
+    );
+    // The node_modules workflow and step are not registered.
+    expect(discovered.discoveredWorkflows.has(normalize(packageWorkflow))).toBe(
+      false
+    );
+    expect(discovered.discoveredSteps.has(normalize(packageStep))).toBe(false);
+    // The dependency's files are never read/scanned: the import graph is not
+    // descended into at all, so none of them show up as discovered files and
+    // the parent edge into the package is not recorded.
+    for (const file of [packageIndex, packageWorkflow, packageStep]) {
+      expect(discovered.discoveredFiles?.has(normalize(file))).toBe(false);
+    }
+    expect(parentHasChild(normalize(entryFile), normalize(packageIndex))).toBe(
+      false
+    );
+  });
+
+  it('still follows imports within node_modules so seeded package entries resolve their subtree', async () => {
+    // Mirrors how the SDK seeds `@workflow/core/runtime/run` (a node_modules
+    // file) as an entry point: descent is blocked from application code, but a
+    // node_modules file may still reach its own transitive files.
+    const entryFile = join(testRoot, 'src', 'entry.ts');
+    const packageRoot = join(testRoot, 'node_modules', 'seeded-pkg');
+    const packageIndex = join(packageRoot, 'index.js');
+    const packageWorkflow = join(packageRoot, 'workflow.js');
+
+    writeFile(entryFile, `export const noop = 1;\n`);
+    writeFile(
+      join(packageRoot, 'package.json'),
+      JSON.stringify({
+        name: 'seeded-pkg',
+        version: '1.0.0',
+        main: 'index.js',
+        dependencies: { workflow: '^1.0.0' },
+      })
+    );
+    writeFile(packageIndex, `export { run } from './workflow.js';\n`);
+    writeFile(
+      packageWorkflow,
+      `export async function run() {
+  "use workflow";
+  return "ok";
+}
+`
+    );
+
+    // Seed the node_modules index directly as an entry point (as the builder
+    // does for the SDK runtime serde entry).
+    const discovered = await createBuilder(testRoot, {
+      discoverWorkflowsInNodeModules: false,
+    }).discoverEntriesPublic([entryFile, packageIndex], join(testRoot, 'out'));
+
+    expect(discovered.discoveredWorkflows.has(normalize(packageWorkflow))).toBe(
+      true
     );
     expect(
       parentHasChild(normalize(packageIndex), normalize(packageWorkflow))

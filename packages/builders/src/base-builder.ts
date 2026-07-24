@@ -97,6 +97,18 @@ function parseSourcemapEnv(
   }
 }
 
+/**
+ * Parse the value of the `WORKFLOW_DISCOVER_NODE_MODULES` environment variable
+ * into a boolean. Returns `undefined` if the env var is unset or empty so
+ * callers can fall back to config/default.
+ */
+function parseDiscoverNodeModulesEnv(
+  value: string | undefined
+): boolean | undefined {
+  if (value === undefined || value === '') return undefined;
+  return value !== '0' && value !== 'false';
+}
+
 function formatBuildDuration(durationMs: number): string {
   if (durationMs < 1000) {
     return `${durationMs}ms`;
@@ -611,6 +623,8 @@ export abstract class BaseBuilder {
       state,
       defaultTsconfigPath: effectiveTsconfigPath,
       workingDir: this.config.workingDir,
+      discoverWorkflowsInNodeModules:
+        this.resolveDiscoverWorkflowsInNodeModules(),
     });
 
     this.logBaseBuilderInfo(
@@ -2321,6 +2335,23 @@ export const OPTIONS = handler;`;
     const envMode = parseSourcemapEnv(process.env.WORKFLOW_SOURCEMAP);
     if (envMode !== undefined) return envMode;
     return defaultMode;
+  }
+
+  /**
+   * Resolve whether workflow/step files under `node_modules` are discovered.
+   * Precedence: explicit `discoverWorkflowsInNodeModules` config > the
+   * `WORKFLOW_DISCOVER_NODE_MODULES` env var (`0`/`false` disables) > the
+   * default (`true`, discover them).
+   */
+  protected resolveDiscoverWorkflowsInNodeModules(): boolean {
+    if (this.config.discoverWorkflowsInNodeModules !== undefined) {
+      return this.config.discoverWorkflowsInNodeModules;
+    }
+    const envValue = parseDiscoverNodeModulesEnv(
+      process.env.WORKFLOW_DISCOVER_NODE_MODULES
+    );
+    if (envValue !== undefined) return envValue;
+    return true;
   }
 
   /**

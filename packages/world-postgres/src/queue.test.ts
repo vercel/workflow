@@ -48,6 +48,7 @@ describe('postgres queue http execution', () => {
   } as unknown as WorkerUtils;
   const runnerMock = {
     stop: vi.fn(),
+    promise: Promise.resolve(),
   };
   const wrappedHandler = vi.fn(async () => Response.json({ ok: true }));
   const localWorldClose = vi.fn();
@@ -75,6 +76,7 @@ describe('postgres queue http execution', () => {
         (server) =>
           new Promise<void>((resolve, reject) => {
             server.close((err) => (err ? reject(err) : resolve()));
+            server.closeAllConnections();
           })
       )
     );
@@ -201,6 +203,121 @@ describe('postgres queue http execution', () => {
     );
 
     expect(getWorkflowPort).toHaveBeenCalled();
+  });
+
+  it('keeps Graphile Worker automatic shutdown by default', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+
+    await queue.start();
+
+    expect(run).toHaveBeenCalledWith(
+      expect.not.objectContaining({ noHandleSignals: true })
+    );
+  });
+
+  it('allows the application to manage shutdown', async () => {
+    const queue = buildQueue(
+      {
+        connectionString: 'postgres://test',
+        applicationManagedShutdown: true,
+      },
+      pool
+    );
+
+    await queue.start();
+
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({ noHandleSignals: true })
+    );
+  });
+
+  it('aborts while waiting for an HTTP response without scheduling a replacement', async () => {
+    const server = await startHangingWorkflowHttpServer('headers');
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+
+    const controller = new AbortController();
+    const execution = getTaskHandler('workflow_steps')(
+      buildMessageData('__wkf_step_test-step', {
+        workflowName: 'test-workflow',
+        workflowRunId: 'run_01ABC',
+        workflowStartedAt: Date.now(),
+        stepId: 'step_01ABC',
+      }),
+      {
+        abortSignal: controller.signal,
+        job: { attempts: 1 },
+      }
+    );
+    const outcome = execution.then(
+      () => ({ status: 'fulfilled' as const }),
+      (error: unknown) => ({ status: 'rejected' as const, error })
+    );
+
+    await server.requestReceived;
+    controller.abort();
+
+    await expect(settleWithin(outcome)).resolves.toMatchObject({
+      status: 'rejected',
+      error: expect.objectContaining({ name: 'AbortError' }),
+    });
+    expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
+  });
+
+  it('aborts while reading an HTTP response body without scheduling a replacement', async () => {
+    const server = await startHangingWorkflowHttpServer('body');
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const nativeFetch = globalThis.fetch;
+    let resolveResponseReceived!: () => void;
+    const responseReceived = new Promise<void>((resolve) => {
+      resolveResponseReceived = resolve;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (...args: Parameters<typeof fetch>) => {
+        const response = await nativeFetch(...args);
+        resolveResponseReceived();
+        return response;
+      })
+    );
+
+    try {
+      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+      await queue.start();
+
+      const controller = new AbortController();
+      const execution = getTaskHandler('workflow_steps')(
+        buildMessageData('__wkf_step_test-step', {
+          workflowName: 'test-workflow',
+          workflowRunId: 'run_01ABC',
+          workflowStartedAt: Date.now(),
+          stepId: 'step_01ABC',
+        }),
+        {
+          abortSignal: controller.signal,
+          job: { attempts: 1 },
+        }
+      );
+      const outcome = execution.then(
+        () => ({ status: 'fulfilled' as const }),
+        (error: unknown) => ({ status: 'rejected' as const, error })
+      );
+
+      await responseReceived;
+      // Let executeMessageOverHttp enter response.text() before aborting.
+      await Promise.resolve();
+      controller.abort();
+
+      await expect(settleWithin(outcome)).resolves.toMatchObject({
+        status: 'rejected',
+        error: expect.objectContaining({ name: 'AbortError' }),
+      });
+      expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('serializes workflow queue execution for the same runId', async () => {
@@ -566,6 +683,56 @@ async function startWorkflowHttpServer(
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
   };
+}
+
+async function startHangingWorkflowHttpServer(stage: 'headers' | 'body') {
+  let resolveRequestReceived!: () => void;
+  const requestReceived = new Promise<void>((resolve) => {
+    resolveRequestReceived = resolve;
+  });
+  const server = createServer((req, res) => {
+    req.resume();
+    resolveRequestReceived();
+
+    if (stage === 'body') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.write('{"ok":');
+    }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.listen(0, '127.0.0.1', () => resolve());
+    server.on('error', reject);
+  });
+
+  createdServers.push(server);
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('Failed to determine test server address');
+  }
+
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    requestReceived,
+  };
+}
+
+async function settleWithin<T>(
+  promise: Promise<T>,
+  timeoutMs = 250
+): Promise<T | { status: 'pending' }> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<{ status: 'pending' }>((resolve) => {
+        timeout = setTimeout(() => resolve({ status: 'pending' }), timeoutMs);
+        timeout.unref();
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function getUnusedLoopbackPort(): Promise<number> {

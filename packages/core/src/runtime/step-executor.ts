@@ -108,9 +108,10 @@ export interface StepExecutorParams {
    * Inline step ownership: the queue message ID of the invocation this
    * executeStep call runs in (from the queue handler's meta). When set, the
    * `step_started` this call sends is stamped with it — on the lazy paths
-   * (where `lazyStepInput` is present) and on the owned-recovery bare start
-   * (where it is not; the re-stamp keeps a recovered step readable as owned
-   * by this message, since ownership derives from the LATEST start). Wake
+   * (where `lazyStepInput` is present) and on the owned-recovery
+   * payload-less start (where it is not; the re-stamp keeps a recovered
+   * step readable as owned by this message, since ownership derives from
+   * the LATEST start — so a recovery start is never bare). Wake
    * replays that observe an actively-owned step suppress the immediate
    * requeue and enqueue a delayed backstop instead. Omitted on the
    * background-step path, whose bare start intentionally clears ownership
@@ -592,11 +593,12 @@ export async function executeStep(
       // step_started (step already created, no payload).
       try {
         // Inline-ownership stamp: present on the lazy paths AND on the
-        // owned-recovery bare start (a redelivery of the owning message
-        // re-executing its step must re-stamp — ownership derives from the
-        // latest start, so an unstamped recovery start would read as
-        // "unowned" to a later wake). The background-step path passes no
-        // ownerMessageId, so its bare start clears ownership as intended.
+        // owned-recovery payload-less start (a redelivery of the owning
+        // message re-executing its step must re-stamp — ownership derives
+        // from the latest start, so an unstamped recovery start would read
+        // as "unowned" to a later wake). Only the background-step path
+        // passes no ownerMessageId: its start is the bare one, clearing
+        // ownership as intended.
         const ownershipStamp =
           params.ownerMessageId !== undefined
             ? { ownerMessageId: params.ownerMessageId }
@@ -929,10 +931,11 @@ export async function executeStep(
       });
 
       // Flush pending ops (stream writes, etc.) with a short inline wait.
-      // Now that WorkflowServerWritableStream flushes synchronously on
-      // each write (not via setTimeout), the flushablePipe's pendingOps
-      // accurately reflects whether data has reached the server. Most ops
-      // settle within ~200ms (100ms lock-release polling + HTTP flush).
+      // WorkflowServerWritableStream acks writes on buffer entry
+      // (group-commit batching); durability is enforced by its drain
+      // barrier, which the flushable state's completion awaits after
+      // lock release. Most ops settle within ~200ms (lock-release
+      // polling + one batched HTTP flush).
       // If ops don't settle in 500ms (e.g., WritableStream kept open
       // across steps), waitUntil handles the rest.
       if (ops.length > 0) {

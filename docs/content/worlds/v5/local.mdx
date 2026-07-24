@@ -68,7 +68,7 @@ Whether pending and running runs found in the data directory are re-enqueued whe
 
 ### `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
 
-Flush interval, in milliseconds, for buffered stream writes. Default: `10`.
+Group-commit window, in milliseconds, for the leading chunk of an idle stream. Default: `0` (dispatch immediately). A positive value holds the first chunk up to that long to collect a group — trading first-chunk latency for fewer requests. Chunks arriving while a request is in flight always coalesce into the next group regardless.
 
 ### Programmatic configuration
 
@@ -83,7 +83,7 @@ export default createWorld({
   // baseUrl overrides port if set
   baseUrl: "https://local.example.com:3000",
   recoverActiveRuns: true, // overrides WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS
-  streamFlushIntervalMs: 10, // overrides WORKFLOW_STREAM_FLUSH_INTERVAL_MS
+  streamFlushIntervalMs: 10, // WORKFLOW_STREAM_FLUSH_INTERVAL_MS, if set, overrides this
 });
 ```
 

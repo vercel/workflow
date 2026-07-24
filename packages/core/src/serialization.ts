@@ -15,6 +15,10 @@ import {
 import {
   createFlushableState,
   flushablePipe,
+  getMaxBufferedBytes,
+  getMaxBytesPerBatch,
+  getMaxChunksPerBatch,
+  getMaxInflightChunks,
   pollReadableLock,
   pollWritableLock,
 } from './flushable-stream.js';
@@ -76,12 +80,12 @@ import {
   ABORT_STREAM_NAME,
   BODY_INIT_SYMBOL,
   STABLE_ULID,
+  STREAM_DRAIN_SYMBOL,
   STREAM_FRAMING_SYMBOL,
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
   STREAM_TYPE_SYMBOL,
-  STREAM_WRITE_BATCH_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
 import * as Attr from './telemetry/semantic-conventions.js';
@@ -953,19 +957,32 @@ export function createReconnectingFramedStream(
 }
 
 /**
- * Default flush interval in milliseconds for buffered stream writes.
- * Chunks are accumulated and flushed together to reduce network overhead.
+ * Default group-commit window for the LEADING chunk of an idle stream.
+ *
+ * 0 = dispatch the first chunk immediately. Measured production producer
+ * rates (most agents: ~1.2 chunks per flush, >70% of chunks arriving more
+ * than 10ms after the previous request already finished) show a fixed
+ * leading-edge window taxes isolated-chunk delivery (~+20% on a ~50ms RTT)
+ * while batching almost nothing for slow producers — fast producers get
+ * their batching from in-flight accumulation regardless. Setting a positive
+ * interval (env or `world.streamFlushIntervalMs`) opts a deployment into
+ * windowed leading-edge batching, trading first-chunk latency for larger
+ * groups.
  */
-const STREAM_FLUSH_INTERVAL_MS = 10;
+const STREAM_FLUSH_INTERVAL_MS = 0;
 
 /**
- * Effective default stream-flush interval (a `world.streamFlushIntervalMs`
- * still takes precedence). Override: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`.
+ * `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`, when set, overrides
+ * `world.streamFlushIntervalMs`; when unset the World option (or the
+ * default) governs. Returns `undefined` for unset/invalid values so the
+ * caller can fall through to the World option.
  */
-const getStreamFlushIntervalMs = (): number =>
-  envNumber('WORKFLOW_STREAM_FLUSH_INTERVAL_MS', STREAM_FLUSH_INTERVAL_MS, {
+const getEnvStreamFlushIntervalMs = (): number | undefined => {
+  const value = envNumber('WORKFLOW_STREAM_FLUSH_INTERVAL_MS', Number.NaN, {
     integer: true,
   });
+  return Number.isNaN(value) ? undefined : value;
+};
 
 /**
  * Emit the client-observed span for one flushed batch of stream writes: first
@@ -1065,149 +1082,328 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       }
     };
 
-    // Buffering state for batched writes
+    // ------------------------------------------------------------------
+    // Group-commit buffering.
+    //
+    // `write()` resolves as soon as the chunk enters this bounded buffer —
+    // NOT when it is durable. That is the property that makes batching
+    // path-independent: a native `readable.pipeTo(serverWritable)` pulls the
+    // next chunk the moment `write()` resolves, so chunks accumulate here
+    // during the flush-timer window and while a server request is in
+    // flight, and each accumulated group goes out as one `writeMulti`.
+    // (Previously `write()` resolved only after the timer AND the server
+    // round trip, so native piping serialized to one request per chunk and
+    // batching only worked through `flushablePipe`'s bespoke coalescing.)
+    //
+    // Durability has a dedicated barrier instead: `drain()` (exposed via
+    // {@link STREAM_DRAIN_SYMBOL}) resolves only when the buffer is empty
+    // and no request is in flight. `close()` awaits it before closing the
+    // server stream, and the flushable-stream lock-release completion
+    // awaits it before letting a step finish — so "step completed" still
+    // implies "stream data durable", exactly as before.
+    //
     // Encryption/decryption is handled at the framing level by
     // getSerializeStream/getDeserializeStream, not here.
+    // ------------------------------------------------------------------
     let buffer: Uint8Array[] = [];
+    let bufferBytes = 0;
+    // The group currently inside a server request. Counted against the
+    // buffer bound so `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS` keeps its
+    // documented meaning — an upper bound across ALL read-but-not-durable
+    // chunks — not just the queued follow-up group.
+    let inFlightChunks = 0;
+    let inFlightBytes = 0;
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    let flushPromise: Promise<void> | null = null;
-    let resolvedFlushIntervalMs: number | undefined;
-    // Client-observed write-batch timing: stamped at `write()` entry for the
-    // first chunk of a batch — before the backpressure wait on any in-flight
-    // flush — so the emitted span covers the full app-perceived latency
-    // (queueing + flush-timer dwell + RPC). Cleared when a flush takes the
-    // batch; restored on write failure so a retried batch keeps its true t0.
-    let batchStartAt: number | undefined;
+    /** The in-flight dispatch chain. At most one, preserving chunk order. */
+    let inFlight: Promise<void> | null = null;
+    /**
+     * Sticky failure: once a dispatch fails, the failed group is re-queued
+     * (retained, exactly as the previous implementation retained its buffer)
+     * and every subsequent `write()`, `close()` and `drain()` rejects with
+     * the original error. Chunks whose `write()` already resolved surface
+     * their failure at the durability barrier — that is the contract of an
+     * early-ack sink.
+     */
+    let sinkError: unknown;
+    // Group-commit window. The env var, when set, overrides the World
+    // option; otherwise `world.streamFlushIntervalMs` governs (default 0) —
+    // including the very first chunk. When it must come from the world,
+    // `scheduleGroupCommit` waits for `worldPromise` before deciding, which
+    // costs nothing: no request can leave before `sendGroup`'s own world
+    // await either.
+    let resolvedFlushIntervalMs = getEnvStreamFlushIntervalMs();
+    let flushIntervalResolution: Promise<void> | null = null;
+    // Per-request wire limits (server caps) and the buffer bound. The bound
+    // uses the same knobs the coalescing pipe used, so producer backpressure
+    // behavior is unchanged: once a request-worth of chunks (or the byte
+    // bound) is buffered, `write()` blocks until a group lands durably.
+    const maxChunksPerRequest = getMaxChunksPerBatch();
+    const maxBytesPerRequest = getMaxBytesPerBatch();
+    const maxBufferedChunks = getMaxInflightChunks();
+    const maxBufferedBytes = getMaxBufferedBytes();
+    // Client-observed write-batch timing: stamped when the buffer goes
+    // empty→non-empty, consumed by the group that carries that chunk out.
+    let bufferT0: number | undefined;
 
-    const flush = async (): Promise<void> => {
-      if (flushTimer) {
-        clearTimeout(flushTimer);
-        flushTimer = null;
+    type Waiter = { resolve: () => void; reject: (err: unknown) => void };
+    /** write() calls blocked on the buffer bound. */
+    let capacityWaiters: Waiter[] = [];
+    /** drain() calls waiting for full durability. */
+    let drainWaiters: Waiter[] = [];
+
+    const rejectWaiters = (err: unknown): void => {
+      const all = [...capacityWaiters, ...drainWaiters];
+      capacityWaiters = [];
+      drainWaiters = [];
+      for (const w of all) w.reject(err);
+    };
+
+    /**
+     * Take the largest leading group that fits one request: at most
+     * `maxChunksPerRequest` chunks and `maxBytesPerRequest` cumulative bytes
+     * (a single oversized chunk still goes out alone).
+     */
+    const takeGroup = (): { group: Uint8Array[]; bytes: number } => {
+      let count = 0;
+      let bytes = 0;
+      for (const chunk of buffer) {
+        if (count >= maxChunksPerRequest) break;
+        if (count > 0 && bytes + chunk.byteLength > maxBytesPerRequest) break;
+        count++;
+        bytes += chunk.byteLength;
       }
+      const group = buffer.slice(0, count);
+      buffer = buffer.slice(count);
+      bufferBytes -= bytes;
+      return { group, bytes };
+    };
 
-      if (buffer.length === 0) return;
-
-      // Order the first server write after the run exists (turbo optimistic
-      // start); a no-op on every later flush and outside turbo.
+    /**
+     * Dispatch loop: while chunks are buffered, send them group by group.
+     * Exactly one loop runs at a time (`inFlight`), so groups reach the
+     * server in write order. Chunks that arrive while a group's request is
+     * in flight accumulate and form the next group — the group-commit
+     * behavior, now independent of how the producer pipes.
+     */
+    /**
+     * Send one group to the server: gate on run readiness, then one
+     * `writeMulti` (or sequential `write`s when the world lacks it). Emits
+     * the write-flush span; dwell is measured up to just before the RPC so a
+     * turbo run-ready barrier wait counts as buffer dwell, matching the
+     * pre-group-commit telemetry.
+     */
+    const sendGroup = async (
+      group: Uint8Array[],
+      bytes: number,
+      groupT0: number | undefined
+    ): Promise<void> => {
       await ensureRunReady();
-
-      // Copy chunks to flush, but don't clear buffer until write succeeds
-      // This prevents data loss if the write operation fails
-      const chunksToFlush = buffer.slice();
-      const batchStart = batchStartAt;
-      batchStartAt = undefined;
-      const dispatchAt = Date.now();
-
       const world = await worldPromise;
-      // Cache the flush interval from the world on first use
-      if (resolvedFlushIntervalMs === undefined) {
-        resolvedFlushIntervalMs =
-          world.streamFlushIntervalMs ?? getStreamFlushIntervalMs();
-      }
-      const rpcStartAt = Date.now();
-      try {
-        // Use writeMulti if available for batch writes
-        if (
-          typeof world.streams.writeMulti === 'function' &&
-          chunksToFlush.length > 1
-        ) {
-          await world.streams.writeMulti(runId, name, chunksToFlush);
-        } else {
-          // Fall back to sequential writes
-          for (const chunk of chunksToFlush) {
-            await world.streams.write(runId, name, chunk);
-          }
+      const dispatchAt = Date.now();
+      if (typeof world.streams.writeMulti === 'function' && group.length > 1) {
+        await world.streams.writeMulti(runId, name, group);
+      } else {
+        // Fall back to sequential writes
+        for (const chunk of group) {
+          await world.streams.write(runId, name, chunk);
         }
-      } catch (error) {
-        // The batch stays buffered for retry — restore its original t0 (the
-        // oldest, if a newer write stamped one meanwhile) so the eventually
-        // successful flush reports the full dwell.
-        if (batchStart !== undefined) {
-          batchStartAt =
-            batchStartAt === undefined
-              ? batchStart
-              : Math.min(batchStartAt, batchStart);
-        }
-        throw error;
       }
-
-      if (batchStart !== undefined) {
+      if (groupT0 !== undefined) {
         recordStreamWriteFlush(
-          batchStart,
+          groupT0,
           dispatchAt,
           runId,
           name,
-          chunksToFlush.length,
-          chunksToFlush.reduce((sum, c) => sum + c.byteLength, 0),
-          Date.now() - rpcStartAt
+          group.length,
+          bytes,
+          Date.now() - dispatchAt
         );
       }
-
-      // Only clear buffer after successful write to prevent data loss
-      buffer = [];
     };
 
-    /** Resolvers/rejectors waiting for the current scheduled flush */
-    let flushWaiters: Array<{
-      resolve: () => void;
-      reject: (err: unknown) => void;
-    }> = [];
+    const dispatchLoop = async (): Promise<void> => {
+      while (buffer.length > 0) {
+        if (flushTimer) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+        const groupT0 = bufferT0;
+        const groupTakenAt = Date.now();
+        const { group, bytes } = takeGroup();
+        inFlightChunks = group.length;
+        inFlightBytes = bytes;
+        bufferT0 = buffer.length > 0 ? groupTakenAt : undefined;
 
-    const scheduleFlush = (): void => {
-      if (flushTimer) return; // Already scheduled
+        try {
+          await sendGroup(group, bytes, groupT0);
+          inFlightChunks = 0;
+          inFlightBytes = 0;
+        } catch (error) {
+          // Retain the failed group (and its original t0) at the front of
+          // the buffer, poison the sink, and surface the failure to every
+          // blocked writer and drain waiter.
+          buffer = group.concat(buffer);
+          bufferBytes += bytes;
+          inFlightChunks = 0;
+          inFlightBytes = 0;
+          bufferT0 =
+            groupT0 !== undefined && bufferT0 !== undefined
+              ? Math.min(groupT0, bufferT0)
+              : (groupT0 ?? bufferT0);
+          throw error;
+        }
 
+        // This group is durable: relieve writers blocked on the bound (they
+        // re-check it and may block again).
+        const relieved = capacityWaiters;
+        capacityWaiters = [];
+        for (const w of relieved) w.resolve();
+      }
+    };
+
+    /** Start (or join) the dispatch chain. Never leaves an unhandled rejection. */
+    const startDispatch = (): void => {
+      if (inFlight || sinkError !== undefined || buffer.length === 0) return;
+      inFlight = dispatchLoop().then(
+        () => {
+          inFlight = null;
+          // A write can land in the microtask gap between the loop's
+          // empty-buffer exit and this reaction. scheduleGroupCommit saw
+          // inFlight still set and armed no timer, so without this check
+          // the chunk would sit stranded until a later write/close/drain.
+          // Treat it like an in-request arrival: dispatch immediately (the
+          // new chain settles the drain waiters when it finishes).
+          if (buffer.length > 0) {
+            startDispatch();
+            return;
+          }
+          // Fully idle (the loop only exits with an empty buffer): settle
+          // the durability barrier.
+          const settled = drainWaiters;
+          drainWaiters = [];
+          for (const w of settled) w.resolve();
+        },
+        (error) => {
+          inFlight = null;
+          sinkError ??= error;
+          rejectWaiters(sinkError);
+        }
+      );
+    };
+
+    /**
+     * Leading-edge dispatch policy for an idle sink:
+     * - window <= 0 (the default): dispatch the leading chunk immediately.
+     *   Fast producers still batch via in-flight accumulation — chunks
+     *   arriving during the request form the next group. The trade for an
+     *   idle burst is one extra request (a 30-chunk burst ships as 1 + 29
+     *   instead of one 30-chunk group under a positive window) in exchange
+     *   for zero fixed first-chunk delay — which matches measured producer
+     *   behavior, where isolated chunks dominate.
+     * - window > 0 (explicitly configured): arm the group-commit timer so
+     *   the leading chunk waits up to the window collecting a group —
+     *   the opt-in trade for slow-but-steady producers.
+     * Window resolution: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`, when set,
+     * overrides `world.streamFlushIntervalMs`; otherwise the World option
+     * (default 0) governs — including the very first chunk. Deciding may
+     * have to wait for the world to resolve; that adds no latency because
+     * `sendGroup` awaits the same promise before any request leaves.
+     */
+    const scheduleGroupCommit = (): void => {
+      if (flushTimer || inFlight) return;
+      if (resolvedFlushIntervalMs === undefined) {
+        // Promise.resolve: everywhere else the world is only ever awaited,
+        // which tolerates a synchronous value (tests stub getWorldLazy that
+        // way); .then() must be given a real promise.
+        flushIntervalResolution ??= Promise.resolve(worldPromise)
+          .then(
+            (world) => {
+              resolvedFlushIntervalMs =
+                world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS;
+            },
+            () => {
+              // World resolution failure surfaces on dispatch; fall back to
+              // the default so buffered chunks still reach the dispatch path
+              // (where the error poisons the sink).
+              resolvedFlushIntervalMs = STREAM_FLUSH_INTERVAL_MS;
+            }
+          )
+          .then(() => {
+            // Re-evaluate: the buffer may have been dispatched by drain()
+            // or a full-request fast path while the world resolved.
+            if (buffer.length > 0) scheduleGroupCommit();
+          });
+        return;
+      }
+      if (resolvedFlushIntervalMs <= 0) {
+        startDispatch();
+        return;
+      }
       flushTimer = setTimeout(() => {
         flushTimer = null;
-        const currentWaiters = flushWaiters;
-        flushWaiters = [];
-        flushPromise = flush().then(
-          () => {
-            for (const w of currentWaiters) w.resolve();
-          },
-          (err) => {
-            for (const w of currentWaiters) w.reject(err);
-          }
-        );
-      }, resolvedFlushIntervalMs ?? getStreamFlushIntervalMs());
+        startDispatch();
+      }, resolvedFlushIntervalMs);
+    };
+
+    /**
+     * Durability barrier: resolves when every accepted chunk has reached the
+     * server and nothing is buffered or in flight; rejects with the sink's
+     * sticky error if any dispatch failed. Flushes a pending group-commit
+     * window immediately rather than waiting out the timer.
+     */
+    const drain = async (): Promise<void> => {
+      while (true) {
+        if (sinkError !== undefined) throw sinkError;
+        if (buffer.length === 0 && !inFlight) return;
+        startDispatch();
+        await new Promise<void>((resolve, reject) => {
+          drainWaiters.push({ resolve, reject });
+        });
+      }
     };
 
     super({
       async write(chunk) {
-        // Batch t0 for the write-flush span: at entry, before the
-        // backpressure wait below, so queueing behind an in-flight flush
-        // counts toward the app-perceived dwell.
-        if (batchStartAt === undefined) batchStartAt = Date.now();
+        if (sinkError !== undefined) throw sinkError;
+        if (bufferT0 === undefined) bufferT0 = Date.now();
+        buffer.push(chunk);
+        bufferBytes += chunk.byteLength;
 
-        // Wait for any in-progress flush to complete before adding to buffer
-        if (flushPromise) {
-          await flushPromise;
-          flushPromise = null;
+        if (
+          buffer.length >= maxChunksPerRequest ||
+          bufferBytes >= maxBytesPerRequest
+        ) {
+          // The buffered group already fills a request: no point dwelling in
+          // the commit window.
+          startDispatch();
+        } else {
+          scheduleGroupCommit();
         }
 
-        buffer.push(chunk);
-        scheduleFlush();
-
-        // Wait for the scheduled flush to complete so that callers
-        // (like flushablePipe) know data has reached the server
-        // before decrementing pendingOps. Without this, pendingOps
-        // reaches 0 when the buffered write returns (instant), but
-        // the 10ms flush timer hasn't fired yet.
-        await new Promise<void>((resolve, reject) => {
-          flushWaiters.push({ resolve, reject });
-        });
+        // Bounded buffer: accept the chunk (never drop), then block until
+        // the read-but-not-durable population — buffered AND in the active
+        // request — is back under the bound. Each durably-sent group
+        // relieves this.
+        while (
+          sinkError === undefined &&
+          (buffer.length + inFlightChunks >= maxBufferedChunks ||
+            bufferBytes + inFlightBytes >= maxBufferedBytes)
+        ) {
+          startDispatch();
+          await new Promise<void>((resolve, reject) => {
+            capacityWaiters.push({ resolve, reject });
+          });
+        }
+        if (sinkError !== undefined) throw sinkError;
       },
       async close() {
-        // Wait for any in-progress flush to complete
-        if (flushPromise) {
-          await flushPromise;
-          flushPromise = null;
-        }
+        // Everything accepted must be durable before the server stream is
+        // closed — the server fences post-close writes.
+        await drain();
 
-        // Flush any remaining buffered chunks
-        await flush();
-
-        // A close with an empty buffer skips flush()'s write (and its barrier),
-        // but can itself be the first write to a brand-new stream — gate it too.
+        // A close with an empty buffer skips the dispatch path (and its
+        // barrier), but can itself be the first write to a brand-new
+        // stream — gate it too.
         await ensureRunReady();
 
         const world = await worldPromise;
@@ -1215,47 +1411,47 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         await world.streams.close(runId, name);
         recordStreamClose(closeStart, runId, name);
       },
-      abort(reason) {
-        // Clean up timer to prevent leaks
+      async abort(reason) {
+        // Buffered chunks were already ACKED to their writers (early-ack
+        // contract), and native pipeTo aborts this sink whenever its SOURCE
+        // errors — e.g. an AI stream that emits ten deltas and then throws.
+        // Discarding here would silently lose the accepted tail of the
+        // prefix, so deliver it first; only the server stream close is
+        // skipped. A dispatch failure during this drain is already sticky
+        // and surfaces through the sink's error paths.
+        //
+        // Deliberately un-timeboxed (unlike the step-executor's 500ms
+        // inline flush): giving up early would drop acked chunks — the
+        // exact loss this path exists to prevent. It is still bounded in
+        // practice by the World transport's own timeout/retry budget: a
+        // stalled write ends in a terminal rejection after finite retries,
+        // which rejects the dispatch and lands in the catch below. The
+        // same catch absorbs the expected conflict when a teardown-driven
+        // abort drains into an already-terminal run.
+        try {
+          await drain();
+        } catch {
+          // sinkError is set; accepted-but-undeliverable chunks surface it.
+        }
         if (flushTimer) {
           clearTimeout(flushTimer);
           flushTimer = null;
         }
-        // Discard buffered chunks - they won't be written
         buffer = [];
-        // Reject any pending flushWaiters so the write() promises settle
-        // and don't leak. Without this, write() hangs forever on an
-        // unsettled promise because the cleared timer will never fire.
-        const waiters = flushWaiters;
-        flushWaiters = [];
-        const abortError = reason ?? new Error('Stream aborted');
-        for (const w of waiters) w.reject(abortError);
+        bufferBytes = 0;
+        sinkError ??= reason ?? new Error('Stream aborted');
+        // Reject blocked writers and drain waiters so nothing leaks or
+        // hangs on a promise whose timer was just cleared.
+        rejectWaiters(sinkError);
       },
     });
 
-    // Batched, durable write entry point used by `flushablePipe` to coalesce
-    // chunks that arrive while a previous batch is still in flight into a
-    // single server write. It buffers every chunk and awaits one `flush()`,
-    // so the whole batch goes out as one `writeMulti` and resolves only once
-    // the batch has reached the server. It shares the buffer/flush machinery
-    // with the per-chunk sink `write()`, but the two are never used
-    // concurrently on the same stream: `flushablePipe` uses either this path
-    // or the writer, never both. On failure `flush()` retains the batch in the
-    // buffer and rethrows, so the caller's durability tracking stays accurate.
-    //
-    // No-`writeMulti` fallback: when the world lacks `writeMulti`, `flush()`
-    // degrades to sequential `write`s for the batch's chunks — one round trip
-    // each, within this single call, while backpressure holds the producer.
-    // `flushablePipe` bounds that stall by capping each coalesced batch (see
-    // `MAX_CHUNKS_PER_BATCH` / `MAX_BYTES_PER_BATCH`), so the fallback can't
-    // turn one drain into an unbounded sequential run.
-    Object.defineProperty(this, STREAM_WRITE_BATCH_SYMBOL, {
-      value: async (chunks: Uint8Array[]): Promise<void> => {
-        if (chunks.length === 0) return;
-        if (batchStartAt === undefined) batchStartAt = Date.now();
-        for (const chunk of chunks) buffer.push(chunk);
-        await flush();
-      },
+    // Durability barrier for owners that complete without closing the
+    // stream: `flushablePipe`'s lock-release completion awaits this so a
+    // step cannot finish (and the function suspend) while accepted chunks
+    // are still client-buffered or in flight.
+    Object.defineProperty(this, STREAM_DRAIN_SYMBOL, {
+      value: drain,
       enumerable: false,
       writable: false,
     });

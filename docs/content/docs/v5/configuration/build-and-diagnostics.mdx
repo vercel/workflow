@@ -42,6 +42,17 @@ Accepted values:
 - Set `1` to expose the workflow manifest at `/.well-known/workflow/v1/manifest.json`.
 - Useful for e2e tests and tools that need to discover workflows over HTTP.
 
+## Discovery
+
+### `WORKFLOW_DISCOVER_NODE_MODULES`
+
+- Framework option: `discoverWorkflowsInNodeModules` where supported
+- Default: enabled
+- Controls whether workflow discovery descends into `node_modules`. By default, dependencies that declare a `workflow`/`@workflow/*` dependency can ship `"use workflow"`/`"use step"` files that are discovered and compiled into your app's bundles.
+- Set `0` or `false` to opt out — imports from your application code that resolve into `node_modules` are not followed, so the build never reads, scans, or descends into dependency file graphs. This skips the cost of scanning `node_modules` and stops third-party workflow/step/serde code from being discovered. Useful when a dependency ships workflow code you don't want compiled into your app, or trips discovery with directive strings you don't intend to run.
+- The SDK's own runtime serde classes (e.g. `Run`) stay registered — they are reached through a seeded entry point, and imports *within* `node_modules` are still followed.
+- Explicit framework config wins over this environment variable.
+
 ## Development diagnostics
 
 ### `WORKFLOW_DEV_HMR_LOGS`
@@ -49,3 +60,11 @@ Accepted values:
 - Default: disabled
 - Set `1` to log workflow rebuild activity during `next dev`.
 - Useful for diagnosing watch and HMR issues.
+
+### `WORKFLOW_DEV_WATCH_IGNORED_PATHS`
+
+- Default: unset
+- Dev-mode only (`next dev`). Comma-separated list of path fragments the file watcher should never watch, in addition to the built-in ignores and your project's `.gitignore`.
+- Each entry is matched as a substring of the absolute path (e.g. `/fixtures/,/generated/`).
+- The watcher already respects `.gitignore` (walking from the app directory up to the workspace root). Use this variable only for large directories you cannot or do not want to add to `.gitignore`.
+- Useful when a project has thousands of non-ignored directories and `next dev` fails with `EMFILE: too many open files, watch`.
