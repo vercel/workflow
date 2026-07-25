@@ -84,6 +84,7 @@ async function drainPendingQueueItems(
   pendingQueue: Map<string, QueueItem>,
   vmGlobalThis: typeof globalThis,
   workflowRun: WorkflowRun,
+  encryptionKey: CryptoKey | undefined,
   outcome: 'completed' | 'failed',
   /**
    * Turbo mode only: resolves once the backgrounded `run_started` has landed.
@@ -120,6 +121,7 @@ async function drainPendingQueueItems(
       suspension: synthesized,
       world,
       run: workflowRun,
+      encryptionKey,
       runReadyBarrier,
     });
   } catch (err) {
@@ -911,6 +913,7 @@ export async function runWorkflow(
         workflowContext.invocationsQueue,
         vmGlobalThis,
         workflowRun,
+        encryptionKey,
         'completed',
         runReadyBarrier
       );
@@ -928,6 +931,7 @@ export async function runWorkflow(
         workflowContext.invocationsQueue,
         vmGlobalThis,
         workflowRun,
+        encryptionKey,
         'failed',
         runReadyBarrier
       );

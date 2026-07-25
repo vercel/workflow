@@ -17,7 +17,7 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-import { importKey } from '../encryption.js';
+import type { CryptoKey } from '../encryption.js';
 import type {
   AttributeInvocationQueueItem,
   HookInvocationQueueItem,
@@ -36,6 +36,12 @@ export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
   world: World;
   run: WorkflowRun;
+  /**
+   * The run's already-resolved encryption key. The workflow runtime shares
+   * this with replay payload hydration and suspension serialization so the
+   * World is not asked to derive or fetch the same key twice.
+   */
+  encryptionKey: CryptoKey | undefined;
   span?: Span;
   requestId?: string;
   /**
@@ -201,6 +207,7 @@ export async function handleSuspension({
   suspension,
   world,
   run,
+  encryptionKey,
   span,
   requestId,
   eventLog,
@@ -281,12 +288,7 @@ export async function handleSuspension({
     }
   }
 
-  // Resolve encryption key for this run
-  const rawKey = await world.getEncryptionKeyForRun?.(run);
-  const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
-
-  // Gate payload compression on the run's specVersion: only runs marked
-  // as possibly containing compressed payloads (spec >= 5) get gzip data.
+  // Gate payload compression on the run's specVersion.
   const compression =
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
 
