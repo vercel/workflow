@@ -25,6 +25,7 @@ import { runtimeLogger } from '../logger.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
+import { appendUniqueEvents } from './append-unique-events.js';
 import { getWorldLazy } from './get-world-lazy.js';
 
 /** Default timeout for health checks in milliseconds */
@@ -397,19 +398,6 @@ function recordRequestedEventCursor(
   requestedCursors.add(cursor);
 }
 
-function appendUniqueEvents(
-  target: Event[],
-  targetIds: Set<string>,
-  events: Event[]
-): void {
-  for (const event of events) {
-    if (!targetIds.has(event.eventId)) {
-      targetIds.add(event.eventId);
-      target.push(event);
-    }
-  }
-}
-
 function assertEventPaginationProgress(
   runId: string,
   hasMore: boolean,
@@ -515,7 +503,7 @@ export async function loadWorkflowRunEvents(
           throw error;
         }
 
-        appendUniqueEvents(loadedEvents, loadedEventIds, response.data);
+        appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
         hasMore = response.hasMore;
         assertEventPaginationProgress(
           runId,
@@ -678,11 +666,7 @@ export async function withPreconditionRetry<T>(
         runId,
         log.cursor ?? undefined
       );
-      appendUniqueEvents(
-        log.events,
-        new Set(log.events.map((e) => e.eventId)),
-        loaded.events
-      );
+      appendUniqueEvents(log.events, loaded.events);
       // When several creates share one `log` (e.g. hook creations under
       // `Promise.all` in `handleSuspension`), concurrent 412s can reload
       // concurrently. The event merge above is safe — `appendUniqueEvents`
