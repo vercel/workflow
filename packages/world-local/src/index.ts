@@ -233,10 +233,3 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     },
   };
 }
-
-/**
- * @deprecated Use `createWorld()` instead.
- */
-export function createLocalWorld(args?: Partial<Config>): LocalWorld {
-  return createWorld(args);
-}
