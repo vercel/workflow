@@ -1,7 +1,4 @@
-export type {
-  HealthCheckEndpoint,
-  HealthCheckResult,
-} from '@workflow/core/runtime';
+export type { HealthCheckResult } from '@workflow/core/runtime';
 export {
   parseStepName,
   parseWorkflowName,

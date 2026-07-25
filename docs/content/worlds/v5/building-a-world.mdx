@@ -108,7 +108,7 @@ Keep the owning Run available for at least as long as its token remains unavaila
 
 ## Queue Interface
 
-The Queue interface handles asynchronous execution of workflows and steps:
+The Queue interface handles asynchronous workflow execution, including queued step work:
 
 {/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
@@ -119,7 +119,7 @@ interface Queue {
     queueName: ValidQueueName,
     message: QueuePayload,
     opts?: QueueOptions
-  ): Promise<{ messageId: MessageId }>;
+  ): Promise<{ messageId: MessageId | null }>;
 
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
@@ -131,35 +131,25 @@ interface Queue {
 ### Queue Names
 
 Queue names follow a specific pattern:
-- `__wkf_workflow_<name>` — For workflow invocations
-- `__wkf_step_<name>` — For step invocations
+- `__wkf_workflow_<name>` — For workflow orchestration and queued step invocations
 
 ### Message Payloads
 
-Two types of messages flow through queues:
+Workflow orchestration and step execution use the same payload. `stepId` and `stepName` identify a queued step invocation:
 
 **Workflow Invocations:**
 {/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
 interface WorkflowInvokePayload {
   runId: string;
+  stepId?: string;
+  stepName?: string;
   traceCarrier?: Record<string, string>;  // OpenTelemetry context
   requestedAt?: Date;
 }
 ```
 
-**Step Invocations:**
-{/* @skip-typecheck - interface definition, not runnable code */}
-```typescript
-interface StepInvokePayload {
-  workflowName: string;
-  workflowRunId: string;
-  workflowStartedAt: number;
-  stepId: string;
-  traceCarrier?: Record<string, string>;
-  requestedAt?: Date;
-}
-```
+The SDK also sends an internal `HealthCheckPayload` through the same workflow queue.
 
 ### Implementation Considerations
 

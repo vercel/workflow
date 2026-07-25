@@ -151,7 +151,7 @@ export const WorkflowBackstopWakesArmed = SemanticConvention<number>(
 // Route attributes
 
 /** The workflow runtime route being handled */
-export const WorkflowRouteType = SemanticConvention<'flow' | 'step'>(
+export const WorkflowRouteType = SemanticConvention<'flow'>(
   'workflow.route.type'
 );
 

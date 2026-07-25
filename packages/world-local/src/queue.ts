@@ -94,18 +94,6 @@ function isDetachedArrayBufferQueueError(error: unknown): boolean {
   return false;
 }
 
-function getQueueRoute(queueName: ValidQueueName): {
-  pathname: 'flow' | 'step';
-  prefix: QueuePrefix;
-} {
-  const { kind, prefix } = parseQueueName(queueName);
-
-  return {
-    pathname: kind === 'workflow' ? 'flow' : 'step',
-    prefix,
-  };
-}
-
 export function createQueue(config: Partial<Config>): LocalQueue {
   // Create a custom agent optimized for high-concurrency local workflows:
   // - headersTimeout: 0 allows long-running steps
@@ -148,15 +136,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     }
 
     const body = transport.serialize(message);
-    const { pathname, prefix } = getQueueRoute(queueName);
+    const { prefix } = parseQueueName(queueName);
     const messageId = MessageId.parse(`msg_${generateId()}`);
 
     // Extract identifiers from the message for structured logging.
-    // Workflow messages have `runId`, step messages have `workflowRunId` + `stepId`.
+    // Combined workflow messages carry `runId` and may include `stepId`.
     const msg = message as Record<string, unknown>;
-    const runId = (msg.runId ?? msg.workflowRunId ?? undefined) as
-      | string
-      | undefined;
+    const runId = (msg.runId ?? undefined) as string | undefined;
     const stepId = (msg.stepId ?? undefined) as string | undefined;
 
     if (opts?.idempotencyKey) {
@@ -187,7 +173,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         await semaphore.acquire();
       }
       // Safety limit to prevent infinite loops in the local queue.
-      // The actual max delivery enforcement happens in the workflow/step handlers
+      // The actual max delivery enforcement happens in the workflow handler
       // (at MAX_QUEUE_DELIVERIES = 48), so this just needs to be comfortably higher.
       const MAX_LOCAL_SAFETY_LIMIT = 256;
       // Number of times the message has actually reached a handler (returned
@@ -215,7 +201,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             if (directHandler) {
               const req = new Request(
                 createWorkflowUrl(resolveDirectBaseUrl(config), {
-                  type: pathname,
+                  type: 'flow',
                 }),
                 { method: 'POST', headers, body }
               );
@@ -224,7 +210,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
               const baseUrl = await resolveBaseUrl(config);
               // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
               response = await fetch(
-                createWorkflowUrl(baseUrl, { type: pathname }),
+                createWorkflowUrl(baseUrl, { type: 'flow' }),
                 {
                   method: 'POST',
                   duplex: 'half',

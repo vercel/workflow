@@ -23,7 +23,7 @@ import type { FormatPrefix } from './types.js';
  *
  * - `workflow`: Runs inside the workflow VM. Includes class serialization,
  *   step function serialization. No stream handling.
- * - `step`: Runs in the step handler (Node.js). Includes class serialization.
+ * - `step`: Runs in the step executor (Node.js). Includes class serialization.
  *   No step function serialization. Stream handling at call sites.
  * - `client`: Runs on the client side. Includes class serialization.
  *   No step function serialization. Stream handling at call sites.

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  getQueuePrefixKind,
   getQueueTopicPrefix,
   parseQueueName,
   QueuePrefix,
@@ -12,23 +11,21 @@ describe('getQueueTopicPrefix', () => {
     expect(getQueueTopicPrefix('workflow')).toBe('__wkf_workflow_');
   });
 
-  it('returns default step prefix without namespace', () => {
-    expect(getQueueTopicPrefix('step')).toBe('__wkf_step_');
-  });
-
   it('returns namespaced workflow prefix', () => {
     expect(getQueueTopicPrefix('workflow', 'custom')).toBe(
       '__custom_wkf_workflow_'
     );
   });
 
-  it('returns namespaced step prefix', () => {
-    expect(getQueueTopicPrefix('step', 'custom')).toBe('__custom_wkf_step_');
-  });
-
   it('accepts multi-character namespace', () => {
     expect(getQueueTopicPrefix('workflow', 'myframework123')).toBe(
       '__myframework123_wkf_workflow_'
+    );
+  });
+
+  it('rejects the retired step queue kind at runtime', () => {
+    expect(() => getQueueTopicPrefix('step' as never)).toThrow(
+      'Unsupported queue kind: step'
     );
   });
 
@@ -61,18 +58,15 @@ describe('QueuePrefix schema', () => {
     expect(QueuePrefix.parse('__wkf_workflow_')).toBe('__wkf_workflow_');
   });
 
-  it('accepts default step prefix', () => {
-    expect(QueuePrefix.parse('__wkf_step_')).toBe('__wkf_step_');
-  });
-
   it('accepts namespaced workflow prefix', () => {
     expect(QueuePrefix.parse('__custom_wkf_workflow_')).toBe(
       '__custom_wkf_workflow_'
     );
   });
 
-  it('accepts namespaced step prefix', () => {
-    expect(QueuePrefix.parse('__custom_wkf_step_')).toBe('__custom_wkf_step_');
+  it('rejects retired step prefixes', () => {
+    expect(() => QueuePrefix.parse('__wkf_step_')).toThrow();
+    expect(() => QueuePrefix.parse('__custom_wkf_step_')).toThrow();
   });
 
   it('rejects invalid prefix', () => {
@@ -85,18 +79,6 @@ describe('QueuePrefix schema', () => {
 
   it('rejects uppercase namespace', () => {
     expect(() => QueuePrefix.parse('__Custom_wkf_workflow_')).toThrow();
-  });
-});
-
-describe('getQueuePrefixKind', () => {
-  it('identifies default prefixes', () => {
-    expect(getQueuePrefixKind('__wkf_workflow_')).toBe('workflow');
-    expect(getQueuePrefixKind('__wkf_step_')).toBe('step');
-  });
-
-  it('identifies namespaced prefixes', () => {
-    expect(getQueuePrefixKind('__custom_wkf_workflow_')).toBe('workflow');
-    expect(getQueuePrefixKind('__custom_wkf_step_')).toBe('step');
   });
 });
 
@@ -113,8 +95,8 @@ describe('ValidQueueName schema', () => {
     );
   });
 
-  it('accepts step queue names', () => {
-    expect(ValidQueueName.parse('__wkf_step_myStep')).toBe('__wkf_step_myStep');
+  it('rejects retired step queue names', () => {
+    expect(() => ValidQueueName.parse('__wkf_step_myStep')).toThrow();
   });
 
   it('rejects prefix-only without a name', () => {
@@ -130,7 +112,6 @@ describe('parseQueueName', () => {
   it('parses default workflow queue names', () => {
     expect(parseQueueName('__wkf_workflow_myFlow')).toEqual({
       prefix: '__wkf_workflow_',
-      kind: 'workflow',
       id: 'myFlow',
     });
   });
@@ -138,16 +119,7 @@ describe('parseQueueName', () => {
   it('parses namespaced workflow queue names', () => {
     expect(parseQueueName('__custom_wkf_workflow_myFlow')).toEqual({
       prefix: '__custom_wkf_workflow_',
-      kind: 'workflow',
       id: 'myFlow',
-    });
-  });
-
-  it('parses namespaced step queue names', () => {
-    expect(parseQueueName('__custom_wkf_step_myStep')).toEqual({
-      prefix: '__custom_wkf_step_',
-      kind: 'step',
-      id: 'myStep',
     });
   });
 });

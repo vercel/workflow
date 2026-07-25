@@ -13,7 +13,7 @@ Performs an end-to-end health check of a deployment's workflow infrastructure by
 import { getWorld, healthCheck } from "workflow/runtime";
 
 const world = await getWorld();
-const result = await healthCheck(world, "workflow"); // [!code highlight]
+const result = await healthCheck(world); // [!code highlight]
 
 if (!result.healthy) {
   console.error("Workflow infrastructure unhealthy:", result.error);
@@ -27,8 +27,7 @@ if (!result.healthy) {
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `world` | `World` | The World instance to send the health check through |
-| `endpoint` | `"workflow" \| "step"` | Which endpoint to check |
-| `options` | `HealthCheckOptions & { namespace?: string }` | Optional configuration |
+| `options` | `HealthCheckOptions` | Optional configuration |
 
 Where `HealthCheckOptions` is:
 
@@ -36,6 +35,7 @@ Where `HealthCheckOptions` is:
 |--------|------|-------------|
 | `timeout` | `number` | Milliseconds to wait for the health check response. Default: `30000`. |
 | `deploymentId` | `string` | Deployment to target. Falls back to `process.env.VERCEL_DEPLOYMENT_ID`. |
+| `namespace` | `string` | Queue namespace of the target deployment. Falls back to `WORKFLOW_QUEUE_NAMESPACE`. |
 
 ### Returns
 
@@ -43,7 +43,7 @@ Returns a `Promise<HealthCheckResult>`:
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `healthy` | `boolean` | Whether the endpoint processed the health check message |
+| `healthy` | `boolean` | Whether the combined workflow endpoint processed the health check message |
 | `error` | `string \| undefined` | Error message when the check failed |
 | `latencyMs` | `number \| undefined` | Round-trip latency when the check succeeded |
 | `specVersion` | `number \| undefined` | Workflow spec version of the responding deployment |

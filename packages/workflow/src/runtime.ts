@@ -6,7 +6,6 @@ export {
   createWorld,
   getWorld,
   getWorldHandlers,
-  type HealthCheckEndpoint,
   type HealthCheckOptions,
   type HealthCheckResult,
   healthCheck,

@@ -104,7 +104,6 @@ import { runWorkflow } from './workflow.js';
 export type { Event, WorkflowRun };
 export { WorkflowSuspension } from './global.js';
 export {
-  type HealthCheckEndpoint,
   type HealthCheckOptions,
   type HealthCheckResult,
   healthCheck,
@@ -141,10 +140,6 @@ export {
   type StartOptionsWithoutDeploymentId,
   start,
 } from './runtime/start.js';
-// V2: stepEntrypoint is no longer re-exported — the combined handler
-// (workflowEntrypoint) executes steps inline. Removing the re-export
-// prevents Turbopack from tracing step-handler.js → get-port.js
-// filesystem operations into the flow route bundle.
 export {
   createWorld,
   createWorldFromModule,
@@ -372,7 +367,6 @@ export function workflowEntrypoint(
         if (healthCheck) {
           await handleHealthCheckMessage(
             healthCheck,
-            'workflow',
             worldHandlers.specVersion
           );
           return;
@@ -2476,7 +2470,7 @@ export function workflowEntrypoint(
                         // terminal events. We only loop back to replay when every
                         // inline step reached a terminal state — otherwise the
                         // still-pending steps will be re-run by their queued retry
-                        // messages and the background-step handler replays once
+                        // messages and the background-step path replays once
                         // all steps are done.
                         const toRetry: {
                           step: (typeof inlineExecutions)[number];
@@ -2618,7 +2612,7 @@ export function workflowEntrypoint(
 
                         if (toRetry.length > 0) {
                           // Some inline steps will be re-run via their queued
-                          // retry messages; the background-step handler replays
+                          // retry messages; the background-step path replays
                           // once all steps are terminal. Don't loop here — the
                           // retrying steps have no terminal event to observe yet.
                           return;

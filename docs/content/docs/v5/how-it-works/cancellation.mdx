@@ -176,12 +176,12 @@ The step's `ops` array is awaited via `waitUntil(Promise.all(ops))` after the st
 
 ### Abort Errors Are Wrapped in FatalError
 
-When a step throws due to an abort — whether from `fetch` throwing `AbortError`, `signal.throwIfAborted()`, or any other abort-induced error — the step handler wraps the error in `FatalError` before recording it in the event log. This ensures:
+When a step throws due to an abort — whether from `fetch` throwing `AbortError`, `signal.throwIfAborted()`, or any other abort-induced error — the step executor wraps the error in `FatalError` before recording it in the event log. This ensures:
 
 - **No retries**: An abort is intentional cancellation, not a transient failure. Retrying would just abort again.
 - **Immediate propagation**: The error bubbles up to the workflow as a `FatalError`, which the workflow can catch with `FatalError.is(err)`.
 
-The wrapping happens at the step handler level (`runtime/step-handler.ts`), during error hydration. When the step's thrown error is an `AbortError` (checked via `err.name === 'AbortError'`), it is treated as fatal regardless of the step's `maxRetries` configuration.
+The wrapping happens in `runtime/step-executor.ts` during error hydration. When the step's thrown error is an `AbortError` (checked via `err.name === 'AbortError'`), it is treated as fatal regardless of the step's `maxRetries` configuration.
 
 ### abort() in the Workflow
 

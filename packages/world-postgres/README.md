@@ -173,10 +173,10 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 
 ## Queue Behavior
 
-- Graphile jobs are acknowledged only after the workflow or step execution finishes, or after the worker durably schedules a delayed follow-up job
+- Graphile jobs are acknowledged only after execution finishes, or after the worker durably schedules a delayed follow-up job
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
-- Workflow and step execution is sent through `/.well-known/workflow/v1/flow` and `/.well-known/workflow/v1/step`
+- Workflow orchestration and queued step execution are both sent through `/.well-known/workflow/v1/flow`
 
 ## Development
 
