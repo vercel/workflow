@@ -159,9 +159,26 @@ export const HealthCheckPayloadSchema = z.object({
   runId: z.string().optional(),
 });
 
+/**
+ * Health check MUST come first.
+ *
+ * Zod unions return the first matching member's output, and `z.object` strips
+ * keys the matching member doesn't declare. `HealthCheckPayloadSchema` carries
+ * an optional `runId`, so a probe payload also satisfies
+ * `WorkflowInvokePayloadSchema` (whose only required field is `runId`). With
+ * the invoke member first, parsing a runId-bearing probe silently dropped
+ * `__healthCheck` and `correlationId`, and the runtime — which dispatches on
+ * `__healthCheck` before falling through to the invoke schema — reinterpreted
+ * the probe as "replay this run". That made the queue handler POST
+ * `run_started` for a run that doesn't exist yet (404), fail, and retry
+ * forever, so the probe never answered and `start()` timed out.
+ *
+ * Ordering health check first is safe in the other direction: it requires
+ * `__healthCheck: true`, which an invoke payload never carries.
+ */
 export const QueuePayloadSchema = z.union([
-  WorkflowInvokePayloadSchema,
   HealthCheckPayloadSchema,
+  WorkflowInvokePayloadSchema,
 ]);
 export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
 
