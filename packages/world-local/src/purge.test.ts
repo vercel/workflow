@@ -128,6 +128,38 @@ describe('purgeRunTree', () => {
     ).rejects.toThrow('was purged');
   });
 
+  it('rejects re-associating a surviving run with a purged tree', async () => {
+    const root = await createRun(world, {
+      deploymentId: 'deployment',
+      input: new Uint8Array(),
+      workflowName: 'workflow',
+    });
+    const survivor = await createRun(world, {
+      deploymentId: 'deployment',
+      input: new Uint8Array(),
+      workflowName: 'workflow',
+    });
+    await updateRun(world, root.runId, 'run_completed', {
+      output: new Uint8Array(),
+    });
+    await world.purgeRunTree?.(root.runId, {
+      descendantAttribute: { key: 'lineageRoot', value: root.runId },
+    });
+
+    await expect(
+      world.runs.experimentalSetAttributes?.(survivor.runId, [
+        { key: 'lineageRoot', value: root.runId },
+      ])
+    ).rejects.toThrow('was purged');
+    await expect(
+      world.runs.experimentalSetAttributes?.(survivor.runId, [
+        { key: 'lineageRoot', value: 'another-root' },
+      ])
+    ).resolves.toEqual({
+      attributes: { lineageRoot: 'another-root' },
+    });
+  });
+
   it('resumes a partial purge from its durable manifest after restart', async () => {
     const root = await createRun(world, {
       deploymentId: 'deployment',

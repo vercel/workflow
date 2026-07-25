@@ -169,7 +169,13 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
             experimentalSetAttributes: (runId, changes, options) =>
               exclusiveMutation(async () => {
                 await ensurePurgeFencesLoaded();
-                assertRunWriteAllowed(runId);
+                const attributeSet: Record<string, string> = {};
+                for (const change of changes) {
+                  if (change.value !== null) {
+                    attributeSet[change.key] = change.value;
+                  }
+                }
+                assertRunWriteAllowed(runId, attributeSet);
                 return experimentalSetAttributes(runId, changes, options);
               }),
           }),
