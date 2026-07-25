@@ -11,13 +11,12 @@ related:
 
 Workflow SDK v5 is out now, and Workflow SDK v4 has moved to maintenance status: it stays installable as `workflow@4`, receives stability fixes only, and its documentation lives at [/v4/docs](/v4/docs).
 
-We recommend upgrading to v5 to get all of the performance, cost, and feature improvements listed below. It's as simple as installing the migration skill and telling your agent to your app from Workflow SDK v4 to v5.
+We recommend upgrading to v5 to get all of the performance, cost, and feature improvements listed below. It's as simple as installing the migration skill and telling your agent to migrate your app from Workflow SDK v4 to v5.
 
 ```bash
 npm install workflow@latest
 npx skills add https://github.com/vercel/workflow --skill migrating-workflow-v4-to-v5
 ```
-
 
 ## Highlights
 
@@ -25,13 +24,11 @@ npx skills add https://github.com/vercel/workflow --skill migrating-workflow-v4-
 
 The largest change in v5 has no API surface: the runtime does far less work per unit of progress. The time between calling `start()` and your first step body executing is now less than half of what it was in v4. This is made possible by many smaller optimizations:
 
-**A workflow invocation now does as much as it can in a single pass.** In 4.x, progress was largely deferred to the queue: an invocation would execute a step, hand back to the queue, and let a fresh invocation pick up the next one. v5 creates and executes steps inline — several per suspension, in parallel, and only uses the queue when it really has to: a wait, a hook, or the function is approaching its timeout.
+**A workflow invocation now does as much as it can in a single pass.** In 4.x, progress was largely deferred to the queue: an invocation would execute a step, hand back to the queue, and let a fresh invocation pick up the next one. v5 creates and executes steps inline — several per suspension, in parallel — and only uses the queue when it really has to: a wait, a hook, or the function is approaching its timeout.
 
 **The runtime avoids waiting on the persistence layer where it can determine that is safe for your workload.** Many API calls are now simply skipped when not needed, like requesting the event-log on a run's first invocation. Step creation is folded into step execution rather than being its own round trip. The inline loop consumes the event-log delta from the previous step's write instead of re-listing events. Each optimization is gated on specific runtime conditions, and can be turned off individually — see [Runtime tuning](/docs/configuration/runtime-tuning).
 
 **Payloads are compressed** before they are encrypted and sent to the API. Repetitive payloads compress heavily; AI token streams average around 80% smaller. That is less stored data and less to move over the network.
-
-Together, time to first step — from `start()` to your first step body executing — is about half of what it was in v4.
 
 On [Vercel Workflows](/worlds/vercel) these benefits compound to reduce compute costs by up to 80% for workflows made of many small steps, and storage cost by up to 70%, depending on the workload. Depending on your setup, you may see similar gains using self-hosted or third-party Worlds.
 
@@ -85,10 +82,9 @@ See [Attributes](/docs/observability/attributes).
 
 ### A redesigned trace viewer, in the open-source package
 
-The trace viewer has been rebuilt from the ground-up, with an easily visible timeline, a minimap, pan, zoom, debug functionality, a new JSON viewer, keyboard navigation, and more.
+The trace viewer has been rebuilt from the ground up, with an easily visible timeline, a minimap, pan, zoom, debug functionality, a new JSON viewer, keyboard navigation, and more.
 
 Vercel Observability uses this trace viewer for all runs, v4 included, but with v5, you get the same new design for self-hosted UI and local debugging. See [Observability](/docs/observability).
-
 
 ### Also new in 5.0
 
@@ -133,4 +129,3 @@ Vercel Observability uses this trace viewer for all runs, v4 included, but with 
 On Next.js 16.2.0-canary.48 and newer, `withWorkflow` now defaults to `lazyDiscovery: true`; older versions fall back to eager discovery automatically.
 
 Runs created on 4.x keep executing on the deployment that created them, so upgrading a deployment does not migrate in-flight runs — and, given the seed change above, must not. One storage caveat is worth knowing about: failed runs stored by `@workflow/world-postgres` before the upgrade read back with `error: undefined`, because the payload lives in the legacy `error` text column rather than `errorJson`.
-
