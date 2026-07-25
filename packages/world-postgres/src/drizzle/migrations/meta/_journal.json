@@ -113,6 +113,13 @@
       "when": 1782691200000,
       "tag": "0015_move_enums_to_workflow_schema",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1785283200000,
+      "tag": "0016_add_run_tree_purge_fences",
+      "breakpoints": true
     }
   ]
 }

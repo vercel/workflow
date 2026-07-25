@@ -170,6 +170,11 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 - **Streaming**: Real-time event streaming capabilities
 - **Health Checks**: Built-in connection health monitoring
 - **Configurable Concurrency**: Adjustable worker concurrency for queue processing
+- **Run-tree Purge**: Transactional deletion of terminal run trees with durable write fences and idempotent retry
+
+`purgeRunTree()` removes runs, events, steps, hooks, waits, and stream chunks in
+one transaction. The migration-created tombstones and lineage fences reject
+later writes or attempts to recreate descendants of a purged tree.
 
 ## Queue Behavior
 
