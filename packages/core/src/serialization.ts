@@ -2717,6 +2717,18 @@ export function getExternalRevivers(
           }
         );
       }
+      // Keep the owner's public key on the handle so a further forward stays on
+      // the zero-lookup sealed path.
+      if (typeof value.encryptionPublicKey === 'string') {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
+          {
+            value: value.encryptionPublicKey,
+            writable: false,
+          }
+        );
+      }
 
       return serialize.writable;
     },
@@ -2829,6 +2841,16 @@ export function getWorkflowRevivers(
       if (typeof value.deploymentId === 'string') {
         descriptor[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL] = {
           value: value.deploymentId,
+          writable: false,
+        };
+      }
+      // Preserve the owner's public key for the same reason as the runId
+      // above. Without it, forwarding a writable through a workflow to a step
+      // silently drops the key, and the step falls back to fetching the
+      // owner's symmetric key — the round trip sealing exists to remove.
+      if (typeof value.encryptionPublicKey === 'string') {
+        descriptor[STREAM_SERVER_PUBLIC_KEY_SYMBOL] = {
+          value: value.encryptionPublicKey,
           writable: false,
         };
       }
@@ -3126,6 +3148,18 @@ function getStepRevivers(
           STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
           {
             value: targetDeploymentId,
+            writable: false,
+          }
+        );
+      }
+      // Keep the owner's public key on the handle so a further forward stays on
+      // the zero-lookup sealed path.
+      if (typeof value.encryptionPublicKey === 'string') {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
+          {
+            value: value.encryptionPublicKey,
             writable: false,
           }
         );

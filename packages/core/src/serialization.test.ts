@@ -695,6 +695,66 @@ describe('workflow arguments', () => {
     }
   });
 
+  it('keeps the owner public key across a workflow -> step forward', async () => {
+    // The end-to-end shape is two hops, not one: `start()` hands the parent's
+    // writable to the CHILD WORKFLOW, and the child workflow then hands it to
+    // the step that actually writes. So the handle is revived and re-serialized
+    // in between.
+    //
+    // The revivers used to re-attach only the stream name, runId and
+    // deploymentId, so the owner's public key was silently dropped on that
+    // middle hop and the step fell back to fetching the owner's symmetric key
+    // — reintroducing exactly the round trip this design removes. Sealing
+    // therefore never engaged for `start()`-forwarded streams in practice,
+    // even though the single-hop test above passed.
+    const ownerMaterial = new Uint8Array(32).fill(0x2b);
+    const ownerKeyPair = await deriveRunKeyPair(ownerMaterial);
+    const ownerPublicKey = bytesToBase64(ownerKeyPair.publicKey);
+
+    const parentWritable = new WritableStream();
+    for (const [sym, value] of [
+      [STREAM_NAME_SYMBOL, 'strm_sealedparent'],
+      [STREAM_SERVER_RUN_ID_SYMBOL, 'wrun_parent'],
+      [STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, 'dpl_parent'],
+      [STREAM_SERVER_PUBLIC_KEY_SYMBOL, ownerPublicKey],
+    ] as const) {
+      Object.defineProperty(parentWritable, sym, { value, writable: false });
+    }
+
+    // Hop 1: parent serializes into the child's workflow arguments, and the
+    // child's workflow revives the handle.
+    const forwarded = await dehydrateWorkflowArguments(
+      parentWritable,
+      'wrun_child',
+      noEncryptionKey
+    );
+    const inChildWorkflow = (await hydrateWorkflowArguments(
+      forwarded,
+      'wrun_child',
+      noEncryptionKey
+    )) as WritableStream<string>;
+
+    // The revived handle must still advertise the owner's key, or hop 2 has
+    // nothing to forward.
+    expect((inChildWorkflow as any)[STREAM_SERVER_PUBLIC_KEY_SYMBOL]).toBe(
+      ownerPublicKey
+    );
+
+    // Hop 2: the child workflow passes it to the step that writes. The
+    // descriptor the step receives is what decides sealed vs symmetric.
+    const toStep = (await dehydrateStepArguments(
+      inChildWorkflow,
+      'wrun_child',
+      noEncryptionKey
+    )) as any;
+
+    // The step payload is devalue-encoded bytes, so decode before matching —
+    // JSON-stringifying the Uint8Array would just yield a map of byte indices.
+    const wire = new TextDecoder().decode(toStep as Uint8Array);
+    expect(wire).toContain('encryptionPublicKey');
+    expect(wire).toContain(ownerPublicKey);
+  });
+
   it('falls back to the symmetric path when the descriptor has no public key', async () => {
     // Descriptors written by older SDKs carry no key; those must keep working.
     const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
