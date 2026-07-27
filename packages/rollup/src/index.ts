@@ -2,12 +2,10 @@ import { relative } from 'node:path';
 import { transform } from '@swc/core';
 import {
   detectWorkflowPatterns,
-  ensureWorkflowTargetWorldEnv,
   isGeneratedWorkflowFile,
   resolveModuleSpecifier,
   shouldTransformFile,
   WORKFLOW_OPTIONAL_OTEL_API_MODULE,
-  WORKFLOW_WORLD_TARGET_MODULE,
 } from '@workflow/builders';
 import { resolveModulePath } from 'exsolve';
 import type { Plugin } from 'rollup';
@@ -51,16 +49,7 @@ export function workflowTransformPlugin(
           return resolved ?? { id: source, external: true };
         }
 
-        if (source !== WORKFLOW_WORLD_TARGET_MODULE) {
-          return null;
-        }
-
-        const targetWorld = ensureWorkflowTargetWorldEnv();
-        const resolved = await this.resolve(targetWorld, importer, {
-          ...options,
-          skipSelf: true,
-        });
-        return resolved ?? { id: targetWorld, external: true };
+        return null;
       },
     },
     // This transform applies the "use workflow"/"use step"
