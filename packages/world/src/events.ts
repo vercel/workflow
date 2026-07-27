@@ -781,10 +781,8 @@ export interface EventResult {
   /**
    * Events with data resolved. Two producers populate this:
    *
-   * - On a `run_started` response: the first replay page up to this point.
-   *   A complete page lets the runtime skip the initial `events.list`; a
-   *   partial page is continued strictly after {@link EventResult.cursor}
-   *   without re-reading the returned prefix.
+   * - On a `run_started` response: the first replay page. Partial pages
+   *   continue after {@link EventResult.cursor}.
    * - On a step-terminal write (`step_completed` / `step_failed`) when
    *   the caller passed {@link CreateEventParams.sinceCursor}: the delta
    *   of events written strictly after that cursor, so the inline loop

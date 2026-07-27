@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import {
   type CreateEventRequest,
   type Event,
@@ -67,8 +68,7 @@ function getWorkflowTransformCode(workflowName: string) {
  * wait races with a hook payload that landed durably first.
  */
 async function runStaleWaitReplayScenario(options: {
-  includePreloadedCursor: boolean;
-  preloadedHasMore?: boolean;
+  preload: 'legacy' | 'complete' | 'partial';
   omitWaitCompletionFromDelta?: boolean;
   terminalFailureAfterWaitCompletion?: boolean;
 }) {
@@ -182,12 +182,14 @@ async function runStaleWaitReplayScenario(options: {
   ];
 
   const staleEventsCursor = 'cursor-after-stale-events';
-  const partialPreloadCursor = 'cursor-after-partial-preload';
-  const preloadedEventCount = options.preloadedHasMore ? 3 : staleEvents.length;
-  const preloadedEvents = staleEvents.slice(0, preloadedEventCount);
-  const preloadedCursor = options.preloadedHasMore
-    ? partialPreloadCursor
-    : staleEventsCursor;
+  const preloadedEvents =
+    options.preload === 'partial' ? staleEvents.slice(0, 3) : staleEvents;
+  const lastPreloadedEvent = preloadedEvents.at(-1);
+  assert(lastPreloadedEvent);
+  const preloadedCursor =
+    options.preload === 'partial'
+      ? lastPreloadedEvent.eventId
+      : staleEventsCursor;
   const hookReceivedEvent = event({
     eventType: 'hook_received',
     specVersion: SPEC_VERSION_CURRENT,
@@ -219,22 +221,16 @@ async function runStaleWaitReplayScenario(options: {
       // Cursor reads simulate the optimized delta fetch. Without a cursor, the
       // runtime has fallen back to a full reload from the beginning.
       const requestedCursor = params.pagination?.cursor;
-      let data: Event[];
-      if (requestedCursor === partialPreloadCursor) {
-        data = durableEvents.slice(preloadedEventCount);
-      } else if (requestedCursor === staleEventsCursor) {
-        data = durableEvents.slice(staleEvents.length);
+      let cursorIndex = -1;
+      if (requestedCursor === staleEventsCursor) {
+        cursorIndex = staleEvents.length - 1;
       } else if (requestedCursor) {
-        const cursorIndex = durableEvents.findIndex(
+        cursorIndex = durableEvents.findIndex(
           (event) => event.eventId === requestedCursor
         );
-        data =
-          cursorIndex >= 0
-            ? durableEvents.slice(cursorIndex + 1)
-            : [...durableEvents];
-      } else {
-        data = [...durableEvents];
+        assert(cursorIndex >= 0, `Unknown event cursor: ${requestedCursor}`);
       }
+      let data = durableEvents.slice(cursorIndex + 1);
       if (
         requestedCursor === staleEventsCursor &&
         options.omitWaitCompletionFromDelta
@@ -257,11 +253,11 @@ async function runStaleWaitReplayScenario(options: {
 
   const runStartedResponse = {
     run: workflowRun,
-    events: [...preloadedEvents],
-    ...(options.includePreloadedCursor
+    events: preloadedEvents,
+    ...(options.preload !== 'legacy'
       ? {
           cursor: preloadedCursor,
-          hasMore: options.preloadedHasMore ?? false,
+          hasMore: options.preload === 'partial',
         }
       : {}),
   };
@@ -464,7 +460,7 @@ describe('workflow handler wait completion replay', () => {
     // so after wait_completed it only needs the delta containing the hook and
     // wait completion.
     const result = await runStaleWaitReplayScenario({
-      includePreloadedCursor: true,
+      preload: 'complete',
     });
 
     // The first call is the cursor delta after wait completion; the second
@@ -488,7 +484,7 @@ describe('workflow handler wait completion replay', () => {
     // Backward compatibility path for worlds/servers that return preloaded
     // events but do not yet return pagination metadata with them.
     const result = await runStaleWaitReplayScenario({
-      includePreloadedCursor: false,
+      preload: 'legacy',
     });
 
     // Full reload after wait completion, plus the next loop iteration's
@@ -518,8 +514,7 @@ describe('workflow handler wait completion replay', () => {
     // A run_started response can return a first page and report that more pages
     // exist. The runtime must retain that prefix and load only its suffix.
     const result = await runStaleWaitReplayScenario({
-      includePreloadedCursor: true,
-      preloadedHasMore: true,
+      preload: 'partial',
     });
 
     // Partial-preload continuation, cursor delta after wait completion, then
@@ -540,13 +535,6 @@ describe('workflow handler wait completion replay', () => {
       'step_completed',
       'wait_created',
     ]);
-    expect(
-      result.listedPages[0]?.some((listed) =>
-        result.preloadedEvents.some(
-          (preloaded) => preloaded.eventId === listed.eventId
-        )
-      )
-    ).toBe(false);
     expect(result.listedPages[1]?.map((event) => event.eventType)).toEqual([
       'hook_received',
       'wait_completed',
@@ -567,7 +555,7 @@ describe('workflow handler wait completion replay', () => {
     // Defensive path: if the cursor read does not include the wait completion
     // this handler just wrote, the cursor was not a safe replay boundary.
     const result = await runStaleWaitReplayScenario({
-      includePreloadedCursor: true,
+      preload: 'complete',
       omitWaitCompletionFromDelta: true,
     });
 
@@ -606,7 +594,7 @@ describe('workflow handler wait completion replay', () => {
 
   it('stops after wait refresh when the event log contains a terminal run event', async () => {
     const result = await runStaleWaitReplayScenario({
-      includePreloadedCursor: true,
+      preload: 'complete',
       terminalFailureAfterWaitCompletion: true,
     });
 

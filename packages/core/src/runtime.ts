@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { types } from 'node:util';
 import {
   CorruptedEventLogError,
@@ -543,9 +544,7 @@ export function workflowEntrypoint(
                   // response. Undefined ⇒ no enforcement (older servers, turbo).
                   let maxEventsLimit: number | undefined;
                   let workflowStartedAt = -1;
-                  let preloadedEvents: Event[] | undefined;
-                  let preloadedEventsCursor: string | null | undefined;
-                  let preloadedEventsHasMore = false;
+                  let preloadedEventLog: MutableEventLog | undefined;
 
                   // Latency telemetry (TTFS) state — see runtime/step-latency.ts.
                   // Whether this invocation's FIRST event snapshot contained
@@ -1001,8 +1000,7 @@ export function workflowEntrypoint(
                         runId,
                         runStartedEvent,
                         // We background this purely as a write barrier and
-                        // never read its preloaded events (preloadedEvents is
-                        // forced to [] below), so tell the World to skip the
+                        // never read its preloaded events, so skip the
                         // run_started event-log preload. That trims the
                         // run_started request the chained first step_started
                         // waits on — shortening time-to-second-step — and the
@@ -1029,13 +1027,11 @@ export function workflowEntrypoint(
                       startedPromise.catch(() => {});
                       // Skip the initial events.list: nothing has been written to
                       // the log yet on a first delivery (run_started is still in
-                      // flight). An empty preloaded set routes iteration 1 through
+                      // flight). An empty preload routes iteration 1 through
                       // the no-load preloaded branch; iteration 2 then takes the
                       // existing post-preloaded full reload to pick up a cursor
-                      // (no spurious "cursor missing" warning). `[]` is
-                      // intentionally truthy here — do not change the load
-                      // branches' `if (preloadedEvents)` checks to test length.
-                      preloadedEvents = [];
+                      // without a spurious "cursor missing" warning.
+                      preloadedEventLog = { events: [], cursor: null };
                       const now = new Date();
                       workflowRun = {
                         runId,
@@ -1090,24 +1086,22 @@ export function workflowEntrypoint(
                         // Anchors RSFS — see the declaration above.
                         runStartedReceivedAtMs = Date.now();
 
-                        // If the response includes events, use them as the
-                        // beginning of the replay snapshot. A complete page
-                        // skips the initial events.list entirely. A partial
-                        // page is continued strictly after its cursor, so the
-                        // runtime never re-reads the preloaded prefix.
-                        //
-                        // hasMore:true without a cursor violates the World
-                        // pagination contract. Ignore that unusable preload
-                        // and retain the full-load fallback for compatibility.
-                        if (
-                          result.events &&
-                          result.events.length > 0 &&
-                          (result.hasMore !== true ||
-                            typeof result.cursor === 'string')
-                        ) {
-                          preloadedEvents = result.events;
-                          preloadedEventsCursor = result.cursor;
-                          preloadedEventsHasMore = result.hasMore === true;
+                        if (result.events?.length) {
+                          let events = result.events;
+                          let cursor = result.cursor ?? null;
+                          if (result.hasMore) {
+                            assert(
+                              cursor,
+                              'Partial event preload has no cursor'
+                            );
+                            const loaded = await loadWorkflowRunEvents(
+                              runId,
+                              cursor
+                            );
+                            events = events.concat(loaded.events);
+                            cursor = loaded.cursor ?? cursor;
+                          }
+                          preloadedEventLog = { events, cursor };
                         }
 
                         if (!workflowRun.startedAt) {
@@ -1288,21 +1282,9 @@ export function workflowEntrypoint(
                       } else if (cachedEvents === null) {
                         // First iteration: use preloaded events if available,
                         // otherwise do a full load with cursor.
-                        if (preloadedEvents) {
-                          events = [...preloadedEvents];
-                          eventsCursor = preloadedEventsCursor ?? null;
-                          if (preloadedEventsHasMore && eventsCursor) {
-                            // Continue from the mutation response's cursor
-                            // rather than loading from the beginning. The list
-                            // request omits a limit intentionally: each World
-                            // controls its largest safe streaming page size.
-                            const loaded = await loadWorkflowRunEvents(
-                              runId,
-                              eventsCursor
-                            );
-                            events.push(...loaded.events);
-                            eventsCursor = loaded.cursor ?? eventsCursor;
-                          }
+                        if (preloadedEventLog) {
+                          events = preloadedEventLog.events;
+                          eventsCursor = preloadedEventLog.cursor;
                         } else {
                           const loaded = await loadWorkflowRunEvents(runId);
                           events = loaded.events;
@@ -1332,7 +1314,7 @@ export function workflowEntrypoint(
                         }
                         eventsCursor = loaded.cursor ?? eventsCursor;
                         events = cachedEvents;
-                      } else if (preloadedEvents) {
+                      } else if (preloadedEventLog) {
                         // Iteration 2 after iteration 1 used preloaded events
                         // (which don't carry a cursor). Do a full load now to
                         // pick up any events written since the preloaded set
