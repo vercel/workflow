@@ -436,20 +436,28 @@ describe('step result delivery ordering across replays', () => {
      * ULID draw order: `createHook()` takes CORR_IDS[0], `stepA()` takes
      * CORR_IDS[1], then the branch resumed FIRST takes CORR_IDS[2].
      *
-     * Two ways of consuming the hook, which differ in whether the payload is
-     * buffered when `hook_received` is consumed:
+     * Two ways of consuming the hook. Both subscribe before `hook_received` is
+     * consumed, so both take the same delivery path in `workflow/hook.ts` (the
+     * `promises.length > 0` branch; the buffered `claim()` path is not involved
+     * in either — entering `for await` calls `next()`, which reaches
+     * `yield await this` and registers the awaiter well before the events
+     * consumer drains the log on `process.nextTick`). What differs is how many
+     * microtask hops separate the payload RESOLVING from the branch calling
+     * `afterHook()` and thereby drawing the next ULID:
      *
-     * - `for-await` (the idiomatic pattern, and what reproduces): the async
-     *   iterator's body starts on the microtask queue, so it has not
-     *   subscribed yet when the consumer drains the log on `process.nextTick`.
-     *   The payload is buffered and delivered later through `claim()`
-     *   (`workflow/hook.ts`), whose chain adds hops on top of the hydration
-     *   slot.
-     * - `await hook` (control): subscribes synchronously, so `hook_received`
-     *   hydrates and resolves through the `promises.length > 0` branch. That
-     *   slot is queued on `ctx.promiseQueue` ahead of the later
-     *   `step_completed` slot, so the serial queue alone happens to preserve
-     *   log order here.
+     * - `for-await` (the idiomatic pattern, and what reproduces): resolution
+     *   resumes the async generator at `yield await this`, the yielded value
+     *   settles the promise returned by `next()`, and only then does the loop
+     *   body run. Those extra hops are enough for a memo-warm `step_completed`
+     *   — which on an unfixed runtime resolves inside its own queue slot with
+     *   no detached chain at all — to draw CORR_IDS[2] first.
+     * - `await hook` (control): resolution resumes the branch's continuation
+     *   directly, so it reaches `afterHook()` in the first microtask and stays
+     *   ahead of the step result even on a warm cache.
+     *
+     * So the hook flavour of this bug is not about payload buffering; it is the
+     * same latency race as the wait flavour, and the consumer shape only sets
+     * how much of a head start the step result needs in order to win.
      */
     function workflowBody(
       ctx: WorkflowOrchestratorContext,
