@@ -351,6 +351,40 @@ export async function runWorkflow(
 
     // `Request` and `Response` are special built-in classes that invoke steps
     // for the `json()`, `text()` and `arrayBuffer()` instance methods
+    const createSerializableBody = (
+      body: unknown
+    ): ReadableStream<any> | null => {
+      if (body === null || body === undefined) return null;
+
+      // Keep the original BodyInit without starting asynchronous stream work
+      // during replay. Serialization recognizes this placeholder and stores
+      // the BodyInit directly.
+      return Object.create(vmGlobalThis.ReadableStream.prototype, {
+        [BODY_INIT_SYMBOL]: {
+          value: body,
+          writable: false,
+        },
+      });
+    };
+
+    const bodyReaderProperties: PropertyDescriptorMap = {
+      arrayBuffer: {
+        value: useStep<[], ArrayBuffer>('__builtin_response_array_buffer'),
+        writable: true,
+        configurable: true,
+      },
+      json: {
+        value: useStep<[], any>('__builtin_response_json'),
+        writable: true,
+        configurable: true,
+      },
+      text: {
+        value: useStep<[], string>('__builtin_response_text'),
+        writable: true,
+        configurable: true,
+      },
+    };
+
     class Request implements globalThis.Request {
       cache!: globalThis.Request['cache'];
       credentials!: globalThis.Request['credentials'];
@@ -516,19 +550,7 @@ export async function runWorkflow(
           throw new TypeError(`Request with GET/HEAD method cannot have body.`);
         }
 
-        // Store the original BodyInit for serialization
-        if (body !== null && body !== undefined) {
-          // Create a "fake" ReadableStream that stores the original body
-          // This avoids doing async work during workflow replay
-          this.body = Object.create(vmGlobalThis.ReadableStream.prototype, {
-            [BODY_INIT_SYMBOL]: {
-              value: body,
-              writable: false,
-            },
-          });
-        } else {
-          this.body = null;
-        }
+        this.body = createSerializableBody(body);
       }
 
       clone(): Request {
@@ -553,23 +575,7 @@ export async function runWorkflow(
     }
     vmGlobalThis.Request = Request;
 
-    Object.defineProperties(Request.prototype, {
-      arrayBuffer: {
-        value: useStep<[], ArrayBuffer>('__builtin_response_array_buffer'),
-        writable: true,
-        configurable: true,
-      },
-      json: {
-        value: useStep<[], any>('__builtin_response_json'),
-        writable: true,
-        configurable: true,
-      },
-      text: {
-        value: useStep<[], string>('__builtin_response_text'),
-        writable: true,
-        configurable: true,
-      },
-    });
+    Object.defineProperties(Request.prototype, bodyReaderProperties);
 
     class Response implements globalThis.Response {
       type!: globalThis.Response['type'];
@@ -600,19 +606,7 @@ export async function runWorkflow(
           );
         }
 
-        // Store the original BodyInit for serialization
-        if (body !== null && body !== undefined) {
-          // Create a "fake" ReadableStream that stores the original body
-          // This avoids doing async work during workflow replay
-          this.body = Object.create(vmGlobalThis.ReadableStream.prototype, {
-            [BODY_INIT_SYMBOL]: {
-              value: body,
-              writable: false,
-            },
-          });
-        } else {
-          this.body = null;
-        }
+        this.body = createSerializableBody(body);
       }
 
       // TODO: implement these
@@ -675,23 +669,7 @@ export async function runWorkflow(
     }
     vmGlobalThis.Response = Response;
 
-    Object.defineProperties(Response.prototype, {
-      arrayBuffer: {
-        value: useStep<[], ArrayBuffer>('__builtin_response_array_buffer'),
-        writable: true,
-        configurable: true,
-      },
-      json: {
-        value: useStep<[], any>('__builtin_response_json'),
-        writable: true,
-        configurable: true,
-      },
-      text: {
-        value: useStep<[], string>('__builtin_response_text'),
-        writable: true,
-        configurable: true,
-      },
-    });
+    Object.defineProperties(Response.prototype, bodyReaderProperties);
 
     class ReadableStream<T> implements globalThis.ReadableStream<T> {
       constructor() {
