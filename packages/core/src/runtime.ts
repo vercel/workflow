@@ -1078,6 +1078,7 @@ export function workflowEntrypoint(
                           { requestId }
                         );
                         startedRun = result.run;
+                        workflowRun = startedRun;
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
                         // Anchors RSFS — see the declaration above.
                         runStartedReceivedAtMs = Date.now();
@@ -1139,8 +1140,6 @@ export function workflowEntrypoint(
                           return;
                         }
                       }
-                      workflowRun = startedRun;
-
                       workflowStartedAt = +startedRun.startedAt;
 
                       span?.setAttributes({
