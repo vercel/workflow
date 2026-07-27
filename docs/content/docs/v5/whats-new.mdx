@@ -9,14 +9,19 @@ related:
   - /docs/foundations/cancellation
 ---
 
-Workflow SDK v5 is out now, and Workflow SDK v4 has moved to maintenance status: it stays installable as `workflow@4`, receives stability fixes only, and its documentation lives at [/v4/docs](/v4/docs).
-
 We recommend upgrading to v5 to get all of the performance, cost, and feature improvements listed below. It's as simple as installing the migration skill and telling your agent to migrate your app from Workflow SDK v4 to v5.
 
 ```bash
 npm install workflow@latest
 npx skills add https://github.com/vercel/workflow --skill migrating-workflow-v4-to-v5
 ```
+
+<CopyPrompt text="Upgrade this app from Workflow SDK v4 to v5 using the migrating-workflow-v4-to-v5 skill. Bump `workflow` and every `@workflow/*` dependency to ^5.0.0, apply the skill's mechanical rewrites, and report the behavior changes it flags instead of silently changing them. Then verify: reinstall, rebuild, typecheck, run the test suite, and execute one workflow end to end." />
+
+<Callout type="info">
+  Workflow SDK v4 remains installable as `workflow@4` and receives stability
+  fixes. Its documentation lives at [/v4/docs](/v4/docs).
+</Callout>
 
 ## Highlights
 
@@ -36,6 +41,8 @@ On [Vercel Workflows](/worlds/vercel) these benefits compound to reduce compute 
 
 Workflow run IDs are now tagged with the compute region they were created in, or the region specified when calling `start()`. Worlds can use this to pin execution to that region.
 This is now the default when deploying to Vercel, and run data will automatically be co-located with the compute region that the run was started in.
+
+See [Multi-region on the Vercel World](/worlds/vercel#multi-region) for how automatic pinning works and how to [select a region explicitly](/worlds/vercel#explicit-region-selection), and [Building a World](/worlds/building-a-world) for adding regional placement to a custom World.
 
 ### Inflight cancellation
 
@@ -91,7 +98,7 @@ Vercel Observability uses this trace viewer for all runs, v4 included, but with 
 - **`start()` from inside a workflow.** Spawn a child run or hand off to a new run directly in a workflow function, without wrapping it in a step. See [Starting workflows](/docs/foundations/starting-workflows).
 - **Stronger hook coordination.** `hook.getConflict()` resolves with the conflicting [`Run`](/docs/api-reference/workflow-api/get-run) rather than a bare `{ runId }`, so a duplicate can `await conflict.status`, `await conflict.returnValue`, or `await conflict.cancel()` directly. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
 - **Errors keep their type.** `WorkflowRunFailedError.cause` preserves the original class identity and cause chain, including your own error classes. See [Serialization](/docs/foundations/serialization).
-- **Support for more frameworks.** [React Router](/docs/getting-started/react-router) (v7 and v8, via Nitro) is now supported, and [NestJS](/docs/getting-started/nestjs) and [Python](/docs/getting-started/python) workflows are in beta.
+- **Support for more frameworks.** [React Router](/docs/getting-started/react-router) (v7 and v8, via Nitro) and [NestJS](/docs/getting-started/nestjs) are now supported.
 
 ## Breaking changes
 
@@ -102,10 +109,10 @@ Vercel Observability uses this trace viewer for all runs, v4 included, but with 
 | `runStep` removed from `workflow/api` | Call your step function directly; the compiler routes it through the step runtime. |
 | `hook.getConflict()` resolves with a `Run` | Replace `conflict.runId` round trips through `getRun()` inside a step with the accessors on `conflict` directly. `conflict.runId` still works. |
 | `experimental_setAttributes` renamed to `setAttributes` | Rename the import. The old name remains as a deprecated alias. |
-| Duplicate step or workflow IDs fail the build | 4.x resolved collisions across non-exported workspace files last-write-wins. Rename the colliding functions. |
+| Duplicate step or workflow IDs fail the build | 4.x resolved collisions across non-exported workspace files last-write-wins. If you start encountering build failures after upgrading, rename the colliding functions. |
 | Default trace mode is `linked` | Update dashboards that assume one trace per run, or set `WORKFLOW_TRACE_MODE=continuous`. |
 | Event creation is guarded by default | Stale-snapshot writes are rejected with [`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error). Opt out with `WORKFLOW_PRECONDITION_GUARD=0`. |
-| A per-run event limit is enforced | The World supplies the ceiling — 25,000 events on the Local and Vercel Worlds — and a run that reaches it fails with `MAX_EVENTS_EXCEEDED`. Split unbounded loops into child runs. See [`WORKFLOW_MAX_EVENTS_OVERRIDE`](/docs/configuration/runtime-tuning#workflow_max_events_override). |
+| A per-run event limit is enforced | The World supplies the ceiling — 25,000 events on the Local and Vercel Worlds — and a run that reaches it fails with `MAX_EVENTS_EXCEEDED`. Split unbounded loops into [child workflows](/cookbook/advanced/child-workflows), one run per batch. As a fallback, the ceiling can be tuned — see [Limits](/docs/configuration/runtime-tuning#limits). |
 | Stream writes flush the first chunk immediately | The leading-edge flush window defaults to `0` instead of 10ms. Restore a window with `streamFlushIntervalMs` or `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`. |
 | Deterministic seeds derive from `runId:workflowName:deploymentId` | Seed-derived values — correlation IDs, nanoids, `Math.random()` — differ for a given run, so a run started before the upgrade must not be replayed after it. Let 4.x runs finish on their existing deployment. |
 
@@ -125,7 +132,5 @@ Vercel Observability uses this trace viewer for all runs, v4 included, but with 
 | `NestLocalBuilder` moved out of `@workflow/nest` root | Import it from `workflow/nest/builder`, so `WorkflowModule` no longer pulls the build toolchain into the runtime bundle. `NestVercelBuilder` lives at `workflow/nest/vercel-builder`. |
 | `workflow/internal/private` and `@workflow/core/private` removed | These were never public API. The compiler no longer emits imports from them, so regenerate build output rather than importing them yourself. |
 | `@workflow/world-local` stream chunks moved | Chunks live at `streams/chunks/<streamName>/`. Files written in the old flat layout are not read back; local development state from 4.x can be deleted. |
-
-On Next.js 16.2.0-canary.48 and newer, `withWorkflow` now defaults to `lazyDiscovery: true`; older versions fall back to eager discovery automatically.
 
 Runs created on 4.x keep executing on the deployment that created them, so upgrading a deployment does not migrate in-flight runs — and, given the seed change above, must not. One storage caveat is worth knowing about: failed runs stored by `@workflow/world-postgres` before the upgrade read back with `error: undefined`, because the payload lives in the legacy `error` text column rather than `errorJson`.

@@ -3,7 +3,7 @@ name: migrating-workflow-v4-to-v5
 description: Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, `experimental_setAttributes`, `NestLocalBuilder` imported from `@workflow/nest`, or an SWC transform invoked with `mode: 'client'`.
 metadata:
   author: Vercel Inc.
-  version: '0.2.0'
+  version: '0.2.1'
 ---
 
 # Migrating Workflow SDK 4.x to 5.0
@@ -172,7 +172,6 @@ These are not code edits. Report each one that applies, and do not "fix" them si
 - **Errors keep their type.** `WorkflowRunFailedError.cause` now preserves the original class identity and cause chain. Code that pattern-matched on `error.message` because the class was flattened in 4.x can use `instanceof` — but flag it rather than rewriting error handling unprompted.
 - **A per-run event limit is enforced.** The World supplies the ceiling (25,000 events on the Local and Vercel Worlds) and a run that reaches it fails with `MAX_EVENTS_EXCEEDED`. Flag any workflow with an unbounded loop; the fix is a child run per batch, which is a design change, not a migration edit.
 - **Stream writes flush the leading chunk immediately.** The flush window default went from 10ms to 0. An app that relied on the window to coalesce a burst of tiny chunks can set `streamFlushIntervalMs` or `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`.
-- **`lazyDiscovery: true` is the default** for `withWorkflow` on Next.js ≥ 16.2.0-canary.48. Older Next.js versions fall back to eager discovery automatically, so this needs no edit — mention it only if the build's discovery behavior changes visibly.
 - **Generated step, workflow and webhook bundles are ESM** (the VM-executed workflow bundle stays CJS). Only matters for a host that post-processes build output.
 - **Duplicate step or workflow IDs now fail the build.** In 4.x, two identically named non-exported functions across workspace files collided last-write-wins. If the build fails on this, rename one of them — do not suppress the check.
 - **`world-postgres` rows written before the upgrade.** Failed runs stored by 4.x read back with `error: undefined`, because the payload lives in the legacy `error` text column rather than `errorJson`. There is no data migration; recent-history dashboards may show blank errors for pre-upgrade failures.

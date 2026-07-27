@@ -5,9 +5,9 @@ import {
 } from '@/components/worlds/building-a-world-page';
 
 export function generateMetadata(): Promise<Metadata> {
-  return generateBuildingAWorldMetadata('v4');
+  return generateBuildingAWorldMetadata('v5');
 }
 
 export default function Page() {
-  return <BuildingAWorldPage version="v4" />;
+  return <BuildingAWorldPage version="v5" />;
 }

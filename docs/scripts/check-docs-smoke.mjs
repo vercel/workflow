@@ -153,6 +153,59 @@ const assertHtmlMeta = async (path, expectedOgImagePath) => {
   }
 };
 
+/**
+ * The unprefixed world routes must serve the current version (no " · v4"
+ * title marker, indexable) and the /v4 routes the maintenance version
+ * (" · v4" marker, noindex). Guards against the version passed by the route
+ * files drifting out of sync with the version semantics in
+ * components/worlds/world-detail-page.tsx.
+ */
+const assertWorldVersionMarkers = async (path, { maintenance }) => {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    headers: await getTrustedSourcesHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(`${path} returned ${res.status}`);
+  }
+  const html = await res.text();
+  const title = html.match(/<title>([^<]*)<\/title>/i)?.[1] ?? '';
+  const hasV4Marker = title.includes('· v4');
+  if (maintenance && !hasV4Marker) {
+    throw new Error(`${path} title was "${title}", expected a " · v4" marker`);
+  }
+  if (!maintenance && hasV4Marker) {
+    throw new Error(
+      `${path} title was "${title}", expected the current version (no " · v4" marker)`
+    );
+  }
+  const hasNoindex =
+    /<meta[^>]+name=["']robots["'][^>]+content=["'][^"']*noindex/i.test(html);
+  if (maintenance && !hasNoindex) {
+    throw new Error(`${path} is missing the robots noindex meta tag`);
+  }
+  if (!maintenance && hasNoindex) {
+    throw new Error(`${path} is unexpectedly noindexed`);
+  }
+};
+
+/**
+ * Community worlds have no versioned content; their canonical page must serve
+ * directly. A version mismatch in the world routes turns them into
+ * self-redirect loops, so assert a plain 200 with no redirect.
+ */
+const assertServesDirectly = async (path) => {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    redirect: 'manual',
+    headers: await getTrustedSourcesHeaders(),
+  });
+  if (res.status !== 200) {
+    const location = res.headers.get('location');
+    throw new Error(
+      `${path} returned ${res.status}${location ? ` -> ${location}` : ''}`
+    );
+  }
+};
+
 const checks = [
   {
     name: 'Deployment protection',
@@ -213,6 +266,20 @@ const checks = [
   {
     name: 'HTML meta - world vercel (v4)',
     run: () => assertHtmlMeta('/v4/worlds/vercel', '/og/worlds/vercel'),
+  },
+  {
+    name: 'World version markers - vercel (current)',
+    run: () =>
+      assertWorldVersionMarkers('/worlds/vercel', { maintenance: false }),
+  },
+  {
+    name: 'World version markers - vercel (v4)',
+    run: () =>
+      assertWorldVersionMarkers('/v4/worlds/vercel', { maintenance: true }),
+  },
+  {
+    name: 'Community world serves directly - turso',
+    run: () => assertServesDirectly('/worlds/turso'),
   },
   {
     name: 'OG docs page image',

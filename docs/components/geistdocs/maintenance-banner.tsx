@@ -38,9 +38,9 @@ const ClockRewind = ({ className }: { className?: string }) => (
 export const MaintenanceBanner = ({ pathname }: MaintenanceBannerProps) => {
   const latestHref = buildVersionUrl(pathname, LATEST_VERSION);
   return (
-    <div className="border-b bg-amber-100 px-4 py-2 text-center text-sm">
+    <div className="border-b bg-amber-100 px-4 py-2 text-center text-sm dark:bg-amber-950/40">
       <div className="mx-auto flex max-w-[1448px] flex-wrap items-center justify-center gap-x-3 gap-y-1">
-        <div className="flex items-center gap-2 text-amber-900">
+        <div className="flex items-center gap-2 text-amber-900 dark:text-amber-200">
           <ClockRewind className="size-4 shrink-0" />
           <span>
             Viewing Workflow {MAINTENANCE_VERSION.id.replace(/^v/, '')}.x
@@ -48,7 +48,7 @@ export const MaintenanceBanner = ({ pathname }: MaintenanceBannerProps) => {
           </span>
         </div>
         <Link
-          className="font-medium text-amber-900 underline underline-offset-4 decoration-amber-900/40 transition-colors hover:decoration-amber-900"
+          className="font-medium text-amber-900 underline underline-offset-4 decoration-amber-900/40 transition-colors hover:decoration-amber-900 dark:text-amber-200 dark:decoration-amber-200/40 dark:hover:decoration-amber-200"
           href={latestHref}
         >
           Go to Workflow {LATEST_VERSION.id.replace(/^v/, '')} (Latest)

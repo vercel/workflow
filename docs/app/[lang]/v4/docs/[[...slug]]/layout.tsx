@@ -13,7 +13,12 @@ const Layout = async ({
   const { lang, slug } = await params;
   return (
     <div className="bg-background-100">
-      <MaintenanceBanner pathname={`/${lang}/v4/docs`} />
+      {/* Deep-link the banner to the same page on the latest version; pages
+          that only exist in v4 are caught by the version-switcher fallback
+          redirects in next.config.ts. */}
+      <MaintenanceBanner
+        pathname={`/${lang}/v4/docs${slug?.length ? `/${slug.join('/')}` : ''}`}
+      />
       <DocsLayout
         activeSlug={slug}
         currentVersion={MAINTENANCE_VERSION.id}
