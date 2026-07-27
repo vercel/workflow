@@ -1,5 +1,6 @@
 import {
   EntityConflictError,
+  PreconditionFailedError,
   RunExpiredError,
   ThrottleError,
   TooEarlyError,
@@ -8,13 +9,13 @@ import {
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { splitEventDataForV4 } from './events.js';
 import {
   createWorkflowRunEventV4,
   getEventV4,
   getWorkflowRunEventsV4,
   throwForErrorResponse,
 } from './events-v4.js';
-import { splitEventDataForV4 } from './events.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
@@ -507,6 +508,111 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('surfaces the events a 412 carries as decoded PreconditionFailedError details', async () => {
+    // A rejecting backend MAY return the events the client was missing, so the
+    // replay restart needs no events.list round trip. They arrive as JSON, so
+    // nested dates must come back as Date instances or the runtime crashes on
+    // .getTime() deep in the replay.
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        412,
+        JSON.stringify({
+          success: false,
+          error: 'precondition-failed',
+          code: 'precondition-failed',
+          message: 'Run state is stale',
+          cursor: 'eid:evnt_missing',
+          events: [
+            {
+              eventId: 'evnt_missing',
+              runId: 'wrun_1',
+              eventType: 'wait_created',
+              correlationId: 'wait_0',
+              specVersion: 5,
+              createdAt: '2026-06-10T00:00:00.000Z',
+              eventData: { resumeAt: '2026-06-10T00:00:05.000Z' },
+            },
+          ],
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      );
+
+    const error = await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: 5,
+        correlationId: 'wait_1',
+        stateUpdatedAt: 1747742400000,
+        stateEventCount: 3,
+        stateCursor: 'eid:evnt_3',
+      },
+      { token: 'test-token', dispatcher: agent }
+    ).catch((err: unknown) => err);
+
+    expect(PreconditionFailedError.is(error)).toBe(true);
+    const details = (error as PreconditionFailedError).details as {
+      events: Array<{
+        eventId: string;
+        eventData: { resumeAt: unknown };
+      }>;
+      cursor?: string;
+    };
+    expect(details.cursor).toBe('eid:evnt_missing');
+    expect(details.events).toHaveLength(1);
+    expect(details.events[0]?.eventId).toBe('evnt_missing');
+    expect(details.events[0]?.eventData.resumeAt).toBeInstanceOf(Date);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('ignores a 412 payload whose events do not narrow to events', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        412,
+        JSON.stringify({
+          success: false,
+          code: 'precondition-failed',
+          message: 'Run state is stale',
+          events: [{ noEventId: true }],
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      );
+
+    const error = await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: 5,
+        correlationId: 'wait_1',
+      },
+      { token: 'test-token', dispatcher: agent }
+    ).catch((err: unknown) => err);
+
+    expect(PreconditionFailedError.is(error)).toBe(true);
+    // Untrusted data on a failure path: dropped whole, so the client falls
+    // back to the authoritative full reload.
+    expect((error as PreconditionFailedError).details).toBeUndefined();
+    agent.assertNoPendingInterceptors();
+  });
+
   it('forwards stateUpdatedAt in the frame meta (precondition guard)', async () => {
     const origin = 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -556,6 +662,112 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
 
     expect(capturedMeta?.eventType).toBe('wait_created');
     expect(capturedMeta?.stateUpdatedAt).toBe(1747742400000);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('forwards stateEventCount and stateCursor in the frame meta', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+          const metaLen = new DataView(
+            bytes.buffer,
+            bytes.byteOffset,
+            bytes.byteLength
+          ).getUint32(0, false);
+          capturedMeta = decode(bytes.subarray(4, 4 + metaLen)) as Record<
+            string,
+            unknown
+          >;
+          return encode({ wait: { waitId: 'wait_1' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: 5,
+        correlationId: 'wait_1',
+        stateUpdatedAt: 1747742400000,
+        stateEventCount: 12,
+        stateCursor: 'eid:evnt_1',
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.stateEventCount).toBe(12);
+    expect(capturedMeta?.stateCursor).toBe('eid:evnt_1');
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('omits stateEventCount and stateCursor from the frame meta when not set', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+          const metaLen = new DataView(
+            bytes.buffer,
+            bytes.byteOffset,
+            bytes.byteLength
+          ).getUint32(0, false);
+          capturedMeta = decode(bytes.subarray(4, 4 + metaLen)) as Record<
+            string,
+            unknown
+          >;
+          return encode({ wait: { waitId: 'wait_1' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: 5,
+        correlationId: 'wait_1',
+        stateUpdatedAt: 1747742400000,
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect('stateEventCount' in (capturedMeta ?? {})).toBe(false);
+    expect('stateCursor' in (capturedMeta ?? {})).toBe(false);
     agent.assertNoPendingInterceptors();
   });
 

@@ -41,6 +41,7 @@ import { ReplayPayloadCache } from './replay-payload-cache.js';
 import {
   getMaxEventsOverride,
   getMaxQueueDeliveries,
+  getPreconditionMaxInProcessRestarts,
   getReplayDivergenceMaxRetries,
   isInlineOwnershipEnabled,
   isTurboEnabled,
@@ -51,14 +52,15 @@ import {
   getWorkflowQueueName,
   handleHealthCheckMessage,
   isPreconditionGuardEnabled,
+  type LoadedEventLog,
   loadWorkflowRunEvents,
-  type MutableEventLog,
   memoizeEncryptionKey,
+  mergeEvents,
   parseHealthCheckPayload,
+  preconditionEventDelta,
+  preconditionSnapshotParams,
   queueMessage,
-  stateUpdatedAtForCreate,
   withHealthCheck,
-  withPreconditionRetry,
 } from './runtime/helpers.js';
 import {
   handleReplayBudgetExhausted,
@@ -530,7 +532,9 @@ export function workflowEntrypoint(
                   // events.list round-trip. Each value is consumed exactly once
                   // and then cleared. Null means "no delta pending — fetch
                   // normally". See the consume site at the top of the loop and
-                  // the produce site after inline executeStep.
+                  // the produce sites: after inline executeStep, and in
+                  // restartReplayInProcess when a stale-snapshot rejection
+                  // carried the missing events with it.
                   let pendingInlineDelta: {
                     events: Event[];
                     cursor: string | null;
@@ -564,7 +568,11 @@ export function workflowEntrypoint(
                   let runStartedReceivedAtMs: number | undefined;
                   // Wall-clock ms spent committing hook_created events before
                   // the first step ran, accumulated across suspension passes
-                  // and subtracted from TTFS.
+                  // and subtracted from TTFS. Accumulators here survive an
+                  // in-process replay restart (a stale-snapshot rejection, or
+                  // the attribute-event restart below), so a restarted
+                  // invocation over-counts by the abandoned pass's hook time —
+                  // the same slight over-count either restart has always had.
                   let preStepBlockingMs = 0;
                   // Snapshot of the accumulator as of the suspension that
                   // wrote the run's first attr_set (whose hook phase ran
@@ -689,6 +697,83 @@ export function workflowEntrypoint(
                       delaySeconds > 0 ? { delaySeconds } : undefined
                     );
                     return undefined;
+                  };
+
+                  // Precondition (412) recovery: how many times this invocation
+                  // has thrown away its replay and started over in-process.
+                  let preconditionRestarts = 0;
+                  /**
+                   * Recover from a stale-snapshot rejection by restarting the
+                   * replay inside this invocation, returning false when the
+                   * per-invocation budget is spent (the caller then falls back
+                   * to a fresh invocation).
+                   *
+                   * A 412 means the log this replay derived its events from was
+                   * missing an event the backend had already recorded. The
+                   * rejected write cannot simply be retried: correlation ids
+                   * are positional ordinals of one seeded sequence, so a replay
+                   * over the corrected log mints a different id for the same
+                   * logical event, and re-posting this one would persist an
+                   * event no correct replay ever produces. The whole replay has
+                   * to be re-derived — which the loop does by discarding its
+                   * cached log, since `runWorkflow` then builds a fresh VM,
+                   * seed and correlation-id sequence from the reloaded events.
+                   */
+                  const restartReplayInProcess = (
+                    reason: string,
+                    error?: unknown
+                  ): boolean => {
+                    if (
+                      preconditionRestarts >=
+                      getPreconditionMaxInProcessRestarts()
+                    ) {
+                      return false;
+                    }
+                    preconditionRestarts++;
+                    // A World MAY return the events we were missing on the 412.
+                    // Trust it only on the FIRST restart: its completeness proof
+                    // leans on the backend's own bookkeeping, so if that
+                    // under-counts, a "complete" delta can still leave a hole.
+                    // Bounding it to one attempt caps that at a single wasted
+                    // restart; every later restart does the authoritative load.
+                    const delta =
+                      preconditionRestarts === 1
+                        ? preconditionEventDelta(error)
+                        : null;
+                    if (delta && cachedEvents) {
+                      // Consumed by the loop's first branch
+                      // (`pendingInlineDelta && cachedEvents`) with no
+                      // events.list round trip at all.
+                      pendingInlineDelta = delta;
+                    } else {
+                      // MUST be a full, cursor-less reload. The cursor filters
+                      // by lexicographic event id while a hole is defined by
+                      // ULID *time*: an event in the same millisecond sorts
+                      // either side of the cursor depending on its random
+                      // component, and an event minted in an earlier
+                      // millisecond but committed later always sorts below it.
+                      // An incremental load therefore heals the hole only by
+                      // luck.
+                      cachedEvents = null;
+                      eventsCursor = null;
+                      preloadedEvents = undefined;
+                      preloadedEventsCursor = undefined;
+                      pendingInlineDelta = null;
+                    }
+                    runtimeLogger.warn(
+                      'Event creation rejected as stale; restarting replay in-process',
+                      {
+                        workflowRunId: runId,
+                        reason,
+                        loopIteration,
+                        preconditionRestarts,
+                        source: delta ? 'inline-delta' : 'full-reload',
+                      }
+                    );
+                    span?.setAttributes({
+                      'workflow.precondition_restarts': preconditionRestarts,
+                    });
+                    return true;
                   };
 
                   // If incoming message has a stepId, this is a background step
@@ -1263,15 +1348,7 @@ export function workflowEntrypoint(
                         const delta = pendingInlineDelta;
                         pendingInlineDelta = null;
                         if (delta.events.length > 0) {
-                          const existingIds = new Set(
-                            cachedEvents.map((e) => e.eventId)
-                          );
-                          for (const e of delta.events) {
-                            if (!existingIds.has(e.eventId)) {
-                              existingIds.add(e.eventId);
-                              cachedEvents.push(e);
-                            }
-                          }
+                          mergeEvents(cachedEvents, delta.events);
                         }
                         eventsCursor = delta.cursor ?? eventsCursor;
                         events = cachedEvents;
@@ -1298,15 +1375,7 @@ export function workflowEntrypoint(
                         // incremental fetch can return events we already have
                         // locally.
                         if (loaded.events.length > 0) {
-                          const existingIds = new Set(
-                            cachedEvents.map((e) => e.eventId)
-                          );
-                          for (const e of loaded.events) {
-                            if (!existingIds.has(e.eventId)) {
-                              existingIds.add(e.eventId);
-                              cachedEvents.push(e);
-                            }
-                          }
+                          mergeEvents(cachedEvents, loaded.events);
                         }
                         eventsCursor = loaded.cursor ?? eventsCursor;
                         events = cachedEvents;
@@ -1341,6 +1410,15 @@ export function workflowEntrypoint(
                         eventsCursor = loaded.cursor;
                         events = cachedEvents;
                       }
+
+                      // Publish the snapshot to the loop-scoped cache as soon
+                      // as it is loaded, not just at the end of the iteration:
+                      // a stale-snapshot rejection thrown by the wait-completion
+                      // writes below restarts the replay, and that restart can
+                      // only consume a World-attached event delta when there is
+                      // a cached array to merge it into. Reassigned again after
+                      // the wait pass, which may swap in a freshly loaded array.
+                      cachedEvents = events;
 
                       // Detect concurrent completion via the event log: if
                       // any other handler wrote a terminal run event, exit
@@ -1382,20 +1460,11 @@ export function workflowEntrypoint(
                         }));
 
                       for (const waitEvent of waitsToComplete) {
-                        const waitLog: MutableEventLog = {
-                          events,
-                          cursor: eventsCursor,
-                        };
                         try {
-                          await withPreconditionRetry(
-                            runId,
-                            waitLog,
-                            (stateUpdatedAt) =>
-                              world.events.create(runId, waitEvent, {
-                                requestId,
-                                stateUpdatedAt,
-                              })
-                          );
+                          await world.events.create(runId, waitEvent, {
+                            requestId,
+                            ...preconditionSnapshotParams(events, eventsCursor),
+                          });
                         } catch (err) {
                           if (EntityConflictError.is(err)) {
                             runtimeLogger.info(
@@ -1408,9 +1477,6 @@ export function workflowEntrypoint(
                             continue;
                           }
                           throw err;
-                        } finally {
-                          // Reloads inside the guard may have advanced the cursor.
-                          eventsCursor = waitLog.cursor;
                         }
                       }
 
@@ -1441,15 +1507,7 @@ export function workflowEntrypoint(
                           );
 
                           if (sawAllWaitCompletions) {
-                            const existingIds = new Set(
-                              events.map((e) => e.eventId)
-                            );
-                            for (const event of loaded.events) {
-                              if (!existingIds.has(event.eventId)) {
-                                existingIds.add(event.eventId);
-                                events.push(event);
-                              }
-                            }
+                            mergeEvents(events, loaded.events);
                             eventsCursor = loaded.cursor ?? eventsCursor;
                           } else {
                             const loaded = await loadWorkflowRunEvents(runId);
@@ -1554,8 +1612,7 @@ export function workflowEntrypoint(
                       // computed by this replay, so a stale (412) rejection must
                       // force a *fresh replay* (which may observe the new event
                       // and produce a different result), not re-commit the stale
-                      // result. The catch below lets PreconditionFailedError
-                      // propagate to the queue for re-invocation.
+                      // result. The catch below restarts the replay in-process.
                       try {
                         // Turbo: a workflow that finishes with no steps reaches
                         // here before the backgrounded run_started; order the
@@ -1570,7 +1627,7 @@ export function workflowEntrypoint(
                           },
                           {
                             requestId,
-                            stateUpdatedAt: stateUpdatedAtForCreate(events),
+                            ...preconditionSnapshotParams(events, eventsCursor),
                           }
                         );
                       } catch (err) {
@@ -1639,10 +1696,11 @@ export function workflowEntrypoint(
 
                         // V2: handle suspension without queuing steps.
                         // Each event creation inside handleSuspension carries the
-                        // loaded snapshot's stateUpdatedAt and self-reloads on a
-                        // stale (412) rejection via the shared event log. We
-                        // guard per-create (rather than wrapping the whole call)
-                        // so a retry never re-issues an already-created event.
+                        // precondition snapshot of the loaded event log, so a
+                        // backend holding an event this replay never saw rejects
+                        // the write (412) instead of accepting a divergent one.
+                        // The rejection is handled here, by restarting the
+                        // replay — never by re-posting the same event.
                         const suspensionStart = Date.now();
                         // The snapshot refresh above always sets cachedEvents
                         // before the replay can suspend. Re-narrow it for this
@@ -1655,7 +1713,7 @@ export function workflowEntrypoint(
                             'Invariant violation: workflow suspended before its event log was loaded'
                           );
                         }
-                        const suspensionLog: MutableEventLog = {
+                        const suspensionLog: LoadedEventLog = {
                           events: cachedEvents,
                           cursor: eventsCursor,
                         };
@@ -1673,15 +1731,24 @@ export function workflowEntrypoint(
                             runReadyBarrier,
                           });
                         } catch (suspensionError) {
-                          // A suspension create whose stale (412) rejection
-                          // survived the in-guard reload retries: schedule an
+                          // A suspension create was rejected as stale: re-derive
+                          // the replay from a corrected log in this invocation.
+                          // Once the in-process budget is spent, fall back to an
                           // explicit immediate re-invocation (a rethrow relies
                           // on redelivery of a message the turbo path already
                           // acked — the run would stall for the queue's ~300s
                           // default visibility timeout).
                           if (PreconditionFailedError.is(suspensionError)) {
+                            if (
+                              restartReplayInProcess(
+                                'suspension-create',
+                                suspensionError
+                              )
+                            ) {
+                              continue;
+                            }
                             runtimeLogger.warn(
-                              'Suspension event creation rejected as stale after reload retries; re-invoking run for a fresh replay',
+                              'Suspension event creation rejected as stale after in-process restarts; re-invoking run for a fresh replay',
                               { workflowRunId: runId, loopIteration }
                             );
                             return await reinvoke(0);
@@ -2283,12 +2350,15 @@ export function workflowEntrypoint(
                         // is deferred), so without a snapshot it would bypass
                         // the guard entirely and a stale replay could claim —
                         // and commit — a step scheduled off a view that misses
-                        // an out-of-band event. `stateUpdatedAtForCreate`
-                        // returns undefined when the guard env flag is off, so
-                        // this is a no-op outside guarded deployments; Worlds
-                        // that don't enforce the guard ignore it.
-                        const inlineClaimStateUpdatedAt =
-                          stateUpdatedAtForCreate(cachedEvents ?? []);
+                        // an event it never loaded.
+                        // `preconditionSnapshotParams` returns an empty object
+                        // when the guard env flag is off, so this is a no-op
+                        // outside guarded deployments; Worlds that don't
+                        // enforce the guard ignore it.
+                        const inlineClaimSnapshot = preconditionSnapshotParams(
+                          cachedEvents ?? [],
+                          preInlineWriteCursor
+                        );
 
                         replayBudget.pause();
                         let stepResults: Awaited<
@@ -2367,7 +2437,7 @@ export function workflowEntrypoint(
                                 // see suppressOptimisticStart above.
                                 suppressOptimisticStart,
                                 runReadyBarrier,
-                                stateUpdatedAt: inlineClaimStateUpdatedAt,
+                                preconditionSnapshot: inlineClaimSnapshot,
                                 ...(stepIndex === 0 &&
                                 s.lazyStepInput !== undefined &&
                                 latencyTracking
@@ -2410,18 +2480,25 @@ export function workflowEntrypoint(
                         } catch (stepErr) {
                           // A stale (412) rejection of an inline step_started
                           // claim: the loaded view this batch was scheduled
-                          // from is behind an out-of-band event (e.g. a
-                          // received hook), so the claim was fenced by the
-                          // guard and no step events were written. Abandon the
-                          // batch — any optimistic body result is discarded by
-                          // executeStep's reconciliation — and re-invoke for a
-                          // fresh replay that observes the new event. Wait for
-                          // the sibling executions to settle first so no owned
-                          // body is in flight when the ack path runs.
+                          // from is missing an event the backend already has,
+                          // so the claim was fenced by the guard and no step
+                          // events were written. Abandon the batch — any
+                          // optimistic body result is discarded by executeStep's
+                          // reconciliation — and restart the replay so it
+                          // observes the missing event. Wait for the sibling
+                          // executions to settle first so no owned body is in
+                          // flight when the restart (or the ack path) runs.
                           if (PreconditionFailedError.is(stepErr)) {
                             await Promise.allSettled(stepExecutionPromises);
+                            if (
+                              restartReplayInProcess('inline-claim', stepErr)
+                            ) {
+                              // The finally below resumes the replay budget
+                              // before the next iteration starts.
+                              continue;
+                            }
                             runtimeLogger.warn(
-                              'Inline step claim rejected as stale; re-invoking run for a fresh replay',
+                              'Inline step claim rejected as stale after in-process restarts; re-invoking run for a fresh replay',
                               { workflowRunId: runId, loopIteration }
                             );
                             // The finally below resumes the replay budget
@@ -2613,18 +2690,23 @@ export function workflowEntrypoint(
                         }
                       } else {
                         // Stale-snapshot rejection of a result-bearing create
-                        // (run_completed sends the snapshot but is intentionally
-                        // NOT retried in place), or one that survived the
-                        // in-guard reload retries. Don't fail the run — schedule
-                        // an explicit immediate re-invocation so a fresh replay
-                        // observes the new event. Rethrowing instead would rely
-                        // on redelivery of the CURRENT message, which the turbo
-                        // path has already acked — empirically the run then
-                        // stalls for the queue's ~300s default visibility
-                        // timeout before completing.
+                        // (run_completed carries the snapshot and is never
+                        // re-posted in place: the result was computed by this
+                        // replay, and a corrected log may produce a different
+                        // one). Don't fail the run — restart the replay in this
+                        // invocation, and only once that budget is spent
+                        // schedule an explicit immediate re-invocation.
+                        // Rethrowing instead would rely on redelivery of the
+                        // CURRENT message, which the turbo path has already
+                        // acked — empirically the run then stalls for the
+                        // queue's ~300s default visibility timeout before
+                        // completing.
                         if (PreconditionFailedError.is(err)) {
+                          if (restartReplayInProcess('result-create', err)) {
+                            continue;
+                          }
                           runtimeLogger.warn(
-                            'Event creation rejected as stale; re-invoking run for a fresh replay',
+                            'Event creation rejected as stale after in-process restarts; re-invoking run for a fresh replay',
                             { workflowRunId: runId, loopIteration }
                           );
                           return await reinvoke(0);
