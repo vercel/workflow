@@ -1,10 +1,9 @@
 import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { isVercelDeploymentEnv } from '@workflow/utils';
 import type { QueuePrefix, World } from '@workflow/world';
 import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
+import { warnIfRunningInVercelDeployment } from './build-target-mismatch.js';
 import type { Config } from './config.js';
 import { config, resolveRecoverActiveRuns } from './config.js';
 import {
@@ -24,6 +23,7 @@ import { resetHookIndexEnsureCache } from './storage/hook-index.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
+export { UnwritableDataDirError } from './build-target-mismatch.js';
 // Re-export init types and utilities for consumers
 export {
   DataDirAccessError,
@@ -42,37 +42,6 @@ export type LocalWorld = World & {
   /** Clear all workflow data (runs, steps, events, hooks, streams). */
   clear(): Promise<void>;
 };
-
-let warnedAboutVercelDeployment = false;
-
-/**
- * The target world is compiled into the host bundles at build time, so a build
- * environment that does not look like Vercel produces a deployment pinned to
- * the local world. Every workflow write then targets a read-only filesystem and
- * runs fail before executing a step, with no indication that the world itself
- * is the problem. Warn as soon as the world is created instead.
- *
- * `/tmp` is exempt: it is writable on Vercel, so a data directory there is a
- * deliberate choice rather than a misconfigured build.
- */
-function warnIfRunningInVercelDeployment(dataDir: string): void {
-  if (warnedAboutVercelDeployment || !isVercelDeploymentEnv()) {
-    return;
-  }
-  const resolvedDataDir = path.resolve(dataDir);
-  if (resolvedDataDir.startsWith(`${tmpdir()}${path.sep}`)) {
-    return;
-  }
-  warnedAboutVercelDeployment = true;
-  console.warn(
-    `[workflow] Warning: the local (filesystem) world is running inside a Vercel deployment, writing to ${resolvedDataDir}. ` +
-      'That filesystem is read-only, so workflow runs will fail before their first step. ' +
-      'The world is selected at build time, so this reflects the build environment rather than the runtime one: ' +
-      'when your build cannot be identified as a Vercel build (for example `vercel build` + `vercel deploy --prebuilt`, ' +
-      'or a build that runs before system environment variables are available), set WORKFLOW_TARGET_WORLD=vercel ' +
-      'in the build environment and rebuild.'
-  );
-}
 
 /**
  * Creates a local world instance that combines queue, storage, and streamer functionalities.

@@ -35,9 +35,10 @@ export function normalizeWorkflowTargetWorldImport(
  * see it while serving a dev server on a developer machine. Development is
  * excluded via `VERCEL_ENV` (set by `vercel dev`) and `NODE_ENV` (set by every
  * framework dev server). Ambiguity resolves toward Vercel because that failure
- * mode is loud — the Vercel world reports missing credentials — whereas
- * wrongly choosing the local world silently writes workflow state to a
- * read-only filesystem.
+ * mode is loud: a process outside a Vercel deployment has no
+ * `VERCEL_DEPLOYMENT_ID`, so the Vercel world refuses to start a run and says
+ * how to select the local world instead. Wrongly choosing the local world is
+ * the silent direction — it writes workflow state to a read-only filesystem.
  *
  * `WORKFLOW_TARGET_WORLD` overrides this in either direction.
  */
@@ -65,10 +66,11 @@ export function resolveWorkflowTargetWorld(
 }
 
 export function getWorldImport(env: WorkflowEnvironment = process.env): string {
-  return (
-    normalizeWorkflowTargetWorldImport(resolveWorkflowTargetWorld(env)) ??
-    '@workflow/world-local'
-  );
+  // `resolveWorkflowTargetWorld` always returns a non-empty specifier, which is
+  // the only input `normalizeWorkflowTargetWorldImport` maps to `undefined`.
+  return normalizeWorkflowTargetWorldImport(
+    resolveWorkflowTargetWorld(env)
+  ) as string;
 }
 
 export function isVercelWorldTarget(targetWorld: string): boolean {

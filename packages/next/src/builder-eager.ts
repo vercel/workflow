@@ -45,7 +45,6 @@ export async function getNextBuilderEager(
     BaseBuilder: BaseBuilderClass,
     getWorkflowQueueTrigger,
     detectWorkflowPatterns,
-    isVercelDeploymentEnv,
     parentHasChild,
   } = buildersModule ??
   (await importEsm<typeof import('@workflow/builders')>('@workflow/builders'));
@@ -108,9 +107,7 @@ export async function getNextBuilderEager(
             'public/.well-known/workflow/v1'
           );
           await mkdir(publicManifestDir, { recursive: true });
-          // Keep the generated manifest out of the developer's repository. A
-          // Vercel build has no repository to dirty.
-          if (!isVercelDeploymentEnv()) {
+          if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
             await writeFile(join(publicManifestDir, '.gitignore'), '*');
           }
           await copyFile(

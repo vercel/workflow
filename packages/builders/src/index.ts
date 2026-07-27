@@ -78,7 +78,6 @@ export {
   createWorkflowWorldTargetEsbuildPlugin,
   ensureWorkflowTargetWorldEnv,
   getWorldImport,
-  isVercelDeploymentEnv,
   isWorkflowTargetWorldPath,
   normalizeWorkflowTargetWorldImport,
   resolveWorkflowCoreRuntimeAlias,

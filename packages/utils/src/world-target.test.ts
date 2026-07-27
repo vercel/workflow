@@ -42,6 +42,14 @@ describe('isVercelDeploymentEnv', () => {
     ).toBe(false);
   });
 
+  test('detects a Vercel build that exposes no NODE_ENV', () => {
+    // Processes outside a framework build/serve command (plain node scripts,
+    // CLI contexts) leave NODE_ENV unset, so absence must not read as
+    // development.
+    const { NODE_ENV: _unset, ...envWithoutNodeEnv } = PREBUILT_BUILD_ENV;
+    expect(isVercelDeploymentEnv(envWithoutNodeEnv)).toBe(true);
+  });
+
   test('ignores `vercel dev`', () => {
     expect(
       isVercelDeploymentEnv({ VERCEL: '1', VERCEL_ENV: 'development' })

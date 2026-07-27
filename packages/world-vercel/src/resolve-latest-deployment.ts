@@ -7,6 +7,7 @@
  */
 
 import * as z from 'zod';
+import { missingDeploymentIdMessage } from './deployment-id.js';
 import { getDispatcher } from './http-client.js';
 import { instrumentedFetch, resolveVercelApiToken } from './http-core.js';
 import type { APIConfig } from './utils.js';
@@ -31,7 +32,9 @@ export function createResolveLatestDeploymentId(
     const currentDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
     if (!currentDeploymentId) {
       throw new Error(
-        'Cannot resolve latest deployment: VERCEL_DEPLOYMENT_ID environment variable is not set'
+        missingDeploymentIdMessage(
+          "Resolving the latest deployment for deploymentId: 'latest'"
+        )
       );
     }
 
