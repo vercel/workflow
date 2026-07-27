@@ -32,6 +32,16 @@ export const SerializationFormat = {
   DEVALUE_V1: 'devl' as FormatPrefix,
   /** Encrypted payload (inner payload has its own format prefix) */
   ENCRYPTED: 'encr' as FormatPrefix,
+  /**
+   * Sealed payload — asymmetrically encrypted to a run's X25519 public key
+   * (inner payload has its own format prefix).
+   *
+   * Used for *cross-run* writes (hook payloads, forwarded stream frames),
+   * where the writer holds only the recipient run's public key and therefore
+   * cannot decrypt. A run's own payloads continue to use {@link ENCRYPTED}.
+   * See `sealed-box.ts` for the construction.
+   */
+  SEALED: 'encp' as FormatPrefix,
   /** Gzip-compressed payload (inner payload has its own format prefix) */
   GZIP: 'gzip' as FormatPrefix,
   /** Zstandard-compressed payload (inner payload has its own format prefix) */

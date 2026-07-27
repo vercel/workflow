@@ -29,7 +29,7 @@ describe('requiresNewerWorld', () => {
     // payloads they cannot decode: a spec-5 run read by an SDK whose
     // SPEC_VERSION_CURRENT is 4 fails this check up front (with
     // RunNotSupportedError at the storage layer) instead of failing on
-    // individual gzip payloads.
+    // individual compressed payloads.
     expect(requiresNewerWorld(SPEC_VERSION_CURRENT + 1)).toBe(true);
   });
 

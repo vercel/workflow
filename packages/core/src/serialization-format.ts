@@ -18,6 +18,17 @@ export const SerializationFormat = {
   DEVALUE_V1: 'devl',
   /** Encrypted payload (inner payload has its own format prefix after decryption) */
   ENCRYPTED: 'encr',
+  /**
+   * Sealed payload — asymmetrically encrypted to a run's X25519 public key
+   * (inner payload has its own format prefix after opening).
+   *
+   * Written by cross-run writers that hold only the recipient run's public
+   * key. Opening it requires the run's private scalar rather than the
+   * symmetric per-run key, so o11y display treats it as ciphertext via
+   * {@link isEncryptedData} but {@link hydrateDataWithKey} does not attempt
+   * an AES-GCM decrypt on it.
+   */
+  SEALED: 'encp',
   /** Gzip-compressed payload (inner payload has its own format prefix after decompression) */
   GZIP: 'gzip',
   /** Zstandard-compressed payload (inner payload has its own format prefix after decompression) */
@@ -140,7 +151,15 @@ export function isExpiredStub(data: unknown): boolean {
 }
 
 /**
- * Check if a binary value has the 'encr' format prefix indicating encryption.
+ * Check if a binary value is ciphertext — either a symmetrically encrypted
+ * payload ('encr') or a sealed cross-run payload ('encp').
+ *
+ * This is the predicate display layers want: both schemes are opaque bytes
+ * that must not be fed to the devalue parser, and both render as the same
+ * "Encrypted" affordance in the CLI and web UI. Use {@link isSealedData} when
+ * the *scheme* matters — notably when choosing a decryption path, since a
+ * sealed payload needs the run's private scalar rather than its symmetric key.
+ *
  * Browser-safe — does not depend on the full serialization module.
  */
 export function isEncryptedData(data: unknown): boolean {
@@ -148,7 +167,24 @@ export function isEncryptedData(data: unknown): boolean {
     return false;
   }
   const prefix = formatDecoder.decode(data.subarray(0, FORMAT_PREFIX_LENGTH));
-  return prefix === SerializationFormat.ENCRYPTED;
+  return (
+    prefix === SerializationFormat.ENCRYPTED ||
+    prefix === SerializationFormat.SEALED
+  );
+}
+
+/**
+ * Check if a binary value has the 'encp' format prefix, indicating a sealed
+ * (asymmetrically encrypted) cross-run payload.
+ *
+ * Browser-safe — does not depend on the full serialization module.
+ */
+export function isSealedData(data: unknown): boolean {
+  if (!(data instanceof Uint8Array) || data.length < FORMAT_PREFIX_LENGTH) {
+    return false;
+  }
+  const prefix = formatDecoder.decode(data.subarray(0, FORMAT_PREFIX_LENGTH));
+  return prefix === SerializationFormat.SEALED;
 }
 
 /**
@@ -362,8 +398,19 @@ export async function hydrateDataWithKey(
   key: import('./encryption.js').CryptoKey | undefined
 ): Promise<unknown> {
   let data = value;
-  if (data instanceof Uint8Array && isEncryptedData(data) && key) {
-    // Decrypt: strip 'encr' prefix, AES-GCM decrypt, then hydrate the result
+  if (
+    data instanceof Uint8Array &&
+    isEncryptedData(data) &&
+    !isSealedData(data) &&
+    key
+  ) {
+    // Decrypt: strip 'encr' prefix, AES-GCM decrypt, then hydrate the result.
+    //
+    // Sealed ('encp') payloads are deliberately excluded: they are encrypted
+    // to the run's X25519 public key, so opening them needs the private
+    // scalar, not the symmetric key this function receives. Feeding them to
+    // AES-GCM would fail the auth tag and surface as a spurious decryption
+    // error, so they fall through untouched and render as ciphertext instead.
     const { decrypt } = await import('./encryption.js');
     const { payload } = decodeFormatPrefix(data);
     data = await decrypt(key, payload);

@@ -53,31 +53,15 @@ import { createSleep } from './workflow/sleep.js';
 /**
  * Drain pending queue items at workflow completion (success or failure).
  *
- * Treats end-of-run like a final suspension: any operation the workflow code
- * spawned but didn't `await` — abort hook resumes, hook creations/disposals,
- * sleep waits, step queueings — gets committed to the event log via the
- * suspension handler before the run is marked terminal.
+ * Treats completion as a final suspension so unawaited hook, wait, and
+ * attribute operations are recorded before the run becomes terminal. This
+ * also lets a final `controller.abort()` reach in-flight steps.
  *
- * This matches normal JS semantics where `setTimeout(fn, ...)` etc. continue
- * running after the surrounding function returns. Most importantly, it ensures
- * `controller.abort()` called as the last statement of a workflow actually
- * propagates to in-flight steps on other compute instances — without this,
- * the abort hook is created but never resumed and the cancellation never
- * reaches the running step.
+ * It records `*_created` and native attribute events, but never executes step
+ * bodies: `step_started` is rejected after the run becomes terminal. A
+ * fire-and-forget step therefore needs a later suspension to be scheduled.
  *
- * NOTE: drain commits native attribute events and the `*_created` events; it
- * does NOT enqueue step
- * bodies for execution. The combined runtime handler rejects `step_started`
- * for runs that have already transitioned to terminal (`RunExpiredError`),
- * so a step queued here would be skipped anyway. Fire-and-forget step calls
- * with side effects therefore work only when followed by some later `await`
- * on a runtime primitive that triggers a real suspension (the normal
- * runtime loop in `runtime.ts` queues the step there). Native attribute writes
- * do not have this limitation because their event is the durable write.
- *
- * Drain failures are swallowed: the workflow's own outcome (the user's return
- * value or thrown error) is the source of truth; secondary cleanup that fails
- * shouldn't change the run's terminal state.
+ * Drain failures do not change the workflow's terminal outcome.
  */
 async function drainPendingQueueItems(
   runId: string,
@@ -86,13 +70,8 @@ async function drainPendingQueueItems(
   workflowRun: WorkflowRun,
   outcome: 'completed' | 'failed',
   /**
-   * Turbo mode only: resolves once the backgrounded `run_started` has landed.
-   * The drain runs at workflow completion *inside* `runWorkflow`, before the
-   * caller's terminal `awaitRunReady()` — so a workflow that creates a
-   * fire-and-forget hook (or wait/attribute) and then returns synchronously
-   * would otherwise have its `*_created` write race ahead of `run_started`.
-   * Threading the barrier into the suspension handler gates those writes the
-   * same way the normal suspension path is gated. Undefined outside turbo.
+   * In turbo mode, gates final `*_created` writes on backgrounded
+   * `run_started`. Undefined when `run_started` is awaited.
    */
   runReadyBarrier?: Promise<unknown>
 ): Promise<void> {
@@ -174,26 +153,12 @@ export async function runWorkflow(
       );
     }
 
-    // The deterministic RNG seed is derived from identifiers that are all
-    // known the instant the queue message arrives — `runId`, `workflowName`,
-    // and `deploymentId` — with no timestamp component. `runId` alone already
-    // makes the seed unique-per-run and replay-stable; `workflowName` and
-    // `deploymentId` are included for extra entropy. Dropping the timestamp
-    // means the seed no longer depends on `startedAt`/`createdAt`, so it (and
-    // the VM context) can be computed before any server round-trip.
-    //
-    // The VM's initial fixed clock is derived from the run's creation time,
-    // recovered from the ULID embedded in `runId` (also available immediately),
-    // falling back to the run snapshot's `createdAt` for non-ULID ids. This
-    // initial `fixedTimestamp` only governs `Date.now()` / `new Date()` in the
-    // window before the first event is consumed; thereafter `updateTimestamp`
-    // advances the VM clock to each consumed event's `createdAt` (see the
-    // EventsConsumer below), starting with `run_created`.
+    // Seed and initial clock must be available before I/O and remain stable on
+    // replay. After the first event, EventsConsumer advances the VM clock from
+    // each event's `createdAt`.
     const fixedTimestamp =
       runIdCreatedAt(workflowRun.runId) ?? +workflowRun.createdAt;
 
-    // Get the port before creating VM context to avoid async operations
-    // affecting the deterministic timestamp
     const isVercel = process.env.VERCEL_URL !== undefined;
     // Load getPort lazily to prevent Turbopack from tracing get-port's
     // fs ops (readdir, readFile) into the flow route bundle. The resolved
@@ -248,15 +213,8 @@ export async function runWorkflow(
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
       eventsConsumer,
-      // Correlation IDs (step_/wait_/hook_) are derived from `generateUlid`, so
-      // the time prefix fed to `ulid()` MUST be replay-stable across every
-      // delivery — otherwise a redelivery regenerates different correlation IDs
-      // and replay throws ReplayDivergenceError. `startedAt` is NOT safe here:
-      // under turbo the first delivery synthesizes `startedAt` from the local
-      // clock, but later (non-turbo) deliveries load the server-canonical
-      // `startedAt`, which differs by >=1ms. Use the same replay-stable value
-      // that already seeds the RNG and the VM clock (`fixedTimestamp`, recovered
-      // from the run ID's ULID and known the instant the message arrives).
+      // Correlation IDs must be replay-stable. `startedAt` differs between a
+      // turbo delivery and a later server-backed replay, so use fixedTimestamp.
       generateUlid: () => ulid(fixedTimestamp),
       generateNanoid,
       invocationsQueue: new Map(),
@@ -335,8 +293,7 @@ export async function runWorkflow(
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[STABLE_ULID] = ulid;
 
-    // NOTE: Will have a config override to use the custom fetch step.
-    //       For now `fetch` must be explicitly imported from `workflow`.
+    // Workflow code must import the deterministic `fetch` step from `workflow`.
     vmGlobalThis.fetch = () => {
       throw new vmGlobalThis.Error(
         `Global "fetch" is unavailable in workflow functions. Use the "fetch" step function from "workflow" to make HTTP requests.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.FETCH_IN_WORKFLOW_FUNCTION}`
@@ -812,11 +769,9 @@ export async function runWorkflow(
     }
     vmGlobalThis.TransformStream = TransformStream;
 
-    // Eventually we'll probably want to provide our own `console` object,
-    // but for now we'll just expose the global one.
     vmGlobalThis.console = globalThis.console;
 
-    // HACK: propagate symbol needed for AI gateway usage
+    // Expose the request-context symbol required by AI Gateway.
     const SYMBOL_FOR_REQ_CONTEXT = Symbol.for('@vercel/request-context');
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[SYMBOL_FOR_REQ_CONTEXT] = (globalThis as any)[
@@ -829,24 +784,9 @@ export async function runWorkflow(
     const parsedName = parseWorkflowName(workflowRun.workflowName);
     const filename = parsedName?.moduleSpecifier || workflowRun.workflowName;
 
-    // Evaluate the workflow bundle against the fresh context using a
-    // process-wide cache of the compiled `vm.Script`. The bundle is the same
-    // string for every replay and every invocation in this process, and
-    // compilation is a pure function of `(code, filename)`, so reusing the
-    // compiled Script across replays is determinism-safe: it produces the same
-    // workflow function and the same `filename` source attribution as
-    // re-parsing the bundle every time, but skips the (expensive) re-parse.
-    // Evaluating the bundle registers every workflow on
-    // `globalThis.__private_workflows`; the trailing lookup expression then
-    // retrieves the requested workflow function. The lookup is evaluated as a
-    // separate cached Script under the same `filename`, so error stack frames
-    // still attribute to the workflow's source file (`remapErrorStack` keys on
-    // `filename`). The one behavioural difference from the previous
-    // single-combined-string approach is the *line number* of an error thrown
-    // by the lookup expression itself: it now reports line 1 of the lookup
-    // Script rather than the line just past the end of the bundle. That path
-    // is rare (it requires the lookup `?.get(...)` expression to throw) and
-    // does not affect the workflow function or replay determinism.
+    // Reuse compiled scripts by `(code, filename)`: compilation is deterministic
+    // and the filename preserves workflow source attribution in stack traces.
+    // The bundle registers workflows on `globalThis.__private_workflows`.
     runCachedWorkflowScript(workflowCode, filename, context);
     const workflowFn = runCachedWorkflowScript(
       `globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
@@ -896,9 +836,8 @@ export async function runWorkflow(
         encryptionKey,
         vmGlobalThis,
         false,
-        // Gate payload compression on the run's specVersion: only runs
-        // marked as possibly containing compressed payloads (spec >= 5)
-        // get gzip data.
+        // Only compression-capable runs (spec >= 5) may write compressed
+        // payloads. The serializer uses zstd when supported and may use gzip.
         (workflowRun.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
       );
 

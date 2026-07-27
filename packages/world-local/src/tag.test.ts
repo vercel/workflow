@@ -353,9 +353,9 @@ describe('File tagging', () => {
     });
 
     it('should clear tagged stream chunks in the sharded layout', async () => {
-      const { createLocalWorld } = await import('./index.js');
+      const { createWorld } = await import('./index.js');
 
-      const world = createLocalWorld({ dataDir: testDir, tag: 'vitest-0' });
+      const world = createWorld({ dataDir: testDir, tag: 'vitest-0' });
       await world.start?.();
 
       const run = await createRun(world, {

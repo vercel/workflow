@@ -29,13 +29,8 @@ export function createWorld(config?: APIConfig): World {
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
 
   return {
-    // Spec v5: new runs may carry gzip-compressed payloads (compression is
-    // entirely client-side — the workflow-server stores payloads opaquely
-    // via RemoteRef and never deserializes them). Spec 5 is a superset of
-    // spec 4, so native `attr_set` events and initial run attributes still
-    // work. New runs are stamped with this version; the server must support
-    // at least it — workflow-server declared spec-5 support in
-    // vercel/workflow-server#520.
+    // Spec v5 adds client-side zstd/gzip payload compression. The server stores
+    // those payloads opaquely, and v5 remains a superset of v4 attributes.
     specVersion: SPEC_VERSION_SUPPORTS_COMPRESSION,
     capabilities: {
       // workflow-server enforces the `stateUpdatedAt` optimistic-concurrency
@@ -75,11 +70,4 @@ export function createWorld(config?: APIConfig): World {
     ),
     resolveLatestDeploymentId: createResolveLatestDeploymentId(config),
   };
-}
-
-/**
- * @deprecated Use `createWorld()` instead.
- */
-export function createVercelWorld(config?: APIConfig): World {
-  return createWorld(config);
 }
