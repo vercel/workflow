@@ -638,6 +638,10 @@ const attributeToDisplayFn: Record<
     if (typeof value !== 'string' || value.length === 0) return null;
     return String(value);
   },
+  // Internal encryption plumbing: the run's X25519 public key, used by
+  // cross-run writers to seal payloads to this run. Not actionable for users
+  // and not secret — hidden rather than rendered as 44 opaque base64 chars.
+  encryptionPublicKey: (_value: unknown) => null,
 };
 
 const resolvableAttributes = [

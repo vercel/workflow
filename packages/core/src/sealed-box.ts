@@ -276,8 +276,88 @@ function importPublicKey(publicKey: Uint8Array): Promise<CryptoKey> {
   );
 }
 
+const BASE64_CHARS =
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
 const BASE64URL_CHARS =
   'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+/**
+ * Encode bytes as standard (padded) base64.
+ *
+ * Hand-rolled for the same reason as {@link base64UrlToBytes}: this module
+ * runs in the browser (o11y decryption) and inside the workflow VM, so neither
+ * `Buffer` nor `btoa` can be assumed. Used for the wire encoding of run public
+ * keys, matching the base64 convention already used for `VERCEL_DEPLOYMENT_KEY`
+ * and the `run-key` API response.
+ */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < bytes.length ? bytes[i + 1] : 0;
+    const b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+
+    out += BASE64_CHARS[(b0 >> 2) & 0x3f];
+    out += BASE64_CHARS[((b0 & 0x03) << 4) | ((b1 >> 4) & 0x0f)];
+    out +=
+      i + 1 < bytes.length
+        ? BASE64_CHARS[((b1 & 0x0f) << 2) | ((b2 >> 6) & 0x03)]
+        : '=';
+    out += i + 2 < bytes.length ? BASE64_CHARS[b2 & 0x3f] : '=';
+  }
+  return out;
+}
+
+/**
+ * Decode standard base64 (padding optional) to bytes.
+ *
+ * Returns `undefined` for malformed input rather than throwing: callers decode
+ * public keys that arrive from storage or over the wire, where a corrupt value
+ * should degrade to "this run has no usable public key" (and fall back to the
+ * symmetric path) rather than crash a resumption.
+ *
+ * Validation is strict, because a lenient decoder is worse than a throwing one
+ * here — silently returning a short or truncated key makes a corrupt value look
+ * *present*, so the caller seals to garbage instead of taking the fallback.
+ * Rejected: characters outside the alphabet, a length that cannot describe a
+ * whole number of bytes (`length % 4 === 1`), padding anywhere but the end, and
+ * a final quantum whose unused low bits are not zero.
+ */
+export function base64ToBytes(value: string): Uint8Array | undefined {
+  // Strip trailing padding, then require what remains to be padding-free.
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '=') end--;
+  const body = value.slice(0, end);
+  if (body.includes('=')) return undefined;
+
+  // 4 chars -> 3 bytes; 3 -> 2; 2 -> 1. A remainder of 1 encodes no byte.
+  if (body.length % 4 === 1) return undefined;
+  // Padding, when present, must bring the total to a multiple of 4.
+  if (end !== value.length && value.length % 4 !== 0) return undefined;
+
+  let accumulator = 0;
+  let bitCount = 0;
+  const bytes: number[] = [];
+
+  for (let i = 0; i < body.length; i++) {
+    const index = BASE64_CHARS.indexOf(body[i]);
+    if (index === -1) return undefined;
+    accumulator = (accumulator << 6) | index;
+    bitCount += 6;
+    if (bitCount >= 8) {
+      bitCount -= 8;
+      bytes.push((accumulator >> bitCount) & 0xff);
+    }
+  }
+
+  // Leftover bits belong to no byte and must be zero in canonical base64.
+  if (bitCount > 0 && (accumulator & ((1 << bitCount) - 1)) !== 0) {
+    return undefined;
+  }
+
+  return new Uint8Array(bytes);
+}
 
 /**
  * Decode a base64url string (JWK encoding) to bytes.
@@ -541,6 +621,112 @@ export async function open(
   const encrypted = sealed.subarray(X25519_KEY_LENGTH);
   const contentKey = await decapsulate(keyPair, ephemeralPublicKey);
   return aesGcmDecrypt(contentKey, encrypted, aad);
+}
+
+/**
+ * A writer-side session that amortizes one KEM operation across many sealed
+ * payloads — use it for streams, where one-shot {@link seal} would perform a
+ * fresh keygen + ECDH + HKDF for every frame.
+ *
+ * Safety rests on two properties:
+ *
+ * - Every payload still gets a **fresh random nonce** from `aesGcmEncrypt`, so
+ *   sharing the content key does not risk `(key, nonce)` reuse. (A counter
+ *   would: it restarts at zero whenever a writer restarts.)
+ * - The session is bound to one writer instance. A reconnect or a durable
+ *   replay constructs a new session, so a restarted writer never inherits a
+ *   previous incarnation's content key.
+ *
+ * The envelope layout is byte-identical to {@link seal}, so a reader cannot
+ * tell which was used and needs no matching session.
+ */
+export function createSealSession(
+  recipientPublicKey: Uint8Array,
+  aad?: Uint8Array
+): { seal(data: Uint8Array): Promise<Uint8Array> } {
+  let encapsulation:
+    | Promise<{ ephemeralPublicKey: Uint8Array; contentKey: CryptoKey }>
+    | undefined;
+
+  return {
+    async seal(data: Uint8Array): Promise<Uint8Array> {
+      // Lazily, so constructing a session for a stream that is never written
+      // to costs nothing.
+      encapsulation ??= encapsulate(recipientPublicKey);
+      const { ephemeralPublicKey, contentKey } = await encapsulation;
+      const encrypted = await aesGcmEncrypt(contentKey, data, aad);
+
+      const result = new Uint8Array(
+        ephemeralPublicKey.byteLength + encrypted.byteLength
+      );
+      result.set(ephemeralPublicKey, 0);
+      result.set(encrypted, ephemeralPublicKey.byteLength);
+      return result;
+    },
+  };
+}
+
+/**
+ * A reader-side session that caches decapsulation per sender.
+ *
+ * The mirror of {@link createSealSession}: because every frame from one writer
+ * carries the same ephemeral public key, this turns an ECDH per frame into an
+ * ECDH per writer. Correctness does not depend on the writer having used a
+ * session — a stream of independently sealed payloads simply misses the cache
+ * on each new ephemeral key.
+ *
+ * The cache is keyed by the ephemeral public key and holds one entry, which is
+ * the common case (one writer per stream). A second writer evicts the first
+ * rather than growing without bound.
+ */
+export function createOpenSession(
+  keyPair: RunKeyPair,
+  aad?: Uint8Array
+): { open(sealed: Uint8Array): Promise<Uint8Array> } {
+  let cachedSender: string | undefined;
+  let cachedKey: Promise<CryptoKey> | undefined;
+
+  return {
+    async open(sealed: Uint8Array): Promise<Uint8Array> {
+      const minLength = X25519_KEY_LENGTH + NONCE_LENGTH + TAG_BYTES;
+      if (sealed.byteLength < minLength) {
+        throw new RuntimeDecryptionError(
+          `Sealed payload too short: expected at least ${minLength} bytes, got ${sealed.byteLength}`,
+          { context: { operation: 'decrypt', byteLength: sealed.byteLength } }
+        );
+      }
+
+      const ephemeralPublicKey = sealed.subarray(0, X25519_KEY_LENGTH);
+      const encrypted = sealed.subarray(X25519_KEY_LENGTH);
+
+      const sender = keyCacheId(ephemeralPublicKey);
+      if (sender !== cachedSender || !cachedKey) {
+        cachedSender = sender;
+        cachedKey = decapsulate(keyPair, ephemeralPublicKey);
+      }
+
+      let contentKey: CryptoKey;
+      try {
+        contentKey = await cachedKey;
+      } catch (error) {
+        // Do not let one bad frame poison the cache for subsequent frames.
+        cachedSender = undefined;
+        cachedKey = undefined;
+        throw error;
+      }
+
+      return aesGcmDecrypt(contentKey, encrypted, aad);
+    },
+  };
+}
+
+/** Stable cache key for a 32-byte public key. */
+function keyCacheId(publicKey: Uint8Array): string {
+  let id = '';
+  for (let i = 0; i < publicKey.length; i++) {
+    id += publicKey[i].toString(16).padStart(2, '0');
+  }
+  return id;
 }
 
 /**

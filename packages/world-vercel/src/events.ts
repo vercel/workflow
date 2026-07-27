@@ -153,6 +153,13 @@ interface SplitEventData {
     writer?: Record<string, unknown>;
     /** Reserved-attribute-key opt-in (attr_set / run_created / run_started). */
     allowReservedAttributes?: boolean;
+    /**
+     * The run's X25519 public key, base64 (run_created / resilient-start
+     * run_started). Plaintext metadata, not a payload: it is not secret, and
+     * the server stores it on the run entity so cross-run writers can seal to
+     * it without holding the run's symmetric key.
+     */
+    encryptionPublicKey?: string;
     /** Client-measured time-to-first-step ms (step_completed / step_failed). */
     ttfs?: number;
     /** Client-measured step-to-step overhead ms (step_completed / step_failed). */
@@ -199,6 +206,7 @@ type MetaSourceField =
   | 'changes'
   | 'writer'
   | 'allowReservedAttributes'
+  | 'encryptionPublicKey'
   | 'ttfs'
   | 'stso'
   | 'stepCount'
@@ -353,6 +361,9 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.allowReservedAttributes === 'boolean') {
     meta.allowReservedAttributes = eventData.allowReservedAttributes;
+  }
+  if (typeof eventData.encryptionPublicKey === 'string') {
+    meta.encryptionPublicKey = eventData.encryptionPublicKey;
   }
   // Client-measured latency telemetry on step terminal events (TTFS / STSO).
   // The server consumes these for metrics; they are not read back.
