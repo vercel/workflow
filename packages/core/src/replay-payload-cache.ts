@@ -40,7 +40,7 @@ export class ReplayPayloadCache {
     Promise<PreparedReplayPayload>
   >();
   private readonly primitiveStepResults = new Map<string, unknown>();
-  private scannedEventCount = 0;
+  private nextUnscannedEventIndex = 0;
 
   constructor(
     private readonly encryptionKey: CryptoKey | undefined,
@@ -70,8 +70,11 @@ export class ReplayPayloadCache {
     // This cache is scoped to one invocation and its append-only event log.
     // Full snapshot reloads preserve the already-seen prefix, so its length is
     // enough to locate events appended since the previous replay.
-    const startIndex = Math.min(this.scannedEventCount, events.length);
-    for (let index = startIndex; index < events.length; index++) {
+    for (
+      let index = this.nextUnscannedEventIndex;
+      index < events.length;
+      index++
+    ) {
       const event = events[index];
       switch (event.eventType) {
         case 'step_completed':
@@ -94,7 +97,7 @@ export class ReplayPayloadCache {
           break;
       }
     }
-    this.scannedEventCount = events.length;
+    this.nextUnscannedEventIndex = events.length;
 
     // Prewarming is speculative and must not fail replay before the matching
     // event is consumed. allSettled also attaches rejection handlers eagerly.
