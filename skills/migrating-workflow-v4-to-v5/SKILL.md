@@ -3,7 +3,7 @@ name: migrating-workflow-v4-to-v5
 description: Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, `experimental_setAttributes`, `NestLocalBuilder` imported from `@workflow/nest`, or an SWC transform invoked with `mode: 'client'`.
 metadata:
   author: Vercel Inc.
-  version: '0.2.1'
+  version: '0.2.2'
 ---
 
 # Migrating Workflow SDK 4.x to 5.0
@@ -176,7 +176,7 @@ These are not code edits. Report each one that applies, and do not "fix" them si
 - **Duplicate step or workflow IDs now fail the build.** In 4.x, two identically named non-exported functions across workspace files collided last-write-wins. If the build fails on this, rename one of them — do not suppress the check.
 - **`world-postgres` rows written before the upgrade.** Failed runs stored by 4.x read back with `error: undefined`, because the payload lives in the legacy `error` text column rather than `errorJson`. There is no data migration; recent-history dashboards may show blank errors for pre-upgrade failures.
 - **`world-local` stream chunks moved** to `streams/chunks/<streamName>/`. Files in the old flat layout are not read back and stale files are left in place — local development state, so deleting the data directory is fine.
-- **In-flight runs do not migrate, and must not.** Runs created on a 4.x deployment keep executing on that deployment. Beyond the usual skew-protection reason, deterministic seed derivation changed in v5 (`runId:workflowName:deploymentId`, clock seeded from the run ID's ULID timestamp), so replaying a pre-upgrade run on v5 produces a different sequence of correlation IDs and random values. Let 4.x runs finish where they started; do not add code to "drain" or re-target them.
+- **In-flight runs do not migrate.** Runs created on a 4.x deployment keep executing on that deployment. Let them finish where they started; do not add code to "drain" or re-target them.
 
 ## Step 4 — custom `World` implementations
 
@@ -235,7 +235,6 @@ Fail the migration if any of these are true:
 - [ ] `world.steps.get` was called with `undefined` as its first argument
 - [ ] `NestLocalBuilder` is imported from `@workflow/nest` instead of `workflow/nest/builder`
 - [ ] a compiler call still passes `mode: 'client'`
-- [ ] a pre-upgrade run was replayed on the upgraded deployment
 - [ ] a behavior change from step 3 was silently "fixed" instead of reported
 - [ ] workflow or step bodies were restructured beyond the rules above
 - [ ] generated output under `.well-known/workflow/v1/` was hand-edited

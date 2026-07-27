@@ -112,11 +112,16 @@ Vercel Observability uses this trace viewer for all runs, v4 included, but with 
 | Duplicate step or workflow IDs fail the build | 4.x resolved collisions across non-exported workspace files last-write-wins. If you start encountering build failures after upgrading, rename the colliding functions. |
 | Default trace mode is `linked` | Update dashboards that assume one trace per run, or set `WORKFLOW_TRACE_MODE=continuous`. |
 | Event creation is guarded by default | Stale-snapshot writes are rejected with [`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error). Opt out with `WORKFLOW_PRECONDITION_GUARD=0`. |
-| A per-run event limit is enforced | The World supplies the ceiling — 25,000 events on the Local and Vercel Worlds — and a run that reaches it fails with `MAX_EVENTS_EXCEEDED`. Split unbounded loops into [child workflows](/cookbook/advanced/child-workflows), one run per batch. As a fallback, the ceiling can be tuned — see [Limits](/docs/configuration/runtime-tuning#limits). |
+| A per-run event limit is enforced | The World supplies the ceiling — 25,000 events on the Local and Vercel Worlds — and a run that reaches it fails with `MAX_EVENTS_EXCEEDED`. Split unbounded loops into [child workflows](/cookbook/advanced/child-workflows). As a fallback, the ceiling can be tuned — see [Limits](/docs/configuration/runtime-tuning#limits). |
 | Stream writes flush the first chunk immediately | The leading-edge flush window defaults to `0` instead of 10ms. Restore a window with `streamFlushIntervalMs` or `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`. |
-| Deterministic seeds derive from `runId:workflowName:deploymentId` | Seed-derived values — correlation IDs, nanoids, `Math.random()` — differ for a given run, so a run started before the upgrade must not be replayed after it. Let 4.x runs finish on their existing deployment. |
 
 ### Custom Worlds and build integrations
+
+If you maintain a custom World, note that the World spec itself changed in a few places, described below — upgrade your World alongside the SDK. We're working on bringing back World compatibility tests and reporting on the [Worlds page](/worlds) to make it easier to see which Workflow versions each World is compatible with.
+
+The easiest way to start upgrading your World is with a prompt like this:
+
+<CopyPrompt text="My app uses a custom Workflow SDK World. Help me upgrade it from the v4 World spec to v5. Clone https://github.com/vercel/workflow and, on the main branch, study packages/world (the World interface and types) plus the first-party implementations in packages/world-vercel and packages/world-postgres. Run git diff stable...main -- packages/world packages/world-vercel packages/world-postgres to see exactly what changed since the 4.x line, and use those diffs to identify the spec and implementation changes. Then port the same changes into my custom World and verify it by running a workflow end to end against it." />
 
 | Change | What to do |
 | --- | --- |
@@ -133,4 +138,4 @@ Vercel Observability uses this trace viewer for all runs, v4 included, but with 
 | `workflow/internal/private` and `@workflow/core/private` removed | These were never public API. The compiler no longer emits imports from them, so regenerate build output rather than importing them yourself. |
 | `@workflow/world-local` stream chunks moved | Chunks live at `streams/chunks/<streamName>/`. Files written in the old flat layout are not read back; local development state from 4.x can be deleted. |
 
-Runs created on 4.x keep executing on the deployment that created them, so upgrading a deployment does not migrate in-flight runs — and, given the seed change above, must not. One storage caveat is worth knowing about: failed runs stored by `@workflow/world-postgres` before the upgrade read back with `error: undefined`, because the payload lives in the legacy `error` text column rather than `errorJson`.
+Runs created on 4.x keep executing on the deployment that created them, so upgrading a deployment does not migrate in-flight runs. One storage caveat is worth knowing about: failed runs stored by `@workflow/world-postgres` before the upgrade read back with `error: undefined`, because the payload lives in the legacy `error` text column rather than `errorJson`.
