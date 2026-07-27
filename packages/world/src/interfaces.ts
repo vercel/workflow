@@ -314,6 +314,11 @@ export interface Storage {
  */
 export interface WorldCapabilities {
   /**
+   * The World can atomically fence and permanently purge a root run and every
+   * descendant selected by the supplied lineage predicate.
+   */
+  runTreePurge?: boolean;
+  /**
    * Supports `experimental_minRetention` for Hooks. Missing or inactive means
    * the runtime rejects retained Hooks before registration.
    */
@@ -353,6 +358,24 @@ export interface WorldCapabilities {
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
 export interface World extends Queue, Streamer, Storage {
+  /**
+   * Permanently removes a workflow run tree and all of its owned entities.
+   *
+   * Implementations must fence new writes before inspecting active state,
+   * reject with EntityConflictError when active work cannot be cancelled and
+   * purged atomically, and treat an absent root as an idempotent success.
+   */
+  purgeRunTree?(
+    rootRunId: string,
+    options?: {
+      /**
+       * Reserved run attribute whose exact value identifies descendants.
+       * Frameworks should own this key and value; Worlds do not infer lineage
+       * from payload-bearing execution context.
+       */
+      descendantAttribute?: { key: string; value: string };
+    }
+  ): Promise<{ purgedRunCount: number; status: 'absent' | 'purged' }>;
   /**
    * Optional analytics read namespace for observability surfaces.
    *

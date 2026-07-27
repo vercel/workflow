@@ -6,6 +6,15 @@ Integrates with Vercel's infrastructure for storage, queuing, and authentication
 
 Used by default for deployments on Vercel. Authentication and API endpoints are configured automatically in Vercel deployments.
 
+## Run-tree purge availability
+
+This client does not advertise `runTreePurge`. Supporting it requires an
+atomic `DELETE /v2/runs/:rootRunId/tree` implementation in the separately
+owned `vercel/workflow-server`, including server-owned snapshots, blob
+references, and durable post-delete write fencing. That server source is not
+part of this repository, so the adapter must not report the capability until
+the server endpoint is implemented and deployed.
+
 ## Custom dispatcher
 
 HTTP requests (including the queue) default to a shared undici `RetryAgent` that handles connection pooling and retries. Pass a custom `dispatcher` to override it — e.g. to tune undici on newer Node runtimes:

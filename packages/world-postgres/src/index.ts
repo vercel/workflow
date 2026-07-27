@@ -1,3 +1,4 @@
+import { EntityConflictError } from '@workflow/errors';
 import type { Storage, World } from '@workflow/world';
 import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { Pool } from 'pg';
@@ -64,9 +65,150 @@ export function createWorld(
 
   return {
     specVersion: SPEC_VERSION_CURRENT,
+    capabilities: { runTreePurge: true },
     ...storage,
     ...streamer,
     ...queue,
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: transaction owns discovery, fencing, and deletion
+    async purgeRunTree(rootRunId, options) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const selector = options?.descendantAttribute;
+        if (selector !== undefined) {
+          await client.query(
+            'select pg_advisory_xact_lock(hashtextextended($1 || chr(31) || $2, 1))',
+            [selector.key, selector.value]
+          );
+        }
+        await client.query(
+          'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [rootRunId]
+        );
+
+        const root = await client.query<{ id: string }>(
+          'select id from workflow.workflow_runs where id = $1',
+          [rootRunId]
+        );
+        if (root.rowCount === 0) {
+          const prior = await client.query<{ run_id: string }>(
+            `select run_id
+               from workflow.workflow_run_tombstones
+              where root_run_id = $1
+              order by run_id`,
+            [rootRunId]
+          );
+          if (prior.rowCount !== 0) {
+            await deleteRunTreeEntities(prior.rows.map((row) => row.run_id));
+            await client.query('commit');
+            return {
+              purgedRunCount: prior.rows.length,
+              status: 'purged' as const,
+            };
+          }
+          await client.query('commit');
+          return { purgedRunCount: 0, status: 'absent' as const };
+        }
+
+        const selected = selector
+          ? await client.query<{ id: string; status: string }>(
+              `select id, status
+                 from workflow.workflow_runs
+                where id = $1 or attributes ->> $2 = $3
+                order by id`,
+              [rootRunId, selector.key, selector.value]
+            )
+          : await client.query<{ id: string; status: string }>(
+              `select id, status
+                 from workflow.workflow_runs
+                where id = $1
+                order by id`,
+              [rootRunId]
+            );
+
+        for (const run of selected.rows) {
+          await client.query(
+            'select pg_advisory_xact_lock(hashtextextended($1, 0))',
+            [run.id]
+          );
+        }
+        const runIds = selected.rows.map((run) => run.id);
+        const locked = await client.query<{ id: string; status: string }>(
+          `select id, status
+             from workflow.workflow_runs
+            where id = any($1::varchar[])
+            order by id
+            for update`,
+          [runIds]
+        );
+        if (
+          locked.rows.some(
+            (run) => run.status === 'pending' || run.status === 'running'
+          )
+        ) {
+          await client.query('rollback');
+          throw new EntityConflictError(
+            `Workflow run tree ${rootRunId} is still active`
+          );
+        }
+
+        if (selector !== undefined) {
+          await client.query(
+            `insert into workflow.workflow_tree_fences
+               (attribute_key, attribute_value, root_run_id)
+             values ($1, $2, $3)
+             on conflict (attribute_key, attribute_value) do update
+               set root_run_id = excluded.root_run_id`,
+            [selector.key, selector.value, rootRunId]
+          );
+        }
+        await client.query(
+          `insert into workflow.workflow_run_tombstones
+             (run_id, root_run_id)
+           select unnest($1::varchar[]), $2
+           on conflict (run_id) do nothing`,
+          [runIds, rootRunId]
+        );
+        await deleteRunTreeEntities(runIds);
+        await client.query('commit');
+        return {
+          purgedRunCount: runIds.length,
+          status: 'purged' as const,
+        };
+
+        async function deleteRunTreeEntities(runIds: string[]) {
+          await client.query(
+            'delete from workflow.workflow_stream_chunks where run_id = any($1::varchar[])',
+            [runIds]
+          );
+          await client.query(
+            'delete from workflow.workflow_waits where run_id = any($1::varchar[])',
+            [runIds]
+          );
+          await client.query(
+            'delete from workflow.workflow_hooks where run_id = any($1::varchar[])',
+            [runIds]
+          );
+          await client.query(
+            'delete from workflow.workflow_steps where run_id = any($1::varchar[])',
+            [runIds]
+          );
+          await client.query(
+            'delete from workflow.workflow_events where run_id = any($1::varchar[])',
+            [runIds]
+          );
+          await client.query(
+            'delete from workflow.workflow_runs where id = any($1::varchar[])',
+            [runIds]
+          );
+        }
+      } catch (error) {
+        await client.query('rollback').catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     ...(config.streamFlushIntervalMs !== undefined && {
       streamFlushIntervalMs: config.streamFlushIntervalMs,
     }),
