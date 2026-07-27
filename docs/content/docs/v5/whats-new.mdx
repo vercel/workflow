@@ -152,7 +152,7 @@ If you maintain a custom World, note that the World spec itself changed in a few
 
 The easiest way to start upgrading your World is with a prompt like this:
 
-<CopyPrompt text="My app uses a custom Workflow SDK World. Help me upgrade it from the v4 World spec to v5. Clone https://github.com/vercel/workflow and, on the main branch, study packages/world (the World interface and types) plus the first-party implementations in packages/world-vercel and packages/world-postgres. Run git diff stable...main -- packages/world packages/world-vercel packages/world-postgres to see exactly what changed since the 4.x line, and use those diffs to identify the spec and implementation changes. Then port the same changes into my custom World and verify it by running a workflow end to end against it." />
+<CopyPrompt text="My app uses a custom Workflow SDK World. Help me upgrade it from the v4 World spec to v5. Clone https://github.com/vercel/workflow and, on the main branch, study packages/world (the World interface and types) plus the first-party implementations in packages/world-vercel and packages/world-postgres. Run git diff stable...workflow@<the 5.x version I am upgrading to> -- packages/world packages/world-vercel packages/world-postgres (release tags are named like workflow@5.0.0; fall back to main if the tag does not exist) to see exactly what changed since the 4.x line, and use those diffs to identify the spec and implementation changes. Then port the same changes into my custom World and verify it by running a workflow end to end against it." />
 
 | Change | What to do |
 | --- | --- |

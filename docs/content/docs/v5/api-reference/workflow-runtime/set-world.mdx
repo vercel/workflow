@@ -36,7 +36,6 @@ This function does not return a value.
 
 The target World is selected at build time (via `WORKFLOW_TARGET_WORLD` when the app was built) and statically injected into the bundle — changing the environment variable at runtime has no effect. To use a different World at runtime, construct it explicitly with the World package's `createWorld()` factory and inject it:
 
-{/* @skip-typecheck: @workflow/world-local is not mapped in the docs snippet type-checker */}
 ```typescript lineNumbers
 import { setWorld } from "workflow/runtime";
 import { createWorld } from "@workflow/world-local";
