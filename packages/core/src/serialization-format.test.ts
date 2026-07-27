@@ -17,6 +17,7 @@ import {
   observabilityRevivers,
   type Revivers,
   SerializationFormat,
+  type SerializationFormatType,
   STREAM_REF_TYPE,
   truncateId,
 } from './serialization-format.js';
@@ -59,10 +60,8 @@ const testRevivers: Revivers = {
 describe('encodeWithFormatPrefix', () => {
   it('should prepend the format prefix to a Uint8Array payload', () => {
     const payload = new Uint8Array([1, 2, 3]);
-    const encoded = encodeWithFormatPrefix(
-      SerializationFormat.DEVALUE_V1,
-      payload
-    ) as Uint8Array;
+    const format: SerializationFormatType = 'devl';
+    const encoded = encodeWithFormatPrefix(format, payload) as Uint8Array;
 
     expect(encoded).toBeInstanceOf(Uint8Array);
     expect(encoded.length).toBe(4 + 3); // "devl" (4 bytes) + payload (3 bytes)

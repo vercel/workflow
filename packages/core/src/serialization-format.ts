@@ -8,35 +8,24 @@
 
 import { getEventDataRefFields } from '@workflow/world';
 import { parse, unflatten } from 'devalue';
+import { SerializationFormat } from './serialization/types.js';
 
 // ---------------------------------------------------------------------------
 // Format prefix constants and encoding/decoding
 // ---------------------------------------------------------------------------
 
-export const SerializationFormat = {
-  /** devalue stringify/parse with TextEncoder/TextDecoder */
-  DEVALUE_V1: 'devl',
-  /** Encrypted payload (inner payload has its own format prefix after decryption) */
-  ENCRYPTED: 'encr',
-  /**
-   * Sealed payload — asymmetrically encrypted to a run's X25519 public key
-   * (inner payload has its own format prefix after opening).
-   *
-   * Written by cross-run writers that hold only the recipient run's public
-   * key. Opening it requires the run's private scalar rather than the
-   * symmetric per-run key, so o11y display treats it as ciphertext via
-   * {@link isEncryptedData} but {@link hydrateDataWithKey} does not attempt
-   * an AES-GCM decrypt on it.
-   */
-  SEALED: 'encp',
-  /** Gzip-compressed payload (inner payload has its own format prefix after decompression) */
-  GZIP: 'gzip',
-  /** Zstandard-compressed payload (inner payload has its own format prefix after decompression) */
-  ZSTD: 'zstd',
-} as const;
+export { SerializationFormat };
 
+/**
+ * Public literal union retained for compatibility with callers that pass a
+ * validated format directly instead of reading it from `SerializationFormat`.
+ */
 export type SerializationFormatType =
-  (typeof SerializationFormat)[keyof typeof SerializationFormat];
+  | 'devl'
+  | 'encr'
+  | 'encp'
+  | 'gzip'
+  | 'zstd';
 
 /** Length of the format prefix in bytes */
 const FORMAT_PREFIX_LENGTH = 4;
@@ -77,7 +66,7 @@ export function decodeFormatPrefix(data: Uint8Array | unknown): {
 } {
   if (!(data instanceof Uint8Array)) {
     return {
-      format: SerializationFormat.DEVALUE_V1,
+      format: SerializationFormat.DEVALUE_V1 as SerializationFormatType,
       payload: new TextEncoder().encode(JSON.stringify(data)),
     };
   }
