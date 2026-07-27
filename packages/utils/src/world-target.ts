@@ -1,27 +1,8 @@
 export type WorkflowEnvironment = Record<string, string | undefined>;
 
-export function normalizeWorkflowTargetWorldImport(
-  targetWorld: string | undefined
-): string | undefined {
-  if (!targetWorld) {
-    return undefined;
-  }
-  if (targetWorld === 'local') {
-    return '@workflow/world-local';
-  }
-  if (targetWorld === 'vercel') {
-    return '@workflow/world-vercel';
-  }
-  return targetWorld;
-}
-
 /**
  * Whether this environment belongs to a Vercel deployment — either running
  * inside one, or building one.
- *
- * The target world is selected at build time and compiled into the host
- * bundles, so this has to answer "will the output of this build run on
- * Vercel?", not just "am I running on Vercel right now?".
  *
  * `VERCEL_DEPLOYMENT_ID` is the most precise signal, but it only exists once a
  * deployment exists: it is present at runtime and inside Vercel's own build
@@ -63,14 +44,6 @@ export function resolveWorkflowTargetWorld(
   }
 
   return isVercelDeploymentEnv(env) ? 'vercel' : 'local';
-}
-
-export function getWorldImport(env: WorkflowEnvironment = process.env): string {
-  // `resolveWorkflowTargetWorld` always returns a non-empty specifier, which is
-  // the only input `normalizeWorkflowTargetWorldImport` maps to `undefined`.
-  return normalizeWorkflowTargetWorldImport(
-    resolveWorkflowTargetWorld(env)
-  ) as string;
 }
 
 export function isVercelWorldTarget(targetWorld: string): boolean {
