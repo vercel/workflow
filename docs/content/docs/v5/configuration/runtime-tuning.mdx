@@ -88,6 +88,22 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Clamp: `1` to `900`
 - How long after an inline step's latest `step_started` other invocations assume its owner may still be executing the body. Within the lease they defer the step's backstop message; past it they enqueue immediately.
 - Raise this on self-hosted multi-instance deployments whose inline steps run longer than the default (the default is sized for Vercel's function duration ceiling).
+- On self-hosted worlds this also bounds how quickly boot-time recovery re-drives a run that crashed mid-step — see [Mid-step crashes and the ownership lease](/worlds/recovering-in-flight-runs#mid-step-crashes-and-the-ownership-lease).
+
+## Boot recovery
+
+These control what `ensureWorldStarted()` does with in-flight (`pending`/`running`) runs at server startup on the self-hosted worlds. See [Recovering in-flight runs](/worlds/recovering-in-flight-runs).
+
+### `WORKFLOW_RECOVER_IN_DEV`
+
+- Default: unset
+- Set `1` to recover (re-enqueue) in-flight runs at dev-server startup instead of cancelling them — e.g. to debug recovery itself. Production behavior is unchanged.
+
+### `WORKFLOW_SKIP_BOOT_RECOVERY`
+
+- Default: unset
+- Set `1` to start the World without touching in-flight runs: background workers still start, but runs are neither recovered nor cancelled.
+- Use on all but one instance of a multi-instance deployment to avoid redundant cluster-wide recovery scans, and on any app that shares its storage backend (e.g. one Postgres database) with other apps — see [Skipping boot recovery](/worlds/recovering-in-flight-runs#skipping-boot-recovery).
 
 ## Compression and tracing
 

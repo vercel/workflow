@@ -85,6 +85,7 @@ The Local World is the default outside Vercel and is intended for development.
 - Environment variable: `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
 - Default: `true`
 - Re-enqueues pending and running local runs when the World starts. Set the environment variable to `0` or `false` to skip recovery; the factory option wins when both are set.
+- Only applies when `start()` is called without an explicit `onRestart` mode (e.g. a test harness calling it directly). The framework startup wiring goes through `ensureWorldStarted()`, which always passes a mode that overrides this option — use [`WORKFLOW_SKIP_BOOT_RECOVERY=1`](/docs/configuration/runtime-tuning#workflow_skip_boot_recovery) to skip recovery there.
 
 ### `tag`
 
