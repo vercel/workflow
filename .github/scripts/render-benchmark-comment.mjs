@@ -202,12 +202,115 @@ export function annotateWithBaseline(results, baseline) {
       const value = from(base);
       if (typeof value === 'number') annotated[annotation] = value;
     }
+    // Raw samples (when the run recorded them) enable the histogram/cumulative
+    // diff below the table — kept separate from BASELINE_FIELDS since it's an
+    // array, not a numeric percentile.
+    if (Array.isArray(base.raw)) annotated.baselineRaw = base.raw;
     return annotated;
   };
   return results.map((result) => ({
     ...result,
     metrics: (result.metrics ?? []).map((row) => annotate(result, row)),
   }));
+}
+
+const sum = (values) => values.reduce((total, v) => total + v, 0);
+
+/** Buckets samples into fixed-width ms bins; anything past `binWidth *
+ * maxBins` is folded into a single overflow bucket, so a handful of outliers
+ * don't blow up the table width. */
+function buildHistogram(samples, binWidth, maxBins) {
+  const counts = new Array(maxBins).fill(0);
+  let overflow = 0;
+  for (const v of samples) {
+    const idx = Math.floor(v / binWidth);
+    if (idx >= 0 && idx < maxBins) counts[idx]++;
+    else overflow++;
+  }
+  return { counts, overflow };
+}
+
+// Bucket width and count for the STSO histogram diff. Provisional, tuned for
+// the 1-20 step-index range (sub-100ms samples); revisit once we've seen the
+// shape of the real distributions.
+const STSO_HISTOGRAM_BIN_WIDTH_MS = 5;
+const STSO_HISTOGRAM_MAX_BINS = 20;
+
+function formatDeltaValue(delta, unit = '') {
+  return `${delta >= 0 ? '+' : ''}${Math.round(delta)}${unit}`;
+}
+
+/** Renders one STSO row's cumulative-time line plus its bucketed histogram
+ * table (run 2 vs run 1). */
+function renderStsoRowDiff(row) {
+  const current = buildHistogram(
+    row.raw,
+    STSO_HISTOGRAM_BIN_WIDTH_MS,
+    STSO_HISTOGRAM_MAX_BINS
+  );
+  const baseline = buildHistogram(
+    row.baselineRaw,
+    STSO_HISTOGRAM_BIN_WIDTH_MS,
+    STSO_HISTOGRAM_MAX_BINS
+  );
+  const currentTotal = sum(row.raw);
+  const baselineTotal = sum(row.baselineRaw);
+  const totalDelta = currentTotal - baselineTotal;
+  const totalPct =
+    baselineTotal > 0 ? (totalDelta / baselineTotal) * 100 : undefined;
+  const pctSuffix =
+    totalPct === undefined ? '' : `, ${formatDeltaValue(totalPct)}%`;
+
+  const lines = [
+    '',
+    `_${row.scenario}_`,
+    '',
+    `Cumulative STSO time: run 1 ${Math.round(baselineTotal)}ms → run 2 ${Math.round(currentTotal)}ms (Δ ${formatDeltaValue(totalDelta, 'ms')}${pctSuffix})`,
+    '',
+    '| Bucket (ms) | Run 1 steps | Run 2 steps | Δ |',
+    '|---|---:|---:|---:|',
+  ];
+  for (let i = 0; i < STSO_HISTOGRAM_MAX_BINS; i++) {
+    if (current.counts[i] === 0 && baseline.counts[i] === 0) continue;
+    const from = i * STSO_HISTOGRAM_BIN_WIDTH_MS;
+    const to = from + STSO_HISTOGRAM_BIN_WIDTH_MS;
+    lines.push(
+      `| ${from}-${to} | ${baseline.counts[i]} | ${current.counts[i]} | ${formatDeltaValue(current.counts[i] - baseline.counts[i])} |`
+    );
+  }
+  if (current.overflow > 0 || baseline.overflow > 0) {
+    lines.push(
+      `| ${STSO_HISTOGRAM_MAX_BINS * STSO_HISTOGRAM_BIN_WIDTH_MS}+ | ${baseline.overflow} | ${current.overflow} | ${formatDeltaValue(current.overflow - baseline.overflow)} |`
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Renders a per-scenario histogram diff (bucketed step counts, run 2 vs run
+ * 1) and a cumulative-time diff (sum of all STSO samples, run 2 vs run 1) for
+ * every STSO row that has raw samples from both runs. This is a
+ * complement to the Best/P75/P90/P99 table: percentiles hide *how many*
+ * steps moved and by how much in aggregate, which is what these two views
+ * are for.
+ */
+function renderStsoDiffSection(result) {
+  const rows = (result.metrics ?? []).filter(
+    (row) =>
+      row.metric === 'stso' &&
+      Array.isArray(row.raw) &&
+      Array.isArray(row.baselineRaw)
+  );
+  if (rows.length === 0) return '';
+
+  const lines = [
+    '',
+    '**STSO histogram & cumulative time diff (run 2 vs run 1)**',
+  ];
+  for (const row of rows) {
+    lines.push(renderStsoRowDiff(row));
+  }
+  return lines.join('\n');
 }
 
 // Deltas beyond ±this vs the paired baseline run get a directional marker: 🔻 for a regression,
@@ -300,6 +403,8 @@ function renderEntry(entry, { heading }) {
       lines.push(`Backend: \`${result.backend}\` · app: \`${result.app}\``, '');
     }
     lines.push(renderResultTable(result), '');
+    const stsoDiff = renderStsoDiffSection(result);
+    if (stsoDiff) lines.push(stsoDiff, '');
   }
   return lines.join('\n');
 }

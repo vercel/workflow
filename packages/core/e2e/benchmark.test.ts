@@ -515,6 +515,8 @@ interface MetricStats {
   p90: number;
   p99: number;
   samples: number;
+  /** Raw sample values (ms), for histogram/cumulative diffing between runs. */
+  raw: number[];
 }
 
 interface MetricTargets {
@@ -540,6 +542,7 @@ function computeStats(samples: number[]): MetricStats {
     p90: round(percentile(90)),
     p99: round(percentile(99)),
     samples: sorted.length,
+    raw: sorted,
   };
 }
 
