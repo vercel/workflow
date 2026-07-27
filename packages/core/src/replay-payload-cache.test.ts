@@ -114,6 +114,28 @@ describe('ReplayPayloadCache', () => {
     allSettled.mockRestore();
   });
 
+  it('scans only events appended after the previous prewarm', async () => {
+    const observedEventIds: string[] = [];
+    const tracked = (event: Event): Event =>
+      new Proxy(event, {
+        get(target, property, receiver) {
+          if (property === 'eventType') {
+            observedEventIds.push(target.eventId);
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      });
+    const cache = new ReplayPayloadCache(undefined);
+    const run = makeRun(undefined);
+    const source = makeEvents([undefined, undefined, undefined]);
+    const events = [tracked(source[0])];
+
+    await cache.prewarm(run, events);
+    await cache.prewarm(run, [...events, tracked(source[1])]);
+
+    expect(observedEventIds).toEqual(['evnt_result', 'evnt_error']);
+  });
+
   it('caches real decrypt/decompress output but revives fresh objects', async () => {
     const key = await importKey(new Uint8Array(32).fill(7));
     const serialized = await dehydrateStepReturnValue(

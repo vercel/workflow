@@ -40,6 +40,7 @@ export class ReplayPayloadCache {
     Promise<PreparedReplayPayload>
   >();
   private readonly primitiveStepResults = new Map<string, unknown>();
+  private scannedEventCount = 0;
 
   constructor(
     private readonly encryptionKey: CryptoKey | undefined,
@@ -51,11 +52,7 @@ export class ReplayPayloadCache {
    * are intentionally retained: the ordered event consumer must observe the
    * original rejection before that entry becomes retryable.
    */
-  async prewarm(
-    workflowRun: WorkflowRun,
-    events: Event[],
-    startIndex = 0
-  ): Promise<void> {
+  async prewarm(workflowRun: WorkflowRun, events: Event[]): Promise<void> {
     const preparations: Promise<PreparedReplayPayload>[] = [];
     const start = (cacheKey: string, value: unknown): void => {
       // Legacy flattened values may be mutated by devalue's unflatten and are
@@ -70,6 +67,10 @@ export class ReplayPayloadCache {
     };
 
     start(this.workflowInputKey(workflowRun.runId), workflowRun.input);
+    // This cache is scoped to one invocation and its append-only event log.
+    // Full snapshot reloads preserve the already-seen prefix, so its length is
+    // enough to locate events appended since the previous replay.
+    const startIndex = Math.min(this.scannedEventCount, events.length);
     for (let index = startIndex; index < events.length; index++) {
       const event = events[index];
       switch (event.eventType) {
@@ -93,6 +94,7 @@ export class ReplayPayloadCache {
           break;
       }
     }
+    this.scannedEventCount = events.length;
 
     // Prewarming is speculative and must not fail replay before the matching
     // event is consumed. allSettled also attaches rejection handlers eagerly.

@@ -8,7 +8,6 @@ import {
 import { monotonicFactory } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../private.js';
-import { ReplayPayloadCache } from '../replay-payload-cache.js';
 import { workflowEntrypoint } from '../runtime.js';
 import {
   dehydrateStepArguments,
@@ -462,46 +461,6 @@ describe('workflow handler wait completion replay', () => {
     expect(result.listedPages[0]?.map((event) => event.eventType)).toEqual([
       'hook_received',
       'wait_completed',
-    ]);
-    expectHookBranchQueued(result);
-  });
-
-  it('prewarms the initial replay and only the appended payload events on the next replay', async () => {
-    const originalPrewarm = ReplayPayloadCache.prototype.prewarm;
-    const prewarmedEventTypes: string[][] = [];
-    const prewarm = vi
-      .spyOn(ReplayPayloadCache.prototype, 'prewarm')
-      .mockImplementation(function (workflowRun, events, startIndex = 0) {
-        prewarmedEventTypes.push(
-          events.slice(startIndex).map((event) => event.eventType)
-        );
-        return originalPrewarm.call(this, workflowRun, events, startIndex);
-      });
-
-    const result = await runStaleWaitReplayScenario({
-      includePreloadedCursor: true,
-    });
-
-    // The first replay sees the complete snapshot after the wait refresh.
-    // The second reuses that array and needs only the wait and drainStep
-    // events appended while handling the first replay's suspension.
-    expect(prewarm).toHaveBeenCalledTimes(2);
-    expect(prewarmedEventTypes[0]).toEqual([
-      'run_created',
-      'run_started',
-      'hook_created',
-      'step_created',
-      'step_started',
-      'step_completed',
-      'wait_created',
-      'hook_received',
-      'wait_completed',
-    ]);
-    expect(prewarmedEventTypes[1]).toEqual([
-      'wait_created',
-      'step_created',
-      'step_started',
-      'step_completed',
     ]);
     expectHookBranchQueued(result);
   });
