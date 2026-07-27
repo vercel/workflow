@@ -88,8 +88,8 @@ export interface StepExecutorParams {
   encryptionKey?: CryptoKey;
   /**
    * The workflow run's specVersion, used to gate payload compression.
-   * Step outputs/errors are only gzip-compressed when the run is marked
-   * as possibly containing compressed payloads (specVersion >= 5).
+   * Step outputs/errors are only compressed when the run is marked as
+   * compression-capable (specVersion >= 5).
    */
   runSpecVersion?: number;
   /**
@@ -250,8 +250,7 @@ export async function executeStep(
     stepName,
   } = params;
   const isVercel = process.env.VERCEL_URL !== undefined;
-  // Gate payload compression on the run's specVersion: only runs marked
-  // as possibly containing compressed payloads (spec >= 5) get gzip data.
+  // Gate payload compression on the run's specVersion.
   const compression =
     (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
 
