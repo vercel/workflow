@@ -32,7 +32,11 @@ import { version } from './version.js';
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
-export const WORKFLOW_SERVER_URL_OVERRIDE = '';
+// TEMPORARY — do not merge. Points CI e2e at the backend branch carrying the
+// matching event-count guard, so these runs exercise both halves together.
+// Revert to '' before this PR leaves draft.
+export const WORKFLOW_SERVER_URL_OVERRIDE =
+  'https://workflow-server-git-peter-event-count-guard.vercel.sh';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.

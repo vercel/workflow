@@ -272,7 +272,8 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
  */
 describe('getEventV4 over HTTP', () => {
   it('returns the first frame and stops reading the rest', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -513,7 +514,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     // replay restart needs no events.list round trip. They arrive as JSON, so
     // nested dates must come back as Date instances or the runtime crashes on
     // .getTime() deep in the replay.
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -575,7 +577,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
   });
 
   it('ignores a 412 payload whose events do not narrow to events', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -614,7 +617,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
   });
 
   it('forwards stateUpdatedAt in the frame meta (precondition guard)', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -666,7 +670,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
   });
 
   it('forwards stateEventCount and stateCursor in the frame meta', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -720,7 +725,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
   });
 
   it('omits stateEventCount and stateCursor from the frame meta when not set', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -772,7 +778,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
   });
 
   it('omits stateUpdatedAt from the frame meta when not set', async () => {
-    const origin = 'https://vercel-workflow.com';
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
 
