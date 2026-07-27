@@ -3433,6 +3433,34 @@ export async function dehydrateStepReturnValue(
 }
 
 /**
+ * Serializes an error payload after its boundary-specific reducers have been
+ * selected. The caller owns error framing so step and run errors retain their
+ * existing labels.
+ */
+async function dehydrateError(
+  value: unknown,
+  reducers: Partial<Reducers>,
+  key: CryptoKey | undefined,
+  compression: boolean
+): Promise<Uint8Array> {
+  const str = stringify(value, reducers);
+  const payload = new TextEncoder().encode(str);
+  const serialized = encodeWithFormatPrefix(
+    SerializationFormat.DEVALUE_V1,
+    payload
+  ) as Uint8Array;
+  // Compress before encrypting — encrypted bytes don't compress.
+  const compressionStats: CompressionStats = {};
+  const compressed = await compress(serialized, compression, compressionStats);
+  const encrypted = (await maybeEncrypt(
+    compressed as Uint8Array,
+    key
+  )) as Uint8Array;
+  await recordCompression(compressionStats, 'serialize');
+  return encrypted;
+}
+
+/**
  * Called from the step executor when a step throws. Dehydrates the thrown
  * value from within the step execution environment into a format that can
  * be saved to the database in a `step_failed` or `step_retrying` event.
@@ -3457,25 +3485,12 @@ export async function dehydrateStepError(
   compression = false
 ): Promise<Uint8Array> {
   try {
-    const str = stringify(value, getStepReducers(global, ops, runId, key));
-    const payload = new TextEncoder().encode(str);
-    const serialized = encodeWithFormatPrefix(
-      SerializationFormat.DEVALUE_V1,
-      payload
-    ) as Uint8Array;
-    // Compress before encrypting — encrypted bytes don't compress.
-    const compressionStats: CompressionStats = {};
-    const compressed = await compress(
-      serialized,
-      compression,
-      compressionStats
+    return await dehydrateError(
+      value,
+      getStepReducers(global, ops, runId, key),
+      key,
+      compression
     );
-    const encrypted = (await maybeEncrypt(
-      compressed as Uint8Array,
-      key
-    )) as Uint8Array;
-    await recordCompression(compressionStats, 'serialize');
-    return encrypted;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
     const { message, hint } = formatSerializationError('step error', cause);
@@ -3530,25 +3545,12 @@ export async function dehydrateRunError(
   compression = false
 ): Promise<Uint8Array> {
   try {
-    const str = stringify(value, getWorkflowReducers(global));
-    const payload = new TextEncoder().encode(str);
-    const serialized = encodeWithFormatPrefix(
-      SerializationFormat.DEVALUE_V1,
-      payload
-    ) as Uint8Array;
-    // Compress before encrypting — encrypted bytes don't compress.
-    const compressionStats: CompressionStats = {};
-    const compressed = await compress(
-      serialized,
-      compression,
-      compressionStats
+    return await dehydrateError(
+      value,
+      getWorkflowReducers(global),
+      key,
+      compression
     );
-    const encrypted = (await maybeEncrypt(
-      compressed as Uint8Array,
-      key
-    )) as Uint8Array;
-    await recordCompression(compressionStats, 'serialize');
-    return encrypted;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
     const { message, hint } = formatSerializationError('run error', cause);
