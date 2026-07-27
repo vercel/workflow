@@ -54,7 +54,7 @@ This guide assumes **Standard** workflows. Express workflows have different sema
 | Wait state | `sleep()` | `sleep('1m')` or `sleep(date)`. |
 | Parallel state | `Promise.all()` | Standard concurrency. |
 | Map state | `for` loop / bounded `Promise.all` (e.g. `p-limit`) / [`start()`](/docs/foundations/starting-workflows) per item for large fan-out | Match the original concurrency mode. |
-| Retry / Catch | `maxRetries`, `RetryableError`, `FatalError`; `try/catch` for compensation | Retry logic moves to step boundaries. |
+| Retry / Catch (`MaxAttempts`, `BackoffRate`, `IntervalSeconds`) | `maxRetries`, `RetryableError`, `FatalError`; `try/catch` for compensation | Retry logic moves to step boundaries; backoff curves via `retryAfter` — see [Errors & Retrying](/docs/foundations/errors-and-retries#advanced-example). |
 | `.waitForTaskToken` | `createHook()` / `createWebhook()` | Hooks for typed signals; webhooks for HTTP. |
 | Child state machine (`StartExecution`) | Call [`start()`](/docs/foundations/starting-workflows) directly from the workflow | Child runs are tagged with `$parentRunId` / `$rootRunId` automatically. |
 

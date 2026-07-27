@@ -59,6 +59,7 @@ Both invest heavily in AI. trigger.dev offers AI SDK tool wrapping, a native `us
 | `triggerAndWait()` | [`start()`](/docs/foundations/starting-workflows) called directly from the workflow, then await the returned `Run` | Spawn + collect. |
 | `batch.triggerAndWait()` | `Promise.all` over collected `Run` handles | Standard concurrency. |
 | `metadata.stream()` / Realtime | `getWritable()` / named streams | Clients read from the stream. |
+| Run tags / `metadata.set()` | [`setAttributes()`](/docs/api-reference/workflow/set-attributes) / `attributes` option on `start()` | Filter runs by `key=value` — see [Attributes](/docs/observability/attributes). |
 | `AbortTaskRunError` | `FatalError` | Stops retries immediately. |
 
 The `task()` factory collapses into a plain function — and because the workflow body is replayed, move side effects into steps:

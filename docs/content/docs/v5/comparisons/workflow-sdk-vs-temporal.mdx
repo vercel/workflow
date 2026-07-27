@@ -67,7 +67,8 @@ The model maps closely. Keep your orchestration logic; drop the workers, task qu
 | Signal | `createHook()` / `createWebhook()` | Hooks for typed resume signals; webhooks for HTTP callbacks. |
 | Query | `getWritable({ namespace: 'status' })` stream | Stream status durably; clients read the stream instead of polling. |
 | Child Workflow | Call [`start()`](/docs/foundations/starting-workflows) directly from the workflow | Child runs are tagged with `$parentRunId` / `$rootRunId` automatically. |
-| Activity retry policy | `maxRetries`, `RetryableError`, `FatalError` | Retries live at the step boundary. |
+| Activity retry policy | `maxRetries`, `RetryableError`, `FatalError` | Retries live at the step boundary — see [Errors & Retrying](/docs/foundations/errors-and-retries). |
+| Search attributes / visibility queries | [`setAttributes()`](/docs/api-reference/workflow/set-attributes) / `attributes` option on `start()` | Filter runs by `key=value` — see [Attributes](/docs/observability/attributes). |
 | Event History | Workflow event log / run timeline | Same durable replay; built-in observability UI. |
 
 A minimal translation — the orchestrator loses `proxyActivities` and becomes plain TypeScript:
@@ -114,9 +115,8 @@ Each row is a Temporal capability the Workflow SDK does not replicate one-to-one
 
 | Temporal feature | How to cover it with the Workflow SDK |
 | --- | --- |
-| Search attributes / visibility queries | Attach metadata with [`setAttributes()`](/docs/api-reference/workflow/set-attributes) (or the `attributes` option of `start()`) and filter runs by `key=value` — see [Attributes](/docs/observability/attributes) |
 | Per-activity timeouts (`startToCloseTimeout`, etc.) | Enforce deadlines inside a step with `AbortSignal.timeout(ms)`, or wrap a call in `Promise.race(step(), sleep('5m'))` |
-| Rich retry policy (`backoffCoefficient`, `nonRetryableErrorTypes`) | Only `maxRetries` is configurable; classify with `RetryableError` / `FatalError` and set delay via `new RetryableError(msg, { retryAfter: '5s' })` |
+| Declarative retry policy (`backoffCoefficient`, `nonRetryableErrorTypes`, `maximumAttempts`) | The Workflow SDK expresses the same policies idiomatically in code instead of a config object: cap attempts with [`maxRetries`](/docs/foundations/errors-and-retries#default-retrying), mark errors non-retryable with [`FatalError`](/docs/api-reference/workflow/fatal-error), and derive any backoff curve from [`getStepMetadata().attempt`](/docs/api-reference/workflow/get-step-metadata) via [`RetryableError`](/docs/api-reference/workflow/retryable-error)'s `retryAfter` — see the [exponential backoff example](/docs/foundations/errors-and-retries#advanced-example) |
 | Polyglot workers | The Workflow SDK is TypeScript-first (Python in beta); for Go/Java/etc. in the same orchestrator, Temporal remains the better fit |
 
 ---

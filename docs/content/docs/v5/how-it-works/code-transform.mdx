@@ -270,6 +270,10 @@ Contains all step functions transformed in **step mode**. The combined flow hand
 
 This module must not be exposed as an HTTP endpoint.
 
+<Callout type="info">
+  **Changed in 5.0:** in 4.x the step bundle was served as its own HTTP route at `POST /.well-known/workflow/v1/step`, with step messages delivered on a separate `__wkf_step_*` queue topic. v5 merged both into the combined flow handler — the step bundle became a registration module imported by `flow.js`, and step messages arrive on the shared workflow queue. See the [v4 version of this page](/v4/docs/how-it-works/code-transform) for the old layout.
+</Callout>
+
 ### `webhook.js`
 
 Contains webhook handling logic for delivering external data to running workflows via [`createWebhook()`](/docs/api-reference/workflow/create-webhook).

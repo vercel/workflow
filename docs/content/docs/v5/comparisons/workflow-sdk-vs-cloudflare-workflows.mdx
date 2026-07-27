@@ -62,7 +62,7 @@ There's no automated migration skill for Cloudflare specifically, but the mappin
 | `step.do(name, cb)` | `"use step"` function called with `await` |
 | `step.sleep` / `step.sleepUntil` | `sleep('1h')` / `sleep(date)` |
 | `step.waitForEvent` | `createHook()` / `createWebhook()` |
-| Per-step `retries` config | `maxRetries`, `RetryableError`, `FatalError` |
+| Per-step `retries` config (`limit`, `delay`, `backoff`) | `maxRetries` caps attempts; any backoff curve via [`RetryableError`](/docs/api-reference/workflow/retryable-error)'s `retryAfter` derived from [`getStepMetadata().attempt`](/docs/api-reference/workflow/get-step-metadata); `FatalError` stops retries — see [Errors & Retrying](/docs/foundations/errors-and-retries#advanced-example) |
 | `env.MY_WORKFLOW.create(...)` binding | `start(workflow, [args])` from your app |
 
 Side effects that lived in `step.do` callbacks move into named `"use step"` functions; the orchestration becomes plain `await` / `if` / `Promise.all` instead of the `WorkflowEntrypoint` class.
