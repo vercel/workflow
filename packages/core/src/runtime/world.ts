@@ -156,8 +156,18 @@ export const getWorld = async (): Promise<World> => {
  * Pass `options.dev` from your framework's authoritative dev flag (e.g. Nitro's
  * `nitro.options.dev`, SvelteKit's `$app/environment` `dev`, Astro's
  * `import.meta.env.DEV`); when omitted it falls back to
- * `process.env.NODE_ENV === 'development'`. Set `WORKFLOW_RECOVER_IN_DEV=1` to
- * force recovery even in development (e.g. to debug recovery itself).
+ * `process.env.NODE_ENV === 'development'`. Only the exact string
+ * `'development'` counts as dev — an unset or unrecognized NODE_ENV fails
+ * safe toward `recover` (a wrongly-recovered dev run can at worst hit replay
+ * divergence, while a wrongly-cancelled production run is terminal). Set
+ * `WORKFLOW_RECOVER_IN_DEV=1` to force recovery even in development (e.g. to
+ * debug recovery itself).
+ *
+ * Set `WORKFLOW_SKIP_BOOT_RECOVERY=1` to start the World without touching
+ * in-flight runs (`onRestart: 'ignore'` — background workers still start).
+ * Use this on all but one instance of a multi-instance deployment to avoid
+ * redundant cluster-wide recovery scans, or on any app that shares its
+ * storage backend with other apps (see the recovery docs).
  *
  * Fail-open: this never throws. Boot-time recovery is best-effort, so a
  * transient failure (e.g. the database is briefly unreachable at startup) must
@@ -181,7 +191,12 @@ export const ensureWorldStarted = async (
 ): Promise<void> => {
   const isDev = options?.dev ?? process.env.NODE_ENV === 'development';
   const recoverInDev = process.env.WORKFLOW_RECOVER_IN_DEV === '1';
-  const onRestart = isDev && !recoverInDev ? 'cancel' : 'recover';
+  const skipRecovery = process.env.WORKFLOW_SKIP_BOOT_RECOVERY === '1';
+  const onRestart = skipRecovery
+    ? 'ignore'
+    : isDev && !recoverInDev
+      ? 'cancel'
+      : 'recover';
   if (!globalSymbols[WorldStartPromise]) {
     globalSymbols[WorldStartPromise] = (async () => {
       const world = await getWorld();

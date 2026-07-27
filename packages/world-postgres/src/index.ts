@@ -73,6 +73,13 @@ export function createWorld(
       streamFlushIntervalMs: config.streamFlushIntervalMs,
     }),
     async start(options?: StartOptions) {
+      // Boot-time recovery assumes this database's workflow schema belongs to
+      // ONE app: `runs` has no namespace/tenant column (`config.namespace`
+      // only prefixes queue topics), so both branches below operate on every
+      // pending/running run in the database. An app sharing the schema with
+      // other apps/namespaces must not run boot recovery — set
+      // WORKFLOW_SKIP_BOOT_RECOVERY=1 (→ onRestart: 'ignore') on it.
+      // Namespace-attributed storage is tracked in vercel/workflow#2978.
       const onRestart = options?.onRestart ?? 'recover';
       if (onRestart === 'cancel') {
         // Cancel BEFORE booting the worker so it can't begin draining a run we

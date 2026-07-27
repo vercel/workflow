@@ -440,12 +440,20 @@ export interface World extends Queue, Streamer, Storage {
    *   against repeated invocation per process, but implementations should also
    *   tolerate being called more than once, and recovery re-enqueues must be
    *   safe to duplicate (the workflow handler is idempotent via event-log replay).
+   *   Note the framework integrations call `ensureWorldStarted()` at boot
+   *   unconditionally, so an integration that already calls `world.start()`
+   *   in its own bootstrap will see BOTH calls — idempotency makes that safe,
+   *   but such bootstraps should migrate to `ensureWorldStarted()` (which also
+   *   selects the right `onRestart` mode for dev vs production).
    * - MAY be a no-op. Push-based / serverless Worlds (e.g. the Vercel World)
    *   need no boot recovery — durability comes from the queue's at-least-once
    *   redelivery, not from a long-lived process re-scanning storage — so they
    *   implement an empty `start()` purely for interface compliance.
    * - SHOULD accept `options` but MAY ignore it (a no-op `start()` taking no
-   *   arguments still satisfies this signature).
+   *   arguments still satisfies this signature). A World that ignores
+   *   `onRestart` forfeits the development behavior, though: dev servers will
+   *   keep recovering (rather than cancelling) previous in-flight runs, which
+   *   can replay-diverge when the workflow code changed between sessions.
    */
   start?(options?: StartOptions): Promise<void>;
 

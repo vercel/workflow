@@ -18,6 +18,7 @@ describe('ensureWorldStarted dev detection', () => {
     if (prevRecover === undefined) delete process.env.WORKFLOW_RECOVER_IN_DEV;
     else process.env.WORKFLOW_RECOVER_IN_DEV = prevRecover;
     delete process.env.WORKFLOW_RECOVER_IN_DEV;
+    delete process.env.WORKFLOW_SKIP_BOOT_RECOVERY;
     // Reset the world cache + start guard so each test starts fresh.
     setWorld(undefined);
   });
@@ -64,6 +65,14 @@ describe('ensureWorldStarted dev detection', () => {
     const start = mockWorld();
     await ensureWorldStarted({ dev: true });
     expect(start).toHaveBeenCalledWith({ onRestart: 'recover' });
+  });
+
+  it('WORKFLOW_SKIP_BOOT_RECOVERY=1 starts the world without touching runs', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.WORKFLOW_SKIP_BOOT_RECOVERY = '1';
+    const start = mockWorld();
+    await ensureWorldStarted();
+    expect(start).toHaveBeenCalledWith({ onRestart: 'ignore' });
   });
 
   it('starts the world at most once per process', async () => {
