@@ -245,13 +245,14 @@ export async function trace<T>(
       span.setStatus({ code: otel.SpanStatusCode.OK });
       return result;
     } catch (e) {
-      span.setStatus({
-        code: otel.SpanStatusCode.ERROR,
-        message: (e as Error).message,
-      });
       if (WorkflowSuspension.is(e)) {
         span.setStatus({ code: otel.SpanStatusCode.OK });
         applyWorkflowSuspensionToSpan(e, span);
+      } else {
+        span.setStatus({
+          code: otel.SpanStatusCode.ERROR,
+          message: (e as Error).message,
+        });
       }
       throw e;
     } finally {

@@ -215,6 +215,8 @@ export async function executeWorkflow(
         execution = resumed.execution;
         break;
       }
+      // No default: exhaustiveness is enforced by definite assignment of
+      // `session`/`execution` above.
     }
 
     span?.setAttributes({
@@ -237,6 +239,12 @@ export async function executeWorkflow(
   });
 }
 
+/**
+ * Single-shot replay: execute the workflow over `events` and either return
+ * its output or throw its suspension. Kept for the extensive existing test
+ * suites — production code goes through `executeWorkflow`, which can also
+ * resume a retained session.
+ */
 export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
@@ -334,23 +342,20 @@ async function createWorkflowSession({
         state = WorkflowSuspension.is(error)
           ? { type: 'suspended', suspension: error }
           : { type: 'replay' };
+        // Each parked step consumer schedules its own (identical) suspension
+        // signal; the first one lands here, and bumping the generation makes
+        // the step-consumer guard drop the rest at fire time.
+        workflowContext.suspensionGeneration++;
         interruption.reject(error);
         return;
       }
-      case 'suspended': {
-        // A suspended VM is quiescent, but each parked step consumer
-        // signals its own (identical) suspension via scheduleWhenIdle —
-        // absorb those duplicates, treat anything else as unretainable.
-        // The suspension counts are all derived from `steps`, so identical
-        // items mean an identical boundary.
-        const { steps } = state.suspension;
-        const isDuplicateSignal =
-          WorkflowSuspension.is(error) &&
-          error.steps.length === steps.length &&
-          error.steps.every((item, index) => item === steps[index]);
-        if (!isDuplicateSignal) state = { type: 'replay' };
+      case 'suspended':
+        // Same-boundary duplicates were staled by the generation bump above,
+        // so anything landing here is out-of-band — an unguarded sleep/hook/
+        // attribute signal or a divergence. Those boundaries are unretainable
+        // (the runtime demotes them too), so fall back to replay.
+        state = { type: 'replay' };
         return;
-      }
       case 'replay':
       case 'completed':
         return;
@@ -1070,10 +1075,15 @@ async function createWorkflowSession({
     resume(nextEvents) {
       switch (state.type) {
         case 'suspended': {
-          const consumedEvents = eventsConsumer.events;
+          // The full O(known events) prefix compare is required: the runtime
+          // usually grows one array in place, but its wait-completion and
+          // stale-reload paths REPLACE the array with a fresh full fetch, so
+          // a rewritten prefix is a real input, not paranoia. The compares
+          // are cheap string equality and dwarfed by the replay they avoid.
+          const knownEvents = eventsConsumer.events;
           const isStrictExtension =
-            nextEvents.length > consumedEvents.length &&
-            consumedEvents.every(
+            nextEvents.length > knownEvents.length &&
+            knownEvents.every(
               (event, index) => event.eventId === nextEvents[index]?.eventId
             );
           if (!isStrictExtension) {
@@ -1083,7 +1093,7 @@ async function createWorkflowSession({
           const interruption = withResolvers<never>();
           state = { type: 'running', interruption };
           workflowContext.suspensionGeneration++;
-          eventsConsumer.append(nextEvents.slice(consumedEvents.length));
+          eventsConsumer.append(nextEvents.slice(knownEvents.length));
           return {
             type: 'resumed',
             execution: waitForExecution(interruption),

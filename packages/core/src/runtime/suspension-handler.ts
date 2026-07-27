@@ -34,7 +34,9 @@ import { type MutableEventLog, withPreconditionRetry } from './helpers.js';
 
 // Serializing a primitive executes no code of any kind. BigInt is excluded:
 // its encoding calls a prototype method. Widened to plain data and standard
-// built-ins by the retained-input walker in a follow-up.
+// built-ins by the retained-input walker in a follow-up. (Distinct from
+// replay-payload-cache's `isMemoizablePrimitive`, a size-gated memoization
+// filter — do not merge them.)
 function isPrimitiveStepArgument(value: unknown): boolean {
   return (
     value === null ||
