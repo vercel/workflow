@@ -45,6 +45,21 @@ export default createWorld({
 WORKFLOW_TARGET_WORLD="./my-world.ts"
 ```
 
+### Registering a World explicitly
+
+`WORKFLOW_TARGET_WORLD` resolves the World module at runtime, from the directory the server runs in. That requires the module to be resolvable at that point, which is not true of every deployment: self-contained server output (Nitro's `.output/server`, an esbuild bundle, a container image built without the World package) and bundlers that rewrite dynamic imports both leave nothing to resolve.
+
+When Workflow cannot load the module, it fails with the resolution attempts it made and points here. Import the World statically at server boot and register it instead:
+
+```typescript title="server-init.ts" lineNumbers
+import { createWorld } from "@workflow/world-postgres";
+import { setWorld } from "workflow/runtime";
+
+setWorld(await createWorld({ connectionString: process.env.DATABASE_URL! }));
+```
+
+A static import is part of your module graph, so the World package is bundled with your server. Run this before anything that starts or resumes a workflow — a framework server hook (`hooks.server.ts`, a Nitro plugin, `instrumentation.ts`) is the usual place. The built-in Local and Vercel Worlds need none of this; they are part of `@workflow/core` and always resolvable.
+
 ## Local World
 
 The Local World is the default outside Vercel and is intended for development.

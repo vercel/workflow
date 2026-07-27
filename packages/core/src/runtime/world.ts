@@ -79,6 +79,106 @@ export function createWorldFromModule(
 // pattern was replaced because Turbopack (Next.js) treats unresolvable
 // dynamic imports from `new Function` as fatal build errors in the V2
 // combined flow route context.
+//
+// The `webpackIgnore`/`turbopackIgnore` comments below are load-bearing: they
+// are what stop webpack and Turbopack from rewriting the expression `import()`
+// into a throwing "expression is too dynamic" stub. `world-bundler-safety.test.ts`
+// asserts they stay attached to every non-literal import/require in this file.
+
+/**
+ * Error text bundlers emit at runtime when they have replaced a dynamic
+ * `import()`/`require()` of a non-literal specifier with a throwing stub
+ * instead of leaving the native call in place. These messages say nothing
+ * about the workflow world, so they get rewrapped with actionable guidance
+ * (see `loadWorldModule`) rather than surfacing raw.
+ *
+ * The o2flow `workflow@5.0.0-beta.26` incident surfaced the Turbopack variant
+ * ("Cannot find module as expression is too dynamic") from a different code
+ * path — see `packages/core/e2e/route-bundle-isolation.test.ts`.
+ */
+const BUNDLER_STUB_ERROR_SIGNATURES = [
+  'expression is too dynamic', // Turbopack
+  'the request of a dependency is an expression', // webpack
+  'Cannot find module as expression', // Turbopack (older wording)
+];
+
+function isBundlerStubError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return BUNDLER_STUB_ERROR_SIGNATURES.some((signature) =>
+    message.includes(signature)
+  );
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Load the module named by `WORKFLOW_TARGET_WORLD` for a custom (non-built-in)
+ * world.
+ *
+ * Both resolution strategies are best-effort by nature: the world package is
+ * not a dependency of `@workflow/core`, so it is resolved from the app root at
+ * runtime and is not part of the host bundle. That fails in two ways worth
+ * telling the user about explicitly, because neither raw error mentions
+ * workflows:
+ *
+ * 1. Self-contained outputs (Nitro's `.output/server`, an esbuild bundle, a
+ *    Docker image built without the world package) have no resolvable copy of
+ *    the package at runtime -> `ERR_MODULE_NOT_FOUND`.
+ * 2. A bundler stripped the ignore comments (or never honored them) and
+ *    replaced the `import()` with a stub -> "expression is too dynamic".
+ *
+ * In both cases the fix is the same and is not discoverable from the raw
+ * error: import the world statically at server boot and register it with
+ * `setWorld()`.
+ */
+async function loadWorldModule(targetWorld: string): Promise<unknown> {
+  const attempts: string[] = [];
+
+  // Try require() first for custom worlds — this avoids Turbopack tracing
+  // a dynamic import() that it can't statically resolve. Fall back to
+  // dynamic import() for ESM-only packages.
+  try {
+    return getRuntimeRequire()(
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      targetWorld
+    );
+  } catch (requireError) {
+    attempts.push(`require("${targetWorld}"): ${describeError(requireError)}`);
+  }
+
+  const resolvedPath = resolveModulePath(targetWorld);
+  try {
+    return await import(
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      resolvedPath
+    );
+  } catch (importError) {
+    attempts.push(`import("${resolvedPath}"): ${describeError(importError)}`);
+
+    const bundlerHint = isBundlerStubError(importError)
+      ? '\nThe import above was replaced by a bundler stub, so the world package ' +
+        'can never be resolved at runtime from this bundle.'
+      : '';
+
+    throw new Error(
+      `Could not load the workflow world package "${targetWorld}" named by ` +
+        'WORKFLOW_TARGET_WORLD.' +
+        bundlerHint +
+        '\nIf the package is not resolvable from the running output (a ' +
+        'self-contained server bundle, or a bundler that rewrote the dynamic ' +
+        'import), import it statically at server boot and register it instead ' +
+        `of relying on WORKFLOW_TARGET_WORLD:\n  import { createWorld } from '${targetWorld}';\n` +
+        "  import { setWorld } from 'workflow/runtime';\n" +
+        '  setWorld(await createWorld());\n' +
+        `Resolution attempts:\n  - ${attempts.join('\n  - ')}`,
+      { cause: importError }
+    );
+  }
+}
 
 function resolveModulePath(specifier: string): string {
   // Already a file:// URL
@@ -161,33 +261,17 @@ export const createWorld = async (): Promise<World> => {
     });
   }
 
-  // Try require() first for custom worlds — this avoids Turbopack tracing
-  // a dynamic import() that it can't statically resolve. Fall back to
-  // dynamic import() for ESM-only packages.
-  let mod: any;
-  try {
-    mod = getRuntimeRequire()(
-      /* webpackIgnore: true */
-      /* turbopackIgnore: true */
-      targetWorld
-    );
-  } catch {
-    const resolvedPath = resolveModulePath(targetWorld);
-    mod = await import(
-      /* webpackIgnore: true */
-      /* turbopackIgnore: true */
-      resolvedPath
-    );
-  }
+  const mod = await loadWorldModule(targetWorld);
   if (typeof mod === 'function') {
     return mod() as World;
   }
 
   try {
     return await createWorldFromModule(mod as WorldFactoryModule);
-  } catch {
+  } catch (error) {
     throw new Error(
-      `Invalid target world module: ${targetWorld}, must export a createWorld function or a default function that returns a World instance.`
+      `Invalid target world module: ${targetWorld}, must export a createWorld function or a default function that returns a World instance.`,
+      { cause: error }
     );
   }
 };
