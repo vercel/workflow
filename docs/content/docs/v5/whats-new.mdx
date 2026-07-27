@@ -77,15 +77,43 @@ async function fetchData(signal: AbortSignal) {
 
 The abort reaches a step that is already executing, not just the next one to start, so a `fetch()` in flight when the controller aborts is torn down. Cancellation stays cooperative: a step that ignores its signal still runs to completion.
 
+Cancelling from the outside gained detail too: [`run.cancel()`](/docs/api-reference/workflow-api/get-run) accepts a `cancelReason`, recorded on the cancellation event and shown in the run detail view.
+
 See [Cancellation](/docs/foundations/cancellation), [How cancellation works](/docs/how-it-works/cancellation), and the [in-flight cancellation changelog](https://vercel.com/changelog/workflow-sdk-now-supports-inflight-cancellation).
 
 ### Run attributes
 
 Attach string metadata to a run with [`setAttributes()`](/docs/api-reference/workflow/set-attributes), or seed it at creation with the `attributes` option of [`start()`](/docs/api-reference/workflow-api/start), then search and filter runs by `key=value`. Attributes were available in beta and are generally available in v5; `experimental_setAttributes` remains as a deprecated alias.
 
+Some attributes are set for you: a run started from inside another workflow or step is automatically tagged with the reserved `$parentRunId` and `$rootRunId` attributes, so a whole chain or fan-out of related runs can be found with a single attribute filter.
+
 Vercel Observability can search runs by attribute. `workflow inspect` and the local web UI read them from `world.analytics` on any World that implements it.
 
 See [Attributes](/docs/observability/attributes).
+
+### Richer serialization
+
+Everything that crosses a workflow/step boundary is serialized, and v5 widens what survives the trip with its identity intact. Errors — including your own classes and built-ins like `TypeError` — keep their class and `cause` chain through `WorkflowRunFailedError.cause`:
+
+```typescript lineNumbers
+import { WorkflowRunFailedError } from "workflow/errors";
+import { getRun } from "workflow/api";
+
+try {
+  await getRun(runId).returnValue;
+} catch (error) {
+  if (
+    error instanceof WorkflowRunFailedError &&
+    error.cause instanceof PaymentDeclinedError // [!code highlight]
+  ) {
+    // your class, not a flattened generic Error
+  }
+}
+```
+
+Workflow function references and [`Run`](/docs/api-reference/workflow-api/get-run) handles are serializable too, so a step can receive a workflow function to `start()` or a run handle to await. And when a value cannot cross a boundary, the failure is precise instead of generic: dedicated [`SerializationError`](/docs/api-reference/workflow-errors) and structured context-violation errors name the offending value and where it was used.
+
+See [Serialization](/docs/foundations/serialization).
 
 ### A redesigned trace viewer, in the open-source package
 
@@ -93,11 +121,12 @@ The trace viewer has been rebuilt from the ground up, with an easily visible tim
 
 Vercel Observability uses this trace viewer for all runs, v4 included, but with v5, you get the same new design for self-hosted UI and local debugging. See [Observability](/docs/observability).
 
+The local tooling around it grew as well: on [Nitro](/docs/getting-started/nitro) the dev server has the web UI built in at `/_workflow`, `workflow inspect runs` accepts `--since`/`--until` listing windows, run lookups by name search past the backend's default 24-hour window, and Worlds can surface their own run fields in `inspect` output — the Vercel World shows each run's region.
+
 ### Also new in 5.0
 
 - **`start()` from inside a workflow.** Spawn a child run or hand off to a new run directly in a workflow function, without wrapping it in a step. See [Starting workflows](/docs/foundations/starting-workflows).
 - **Stronger hook coordination.** `hook.getConflict()` resolves with the conflicting [`Run`](/docs/api-reference/workflow-api/get-run) rather than a bare `{ runId }`, so a duplicate can `await conflict.status`, `await conflict.returnValue`, or `await conflict.cancel()` directly. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
-- **Errors keep their type.** `WorkflowRunFailedError.cause` preserves the original class identity and cause chain, including your own error classes. See [Serialization](/docs/foundations/serialization).
 - **Support for more frameworks.** [React Router](/docs/getting-started/react-router) (v7 and v8, via Nitro) and [NestJS](/docs/getting-started/nestjs) are now supported.
 
 ## Breaking changes
@@ -114,6 +143,7 @@ Vercel Observability uses this trace viewer for all runs, v4 included, but with 
 | Event creation is guarded by default | Stale-snapshot writes are rejected with [`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error). Opt out with `WORKFLOW_PRECONDITION_GUARD=0`. |
 | A per-run event limit is enforced | The World supplies the ceiling — 25,000 events on the Local and Vercel Worlds — and a run that reaches it fails with `MAX_EVENTS_EXCEEDED`. Split unbounded loops into [child workflows](/cookbook/advanced/child-workflows). As a fallback, the ceiling can be tuned — see [Limits](/docs/configuration/runtime-tuning#limits). |
 | Stream writes flush the first chunk immediately | The leading-edge flush window defaults to `0` instead of 10ms. Restore a window with `streamFlushIntervalMs` or `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`. |
+| The workflow sandbox is stricter about nondeterminism | `WeakRef`, `FinalizationRegistry`, `Atomics.waitAsync`, and async `WebAssembly` compilation are no longer available inside workflow functions, and `crypto.subtle.digest` computes synchronously (same results, deterministic timing). Move code that needs them into a step. |
 
 ### Custom Worlds and build integrations
 
@@ -129,9 +159,11 @@ The easiest way to start upgrading your World is with a prompt like this:
 | Stream methods moved to `world.streams.*`, with `runId` first | `writeToStream(name, runId, chunk)` becomes `streams.write(runId, name, chunk)`; likewise `writeToStreamMulti` → `streams.writeMulti`, `closeStream` → `streams.close`, `readFromStream` → `streams.get`, `getStreamChunks` → `streams.getChunks`, `listStreamsByRunId` → `streams.list`. |
 | `world.steps.get()` requires `runId` | The first argument is no longer `string \| undefined` — pass the run ID that owns the step. |
 | The suspension and dispatch contract changed | The asymmetric `{ timeoutSeconds }` wait-return contract is gone. Waits are ordinary queue continuations with `delaySeconds`, and wait plus step dispatch is one parallel batch per suspension. |
+| Step queue topics are retired | The `'step'` queue kind is gone: queued steps travel on the workflow topic (carrying `stepId`/`stepName` in the payload) and execute in the combined flow handler. A World that provisioned separate `__wkf_step_*` topics can drop them. |
 | The `World` interface gained surface area | Analytics, run attributes, and capability advertisement, alongside the stream changes above. Unadvertised capabilities fail closed, so a partial World stays correct but slower. See [Building a World](/worlds/building-a-world). |
 | Worlds are injected into host bundles at build time | Selection is static rather than dynamic at runtime, and first-party World packages expose a `createWorld()` factory. Verify a custom or community World still resolves after the upgrade. |
-| `stepEntrypoint` removed from `workflow/runtime` | Framework integrations generate step routes; use `getWorldHandlers()` for custom hosts. |
+| `createLocalWorld()` and `createVercelWorld()` removed | Import `createWorld()` from the same package instead — for example `import { createWorld } from '@workflow/world-local'`. The arguments are unchanged. |
+| `stepEntrypoint` removed from `workflow/runtime` | Steps execute through the combined workflow handler generated by the framework integrations; use `getWorldHandlers()` for custom hosts. |
 | The `client` SWC transform mode was removed | It merged into `step` mode. Integrations passing `mode: 'client'` pass `mode: 'step'`. |
 | Step, workflow and webhook bundles are ESM | Generated output moved from CJS to ESM, with a `createRequire` banner for CJS dependencies. The VM-executed workflow bundle stays CJS. |
 | `NestLocalBuilder` moved out of `@workflow/nest` root | Import it from `workflow/nest/builder`, so `WorkflowModule` no longer pulls the build toolchain into the runtime bundle. `NestVercelBuilder` lives at `workflow/nest/vercel-builder`. |

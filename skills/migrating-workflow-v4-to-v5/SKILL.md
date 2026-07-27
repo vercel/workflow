@@ -1,9 +1,9 @@
 ---
 name: migrating-workflow-v4-to-v5
-description: Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, `experimental_setAttributes`, `NestLocalBuilder` imported from `@workflow/nest`, or an SWC transform invoked with `mode: 'client'`.
+description: Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, `experimental_setAttributes`, `createLocalWorld` / `createVercelWorld`, `NestLocalBuilder` imported from `@workflow/nest`, or an SWC transform invoked with `mode: 'client'`.
 metadata:
   author: Vercel Inc.
-  version: '0.2.2'
+  version: '0.2.3'
 ---
 
 # Migrating Workflow SDK 4.x to 5.0
@@ -24,7 +24,7 @@ Before editing, establish:
 
 1. **Which packages are installed.** Read `package.json` for `workflow` and every `@workflow/*` dependency.
 2. **Whether the app touches the runtime.** Grep for `getWorld`, `createWorld`, `getWorldHandlers`, `writeToStream`, `readFromStream`, `closeStream`, `listStreamsByRunId`, `getStreamChunks`, `world.steps`, `runStep`, `stepEntrypoint`, `internal/private`, `core/private`.
-3. **Whether the app implements a custom World.** Grep for `implements World`, `: World`, `createLocalWorld`, `startWorkflowWorld`.
+3. **Whether the app implements a custom World.** Grep for `implements World`, `: World`, `createLocalWorld`, `createVercelWorld`, `startWorkflowWorld`.
 4. **Which framework integration is in use.** `@workflow/next`, `@workflow/nest`, `@workflow/nitro`, `@workflow/sveltekit`, `@workflow/vite`, `@workflow/nuxt`, `@workflow/astro`, or the CLI.
 5. **Whether `hook.getConflict()` is used.** Grep for `getConflict`.
 6. **Whether the app calls the compiler directly.** Grep for `mode: 'client'`, `transformSync`, `swc-plugin-workflow`. Only custom build integrations do this.
@@ -64,6 +64,22 @@ const world = await getWorld();
 ```
 
 This also applies to `getWorldHandlers()`. Awaiting was already correct in 4.x, so this edit is safe to make before the dependency bump. Propagate `async` up the call chain rather than wrapping in `.then()` chains.
+
+### `createLocalWorld()` and `createVercelWorld()` removed
+
+First-party World packages now expose a single `createWorld()` factory. The arguments are unchanged — this is a rename only.
+
+```ts
+// v4
+import { createLocalWorld } from '@workflow/world-local';
+const world = createLocalWorld({ dataDir });
+
+// v5
+import { createWorld } from '@workflow/world-local';
+const world = createWorld({ dataDir });
+```
+
+The same applies to `createVercelWorld` from `@workflow/world-vercel`.
 
 ### `runStep` removed from `workflow/api`
 
@@ -176,6 +192,7 @@ These are not code edits. Report each one that applies, and do not "fix" them si
 - **Duplicate step or workflow IDs now fail the build.** In 4.x, two identically named non-exported functions across workspace files collided last-write-wins. If the build fails on this, rename one of them — do not suppress the check.
 - **`world-postgres` rows written before the upgrade.** Failed runs stored by 4.x read back with `error: undefined`, because the payload lives in the legacy `error` text column rather than `errorJson`. There is no data migration; recent-history dashboards may show blank errors for pre-upgrade failures.
 - **`world-local` stream chunks moved** to `streams/chunks/<streamName>/`. Files in the old flat layout are not read back and stale files are left in place — local development state, so deleting the data directory is fine.
+- **The workflow sandbox is stricter about nondeterminism.** `WeakRef`, `FinalizationRegistry`, `Atomics.waitAsync`, and async `WebAssembly` compilation are no longer available inside workflow functions, and `crypto.subtle.digest` computes synchronously (same results, deterministic timing). Grep `"use workflow"` files for these APIs; the fix is moving that code into a step, which is a design change — flag it, do not restructure unprompted.
 - **In-flight runs do not migrate.** Runs created on a 4.x deployment keep executing on that deployment. Let them finish where they started; do not add code to "drain" or re-target them.
 
 ## Step 4 — custom `World` implementations
@@ -189,14 +206,13 @@ Only if the app implements `World` itself. Beyond the stream and step signatures
 - an optional per-run event ceiling returned on run reads, which the runtime enforces.
 - optional `createRunId()` and a `region` on queue options, for worlds that place run state regionally.
 
-Two contract changes affect existing implementations:
+Three contract changes affect existing implementations:
 
 - **Suspension and dispatch.** The asymmetric `{ timeoutSeconds }` return contract for waits is gone. Waits are ordinary queue continuations carrying `delaySeconds`, and wait plus step dispatch is unified into one parallel batch per suspension. A World that special-cased the old wait return needs rewriting against the current interface.
+- **Step queue topics are retired.** The `'step'` queue kind no longer exists: queued steps travel on the workflow topic (carrying `stepId`/`stepName` in the payload) and execute in the combined flow handler. A World that provisioned or routed separate `__wkf_step_*` topics can drop them.
 - **World resolution happens at build time.** Worlds are statically injected into host bundles rather than selected dynamically at runtime, and first-party World packages expose a `createWorld()` factory. A custom or community World must be resolvable by the build; verify the app still boots against it rather than assuming a runtime lookup.
 
 Optional methods may be omitted; the runtime falls back. Point the user at the "Building a World" guide for the full interface rather than inventing method bodies.
-
-`createLocalWorld()` from `@workflow/world-local` already took a config object in 4.x and is not a breaking change.
 
 ## Required output shape
 
@@ -229,6 +245,7 @@ Fail the migration if any of these are true:
 - [ ] `workflow` and `@workflow/*` versions span both 4.x and 5.x
 - [ ] `getWorld()` / `createWorld()` / `getWorldHandlers()` is called without `await`
 - [ ] `runStep` or `stepEntrypoint` is still imported
+- [ ] `createLocalWorld` or `createVercelWorld` is still imported
 - [ ] `workflow/internal/private` or `@workflow/core/private` is still imported
 - [ ] a `world.streams.*` call kept the v4 argument order (name before runId)
 - [ ] `streams.get` was called without a `runId`

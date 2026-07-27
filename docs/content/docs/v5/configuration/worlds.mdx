@@ -246,3 +246,10 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - CLI flag: none
 - Default: `1000`
 - Maximum stream chunks written in one Vercel World request. Larger batches are split.
+
+### `WORKFLOW_DISABLE_ANALYTICS_READS`
+
+- Factory option: none
+- CLI flag: none
+- Default: disabled
+- Set `1` to turn off the World's metadata-only `analytics` read namespace, forcing `workflow inspect` and web UI list views onto strongly consistent primary storage. Intended for tests and tooling that read entities immediately after writing them.
