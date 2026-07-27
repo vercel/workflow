@@ -406,11 +406,16 @@ function recordRequestedEventCursor(
 export function appendUniqueEvents(
   target: Event[],
   events: readonly Event[],
-  targetIds = new Set(target.map((event) => event.eventId))
+  targetIds?: Set<string>
 ): void {
+  if (events.length === 0) {
+    return;
+  }
+
+  const ids = targetIds ?? new Set(target.map((event) => event.eventId));
   for (const event of events) {
-    if (!targetIds.has(event.eventId)) {
-      targetIds.add(event.eventId);
+    if (!ids.has(event.eventId)) {
+      ids.add(event.eventId);
       target.push(event);
     }
   }
