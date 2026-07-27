@@ -661,9 +661,11 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
         const filePath = path.join(resolvedDirectory, `${fileId}.json`);
         try {
           const cachedItem = cachedItems?.get(filePath);
-          return cachedItem === undefined
-            ? await readJSON(filePath, schema)
-            : structuredClone(cachedItem);
+          const item =
+            cachedItem === undefined
+              ? await readJSON(filePath, schema)
+              : structuredClone(cachedItem);
+          return item && filter && !(await filter(item)) ? null : item;
         } catch (error: unknown) {
           // We don't expect zod errors to happen, but if the JSON does get malformed,
           // we skip the item. Preferably, we'd have a way to mark items as malformed,
@@ -682,8 +684,6 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
 
     for (const item of loadedBatch) {
       if (!item) continue;
-      // Apply custom filter early if provided
-      if (filter && !(await filter(item))) continue;
 
       // Double-check cursor filtering with actual createdAt from JSON
       // (in case ULID timestamp differs from stored createdAt)

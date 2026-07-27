@@ -2,9 +2,11 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { decodeTime, monotonicFactory } from 'ulid';
+import { z } from 'zod';
 import {
   hasTag,
   isUntagged,
+  readJSON,
   resolveWithinBase,
   stripTag,
   ulidToDate,
@@ -284,6 +286,32 @@ export async function mintRunDominantEventKey(
  */
 export function hookTokenClaimPath(basedir: string, token: string): string {
   return path.join(basedir, 'hooks', 'tokens', `${hashToken(token)}.json`);
+}
+
+export const HookTokenClaimSchema = z.object({
+  // Legacy claims omitted hookId. Keeping it optional preserves their
+  // existing cross-hook conflict behavior (see #2283).
+  hookId: z.string().optional(),
+  runId: z.string(),
+  // Legacy claims also omitted eventId. Their recovery marker pins the
+  // canonical hook_created event before concurrent retries publish it.
+  eventId: z.string().optional(),
+  tokenRetentionUntil: z.coerce.date().optional(),
+});
+
+export type HookTokenClaim = z.infer<typeof HookTokenClaimSchema>;
+
+export async function readHookTokenClaim(
+  claimPath: string
+): Promise<HookTokenClaim | null> {
+  try {
+    return await readJSON(claimPath, HookTokenClaimSchema);
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**

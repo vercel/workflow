@@ -2281,10 +2281,11 @@ describe('Storage', () => {
       it('keeps a retained Hook available after its run ends', async () => {
         const token = 'retained-token';
         const hookId = 'hook_retained';
+        const retainedUntil = new Date(Date.now() + 60_000);
         await createHook(storage, testRunId, {
           hookId,
           token,
-          tokenRetentionUntil: new Date(Date.now() + 60_000),
+          tokenRetentionUntil: retainedUntil,
         });
         await updateRun(storage, testRunId, 'run_started');
         await updateRun(storage, testRunId, 'run_completed', {
@@ -2319,6 +2320,14 @@ describe('Storage', () => {
           eventType: 'hook_conflict',
           eventData: { token, conflictingRunId: testRunId },
         });
+
+        vi.spyOn(Date, 'now').mockReturnValue(retainedUntil.getTime());
+        await expect(storage.hooks.getByToken(token)).rejects.toMatchObject({
+          name: 'HookNotFoundError',
+        });
+        await expect(
+          fs.access(path.join(testDir, 'hooks', `${hookId}.json`))
+        ).rejects.toThrow();
       });
 
       it('releases retention only after both its deadline and run end', async () => {
@@ -3439,6 +3448,7 @@ describe('Storage', () => {
       // and the outer code path emits the `hook_created` event.
       const token = 'orphaned-claim-token';
       const hookId = 'hook_orphan_1';
+      const tokenRetentionUntil = new Date(Date.now() + 60_000);
 
       // Pre-seed an orphaned token claim — same shape as one written
       // by `events.create` but with no corresponding hook entity on
@@ -3448,7 +3458,7 @@ describe('Storage', () => {
       await fs.mkdir(tokensDir, { recursive: true });
       await fs.writeFile(
         path.join(tokensDir, `${hashToken(token)}.json`),
-        JSON.stringify({ token, hookId, runId: testRunId, foo: 'bar' })
+        JSON.stringify({ token, hookId, runId: testRunId, tokenRetentionUntil })
       );
 
       // Sanity: the hook entity is not on disk yet.
@@ -3458,7 +3468,11 @@ describe('Storage', () => {
 
       // Retry: must succeed, write the hook entity, and emit a
       // hook_created event.
-      const hook = await createHook(storage, testRunId, { hookId, token });
+      const hook = await createHook(storage, testRunId, {
+        hookId,
+        token,
+        tokenRetentionUntil: new Date(Date.now() + 120_000),
+      });
       expect(hook.hookId).toBe(hookId);
       expect(hook.token).toBe(token);
 
@@ -3478,7 +3492,11 @@ describe('Storage', () => {
       const conflicts = events.data.filter(
         (e) => e.eventType === 'hook_conflict'
       );
-      expect(created).toHaveLength(1);
+      expect(created).toEqual([
+        expect.objectContaining({
+          eventData: expect.objectContaining({ tokenRetentionUntil }),
+        }),
+      ]);
       expect(conflicts).toHaveLength(0);
     });
 

@@ -34,9 +34,11 @@ import {
   hookRecoveryMarkerPath,
   hookTokenClaimPath,
   isHookDisposalCommitted,
+  readHookTokenClaim,
   releaseHookTokenClaimIfOwnedBy,
 } from './helpers.js';
 import {
+  deleteHookByRunMarker,
   deleteHookByRunMarkerFile,
   ensureHookIndexes,
   findNewestIndexedHookCreatedEvent,
@@ -49,12 +51,6 @@ function getHookCreatedToken(event: Event): string | undefined {
   const token = (event.eventData as { token?: unknown }).token;
   return typeof token === 'string' ? token : undefined;
 }
-
-const HookTokenClaimSchema = z.object({
-  hookId: z.string().optional(),
-  runId: z.string(),
-  tokenRetentionUntil: z.coerce.date().optional(),
-});
 
 function hookFromCreatedEvent(event: HookCreatedEvent): Hook {
   const { token, metadata, isWebhook, isSystem } = event.eventData;
@@ -223,27 +219,32 @@ export function createHooksStorage(
     const claim = await readHookTokenClaim(
       hookTokenClaimPath(basedir, hook.token)
     );
-    return Boolean(
+    const retained =
       claim?.runId === hook.runId &&
-        claim.hookId === hook.hookId &&
-        claim.tokenRetentionUntil &&
-        claim.tokenRetentionUntil.getTime() > Date.now()
+      claim.hookId === hook.hookId &&
+      claim.tokenRetentionUntil &&
+      claim.tokenRetentionUntil.getTime() > Date.now();
+    if (retained) {
+      return true;
+    }
+
+    await releaseHookTokenClaimIfOwnedBy(
+      basedir,
+      hook.token,
+      hook.runId,
+      hook.hookId
     );
+    await deleteJSON(taggedPath(basedir, 'hooks', hook.hookId, tag));
+    await deleteJSON(
+      hookRecoveryMarkerPath(basedir, hook.token, hook.runId, hook.hookId)
+    );
+    await deleteHookByRunMarker(basedir, hook.runId, hook.hookId, tag);
+    return false;
   }
 
   async function findHookByToken(token: string): Promise<Hook | null> {
     // Fast path: the token claim file points at the owning hookId.
-    let claim: z.infer<typeof HookTokenClaimSchema> | null = null;
-    try {
-      claim = await readJSON(
-        hookTokenClaimPath(basedir, token),
-        HookTokenClaimSchema
-      );
-    } catch (error) {
-      if (!(error instanceof SyntaxError || error instanceof z.ZodError)) {
-        throw error;
-      }
-    }
+    const claim = await readHookTokenClaim(hookTokenClaimPath(basedir, token));
     if (claim?.hookId) {
       try {
         const hook = await readJSONWithFallback(
@@ -261,6 +262,7 @@ export function createHooksStorage(
           throw error;
         }
       }
+      return null;
     }
 
     // Slow path for legacy states (e.g. a lost claim file while the
@@ -414,18 +416,5 @@ export async function deleteAllHooksForRun(
       }
     }
     await deleteHookByRunMarkerFile(basedir, marker.fileId);
-  }
-}
-
-async function readHookTokenClaim(
-  claimPath: string
-): Promise<z.infer<typeof HookTokenClaimSchema> | null> {
-  try {
-    return await readJSON(claimPath, HookTokenClaimSchema);
-  } catch (error) {
-    if (error instanceof SyntaxError || error instanceof z.ZodError) {
-      return null;
-    }
-    throw error;
   }
 }

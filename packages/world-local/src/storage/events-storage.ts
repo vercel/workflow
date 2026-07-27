@@ -13,6 +13,7 @@ import type {
   Event,
   EventResult,
   Hook,
+  HookCreatedEventRequest,
   SerializedData,
   Step,
   Storage,
@@ -62,6 +63,7 @@ import {
 import { stripEventDataRefs } from './filters.js';
 import {
   getObjectCreatedAt,
+  type HookTokenClaim,
   hookDisposeLockPath,
   hookRecoveryMarkerPath,
   hookTokenClaimPath,
@@ -70,6 +72,7 @@ import {
   mintRunDominantEventKey,
   monotonicUlid,
   pendingHookEventPath,
+  readHookTokenClaim,
   reapPendingHookEvents,
   releaseHookTokenClaimIfOwnedBy,
   runTerminalMarkerPath,
@@ -122,27 +125,6 @@ function getMaxEventsPerRun(): number {
 // but a shared filesystem), exactly matching the cross-process
 // semantics without spawning subprocesses.
 
-const HookTokenClaimSchema = z.object({
-  // The token-claim writer below has always persisted `hookId`, but
-  // this read schema previously omitted it, which is the bug fixed
-  // by https://github.com/vercel/workflow/issues/2283. `optional()`
-  // is defensive: any claim file that somehow lacks the field still
-  // parses (yielding `undefined`) and falls through to the cross-
-  // hook conflict branch, matching pre-fix behavior.
-  hookId: z.string().optional(),
-  runId: z.string(),
-  // `eventId` is the canonical hook_created event ID the claiming
-  // worker committed to publishing. Persisting it here turns the
-  // claim file into a durable convergence key for cross-worker /
-  // cross-process retries (see comment on the hook_created branch).
-  // `optional()` for backward compatibility: a legacy claim file
-  // written before this field existed falls through to the recovery-
-  // marker upgrade path, which atomically pins a canonical eventId
-  // via a sidecar marker (also a `writeExclusive`).
-  eventId: z.string().optional(),
-  tokenRetentionUntil: z.coerce.date().optional(),
-});
-
 /**
  * Sidecar recovery marker that pins a canonical `hook_created`
  * eventId for a legacy token claim — one written by a version of
@@ -164,19 +146,6 @@ const HookRecoveryMarkerSchema = z.object({
   eventId: z.string(),
 });
 
-async function readHookTokenClaim(
-  constraintPath: string
-): Promise<z.infer<typeof HookTokenClaimSchema> | null> {
-  try {
-    return await readJSON(constraintPath, HookTokenClaimSchema);
-  } catch (error) {
-    if (error instanceof SyntaxError || error instanceof z.ZodError) {
-      return null;
-    }
-    throw error;
-  }
-}
-
 /**
  * Whether a token claim held by another `(runId, hookId)` can never become
  * live again and may therefore be released by a new claimant:
@@ -194,7 +163,7 @@ async function readHookTokenClaim(
  */
 async function isHookTokenClaimReleasable(
   basedir: string,
-  claim: z.infer<typeof HookTokenClaimSchema>,
+  claim: HookTokenClaim,
   tag?: string
 ): Promise<boolean> {
   if (
@@ -1686,13 +1655,8 @@ export function createEventsStorage(
           data.eventType === 'hook_created' &&
           'eventData' in data
         ) {
-          const hookData = data.eventData as {
-            token: string;
-            tokenRetentionUntil?: Date;
-            metadata?: any;
-            isWebhook?: boolean;
-            isSystem?: boolean;
-          };
+          const hookData =
+            data.eventData as HookCreatedEventRequest['eventData'];
 
           // Atomically claim the token using an exclusive-create constraint file.
           // This avoids the TOCTOU race of the previous read-all-then-check approach.
@@ -1729,7 +1693,7 @@ export function createEventsStorage(
           // first iteration and falls through to the dedup / conflict
           // handling below.
           let tokenClaimed = false;
-          let existingClaim: z.infer<typeof HookTokenClaimSchema> | null = null;
+          let existingClaim: HookTokenClaim | null = null;
           let releasableObservations = 0;
           // A claim file that exists (exclusive-create keeps failing) but never
           // parses is debris: `writeExclusive` writes atomically, so a live
@@ -1950,6 +1914,12 @@ export function createEventsStorage(
                 ulidToDate(eventId.replace(/^evnt_/, '')) ?? now;
               event = {
                 ...data,
+                // The first claim fixes the retention deadline even when its
+                // writer crashes before publishing hook_created.
+                eventData: {
+                  ...data.eventData,
+                  tokenRetentionUntil: existingClaim.tokenRetentionUntil,
+                },
                 runId: effectiveRunId,
                 eventId,
                 createdAt: canonicalCreatedAt,
