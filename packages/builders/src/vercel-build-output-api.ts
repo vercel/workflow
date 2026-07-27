@@ -2,6 +2,7 @@ import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { BaseBuilder } from './base-builder.js';
 import { getWorkflowQueueTrigger } from './constants.js';
+import { isVercelDeploymentEnv } from './world-target.js';
 
 export class VercelBuildOutputAPIBuilder extends BaseBuilder {
   async build(): Promise<void> {
@@ -69,7 +70,9 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
         'static/.well-known/workflow/v1'
       );
       await mkdir(staticManifestDir, { recursive: true });
-      if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
+      // Keep the generated manifest out of the developer's repository. A
+      // Vercel build has no repository to dirty.
+      if (!isVercelDeploymentEnv()) {
         await writeFile(join(staticManifestDir, '.gitignore'), '*');
       }
       await copyFile(

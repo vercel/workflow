@@ -1,13 +1,81 @@
 import { describe, expect, test } from 'vitest';
 import {
   getWorldImport,
+  isVercelDeploymentEnv,
   isVercelWorldTarget,
   normalizeWorkflowTargetWorldImport,
   resolveWorkflowTargetWorld,
   usesVercelWorld,
 } from './world-target.js';
 
+/**
+ * Environment of a `vercel build` run outside Vercel's own build container,
+ * as produced by `vercel pull`: no deployment exists yet, so there is no
+ * deployment ID to key off.
+ */
+const PREBUILT_BUILD_ENV = {
+  VERCEL: '1',
+  VERCEL_ENV: 'production',
+  VERCEL_TARGET_ENV: 'production',
+  VERCEL_URL: 'example.vercel.app',
+  NODE_ENV: 'production',
+};
+
+describe('isVercelDeploymentEnv', () => {
+  test('detects a deployment from VERCEL_DEPLOYMENT_ID', () => {
+    expect(isVercelDeploymentEnv({ VERCEL_DEPLOYMENT_ID: 'dpl_123' })).toBe(
+      true
+    );
+  });
+
+  test('detects a prebuilt build that has no deployment ID yet', () => {
+    expect(isVercelDeploymentEnv(PREBUILT_BUILD_ENV)).toBe(true);
+  });
+
+  test('ignores VERCEL=1 leaking into a dev server via `vercel env pull`', () => {
+    expect(
+      isVercelDeploymentEnv({
+        ...PREBUILT_BUILD_ENV,
+        VERCEL_ENV: 'preview',
+        NODE_ENV: 'development',
+      })
+    ).toBe(false);
+  });
+
+  test('ignores `vercel dev`', () => {
+    expect(
+      isVercelDeploymentEnv({ VERCEL: '1', VERCEL_ENV: 'development' })
+    ).toBe(false);
+  });
+
+  test('is false off Vercel', () => {
+    expect(isVercelDeploymentEnv({ NODE_ENV: 'production' })).toBe(false);
+  });
+});
+
 describe('resolveWorkflowTargetWorld', () => {
+  test('resolves vercel for a prebuilt build with no deployment ID', () => {
+    expect(resolveWorkflowTargetWorld(PREBUILT_BUILD_ENV)).toBe('vercel');
+  });
+
+  test('WORKFLOW_TARGET_WORLD still opts a Vercel build out to local', () => {
+    expect(
+      resolveWorkflowTargetWorld({
+        ...PREBUILT_BUILD_ENV,
+        WORKFLOW_TARGET_WORLD: 'local',
+      })
+    ).toBe('local');
+  });
+
+  test('resolves local for a dev server with pulled Vercel env', () => {
+    expect(
+      resolveWorkflowTargetWorld({
+        ...PREBUILT_BUILD_ENV,
+        NODE_ENV: 'development',
+      })
+    ).toBe('local');
+  });
+
   test('returns configured world when WORKFLOW_TARGET_WORLD is set', () => {
     expect(
       resolveWorkflowTargetWorld({
@@ -59,6 +127,10 @@ describe('getWorldImport', () => {
 
   test('defaults to local import when no world env vars are set', () => {
     expect(getWorldImport({})).toBe('@workflow/world-local');
+  });
+
+  test('returns the Vercel import for a prebuilt build with no deployment ID', () => {
+    expect(getWorldImport(PREBUILT_BUILD_ENV)).toBe('@workflow/world-vercel');
   });
 });
 

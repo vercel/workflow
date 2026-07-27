@@ -21,6 +21,10 @@ A [World](/docs/deploying) stores workflow state and delivers queue messages.
 
 Outside Vercel, Workflow defaults to the Local World. On Vercel, leave `WORKFLOW_TARGET_WORLD` unset for the normal case; Workflow detects the Vercel deployment and selects the Vercel World automatically.
 
+The World is selected when your app is **built**, not when it runs, and compiled into the server bundles. Detection therefore reads the build environment: `VERCEL_DEPLOYMENT_ID` when it is available, otherwise `VERCEL=1` for builds where no deployment exists yet. A dev server is never affected, because `VERCEL_ENV=development` and `NODE_ENV=development` both keep the Local World selected — including when `vercel env pull` has written `VERCEL=1` into `.env.local`.
+
+If your build environment does not expose Vercel's system environment variables — for example a build that runs in a container of your own before uploading, or one where [system environment variables](https://vercel.com/docs/environment-variables/system-environment-variables) are disabled for the project — set `WORKFLOW_TARGET_WORLD=vercel` in the build environment. Without it, the deployment is built against the Local World and every run fails writing to a read-only filesystem. Switching this value requires a rebuild; changing it at runtime has no effect.
+
 Set `WORKFLOW_TARGET_WORLD` only when you want to use a custom or self-hosted World:
 
 - `local` - alias for `@workflow/world-local`.

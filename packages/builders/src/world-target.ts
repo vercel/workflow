@@ -12,6 +12,7 @@ export const WORKFLOW_CORE_RUNTIME_MODULE = '@workflow/core/runtime';
 
 export {
   getWorldImport,
+  isVercelDeploymentEnv,
   normalizeWorkflowTargetWorldImport,
 } from '@workflow/utils';
 
