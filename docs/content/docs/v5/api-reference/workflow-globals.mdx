@@ -26,7 +26,7 @@ These APIs are available but are **seeded or fixed** to ensure deterministic beh
 | [`Date`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date) / `Date.now()` / `new Date()` | Returns a fixed timestamp that advances with the workflow's logical clock |
 | [`crypto.getRandomValues()`](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/getRandomValues) | Seeded — produces deterministic output for a given workflow run |
 | [`crypto.randomUUID()`](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/randomUUID) | Seeded — produces deterministic UUIDs for a given workflow run |
-| [`crypto.subtle.digest()`](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/digest) | Passes through to the real implementation (SHA-256, etc. are deterministic by nature) |
+| [`crypto.subtle.digest()`](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/digest) | Computed synchronously via `node:crypto` (values are byte-identical to WebCrypto), so the promise settles at a deterministic point during replay |
 
 <Callout type="info">
 You can safely use `Math.random()`, `Date.now()`, and `crypto.randomUUID()` in workflow functions. The framework ensures these return the same values across replays.
@@ -100,3 +100,6 @@ The following are **not available** in workflow functions. Move this logic to [s
 - **Global `fetch`**: Use [`import { fetch } from "workflow"`](/docs/api-reference/workflow/fetch) instead. See [fetch-in-workflow](/docs/errors/fetch-in-workflow).
 - **Timers**: `setTimeout`, `setInterval`, `setImmediate`, and their `clear*` counterparts. Use [`sleep()`](/docs/api-reference/workflow/sleep) instead. See [timeout-in-workflow](/docs/errors/timeout-in-workflow).
 - **`Buffer`**: Node.js-specific API. Use `Uint8Array` with `toBase64()` / `fromBase64()` / `toHex()` / `fromHex()` for binary data encoding, or `atob()` / `btoa()` for string-based base64.
+- **`WeakRef` and `FinalizationRegistry`**: garbage-collection timing is not deterministic, so observing it would make workflow code impossible to replay. (`WeakMap` and `WeakSet` remain available — they do not expose GC state.)
+- **`Atomics.waitAsync`**: a wall-clock timer, which cannot be replayed. Use [`sleep()`](/docs/api-reference/workflow/sleep) instead.
+- **Async `WebAssembly` compilation** (`compile`, `instantiate`, `compileStreaming`, `instantiateStreaming`): resolves on compile-thread timing. The synchronous `new WebAssembly.Module()` and `new WebAssembly.Instance()` constructors remain available.
