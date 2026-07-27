@@ -67,8 +67,20 @@ import { createSleep } from './workflow/sleep.js';
  * These tests assert the CORRECT behavior: both replays must agree with the
  * committed log and suspend. On `main` the second replay instead throws
  * `ReplayDivergenceError`, which is the reproduction. The companion fix on
- * branch `pgp/fix-step-delivery-ordering` adds `'step'` to the
+ * branch `pgp/fix-step-delivery-ordering` brings step results into the
  * delivery-barrier system and makes these pass.
+ *
+ * Scope limit, worth knowing before treating these five cases as the whole
+ * guarantee: every branch here reaches its next `useStep(...)` in the fewest
+ * possible microtask hops after being resumed. That makes them unable to
+ * distinguish "step results are delivered in event-log order relative to wait
+ * and hook deliveries" from "a step result merely resolves a hop or two later
+ * than it used to", which beats the shortest consumers and nothing else. A
+ * revision of the companion fix that only reordered the `resolve()` calls
+ * passed all five while a consumer padded with one extra `await` still
+ * diverged. Padded consumers are covered separately by
+ * `step-delivery-hop-count.test.ts` on the fix branch; both files together are
+ * what pins the ordering guarantee.
  */
 
 /**
@@ -534,9 +546,9 @@ describe('step result delivery ordering across replays', () => {
       }
       expect(hydration.hydrateSpy).toHaveBeenCalled();
 
-      // Hook payloads have no primitive memo, so the buffered payload still
-      // re-hydrates on the second replay while the small primitive step result
-      // is served straight from `primitiveStepResults`.
+      // Hook payloads have no primitive memo, so the payload still re-hydrates
+      // on the second replay while the small primitive step result is served
+      // straight from `primitiveStepResults`.
       const secondCtx = setupWorkflowContext(events, sharedCache);
       const { error } = await runWithDiscontinuation(
         secondCtx,
@@ -544,7 +556,7 @@ describe('step result delivery ordering across replays', () => {
       );
 
       expect(error).toBeDefined();
-      // FAILS on `main`: the step result overtakes the buffered hook payload,
+      // FAILS on `main`: the step result overtakes the hook payload,
       // `afterStep` draws CORR_IDS[2], and replay diverges at evnt_5 with the
       // production error shape.
       if (!WorkflowSuspension.is(error)) {
@@ -557,10 +569,13 @@ describe('step result delivery ordering across replays', () => {
       expect(secondCtx.eventsConsumer.eventIndex).toBe(events.length);
     });
 
-    // Control: subscribing synchronously with `await hook` keeps log order on
-    // both replays today, because the hook's hydration slot is queued on the
-    // serial `promiseQueue` ahead of the `step_completed` slot. The fix must
-    // not regress this.
+    // Control: `await hook` keeps log order on both replays today. This is not
+    // a different delivery path — all three hook cases in this file take the
+    // same `promises.length > 0` immediate path in `workflow/hook.ts` — it is
+    // just a shorter consumer. Resolution resumes this branch's continuation
+    // directly, so it reaches `afterHook()` in the first microtask and stays
+    // ahead of a memo-warm step result. It is the shortest-consumer case here,
+    // and the fix must not regress it.
     it('keeps log order across replays when the hook is awaited directly', async () => {
       const hydration = delayHydration();
       spy = await hydration.install();
