@@ -27,7 +27,7 @@
     "lucide-react": "^0.454.0",
     "monaco-editor": "latest",
     "monaco-vim": "0.4.4",
-    "next": "16.2.1",
+    "next": "16.2.11",
     "next-themes": "latest",
     "radix-ui": "^1.4.3",
     "react": "19.2.4",
@@ -40,7 +40,7 @@
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "postcss": "^8.5",
+    "postcss": "^8.5.18",
     "tailwindcss": "^4.1.9",
     "tw-animate-css": "^1.3.3",
     "typescript": "^5"

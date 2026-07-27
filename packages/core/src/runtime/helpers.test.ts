@@ -166,7 +166,7 @@ describe('healthCheck response parsing', () => {
       })
     );
 
-    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+    const result = await healthCheck(world, { timeout: 1000 });
 
     expect(result.healthy).toBe(true);
     expect(result.specVersion).toBe(3);
@@ -187,7 +187,7 @@ describe('healthCheck response parsing', () => {
       })
     );
 
-    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+    const result = await healthCheck(world, { timeout: 1000 });
 
     expect(result.healthy).toBe(true);
     expect(result.specVersion).toBe(3);
@@ -207,7 +207,7 @@ describe('healthCheck response parsing', () => {
       })
     );
 
-    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+    const result = await healthCheck(world, { timeout: 1000 });
 
     expect(result.healthy).toBe(true);
     expect(result.workflowCoreVersion).toBeUndefined();
@@ -221,7 +221,7 @@ describe('healthCheck response parsing', () => {
       'Workflow SDK "workflow" endpoint is healthy'
     );
 
-    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+    const result = await healthCheck(world, { timeout: 1000 });
 
     expect(result.healthy).toBe(true);
     expect(result.specVersion).toBeUndefined();
@@ -233,7 +233,7 @@ describe('healthCheck response parsing', () => {
       JSON.stringify({ healthy: true, endpoint: 'workflow' })
     );
 
-    await healthCheck(world, 'workflow', { timeout: 1000 });
+    await healthCheck(world, { timeout: 1000 });
 
     expect(world.queue).toHaveBeenCalledWith(
       '__wkf_workflow_health_check',
@@ -247,7 +247,7 @@ describe('healthCheck response parsing', () => {
       JSON.stringify({ healthy: true, endpoint: 'workflow' })
     );
 
-    const result = await healthCheck(world, 'workflow', {
+    const result = await healthCheck(world, {
       timeout: 1000,
       namespace: 'eve',
     });
@@ -271,7 +271,7 @@ describe('healthCheck response parsing', () => {
       },
     } as unknown as World;
 
-    const result = await healthCheck(world, 'workflow', { timeout: 300 });
+    const result = await healthCheck(world, { timeout: 300 });
 
     expect(result.healthy).toBe(false);
     expect(result.error).toMatch(/timed out/);
@@ -510,8 +510,8 @@ describe('withPreconditionRetry', () => {
     }
   });
 
-  it('passes no snapshot to op when the guard is not opted in', async () => {
-    delete process.env.WORKFLOW_PRECONDITION_GUARD;
+  it('passes no snapshot to op when the guard is explicitly disabled', async () => {
+    process.env.WORKFLOW_PRECONDITION_GUARD = '0';
     const log: MutableEventLog = {
       events: [makeUlidEvent(1_700_000_000_000)],
       cursor: 'c0',
@@ -526,6 +526,24 @@ describe('withPreconditionRetry', () => {
     );
     expect(op).toHaveBeenCalledTimes(1);
     expect(eventsListMock).not.toHaveBeenCalled();
+  });
+
+  it('sends a snapshot by default when the guard variable is unset (on by default)', async () => {
+    delete process.env.WORKFLOW_PRECONDITION_GUARD;
+    const time = 1_700_000_000_000;
+    const log: MutableEventLog = {
+      events: [makeUlidEvent(time)],
+      cursor: 'c0',
+    };
+    const op = vi.fn(async (stateUpdatedAt?: number) => {
+      expect(stateUpdatedAt).toBe(time);
+      return 'ok';
+    });
+
+    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
+      'ok'
+    );
+    expect(op).toHaveBeenCalledTimes(1);
   });
 
   it('passes the latest snapshot time to op and returns its result without reloading', async () => {

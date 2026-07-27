@@ -284,11 +284,19 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
               | { ok: false; error: unknown };
             ctx.promiseQueue = ctx.promiseQueue.then(async () => {
               try {
+                const prepared =
+                  await ctx.replayPayloadCache.prepareEventPayload(
+                    event.eventId,
+                    'payload',
+                    event.eventData.payload
+                  );
                 const payload = await hydrateStepReturnValue(
                   event.eventData.payload,
                   ctx.runId,
                   ctx.encryptionKey,
-                  ctx.globalThis
+                  ctx.globalThis,
+                  {},
+                  prepared
                 );
                 hydrateOutcome = { ok: true, value: payload as T };
               } catch (error) {
@@ -337,11 +345,18 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
+              const prepared = await ctx.replayPayloadCache.prepareEventPayload(
+                event.eventId,
+                'payload',
+                event.eventData.payload
+              );
               const payload = await hydrateStepReturnValue(
                 event.eventData.payload,
                 ctx.runId,
                 ctx.encryptionKey,
-                ctx.globalThis
+                ctx.globalThis,
+                {},
+                prepared
               );
               outcome = { ok: true, value: payload as T };
             } catch (error) {

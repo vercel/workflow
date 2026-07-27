@@ -50,11 +50,10 @@ import {
   jsonReviver,
   listJSONFiles,
   paginatedFileSystemQuery,
+  promoteExclusive,
   readJSON,
-  readJSONLenient,
   readJSONWithFallback,
   resolveWithinBase,
-  stripTag,
   taggedPath,
   write,
   writeExclusive,
@@ -65,10 +64,15 @@ import {
   getObjectCreatedAt,
   hookDisposeLockPath,
   hookRecoveryMarkerPath,
+  hookTokenClaimPath,
   isHookDisposalCommitted,
+  isRunTerminalCommitted,
+  mintRunDominantEventKey,
   monotonicUlid,
-  withFileLock,
-  withRunEventLock,
+  pendingHookEventPath,
+  reapPendingHookEvents,
+  releaseHookTokenClaimIfOwnedBy,
+  runTerminalMarkerPath,
 } from './helpers.js';
 import {
   deleteHookByRunMarker,
@@ -76,18 +80,68 @@ import {
   writeHookCreatedIndexEntries,
 } from './hook-index.js';
 import {
-  type CurrentHookTokenConstraint,
-  type HookTokenConstraint,
-  hasRemainingTokenRetention,
-  hookTokenConstraintPath,
-  readHookTokenConstraint,
-} from './hook-token-constraint.js';
-import {
   deleteAllHooksForRun,
-  rebuildHookTokenConstraintFromEventLog,
+  rebuildLiveHookByTokenFromEventLog,
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
+
+/**
+ * Per-run event ceiling the Local World reports on run responses (mirrors the
+ * Vercel World). Overridable via `WORKFLOW_MAX_EVENTS`; defaults to 25,000.
+ */
+const DEFAULT_MAX_EVENTS_PER_RUN = 25_000;
+function getMaxEventsPerRun(): number {
+  const raw = process.env.WORKFLOW_MAX_EVENTS;
+  const parsed = raw !== undefined ? Number(raw) : Number.NaN;
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_MAX_EVENTS_PER_RUN;
+}
+
+/**
+ * Per-step in-process async mutex. Serializes concurrent `events.create` calls
+ * that target the same step, so that the "check terminal state, then write step
+ * entity + event" sequence is atomic. Without this, two concurrent step_started
+ * calls can both pass the not-terminal check and both write step_started events
+ * — or a step_started can land in the log after step_completed has already
+ * written, producing unconsumed events on replay.
+ *
+ * Duplicate step_started events for a non-terminal step are still allowed
+ * (retries legitimately re-start a step), only writes to an already-terminal
+ * step are rejected.
+ */
+// `stepLocks` and `hookLocks` are now instantiated per
+// `createEventsStorage` call (see inside the function) rather than
+// being module-level. The on-disk constraint / claim files remain
+// the durable source of truth across processes; the in-process
+// mutex is a per-instance optimization that closes a short race
+// window in the dedup-recovery path. Per-instance scoping lets
+// tests simulate cross-process behavior with two storage instances
+// sharing one data directory (each instance has independent locks
+// but a shared filesystem), exactly matching the cross-process
+// semantics without spawning subprocesses.
+
+const HookTokenClaimSchema = z.object({
+  // The token-claim writer below has always persisted `hookId`, but
+  // this read schema previously omitted it, which is the bug fixed
+  // by https://github.com/vercel/workflow/issues/2283. `optional()`
+  // is defensive: any claim file that somehow lacks the field still
+  // parses (yielding `undefined`) and falls through to the cross-
+  // hook conflict branch, matching pre-fix behavior.
+  hookId: z.string().optional(),
+  runId: z.string(),
+  // `eventId` is the canonical hook_created event ID the claiming
+  // worker committed to publishing. Persisting it here turns the
+  // claim file into a durable convergence key for cross-worker /
+  // cross-process retries (see comment on the hook_created branch).
+  // `optional()` for backward compatibility: a legacy claim file
+  // written before this field existed falls through to the recovery-
+  // marker upgrade path, which atomically pins a canonical eventId
+  // via a sidecar marker (also a `writeExclusive`).
+  eventId: z.string().optional(),
+  tokenRetentionUntil: z.coerce.date().optional(),
+});
 
 /**
  * Sidecar recovery marker that pins a canonical `hook_created`
@@ -110,18 +164,75 @@ const HookRecoveryMarkerSchema = z.object({
   eventId: z.string(),
 });
 
-type HookTokenReservation =
-  | { type: 'claimed' }
-  | { type: 'owned'; constraint: HookTokenConstraint }
-  | { type: 'conflict'; runId: string };
-type HookTokenRelease =
-  | { type: 'retain' }
-  | { type: 'release'; ownerTag: string | undefined };
+async function readHookTokenClaim(
+  constraintPath: string
+): Promise<z.infer<typeof HookTokenClaimSchema> | null> {
+  try {
+    return await readJSON(constraintPath, HookTokenClaimSchema);
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Whether a token claim held by another `(runId, hookId)` can never become
+ * live again and may therefore be released by a new claimant:
+ *
+ *   - the claimed hook's disposal is committed (its dispose lock exists —
+ *     the durable release of the claim file just hasn't landed yet, or was
+ *     lost to a crash between the lock write and the claim delete), or
+ *   - the owning run is terminal and its minimum retention has ended (the
+ *     run-completion cleanup normally releases the claim first), or
+ *   - the owning run does not exist (a claim can only be written during a
+ *     suspension of an existing run, so an ownerless claim is debris).
+ *
+ * A claim from a mid-creation writer is never releasable: its owning run
+ * exists and is non-terminal, and its dispose lock does not exist.
+ */
+async function isHookTokenClaimReleasable(
+  basedir: string,
+  claim: z.infer<typeof HookTokenClaimSchema>,
+  tag?: string
+): Promise<boolean> {
+  if (
+    claim.hookId &&
+    (await isHookDisposalCommitted(basedir, claim.hookId, tag))
+  ) {
+    return true;
+  }
+  const owningRun = await readJSONWithFallback(
+    basedir,
+    'runs',
+    claim.runId,
+    WorkflowRunSchema,
+    tag
+  );
+  if (!owningRun) {
+    return true;
+  }
+  if (!isTerminalWorkflowRunStatus(owningRun.status)) {
+    return false;
+  }
+  return (
+    !claim.tokenRetentionUntil ||
+    claim.tokenRetentionUntil.getTime() <= Date.now()
+  );
+}
 
 async function readHookRecoveryMarker(
   markerPath: string
 ): Promise<z.infer<typeof HookRecoveryMarkerSchema> | null> {
-  return readJSONLenient(markerPath, HookRecoveryMarkerSchema);
+  try {
+    return await readJSON(markerPath, HookRecoveryMarkerSchema);
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -378,125 +489,6 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
   });
 }
 
-// Legacy reservations do not record their tag. Prefer an active matching run
-// so it can never be mistaken for terminal data and released.
-async function findRunAcrossTags(
-  basedir: string,
-  runId: string
-): Promise<{ run: WorkflowRun; tag: string | undefined } | null> {
-  let terminal: { run: WorkflowRun; tag: string | undefined } | null = null;
-  for (const fileId of await listJSONFiles(path.join(basedir, 'runs'))) {
-    if (stripTag(fileId) !== runId) continue;
-    const tag = fileId === runId ? undefined : fileId.slice(runId.length + 1);
-    const run = await readJSON(
-      taggedPath(basedir, 'runs', runId, tag),
-      WorkflowRunSchema
-    );
-    if (!run) continue;
-    if (!isTerminalWorkflowRunStatus(run.status)) return { run, tag };
-    terminal ??= { run, tag };
-  }
-  return terminal;
-}
-
-/**
- * A disposed Hook releases its token immediately. Otherwise the token stays
- * reserved while its run is active or its minimum retention has not elapsed.
- */
-async function getHookTokenRelease(
-  basedir: string,
-  constraint: HookTokenConstraint
-): Promise<HookTokenRelease> {
-  let ownerTag: string | undefined;
-  let owningRun: WorkflowRun | null = null;
-  switch (constraint.type) {
-    case 'current':
-      ownerTag = constraint.tag ?? undefined;
-      break;
-    case 'legacy':
-    case 'legacy-pinned': {
-      const owner = await findRunAcrossTags(basedir, constraint.runId);
-      ownerTag = owner?.tag;
-      owningRun = owner?.run ?? null;
-      break;
-    }
-    default: {
-      const unknownConstraint: never = constraint;
-      throw new Error(
-        `Unknown Hook token constraint: ${JSON.stringify(unknownConstraint)}`
-      );
-    }
-  }
-
-  if (await isHookDisposalCommitted(basedir, constraint.hookId, ownerTag)) {
-    return { type: 'release', ownerTag };
-  }
-  if (hasRemainingTokenRetention(constraint)) return { type: 'retain' };
-
-  owningRun ??= await readJSONWithFallback(
-    basedir,
-    'runs',
-    constraint.runId,
-    WorkflowRunSchema,
-    ownerTag
-  );
-  if (owningRun && !isTerminalWorkflowRunStatus(owningRun.status)) {
-    return { type: 'retain' };
-  }
-  return { type: 'release', ownerTag };
-}
-
-/**
- * Atomically reserves a token. Retries by the same Hook recover its canonical
- * event; other Hooks conflict until the previous reservation can be released.
- */
-async function reserveHookToken(
-  basedir: string,
-  next: CurrentHookTokenConstraint
-): Promise<HookTokenReservation> {
-  const constraintPath = hookTokenConstraintPath(basedir, next.token);
-  return withFileLock(constraintPath, async () => {
-    const existing =
-      (await readHookTokenConstraint(constraintPath)) ??
-      (await rebuildHookTokenConstraintFromEventLog(basedir, next.token));
-
-    if (!existing) {
-      await writeJSON(constraintPath, next, { overwrite: true });
-      return { type: 'claimed' };
-    }
-    if (existing.runId === next.runId && existing.hookId === next.hookId) {
-      return { type: 'owned', constraint: existing };
-    }
-
-    const release = await getHookTokenRelease(basedir, existing);
-    if (release.type === 'retain') {
-      return { type: 'conflict', runId: existing.runId };
-    }
-    const { ownerTag } = release;
-
-    await Promise.all([
-      deleteJSON(taggedPath(basedir, 'hooks', existing.hookId, ownerTag)),
-      deleteJSON(
-        hookRecoveryMarkerPath(
-          basedir,
-          existing.token,
-          existing.runId,
-          existing.hookId
-        )
-      ),
-      deleteHookByRunMarker(basedir, existing.runId, existing.hookId, ownerTag),
-    ]);
-    await writeJSON(constraintPath, next, { overwrite: true });
-    return { type: 'claimed' };
-  });
-}
-
-function shouldLockRunEvent(eventType: Event['eventType']): boolean {
-  return (
-    isTerminalRunEventType(eventType) || isHookLifecycleEventType(eventType)
-  );
-}
-
 /**
  * Creates the events storage implementation using the filesystem.
  * Implements the Storage['events'] interface with create, list, and listByCorrelationId operations.
@@ -618,10 +610,24 @@ export function createEventsStorage(
     rememberStoredEvent(event, eventPath, serializedEvent);
   }
 
-  // In-process queues preserve call order. Hook lifecycle and terminal events
-  // also share a filesystem run lock for cross-process atomicity.
+  // Per-instance in-process mutexes. Two storage instances sharing
+  // one data directory get independent lock maps, which makes them
+  // behave like two separate OS processes from the locking
+  // standpoint — cross-instance arbitration relies on the on-disk
+  // `writeExclusive` constraint / claim files instead. Tests use
+  // this to exercise cross-process convergence without spawning
+  // subprocesses.
+  //
+  // `stepLocks` serializes step lifecycle events for the same
+  // (runId, correlationId): see comment further down in the
+  // `isStepEvent` branch.
+  //
+  // `hookLocks` serializes `hook_created` calls for the same
+  // (runId, correlationId) so the "claim token, then write hook
+  // entity + event" sequence runs to completion before another
+  // in-process invocation enters the dedup branch.
   const stepLocks = new Map<string, Promise<unknown>>();
-  const runEventLocks = new Map<string, Promise<unknown>>();
+  const hookLocks = new Map<string, Promise<unknown>>();
 
   return {
     clearCache,
@@ -655,13 +661,34 @@ export function createEventsStorage(
           : `${runId}-${data.correlationId}`;
         return withInProcessLock(stepLocks, lockKey, () => createImpl());
       }
-      // Token locks are acquired inside this lock, keeping the global order
-      // run -> token for Hook creation, disposal, and terminal cleanup.
-      if (runId && shouldLockRunEvent(data.eventType)) {
-        const lockKey = tag ? `${runId}.${tag}` : runId;
-        return withInProcessLock(runEventLocks, lockKey, () =>
-          withRunEventLock(basedir, runId, () => createImpl())
-        );
+      // `hook_created` is serialized per-(runId, hookId) so the
+      // "claim token, write hook entity, write event" sequence runs to
+      // completion before another in-process invocation enters the
+      // same-hook dedup branch. Without this, two same-tick concurrent
+      // callers can race between the winner's `writeExclusive(claim)`
+      // and `writeJSON(hook)`, making the second caller momentarily
+      // observe a claim with no matching hook entity — which the
+      // crash-recovery path below would misinterpret as a prior crash
+      // and incorrectly fall through to a second hook entity write.
+      //
+      // `hook_received` and `hook_disposed` share the same per-hook lock
+      // so a resume's "hook exists and is not disposed, then append"
+      // sequence is atomic with respect to the disposer's "write dispose
+      // lock, delete entity, then append" sequence. Without this, a
+      // resume that passed its existence check before the disposal began
+      // could append its `hook_received` AFTER `hook_disposed` — an
+      // ordering that is journaled durably and makes every subsequent
+      // replay of the owning run diverge at that event
+      // (https://github.com/vercel/workflow/issues/2781).
+      if (
+        isHookLifecycleEventType(data.eventType) &&
+        runId &&
+        data.correlationId
+      ) {
+        const lockKey = tag
+          ? `${runId}-${data.correlationId}.hook.${tag}`
+          : `${runId}-${data.correlationId}.hook`;
+        return withInProcessLock(hookLocks, lockKey, () => createImpl());
       }
       return createImpl();
 
@@ -881,6 +908,7 @@ export function createEventsStorage(
             return {
               event: stripEventDataRefs(event, resolveData),
               run: currentRun,
+              ...(currentRun ? { maxEvents: getMaxEventsPerRun() } : {}),
             };
           }
 
@@ -980,16 +1008,15 @@ export function createEventsStorage(
           isHookEventRequiringExistence(data.eventType) &&
           data.correlationId
         ) {
-          if (
-            data.eventType === 'hook_received' &&
-            currentRun &&
-            isTerminalWorkflowRunStatus(currentRun.status)
-          ) {
-            throw new HookNotFoundError(data.correlationId);
-          }
-          // Disposal commits its lock before deleting the Hook or appending
-          // the event. A crash can therefore leave an entity that must not be
-          // resumable; the durable disposal lock is the source of truth.
+          // A resume must never be journaled after the hook's disposal.
+          // The disposer's durable order is: dispose lock → claim/entity
+          // delete → `hook_disposed` append, so the hook entity can still
+          // exist (or the disposer may have crashed mid-teardown) while
+          // disposal is already committed. Re-validate the dispose lock
+          // here — under the per-hook in-process lock taken above — so
+          // acceptance observes the same order replay will: once disposal
+          // has committed, the resume is rejected exactly like one that
+          // arrived after teardown finished.
           if (
             data.eventType === 'hook_received' &&
             (await isHookDisposalCommitted(basedir, data.correlationId, tag))
@@ -1009,8 +1036,8 @@ export function createEventsStorage(
           }
         }
         // `event` may be reassigned later in the `hook_created`
-        // dedup-recovery branch to swap in a canonical eventId and
-        // its deterministically derived createdAt so
+        // dedup-recovery branch to swap in a canonical eventId /
+        // createdAt persisted in the durable token claim so
         // concurrent / cross-process workers converge on a single
         // event in the log.
         let event: Event = {
@@ -1054,7 +1081,60 @@ export function createEventsStorage(
         // chosen by the dedup-recovery branch above (undefined for
         // first writers, `{ overwrite: true }` for retries that may
         // be repairing an orphaned partial write).
-        let hookEntityWriteOptions: { overwrite: true } | undefined;
+        let hookEntityWriteOptions: { overwrite: boolean } | undefined;
+
+        // Terminal transitions commit in two cross-process-visible steps
+        // BEFORE any terminal state write below (and thus before the
+        // terminal event is appended to the log at the bottom of this
+        // function):
+        //
+        //   1. Publish the durable run-terminal marker. Its existence is
+        //      the earliest cross-process evidence that the run can never
+        //      accept a new `hook_received` again — the run-level analogue
+        //      of the hook dispose marker.
+        //   2. Reap the run's staged (not yet reader-visible) hook_received
+        //      events. A resume publishes in three steps — stage, re-check
+        //      this marker, promote via atomic hard link into `events/` —
+        //      so the reap's unlink and the resume's link race on the SAME
+        //      staged file and the filesystem decides a single winner:
+        //      either the resume's event was already visible before this
+        //      transition proceeded (it legitimately precedes the
+        //      termination), or its staged file is gone, its promotion
+        //      fails, and the event is never visible to any reader. A
+        //      resume that stages after this reap necessarily stages after
+        //      the marker, and its own marker re-check rejects it. See
+        //      `reapPendingHookEvents` for the full argument.
+        //
+        // The terminal-state validation above has already rejected
+        // transitions from an already-terminal run, so reaching here means
+        // this is a fresh terminal transition; `writeExclusive` returning
+        // false (marker already present from a concurrent duplicate) is
+        // harmless, and both duplicates reap.
+        if (isTerminalRunEventType(data.eventType) && currentRun) {
+          await writeExclusive(
+            runTerminalMarkerPath(basedir, effectiveRunId, tag),
+            ''
+          );
+          await reapPendingHookEvents(basedir, effectiveRunId, tag);
+          // Re-derive this terminal event's replay-ordering key at the
+          // linearization point. The eventId/createdAt allocated at
+          // createImpl() entry can predate a hook_received that
+          // legitimately won the promote arbitration while this invocation
+          // was stalled before the marker write; events.list() sorts by
+          // (createdAt, eventId), so the stale key would order the terminal
+          // event BEFORE that accepted hook on replay. Every accepted hook
+          // is reader-visible by the end of the reap, so a key that
+          // strictly dominates all visible events of the run guarantees the
+          // terminal event replays last. See mintRunDominantEventKey for
+          // the dominance argument.
+          const dominantKey = await mintRunDominantEventKey(
+            basedir,
+            effectiveRunId,
+            tag
+          );
+          eventId = dominantKey.eventId;
+          event = { ...event, eventId, createdAt: dominantKey.createdAt };
+        }
 
         // Create/update entity based on event type (event-sourced architecture)
         // Run lifecycle events
@@ -1116,7 +1196,7 @@ export function createEventsStorage(
             // because this is a rare race-condition path — the runtime
             // falls back to loadWorkflowRunEvents().
             if (currentRun.status === 'running') {
-              return { run: currentRun };
+              return { run: currentRun, maxEvents: getMaxEventsPerRun() };
             }
 
             run = await writeRunUnderLifecycleLock(
@@ -1606,113 +1686,315 @@ export function createEventsStorage(
           data.eventType === 'hook_created' &&
           'eventData' in data
         ) {
-          const hookData = data.eventData;
+          const hookData = data.eventData as {
+            token: string;
+            tokenRetentionUntil?: Date;
+            metadata?: any;
+            isWebhook?: boolean;
+            isSystem?: boolean;
+          };
 
-          const nextConstraint: CurrentHookTokenConstraint = {
-            type: 'current',
+          // Atomically claim the token using an exclusive-create constraint file.
+          // This avoids the TOCTOU race of the previous read-all-then-check approach.
+          const constraintPath = hookTokenClaimPath(basedir, hookData.token);
+          // Persist `eventId` in the claim so concurrent / cross-
+          // process retries can converge on a single canonical
+          // `hook_created` event path. See the recovery comment
+          // below.
+          const claimContent = JSON.stringify({
             token: hookData.token,
             hookId: data.correlationId,
             runId: effectiveRunId,
-            tag: tag ?? null,
             eventId,
             tokenRetentionUntil: hookData.tokenRetentionUntil,
-          };
-          const reservation = await reserveHookToken(basedir, nextConstraint);
+          });
 
-          switch (reservation.type) {
-            case 'claimed':
+          // Bounded claim loop. A same-token claim can be observed in the
+          // short window where its release is already committed but the
+          // claim file itself is still on disk (or was just deleted):
+          //
+          //   - the claim vanished between the exclusive-create attempt
+          //     and the ownership read → retry immediately;
+          //   - the claim is held by a disposed hook or a terminal/missing
+          //     run (`isHookTokenClaimReleasable`) → wait briefly for the
+          //     in-flight releaser (the hook_disposed handler or the
+          //     run-completion cleanup) to delete it, then reclaim; if it
+          //     never does (the releaser crashed after committing its
+          //     dispose lock / terminal status), release the stale claim
+          //     ourselves and reclaim.
+          //
+          // Without this, a run claiming a token right after the previous
+          // owner disposed it records a durable, spurious hook_conflict
+          // (issue #2778). A genuinely live claim exits the loop on the
+          // first iteration and falls through to the dedup / conflict
+          // handling below.
+          let tokenClaimed = false;
+          let existingClaim: z.infer<typeof HookTokenClaimSchema> | null = null;
+          let releasableObservations = 0;
+          // A claim file that exists (exclusive-create keeps failing) but never
+          // parses is debris: `writeExclusive` writes atomically, so a live
+          // claim is always valid JSON — an unparseable one at the canonical
+          // path is a corrupt/partial leftover. The releaser leaves it alone
+          // (ownership is undeterminable), so nothing else reaps it and it would
+          // block the token forever. Force-delete it after a few observations.
+          let unparseableObservations = 0;
+          for (let attempt = 0; attempt < 10; attempt++) {
+            // When the claim is absent, the event log is the only durable
+            // source that can distinguish a first hook from a crash-lost
+            // token cache.
+            if (!(await readHookTokenClaim(constraintPath))) {
+              await rebuildLiveHookByTokenFromEventLog(
+                basedir,
+                hookData.token,
+                tag
+              );
+            }
+            tokenClaimed = await writeExclusive(constraintPath, claimContent);
+            if (tokenClaimed) break;
+
+            existingClaim = await readHookTokenClaim(constraintPath);
+            if (!existingClaim) {
+              // The claim either vanished (raced a releaser between the
+              // exclusive-create attempt and this read → retry resolves it) or
+              // exists but is unparseable. `readHookTokenClaim` can't tell them
+              // apart, so count consecutive misses; once we're confident it is
+              // not a transient race, delete the (presumed corrupt) file so the
+              // token isn't blocked forever. `deleteJSON` is a no-op if it was
+              // in fact a vanished-claim race.
+              unparseableObservations++;
+              if (unparseableObservations >= 3) {
+                await deleteJSON(constraintPath);
+              }
+              continue;
+            }
+            if (
+              existingClaim.runId === effectiveRunId &&
+              existingClaim.hookId === data.correlationId
+            ) {
+              // Our own prior claim — dedup-recovery handling below.
               break;
-            case 'conflict': {
+            }
+            if (
+              !(await isHookTokenClaimReleasable(basedir, existingClaim, tag))
+            ) {
+              // Genuinely live claim — conflict handling below.
+              break;
+            }
+            releasableObservations++;
+            if (releasableObservations < 3) {
+              // Give the in-flight releaser a moment to delete the claim.
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            } else {
+              // The releaser is not coming. Release the stale claim and
+              // the hook entity it points at, mirroring the hook_disposed
+              // cleanup.
+              await deleteJSON(constraintPath);
+              if (existingClaim.hookId) {
+                await deleteJSON(
+                  taggedPath(basedir, 'hooks', existingClaim.hookId, tag)
+                );
+                await deleteJSON(
+                  hookRecoveryMarkerPath(
+                    basedir,
+                    hookData.token,
+                    existingClaim.runId,
+                    existingClaim.hookId
+                  )
+                );
+                await deleteHookByRunMarker(
+                  basedir,
+                  existingClaim.runId,
+                  existingClaim.hookId,
+                  tag
+                );
+              }
+            }
+            existingClaim = null;
+          }
+
+          // Recovery shape: the durable record of a successful hook
+          // creation is the `hook_created` event in the event log. The
+          // claim file and hook entity are written before the event,
+          // and the three writes are NOT atomic, so a crash at any
+          // point can leave one or two of them on disk without the
+          // event. Treating those as "completed" would have the
+          // suspension handler swallow the retry and permanently lose
+          // the `hook_created` event from the log.
+          //
+          // When the dedup branch fires for the same `(runId, hookId)`,
+          // we converge on the canonical `eventId` persisted in the
+          // claim file by the original (winning) `writeExclusive`. By
+          // adopting that eventId for this retry's event write — and
+          // letting the outer no-overwrite `writeJSON` for the event
+          // throw `EntityConflictError` on collision — concurrent /
+          // cross-process workers either:
+          //   - publish the same event at the same path exactly once
+          //     (the loser's `writeJSON` throws EntityConflictError,
+          //     which the runtime's existing concurrent-replay catch
+          //     path at suspension-handler.ts:142 swallows), or
+          //   - converge on a single recovery write when the prior
+          //     claim was orphaned by a crash before the event landed.
+          //
+          // The legacy fallback (`existingClaim.eventId` undefined)
+          // is for claim files written before this field was added —
+          // those probe the event log directly and fall through to a
+          // fresh-eventId recovery write. The legacy path does not
+          // converge across workers but cannot regress behavior for
+          // freshly-written claims.
+          //
+          // The `withHookLock` in-process mutex above keeps two same-
+          // tick in-process callers from racing into this branch with
+          // the winner mid-write, but is not sufficient across
+          // processes — the durable convergence key (`claim.eventId`)
+          // is what closes the cross-process race.
+          let writeHookEntityWithOverwrite = false;
+
+          if (!tokenClaimed) {
+            if (
+              existingClaim?.runId === effectiveRunId &&
+              existingClaim.hookId === data.correlationId
+            ) {
+              // Adopt a canonical eventId for the recovery write. The
+              // outer event publish (`writeExclusive(eventPath)`)
+              // either succeeds (we publish the canonical event,
+              // repairing a partial write left by the original
+              // claimant) or returns `false` and we throw
+              // `EntityConflictError` (the event was already
+              // published — a real duplicate). Either way the log
+              // ends with exactly one `hook_created` event for this
+              // `(runId, hookId)`.
+              //
+              // The canonical eventId comes from one of two places:
+              //
+              //   - `existingClaim.eventId` for claims written by
+              //     this version (the writer above persists the
+              //     candidate eventId atomically with the claim).
+              //     The eventId is durable, so the outer
+              //     `writeExclusive(eventPath)` alone is enough to
+              //     arbitrate publication: it fails iff the event
+              //     was already published at that exact path.
+              //
+              //   - The recovery-marker sidecar for legacy claims
+              //     written before `eventId` was persisted inline
+              //     in the claim. The marker is itself a
+              //     `writeExclusive`, so the first retry pins its
+              //     candidate eventId as canonical and subsequent
+              //     retries adopt it. Without this, two processes
+              //     both reading the same legacy claim would each
+              //     generate their own eventId, land their
+              //     `writeExclusive(eventPath)` calls at different
+              //     paths, and append two events.
+              //
+              //     For legacy claims we also must probe the event
+              //     log for an existing `hook_created` event BEFORE
+              //     pinning a canonical eventId: the pre-upgrade
+              //     writer may have already published the event
+              //     with its own eventId, and the marker has no way
+              //     of knowing that eventId after the fact. Without
+              //     this probe, a post-upgrade retry would pin a
+              //     different eventId, write a hook entity, and
+              //     publish a duplicate event at the marker's path.
+              let canonicalEventId: string;
+              if (existingClaim.eventId) {
+                canonicalEventId = existingClaim.eventId;
+              } else {
+                const alreadyPublishedEventId =
+                  await findExistingHookCreatedEventId(
+                    basedir,
+                    effectiveRunId,
+                    data.correlationId
+                  );
+                if (alreadyPublishedEventId !== null) {
+                  // The pre-upgrade writer may have crashed between
+                  // its event publish and its hook entity write —
+                  // repair the entity from the persisted event's
+                  // payload before surfacing the benign duplicate.
+                  await repairHookEntityFromPersistedEvent(
+                    basedir,
+                    effectiveRunId,
+                    data.correlationId,
+                    alreadyPublishedEventId,
+                    tag
+                  );
+                  throw new EntityConflictError(
+                    `Hook "${data.correlationId}" already created`
+                  );
+                }
+                const pinned = await pinCanonicalEventIdForLegacyClaim(
+                  basedir,
+                  hookData.token,
+                  effectiveRunId,
+                  data.correlationId,
+                  eventId
+                );
+                if (pinned === null) {
+                  // Lost the marker race and the marker file is
+                  // unreadable (extremely rare; corrupted disk).
+                  // Treat as a real duplicate so the runtime's
+                  // concurrent-replay catch path swallows this
+                  // attempt instead of risking divergent
+                  // publication.
+                  throw new EntityConflictError(
+                    `Hook "${data.correlationId}" already created`
+                  );
+                }
+                canonicalEventId = pinned;
+              }
+
+              // Rebuild `event` with the canonical eventId and a
+              // deterministic `createdAt` derived from the eventId
+              // (a ULID) so two workers writing the same event
+              // produce byte-identical content.
+              eventId = canonicalEventId;
+              const canonicalCreatedAt =
+                ulidToDate(eventId.replace(/^evnt_/, '')) ?? now;
+              event = {
+                ...data,
+                runId: effectiveRunId,
+                eventId,
+                createdAt: canonicalCreatedAt,
+                specVersion: effectiveSpecVersion,
+              };
+              writeHookEntityWithOverwrite = true;
+            } else {
+              // Cross-hook / cross-run conflict: a different
+              // (runId, hookId) holds this token. Create a
+              // hook_conflict event so the workflow can fail
+              // gracefully when the hook is awaited.
               const conflictEvent: Event = {
                 eventType: 'hook_conflict',
                 correlationId: data.correlationId,
                 eventData: {
                   token: hookData.token,
-                  conflictingRunId: reservation.runId,
+                  ...(existingClaim
+                    ? { conflictingRunId: existingClaim.runId }
+                    : {}),
                 },
                 runId: effectiveRunId,
                 eventId,
                 createdAt: now,
                 specVersion: effectiveSpecVersion,
               };
+
+              // Persist and cache the conflict event (create-only,
+              // same path the read cache keys on) so an immediate
+              // replay can serve it without rereading from disk.
               await storeEvent(conflictEvent);
+
+              const resolveData =
+                params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+              const filteredEvent = stripEventDataRefs(
+                conflictEvent,
+                resolveData
+              );
+
+              // Return EventResult with conflict event (no hook entity created)
               return {
-                event: stripEventDataRefs(
-                  conflictEvent,
-                  params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION
-                ),
+                event: filteredEvent,
                 run,
                 step,
                 hook: undefined,
               };
-            }
-            case 'owned': {
-              const { constraint } = reservation;
-              switch (constraint.type) {
-                case 'current':
-                case 'legacy-pinned':
-                  eventId = constraint.eventId;
-                  break;
-                case 'legacy': {
-                  const existingEventId = await findExistingHookCreatedEventId(
-                    basedir,
-                    effectiveRunId,
-                    data.correlationId
-                  );
-                  if (existingEventId) {
-                    await repairHookEntityFromPersistedEvent(
-                      basedir,
-                      effectiveRunId,
-                      data.correlationId,
-                      existingEventId,
-                      tag
-                    );
-                    throw new EntityConflictError(
-                      `Hook "${data.correlationId}" already created`
-                    );
-                  }
-                  const pinned = await pinCanonicalEventIdForLegacyClaim(
-                    basedir,
-                    hookData.token,
-                    effectiveRunId,
-                    data.correlationId,
-                    eventId
-                  );
-                  if (!pinned) {
-                    throw new EntityConflictError(
-                      `Hook "${data.correlationId}" already created`
-                    );
-                  }
-                  eventId = pinned;
-                  break;
-                }
-                default: {
-                  const unknownConstraint: never = constraint;
-                  throw new Error(
-                    `Unknown Hook token constraint: ${JSON.stringify(unknownConstraint)}`
-                  );
-                }
-              }
-
-              event = {
-                ...data,
-                eventData: {
-                  ...data.eventData,
-                  tokenRetentionUntil: constraint.tokenRetentionUntil,
-                },
-                runId: effectiveRunId,
-                eventId,
-                createdAt: ulidToDate(eventId.replace(/^evnt_/, '')) ?? now,
-                specVersion: effectiveSpecVersion,
-              };
-              hookEntityWriteOptions = { overwrite: true };
-              break;
-            }
-            default: {
-              const unknownReservation: never = reservation;
-              throw new Error(
-                `Unknown Hook token reservation: ${JSON.stringify(unknownReservation)}`
-              );
             }
           }
 
@@ -1749,6 +2031,10 @@ export function createEventsStorage(
             isWebhook: hookData.isWebhook ?? false,
             isSystem: hookData.isSystem ?? false,
           };
+          hookEntityWriteOptions = writeHookEntityWithOverwrite
+            ? { overwrite: true }
+            : undefined;
+
           // Index entries before the event publish (see hook-index.ts
           // crash-ordering invariant). `eventId` is final here — the
           // dedup-recovery branch above already reassigned it to the
@@ -1795,19 +2081,23 @@ export function createEventsStorage(
             tag
           );
           if (existingHook) {
-            const constraintPath = hookTokenConstraintPath(
+            // Release the token claim to free up the token for reuse —
+            // but only if it still points at this hook. A claimant that
+            // force-released this hook's stale claim (see
+            // `isHookTokenClaimReleasable`) may already hold a fresh
+            // claim for the token; deleting unconditionally here would
+            // destroy that live claim and transiently break token
+            // uniqueness. Also delete this hook's recovery marker (if
+            // any) for disk hygiene. The marker's filename hash
+            // includes `(token, runId, hookId)` so different
+            // lifetimes never collide, but cleaning up reduces disk
+            // leak for hooks that go through the recovery path.
+            await releaseHookTokenClaimIfOwnedBy(
               basedir,
-              existingHook.token
+              existingHook.token,
+              existingHook.runId,
+              existingHook.hookId
             );
-            await withFileLock(constraintPath, async () => {
-              const constraint = await readHookTokenConstraint(constraintPath);
-              if (
-                constraint?.runId === existingHook.runId &&
-                constraint.hookId === existingHook.hookId
-              ) {
-                await deleteJSON(constraintPath);
-              }
-            });
             await deleteJSON(
               hookRecoveryMarkerPath(
                 basedir,
@@ -1932,15 +2222,129 @@ export function createEventsStorage(
         // collision indicates a real bug and EntityConflictError is
         // also the right surface — same shape as step_created's
         // claim-file behavior.
-        // Hook events still hold the run lock here, so resume, disposal, and
-        // terminal cleanup cannot interleave between validation and publish.
+        // Last-instant re-validation for `hook_received` (see the acceptance
+        // check above). The per-hook in-process lock already serializes
+        // resume vs. dispose within one storage instance; this second check
+        // narrows the cross-instance window (independent lock maps, shared
+        // filesystem) to the single event write below, matching the
+        // module's convention that the on-disk lock file — not the
+        // in-process mutex — is the durable source of truth.
+        if (
+          data.eventType === 'hook_received' &&
+          data.correlationId &&
+          (await isHookDisposalCommitted(basedir, data.correlationId, tag))
+        ) {
+          throw new HookNotFoundError(data.correlationId);
+        }
+
         const compositeKey = `${effectiveRunId}-${eventId}`;
         const eventPath = taggedPath(basedir, 'events', compositeKey, tag);
         // Capture the serialized payload before the write's `await` so the
         // cached snapshot can't observe a later mutation (see
         // rememberStoredEvent).
         const serializedEvent = JSON.stringify(event, jsonReplacer, 2);
-        const eventPublished = await writeExclusive(eventPath, serializedEvent);
+
+        // Cross-process terminal-run guard for `hook_received`. A terminal
+        // transition (run_completed / run_failed / run_cancelled) in ANY
+        // process (1) publishes a durable `runTerminalMarkerPath` marker and
+        // (2) reaps the run's staged hook_received events, both BEFORE it
+        // writes the terminal run state or appends its terminal event (see
+        // the terminal-transition block earlier in this function). In-memory
+        // locks cannot close the shared-filesystem race this backend
+        // explicitly supports, and a published event file is immediately
+        // visible to `events.list()` in other processes — so it can never be
+        // "rolled back" after the fact. Instead, the event stays INVISIBLE
+        // to readers until a single atomic filesystem operation decides its
+        // fate:
+        //
+        //   1. (fast path) reject if the run is already terminal — by
+        //      marker, or by run state for runs that predate the marker —
+        //      so the common case never creates a file.
+        //   2. STAGE the event at a non-reader-visible path under `.locks`.
+        //   3. re-CHECK the terminal marker; reject if present.
+        //   4. PROMOTE the staged file into `events/` with an atomic hard
+        //      link; reject if the staged file was reaped (`'missing'`).
+        //
+        // Correctness: the reap's `unlink` and step 4's `link` target the
+        // same staged file, so the filesystem serializes them — exactly one
+        // wins. If the link wins, the event was reader-visible before the
+        // reap completed, and therefore before the terminal state and
+        // terminal event were written: acceptance happened-before the
+        // termination and legitimately precedes it. If the unlink wins,
+        // promotion fails and the event is never visible to any reader —
+        // there is nothing to roll back. A resume that stages after the
+        // reap has passed necessarily stages after the marker was
+        // committed, so step 3 rejects it. Rejections before step 4 unlink
+        // a file no reader can see.
+        let eventPublished: boolean;
+        if (data.eventType === 'hook_received') {
+          // Step 1: fast path. The marker is the authoritative durable
+          // signal; the run-state read additionally rejects runs whose
+          // terminal state was written without a marker (e.g. runs that
+          // terminated on an older storage version).
+          const terminalByMarker = await isRunTerminalCommitted(
+            basedir,
+            effectiveRunId,
+            tag
+          );
+          const runNow = terminalByMarker
+            ? null
+            : await readJSONWithFallback(
+                basedir,
+                'runs',
+                effectiveRunId,
+                WorkflowRunSchema,
+                tag
+              );
+          if (
+            terminalByMarker ||
+            (runNow && isTerminalWorkflowRunStatus(runNow.status))
+          ) {
+            throw new RunExpiredError(
+              `Workflow run "${effectiveRunId}" is already in a terminal state`
+            );
+          }
+
+          const stagedPath = pendingHookEventPath(
+            basedir,
+            effectiveRunId,
+            eventId,
+            tag
+          );
+          const staged = await writeExclusive(stagedPath, serializedEvent);
+          if (!staged) {
+            // eventId is a freshly generated ULID; its staging path can
+            // only be occupied by a previous crashed attempt of this very
+            // event, which never promoted. Surface the same conflict shape
+            // as a visible-path collision.
+            throw new EntityConflictError(
+              `Event "${eventId}" already exists for run "${effectiveRunId}"`
+            );
+          }
+          try {
+            if (await isRunTerminalCommitted(basedir, effectiveRunId, tag)) {
+              throw new RunExpiredError(
+                `Workflow run "${effectiveRunId}" is already in a terminal state`
+              );
+            }
+            const promoted = await promoteExclusive(stagedPath, eventPath);
+            if (promoted === 'missing') {
+              // A terminal transition reaped the staged file between the
+              // check and the link — the atomic loss of the arbitration.
+              throw new RunExpiredError(
+                `Workflow run "${effectiveRunId}" is already in a terminal state`
+              );
+            }
+            eventPublished = promoted === 'linked';
+          } finally {
+            // The staged path is not reader-visible; removing it is pure
+            // cleanup on every outcome (already gone when reaped).
+            await deleteJSON(stagedPath).catch(() => {});
+          }
+        } else {
+          eventPublished = await writeExclusive(eventPath, serializedEvent);
+        }
+
         if (!eventPublished) {
           // For `hook_created`, losing the event publish means the
           // event was already committed at this exact (canonical)
@@ -2076,6 +2480,8 @@ export function createEventsStorage(
           cursor,
           hasMore,
           ...(stepCreatedLazily ? { stepCreated: true } : {}),
+          // Per-run event ceiling (mirrors the Vercel World).
+          ...(run ? { maxEvents: getMaxEventsPerRun() } : {}),
         };
       } // end createImpl
     },

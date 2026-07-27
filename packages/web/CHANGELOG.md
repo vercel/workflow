@@ -1,5 +1,12 @@
 # @workflow/web
 
+## 5.0.0-beta.36
+
+### Patch Changes
+
+- Updated dependencies [[`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3), [`850777a`](https://github.com/vercel/workflow/commit/850777a03bc1ad85fa7333d5e15a55a353ed6d23)]:
+  - @workflow/world-local@5.0.0-beta.30
+
 ## 5.0.0-beta.35
 
 ### Patch Changes

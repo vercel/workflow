@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { HookCreatedEvent } from '@workflow/world';
+import type { Event } from '@workflow/world';
 import { EventSchema, HookSchema } from '@workflow/world';
 import { z } from 'zod';
 import {
@@ -10,7 +10,6 @@ import {
   isUntagged,
   listJSONFiles,
   readJSON,
-  readJSONLenient,
   resolveWithinBase,
   stripTag,
   taggedPath,
@@ -75,6 +74,17 @@ export function isVisibleToTag(
   tag: string | undefined
 ): boolean {
   return tag ? isUntagged(fileId) || hasTag(fileId, tag) : isUntagged(fileId);
+}
+
+async function readEventLenient(filePath: string): Promise<Event | null> {
+  try {
+    return await readJSON(filePath, EventSchema);
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -237,9 +247,8 @@ async function ensureHookIndexesImpl(basedir: string): Promise<void> {
     await listJSONFiles(eventsDir),
     32,
     async (fileId) => {
-      const event = await readJSONLenient(
-        path.join(eventsDir, `${fileId}.json`),
-        EventSchema
+      const event = await readEventLenient(
+        path.join(eventsDir, `${fileId}.json`)
       );
       if (!event || event.eventType !== 'hook_created') return;
       if (typeof event.correlationId !== 'string') return;
@@ -286,47 +295,30 @@ async function ensureHookIndexesImpl(basedir: string): Promise<void> {
   await writeExclusive(markerPath, '');
 }
 
-// Token reservations are global; Hook ID reads retain normal tag visibility.
-export type HookIndexLookup =
-  | { kind: 'token'; token: string }
-  | { kind: 'id'; hookId: string; tag: string | undefined };
-
 /**
- * Find the newest matching `hook_created` event for a token or hookId.
+ * Find the newest visible `hook_created` event for a token or hookId.
  * Entries are iterated newest-first (eventIds are ULIDs); dangling or
  * non-matching entries are skipped. Liveness is the caller's job.
  */
 export async function findNewestIndexedHookCreatedEvent(
   basedir: string,
-  index: HookIndexLookup
-): Promise<{ event: HookCreatedEvent; tag: string | undefined } | null> {
+  index: { kind: 'token'; token: string } | { kind: 'id'; hookId: string },
+  matches: (event: Event) => boolean,
+  tag?: string
+): Promise<Event | null> {
   await ensureHookIndexes(basedir);
   let dir: string;
-  let isVisible: (fileId: string) => boolean;
-  let matches: (event: HookCreatedEvent) => boolean;
-  switch (index.kind) {
-    case 'token':
-      dir = tokenIndexDir(basedir, index.token);
-      isVisible = () => true;
-      matches = (event) => event.eventData.token === index.token;
-      break;
-    case 'id':
-      try {
-        dir = idIndexDir(basedir, index.hookId);
-      } catch {
-        return null;
-      }
-      isVisible = (fileId) => isVisibleToTag(fileId, index.tag);
-      matches = (event) => event.correlationId === index.hookId;
-      break;
-    default: {
-      const unknownIndex: never = index;
-      throw new Error(`Unknown Hook index: ${JSON.stringify(unknownIndex)}`);
-    }
+  try {
+    dir =
+      index.kind === 'token'
+        ? tokenIndexDir(basedir, index.token)
+        : idIndexDir(basedir, index.hookId);
+  } catch {
+    return null;
   }
 
   const entryIds = (await listJSONFiles(dir))
-    .filter(isVisible)
+    .filter((fileId) => isVisibleToTag(fileId, tag))
     .sort((a, b) => stripTag(b).localeCompare(stripTag(a)));
 
   for (const entryId of entryIds) {
@@ -343,22 +335,24 @@ export async function findNewestIndexedHookCreatedEvent(
     }
     if (!entry) continue;
 
-    const tag = tagOf(entryId);
+    const eventId = stripTag(entryId);
     let eventPath: string;
     try {
       eventPath = taggedPath(
         basedir,
         'events',
-        `${entry.runId}-${stripTag(entryId)}`,
-        tag
+        `${entry.runId}-${eventId}`,
+        tagOf(entryId)
       );
     } catch {
       continue;
     }
-    const event = await readJSONLenient(eventPath, EventSchema);
-    if (event?.eventType === 'hook_created' && matches(event)) {
-      return { event, tag };
-    }
+    const event = await readEventLenient(eventPath);
+    if (!event) continue;
+    if (event.eventType !== 'hook_created') continue;
+    if (typeof event.correlationId !== 'string') continue;
+    if (!matches(event)) continue;
+    return event;
   }
   return null;
 }

@@ -15,6 +15,7 @@ import {
 import { EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
+import { ReplayPayloadCache } from '../replay-payload-cache.js';
 import { Run } from '../runtime/run.js';
 import { dehydrateStepReturnValue } from '../serialization.js';
 import { createContext } from '../vm/index.js';
@@ -38,6 +39,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     runId: 'wrun_test',
     encryptionKey: undefined,
     worldCapabilities: { hookRetention: { active: true } },
+    replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent: () => {},

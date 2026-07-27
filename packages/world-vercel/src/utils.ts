@@ -201,6 +201,17 @@ export function serializeError<T extends { error?: SerializedData }>(
   return data;
 }
 
+/**
+ * Joins User-Agent product tokens with spaces per the RFC 9110 `User-Agent`
+ * grammar (`product *( RWS ( product / comment ) )`), skipping empty parts.
+ * Never join UA products with `Headers.append()` — repeated header values
+ * combine with `", "`, and a comma glued to a product token breaks
+ * whitespace-delimited parsers on the receiving side.
+ */
+const joinUserAgentProducts = (
+  ...products: (string | null | undefined)[]
+): string => products.filter(Boolean).join(' ');
+
 const getUserAgent = () => {
   const deploymentId = process.env.VERCEL_DEPLOYMENT_ID;
   if (deploymentId) {
@@ -239,7 +250,10 @@ export const getHeaders = (
 ): Headers => {
   const projectConfig = config?.projectConfig;
   const headers = new Headers(config?.headers);
-  headers.set('User-Agent', getUserAgent());
+  headers.set(
+    'User-Agent',
+    joinUserAgentProducts(getUserAgent(), headers.get('User-Agent'))
+  );
   const testLimitOverrides = getTestLimitOverridesHeader();
   if (testLimitOverrides) {
     headers.set(TEST_LIMIT_OVERRIDES_HEADER, testLimitOverrides);
@@ -313,6 +327,7 @@ export async function makeRequest<T>({
   schema,
   data,
   onResponse,
+  retryConnectTimeout = false,
 }: {
   endpoint: string;
   options?: Omit<RequestInit, 'body'>;
@@ -322,6 +337,8 @@ export async function makeRequest<T>({
   data?: unknown;
   /** Optional callback invoked with the raw Response before body consumption. Use to read response headers. */
   onResponse?: (response: Response) => void;
+  /** Retry an idempotent read once when connecting timed out before a request was sent. */
+  retryConnectTimeout?: boolean;
 }): Promise<T> {
   const method = options.method || 'GET';
   const { baseUrl, headers } = await getHttpConfig(config);
@@ -365,7 +382,7 @@ export async function makeRequest<T>({
       // already handed back the response by the time we consume the body, so
       // we retry such failures here. Only idempotent reads are re-issued; a
       // write must not be replayed (it could be applied twice).
-      const canRetryBody = IDEMPOTENT_METHODS.has(method.toUpperCase());
+      const canRetryRead = IDEMPOTENT_METHODS.has(method.toUpperCase());
       let parseResult: ParseResult;
       let responseDiagnostics = '';
       for (let attempt = 0; ; attempt++) {
@@ -416,6 +433,17 @@ export async function makeRequest<T>({
           // of failing the run. See TRANSIENT_TRANSPORT_ERROR_CODES.
           const transportCode = getTransientTransportCode(error);
           if (transportCode) {
+            if (
+              retryConnectTimeout &&
+              canRetryRead &&
+              transportCode === 'UND_ERR_CONNECT_TIMEOUT' &&
+              attempt === 0
+            ) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, BODY_PARSE_RETRY_BASE_MS)
+              );
+              continue;
+            }
             const transportError = new WorkflowWorldError(
               `${method} ${endpoint} transport failure after ${elapsed}ms (${transportCode})`,
               { url, code: 'TRANSPORT', cause: error }
@@ -491,7 +519,7 @@ export async function makeRequest<T>({
           // Body read and decoded successfully.
           break;
         } catch (error) {
-          if (canRetryBody && attempt < MAX_BODY_PARSE_RETRIES) {
+          if (canRetryRead && attempt < MAX_BODY_PARSE_RETRIES) {
             const backoffMs = BODY_PARSE_RETRY_BASE_MS * 2 ** attempt;
             span?.setAttributes({
               ...ErrorType('PARSE_ERROR_RETRYING'),

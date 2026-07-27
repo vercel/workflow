@@ -1,5 +1,16 @@
 # @workflow/nest
 
+## 5.0.0-beta.36
+
+### Major Changes
+
+- [#2988](https://github.com/vercel/workflow/pull/2988) [`542138d`](https://github.com/vercel/workflow/commit/542138dc0b37f492fbf51b75e8ba4f57e291fc8f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `workflow-nest build --vercel` command for emitting a Vercel Build Output API directory, enabling deployment of NestJS apps on Vercel. **Breaking:** `NestLocalBuilder` moved from the package root to the `@workflow/nest/builder` (`workflow/nest/builder`) subpath so importing `WorkflowModule` no longer pulls the build toolchain into the runtime bundle; the new `NestVercelBuilder` lives at `@workflow/nest/vercel-builder` (`workflow/nest/vercel-builder`).
+
+### Patch Changes
+
+- Updated dependencies [[`927b61a`](https://github.com/vercel/workflow/commit/927b61ab419e98c027c077af81273e73650cb94f)]:
+  - @workflow/builders@5.0.0-beta.36
+
 ## 5.0.0-beta.35
 
 ### Patch Changes

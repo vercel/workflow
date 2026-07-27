@@ -291,6 +291,8 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   if (typeof eventData.token === 'string') {
     meta.hookToken = eventData.token;
   }
+  // This new World field is Date-only; unlike legacy date fields above, it
+  // does not need an ISO string fallback.
   if (eventData.tokenRetentionUntil instanceof Date) {
     meta.hookTokenRetentionUntil = eventData.tokenRetentionUntil;
   }
@@ -759,5 +761,9 @@ async function createWorkflowRunEventInner(
     // signal through so the owned-inline runtime path can gate body execution
     // on it. Absent from older servers → undefined → safe default.
     ...(body.stepCreated ? { stepCreated: true } : {}),
+    // Server-supplied per-run event ceiling; absent from older servers.
+    ...(typeof body.maxEvents === 'number'
+      ? { maxEvents: body.maxEvents }
+      : {}),
   };
 }

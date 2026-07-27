@@ -12,6 +12,7 @@ import { registerSerializationClass } from './class-serialization.js';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
 import {
   dehydrateStepError,
   dehydrateStepReturnValue,
@@ -53,6 +54,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   return {
     runId: 'wrun_test',
     encryptionKey: undefined,
+    replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent: () => {},
@@ -679,7 +681,7 @@ describe('createUseStep', () => {
 
   it('should preserve Error subclass identity and stack through serialization round-trip', async () => {
     // Build a real Error with a specific stack and serialize it through the
-    // same pipeline that the step handler uses on write.
+    // same pipeline that the step executor uses on write.
     const originalError = new FatalError('Custom error message');
     originalError.stack =
       'Error: Custom error message\n    at someFunction (file.js:10:5)';

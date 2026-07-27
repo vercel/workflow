@@ -16,7 +16,6 @@ import type {
 import { decode, encode } from 'cbor-x';
 import type {
   EnvMap,
-  HealthCheckEndpoint,
   HealthCheckResult,
   HookListItem,
   HookTokenResult,
@@ -226,10 +225,9 @@ export async function fetchWorkflowsManifest(
 
 export async function runHealthCheck(
   worldEnv: EnvMap,
-  endpoint: HealthCheckEndpoint,
   options?: { timeout?: number }
 ): Promise<ServerActionResult<HealthCheckResult>> {
-  return rpc('runHealthCheck', { worldEnv, endpoint, options });
+  return rpc('runHealthCheck', { worldEnv, options });
 }
 
 export async function getEncryptionKeyForRun(

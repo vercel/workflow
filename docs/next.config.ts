@@ -132,6 +132,70 @@ const config: NextConfig = {
         destination: '/cookbook',
         permanent: true,
       },
+      // The Migration Guides section was replaced by Comparisons (#2676):
+      // each migrating-from-* page's content folded into the matching
+      // workflow-sdk-vs-* comparison page. Permanent redirects keep old
+      // links and indexed search results working. The /v5-prefixed
+      // equivalents are intentionally omitted: those URLs carried noindex,
+      // and the /v5 prefix collapses into the unprefixed space when v5
+      // becomes the default docs version.
+      {
+        source: '/docs/migration-guides',
+        destination: '/docs/comparisons',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-inngest',
+        destination: '/docs/comparisons/workflow-sdk-vs-inngest',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-temporal',
+        destination: '/docs/comparisons/workflow-sdk-vs-temporal',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-trigger-dev',
+        destination: '/docs/comparisons/workflow-sdk-vs-trigger-dev',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-aws-step-functions',
+        destination: '/docs/comparisons/workflow-sdk-vs-aws-step-functions',
+        permanent: true,
+      },
+      // Docs pages also expose text/markdown alternates at `<page>.md`.
+      {
+        source: '/docs/migration-guides.md',
+        destination: '/docs/comparisons.md',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-inngest.md',
+        destination: '/docs/comparisons/workflow-sdk-vs-inngest.md',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-temporal.md',
+        destination: '/docs/comparisons/workflow-sdk-vs-temporal.md',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-trigger-dev.md',
+        destination: '/docs/comparisons/workflow-sdk-vs-trigger-dev.md',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-aws-step-functions.md',
+        destination: '/docs/comparisons/workflow-sdk-vs-aws-step-functions.md',
+        permanent: true,
+      },
+      // Anything else under the retired section lands on the index.
+      {
+        source: '/docs/migration-guides/:path*',
+        destination: '/docs/comparisons',
+        permanent: false,
+      },
       // Cookbook: child-workflows and distributed-abort-controller moved
       // from common-patterns (now "Reliability Patterns") to advanced
       {
@@ -160,17 +224,21 @@ const config: NextConfig = {
         permanent: true,
       },
       // setAttributes graduated from experimental_setAttributes; the API
-      // reference page moved with it. Cover both the versioned (v5) path and
-      // the unversioned path so links keep working once v5 becomes default.
+      // reference page moved with it.
       {
         source: '/v5/docs/api-reference/workflow/experimental-set-attributes',
         destination: '/v5/docs/api-reference/workflow/set-attributes',
         permanent: true,
       },
+      // setAttributes is v5-only, so the unversioned path has no page yet.
+      // Land on the section index directly (no redirect chain through the
+      // /docs/api-reference/workflow/set-attributes fallback below). Point
+      // this at /docs/api-reference/workflow/set-attributes once v5 becomes
+      // the default version.
       {
         source: '/docs/api-reference/workflow/experimental-set-attributes',
-        destination: '/docs/api-reference/workflow/set-attributes',
-        permanent: true,
+        destination: '/docs/api-reference/workflow',
+        permanent: false,
       },
       {
         source: '/python',
@@ -222,6 +290,97 @@ const config: NextConfig = {
         source: '/v5/docs/api-reference/workflow-api/world/:path*',
         destination: '/v5/docs/api-reference/workflow-runtime/world/:path*',
         permanent: true,
+      },
+      // --- Version-switcher fallbacks ---
+      // The version switcher swaps the /v5 route prefix without checking
+      // that the page exists in the target version, so pages that exist in
+      // only one docs tree 404 on switch. Each rule below covers a page
+      // missing from one version and lands on the nearest equivalent
+      // (usually the section index). All are temporary redirects: they must
+      // be revisited when content is backported or when v5 becomes the
+      // default version (which swaps the trees served at /docs).
+      //
+      // Pages that exist only in v5 (v5 -> v4 switch):
+      {
+        source: '/docs/api-reference/workflow/set-attributes',
+        destination: '/docs/api-reference/workflow',
+        permanent: false,
+      },
+      {
+        source: '/docs/api-reference/workflow-errors/precondition-failed-error',
+        destination: '/docs/api-reference/workflow-errors',
+        permanent: false,
+      },
+      {
+        source: '/docs/api-reference/workflow-runtime/world/analytics',
+        destination: '/docs/api-reference/workflow-runtime/world',
+        permanent: false,
+      },
+      {
+        source:
+          '/docs/changelog/(attributes-mvp|eager-processing|step-message-ownership)',
+        destination: '/docs/changelog',
+        permanent: false,
+      },
+      {
+        source: '/docs/configuration',
+        destination: '/docs/deploying',
+        permanent: false,
+      },
+      {
+        source: '/docs/configuration/:path*',
+        destination: '/docs/deploying',
+        permanent: false,
+      },
+      {
+        source: '/docs/errors/abort-signal-timeout-in-workflow',
+        destination: '/docs/errors',
+        permanent: false,
+      },
+      {
+        source: '/docs/foundations/cancellation',
+        destination: '/docs/foundations',
+        permanent: false,
+      },
+      // v4 has no how-it-works index page; foundations is the closest
+      // conceptual landing for the v5 cancellation internals page.
+      {
+        source: '/docs/how-it-works/cancellation',
+        destination: '/docs/foundations',
+        permanent: false,
+      },
+      {
+        source: '/docs/getting-started/react-router',
+        destination: '/docs/getting-started',
+        permanent: false,
+      },
+      {
+        source: '/docs/getting-started/react-router/:path*',
+        destination: '/docs/getting-started',
+        permanent: false,
+      },
+      {
+        source:
+          '/docs/internal/(nitro-native-build|nitro-web-ui|serializable-abort-controller)',
+        destination: '/docs/internal',
+        permanent: false,
+      },
+      {
+        source: '/docs/observability/(attributes|tracing)',
+        destination: '/docs/observability',
+        permanent: false,
+      },
+      // Pages that exist only in v4 (v4 -> v5 switch):
+      {
+        source: '/v5/docs/api-reference/workflow-runtime/step-entrypoint',
+        destination: '/v5/docs/api-reference/workflow-runtime',
+        permanent: false,
+      },
+      // /v5/cookbook/advanced has no index page; fall back to the root.
+      {
+        source: '/v5/cookbook/advanced/distributed-abort-controller',
+        destination: '/v5/cookbook',
+        permanent: false,
       },
     ];
   },

@@ -11,6 +11,7 @@ import {
   isClassInstanceRef,
   isEncryptedData,
   isExpiredStub,
+  isSealedData,
   isStreamId,
   isStreamRef,
   observabilityRevivers,
@@ -536,6 +537,16 @@ describe('encrypted data handling', () => {
     return result;
   }
 
+  /** Create a fake sealed cross-run payload: "encp" prefix + random bytes */
+  function makeSealedPayload(): Uint8Array {
+    const prefix = new TextEncoder().encode('encp');
+    const fakeSealedBody = new Uint8Array(60).fill(9);
+    const result = new Uint8Array(prefix.length + fakeSealedBody.length);
+    result.set(prefix, 0);
+    result.set(fakeSealedBody, prefix.length);
+    return result;
+  }
+
   describe('isEncryptedData', () => {
     it('should detect encr-prefixed Uint8Array', () => {
       expect(isEncryptedData(makeEncryptedPayload())).toBe(true);
@@ -556,6 +567,32 @@ describe('encrypted data handling', () => {
 
     it('should return false for Uint8Array shorter than 4 bytes', () => {
       expect(isEncryptedData(new Uint8Array([1, 2, 3]))).toBe(false);
+    });
+
+    it('should detect encp-prefixed (sealed) Uint8Array as ciphertext', () => {
+      // Display layers treat both schemes identically — a sealed cross-run
+      // payload is just as opaque as a symmetrically encrypted one.
+      expect(isEncryptedData(makeSealedPayload())).toBe(true);
+    });
+  });
+
+  describe('isSealedData', () => {
+    it('should detect encp-prefixed Uint8Array', () => {
+      expect(isSealedData(makeSealedPayload())).toBe(true);
+    });
+
+    it('should not detect encr-prefixed Uint8Array', () => {
+      expect(isSealedData(makeEncryptedPayload())).toBe(false);
+    });
+
+    it('should not detect devl-prefixed Uint8Array', () => {
+      expect(isSealedData(makeDevlPayload('hello'))).toBe(false);
+    });
+
+    it('should return false for non-Uint8Array and short values', () => {
+      expect(isSealedData('hello')).toBe(false);
+      expect(isSealedData(null)).toBe(false);
+      expect(isSealedData(new Uint8Array([1, 2, 3]))).toBe(false);
     });
   });
 
@@ -672,6 +709,34 @@ describe('encrypted data handling', () => {
         key
       );
       expect(result).toEqual(original);
+    });
+
+    it('should pass sealed payloads through untouched even when a key is present', async () => {
+      // A sealed payload is encrypted to the run's X25519 public key, so the
+      // symmetric key this function receives cannot open it. Attempting an
+      // AES-GCM decrypt would fail the auth tag and surface a spurious
+      // decryption error, so it must fall through as ciphertext instead.
+      const sealed = makeSealedPayload();
+      const key = await getTestKey();
+
+      const result = await hydrateDataWithKey(
+        sealed,
+        observabilityRevivers,
+        key
+      );
+      expect(result).toBe(sealed);
+      expect(isEncryptedData(result)).toBe(true);
+    });
+
+    it('should not throw "Unsupported serialization format" for sealed payloads', async () => {
+      // Regression guard: before `encp` was recognized, o11y hydration hit the
+      // unknown-format branch and threw, breaking the CLI/dashboard entirely
+      // for any run that received a sealed cross-run write.
+      const sealed = makeSealedPayload();
+      await expect(
+        hydrateDataWithKey(sealed, observabilityRevivers, undefined)
+      ).resolves.toBe(sealed);
+      expect(() => hydrateData(sealed, {})).not.toThrow();
     });
 
     it('should handle non-Uint8Array values (legacy specVersion 1 data)', async () => {

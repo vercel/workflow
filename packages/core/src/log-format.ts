@@ -52,7 +52,7 @@ function renderStructuredFields(
   if (!metadata || Object.keys(metadata).length === 0) return null;
 
   // Drop fields that the message already encodes. We render framings and
-  // stacks into the message string itself in step-handler / runtime, so
+  // stacks into the message string itself in step executor / combined runtime, so
   // repeating them here would be pure noise.
   const redundant = new Set<string>();
   redundant.add('errorStack');
@@ -155,7 +155,7 @@ function renderStructuredFields(
  *
  *     Name: message
  *         at userStep (./workflows/foo.ts:12:11)
- *         at <unknown> (../../packages/core/src/runtime/step-handler.ts:535:32)
+ *         at <unknown> (../../packages/core/src/runtime/step-executor.ts:535:32)
  *         at <unknown> (.../node_modules/.pnpm/next@…/…/base-server.js:1454:9)
  *         at <unknown> (.../node_modules/.pnpm/@opentelemetry+api@…/…/api.js:5440)
  *         at … (15 more frames into Next.js / pnpm internals)

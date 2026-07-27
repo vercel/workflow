@@ -1,5 +1,33 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.32
+
+### Minor Changes
+
+- [#2915](https://github.com/vercel/workflow/pull/2915) [`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3) Thanks [@joeyhotz](https://github.com/joeyhotz)! - Add `runs.getMany()` for retrieving ordered workflow run snapshots in one storage operation.
+
+- [#2865](https://github.com/vercel/workflow/pull/2865) [`a5e6f11`](https://github.com/vercel/workflow/commit/a5e6f1167aa07f36b49777d3c020282d11a0abf2) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Add `experimental_minRetention` for keeping a Hook token unavailable after its run ends, and require supporting Worlds to advertise the `hookRetention` capability.
+
+### Patch Changes
+
+- [#2986](https://github.com/vercel/workflow/pull/2986) [`fe12b84`](https://github.com/vercel/workflow/commit/fe12b847291912cf9e47143ee10c73828dbdf1a1) Thanks [@shalabhc](https://github.com/shalabhc)! - Enforce a server-supplied per-run event limit (default 25K)
+
+- [#2951](https://github.com/vercel/workflow/pull/2951) [`6f032d7`](https://github.com/vercel/workflow/commit/6f032d73fee8103b6cfcd69713f3e87cf8e19140) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Decode stable-line CBOR structured errors when reading v4 workflow events while preserving current serialized error payloads.
+
+- [#2959](https://github.com/vercel/workflow/pull/2959) [`457e671`](https://github.com/vercel/workflow/commit/457e671ca9205ef439c1a155cee3b59486c9c067) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Log the underlying queue handler error before retrying a failed delivery.
+
+- [#3013](https://github.com/vercel/workflow/pull/3013) [`9078126`](https://github.com/vercel/workflow/commit/9078126c43c3ac68d3396294cfaab5ff4ef11d6b) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Retry transient connection timeouts so Eve can resume existing workflow runs after brief network failures.
+
+- [#3038](https://github.com/vercel/workflow/pull/3038) [`59c1369`](https://github.com/vercel/workflow/commit/59c13697c9919a4a96c012182e1adc0c58114ba5) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Retry stream close on retriable 5xx. Close is idempotent on the server (unlike chunk appends, which keep their no-5xx retry policy), and the server may return retriable 503s expecting the writer to close again.
+
+- [#2970](https://github.com/vercel/workflow/pull/2970) [`bb773e9`](https://github.com/vercel/workflow/commit/bb773e950786b15100a8058407cbfcba23a44ebc) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optional `capabilities?: WorldCapabilities` field to the World interface so implementations can declare backend feature support (`preconditionGuard`, `maxConcurrency`) instead of the runtime inferring it from environment variables; the Vercel World declares both.
+
+- [#2998](https://github.com/vercel/workflow/pull/2998) [`4ecbe7e`](https://github.com/vercel/workflow/commit/4ecbe7ecf54bebcea1e7459c1b0d4b94cbe27d4a) Thanks [@ruiconti](https://github.com/ruiconti)! - Append caller-provided user-agent tokens to the world-vercel user-agent instead of discarding them.
+
+- Updated dependencies [[`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3), [`fe12b84`](https://github.com/vercel/workflow/commit/fe12b847291912cf9e47143ee10c73828dbdf1a1), [`a5e6f11`](https://github.com/vercel/workflow/commit/a5e6f1167aa07f36b49777d3c020282d11a0abf2), [`eb8fdb9`](https://github.com/vercel/workflow/commit/eb8fdb979748f54a94289530ee7ac155feddddcc), [`bb773e9`](https://github.com/vercel/workflow/commit/bb773e950786b15100a8058407cbfcba23a44ebc)]:
+  - @workflow/world@5.0.0-beta.22
+  - @workflow/errors@5.0.0-beta.12
+
 ## 5.0.0-beta.31
 
 ### Minor Changes

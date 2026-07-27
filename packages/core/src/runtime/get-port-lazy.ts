@@ -12,12 +12,12 @@ import { pathToFileURL } from 'node:url';
 
 let _getPort: (() => Promise<number | undefined>) | undefined;
 
-// Per-process cache of the resolved port. The workflow dev server listens on a
+// Per-process cache of the resolved port. The workflow server listens on a
 // stable port for the lifetime of the process, but `getPort()` rediscovers it
 // on every call by querying the OS for the process's listening sockets — on
 // macOS that shells out to `lsof` (~60ms), which the runtime pays on EVERY
-// workflow replay (the non-Vercel branch of `runWorkflow`). Since the port does
-// not change within a process, resolve it once and reuse it. `_inFlight`
+// workflow replay or step invocation. Since the port does not change within a
+// process, resolve it once and reuse it. `_inFlight`
 // dedupes concurrent first calls so discovery never runs more than once.
 //
 // The first concrete port is pinned for the lifetime of the process — there is

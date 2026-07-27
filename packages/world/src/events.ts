@@ -698,6 +698,16 @@ export interface CreateEventParams {
    * when a newer out-of-band event was recorded after this snapshot, enabling
    * an optimistic-concurrency guard. Omitted by callers without a loaded event
    * log.
+   *
+   * Backend contract (for World implementers who want to support the guard):
+   * maintain a per-run marker holding the ULID time of the most recent
+   * *externally-originated* event — a `hook_received` or `step_completed`
+   * created **without** a `stateUpdatedAt` (replay-origin events carry one and
+   * must not advance the marker). On a create that carries `stateUpdatedAt`,
+   * reject with 412 when `stateUpdatedAt < marker` (strictly older); an equal
+   * timestamp must pass (anti-livelock, so an up-to-date client is never
+   * rejected). A backend that ignores this field simply disables the guard —
+   * the client falls open and behaves as before.
    */
   stateUpdatedAt?: number;
   /**
@@ -795,6 +805,8 @@ export interface EventResult {
    * the safe default (treated as "not the lazy creator").
    */
   stepCreated?: boolean;
+  /** Server-owned max event count for the run (run-lifecycle responses); the runtime enforces it. */
+  maxEvents?: number;
 }
 
 export interface GetEventParams {

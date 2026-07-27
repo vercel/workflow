@@ -1298,7 +1298,7 @@ describe('e2e', () => {
             expect(failedStep.status).toBe('failed');
             // The CLI hydrates `step.error` from the serialization pipeline.
             // Errors thrown from steps are wrapped in `FatalError` by the
-            // step handler, which serializes via the Instance reducer
+            // step executor, which serializes via the Instance reducer
             // (`{ classId, data }`); the CLI surfaces unregistered class
             // instances as placeholders with the original `data` payload.
             const errorData = failedStep.error.data ?? failedStep.error;
@@ -2577,7 +2577,7 @@ describe('e2e', () => {
 
   // This test requires direct HTTP access and works when running locally.
   // For production use on Vercel with Deployment Protection enabled, use the
-  // queue-based `healthCheck(world, endpoint, options)` function instead, which
+  // queue-based `healthCheck(world, options)` function instead, which
   // bypasses protection by sending messages through the Queue infrastructure.
   test.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow endpoint responds to __health query parameter',
@@ -2587,7 +2587,7 @@ describe('e2e', () => {
       // This approach requires direct HTTP access and works when running locally (for port detection)
       //
       // For production use on Vercel with Deployment Protection enabled, use the
-      // queue-based `healthCheck(world, endpoint, options)` function instead, which
+      // queue-based `healthCheck(world, options)` function instead, which
       // bypasses protection by sending messages through the Queue infrastructure.
 
       // Test the flow endpoint health check (V2: combined handler for both workflow + step)
@@ -2624,7 +2624,7 @@ describe('e2e', () => {
       const world = await getWorld();
 
       // Test workflow endpoint health check (V2: combined handler)
-      const workflowResult = await healthCheck(world, 'workflow', {
+      const workflowResult = await healthCheck(world, {
         timeout: 30000,
       });
       expect(workflowResult.healthy).toBe(true);
@@ -2643,10 +2643,7 @@ describe('e2e', () => {
       // queue-based health check under the hood. The CLI provides a convenient
       // way to check endpoint health from the command line.
 
-      // V2: Only check the workflow endpoint since the combined handler
-      // replaces the separate step route.
       const result = await cliHealthJson({
-        endpoint: 'workflow',
         timeout: 30000,
       });
       expect(result.json.allHealthy).toBe(true);
@@ -3259,6 +3256,61 @@ describe('e2e', () => {
     });
   });
 
+  // Regression test for the o2flow v5 upgrade incident (5.0.0-beta.26, fixed
+  // by #2752): a plain API route — no workflow directives anywhere in its
+  // module graph — importing a `defineHook()` hook from a shared module and
+  // calling `.resume()` on it. On broken versions the framework bundler
+  // tree-shook the world registration out of the route bundle and the resume
+  // failed with Turbopack's "Cannot find module as expression is too dynamic"
+  // stub before reaching any world API. Only deployed apps reproduce the
+  // broken case (isolated route bundles); local dev servers mask it because
+  // evaluating next.config registers the world process-wide — see
+  // route-bundle-isolation.test.ts for the locally-reproducible variant.
+  test.skipIf(!isNextJsApp)(
+    'plainModuleDoneHook resumed via plain API route (o2flow shape)',
+    { timeout: 90_000 },
+    async () => {
+      const token = `plain-module-hook-${Math.random().toString(36).slice(2)}`;
+
+      const run = await start(
+        await getWorkflowMetadata(
+          deploymentUrl,
+          'workflows/102_plain_module_hook.ts',
+          'waitForPlainModuleHook'
+        ),
+        [token]
+      );
+
+      await waitForHook(token, { runId: run.runId });
+
+      const res = await fetch(
+        new URL('/api/resume-plain-hook', deploymentUrl),
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(await getTrustedSourcesHeaders()),
+          },
+          body: JSON.stringify({
+            token,
+            ok: true,
+            note: 'resumed-from-plain-route',
+          }),
+        }
+      );
+      const body = await res.text();
+      expect(res.status, `resume route responded ${res.status}: ${body}`).toBe(
+        200
+      );
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual({
+        resumedWith: { ok: true, note: 'resumed-from-plain-route' },
+        plainModuleHookTestData: 'workflow_completed',
+      });
+    }
+  );
+
   test(
     'hookWithSleepWorkflow - hook payloads delivered correctly with concurrent sleep',
     { timeout: 90_000 },
@@ -3651,7 +3703,7 @@ describe('e2e', () => {
         const returnValue = await run.returnValue;
 
         // The step calls throwIfAborted() on an already-aborted signal.
-        // The DOMException is wrapped in FatalError by the step handler.
+        // The DOMException is wrapped in FatalError by the step executor.
         expect(returnValue.threw).toBe(true);
         expect(returnValue.isFatal).toBe(true);
       }
@@ -3798,7 +3850,7 @@ describe('e2e', () => {
         const returnValue = await run.returnValue;
 
         // The polling step's throwIfAborted() throws a DOMException once the
-        // abort fires mid-flight. The step handler wraps that as FatalError
+        // abort fires mid-flight. The step executor wraps that as FatalError
         // (no retries). A `result: 'completed'` would mean the abort never
         // reached the polling step.
         expect(returnValue.threw).toBe(true);

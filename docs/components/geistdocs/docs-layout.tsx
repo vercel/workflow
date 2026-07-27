@@ -2,6 +2,7 @@ import { GeistdocsDocsLayout as PackageDocsLayout } from '@vercel/geistdocs/layo
 import { GeistdocsVersionSelect } from '@vercel/geistdocs/versions';
 import type { ComponentProps, CSSProperties, ReactNode } from 'react';
 import { config } from '@/lib/geistdocs/config';
+import { getVersionSwitchPaths } from '@/lib/geistdocs/version-switch-paths';
 
 type DocsTree = ComponentProps<typeof PackageDocsLayout>['tree'];
 type DocsTreeNode = DocsTree['children'][number];
@@ -53,20 +54,56 @@ const addSidebarBadges = (nodes: DocsTreeNode[]): DocsTreeNode[] =>
     return node;
   });
 
+// A folder with no index page can't be clicked, only expanded/collapsed —
+// fall back to its first descendant page so every sidebar category navigates.
+type PageNode = Extract<DocsTreeNode, { type: 'page' }>;
+
+const findFirstPage = (nodes: DocsTreeNode[]): PageNode | undefined => {
+  for (const node of nodes) {
+    if (node.type === 'page') {
+      return node;
+    }
+    if (node.type === 'folder') {
+      const found = node.index ?? findFirstPage(node.children);
+      if (found) {
+        return found;
+      }
+    }
+  }
+  return undefined;
+};
+
+const withFallbackFolderIndex = (nodes: DocsTreeNode[]): DocsTreeNode[] =>
+  nodes.map((node) => {
+    if (node.type !== 'folder') {
+      return node;
+    }
+
+    const children = withFallbackFolderIndex(node.children);
+
+    return {
+      ...node,
+      children,
+      index: node.index ?? findFirstPage(children),
+    };
+  });
+
 const addSidebarBadgesToTree = (tree: DocsTree): DocsTree => ({
   ...tree,
-  children: addSidebarBadges(tree.children),
+  children: addSidebarBadges(withFallbackFolderIndex(tree.children)),
 });
 
 interface DocsLayoutProps {
   children: ReactNode;
   currentVersion?: string;
+  lang: string;
   tree: ComponentProps<typeof PackageDocsLayout>['tree'];
 }
 
 export const DocsLayout = ({
   tree,
   currentVersion = config.versions?.current,
+  lang,
   children,
 }: DocsLayoutProps) => (
   <PackageDocsLayout
@@ -81,6 +118,7 @@ export const DocsLayout = ({
       config.versions ? (
         <GeistdocsVersionSelect
           current={currentVersion}
+          paths={getVersionSwitchPaths(lang)}
           versions={config.versions}
         />
       ) : null

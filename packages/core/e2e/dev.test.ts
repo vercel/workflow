@@ -6,7 +6,7 @@ import { start } from '../src/runtime';
 import { getWorkbenchAppPath, getWorkflowMetadata, setupWorld } from './utils';
 
 export interface DevTestConfig {
-  generatedStepPath: string;
+  generatedStepRegistrationPath: string;
   generatedWorkflowPath: string;
   apiFilePath: string;
   apiFileImportPath: string;
@@ -54,7 +54,10 @@ export function createDevTests(config?: DevTestConfig) {
     const CLEANUP_HOOK_TIMEOUT_MS = PREWARM_FETCH_TIMEOUT_MS * 4;
     const appPath = getWorkbenchAppPath();
     const deploymentUrl = process.env.DEPLOYMENT_URL;
-    const generatedStep = path.join(appPath, finalConfig.generatedStepPath);
+    const generatedStepRegistration = path.join(
+      appPath,
+      finalConfig.generatedStepRegistrationPath
+    );
     const generatedWorkflow = path.join(
       appPath,
       finalConfig.generatedWorkflowPath
@@ -84,6 +87,11 @@ export function createDevTests(config?: DevTestConfig) {
         : 70_000;
     const multiPhaseHmrTestTimeoutMs =
       hmrTestTimeoutMs + hmrRediscoveryTimeoutMs;
+    const flowRouteHmrRediscoveryTimeoutMs = finalConfig.canary
+      ? process.env.APP_NAME === 'nextjs-webpack'
+        ? 300_000
+        : 240_000
+      : hmrRediscoveryTimeoutMs;
     const flowRouteHmrFuzzTimeoutMs = finalConfig.canary ? 480_000 : 240_000;
     const readManifestStepFunctionNames = async (): Promise<string[]> => {
       const manifestJson = await fs.readFile(workflowManifestPath, 'utf8');
@@ -104,7 +112,7 @@ export function createDevTests(config?: DevTestConfig) {
       );
     };
     const readGeneratedArtifactSnapshot = async () => ({
-      stepMtimeMs: (await fs.stat(generatedStep)).mtimeMs,
+      stepMtimeMs: (await fs.stat(generatedStepRegistration)).mtimeMs,
       workflowMtimeMs: (await fs.stat(generatedWorkflow)).mtimeMs,
       manifestMtimeMs: usesNextFlowRoute
         ? (await fs.stat(workflowManifestPath)).mtimeMs
@@ -607,8 +615,10 @@ export async function myNewStep() {
           description: 'generated step outputs to include myNewStep',
           timeoutMs: usesNextFlowRoute ? 50_000 : 25_000,
           check: async () => {
-            const stepRouteContent = await readFileIfExists(generatedStep);
-            if (stepRouteContent?.includes('myNewStep')) {
+            const stepRegistrationContent = await readFileIfExists(
+              generatedStepRegistration
+            );
+            if (stepRegistrationContent?.includes('myNewStep')) {
               return;
             }
 
@@ -658,7 +668,9 @@ async function hmrStep() {
         await pollUntil({
           description: 'generated step output to include the HMR fixture',
           check: async () => {
-            expect(await fs.readFile(generatedStep, 'utf8')).toContain(before);
+            expect(
+              await fs.readFile(generatedStepRegistration, 'utf8')
+            ).toContain(before);
           },
         });
 
@@ -678,7 +690,9 @@ async function hmrStep() {
         await pollUntil({
           description: 'generated step output to include the HMR update',
           check: async () => {
-            expect(await fs.readFile(generatedStep, 'utf8')).toContain(after);
+            expect(
+              await fs.readFile(generatedStepRegistration, 'utf8')
+            ).toContain(after);
           },
         });
 
@@ -983,7 +997,7 @@ ${apiFileContent}`
 
         await pollUntil({
           description: 'HMR fuzz fixture to appear in the Next manifest',
-          timeoutMs: hmrRediscoveryTimeoutMs,
+          timeoutMs: flowRouteHmrRediscoveryTimeoutMs,
           check: async () => {
             await prewarm();
             expect(await readManifestStepFunctionNames()).toContain(
@@ -1252,7 +1266,7 @@ export async function hmrFuzzAddedStep() {
             assert: async () => {
               await pollUntil({
                 description: 'added step definition to appear in manifest',
-                timeoutMs: hmrRediscoveryTimeoutMs,
+                timeoutMs: flowRouteHmrRediscoveryTimeoutMs,
                 intervalMs: 500,
                 check: async () => {
                   await prewarm();
@@ -1293,7 +1307,7 @@ export async function hmrFuzzAddedWorkflow() {
             assert: async () => {
               await pollUntil({
                 description: 'added workflow definition to appear in manifest',
-                timeoutMs: hmrRediscoveryTimeoutMs,
+                timeoutMs: flowRouteHmrRediscoveryTimeoutMs,
                 intervalMs: 500,
                 check: async () => {
                   await prewarm();
@@ -1326,7 +1340,7 @@ ${apiFileContent}`
             assert: async () => {
               await pollUntil({
                 description: 'added workflow file to appear in manifest',
-                timeoutMs: hmrRediscoveryTimeoutMs,
+                timeoutMs: flowRouteHmrRediscoveryTimeoutMs,
                 intervalMs: 500,
                 check: async () => {
                   await prewarm();
@@ -1352,7 +1366,7 @@ ${apiFileContent}`
             assert: async () => {
               await pollUntil({
                 description: 'removed workflow file to disappear from manifest',
-                timeoutMs: hmrRediscoveryTimeoutMs,
+                timeoutMs: flowRouteHmrRediscoveryTimeoutMs,
                 intervalMs: 500,
                 check: async () => {
                   await prewarm();

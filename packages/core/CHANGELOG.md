@@ -1,5 +1,35 @@
 # @workflow/core
 
+## 5.0.0-beta.36
+
+### Minor Changes
+
+- [#2865](https://github.com/vercel/workflow/pull/2865) [`a5e6f11`](https://github.com/vercel/workflow/commit/a5e6f1167aa07f36b49777d3c020282d11a0abf2) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Add `experimental_minRetention` for keeping a Hook token unavailable after its run ends, and require supporting Worlds to advertise the `hookRetention` capability.
+
+- [#2946](https://github.com/vercel/workflow/pull/2946) [`eb8fdb9`](https://github.com/vercel/workflow/commit/eb8fdb979748f54a94289530ee7ac155feddddcc) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - The `WORKFLOW_PRECONDITION_GUARD` event-creation guard is now on by default; opt out with `WORKFLOW_PRECONDITION_GUARD=0`.
+
+### Patch Changes
+
+- [#2993](https://github.com/vercel/workflow/pull/2993) [`6d1d700`](https://github.com/vercel/workflow/commit/6d1d7006cf442c715c464ec2b8c80a21d1c90b01) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Avoid resolving run data before background step execution.
+
+- [#2996](https://github.com/vercel/workflow/pull/2996) [`d8071bb`](https://github.com/vercel/workflow/commit/d8071bb49a42b65cc412691050fcf35489f97b57) Thanks [@joeyhotz](https://github.com/joeyhotz)! - Cache self-hosted step port discovery per process.
+
+- [#2986](https://github.com/vercel/workflow/pull/2986) [`fe12b84`](https://github.com/vercel/workflow/commit/fe12b847291912cf9e47143ee10c73828dbdf1a1) Thanks [@shalabhc](https://github.com/shalabhc)! - Enforce a server-supplied per-run event limit (default 25K)
+
+- [#2970](https://github.com/vercel/workflow/pull/2970) [`bb773e9`](https://github.com/vercel/workflow/commit/bb773e950786b15100a8058407cbfcba23a44ebc) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Keep the inline event-log delta fast path active with open hooks when `WORKFLOW_PRECONDITION_GUARD=1` and the World declares `capabilities.preconditionGuard`. The lazy inline `step_started` claim now carries the guard snapshot so a stale replay's claim is fenced (412 → fresh replay), and guard-enforced batches with an open hook take the await-then-run path so a fenced claim never executes the step body.
+
+- [#2980](https://github.com/vercel/workflow/pull/2980) [`268fede`](https://github.com/vercel/workflow/commit/268fede627b3a83dbabcff9d35fd946132bf9a06) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Prepare encrypted replay payloads concurrently and cache the decrypted, decompressed representation for reuse across inline replay iterations.
+
+- [#3035](https://github.com/vercel/workflow/pull/3035) [`9177ba8`](https://github.com/vercel/workflow/commit/9177ba83d3168866d13ff34ca3d651312d1d87d2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Enforce `maxRetries` for inline and backgrounded steps that time out
+
+- [#2995](https://github.com/vercel/workflow/pull/2995) [`6353c8c`](https://github.com/vercel/workflow/commit/6353c8c6cf5afe6cbd8e4a08e93e339b3b6f81f7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix stream writes never batching: `flushablePipe` awaited each `writer.write()` and the WritableStream sink serialized chunks one at a time, so the server writable's buffer never held more than one chunk and its `writeMulti` batching path never engaged — every chunk became its own server round trip. The server writable now exposes a durable batch write that `flushablePipe` uses to coalesce chunks arriving while a previous write is in flight into a single `writeMulti`, while preserving the existing durability guarantees. Coalesced batches are split at chunk-count and byte wire limits (`WORKFLOW_STREAM_MAX_CHUNKS_PER_BATCH`, `WORKFLOW_STREAM_MAX_BYTES_PER_BATCH`), independent of the read-ahead backpressure bound (`WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS`).
+
+- Updated dependencies [[`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3), [`fe12b84`](https://github.com/vercel/workflow/commit/fe12b847291912cf9e47143ee10c73828dbdf1a1), [`6f032d7`](https://github.com/vercel/workflow/commit/6f032d73fee8103b6cfcd69713f3e87cf8e19140), [`a5e6f11`](https://github.com/vercel/workflow/commit/a5e6f1167aa07f36b49777d3c020282d11a0abf2), [`850777a`](https://github.com/vercel/workflow/commit/850777a03bc1ad85fa7333d5e15a55a353ed6d23), [`457e671`](https://github.com/vercel/workflow/commit/457e671ca9205ef439c1a155cee3b59486c9c067), [`eb8fdb9`](https://github.com/vercel/workflow/commit/eb8fdb979748f54a94289530ee7ac155feddddcc), [`9078126`](https://github.com/vercel/workflow/commit/9078126c43c3ac68d3396294cfaab5ff4ef11d6b), [`59c1369`](https://github.com/vercel/workflow/commit/59c13697c9919a4a96c012182e1adc0c58114ba5), [`bb773e9`](https://github.com/vercel/workflow/commit/bb773e950786b15100a8058407cbfcba23a44ebc), [`4ecbe7e`](https://github.com/vercel/workflow/commit/4ecbe7ecf54bebcea1e7459c1b0d4b94cbe27d4a)]:
+  - @workflow/world@5.0.0-beta.22
+  - @workflow/world-local@5.0.0-beta.30
+  - @workflow/world-vercel@5.0.0-beta.32
+  - @workflow/errors@5.0.0-beta.12
+
 ## 5.0.0-beta.35
 
 ### Minor Changes

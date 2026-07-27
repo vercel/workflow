@@ -5,6 +5,7 @@ import {
   mkdir,
   readdir,
   realpath,
+  rm,
   stat,
   writeFile,
 } from 'node:fs/promises';
@@ -15,6 +16,7 @@ import type {
 } from '@workflow/builders';
 import chokidar from 'chokidar';
 import type { NextConfig as ProjectNextConfig } from 'next';
+import { createWatchIgnorePredicate } from './watch-ignore.js';
 import {
   classifyRebuild,
   createSourceSnapshot,
@@ -59,6 +61,13 @@ export async function getNextBuilderEager(
 
       // Ensure output directories exist
       await mkdir(workflowGeneratedDir, { recursive: true });
+      if (!this.config.watch) {
+        // Production build caches may still contain the retired step route.
+        await rm(join(workflowGeneratedDir, 'step'), {
+          recursive: true,
+          force: true,
+        });
+      }
       await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
 
       const inputFiles = await this.getInputFiles();
@@ -156,39 +165,30 @@ export async function getNextBuilderEager(
           '.cjs',
           '.mjs',
         ]);
-        const ignoredPathFragments = [
-          '/.git/',
-          '/node_modules/',
-          '/.next/',
-          '/.turbo/',
-          '/.vercel/',
-          '/dist/',
-          '/build/',
-          '/out/',
-          '/.cache/',
-          '/.yarn/',
-          '/.pnpm-store/',
-          '/.parcel-cache/',
-          '/.well-known/workflow/',
-        ];
         const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
         const normalizedDistDir = normalizePath(this.config.distDir);
-        ignoredPathFragments.push(normalizedGeneratedDir);
+
+        // Prune the dev watch set to keep chokidar from registering an
+        // fs.watch per directory across the whole project tree (chokidar 4
+        // dropped fsevents, so on macOS that exhausts the fd limit -> EMFILE
+        // on large monorepos). This honors `.gitignore` and the
+        // WORKFLOW_DEV_WATCH_IGNORED_PATHS env var in addition to the
+        // built-in fragments. The generated workflow dir is passed as an
+        // extra fragment so it is pruned regardless of `.gitignore`.
+        const isIgnoredWatchPath = createWatchIgnorePredicate({
+          workingDir: this.config.workingDir,
+          projectRoot: this.transformProjectRoot,
+          extraFragments: [normalizedGeneratedDir],
+        });
 
         const hasIgnoredPathFragment = (normalizedPath: string) => {
           if (
-            normalizedPath.startsWith(normalizedGeneratedDir) ||
             normalizedPath === normalizedDistDir ||
             normalizedPath.startsWith(`${normalizedDistDir}/`)
           ) {
             return true;
           }
-          for (const fragment of ignoredPathFragments) {
-            if (normalizedPath.includes(fragment)) {
-              return true;
-            }
-          }
-          return false;
+          return isIgnoredWatchPath(normalizedPath);
         };
 
         let rebuildQueue = Promise.resolve();

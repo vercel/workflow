@@ -705,7 +705,7 @@ describe('step-initiated abort: durable hook resume is committed before completi
     // The durable hook resume is queued for pre-completion draining.
     expect(preCompletionOps.length).toBe(1);
 
-    // Draining preCompletionOps (what the step handler awaits before
+    // Draining preCompletionOps (what the step executor awaits before
     // step_completed) actually fires the resume with the correct payload.
     await Promise.all(preCompletionOps);
     expect(mockResumeHook).toHaveBeenCalledTimes(1);

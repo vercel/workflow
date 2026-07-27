@@ -298,7 +298,14 @@ export const cliInspectJson = async (args: string) => {
       ...inspectArgs,
       ...cliArgs,
     ],
-    cliAppPath
+    cliAppPath,
+    undefined,
+    {
+      // e2e assertions read entities immediately after writing them; the
+      // analytics store ingests asynchronously and can miss the freshest
+      // rows. Force the storage-backed list paths for determinism.
+      WORKFLOW_DISABLE_ANALYTICS_READS: '1',
+    }
   );
   if (!result.stdout.trim()) {
     throw new Error(
@@ -789,18 +796,12 @@ export function writeDiagnosticsSidecar() {
   fs.writeFileSync(filePath, JSON.stringify(diagnostics, null, 2));
 }
 
-export const cliHealthJson = async (options?: {
-  endpoint?: 'workflow' | 'step' | 'both';
-  timeout?: number;
-}) => {
+export const cliHealthJson = async (options?: { timeout?: number }) => {
   const cliAppPath = getWorkbenchAppPath();
   const cliArgs = splitArgs(getCliArgs());
 
   const args = ['./node_modules/workflow/bin/run.js', 'health', '--json'];
 
-  if (options?.endpoint) {
-    args.push(`--endpoint=${options.endpoint}`);
-  }
   if (options?.timeout) {
     args.push(`--timeout=${options.timeout}`);
   }

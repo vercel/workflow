@@ -150,9 +150,8 @@ export async function resumeHook<T = any>(
           encryptionKey = undefined;
         }
 
-        // Compress the payload only when the target run is marked as
-        // possibly containing compressed payloads (specVersion >= 5) AND
-        // its deployment can decode the 'gzip' format.
+        // Compress only when the target run and its deployment support the
+        // compression formats introduced with spec version 5.
         const compression =
           (workflowRun.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION &&
           capabilities.supportedFormats.has(SerializationFormat.GZIP);

@@ -51,7 +51,7 @@ import {
 } from './step-latency.js';
 import { safeWaitUntil } from './wait-until.js';
 
-const DEFAULT_STEP_MAX_RETRIES = 3;
+export const DEFAULT_STEP_MAX_RETRIES = 3;
 
 /**
  * Extract the inline delta from a step-terminal `events.create` result,
@@ -88,8 +88,8 @@ export interface StepExecutorParams {
   encryptionKey?: CryptoKey;
   /**
    * The workflow run's specVersion, used to gate payload compression.
-   * Step outputs/errors are only gzip-compressed when the run is marked
-   * as possibly containing compressed payloads (specVersion >= 5).
+   * Step outputs/errors are only compressed when the run is marked as
+   * compression-capable (specVersion >= 5).
    */
   runSpecVersion?: number;
   /**
@@ -108,9 +108,10 @@ export interface StepExecutorParams {
    * Inline step ownership: the queue message ID of the invocation this
    * executeStep call runs in (from the queue handler's meta). When set, the
    * `step_started` this call sends is stamped with it — on the lazy paths
-   * (where `lazyStepInput` is present) and on the owned-recovery bare start
-   * (where it is not; the re-stamp keeps a recovered step readable as owned
-   * by this message, since ownership derives from the LATEST start). Wake
+   * (where `lazyStepInput` is present) and on the owned-recovery
+   * payload-less start (where it is not; the re-stamp keeps a recovered
+   * step readable as owned by this message, since ownership derives from
+   * the LATEST start — so a recovery start is never bare). Wake
    * replays that observe an actively-owned step suppress the immediate
    * requeue and enqueue a delayed backstop instead. Omitted on the
    * background-step path, whose bare start intentionally clears ownership
@@ -127,6 +128,33 @@ export interface StepExecutorParams {
    * handler is the sole inline writer for the run on this iteration.
    */
   inlineDeltaSinceCursor?: string;
+  /**
+   * Precondition-guard snapshot (epoch ms of the latest event the caller's
+   * replay loaded) to attach to this step's `step_started` claim. On the lazy
+   * inline path the claim is the step's FIRST durable write (its
+   * `step_created` is deferred), so without this the claim would bypass the
+   * optimistic-concurrency guard entirely: a replay working from a stale view
+   * could claim — and then commit — a step scheduled without observing an
+   * out-of-band event. A guard-enforcing World rejects a stale claim with
+   * `PreconditionFailedError` (412); executeStep does NOT translate that
+   * rejection (re-claiming in place would still commit the stale schedule),
+   * so it propagates for the caller to abandon the batch and force a fresh
+   * replay. Undefined when the guard is disabled or the caller has no
+   * snapshot; Worlds that don't enforce the guard ignore it.
+   */
+  stateUpdatedAt?: number;
+  /**
+   * Suppress optimistic inline start for this step regardless of
+   * `WORKFLOW_OPTIMISTIC_INLINE_START` / `forceOptimisticStart`: take the
+   * await-then-run path so the body only runs after the `step_started` claim
+   * succeeds. Set by the runtime for guard-enforced batches that are
+   * stale-sensitive (an open hook means an out-of-band event can make the
+   * scheduling view stale): the guard's 412 fence can reject a stale claim's
+   * durable writes, but it cannot un-run a body that optimistic start began
+   * before the claim settled — awaiting the claim extends the fence to user
+   * code. Wins over `forceOptimisticStart` and the env flag.
+   */
+  suppressOptimisticStart?: boolean;
   /**
    * Force optimistic inline start regardless of
    * `WORKFLOW_OPTIMISTIC_INLINE_START`. Set by turbo mode on the first delivery
@@ -153,6 +181,17 @@ export interface StepExecutorParams {
    * runtime/step-latency.ts.
    */
   latencyTracking?: StepLatencyTracking;
+  /**
+   * Authoritative attempt number for this execution, used to bound retries
+   * against `maxRetries` BEFORE the body runs. In order to also catch
+   * step timeouts (which we can't have catch handlers for), we determine
+   * the attempt count based as follows:
+   * - Inline (combined handler): the number of `step_started` events already
+   *   in the event log for this step, plus one for the attempt about to run.
+   * - Background (queue-dispatched): the queue delivery count
+   *   (`metadata.attempt`), which increments on every redelivery.
+   */
+  authoritativeAttempt?: number;
 }
 
 /**
@@ -197,7 +236,7 @@ export type StepExecutionResult =
  * runs the step function, creates step_completed/step_failed/step_retrying events.
  *
  * Does NOT queue workflow continuation messages — the caller decides what to do next.
- * Used by both the V1 step handler and the V2 combined handler.
+ * Used by the combined workflow handler for step execution.
  */
 export async function executeStep(
   params: StepExecutorParams
@@ -211,8 +250,7 @@ export async function executeStep(
     stepName,
   } = params;
   const isVercel = process.env.VERCEL_URL !== undefined;
-  // Gate payload compression on the run's specVersion: only runs marked
-  // as possibly containing compressed payloads (spec >= 5) get gzip data.
+  // Gate payload compression on the run's specVersion.
   const compression =
     (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
 
@@ -234,7 +272,7 @@ export async function executeStep(
     const stepFn = getStepFunction(stepName);
     if (!stepFn || typeof stepFn !== 'function') {
       // Step function not registered — fail the step immediately (not the run).
-      // This matches the V1 step handler pattern: create step_failed event so
+      // Create a step_failed event so
       // the workflow can handle it gracefully via try/catch in user code.
       const errorMessage = `Step "${stepName}" is not registered in the current deployment. This usually indicates a build or bundling issue that caused the step to not be included in the deployment.`;
       runtimeLogger.error('Step function not registered, failing step', {
@@ -324,6 +362,70 @@ export async function executeStep(
       ...Attribute.StepMaxRetries(maxRetries),
     });
 
+    // maxRetries enforced before starting another attempt. Timeouts can kill
+    // a step execution without any way to catch the error, so the post-body/error
+    // guards below might miss it. Hence, we use `authoritativeAttempt` count
+    // as an additional guard based on step_started count or queue delivery count
+    // on backgrounded steps.
+    // Thrown-error exhaustion still terminates one attempt earlier via the post-body
+    // guard (with the thrown error as cause), and this check does not affect that.
+    if (
+      params.authoritativeAttempt !== undefined &&
+      params.authoritativeAttempt > maxRetries + 1
+    ) {
+      const retryCount = maxRetries;
+      const errorMessage = `Step "${stepName}" exceeded max retries (${retryCount} ${pluralize('retry', 'retries', retryCount)})`;
+      stepLogger.error('Step exceeded max retries', {
+        workflowRunId,
+        stepName,
+        stepId,
+        attempt: params.authoritativeAttempt,
+        maxRetries,
+      });
+      try {
+        await world.events.create(workflowRunId, {
+          eventType: 'step_failed',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: stepId,
+          eventData: {
+            stepName,
+            error: await dehydrateStepError(
+              new FatalError(errorMessage),
+              workflowRunId,
+              await getEncryptionKey(),
+              [],
+              globalThis,
+              compression
+            ),
+          },
+        });
+      } catch (err) {
+        if (EntityConflictError.is(err)) {
+          // Step already reached a terminal state (a concurrent handler or an
+          // earlier delivery failed/completed it) — nothing to do.
+          runtimeLogger.info(
+            'Tried failing step for exceeded retries, but step has already finished.',
+            {
+              workflowRunId,
+              stepId,
+              stepName,
+              message: err instanceof Error ? err.message : String(err),
+            }
+          );
+          return { type: 'skipped' };
+        }
+        if (RunExpiredError.is(err)) {
+          return { type: 'gone' };
+        }
+        throw err;
+      }
+      span?.setAttributes({
+        ...Attribute.StepStatus('failed'),
+        ...Attribute.StepRetryExhausted(true),
+      });
+      return { type: 'failed' };
+    }
+
     // Maps a `step_started` rejection to a terminal StepExecutionResult,
     // shared by the await path (below) and the optimistic-start reconciliation.
     // Returns undefined when the error is not one we translate (caller rethrows).
@@ -390,6 +492,10 @@ export async function executeStep(
     // flag, so an explicit opt-out wins over turbo's force.
     const optimisticStart =
       params.lazyStepInput !== undefined &&
+      // Stale-sensitive guarded batches await the claim so the 412 fence
+      // covers the body, not just durable writes — see
+      // StepExecutorParams.suppressOptimisticStart.
+      params.suppressOptimisticStart !== true &&
       (isOptimisticInlineStartEnabled() ||
         (params.forceOptimisticStart === true &&
           !isOptimisticInlineStartExplicitlyDisabled()));
@@ -434,20 +540,30 @@ export async function executeStep(
           // RSFS measures the run_started-to-POST stretch, and the barrier
           // wait IS part of that stretch under turbo.
           stepStartPostSentAtMs = Date.now();
-          return world.events.create(workflowRunId, {
-            eventType: 'step_started',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: stepId,
-            eventData: {
-              stepName,
-              workflowName,
-              input: params.lazyStepInput,
-              // Inline-ownership stamp — see StepExecutorParams.ownerMessageId.
-              ...(params.ownerMessageId !== undefined
-                ? { ownerMessageId: params.ownerMessageId }
-                : {}),
+          return world.events.create(
+            workflowRunId,
+            {
+              eventType: 'step_started',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: stepId,
+              eventData: {
+                stepName,
+                workflowName,
+                input: params.lazyStepInput,
+                // Inline-ownership stamp — see StepExecutorParams.ownerMessageId.
+                ...(params.ownerMessageId !== undefined
+                  ? { ownerMessageId: params.ownerMessageId }
+                  : {}),
+              },
             },
-          });
+            // Guard the claim — see StepExecutorParams.stateUpdatedAt. A stale
+            // (412) rejection surfaces via reconcileOptimisticStart as a
+            // non-translatable error: the body result is discarded and the
+            // rejection propagates to the caller.
+            params.stateUpdatedAt !== undefined
+              ? { stateUpdatedAt: params.stateUpdatedAt }
+              : undefined
+          );
         }
       );
       optimisticStartSettled = startedPromise.then(
@@ -476,30 +592,41 @@ export async function executeStep(
       // step_started (step already created, no payload).
       try {
         // Inline-ownership stamp: present on the lazy paths AND on the
-        // owned-recovery bare start (a redelivery of the owning message
-        // re-executing its step must re-stamp — ownership derives from the
-        // latest start, so an unstamped recovery start would read as
-        // "unowned" to a later wake). The background-step path passes no
-        // ownerMessageId, so its bare start clears ownership as intended.
+        // owned-recovery payload-less start (a redelivery of the owning
+        // message re-executing its step must re-stamp — ownership derives
+        // from the latest start, so an unstamped recovery start would read
+        // as "unowned" to a later wake). Only the background-step path
+        // passes no ownerMessageId: its start is the bare one, clearing
+        // ownership as intended.
         const ownershipStamp =
           params.ownerMessageId !== undefined
             ? { ownerMessageId: params.ownerMessageId }
             : {};
         stepStartPostSentAtMs = Date.now();
-        const startResult = await world.events.create(workflowRunId, {
-          eventType: 'step_started',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: stepId,
-          eventData:
-            params.lazyStepInput !== undefined
-              ? {
-                  stepName,
-                  workflowName,
-                  input: params.lazyStepInput,
-                  ...ownershipStamp,
-                }
-              : { stepName, ...ownershipStamp },
-        });
+        const startResult = await world.events.create(
+          workflowRunId,
+          {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData:
+              params.lazyStepInput !== undefined
+                ? {
+                    stepName,
+                    workflowName,
+                    input: params.lazyStepInput,
+                    ...ownershipStamp,
+                  }
+                : { stepName, ...ownershipStamp },
+          },
+          // Guard the claim — see StepExecutorParams.stateUpdatedAt. A stale
+          // (412) rejection is intentionally NOT translated by
+          // startErrorToResult below, so it propagates to the caller for a
+          // fresh replay.
+          params.stateUpdatedAt !== undefined
+            ? { stateUpdatedAt: params.stateUpdatedAt }
+            : undefined
+        );
 
         if (!startResult.step) {
           throw new WorkflowRuntimeError(
@@ -529,7 +656,7 @@ export async function executeStep(
 
     // Check max retries AFTER step_started (attempt was just incremented).
     // Only enforce when the step has a previous error — this distinguishes
-    // actual retries (failed → retry) from concurrent starts (V2 inline
+    // actual retries (failed → retry) from concurrent inline starts
     // execution loop can cause multiple handlers to step_started the same
     // step simultaneously, inflating the attempt counter without any failure).
     if (step.attempt > maxRetries + 1 && step.error) {
@@ -763,7 +890,6 @@ export async function executeStep(
       // settles, so the `ops` flush below always loses the 500ms race and the
       // step reports `hasPendingOps` — forcing the inline loop to queue a
       // continuation and paying a full round-trip per signal-bearing step.
-      // The non-inline `step-handler` path already does this after user code.
       // Runs unconditionally (success or failure) so a throwing step doesn't
       // leak the reader.
       cancelAbortReaders(...args, thisVal, hydratedInput.closureVars);
@@ -803,10 +929,11 @@ export async function executeStep(
       });
 
       // Flush pending ops (stream writes, etc.) with a short inline wait.
-      // Now that WorkflowServerWritableStream flushes synchronously on
-      // each write (not via setTimeout), the flushablePipe's pendingOps
-      // accurately reflects whether data has reached the server. Most ops
-      // settle within ~200ms (100ms lock-release polling + HTTP flush).
+      // WorkflowServerWritableStream acks writes on buffer entry
+      // (group-commit batching); durability is enforced by its drain
+      // barrier, which the flushable state's completion awaits after
+      // lock release. Most ops settle within ~200ms (lock-release
+      // polling + one batched HTTP flush).
       // If ops don't settle in 500ms (e.g., WritableStream kept open
       // across steps), waitUntil handles the rest.
       if (ops.length > 0) {
@@ -1183,7 +1310,7 @@ export async function executeStep(
         opsCount: ops.length,
       });
     }
-    // hasPendingOps signals the V2 handler to break the loop
+    // hasPendingOps signals the combined handler to break the loop
     // and queue a continuation so waitUntil can flush them.
     return { type: 'completed', hasPendingOps: !opsSettled, inlineDelta };
   });

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { HookNotFoundError } from '@workflow/errors';
 import type {
+  Event,
   GetHookParams,
   Hook,
   HookCreatedEvent,
@@ -19,39 +20,41 @@ import {
   assertSafeEntityId,
   deleteJSON,
   jsonReplacer,
+  listJSONFiles,
   paginatedFileSystemQuery,
   readJSON,
   readJSONWithFallback,
   taggedPath,
   UnsafeEntityIdError,
   writeExclusive,
-  writeJSON,
 } from '../fs.js';
 import { filterHookData } from './filters.js';
 import {
+  hashToken,
   hookRecoveryMarkerPath,
+  hookTokenClaimPath,
   isHookDisposalCommitted,
-  withFileLock,
+  releaseHookTokenClaimIfOwnedBy,
 } from './helpers.js';
 import {
   deleteHookByRunMarkerFile,
   ensureHookIndexes,
   findNewestIndexedHookCreatedEvent,
-  type HookIndexLookup,
   listHookByRunMarkers,
   writeHookByRunMarker,
 } from './hook-index.js';
-import {
-  type CurrentHookTokenConstraint,
-  type HookTokenConstraint,
-  hasRemainingTokenRetention,
-  hookTokenConstraintPath,
-  readHookTokenConstraint,
-} from './hook-token-constraint.js';
 
-type IndexedHookCreatedEvent = NonNullable<
-  Awaited<ReturnType<typeof findNewestIndexedHookCreatedEvent>>
->;
+function getHookCreatedToken(event: Event): string | undefined {
+  if (event.eventType !== 'hook_created') return undefined;
+  const token = (event.eventData as { token?: unknown }).token;
+  return typeof token === 'string' ? token : undefined;
+}
+
+const HookTokenClaimSchema = z.object({
+  hookId: z.string().optional(),
+  runId: z.string(),
+  tokenRetentionUntil: z.coerce.date().optional(),
+});
 
 function hookFromCreatedEvent(event: HookCreatedEvent): Hook {
   const { token, metadata, isWebhook, isSystem } = event.eventData;
@@ -70,7 +73,18 @@ function hookFromCreatedEvent(event: HookCreatedEvent): Hook {
   };
 }
 
-async function isRunActive(
+function isMatchingHookCreatedEvent(
+  event: Event,
+  matches: (event: Event) => boolean
+): event is HookCreatedEvent {
+  return (
+    event.eventType === 'hook_created' &&
+    typeof event.correlationId === 'string' &&
+    matches(event)
+  );
+}
+
+async function isTerminalRunCache(
   basedir: string,
   runId: string,
   tag?: string
@@ -82,65 +96,77 @@ async function isRunActive(
     WorkflowRunSchema,
     tag
   );
-  return run !== null && !isTerminalWorkflowRunStatus(run.status);
+  return run ? isTerminalWorkflowRunStatus(run.status) : false;
 }
 
 /**
  * Find the available `hook_created` event for a token or hookId via the
  * durable hook indexes (instead of scanning the whole event log).
  *
- * The availability checks below subsume the old scan's in-log closure
+ * The liveness checks below subsume the old scan's in-log closure
  * replay: the dispose lock is written before `hook_disposed` is
  * appended, the run entity is terminal before any terminal run event
  * is appended, and neither is ever deleted — so any closure visible
  * in the log is also visible to these checks.
  */
-async function isHookCreatedEventAvailable(
+async function findAvailableHookCreatedEvent(
   basedir: string,
-  { event, tag }: IndexedHookCreatedEvent
-): Promise<boolean> {
-  // Disposal is committed before its event, so the lock closes the Hook even
-  // when a crash leaves the entity and event-log cleanup incomplete.
-  if (await isHookDisposalCommitted(basedir, event.correlationId, tag)) {
-    return false;
-  }
-  return (
-    hasRemainingTokenRetention(event.eventData) ||
-    (await isRunActive(basedir, event.runId, tag))
+  index: { kind: 'token'; token: string } | { kind: 'id'; hookId: string },
+  matches: (event: Event) => boolean,
+  tag?: string
+): Promise<HookCreatedEvent | null> {
+  const newest = await findNewestIndexedHookCreatedEvent(
+    basedir,
+    index,
+    (event) => isMatchingHookCreatedEvent(event, matches),
+    tag
   );
+  if (!newest || !isMatchingHookCreatedEvent(newest, matches)) {
+    return null;
+  }
+
+  if (await isTerminalRunCache(basedir, newest.runId, tag)) {
+    const retainedUntil = newest.eventData.tokenRetentionUntil;
+    if (!retainedUntil || retainedUntil.getTime() <= Date.now()) {
+      return null;
+    }
+  }
+
+  // A committed disposal (dispose lock on disk) closes the hook even when
+  // its `hook_disposed` event has not landed in the log yet — the disposer
+  // writes the lock, releases the token claim and hook entity, and only
+  // then appends the event. Rebuilding the caches from the log in that
+  // window would resurrect a claim for a hook that is being torn down.
+  if (await isHookDisposalCommitted(basedir, newest.correlationId, tag)) {
+    return null;
+  }
+
+  return newest;
 }
 
-async function findHookCreatedEvent(
-  basedir: string,
-  index: HookIndexLookup
-): Promise<IndexedHookCreatedEvent | null> {
-  const indexed = await findNewestIndexedHookCreatedEvent(basedir, index);
-  if (!indexed) return null;
-  if (!(await isHookCreatedEventAvailable(basedir, indexed))) return null;
-  return indexed;
-}
-
-function hookTokenConstraintFromEvent(
-  event: HookCreatedEvent,
-  tag: string | undefined
-): CurrentHookTokenConstraint {
-  return {
-    type: 'current',
-    token: event.eventData.token,
-    hookId: event.correlationId,
-    runId: event.runId,
-    tag: tag ?? null,
-    eventId: event.eventId,
-    tokenRetentionUntil: event.eventData.tokenRetentionUntil,
-  };
-}
-
-async function restoreHookEntityFromEvent(
+async function restoreHookCachesFromEvent(
   basedir: string,
   event: HookCreatedEvent,
-  tag: string | undefined
+  tag?: string
 ): Promise<Hook> {
   const hook = hookFromCreatedEvent(event);
+
+  const claimPath = path.join(
+    basedir,
+    'hooks',
+    'tokens',
+    `${hashToken(hook.token)}.json`
+  );
+  await writeExclusive(
+    claimPath,
+    JSON.stringify({
+      token: hook.token,
+      hookId: hook.hookId,
+      runId: hook.runId,
+      eventId: event.eventId,
+      tokenRetentionUntil: event.eventData.tokenRetentionUntil,
+    })
+  );
   // Marker before entity (see hook-index.ts crash-ordering invariant).
   await writeHookByRunMarker(basedir, hook.runId, hook.hookId, tag);
   await writeExclusive(
@@ -151,83 +177,33 @@ async function restoreHookEntityFromEvent(
   return hook;
 }
 
-// Admission repairs only the reservation. Hook reads restore the entity and
-// by-run marker, keeping conflict checks free of unrelated filesystem writes.
-export async function rebuildHookTokenConstraintFromEventLog(
+export async function rebuildLiveHookByTokenFromEventLog(
   basedir: string,
-  token: string
-): Promise<HookTokenConstraint | null> {
-  const indexed = await findHookCreatedEvent(basedir, { kind: 'token', token });
-  if (!indexed) return null;
-  const constraint = hookTokenConstraintFromEvent(indexed.event, indexed.tag);
-  await writeJSON(hookTokenConstraintPath(basedir, token), constraint, {
-    overwrite: true,
-  });
-  return constraint;
-}
-
-async function rebuildHookByTokenFromEventLog(
-  basedir: string,
-  token: string
+  token: string,
+  tag?: string
 ): Promise<Hook | null> {
-  const constraintPath = hookTokenConstraintPath(basedir, token);
-  return withFileLock(constraintPath, async () => {
-    const indexed = await findHookCreatedEvent(basedir, {
-      kind: 'token',
-      token,
-    });
-    if (!indexed) return null;
-    await writeJSON(
-      constraintPath,
-      hookTokenConstraintFromEvent(indexed.event, indexed.tag),
-      { overwrite: true }
-    );
-    return restoreHookEntityFromEvent(basedir, indexed.event, indexed.tag);
-  });
+  const event = await findAvailableHookCreatedEvent(
+    basedir,
+    { kind: 'token', token },
+    (candidate) => getHookCreatedToken(candidate) === token,
+    tag
+  );
+  return event ? restoreHookCachesFromEvent(basedir, event, tag) : null;
 }
 
-async function rebuildHookByIdFromEventLog(
+async function rebuildLiveHookByIdFromEventLog(
   basedir: string,
   hookId: string,
   tag?: string
 ): Promise<Hook | null> {
-  const indexed = await findHookCreatedEvent(basedir, {
-    kind: 'id',
-    hookId,
-    tag,
-  });
-  if (!indexed) return null;
-
-  const constraintPath = hookTokenConstraintPath(
+  const event = await findAvailableHookCreatedEvent(
     basedir,
-    indexed.event.eventData.token
+    { kind: 'id', hookId },
+    (candidate) => candidate.correlationId === hookId,
+    tag
   );
-  return withFileLock(constraintPath, async () => {
-    if (!(await isHookCreatedEventAvailable(basedir, indexed))) return null;
-    // An ID-based repair must not replace a newer owner of the same token.
-    const constraint = await readHookTokenConstraint(constraintPath);
-    if (
-      constraint &&
-      (constraint.runId !== indexed.event.runId ||
-        constraint.hookId !== indexed.event.correlationId)
-    ) {
-      return null;
-    }
-    if (!constraint) {
-      await writeJSON(
-        constraintPath,
-        hookTokenConstraintFromEvent(indexed.event, indexed.tag),
-        { overwrite: true }
-      );
-    }
-    return restoreHookEntityFromEvent(basedir, indexed.event, indexed.tag);
-  });
+  return event ? restoreHookCachesFromEvent(basedir, event, tag) : null;
 }
-
-type HookByTokenLookup =
-  | { type: 'found'; hook: Hook }
-  | { type: 'recover' }
-  | { type: 'unavailable' };
 
 /**
  * Creates a hooks storage implementation using the filesystem.
@@ -237,79 +213,111 @@ export function createHooksStorage(
   basedir: string,
   tag?: string
 ): Storage['hooks'] {
-  async function findHookByToken(token: string): Promise<HookByTokenLookup> {
-    const constraint = await readHookTokenConstraint(
-      hookTokenConstraintPath(basedir, token)
+  async function isAvailable(hook: Hook): Promise<boolean> {
+    if (await isHookDisposalCommitted(basedir, hook.hookId, tag)) {
+      return false;
+    }
+    if (!(await isTerminalRunCache(basedir, hook.runId, tag))) {
+      return true;
+    }
+    const claim = await readHookTokenClaim(
+      hookTokenClaimPath(basedir, hook.token)
     );
-    if (!constraint || constraint.type !== 'current') {
-      return { type: 'recover' };
-    }
-    const ownerTag = constraint.tag ?? undefined;
-    const hook = await readJSONWithFallback(
-      basedir,
-      'hooks',
-      constraint.hookId,
-      HookSchema,
-      ownerTag
+    return Boolean(
+      claim?.runId === hook.runId &&
+        claim.hookId === hook.hookId &&
+        claim.tokenRetentionUntil &&
+        claim.tokenRetentionUntil.getTime() > Date.now()
     );
-    if (!hook || hook.token !== token) return { type: 'recover' };
-    if (await isHookDisposalCommitted(basedir, hook.hookId, ownerTag)) {
-      return { type: 'unavailable' };
+  }
+
+  async function findHookByToken(token: string): Promise<Hook | null> {
+    // Fast path: the token claim file points at the owning hookId.
+    let claim: z.infer<typeof HookTokenClaimSchema> | null = null;
+    try {
+      claim = await readJSON(
+        hookTokenClaimPath(basedir, token),
+        HookTokenClaimSchema
+      );
+    } catch (error) {
+      if (!(error instanceof SyntaxError || error instanceof z.ZodError)) {
+        throw error;
+      }
     }
-    if (
-      !hasRemainingTokenRetention(constraint) &&
-      !(await isRunActive(basedir, hook.runId, ownerTag))
-    ) {
-      return { type: 'unavailable' };
+    if (claim?.hookId) {
+      try {
+        const hook = await readJSONWithFallback(
+          basedir,
+          'hooks',
+          claim.hookId,
+          HookSchema,
+          tag
+        );
+        if (hook && hook.token === token && (await isAvailable(hook))) {
+          return { ...hook, isWebhook: hook.isWebhook ?? true };
+        }
+      } catch (error) {
+        if (!UnsafeEntityIdError.is(error)) {
+          throw error;
+        }
+      }
     }
-    return {
-      type: 'found',
-      hook: { ...hook, isWebhook: hook.isWebhook ?? true },
-    };
+
+    // Slow path for legacy states (e.g. a lost claim file while the
+    // entity is still on disk).
+    const hooksDir = path.join(basedir, 'hooks');
+    const files = await listJSONFiles(hooksDir);
+
+    for (const file of files) {
+      const hookPath = path.join(hooksDir, `${file}.json`);
+      const hook = await readJSON(hookPath, HookSchema);
+      if (hook && hook.token === token && (await isAvailable(hook))) {
+        return { ...hook, isWebhook: hook.isWebhook ?? true };
+      }
+    }
+
+    return null;
   }
 
   async function get(hookId: string, params?: GetHookParams): Promise<Hook> {
     assertSafeEntityId('hookId', hookId);
-    const hook =
-      (await readJSONWithFallback(basedir, 'hooks', hookId, HookSchema, tag)) ??
-      (await rebuildHookByIdFromEventLog(basedir, hookId, tag));
-    if (!hook) {
-      throw new HookNotFoundError(hookId);
-    }
-    if (await isHookDisposalCommitted(basedir, hookId, tag)) {
-      throw new HookNotFoundError(hookId);
-    }
-    const resolveData = params?.resolveData || DEFAULT_RESOLVE_DATA_OPTION;
-    if (await isRunActive(basedir, hook.runId, tag)) {
+    const hook = await readJSONWithFallback(
+      basedir,
+      'hooks',
+      hookId,
+      HookSchema,
+      tag
+    );
+    if (!hook || !(await isAvailable(hook))) {
+      const rebuilt = await rebuildLiveHookByIdFromEventLog(
+        basedir,
+        hookId,
+        tag
+      );
+      if (!rebuilt) {
+        throw new HookNotFoundError(hookId);
+      }
+      const resolveData = params?.resolveData || DEFAULT_RESOLVE_DATA_OPTION;
       return filterHookData(
-        { ...hook, isWebhook: hook.isWebhook ?? true },
+        { ...rebuilt, isWebhook: rebuilt.isWebhook ?? true },
         resolveData
       );
     }
-    const retained = await getByToken(hook.token);
-    if (retained.hookId !== hookId) throw new HookNotFoundError(hookId);
-    return filterHookData(retained, resolveData);
+    const resolveData = params?.resolveData || DEFAULT_RESOLVE_DATA_OPTION;
+    return filterHookData(
+      { ...hook, isWebhook: hook.isWebhook ?? true },
+      resolveData
+    );
   }
 
   async function getByToken(token: string): Promise<Hook> {
-    const lookup = await findHookByToken(token);
-    switch (lookup.type) {
-      case 'found':
-        return lookup.hook;
-      case 'recover': {
-        const hook = await rebuildHookByTokenFromEventLog(basedir, token);
-        if (hook) return hook;
-        throw new HookNotFoundError(token);
-      }
-      case 'unavailable':
-        throw new HookNotFoundError(token);
-      default: {
-        const unknownLookup: never = lookup;
-        throw new Error(
-          `Unknown Hook token lookup: ${JSON.stringify(unknownLookup)}`
-        );
-      }
+    const hook =
+      (await findHookByToken(token)) ??
+      (await rebuildLiveHookByTokenFromEventLog(basedir, token, tag));
+    if (!hook) {
+      throw new HookNotFoundError(token);
     }
+    return hook;
   }
 
   async function list(
@@ -326,14 +334,11 @@ export function createHooksStorage(
       cursor: params.pagination?.cursor,
       filePrefix: undefined, // Hooks don't have ULIDs, so we can't optimize by filename
       filter: async (hook) => {
-        if (params.runId && hook.runId !== params.runId) return false;
-        try {
-          await get(hook.hookId);
-          return true;
-        } catch (error) {
-          if (HookNotFoundError.is(error)) return false;
-          throw error;
+        // Filter by runId if provided
+        if (params.runId && hook.runId !== params.runId) {
+          return false;
         }
+        return isAvailable(hook);
       },
       getCreatedAt: () => {
         // Hook files don't have ULID timestamps in filename, so return null
@@ -344,6 +349,7 @@ export function createHooksStorage(
       getId: (hook) => hook.hookId,
     });
 
+    // Transform the data after pagination
     return {
       ...result,
       data: result.data.map((hook) => filterHookData(hook, resolveData)),
@@ -366,47 +372,60 @@ export async function deleteAllHooksForRun(
   await ensureHookIndexes(basedir);
 
   for (const marker of await listHookByRunMarkers(basedir, runId)) {
-    if (!marker.hookId) {
-      await deleteHookByRunMarkerFile(basedir, marker.fileId);
-      continue;
-    }
-    let hookPath: string;
-    let hook: Hook | null;
-    try {
-      hookPath = taggedPath(basedir, 'hooks', marker.hookId, marker.tag);
-      hook = await readJSON(hookPath, HookSchema);
-    } catch (error) {
-      if (
-        !UnsafeEntityIdError.is(error) &&
-        !(error instanceof SyntaxError || error instanceof z.ZodError)
-      ) {
-        throw error;
+    if (marker.hookId) {
+      let hook: Hook | null = null;
+      let hookPath: string | null = null;
+      try {
+        hookPath = taggedPath(basedir, 'hooks', marker.hookId, marker.tag);
+        hook = await readJSON(hookPath, HookSchema);
+      } catch (error) {
+        if (
+          !UnsafeEntityIdError.is(error) &&
+          !(error instanceof SyntaxError || error instanceof z.ZodError)
+        ) {
+          throw error;
+        }
       }
-      await deleteHookByRunMarkerFile(basedir, marker.fileId);
-      continue;
+      if (hook && hookPath && hook.runId === runId) {
+        const claim = await readHookTokenClaim(
+          hookTokenClaimPath(basedir, hook.token)
+        );
+        if (
+          claim?.runId === hook.runId &&
+          claim.hookId === hook.hookId &&
+          claim.tokenRetentionUntil &&
+          claim.tokenRetentionUntil.getTime() > Date.now()
+        ) {
+          continue;
+        }
+        // Release the claim only if it still points at this hook — a
+        // claimant may already hold a fresh claim for the token (see
+        // `isHookTokenClaimReleasable`).
+        await releaseHookTokenClaimIfOwnedBy(
+          basedir,
+          hook.token,
+          hook.runId,
+          hook.hookId
+        );
+        await deleteJSON(
+          hookRecoveryMarkerPath(basedir, hook.token, hook.runId, hook.hookId)
+        );
+        await deleteJSON(hookPath);
+      }
     }
-    if (!hook || hook.runId !== runId) {
-      await deleteHookByRunMarkerFile(basedir, marker.fileId);
-      continue;
+    await deleteHookByRunMarkerFile(basedir, marker.fileId);
+  }
+}
+
+async function readHookTokenClaim(
+  claimPath: string
+): Promise<z.infer<typeof HookTokenClaimSchema> | null> {
+  try {
+    return await readJSON(claimPath, HookTokenClaimSchema);
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      return null;
     }
-
-    const constraintPath = hookTokenConstraintPath(basedir, hook.token);
-    const keepHook = await withFileLock(constraintPath, async () => {
-      const constraint = await readHookTokenConstraint(constraintPath);
-      const owned =
-        constraint?.runId === hook.runId && constraint.hookId === hook.hookId;
-      if (owned && hasRemainingTokenRetention(constraint)) return true;
-      if (owned) await deleteJSON(constraintPath);
-      return false;
-    });
-    if (keepHook) continue;
-
-    await Promise.all([
-      deleteJSON(
-        hookRecoveryMarkerPath(basedir, hook.token, hook.runId, hook.hookId)
-      ),
-      deleteJSON(hookPath),
-      deleteHookByRunMarkerFile(basedir, marker.fileId),
-    ]);
+    throw error;
   }
 }

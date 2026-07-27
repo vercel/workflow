@@ -7,8 +7,6 @@ import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import { cliFlags } from '../lib/inspect/flags.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
 
-type HealthCheckEndpoint = 'workflow' | 'step';
-
 interface HealthCheckResult {
   healthy: boolean;
   error?: string;
@@ -16,40 +14,32 @@ interface HealthCheckResult {
 }
 
 interface EndpointHealthResult {
-  endpoint: HealthCheckEndpoint;
+  endpoint: 'workflow';
   healthy: boolean;
   error?: string;
   latencyMs?: number;
 }
 
-function formatHealthyResult(endpoint: string, latencyMs: number): string {
+function formatHealthyResult(latencyMs: number): string {
   return (
-    chalk.green(`  ✓ ${endpoint} endpoint is healthy`) +
+    chalk.green('  ✓ workflow endpoint is healthy') +
     chalk.gray(` (${latencyMs}ms)`)
   );
 }
 
-function formatUnhealthyResult(endpoint: string, error?: string): string {
+function formatUnhealthyResult(error?: string): string {
   const errorSuffix = error ? chalk.gray(` - ${error}`) : '';
-  return chalk.red(`  ✗ ${endpoint} endpoint is unhealthy`) + errorSuffix;
-}
-
-function getEndpointsToCheck(endpointFlag: string): HealthCheckEndpoint[] {
-  return endpointFlag === 'both'
-    ? ['workflow', 'step']
-    : [endpointFlag as HealthCheckEndpoint];
+  return chalk.red('  ✗ workflow endpoint is unhealthy') + errorSuffix;
 }
 
 function printSummary(results: EndpointHealthResult[], backend: string): void {
   const allHealthy = results.every((r) => r.healthy);
   logger.log('');
   if (allHealthy) {
-    logger.log(chalk.green('All endpoints are healthy!'));
+    logger.log(chalk.green('Workflow endpoint is healthy!'));
   } else {
     const unhealthyCount = results.filter((r) => !r.healthy).length;
-    logger.log(
-      chalk.red(`${unhealthyCount} of ${results.length} endpoint(s) unhealthy`)
-    );
+    logger.log(chalk.red(`${unhealthyCount} workflow endpoint(s) unhealthy`));
     // Provide helpful hints for common issues
     if (backend === 'local' || backend === '@workflow/world-local') {
       logger.log('');
@@ -99,11 +89,10 @@ function resolveLocalBaseUrl(
 
 async function testHttpHealthEndpoint(
   baseUrl: string,
-  endpoint: 'flow' | 'step',
   verbose: boolean
 ): Promise<{ ok: boolean; status?: number; error?: string }> {
   try {
-    const healthUrl = `${baseUrl}/.well-known/workflow/v1/${endpoint}?__health`;
+    const healthUrl = `${baseUrl}/.well-known/workflow/v1/flow?__health`;
     if (verbose) {
       logger.debug(`Testing HTTP health at: ${healthUrl}`);
     }
@@ -147,7 +136,7 @@ async function verifyLocalServerAccessible(
     logger.debug(`Resolved base URL: ${baseUrl}`);
   }
 
-  const result = await testHttpHealthEndpoint(baseUrl, 'flow', verbose);
+  const result = await testHttpHealthEndpoint(baseUrl, verbose);
   if (result.ok) {
     return baseUrl;
   }
@@ -179,29 +168,27 @@ function logWorldConfig(): void {
 async function runHealthCheckWithLogging(
   healthCheck: (
     world: any,
-    endpoint: HealthCheckEndpoint,
     options: { timeout: number }
   ) => Promise<HealthCheckResult>,
   world: any,
-  endpoint: HealthCheckEndpoint,
   timeout: number,
   verbose: boolean
 ): Promise<HealthCheckResult> {
   try {
     if (verbose) {
-      logger.debug(`Starting health check for ${endpoint}...`);
+      logger.debug('Starting health check for workflow endpoint...');
     }
-    const result = await healthCheck(world, endpoint, { timeout });
+    const result = await healthCheck(world, { timeout });
     if (verbose) {
       logger.debug(
-        `Health check for ${endpoint} completed: ${JSON.stringify(result)}`
+        `Workflow health check completed: ${JSON.stringify(result)}`
       );
     }
     return result;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     if (verbose) {
-      logger.debug(`Health check for ${endpoint} threw: ${errorMessage}`);
+      logger.debug(`Workflow health check threw: ${errorMessage}`);
     }
     return {
       healthy: false,
@@ -212,24 +199,15 @@ async function runHealthCheckWithLogging(
 
 export default class Health extends BaseCommand {
   static description =
-    'Check health of workflow and step endpoints via queue-based health check';
+    'Check the workflow endpoint via a queue-based health check';
 
   static examples = [
     '$ workflow health',
-    '$ workflow health --endpoint workflow',
-    '$ workflow health --endpoint step --timeout 60000',
+    '$ workflow health --timeout 60000',
     '$ workflow health --backend vercel --project my-project --team my-team',
   ];
 
   static flags = {
-    endpoint: Flags.string({
-      description: 'Which endpoint(s) to check',
-      options: ['workflow', 'step', 'both'],
-      default: 'both',
-      helpGroup: 'Health Check',
-      helpLabel: '--endpoint',
-      helpValue: ['workflow', 'step', 'both'],
-    }),
     timeout: Flags.integer({
       char: 't',
       description: 'Timeout in milliseconds for health check',
@@ -295,7 +273,6 @@ export default class Health extends BaseCommand {
     }
 
     const { healthCheck } = await import('@workflow/core/runtime');
-    const endpoints = getEndpointsToCheck(flags.endpoint);
 
     if (!flags.json) {
       const backendName =
@@ -306,16 +283,15 @@ export default class Health extends BaseCommand {
       logger.log('');
     }
 
-    const results = await this.checkEndpoints(endpoints, healthCheck, world, {
+    const result = await this.checkEndpoint(healthCheck, world, {
       timeout: flags.timeout,
       json: flags.json,
       verbose: flags.verbose,
     });
 
-    this.outputResults(results, flags.json, flags.backend);
+    this.outputResults([result], flags.json, flags.backend);
 
-    const allHealthy = results.every((r) => r.healthy);
-    process.exit(allHealthy ? 0 : 1);
+    process.exit(result.healthy ? 0 : 1);
   }
 
   private async verifyLocalServer(
@@ -351,64 +327,38 @@ export default class Health extends BaseCommand {
     }
   }
 
-  private async checkEndpoints(
-    endpoints: HealthCheckEndpoint[],
+  private async checkEndpoint(
     healthCheck: (
       world: any,
-      endpoint: HealthCheckEndpoint,
-      options: { timeout: number }
-    ) => Promise<HealthCheckResult>,
-    world: any,
-    flags: { timeout: number; json: boolean; verbose: boolean }
-  ): Promise<EndpointHealthResult[]> {
-    if (flags.verbose) {
-      logWorldConfig();
-    }
-
-    const results: EndpointHealthResult[] = [];
-    for (const endpoint of endpoints) {
-      const result = await this.checkSingleEndpoint(
-        endpoint,
-        healthCheck,
-        world,
-        flags
-      );
-      results.push(result);
-    }
-    return results;
-  }
-
-  private async checkSingleEndpoint(
-    endpoint: HealthCheckEndpoint,
-    healthCheck: (
-      world: any,
-      endpoint: HealthCheckEndpoint,
       options: { timeout: number }
     ) => Promise<HealthCheckResult>,
     world: any,
     flags: { timeout: number; json: boolean; verbose: boolean }
   ): Promise<EndpointHealthResult> {
+    if (flags.verbose) {
+      logWorldConfig();
+    }
+
     if (!flags.json) {
-      logger.log(`Checking ${endpoint} endpoint...`);
+      logger.log('Checking workflow endpoint...');
     }
 
     const result = await runHealthCheckWithLogging(
       healthCheck,
       world,
-      endpoint,
       flags.timeout,
       flags.verbose
     );
 
     if (!flags.json) {
       const message = result.healthy
-        ? formatHealthyResult(endpoint, result.latencyMs ?? 0)
-        : formatUnhealthyResult(endpoint, result.error);
+        ? formatHealthyResult(result.latencyMs ?? 0)
+        : formatUnhealthyResult(result.error);
       logger.log(message);
     }
 
     return {
-      endpoint,
+      endpoint: 'workflow',
       healthy: result.healthy,
       error: result.error,
       latencyMs: result.latencyMs,

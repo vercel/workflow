@@ -53,18 +53,20 @@ flowchart LR
     A["Source Code<br/>with directives"] --> B["Step Mode"]
     A --> C["Workflow Mode"]
     A --> D["Client Mode"]
-    B --> E["step.js<br/>(Step Execution)"]
-    C --> F["flow.js<br/>(Workflow Execution)"]
+    B --> E["Step registration bundle"]
+    C --> F["Workflow bundle"]
+    E --> H["Combined flow handler"]
+    F --> H
     D --> G["Your App Code<br/>(Enables `start`)"]
 ```
 
 ### Comparison Table
 
-| Mode     | Used In    | Purpose                        | Output API Route                   | Required? |
-|----------|------------|--------------------------------|------------------------------------|-----------|
-| Step     | Build time | Bundles step handlers          | `.well-known/workflow/v1/step`  | Yes       |
-| Workflow | Build time | Bundles workflow orchestrators | `.well-known/workflow/v1/flow`  | Yes       |
-| Client   | Build/Runtime | Provides workflow IDs and types to `start`   | Your application code              | Optional* |
+| Mode     | Used In    | Purpose                        | Runtime role | Required? |
+|----------|------------|--------------------------------|--------------|-----------|
+| Step     | Build time | Registers executable step functions | Imported by the combined flow handler | Yes |
+| Workflow | Build time | Bundles workflow orchestrators | Executed by `.well-known/workflow/v1/flow` | Yes |
+| Client   | Build/Runtime | Provides workflow IDs and types to `start` | Your application code | Optional* |
 
 \* Client mode is **recommended** for better developer experience—it provides automatic ID generation and type safety. Without it, you must manually construct workflow IDs or use the build manifest.
 
@@ -73,7 +75,7 @@ flowchart LR
 <Tabs items={["Step Mode", "Workflow Mode", "Client Mode"]}>
 <Tab value="Step Mode">
 
-**Step Mode** creates the step execution bundle served at `/.well-known/workflow/v1/step`.
+**Step Mode** creates a registration bundle that the combined flow handler imports. It is not an HTTP route.
 
 **Input:**
 
@@ -211,7 +213,7 @@ The IDs are generated exactly like in workflow mode to ensure they can be direct
 
 ## Generated Files
 
-When you build your application, the Workflow SDK generates three handler files in `.well-known/workflow/v1/`:
+When you build your application, the Workflow SDK generates a combined flow handler, an internal step registration bundle, and a webhook handler. Exact filenames vary by framework.
 
 ### `flow.js`
 
@@ -245,15 +247,17 @@ Most invalid patterns cause **build-time errors**, catching issues before deploy
   **Why a VM?** Workflow functions must be deterministic to support replay. The VM sandbox prevents accidental use of non-deterministic APIs or side effects. All side effects should be performed in [step functions](/docs/foundations/workflows-and-steps#step-functions) instead.
 </Callout>
 
-### `step.js`
+### `__step_registrations.js`
 
-Contains all step functions transformed in **step mode**. This file is imported by your framework to handle step execution requests at `POST /.well-known/workflow/v1/step`.
+Contains all step functions transformed in **step mode**. The combined flow handler imports this module for its registration side effects.
 
 **What it does:**
 
-- Exports a `POST` handler that accepts Web standard `Request` objects
-- Executes individual steps with full runtime access
-- Returns step results to the orchestration layer
+- Adds step functions to the runtime step registry
+- Keeps step bodies in the full host runtime
+- Makes registered steps available when a flow queue message includes `stepId` and `stepName`
+
+This module must not be exposed as an HTTP endpoint.
 
 ### `webhook.js`
 
@@ -336,7 +340,7 @@ These transformations are framework-agnostic—they output standard JavaScript t
 
 If you need to debug transformation issues, you can inspect the generated files:
 
-1. **Look in `.well-known/workflow/v1/`**: Check the generated `flow.js`, `step.js`,`webhook.js`, and other emitted debug files.
+1. **Inspect the generated output**: Check the combined flow handler, step registration bundle, webhook handler, and emitted debug files.
 2. **Check build logs**: Most frameworks log transformation activity during builds
 3. **Verify directives**: Ensure `"use workflow"` and `"use step"` are the first statements in functions
 4. **Check file locations**: Transformations only apply to files in configured source directories

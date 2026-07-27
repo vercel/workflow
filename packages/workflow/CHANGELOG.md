@@ -1,5 +1,28 @@
 # workflow
 
+## 5.0.0-beta.36
+
+### Minor Changes
+
+- [#2946](https://github.com/vercel/workflow/pull/2946) [`eb8fdb9`](https://github.com/vercel/workflow/commit/eb8fdb979748f54a94289530ee7ac155feddddcc) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - The `WORKFLOW_PRECONDITION_GUARD` event-creation guard is now on by default; opt out with `WORKFLOW_PRECONDITION_GUARD=0`.
+
+### Patch Changes
+
+- [#2980](https://github.com/vercel/workflow/pull/2980) [`268fede`](https://github.com/vercel/workflow/commit/268fede627b3a83dbabcff9d35fd946132bf9a06) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Prepare encrypted replay payloads concurrently and cache the decrypted, decompressed representation for reuse across inline replay iterations.
+
+- Updated dependencies [[`6d1d700`](https://github.com/vercel/workflow/commit/6d1d7006cf442c715c464ec2b8c80a21d1c90b01), [`d8071bb`](https://github.com/vercel/workflow/commit/d8071bb49a42b65cc412691050fcf35489f97b57), [`fe12b84`](https://github.com/vercel/workflow/commit/fe12b847291912cf9e47143ee10c73828dbdf1a1), [`a5e6f11`](https://github.com/vercel/workflow/commit/a5e6f1167aa07f36b49777d3c020282d11a0abf2), [`bb773e9`](https://github.com/vercel/workflow/commit/bb773e950786b15100a8058407cbfcba23a44ebc), [`542138d`](https://github.com/vercel/workflow/commit/542138dc0b37f492fbf51b75e8ba4f57e291fc8f), [`268fede`](https://github.com/vercel/workflow/commit/268fede627b3a83dbabcff9d35fd946132bf9a06), [`eb8fdb9`](https://github.com/vercel/workflow/commit/eb8fdb979748f54a94289530ee7ac155feddddcc), [`9177ba8`](https://github.com/vercel/workflow/commit/9177ba83d3168866d13ff34ca3d651312d1d87d2), [`6353c8c`](https://github.com/vercel/workflow/commit/6353c8c6cf5afe6cbd8e4a08e93e339b3b6f81f7)]:
+  - @workflow/core@5.0.0-beta.36
+  - @workflow/errors@5.0.0-beta.12
+  - @workflow/nest@5.0.0-beta.36
+  - @workflow/cli@5.0.0-beta.36
+  - @workflow/next@5.0.0-beta.36
+  - @workflow/nitro@5.0.0-beta.36
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.36
+  - @workflow/nuxt@5.0.0-beta.36
+  - @workflow/rollup@5.0.0-beta.36
+  - @workflow/sveltekit@5.0.0-beta.36
+
 ## 5.0.0-beta.35
 
 ### Minor Changes

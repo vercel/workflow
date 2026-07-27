@@ -192,7 +192,7 @@ async function sendOnboardingEmail(user: { id: string; email: string}) {
 
 Taking a look at this code:
 
-* Business logic lives inside **steps**. When a step is invoked inside a **workflow**, it gets enqueued to run on a separate request while the workflow is suspended, just like `sleep`.
+* Business logic lives inside **steps**. When a workflow invokes a step, the workflow suspends while the step runs with full Node.js access. The combined handler may execute it inline; queued retries and continuations return through the same flow route.
 * If a step throws an error, like in `sendWelcomeEmail`, the step will automatically be retried until it succeeds (or hits the step's max retry count).
 * Steps can throw a `FatalError` if an error is intentional and should not be retried.
 
@@ -316,7 +316,7 @@ Without this configuration, you may experience intermittent issues where workflo
 If you see this error:
 
 ```
-'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.
+'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.
 ```
 
 Check both of these first:
