@@ -523,6 +523,14 @@ export function workflowEntrypoint(
                   let cachedEvents: Event[] | null = null;
                   let eventsCursor: string | null = null;
 
+                  // Payload preparation is also scoped to this invocation. Replays
+                  // normally append to cachedEvents in place, so remember the array
+                  // and its length at the last prewarm pass to avoid rescanning the
+                  // already-prepared prefix. A snapshot reload replaces the array;
+                  // that intentionally starts a full prewarm pass again.
+                  let prewarmedEvents: Event[] | null = null;
+                  let prewarmedEventCount = 0;
+
                   // Inline-delta optimization: when an inline step's terminal
                   // write returns the event-log delta since the pre-write
                   // cursor (a supporting World only), we stash it here so the
@@ -1525,10 +1533,15 @@ export function workflowEntrypoint(
                       // Start every missing decrypt/decompress operation before
                       // VM setup. Web Crypto work can overlap bundle evaluation;
                       // consumers still deserialize and resolve in event order.
+                      const prewarmStartIndex =
+                        prewarmedEvents === events ? prewarmedEventCount : 0;
                       const payloadPrewarm = replayPayloadCache.prewarm(
                         workflowRun,
-                        events
+                        events,
+                        prewarmStartIndex
                       );
+                      prewarmedEvents = events;
+                      prewarmedEventCount = events.length;
                       const result = await runWorkflow(
                         workflowCode,
                         workflowRun,

@@ -51,7 +51,11 @@ export class ReplayPayloadCache {
    * are intentionally retained: the ordered event consumer must observe the
    * original rejection before that entry becomes retryable.
    */
-  async prewarm(workflowRun: WorkflowRun, events: Event[]): Promise<void> {
+  async prewarm(
+    workflowRun: WorkflowRun,
+    events: Event[],
+    startIndex = 0
+  ): Promise<void> {
     const preparations: Promise<PreparedReplayPayload>[] = [];
     const start = (cacheKey: string, value: unknown): void => {
       // Legacy flattened values may be mutated by devalue's unflatten and are
@@ -66,7 +70,8 @@ export class ReplayPayloadCache {
     };
 
     start(this.workflowInputKey(workflowRun.runId), workflowRun.input);
-    for (const event of events) {
+    for (let index = startIndex; index < events.length; index++) {
+      const event = events[index];
       switch (event.eventType) {
         case 'step_completed':
           start(
