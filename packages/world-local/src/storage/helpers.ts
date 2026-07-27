@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { lock } from 'proper-lockfile';
 import { decodeTime, monotonicFactory } from 'ulid';
 import { z } from 'zod';
 import {
@@ -314,6 +315,30 @@ export async function readHookTokenClaim(
   }
 }
 
+/** Serializes Hook token handoffs across processes sharing a data directory. */
+export async function withHookTokenClaimLock<T>(
+  basedir: string,
+  token: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  const claimPath = hookTokenClaimPath(basedir, token);
+  await fs.mkdir(path.dirname(claimPath), { recursive: true });
+  const release = await lock(claimPath, {
+    realpath: false,
+    stale: 30_000,
+    retries: {
+      forever: true,
+      minTimeout: 10,
+      maxTimeout: 100,
+    },
+  });
+  try {
+    return await fn();
+  } finally {
+    await release();
+  }
+}
+
 /**
  * Release (delete) a token claim only if it still points at the releasing
  * hook's own `(runId, hookId)`.
@@ -338,17 +363,18 @@ export async function releaseHookTokenClaimIfOwnedBy(
   runId: string,
   hookId: string
 ): Promise<void> {
-  const claimPath = hookTokenClaimPath(basedir, token);
-  let claim: { runId?: unknown; hookId?: unknown };
-  try {
-    claim = JSON.parse(await fs.readFile(claimPath, 'utf8'));
-  } catch {
-    return;
-  }
-  if (claim.runId !== runId || claim.hookId !== hookId) {
-    return;
-  }
-  await fs.unlink(claimPath).catch(() => {});
+  await withHookTokenClaimLock(basedir, token, async () => {
+    const claimPath = hookTokenClaimPath(basedir, token);
+    let claim: { runId?: unknown; hookId?: unknown };
+    try {
+      claim = JSON.parse(await fs.readFile(claimPath, 'utf8'));
+    } catch {
+      return;
+    }
+    if (claim.runId === runId && claim.hookId === hookId) {
+      await fs.unlink(claimPath).catch(() => {});
+    }
+  });
 }
 
 /**

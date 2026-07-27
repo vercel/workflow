@@ -2368,6 +2368,55 @@ describe('Storage', () => {
         ).resolves.toMatchObject({ runId: replacement.runId, token });
       });
 
+      it('admits one replacement across storage instances after retention ends', async () => {
+        const token = 'concurrent-expired-retention-token';
+        const retainedUntil = new Date(Date.now() + 500);
+        await createHook(storage, testRunId, {
+          hookId: 'hook_expiring_owner',
+          token,
+          tokenRetentionUntil: retainedUntil,
+        });
+        await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+
+        const workers = Array.from({ length: 10 }, () =>
+          createStorage(testDir)
+        );
+        const runs = await Promise.all(
+          workers.map((worker, index) =>
+            createRun(worker, {
+              deploymentId: `deployment-contender-${index}`,
+              workflowName: 'retention-contender',
+              input: new Uint8Array(),
+            })
+          )
+        );
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.max(0, retainedUntil.getTime() - Date.now() + 1)
+          )
+        );
+
+        const results = await Promise.all(
+          workers.map((worker, index) =>
+            worker.events.create(runs[index].runId, {
+              eventType: 'hook_created',
+              correlationId: `hook_contender_${index}`,
+              eventData: { token },
+            })
+          )
+        );
+        expect(
+          results.filter(({ event }) => event.eventType === 'hook_created')
+        ).toHaveLength(1);
+        expect(
+          results.filter(({ event }) => event.eventType === 'hook_conflict')
+        ).toHaveLength(workers.length - 1);
+      });
+
       // Regression test for #2778: a claim whose owning run is terminal can
       // never become live again — a new claimant must treat it as vacant
       // instead of recording a hook_conflict against a finished run. The

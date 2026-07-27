@@ -76,6 +76,7 @@ import {
   reapPendingHookEvents,
   releaseHookTokenClaimIfOwnedBy,
   runTerminalMarkerPath,
+  withHookTokenClaimLock,
 } from './helpers.js';
 import {
   deleteHookByRunMarker,
@@ -116,14 +117,8 @@ function getMaxEventsPerRun(): number {
  */
 // `stepLocks` and `hookLocks` are now instantiated per
 // `createEventsStorage` call (see inside the function) rather than
-// being module-level. The on-disk constraint / claim files remain
-// the durable source of truth across processes; the in-process
-// mutex is a per-instance optimization that closes a short race
-// window in the dedup-recovery path. Per-instance scoping lets
-// tests simulate cross-process behavior with two storage instances
-// sharing one data directory (each instance has independent locks
-// but a shared filesystem), exactly matching the cross-process
-// semantics without spawning subprocesses.
+// being module-level. Claim files remain the durable ownership record;
+// cross-process Hook token handoffs use `withHookTokenClaimLock`.
 
 /**
  * Sidecar recovery marker that pins a canonical `hook_created`
@@ -657,7 +652,16 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.hook.${tag}`
           : `${runId}-${data.correlationId}.hook`;
-        return withInProcessLock(hookLocks, lockKey, () => createImpl());
+        return withInProcessLock(hookLocks, lockKey, () => {
+          if (data.eventType === 'hook_created') {
+            return withHookTokenClaimLock(
+              basedir,
+              data.eventData.token,
+              createImpl
+            );
+          }
+          return createImpl();
+        });
       }
       return createImpl();
 
