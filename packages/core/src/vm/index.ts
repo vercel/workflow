@@ -10,6 +10,19 @@ export interface CreateContextOptions {
   seed: string;
   // Fixed timestamp for deterministic Date operations
   fixedTimestamp: number;
+  /**
+   * Immutable environment captured for this workflow delivery. Supplying it
+   * lets fresh replay VMs observe the same environment without exposing the
+   * host `process` object.
+   */
+  environment?: EnvironmentSnapshot;
+}
+
+export type EnvironmentSnapshot = Readonly<NodeJS.ProcessEnv>;
+
+/** Capture the host environment once for deterministic workflow replays. */
+export function snapshotEnvironment(): EnvironmentSnapshot {
+  return Object.freeze({ ...process.env });
 }
 
 // WebCrypto digest algorithm names → node:crypto (OpenSSL) names.
@@ -51,7 +64,7 @@ function toDigestInput(
  */
 export function createContext(options: CreateContextOptions) {
   let { fixedTimestamp } = options;
-  const { seed } = options;
+  const { seed, environment = snapshotEnvironment() } = options;
   const rng = seedrandom(seed);
   const context = vmCreateContext();
 
@@ -171,7 +184,7 @@ export function createContext(options: CreateContextOptions) {
 
   // Propagate environment variables
   (g as any).process = {
-    env: Object.freeze({ ...process.env }),
+    env: environment,
   };
 
   // Stateless + synchronous Web APIs that are made available inside the sandbox

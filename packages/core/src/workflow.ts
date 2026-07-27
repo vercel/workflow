@@ -38,7 +38,11 @@ import {
 import * as Attribute from './telemetry/semantic-conventions.js';
 import { trace } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
-import { createContext } from './vm/index.js';
+import {
+  createContext,
+  type EnvironmentSnapshot,
+  snapshotEnvironment,
+} from './vm/index.js';
 import { runCachedWorkflowScript } from './vm/script-cache.js';
 import {
   createAbortSignalStatics,
@@ -136,7 +140,12 @@ export async function runWorkflow(
    * Features supported by the World executing this workflow. Missing
    * capabilities are treated as unsupported.
    */
-  worldCapabilities?: WorldCapabilities
+  worldCapabilities?: WorldCapabilities,
+  /**
+   * Immutable environment captured at the start of the queue delivery. It is
+   * shared by every fresh VM replay in that delivery.
+   */
+  environment: EnvironmentSnapshot = snapshotEnvironment()
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
@@ -159,14 +168,14 @@ export async function runWorkflow(
     const fixedTimestamp =
       runIdCreatedAt(workflowRun.runId) ?? +workflowRun.createdAt;
 
-    const isVercel = process.env.VERCEL_URL !== undefined;
+    const isVercel = environment.VERCEL_URL !== undefined;
     // Load getPort lazily to prevent Turbopack from tracing get-port's
     // fs ops (readdir, readFile) into the flow route bundle. The resolved
     // port is cached per process (see get-port-lazy.ts), so this is cheap
     // on replays after the first.
     const workflowBaseUrl = createWorkflowBaseUrl(
       isVercel
-        ? `https://${process.env.VERCEL_URL}`
+        ? `https://${environment.VERCEL_URL}`
         : `http://localhost:${(await getPortLazy()) ?? 3000}`
     );
 
@@ -177,6 +186,7 @@ export async function runWorkflow(
     } = createContext({
       seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
       fixedTimestamp,
+      environment,
     });
 
     const workflowDiscontinuation = withResolvers<void>();

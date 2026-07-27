@@ -18,6 +18,7 @@ import { workflowEntrypoint } from './runtime.js';
 import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
+  hydrateWorkflowReturnValue,
 } from './serialization.js';
 
 // Capture every promise handed to `waitUntil` so tests can assert that
@@ -63,6 +64,8 @@ async function runWorkflowHandlerWithEvents(
      * pin the log's contents keep full control.
      */
     dynamicEventLog?: boolean;
+    /** Invoked after an event is made durable by the test World. */
+    afterEventCreated?: (event: Event) => void;
   } = {}
 ) {
   const createdEvents = options.createdEvents ?? [];
@@ -85,6 +88,7 @@ async function runWorkflowHandlerWithEvents(
     if (options.dynamicEventLog) {
       events.push(event as Event);
     }
+    options.afterEventCreated?.(event as Event);
     return { event };
   });
 
@@ -760,6 +764,86 @@ describe('workflowEntrypoint replay guards', () => {
     expect(createdEvents).not.toContainEqual(
       expect.objectContaining({ eventType: 'step_started' })
     );
+  });
+
+  it('keeps the environment stable across inline replays in one delivery', async () => {
+    const environmentKey = 'WORKFLOW_DELIVERY_ENV_SNAPSHOT_TEST';
+    const originalEnvironmentValue = process.env[environmentKey];
+    process.env[environmentKey] = 'before-replay';
+
+    try {
+      const workflowRun: WorkflowRun = {
+        runId: 'wrun_delivery_environment',
+        workflowName: 'workflow',
+        status: 'running',
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_delivery_environment',
+          undefined,
+          []
+        ),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+      const createdEvents: unknown[] = [];
+
+      await runWorkflowHandlerWithEvents(
+        `const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
+        async function workflow() {
+          const environment = process.env.${environmentKey};
+          await setAttributes([{ key: 'environment', value: environment }]);
+          return environment;
+        }${getWorkflowTransformCode('workflow')}`,
+        workflowRun,
+        [],
+        {
+          createdEvents,
+          dynamicEventLog: true,
+          afterEventCreated: (event) => {
+            if (event.eventType === 'attr_set') {
+              process.env[environmentKey] = 'after-replay';
+            }
+          },
+        }
+      );
+
+      expect(createdEvents).toContainEqual(
+        expect.objectContaining({
+          eventType: 'attr_set',
+          eventData: expect.objectContaining({
+            changes: [{ key: 'environment', value: 'before-replay' }],
+          }),
+        })
+      );
+      expect(createdEvents).toContainEqual(
+        expect.objectContaining({ eventType: 'run_completed' })
+      );
+      const completedEvent = createdEvents.find(
+        (event): event is { eventData: { output: Uint8Array } } =>
+          typeof event === 'object' &&
+          event !== null &&
+          'eventType' in event &&
+          event.eventType === 'run_completed'
+      );
+      if (!completedEvent) {
+        throw new Error('Expected the delivery to complete the workflow');
+      }
+      expect(
+        await hydrateWorkflowReturnValue(
+          completedEvent.eventData.output,
+          workflowRun.runId,
+          undefined
+        )
+      ).toBe('before-replay');
+    } finally {
+      if (originalEnvironmentValue === undefined) {
+        delete process.env[environmentKey];
+      } else {
+        process.env[environmentKey] = originalEnvironmentValue;
+      }
+    }
   });
 
   it('fails the run when the World rejects an attr_set event as invalid', async () => {

@@ -37,6 +37,7 @@ import {
   normalizeUnknownError,
   promoteAbortErrorToFatal,
 } from '../types.js';
+import { type EnvironmentSnapshot, snapshotEnvironment } from '../vm/index.js';
 
 import {
   isOptimisticInlineStartEnabled,
@@ -85,6 +86,8 @@ export interface StepExecutorParams {
   rootRunId?: string;
   stepId: string;
   stepName: string;
+  /** Immutable environment captured at the start of this queue delivery. */
+  environment?: EnvironmentSnapshot;
   encryptionKey?: CryptoKey;
   /**
    * The workflow run's specVersion, used to gate payload compression.
@@ -249,7 +252,8 @@ export async function executeStep(
     stepId,
     stepName,
   } = params;
-  const isVercel = process.env.VERCEL_URL !== undefined;
+  const environment = params.environment ?? snapshotEnvironment();
+  const isVercel = environment.VERCEL_URL !== undefined;
   // Gate payload compression on the run's specVersion.
   const compression =
     (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
@@ -798,7 +802,7 @@ export async function executeStep(
       const thisVal = hydratedInput.thisVal ?? null;
       const workflowBaseUrl = createWorkflowBaseUrl(
         isVercel
-          ? `https://${process.env.VERCEL_URL}`
+          ? `https://${environment.VERCEL_URL}`
           : `http://localhost:${(await getPortLazy()) ?? 3000}`
       );
 

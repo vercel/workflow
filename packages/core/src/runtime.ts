@@ -99,6 +99,7 @@ import {
 } from './telemetry.js';
 import { getErrorName, getErrorStack, normalizeUnknownError } from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
+import { snapshotEnvironment } from './vm/index.js';
 import { runWorkflow } from './workflow.js';
 
 export type { Event, WorkflowRun };
@@ -375,6 +376,10 @@ export function workflowEntrypoint(
           replayDivergence,
           runInput,
         } = WorkflowInvokePayloadSchema.parse(message_);
+        // A delivery may replay the workflow several times while executing
+        // inline steps. Capture the environment before any async work so each
+        // fresh VM and its derived base URL see one consistent snapshot.
+        const environment = snapshotEnvironment();
         // `start()` always attaches a trace carrier, but
         // serializeTraceCarrier() returns `{}` when no OTEL SDK is registered
         // or no span is active — treat an empty carrier the same as an
@@ -783,6 +788,7 @@ export function workflowEntrypoint(
                               stepId: incomingStepId,
                               stepName: incomingStepName,
                               runSpecVersion: bgRun.specVersion,
+                              environment,
                               // Retry ceiling: the queue delivery count as a fast
                               // gate, verified against the recorded step_started
                               // count once it crosses the ceiling (see above).
@@ -1540,7 +1546,8 @@ export function workflowEntrypoint(
                         // `awaitRunReady()` below, so gate those writes on the
                         // backgrounded run_started too. Undefined outside turbo.
                         runReadyBarrier,
-                        world.capabilities
+                        world.capabilities,
+                        environment
                       );
                       await payloadPrewarm;
                       runtimeLogger.debug('Workflow replay completed', {
@@ -2310,6 +2317,7 @@ export function workflowEntrypoint(
                                 stepId: s.correlationId,
                                 stepName: s.stepName,
                                 runSpecVersion: workflowRun.specVersion,
+                                environment,
                                 // Attempt number = prior step_started count + 1
                                 // (this execution's start), counting only THIS
                                 // message's own starts: the owned-recovery

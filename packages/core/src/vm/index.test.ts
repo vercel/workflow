@@ -27,6 +27,26 @@ describe('createContext', () => {
     expect(vm.runInContext('Date.now()', context)).toEqual(fixedTimestamp);
   });
 
+  it('uses the supplied immutable environment snapshot directly', () => {
+    const environment = Object.freeze({
+      WORKFLOW_ENV_TEST: 'captured',
+    });
+    const { context } = createContext({ seed, fixedTimestamp, environment });
+
+    const vmEnvironment = vm.runInContext('process.env', context);
+    expect(vmEnvironment).toBe(environment);
+    expect(vm.runInContext('process.env.WORKFLOW_ENV_TEST', context)).toBe(
+      'captured'
+    );
+    expect(vm.runInContext('Object.isFrozen(process.env)', context)).toBe(true);
+    expect(
+      vm.runInContext(
+        "process.env.hasOwnProperty('WORKFLOW_ENV_TEST')",
+        context
+      )
+    ).toBe(true);
+  });
+
   it('should have deterministic `Date` constructor when called without arguments', () => {
     const fixedTimestamp = 1234567890000;
     const { context } = createContext({ seed, fixedTimestamp });
