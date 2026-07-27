@@ -138,9 +138,9 @@ These variables are primarily for tests, debugging, or unusual deployments.
 
 ### `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
 
-- Default: `10`
-- Stream write buffering interval.
-- Also available as `streamFlushIntervalMs` on Worlds that expose it.
+- Default: `0` (dispatch the first chunk of an idle stream immediately)
+- Group-commit window for the *leading* chunk of an idle stream. `0` sends it at once; a positive value holds it up to that many milliseconds to collect a group — an opt-in trade of first-chunk latency for larger batches, useful for slow-but-steady producers. Chunks arriving while a request is already in flight always coalesce into the next group regardless of this setting.
+- Also available as `streamFlushIntervalMs` on Worlds that expose it (the env var, when set, takes precedence over the World option).
 
 ### `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS`
 
@@ -156,6 +156,11 @@ These variables are primarily for tests, debugging, or unusual deployments.
 
 - Default: `1048576` (1 MiB)
 - Wire limit: maximum cumulative bytes in a single coalesced multi-write, so large chunks don't produce a request body that platform limits reject. A single chunk larger than this is still sent on its own.
+
+### `WORKFLOW_STREAM_MAX_BUFFERED_BYTES`
+
+- Default: `8388608` (8 MiB)
+- Flow-control bound: maximum cumulative bytes accepted into the stream writer's group-commit buffer before `write()` applies backpressure. The byte-denominated counterpart of `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS`; distinct from `WORKFLOW_STREAM_MAX_BYTES_PER_BATCH`, which only splits how much goes out in one request.
 
 ### `WORKFLOW_FRAMED_STREAM_MAX_RECONNECTS`
 

@@ -23,7 +23,7 @@ import type { FormatPrefix } from './types.js';
  *
  * - `workflow`: Runs inside the workflow VM. Includes class serialization,
  *   step function serialization. No stream handling.
- * - `step`: Runs in the step handler (Node.js). Includes class serialization.
+ * - `step`: Runs in the step executor (Node.js). Includes class serialization.
  *   No step function serialization. Stream handling at call sites.
  * - `client`: Runs on the client side. Includes class serialization.
  *   No step function serialization. Stream handling at call sites.
@@ -57,9 +57,11 @@ export interface CodecOptions {
   extraRevivers?: Record<string, (value: any) => any>;
 
   /**
-   * Whether to gzip-compress the serialized payload (write side only;
-   * reads always handle both compressed and uncompressed data). Must
-   * only be enabled when the target run supports compressed payloads:
+   * Whether to compress the serialized payload (write side only; zstd is
+   * preferred and gzip is the portable fallback). Reads dispatch compressed
+   * payloads by format prefix; zstd decoding still requires runtime or
+   * registered decoder support. Must only be enabled when the target run
+   * supports compressed payloads:
    * run specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION, and for
    * cross-deployment writes the target deployment's capabilities (see
    * `getRunCapabilities` in capabilities.ts). Defaults to `false`.

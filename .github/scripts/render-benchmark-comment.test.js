@@ -108,6 +108,11 @@ test('renders a completed run with a table and embedded history', async () => {
   assert.match(body, /\| 320 \| 398 🔴 \|/);
   // Metric definitions live in the footer, not in the table rows
   assert.doesNotMatch(body, /\| \*\*TTFS\*\* <sub>/);
+  // The smallprint footer is collapsed into a dropdown, like "Previous results"
+  assert.match(
+    body,
+    /<details>\n<summary>ℹ️ Metric definitions & methodology<\/summary>/
+  );
   assert.match(body, /<sub>Metrics — \*\*TTFS\*\*: time to first step body/);
   assert.match(body, /\*\*SL\*\*: stream latency/);
   // Scenario legend from the runner-provided descriptions
@@ -133,6 +138,63 @@ test('renders a completed run with a table and embedded history', async () => {
   assert.strictEqual(history.length, 1);
   assert.strictEqual(history[0].commit, 'abcdef1234567890');
   assert.strictEqual(history[0].results[0].metrics.length, 4);
+});
+
+test('renders both SO payload-shape rows under one metric', async () => {
+  const { renderComment } = await loadModule();
+  const soRow = (scenario, overrides) => ({
+    metric: 'so',
+    scenario,
+    unit: 'ms',
+    best: 40,
+    avg: 120,
+    p75: 110,
+    p90: 220,
+    p99: 380,
+    samples: 30,
+    targets: { p75: 250, p90: 500, p99: 1000 },
+    ...overrides,
+  });
+  const result = sampleResult({
+    scenarios: [
+      {
+        name: 'stream overhead (text)',
+        description: 'raw string token deltas',
+      },
+      {
+        name: 'stream overhead (structured)',
+        description: 'AI-SDK-style structured deltas',
+      },
+    ],
+    metrics: [
+      soRow('stream overhead (text)'),
+      soRow('stream overhead (structured)', { p75: 140, p90: 260, p99: 440 }),
+    ],
+  });
+  const body = renderComment({
+    status: 'completed',
+    results: [result],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+
+  // Both payload shapes render as distinct SO rows.
+  assert.match(body, /\| \*\*SO\*\* \| stream overhead \(text\) \|/);
+  assert.match(body, /\| \*\*SO\*\* \| stream overhead \(structured\) \|/);
+  // Both scenarios are described in the (collapsed) footer legend.
+  assert.match(
+    body,
+    /\*\*stream overhead \(text\)\*\*: raw string token deltas/
+  );
+  assert.match(
+    body,
+    /\*\*stream overhead \(structured\)\*\*: AI-SDK-style structured deltas/
+  );
+  // Within target on every percentile → neither SO row carries a 🔴 mark.
+  assert.doesNotMatch(body, /\| \*\*SO\*\* \|.*🔴/);
+  // Both rows share the one SO metric definition and targets entry.
+  assert.match(body, /\*\*SO\*\*: stream overhead/);
+  assert.match(body, /Targets \(p75\/p90\/p99, ms\) — SO 250\/500\/1000/);
 });
 
 test('renders best/p75/p90/p99 deltas with 🔻/💚 threshold marks and embeds them', async () => {

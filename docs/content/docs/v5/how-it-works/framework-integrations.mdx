@@ -2,7 +2,7 @@
 title: Framework Integrations
 description: Guide for framework authors to integrate Workflow SDK with custom frameworks or runtimes.
 type: guide
-summary: Build a custom framework integration using the Workflow SDK compiler and runtime.
+summary: Build a custom framework integration using the Workflow SDK compiler and combined runtime handler.
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
@@ -10,55 +10,45 @@ related:
 ---
 
 <Callout>
-  **For users:** If you just want to use Workflow SDK with an existing framework, check out the [Getting Started](/docs/getting-started) guide instead. This page is for framework authors who want to integrate Workflow SDK with their framework or runtime.
+  **For users:** If you just want to use Workflow SDK with an existing framework, see [Getting Started](/docs/getting-started). This page is for framework authors.
 </Callout>
 
-This guide walks you through building a framework integration for Workflow SDK using Bun as a concrete example. The same principles apply to any JavaScript runtime (Node.js, Deno, Cloudflare Workers, etc.).
+This guide uses Bun as a concrete example, but the same build and routing model applies to other JavaScript frameworks and runtimes.
 
 <Callout type="info">
-  **Prerequisites:** Before building a framework integration, we recommend reading [How the Directives Work](/docs/how-it-works/code-transform) to understand the transformation system that powers Workflow SDK.
+  Read [How the Directives Work](/docs/how-it-works/code-transform) first if you are not familiar with the three compiler modes.
 </Callout>
 
-## What You'll Build
+## Integration shape
 
-A framework integration has two main components:
+A framework integration has two responsibilities:
 
-1. **Build-time**: Generate workflow handler files (`flow.js`, `step.js`, `webhook.js`)
-2. **Runtime**: Expose these handlers as HTTP endpoints in your application server
+1. **Build time:** transform workflow and step code, register the steps, and generate the combined flow handler.
+2. **Runtime:** expose the generated flow and webhook handlers as HTTP routes.
 
 ```mermaid
 flowchart TD
-    A["Source Code<br/>'use workflow'"] --> B["Workflow Builder"]
-    B --> C["SWC Transform"]
-    C --> D["Step Mode"]
-    C --> E["Workflow Mode"]
-    C --> F["Client Mode"]
-    D --> G["Generated Handlers<br/>step.js"]
-    E --> H["Generated Handlers<br/>flow.js"]
-    B --> L["Generated Handlers<br/>webhook.js"]
-    F --> I["Used by framework loader"]
-    G --> J["HTTP Server<br/>(Your Runtime)"]
-    H --> J
-    L --> J
+    A["Source code<br/>'use workflow' / 'use step'"] --> B["Workflow builder"]
+    B --> C["Workflow-mode bundle"]
+    B --> D["Step registration bundle"]
+    D --> E["Combined flow handler"]
+    C --> E
+    B --> F["Webhook handler"]
+    E --> G["POST /.well-known/workflow/v1/flow"]
+    F --> H["/.well-known/workflow/v1/webhook/:token"]
 
     style B fill:#a78bfa,stroke:#8b5cf6,color:#000
-    style I fill:#a78bfa,stroke:#8b5cf6,color:#000
-    style J fill:#a78bfa,stroke:#8b5cf6,color:#000
+    style G fill:#a78bfa,stroke:#8b5cf6,color:#000
+    style H fill:#a78bfa,stroke:#8b5cf6,color:#000
 ```
 
-The purple boxes are what you implement—everything else is provided by Workflow SDK.
+Steps do not have their own HTTP route. A queued step invocation contains `stepId` and `stepName` and is delivered to the flow handler on the workflow queue. The handler executes the registered step in the full host runtime, then replays the workflow in its sandboxed VM.
 
-## Example: Bun Integration
+## Example: Bun integration
 
-Let's build a complete integration for Bun. Bun is unique because it serves as both a runtime (needs code transformations) and a framework (provides `Bun.serve()` for HTTP routing).
+### 1. Generate the bundles
 
-<Callout type="info">
-  A working example can be [found here](https://github.com/vercel/workflow-examples/tree/main/custom-adapter). For a production-ready reference, see the [Next.js integration](https://github.com/vercel/workflow/tree/main/packages/next).
-</Callout>
-
-### Step 1: Generate Handler Files
-
-Use the `workflow` CLI to generate the handler bundles. The CLI scans your `workflows/` directory and creates `flow.js`, `step.js`, and `webhook.js`.
+The standalone CLI scans `workflows/` and creates the combined flow handler, an internal step registration module, and the webhook handler.
 
 ```json title="package.json"
 {
@@ -68,21 +58,19 @@ Use the `workflow` CLI to generate the handler bundles. The CLI scans your `work
 }
 ```
 
+The default output is:
+
+- `/.well-known/workflow/v1/flow.mjs` — the combined workflow and step queue consumer
+- `/.well-known/workflow/v1/__step_registrations.mjs` — an internal module imported by `flow.mjs`; do not route to it
+- `/.well-known/workflow/v1/webhook.mjs` — webhook delivery
+
 <Callout>
-  **For production integrations:** Instead of using the CLI, extend the `BaseBuilder` class directly in your framework plugin. This gives you control over file watching, custom output paths, and framework-specific hooks. See the [Next.js plugin](https://github.com/vercel/workflow/tree/main/packages/next) for an example.
+  Production integrations should extend `BaseBuilder` from `@workflow/builders` so they can participate in the framework's build, watch, and routing lifecycle.
 </Callout>
 
-**What gets generated:**
+### 2. Add the client transform
 
-- `/.well-known/workflow/v1/flow.js` - Handles workflow execution (workflow mode transform)
-- `/.well-known/workflow/v1/step.js` - Handles step execution (step mode transform)
-- `/.well-known/workflow/v1/webhook.js` - Handles webhook delivery
-
-Each file exports a `POST` function that accepts Web standard `Request` objects.
-
-### Step 2: Add Client Mode Transform (Optional)
-
-Client mode transforms your application code to provide better DX. Add a Bun plugin to apply this transformation at runtime:
+Client mode gives application code the workflow IDs used by `start()` and prevents accidental direct workflow execution.
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript title="workflow-plugin.ts" lineNumbers
@@ -94,8 +82,6 @@ plugin({
   setup(build) {
     build.onLoad({ filter: /\.(ts|tsx|js|jsx)$/ }, async (args) => {
       const source = await Bun.file(args.path).text();
-
-      // Optimization: Skip files that do not have any directives
       if (!source.match(/(use step|use workflow)/)) {
         return { contents: source };
       }
@@ -105,7 +91,7 @@ plugin({
         jsc: {
           experimental: {
             plugins: [
-              [require.resolve("@workflow/swc-plugin"), { mode: "client" }], // [!code highlight]
+              [require.resolve("@workflow/swc-plugin"), { mode: "client" }],
             ],
           },
         },
@@ -123,23 +109,14 @@ Activate the plugin in `bunfig.toml`:
 preload = ["./workflow-plugin.ts"]
 ```
 
-**What this does:**
+### 3. Expose the HTTP routes
 
-- Attaches workflow IDs to functions for use with `start()`
-- Provides TypeScript type safety
-- Prevents accidental direct execution of workflows
-
-**Why optional?** Without client mode, you can still use workflows by manually constructing IDs or referencing the build manifest.
-
-### Step 3: Expose HTTP Endpoints
-
-Wire up the generated handlers to HTTP endpoints using `Bun.serve()`:
+Only the combined flow handler and webhook handler are routable:
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript title="server.ts" lineNumbers
-import flow from "./.well-known/workflow/v1/flow.js";
-import step from "./.well-known/workflow/v1/step.js";
-import * as webhook from "./.well-known/workflow/v1/webhook.js";
+import * as flow from "./.well-known/workflow/v1/flow.mjs";
+import * as webhook from "./.well-known/workflow/v1/webhook.mjs";
 
 import { start } from "workflow/api";
 import { handleUserSignup } from "./workflows/user-signup.js";
@@ -148,23 +125,14 @@ const server = Bun.serve({
   port: process.env.PORT,
   routes: {
     "/.well-known/workflow/v1/flow": {
-      POST: (req) => flow.POST(req),
+      POST: flow.POST,
     },
-    "/.well-known/workflow/v1/step": {
-      POST: (req) => step.POST(req),
-    },
-    // webhook exports handlers for GET, POST, DELETE, etc.
     "/.well-known/workflow/v1/webhook/:token": webhook,
-
-    // Example: Start a workflow
     "/": {
-      GET: async (req) => {
+      GET: async () => {
         const email = `test-${crypto.randomUUID()}@test.com`;
         const run = await start(handleUserSignup, [email]);
-        return Response.json({
-          message: "User signup workflow started",
-          runId: run.runId,
-        });
+        return Response.json({ runId: run.runId });
       },
     },
   },
@@ -173,222 +141,90 @@ const server = Bun.serve({
 console.log(`Server listening on http://localhost:${server.port}`);
 ```
 
-**That's it!** Your Bun integration is complete.
+## Runtime routes
 
-## Understanding the Endpoints
-
-Your integration must expose three HTTP endpoints. The generated handlers manage all protocol details—you just route requests.
-
-### Workflow Endpoint
+### Combined flow endpoint
 
 **Route:** `POST /.well-known/workflow/v1/flow`
 
-Executes workflow orchestration logic. The workflow function is "rendered" multiple times during execution—each time it progresses until it encounters the next step.
+The handler consumes every workflow queue message. Depending on the payload and event log, it can:
 
-**Called when:**
+- start or replay workflow orchestration in the sandboxed VM;
+- execute a queued step in the host runtime;
+- continue replay inline after a step completes;
+- resume a run after a hook, webhook, sleep, retry, or recovery event.
 
-- Starting a new workflow
-- Resuming after a step completes
-- Resuming after a webhook or hook triggers
-- Recovering from failures
+### Webhook endpoint
 
-### Step Endpoint
+**Route:** `/.well-known/workflow/v1/webhook/:token`
 
-**Route:** `POST /.well-known/workflow/v1/step`
+This handler delivers data to [`createWebhook()`](/docs/api-reference/workflow/create-webhook). Its generated file structure varies by framework; for example, Next.js uses `webhook/[token]/route.js`.
 
-Executes individual atomic operations within workflows. Each step runs exactly once per execution (unless retried due to failure). Steps have full runtime access (Node.js APIs, file system, databases, etc.).
+## Building with `BaseBuilder`
 
-### Webhook Endpoint
+Use `createCombinedBundle()` so the flow bundle imports the generated step registrations. Calling `createWorkflowsBundle()` and `createStepsBundle()` independently does not create a complete runtime route.
 
-**Route:** `POST /.well-known/workflow/v1/webhook/:token`
-
-Delivers webhook data to running workflows via [`createWebhook()`](/docs/api-reference/workflow/create-webhook). The `:token` parameter identifies which workflow run should receive the data.
-
-<Callout type="info">
-  The webhook file structure varies by framework. Next.js generates `webhook/[token]/route.js` to leverage App Router's dynamic routing, while other frameworks generate a single `webhook.js` handler.
-</Callout>
-
-## Adapting to Other Frameworks
-
-The Bun example demonstrates the core pattern. To adapt for your framework:
-
-### Build-Time
-
-**Option 1: Use the CLI** (simplest)
-
-```bash
-workflow build
-```
-
-This will default to scanning the `./workflows` top-level directory for workflow files, and will output bundled files directly into your working directory.
-
-**Option 2: Extend `BaseBuilder`** (recommended)
-
-{/* @skip-typecheck: @workflow/cli internal module */}
-```typescript lineNumbers
-import { BaseBuilder } from "@workflow/cli/dist/lib/builders/base-builder";
+{/* @skip-typecheck: incomplete framework adapter */}
+```typescript title="my-framework-builder.ts" lineNumbers
+import { join } from "node:path";
+import { BaseBuilder } from "@workflow/builders";
 
 class MyFrameworkBuilder extends BaseBuilder {
-  constructor(options) {
-    super({
-      dirs: ["workflows"],
-      workingDir: options.rootDir,
-      watch: options.dev,
-    });
-  }
-
   override async build(): Promise<void> {
     const inputFiles = await this.getInputFiles();
+    const tsconfigPath = await this.findTsConfigPath();
+    const outputDir = join(this.config.workingDir, ".workflow");
 
-    await this.createWorkflowsBundle({
-      outfile: "/path/to/.well-known/workflow/v1/flow.js",
-      format: "esm",
+    await this.createCombinedBundle({
       inputFiles,
-    });
-
-    await this.createStepsBundle({
-      outfile: "/path/to/.well-known/workflow/v1/step.js",
+      stepsOutfile: join(outputDir, "__step_registrations.mjs"),
+      flowOutfile: join(outputDir, "flow.mjs"),
+      tsconfigPath,
       format: "esm",
-      inputFiles,
     });
 
     await this.createWebhookBundle({
-      outfile: "/path/to/.well-known/workflow/v1/webhook.js",
+      outfile: join(outputDir, "webhook.mjs"),
     });
   }
 }
 ```
 
-If your framework supports virtual server routes and dev mode watching, make sure to adapt accordingly. Please open a PR to the Workflow SDK if the base builder class is missing necessary functionality.
+If workflows import sibling workspace packages, set `projectRoot` to the smallest directory containing all imported packages.
 
-### Monorepos and Workspace Imports
-
-If your framework integration lives in a subdirectory and your workflows import code from sibling workspace packages, pass `projectRoot` to `BaseBuilder`. Use the smallest directory that contains every workspace package imported by your workflows.
-
-{/* @skip-typecheck: @workflow/cli internal module */}
-```typescript title="my-framework-builder.ts" lineNumbers
-import { BaseBuilder } from "@workflow/cli/dist/lib/builders/base-builder";
-
-class MyFrameworkBuilder extends BaseBuilder {
-  constructor(options: {
-    rootDir: string;
-    workspaceRoot?: string;
-    dev: boolean;
-  }) {
-    super({
-      dirs: ["workflows"],
-      workingDir: options.rootDir,
-      projectRoot: options.workspaceRoot ?? options.rootDir, // [!code highlight]
-      watch: options.dev,
-    });
-  }
-
-  override async build(): Promise<void> {
-    const inputFiles = await this.getInputFiles();
-    // ...
-  }
-}
-```
-
-Hook into your framework's build:
-
-{/* @skip-typecheck: incomplete code sample */}
-```typescript title="pseudocode.ts" lineNumbers
-framework.hooks.hook("build:before", async () => {
-  await new MyFrameworkBuilder(framework).build();
+{/* @skip-typecheck: partial constructor configuration */}
+```typescript
+super({
+  dirs: ["workflows"],
+  workingDir: options.rootDir,
+  projectRoot: options.workspaceRoot ?? options.rootDir,
+  watch: options.dev,
 });
 ```
 
-### Runtime (Client Mode)
+Your integration can expose physical files, virtual modules, or framework-native routes. In every case, the step registration module is a dependency of the flow handler, not a route of its own.
 
-Add a loader/plugin for your bundler:
+## Vercel queue configuration
 
-**Rollup/Vite:**
+On Vercel, configure the flow function as the sole queue consumer. `getWorkflowQueueTrigger()` handles the optional queue namespace and `WORKFLOW_SEQUENTIAL_REPLAYS=1` behavior.
 
-```typescript lineNumbers
-export function workflowPlugin() {
-  return {
-    name: "workflow-client-transform",
-    async transform(code, id) {
-      if (!code.match(/(use step|use workflow)/)) return null;
+```typescript
+import { getWorkflowQueueTrigger } from "@workflow/builders";
 
-      const result = await transform(code, {
-        filename: id,
-        jsc: {
-          experimental: {
-            plugins: [[require.resolve("@workflow/swc-plugin"), { mode: "client" }]], // [!code highlight]
-          },
-        },
-      });
-
-      return { code: result.code, map: result.map };
-    },
-  };
-}
-```
-
-**Webpack:**
-
-```javascript lineNumbers
-module.exports = {
-  module: {
-    rules: [
-      {
-        test: /\.(ts|tsx|js|jsx)$/,
-        use: "workflow-client-loader", // Similar implementation
-      },
-    ],
-  },
+const flowConfig = {
+  maxDuration: "max",
+  experimentalTriggers: [getWorkflowQueueTrigger()],
 };
 ```
 
-### HTTP Server
+The generated trigger listens to one topic family:
 
-Route the three endpoints to the generated handlers. The exact implementation depends on your framework's routing API.
-
-In the bun example above, we left routing to the user. Essentially, the user has to serve routes like this:
-
-{/* @skip-typecheck: incomplete code sample */}
-```typescript title="server.ts" lineNumbers
-import flow from "./.well-known/workflow/v1/flow.js";
-import step from "./.well-known/workflow/v1/step.js";
-import * as webhook from "./.well-known/workflow/v1/webhook.js";
-
-// Expose the 3 generated routes
-const server = Bun.serve({
-  routes: {
-    "/.well-known/workflow/v1/flow": {
-      POST: (req) => flow.POST(req),
-    },
-    "/.well-known/workflow/v1/step": {
-      POST: (req) => step.POST(req),
-    },
-    // webhook exports handlers for GET, POST, DELETE, etc.
-    "/.well-known/workflow/v1/webhook/:token": webhook,
-  },
-});
-```
-
-Production framework integrations should handle this routing in the plugin instead of leaving it to the user, and this depends on each framework's unique implementaiton.
-Check the Workflow SDK source code for examples of production framework implementations.
-In the future, the Workflow SDK will emit more routes under the `.well-known/workflow` namespace.
-
-## Security
-
-The workflow and step handler endpoints are invoked by the world's queuing infrastructure, not by end users. How they're secured depends on which world you're deploying to.
-
-### Vercel (`@workflow/world-vercel`)
-
-On Vercel, workflow handler functions are not accessible through public endpoints. Handlers use the same [consumer function security](https://vercel.com/docs/queues/concepts#consumer-function-security) mechanism that secures [Vercel Queues](https://vercel.com/docs/queues) consumers.
-
-During the build step, the Workflow SDK automatically configures each handler as a queue consumer by writing `experimentalTriggers` to the function's `.vc-config.json`:
-
-```json title=".vc-config.json (generated by Workflow SDK)"
+```json title=".vc-config.json (excerpt)"
 {
   "experimentalTriggers": [
     {
       "type": "queue/v2beta",
-      "topic": "__wkf_step_*",
+      "topic": "__wkf_workflow_*",
       "consumer": "default",
       "retryAfterSeconds": 5,
       "initialDelaySeconds": 0
@@ -397,110 +233,28 @@ During the build step, the Workflow SDK automatically configures each handler as
 }
 ```
 
+Both orchestration messages and step messages use this topic family. A step message is distinguished by its payload, not by a second topic or function.
 
-Two queue topics are created per deployment:
+If you construct the trigger yourself, add `maxConcurrency: 1` when `WORKFLOW_SEQUENTIAL_REPLAYS=1`. The exported `isSequentialReplaysEnabled()` helper implements that build-time check.
 
-| Handler | Topic | Description |
-| --- | --- | --- |
-| `step.func` | `__wkf_step_*` | Step execution (long-running, `maxDuration: max`) |
-| `flow.func` | `__wkf_workflow_*` | Workflow orchestration (`maxDuration: 60`) |
+## Security
 
-If you're building a framework integration that targets Vercel, you should write these triggers into the `.vc-config.json` for each generated function. Use `getWorkflowQueueTrigger()` for flow functions so `WORKFLOW_SEQUENTIAL_REPLAYS=1` is reflected in the generated trigger configuration (it also accepts a `namespace` option, matching `createWorkflowQueueTrigger`); `STEP_QUEUE_TRIGGER` is exported for step functions:
+On Vercel, the flow handler uses [queue consumer security](https://vercel.com/docs/queues/concepts#consumer-function-security). For self-hosted worlds, protect the flow and webhook routes with the authentication, network controls, and rate limits appropriate to your queue transport.
 
-```typescript
-import { getWorkflowQueueTrigger, STEP_QUEUE_TRIGGER } from "@workflow/builders";
+## Testing an integration
 
-const flowTriggers = [getWorkflowQueueTrigger()];
-const stepTriggers = [STEP_QUEUE_TRIGGER];
-```
+After a build, verify that:
 
-If your integration constructs the flow trigger object itself instead of calling `getWorkflowQueueTrigger()`, it must add `maxConcurrency: 1` to that trigger when sequential replays are enabled at build time (`WORKFLOW_SEQUENTIAL_REPLAYS=1` — the exported `isSequentialReplaysEnabled()` helper implements this check). The runtime half of the feature (per-run queue topics) activates from the environment variable alone — without the trigger half, those per-run topics are not serialized and the setting only adds queue-topic cardinality.
+- the flow handler exists and imports or embeds the step registration bundle;
+- the webhook handler exists;
+- no step HTTP route or step queue trigger is generated;
+- the flow function has the workflow queue trigger and the required maximum duration;
+- starting a workflow executes a real step and resumes the workflow.
 
-
-### Custom implementations
-
-For self-hosted or non-Vercel deployments, you are responsible for securing the handler endpoints:
-
-- **Framework middleware** — Add authentication (API keys, JWT, OIDC) in front of the `/.well-known/workflow/v1/*` routes
-- **Network-level security** — Deploy handlers behind a VPC, private network, or firewall rules so only your queue infrastructure can reach them
-- **Rate limiting** — Add request validation and rate limiting to prevent abuse
-
-Learn more about [building custom Worlds](/worlds/building-a-world).
-
-## Testing Your Integration
-
-### 1. Test Build Output
-
-Create a test workflow:
-
-```typescript title="workflows/test.ts" lineNumbers
-import { sleep, createWebhook } from "workflow";
-
-export async function handleUserSignup(email: string) {
-  "use workflow";
-
-  const user = await createUser(email);
-  await sendWelcomeEmail(user);
-
-  await sleep("5s");
-
-  const webhook = createWebhook();
-  await sendOnboardingEmail(user, webhook.url);
-
-  await webhook;
-  console.log("Webhook Resolved");
-
-  return { userId: user.id, status: "onboarded" };
-}
-
-async function createUser(email: string) {
-  "use step";
-
-  console.log(`Creating a new user with email: ${email}`);
-
-  return { id: crypto.randomUUID(), email };
-}
-
-async function sendWelcomeEmail(user: { id: string; email: string }) {
-  "use step";
-
-  console.log(`Sending welcome email to user: ${user.id}`);
-}
-
-async function sendOnboardingEmail(user: { id: string; email: string }, callback: string) {
-  "use step";
-
-  console.log(`Sending onboarding email to user: ${user.id}`);
-
-  console.log(`Click this link to resolve the webhook: ${callback}`);
-}
-
-```
-
-Run your build and verify:
-
-- `.well-known/workflow/v1/flow.js` exists
-- `.well-known/workflow/v1/step.js` exists
-- `.well-known/workflow/v1/webhook.js` exists
-
-### 2. Test HTTP Endpoints
-
-Start your server and verify routes respond:
+The flow route exposes a lightweight direct health mode:
 
 ```bash
-curl -X POST http://localhost:3000/.well-known/workflow/v1/flow
-curl -X POST http://localhost:3000/.well-known/workflow/v1/step
-curl -X POST http://localhost:3000/.well-known/workflow/v1/webhook/test
+curl -X POST "http://localhost:3000/.well-known/workflow/v1/flow?__health"
 ```
 
-(Should respond but not trigger meaningful code without authentication/proper workflow run)
-
-### 3. Run a Workflow End-to-End
-
-```typescript
-import { start } from "workflow/api";
-import { handleUserSignup } from "./workflows/test";
-
-const run = await start(handleUserSignup, ["test@example.com"]);
-console.log("Workflow started:", run.runId);
-```
+For an end-to-end queue check, use [`healthCheck()`](/docs/api-reference/workflow-runtime/health-check).

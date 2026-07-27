@@ -367,9 +367,8 @@ export default {
           ...rules[flowPath],
           ...(runtime && { runtime }),
           maxDuration: 'max',
-          // V2 combined: a single trigger covers both `__wkf_workflow_*`
-          // (workflow orchestration) and `__wkf_step_*` (step execution),
-          // since the same handler dispatches both.
+          // A single workflow trigger handles orchestration and queued step
+          // execution; step messages include stepId on `__wkf_workflow_*`.
           experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
         };
 

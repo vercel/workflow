@@ -300,8 +300,7 @@ export async function handleSuspension({
   const rawKey = await world.getEncryptionKeyForRun?.(run);
   const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
 
-  // Gate payload compression on the run's specVersion: only runs marked
-  // as possibly containing compressed payloads (spec >= 5) get gzip data.
+  // Gate payload compression on the run's specVersion.
   const compression =
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
 

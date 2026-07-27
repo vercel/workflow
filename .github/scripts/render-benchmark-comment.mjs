@@ -47,8 +47,13 @@ const METRIC_LABELS = {
     description:
       'stream latency (in-deployment write → read propagation, readAt - writtenAt)',
   },
+  so: {
+    name: 'SO',
+    description:
+      'stream overhead (end-to-end write+consume time beyond the modelled generation window)',
+  },
 };
-const METRIC_ORDER = ['ttfs', 'stso', 'wo', 'sl'];
+const METRIC_ORDER = ['ttfs', 'stso', 'wo', 'sl', 'so'];
 
 export function parseArgs(argv) {
   const args = {
@@ -347,7 +352,7 @@ function renderFooter(entries) {
     )
   );
 
-  return [
+  const smallprint = [
     ...(hasBaseline
       ? [
           '<sub>Best/P75/P90/P99 deltas compare against the most recent benchmark run on `main` at the time of this run. 🔻 flags a delta worse than +15%, 💚 one better than −15%.</sub>',
@@ -366,6 +371,17 @@ function renderFooter(entries) {
     '<sub>All metrics are measured from deployment-side timestamps only. Runs are triggered by an in-deployment route that stamps the anchor (`clientStart`) right before `start()`, so the CI runner’s request and its path through api.vercel.com sit outside every measured window. TTFS = in-deployment `start()` → first step body (turbo uses the in-process fast path, non-turbo the dispatch path), and includes the VQS dispatch hop plus any `/flow` cold start. STSO/WO are measured between step bodies on the deployment. SL is measured inside the workflow (parallel reader/writer steps), so it no longer includes the api.vercel.com read path.</sub>',
     '',
     '<sub>Cold starts are kept in the numbers on purpose — they are part of real bursty-workload latency. The workbench deployment cold-starts the `/flow` invocation for a large fraction of runs, inflating P75+; the **Best** column shows the fastest (warm-start) sample for comparison.</sub>',
+  ];
+
+  // Keep the definitions/methodology out of the way in a collapsed dropdown,
+  // mirroring the "Previous results" section. The blank line after <summary>
+  // lets GitHub render the markdown inside the <details> block.
+  return [
+    '<details>',
+    '<summary>ℹ️ Metric definitions & methodology</summary>',
+    '',
+    smallprint.join('\n'),
+    '</details>',
   ].join('\n');
 }
 

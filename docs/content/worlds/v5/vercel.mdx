@@ -234,14 +234,14 @@ For the full model, including rerunning on latest and explicit upgrade boundarie
 
 ### Consumer function security
 
-Workflow handler functions on Vercel are not accessible through public endpoints. During the build step, the Workflow SDK registers each handler as only reachable by [Vercel Queue](https://vercel.com/docs/queues), by using the `experimentalTriggers` configuration in `.vc-config.json`:
+Workflow handler functions on Vercel are not accessible through public endpoints. During the build step, the Workflow SDK registers the combined flow handler as only reachable by [Vercel Queue](https://vercel.com/docs/queues), using the `experimentalTriggers` configuration in `.vc-config.json`:
 
-```json title=".vc-config.json (step handler)"
+```json title=".vc-config.json (flow handler)"
 {
   "experimentalTriggers": [
     {
       "type": "queue/v2beta",
-      "topic": "__wkf_step_*",
+      "topic": "__wkf_workflow_*",
       "consumer": "default",
     }
   ]
@@ -251,7 +251,7 @@ Workflow handler functions on Vercel are not accessible through public endpoints
 Practically, this means:
 
 - You don't need to add authentication or authorization logic to workflow handlers
-- Unauthorized requests can never reach the step or workflow functions
+- Unauthorized requests can never reach workflow or step execution
 - Only messages delivered through Vercel Queues can trigger execution
 - Handlers receive only a message ID that must be retrieved from Vercel's backend, making it impossible to craft custom payloads
 

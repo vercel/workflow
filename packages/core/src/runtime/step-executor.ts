@@ -88,8 +88,8 @@ export interface StepExecutorParams {
   encryptionKey?: CryptoKey;
   /**
    * The workflow run's specVersion, used to gate payload compression.
-   * Step outputs/errors are only gzip-compressed when the run is marked
-   * as possibly containing compressed payloads (specVersion >= 5).
+   * Step outputs/errors are only compressed when the run is marked as
+   * compression-capable (specVersion >= 5).
    */
   runSpecVersion?: number;
   /**
@@ -108,9 +108,10 @@ export interface StepExecutorParams {
    * Inline step ownership: the queue message ID of the invocation this
    * executeStep call runs in (from the queue handler's meta). When set, the
    * `step_started` this call sends is stamped with it — on the lazy paths
-   * (where `lazyStepInput` is present) and on the owned-recovery bare start
-   * (where it is not; the re-stamp keeps a recovered step readable as owned
-   * by this message, since ownership derives from the LATEST start). Wake
+   * (where `lazyStepInput` is present) and on the owned-recovery
+   * payload-less start (where it is not; the re-stamp keeps a recovered
+   * step readable as owned by this message, since ownership derives from
+   * the LATEST start — so a recovery start is never bare). Wake
    * replays that observe an actively-owned step suppress the immediate
    * requeue and enqueue a delayed backstop instead. Omitted on the
    * background-step path, whose bare start intentionally clears ownership
@@ -235,7 +236,7 @@ export type StepExecutionResult =
  * runs the step function, creates step_completed/step_failed/step_retrying events.
  *
  * Does NOT queue workflow continuation messages — the caller decides what to do next.
- * Used by both the V1 step handler and the V2 combined handler.
+ * Used by the combined workflow handler for step execution.
  */
 export async function executeStep(
   params: StepExecutorParams
@@ -249,8 +250,7 @@ export async function executeStep(
     stepName,
   } = params;
   const isVercel = process.env.VERCEL_URL !== undefined;
-  // Gate payload compression on the run's specVersion: only runs marked
-  // as possibly containing compressed payloads (spec >= 5) get gzip data.
+  // Gate payload compression on the run's specVersion.
   const compression =
     (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
 
@@ -272,7 +272,7 @@ export async function executeStep(
     const stepFn = getStepFunction(stepName);
     if (!stepFn || typeof stepFn !== 'function') {
       // Step function not registered — fail the step immediately (not the run).
-      // This matches the V1 step handler pattern: create step_failed event so
+      // Create a step_failed event so
       // the workflow can handle it gracefully via try/catch in user code.
       const errorMessage = `Step "${stepName}" is not registered in the current deployment. This usually indicates a build or bundling issue that caused the step to not be included in the deployment.`;
       runtimeLogger.error('Step function not registered, failing step', {
@@ -592,11 +592,12 @@ export async function executeStep(
       // step_started (step already created, no payload).
       try {
         // Inline-ownership stamp: present on the lazy paths AND on the
-        // owned-recovery bare start (a redelivery of the owning message
-        // re-executing its step must re-stamp — ownership derives from the
-        // latest start, so an unstamped recovery start would read as
-        // "unowned" to a later wake). The background-step path passes no
-        // ownerMessageId, so its bare start clears ownership as intended.
+        // owned-recovery payload-less start (a redelivery of the owning
+        // message re-executing its step must re-stamp — ownership derives
+        // from the latest start, so an unstamped recovery start would read
+        // as "unowned" to a later wake). Only the background-step path
+        // passes no ownerMessageId: its start is the bare one, clearing
+        // ownership as intended.
         const ownershipStamp =
           params.ownerMessageId !== undefined
             ? { ownerMessageId: params.ownerMessageId }
@@ -655,7 +656,7 @@ export async function executeStep(
 
     // Check max retries AFTER step_started (attempt was just incremented).
     // Only enforce when the step has a previous error — this distinguishes
-    // actual retries (failed → retry) from concurrent starts (V2 inline
+    // actual retries (failed → retry) from concurrent inline starts
     // execution loop can cause multiple handlers to step_started the same
     // step simultaneously, inflating the attempt counter without any failure).
     if (step.attempt > maxRetries + 1 && step.error) {
@@ -889,7 +890,6 @@ export async function executeStep(
       // settles, so the `ops` flush below always loses the 500ms race and the
       // step reports `hasPendingOps` — forcing the inline loop to queue a
       // continuation and paying a full round-trip per signal-bearing step.
-      // The non-inline `step-handler` path already does this after user code.
       // Runs unconditionally (success or failure) so a throwing step doesn't
       // leak the reader.
       cancelAbortReaders(...args, thisVal, hydratedInput.closureVars);
@@ -929,10 +929,11 @@ export async function executeStep(
       });
 
       // Flush pending ops (stream writes, etc.) with a short inline wait.
-      // Now that WorkflowServerWritableStream flushes synchronously on
-      // each write (not via setTimeout), the flushablePipe's pendingOps
-      // accurately reflects whether data has reached the server. Most ops
-      // settle within ~200ms (100ms lock-release polling + HTTP flush).
+      // WorkflowServerWritableStream acks writes on buffer entry
+      // (group-commit batching); durability is enforced by its drain
+      // barrier, which the flushable state's completion awaits after
+      // lock release. Most ops settle within ~200ms (lock-release
+      // polling + one batched HTTP flush).
       // If ops don't settle in 500ms (e.g., WritableStream kept open
       // across steps), waitUntil handles the rest.
       if (ops.length > 0) {
@@ -1309,7 +1310,7 @@ export async function executeStep(
         opsCount: ops.length,
       });
     }
-    // hasPendingOps signals the V2 handler to break the loop
+    // hasPendingOps signals the combined handler to break the loop
     // and queue a continuation so waitUntil can flush them.
     return { type: 'completed', hasPendingOps: !opsSettled, inlineDelta };
   });

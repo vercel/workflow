@@ -76,11 +76,17 @@ async function readFileIfExists(filePath: string): Promise<string | null> {
 }
 
 /**
- * Projects that use the VercelBuildOutputAPIBuilder and produce ESM step bundles.
+ * Projects that use the VercelBuildOutputAPIBuilder and produce ESM step registration bundles.
  */
-const ESM_STEP_BUNDLE_PROJECTS: Record<string, string> = {
+const ESM_STEP_REGISTRATION_PROJECTS: Record<string, string> = {
   example:
-    '.vercel/output/functions/.well-known/workflow/v1/step.func/index.mjs',
+    '.vercel/output/functions/.well-known/workflow/v1/flow.func/__step_registrations.mjs',
+};
+
+const LEGACY_STEP_ROUTE_PATHS: Record<string, string> = {
+  example: '.vercel/output/functions/.well-known/workflow/v1/step.func',
+  'nextjs-webpack': 'app/.well-known/workflow/v1/step',
+  'nextjs-turbopack': 'app/.well-known/workflow/v1/step',
 };
 
 const DIAGNOSTICS_MANIFEST_PATHS: Record<string, string> = {
@@ -233,7 +239,7 @@ describe.each([
     }
 
     // Verify ESM step bundles use native import.meta (no CJS polyfill needed)
-    const esmBundlePath = ESM_STEP_BUNDLE_PROJECTS[project];
+    const esmBundlePath = ESM_STEP_REGISTRATION_PROJECTS[project];
     if (esmBundlePath) {
       const bundleContent = await readFileIfExists(
         path.join(appPath, esmBundlePath)
@@ -242,6 +248,13 @@ describe.each([
       // ESM output should NOT contain CJS polyfill
       expect(bundleContent).not.toContain('var __import_meta_url');
       expect(bundleContent).not.toContain('pathToFileURL(__filename)');
+    }
+
+    const legacyStepRoutePath = LEGACY_STEP_ROUTE_PATHS[project];
+    if (legacyStepRoutePath) {
+      await expect(
+        fs.access(path.join(appPath, legacyStepRoutePath))
+      ).rejects.toThrow();
     }
   });
 });

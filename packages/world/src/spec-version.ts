@@ -25,10 +25,9 @@ export const SPEC_VERSION_SUPPORTS_EVENT_SOURCING = 2 as SpecVersion;
 export const SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT = 3 as SpecVersion;
 export const SPEC_VERSION_SUPPORTS_ATTRIBUTES = 4 as SpecVersion;
 /**
- * Runs at this spec version or later may contain gzip-compressed payloads
- * ('gzip' format prefix). Readers older than this version cannot decode
- * such payloads and reject the run via `requiresNewerWorld()` instead of
- * failing on individual payloads.
+ * Runs at this spec version or later may contain zstd- or gzip-compressed
+ * payloads. Readers older than this version reject the run via
+ * `requiresNewerWorld()` instead of failing on individual payloads.
  */
 export const SPEC_VERSION_SUPPORTS_COMPRESSION = 5 as SpecVersion;
 
