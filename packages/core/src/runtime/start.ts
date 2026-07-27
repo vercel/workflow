@@ -580,7 +580,7 @@ export async function start<TArgs extends unknown[], TResult>(
           : {}),
       });
 
-      return new Run<TResult>(runId, { resilientStart });
+      return new Run<TResult>(runId, { resilientStart, encryptionKey });
     });
   });
 }

@@ -25,9 +25,11 @@ vi.mock('../serialization.js', async (importActual) => {
 });
 
 import { registerSerializationClass } from '../class-serialization.js';
+import { importKey } from '../encryption.js';
 import {
   dehydrateRunError,
   dehydrateStepReturnValue,
+  dehydrateWorkflowReturnValue,
   hydrateStepReturnValue,
 } from '../serialization.js';
 import { Run } from './run.js';
@@ -393,6 +395,41 @@ describe('Run custom serialization', () => {
 
     expect(hydrated).toBeInstanceOf(Run);
     expect((hydrated as Run<unknown>).runId).toBe('wrun_roundtrip');
+  });
+});
+
+describe('Run.returnValue encryption key resolution', () => {
+  afterEach(() => {
+    setWorld(undefined as unknown as World);
+  });
+
+  it('reuses the polled run when resolving its encryption key', async () => {
+    const rawKey = new Uint8Array(32).fill(7);
+    const encryptionKey = await importKey(rawKey);
+    const world = createMockWorld({
+      run: {
+        status: 'completed',
+        output: await dehydrateWorkflowReturnValue(
+          'result',
+          'wrun_123',
+          encryptionKey
+        ),
+        completedAt: new Date(),
+      },
+    });
+    const getEncryptionKeyForRun = vi.fn().mockResolvedValue(rawKey);
+    world.getEncryptionKeyForRun = getEncryptionKeyForRun;
+    setWorld(world);
+
+    await expect(new Run('wrun_123').returnValue).resolves.toBe('result');
+
+    expect(world.runs.get).toHaveBeenCalledTimes(1);
+    expect(getEncryptionKeyForRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: 'wrun_123',
+        status: 'completed',
+      })
+    );
   });
 });
 

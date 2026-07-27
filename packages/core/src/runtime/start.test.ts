@@ -14,7 +14,9 @@ import {
   it,
   vi,
 } from 'vitest';
+import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
+import { dehydrateWorkflowReturnValue } from '../serialization.js';
 import type { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
 import { _resetLatestNoOpWarnForTests, start } from './start.js';
@@ -404,7 +406,11 @@ describe('start', () => {
   describe('encryption', () => {
     let mockEventsCreate: ReturnType<typeof vi.fn>;
     let mockQueue: ReturnType<typeof vi.fn>;
+    let mockRunsGet: ReturnType<typeof vi.fn>;
     let mockGetEncryptionKeyForRun: ReturnType<typeof vi.fn>;
+    const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+      workflowId: 'test-workflow',
+    });
 
     beforeEach(() => {
       mockEventsCreate = vi.fn().mockImplementation((runId) => {
@@ -413,11 +419,13 @@ describe('start', () => {
         });
       });
       mockQueue = vi.fn().mockResolvedValue(undefined);
+      mockRunsGet = vi.fn();
       mockGetEncryptionKeyForRun = vi.fn().mockResolvedValue(undefined);
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_resolved'),
+        runs: { get: mockRunsGet },
         events: { create: mockEventsCreate },
         queue: mockQueue,
         getEncryptionKeyForRun: mockGetEncryptionKeyForRun,
@@ -430,10 +438,6 @@ describe('start', () => {
     });
 
     it('should pass resolved deploymentId to getEncryptionKeyForRun even when not in opts', async () => {
-      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
-        workflowId: 'test-workflow',
-      });
-
       // Call start() without explicit deploymentId in options — it should
       // be resolved from world.getDeploymentId() and forwarded to
       // getEncryptionKeyForRun so the key can be fetched.
@@ -448,10 +452,6 @@ describe('start', () => {
     });
 
     it('should pass explicit deploymentId from opts to getEncryptionKeyForRun', async () => {
-      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
-        workflowId: 'test-workflow',
-      });
-
       await start(validWorkflow, [], { deploymentId: 'deploy_explicit' });
 
       expect(mockGetEncryptionKeyForRun).toHaveBeenCalledWith(
@@ -460,6 +460,25 @@ describe('start', () => {
           deploymentId: 'deploy_explicit',
         })
       );
+    });
+
+    it('should reuse the resolved key on the returned run handle', async () => {
+      const rawKey = new Uint8Array(32).fill(7);
+      mockGetEncryptionKeyForRun.mockResolvedValue(rawKey);
+      const run = await start(validWorkflow, []);
+      mockRunsGet.mockResolvedValue({
+        runId: run.runId,
+        status: 'completed',
+        output: await dehydrateWorkflowReturnValue(
+          'result',
+          run.runId,
+          await importKey(rawKey)
+        ),
+      });
+
+      await expect(run.returnValue).resolves.toBe('result');
+      expect(mockRunsGet).toHaveBeenCalledTimes(1);
+      expect(mockGetEncryptionKeyForRun).toHaveBeenCalledTimes(1);
     });
   });
 

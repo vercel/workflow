@@ -7,6 +7,7 @@ import {
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import {
   SPEC_VERSION_CURRENT,
+  type WorkflowRun,
   type WorkflowRunStatus,
   type World,
 } from '@workflow/world';
@@ -114,9 +115,18 @@ export class Run<TResult> {
    */
   #resilientStart = false;
 
-  constructor(runId: string, opts?: { resilientStart?: boolean }) {
+  constructor(
+    runId: string,
+    opts?: {
+      resilientStart?: boolean;
+      encryptionKey?: CryptoKey | undefined;
+    }
+  ) {
     this.runId = runId;
     this.#resilientStart = opts?.resilientStart ?? false;
+    if (opts && 'encryptionKey' in opts) {
+      this.#encryptionKeyPromise = Promise.resolve(opts.encryptionKey);
+    }
   }
 
   /**
@@ -125,12 +135,12 @@ export class Run<TResult> {
    * to be resolved once.
    * @internal
    */
-  #getEncryptionKey(): Promise<CryptoKey | undefined> {
+  #getEncryptionKey(run?: WorkflowRun): Promise<CryptoKey | undefined> {
     if (!this.#encryptionKeyPromise) {
       this.#encryptionKeyPromise = (async () => {
         const world = await this.#lazyWorldPromise;
-        const run = await world.runs.get(this.runId);
-        const rawKey = await world.getEncryptionKeyForRun?.(run);
+        const resolvedRun = run ?? (await world.runs.get(this.runId));
+        const rawKey = await world.getEncryptionKeyForRun?.(resolvedRun);
         return rawKey ? await importKey(rawKey) : undefined;
       })();
     }
@@ -332,7 +342,7 @@ export class Run<TResult> {
         const run = await world.runs.get(this.runId);
 
         if (run.status === 'completed') {
-          const encryptionKey = await this.#getEncryptionKey();
+          const encryptionKey = await this.#getEncryptionKey(run);
           return await hydrateWorkflowReturnValue(
             run.output,
             this.runId,
@@ -348,7 +358,7 @@ export class Run<TResult> {
           // Hydrate the serialized run error so the original thrown value
           // (with its type identity, cause chain, etc.) is set as the
           // `cause` on WorkflowRunFailedError.
-          const encryptionKey = await this.#getEncryptionKey();
+          const encryptionKey = await this.#getEncryptionKey(run);
           let hydratedError: unknown;
           try {
             hydratedError = await hydrateRunError(
