@@ -1,11 +1,42 @@
 import { FatalError, RUN_ERROR_CODES } from '@workflow/errors';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import { describeError } from '../describe-error.js';
 import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
 import { getReplayTimeoutMaxRetries, getReplayTimeoutMs } from './constants.js';
 import { memoizeEncryptionKey } from './helpers.js';
 import { getWorld } from './world.js';
+
+async function writeReplayTimeoutFailure({
+  world,
+  runId,
+  requestId,
+  message,
+}: {
+  world: World;
+  runId: string;
+  requestId: string | undefined;
+  message: string;
+}): Promise<void> {
+  const getEncryptionKey = memoizeEncryptionKey(world, runId);
+  const timeoutError = new FatalError(message);
+  await world.events.create(
+    runId,
+    {
+      eventType: 'run_failed',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        error: await dehydrateRunError(
+          timeoutError,
+          runId,
+          await getEncryptionKey()
+        ),
+        errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
+      },
+    },
+    { requestId }
+  );
+}
 
 /**
  * Per-invocation accounting of the *non-step* portion of a workflow
@@ -145,26 +176,12 @@ export async function handleReplayBudgetExhausted(args: {
       { timeoutMs: limitMs, attempt }
     );
     try {
-      const getEncryptionKey = memoizeEncryptionKey(world, runId);
-      const timeoutErr = new FatalError(
-        `Workflow replay exceeded maximum duration (${limitMs / 1000}s)`
-      );
-      await world.events.create(
+      await writeReplayTimeoutFailure({
+        world,
         runId,
-        {
-          eventType: 'run_failed',
-          specVersion: SPEC_VERSION_CURRENT,
-          eventData: {
-            error: await dehydrateRunError(
-              timeoutErr,
-              runId,
-              await getEncryptionKey()
-            ),
-            errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
-          },
-        },
-        { requestId }
-      );
+        requestId,
+        message: `Workflow replay exceeded maximum duration (${limitMs / 1000}s)`,
+      });
     } catch (err) {
       runLogger.warn('Unable to mark run as failed', {
         attempt,
@@ -204,26 +221,12 @@ export async function handleReplayBudgetExhausted(args: {
   );
 
   try {
-    const getEncryptionKey = memoizeEncryptionKey(world, runId);
-    const timeoutErr = new FatalError(
-      `Workflow replay exceeded maximum duration (${limitMs / 1000}s) after ${attempt} attempts`
-    );
-    await world.events.create(
+    await writeReplayTimeoutFailure({
+      world,
       runId,
-      {
-        eventType: 'run_failed',
-        specVersion: SPEC_VERSION_CURRENT,
-        eventData: {
-          error: await dehydrateRunError(
-            timeoutErr,
-            runId,
-            await getEncryptionKey()
-          ),
-          errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
-        },
-      },
-      { requestId }
-    );
+      requestId,
+      message: `Workflow replay exceeded maximum duration (${limitMs / 1000}s) after ${attempt} attempts`,
+    });
   } catch (err) {
     // Best effort — process exits regardless. Surface why so operators
     // can diagnose repeat timeouts against the backend.
