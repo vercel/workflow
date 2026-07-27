@@ -2411,6 +2411,51 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 }
 
 /**
+ * Reconstruct native web platform values outside the workflow VM. The VM
+ * revivers intentionally use fake objects instead, so they stay separate.
+ */
+function reviveNativeRequest(
+  global: Record<string, any>,
+  value: SerializableSpecial['Request']
+) {
+  const init: RequestInit & { duplex?: string } = {
+    method: value.method,
+    headers: new global.Headers(value.headers),
+    body: value.body,
+    duplex: value.duplex,
+  };
+  if (value.signal) init.signal = value.signal;
+  const request = new global.Request(value.url, init);
+  // The Request constructor creates an internal signal copy, so the
+  // abort-internal symbols set by reviveAbortSignal don't propagate.
+  // Re-tag the request's own signal so cancelAbortReaders can find it.
+  if (value.signal) copyAbortInternals(value.signal, request.signal);
+  return request;
+}
+
+function reviveNativeResponse(
+  global: Record<string, any>,
+  value: SerializableSpecial['Response']
+) {
+  // Note: Response constructor only accepts status, statusText, and headers.
+  // The type, url, and redirected properties are read-only and set by it.
+  return new global.Response(value.body, {
+    status: value.status,
+    statusText: value.statusText,
+    headers: new global.Headers(value.headers),
+  });
+}
+
+function reviveNativeBodyInitReadableStream(
+  global: Record<string, any>,
+  bodyInit: unknown
+) {
+  // Use the native Response constructor to properly convert BodyInit to a
+  // ReadableStream.
+  return new global.Response(bodyInit).body;
+}
+
+/**
  * Resolve the encrypt-only key needed when a child writes into another run's
  * stream. New descriptors include the owner's deployment ID; descriptors
  * created by older SDK versions fall back to loading the owning run.
@@ -2468,38 +2513,13 @@ export function getExternalRevivers(
         { workflowId: value.workflowId }
       ),
 
-    Request: (value) => {
-      const init: RequestInit & { duplex?: string } = {
-        method: value.method,
-        headers: new global.Headers(value.headers),
-        body: value.body,
-        duplex: value.duplex,
-      };
-      if (value.signal) init.signal = value.signal;
-      const request = new global.Request(value.url, init);
-      // The Request constructor creates an internal signal copy, so the
-      // abort-internal symbols set by reviveAbortSignal don't propagate.
-      // Re-tag the request's own signal so cancelAbortReaders can find it.
-      if (value.signal) copyAbortInternals(value.signal, request.signal);
-      return request;
-    },
-    Response: (value) => {
-      // Note: Response constructor only accepts status, statusText, and headers
-      // The type, url, and redirected properties are read-only and set by the constructor
-      return new global.Response(value.body, {
-        status: value.status,
-        statusText: value.statusText,
-        headers: new global.Headers(value.headers),
-      });
-    },
+    Request: (value) => reviveNativeRequest(global, value),
+    Response: (value) => reviveNativeResponse(global, value),
     ReadableStream: (value) => {
       // If this has bodyInit, it came from a Response constructor
       // Convert it to a REAL stream now that we're outside the workflow
       if ('bodyInit' in value) {
-        const bodyInit = value.bodyInit;
-        // Use the native Response constructor to properly convert BodyInit to ReadableStream
-        const response = new global.Response(bodyInit);
-        return response.body;
+        return reviveNativeBodyInitReadableStream(global, value.bodyInit);
       }
 
       if (value.type === 'bytes') {
@@ -2867,18 +2887,7 @@ function getStepRevivers(
 
     Request: (value) => {
       const responseWritable = value.responseWritable;
-      const init: RequestInit & { duplex?: string } = {
-        method: value.method,
-        headers: new global.Headers(value.headers),
-        body: value.body,
-        duplex: value.duplex,
-      };
-      if (value.signal) init.signal = value.signal;
-      const request = new global.Request(value.url, init);
-      // The Request constructor creates an internal signal copy, so the
-      // abort-internal symbols set by reviveAbortSignal don't propagate.
-      // Re-tag the request's own signal so cancelAbortReaders can find it.
-      if (value.signal) copyAbortInternals(value.signal, request.signal);
+      const request = reviveNativeRequest(global, value);
       if (responseWritable) {
         request.respondWith = async (response: Response) => {
           const writer = responseWritable.getWriter();
@@ -2888,23 +2897,12 @@ function getStepRevivers(
       }
       return request;
     },
-    Response: (value) => {
-      // Note: Response constructor only accepts status, statusText, and headers
-      // The type, url, and redirected properties are read-only and set by the constructor
-      return new global.Response(value.body, {
-        status: value.status,
-        statusText: value.statusText,
-        headers: new global.Headers(value.headers),
-      });
-    },
+    Response: (value) => reviveNativeResponse(global, value),
     ReadableStream: (value) => {
       // If this has bodyInit, it came from a Response constructor
       // Convert it to a REAL stream now that we're in the step environment
       if ('bodyInit' in value) {
-        const bodyInit = value.bodyInit;
-        // Use the native Response constructor to properly convert BodyInit to ReadableStream
-        const response = new global.Response(bodyInit);
-        return response.body;
+        return reviveNativeBodyInitReadableStream(global, value.bodyInit);
       }
 
       const readable = new WorkflowServerReadableStream(runId, value.name);
