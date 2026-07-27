@@ -589,7 +589,8 @@ export function createEventsStorage(
   // `hookLocks` serializes `hook_created` calls for the same
   // (runId, correlationId) so the "claim token, then write hook
   // entity + event" sequence runs to completion before another
-  // in-process invocation enters the dedup branch.
+  // in-process invocation enters the dedup branch. A run-level key
+  // preserves creation order across different Hooks in that run.
   const stepLocks = new Map<string, Promise<unknown>>();
   const hookLocks = new Map<string, Promise<unknown>>();
 
@@ -634,6 +635,8 @@ export function createEventsStorage(
       // observe a claim with no matching hook entity — which the
       // crash-recovery path below would misinterpret as a prior crash
       // and incorrectly fall through to a second hook entity write.
+      // A same-run creation queue also preserves source order before
+      // independent token locks can complete out of order.
       //
       // `hook_received` and `hook_disposed` share the same per-hook lock
       // so a resume's "hook exists and is not disposed, then append"
@@ -652,16 +655,17 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.hook.${tag}`
           : `${runId}-${data.correlationId}.hook`;
-        return withInProcessLock(hookLocks, lockKey, () => {
-          if (data.eventType === 'hook_created') {
-            return withHookTokenClaimLock(
-              basedir,
-              data.eventData.token,
-              createImpl
-            );
-          }
-          return createImpl();
-        });
+        if (data.eventType === 'hook_created') {
+          const creationLockKey = tag
+            ? `${runId}.hook-created.${tag}`
+            : `${runId}.hook-created`;
+          return withInProcessLock(hookLocks, lockKey, () =>
+            withInProcessLock(hookLocks, creationLockKey, () =>
+              withHookTokenClaimLock(basedir, data.eventData.token, createImpl)
+            )
+          );
+        }
+        return withInProcessLock(hookLocks, lockKey, createImpl);
       }
       return createImpl();
 
