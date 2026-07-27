@@ -27,6 +27,8 @@ await ensureWorldStarted();
 
 It is **idempotent** — it starts the World at most once per process, so it is safe to call from a hook that may run more than once. Re-enqueuing a run that is already progressing is harmless: the workflow handler is replay-idempotent, so duplicate enqueues converge rather than double-execute.
 
+It is also **fail-open**: it never throws. A transient startup failure (say, the database is briefly unreachable) is logged and retried on the next call rather than crashing your server. Awaiting it therefore only delays boot by the duration of the recovery scan — if you'd rather not gate startup on that at all, call it without `await` (recovery then completes in the background).
+
 You can call this regardless of which World you target. On the [Vercel World](/worlds/vercel) it is a no-op — delivery is push-based and the queue redelivers in-flight messages on its own, so there is no long-lived process to recover.
 
 If your server bootstrap already calls `world.start()` directly, replace that call with `ensureWorldStarted()`. The framework integrations invoke it at boot as well, so a direct `start()` would run *in addition* to it — safe, since `start()` must be idempotent, but the direct call bypasses the development-vs-production mode selection described below.

@@ -321,7 +321,8 @@ export interface StartOptions {
   /**
    * How to handle runs that were in flight when the process last stopped.
    * Defaults to `recover` when omitted. The shared `ensureWorldStarted()` helper
-   * sets this to `cancel` in development and `recover` in production.
+   * sets this to `cancel` in development, `recover` in production, and
+   * `ignore` when `WORKFLOW_SKIP_BOOT_RECOVERY=1` is set.
    */
   onRestart?: OnRestart;
 }

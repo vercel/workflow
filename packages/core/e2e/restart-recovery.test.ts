@@ -283,7 +283,9 @@ async function waitForCompleted(runId: string): Promise<void> {
   }
   throw new Error(
     `Run ${runId} did not recover to 'completed' within ${RECOVERY_TIMEOUT_MS}ms (last status: ${lastStatus}). ` +
-      `This indicates server startup did not start the World (ensureWorldStarted).`
+      `Either server startup did not start the World (ensureWorldStarted), or the run is ` +
+      `mid-step and deferred behind the inline-ownership lease ` +
+      `(WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS) longer than this test waits.`
   );
 }
 

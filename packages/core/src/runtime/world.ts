@@ -138,6 +138,18 @@ export const getWorld = async (): Promise<World> => {
 };
 
 /**
+ * Options for {@link ensureWorldStarted}.
+ */
+export interface EnsureWorldStartedOptions {
+  /**
+   * Whether this is a development server. In dev, in-flight runs from a previous
+   * session are cancelled rather than recovered (their workflow code may have
+   * changed). Defaults to `process.env.NODE_ENV === 'development'`.
+   */
+  dev?: boolean;
+}
+
+/**
  * Ensure the World's background tasks are started exactly once per process,
  * and that boot-time recovery (`reenqueueActiveRuns` for queue-backed Worlds)
  * runs. Framework integrations call this at server startup — e.g. a Next.js
@@ -176,16 +188,11 @@ export const getWorld = async (): Promise<World> => {
  * Failures are logged and the cached promise is cleared so a subsequent call
  * retries rather than reusing the rejection. Callers (and the docs samples)
  * can therefore `await ensureWorldStarted()` unguarded.
+ *
+ * First caller wins: because the start promise is cached, the recovery mode
+ * is decided by the options (and env) of the first invocation in the process;
+ * later calls with different options await the same start.
  */
-export interface EnsureWorldStartedOptions {
-  /**
-   * Whether this is a development server. In dev, in-flight runs from a previous
-   * session are cancelled rather than recovered (their workflow code may have
-   * changed). Defaults to `process.env.NODE_ENV === 'development'`.
-   */
-  dev?: boolean;
-}
-
 export const ensureWorldStarted = async (
   options?: EnsureWorldStartedOptions
 ): Promise<void> => {

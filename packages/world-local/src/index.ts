@@ -84,9 +84,10 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     }),
     async start(options?: StartOptions) {
       await initDataDir(mergedConfig.dataDir);
-      // Explicit caller mode (ensureWorldStarted passes 'recover'/'cancel')
-      // wins; otherwise fall back to the construction-time `recoverActiveRuns`
-      // flag (the vitest harness sets it false → 'ignore').
+      // Explicit caller mode (ensureWorldStarted passes 'recover'/'cancel',
+      // or 'ignore' under WORKFLOW_SKIP_BOOT_RECOVERY) wins; otherwise fall
+      // back to the construction-time `recoverActiveRuns` flag (the vitest
+      // harness sets it false → 'ignore').
       const onRestart =
         options?.onRestart ?? (recoverActiveRuns ? 'recover' : 'ignore');
       if (onRestart === 'ignore') {
