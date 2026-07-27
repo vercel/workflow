@@ -39,6 +39,7 @@ import {
   type Event,
   type EventDataPayloadField,
   type EventResult,
+  type EventResultFor,
   EventSchema,
   EventTypeSchema,
   type GetEventParams,
@@ -592,12 +593,12 @@ export async function getWorkflowRunEvents(
   } as PaginatedResponse<Event>;
 }
 
-export async function createWorkflowRunEvent(
+export async function createWorkflowRunEvent<T extends AnyEventRequest>(
   id: string | null,
-  data: AnyEventRequest,
+  data: T,
   params?: CreateEventParams,
   config?: APIConfig
-): Promise<EventResult> {
+): Promise<EventResultFor<T>> {
   try {
     // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
     // socket/headers timeouts, transient 5xx) in-process for event types that
@@ -607,10 +608,10 @@ export async function createWorkflowRunEvent(
     // the next queue delivery. Non-retryable
     // types (step_started, step_retrying, hook_received) run once. See
     // ./event-retry for the validated per-event classification.
-    return await withEventPostRetry(
+    return (await withEventPostRetry(
       () => createWorkflowRunEventInner(id, data, params, config),
       data.eventType
-    );
+    )) as EventResultFor<T>;
   } catch (err) {
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (

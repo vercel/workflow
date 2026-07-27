@@ -24,6 +24,7 @@ import {
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  type StartedWorkflowRun,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
   type World,
@@ -1068,6 +1069,7 @@ export function workflowEntrypoint(
                         ...Attribute.WorkflowStartedAt(workflowStartedAt),
                       });
                     } else {
+                      let startedRun: StartedWorkflowRun;
                       try {
                         recordRunStartedCreateStart(false);
                         const result = await world.events.create(
@@ -1075,12 +1077,7 @@ export function workflowEntrypoint(
                           runStartedEvent,
                           { requestId }
                         );
-                        if (!result.run) {
-                          throw new WorkflowRuntimeError(
-                            `Event creation for 'run_started' did not return the run entity for run "${runId}"`
-                          );
-                        }
-                        workflowRun = result.run;
+                        startedRun = result.run;
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
                         // Anchors RSFS — see the declaration above.
                         runStartedReceivedAtMs = Date.now();
@@ -1108,12 +1105,6 @@ export function workflowEntrypoint(
                             cursor = loaded.cursor ?? cursor;
                           }
                           preloadedEventLog = { events, cursor };
-                        }
-
-                        if (!workflowRun.startedAt) {
-                          throw new WorkflowRuntimeError(
-                            `Workflow run "${runId}" has no "startedAt" timestamp`
-                          );
                         }
                       } catch (err) {
                         // Run was concurrently completed/failed/cancelled
@@ -1148,21 +1139,22 @@ export function workflowEntrypoint(
                           return;
                         }
                       }
+                      workflowRun = startedRun;
 
-                      workflowStartedAt = +workflowRun.startedAt;
+                      workflowStartedAt = +startedRun.startedAt;
 
                       span?.setAttributes({
-                        ...Attribute.WorkflowRunStatus(workflowRun.status),
+                        ...Attribute.WorkflowRunStatus(startedRun.status),
                         ...Attribute.WorkflowStartedAt(workflowStartedAt),
                       });
 
-                      if (workflowRun.status !== 'running') {
+                      if (startedRun.status !== 'running') {
                         // Workflow has already completed or failed, so we can skip it
                         runtimeLogger.info(
                           'Workflow already completed or failed, skipping',
                           {
                             workflowRunId: runId,
-                            status: workflowRun.status,
+                            status: startedRun.status,
                           }
                         );
 

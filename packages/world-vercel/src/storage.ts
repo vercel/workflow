@@ -1,4 +1,8 @@
-import type { Storage } from '@workflow/world';
+import type {
+  AnyEventRequest,
+  CreateEventParams,
+  Storage,
+} from '@workflow/world';
 import {
   createWorkflowRunEvent,
   getEvent,
@@ -37,8 +41,11 @@ export function createStorage(config?: APIConfig): Storage {
         listWorkflowRunSteps(params, config)) as Storage['steps']['list'],
     },
     events: {
-      create: (runId, data, params) =>
-        createWorkflowRunEvent(runId, data, params, config),
+      create: <T extends AnyEventRequest>(
+        runId: string | null,
+        data: T,
+        params?: CreateEventParams
+      ) => createWorkflowRunEvent(runId, data, params, config),
       get: (runId, eventId, params) => getEvent(runId, eventId, params, config),
       list: (params) => getWorkflowRunEvents(params, config),
       listByCorrelationId: (params) => getWorkflowRunEvents(params, config),

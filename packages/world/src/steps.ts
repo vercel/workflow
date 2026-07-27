@@ -88,6 +88,8 @@ export function isTerminalStepStatus(
 }
 
 export type Step = z.infer<typeof StepSchema>;
+/** A step with its first start time materialized. */
+export type StartedStep = Step & { startedAt: Date };
 
 /**
  * Step with input/output fields excluded (when resolveData='none').

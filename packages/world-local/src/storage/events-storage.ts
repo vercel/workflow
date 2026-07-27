@@ -10,8 +10,11 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  AnyEventRequest,
+  CreateEventParams,
   Event,
   EventResult,
+  EventResultFor,
   Hook,
   SerializedData,
   Step,
@@ -50,9 +53,9 @@ import {
   jsonReviver,
   listJSONFiles,
   paginatedFileSystemQuery,
+  promoteExclusive,
   readJSON,
   readJSONWithFallback,
-  promoteExclusive,
   resolveWithinBase,
   taggedPath,
   write,
@@ -70,8 +73,8 @@ import {
   mintRunDominantEventKey,
   monotonicUlid,
   pendingHookEventPath,
-  releaseHookTokenClaimIfOwnedBy,
   reapPendingHookEvents,
+  releaseHookTokenClaimIfOwnedBy,
   runTerminalMarkerPath,
 } from './helpers.js';
 import {
@@ -625,7 +628,11 @@ export function createEventsStorage(
 
   return {
     clearCache,
-    async create(runId, data, params): Promise<EventResult> {
+    async create<T extends AnyEventRequest>(
+      runId: string | null,
+      data: T,
+      params?: CreateEventParams
+    ): Promise<EventResultFor<T>> {
       // Validate request-supplied IDs before they're concatenated into
       // filesystem paths. This is the primary defense against path traversal
       // attacks where a client supplies runId / correlationId values like
@@ -653,7 +660,11 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.${tag}`
           : `${runId}-${data.correlationId}`;
-        return withInProcessLock(stepLocks, lockKey, () => createImpl());
+        return (await withInProcessLock(
+          stepLocks,
+          lockKey,
+          createImpl
+        )) as EventResultFor<T>;
       }
       // `hook_created` is serialized per-(runId, hookId) so the
       // "claim token, write hook entity, write event" sequence runs to
@@ -682,9 +693,13 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.hook.${tag}`
           : `${runId}-${data.correlationId}.hook`;
-        return withInProcessLock(hookLocks, lockKey, () => createImpl());
+        return (await withInProcessLock(
+          hookLocks,
+          lockKey,
+          createImpl
+        )) as EventResultFor<T>;
       }
-      return createImpl();
+      return (await createImpl()) as EventResultFor<T>;
 
       async function createImpl(): Promise<EventResult> {
         // Most paths use the freshly-generated candidate eventId. The

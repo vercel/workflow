@@ -1,7 +1,28 @@
 import { runInNewContext } from 'node:vm';
 import { FatalError } from '@workflow/errors';
-import { describe, expect, it } from 'vitest';
+import type {
+  EventRequestOfType,
+  EventResultFor,
+  StartedStep,
+  StartedWorkflowRun,
+  WorkflowRun,
+} from '@workflow/world';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import { isAbortError, promoteAbortErrorToFatal } from './types.js';
+
+describe('EventResultFor', () => {
+  it('requires the entity returned by runtime setup events', () => {
+    expectTypeOf<
+      EventResultFor<EventRequestOfType<'run_created'>>['run']
+    >().toEqualTypeOf<WorkflowRun>();
+    expectTypeOf<
+      EventResultFor<EventRequestOfType<'run_started'>>['run']
+    >().toEqualTypeOf<StartedWorkflowRun>();
+    expectTypeOf<
+      EventResultFor<EventRequestOfType<'step_started'>>['step']
+    >().toEqualTypeOf<StartedStep>();
+  });
+});
 
 describe('isAbortError', () => {
   it('recognizes an AbortError from another realm', () => {
