@@ -5,7 +5,9 @@ import {
   RunExpiredError,
 } from '@workflow/errors';
 import {
+  type CreateEventParams,
   type CreateEventRequest,
+  type EventResult,
   type SerializedData,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
@@ -22,7 +24,11 @@ import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
-import { queueMessage } from './helpers.js';
+import {
+  type MutableEventLog,
+  queueMessage,
+  withPreconditionRetry,
+} from './helpers.js';
 
 /**
  * Extracts W3C trace context headers from a trace carrier for HTTP propagation.
@@ -47,6 +53,14 @@ export interface SuspensionHandlerParams {
   run: WorkflowRun;
   span?: Span;
   requestId?: string;
+  /**
+   * The runtime's loaded event log. Each event creation is sent with this
+   * snapshot's `stateUpdatedAt` and, if the backend rejects it as stale (412),
+   * the log is reloaded in place and the create is retried — see
+   * `withPreconditionRetry`. Guarding per-create (rather than the whole
+   * suspension) ensures a retry never re-issues an already-created event.
+   */
+  eventLog?: MutableEventLog;
 }
 
 export interface SuspensionHandlerResult {
@@ -54,23 +68,26 @@ export interface SuspensionHandlerResult {
 }
 
 async function createHookEvent({
-  world,
   runId,
   hookEvent,
   queueItem,
   requestId,
+  createEvent,
 }: {
-  world: World;
   runId: string;
   hookEvent: CreateEventRequest;
   queueItem: HookInvocationQueueItem;
   requestId?: string;
+  createEvent: (
+    data: CreateEventRequest,
+    params?: CreateEventParams
+  ) => Promise<EventResult>;
 }): Promise<{
   hasHookConflict: boolean;
   hasAwaitedHookCreation: boolean;
 }> {
   try {
-    const result = await world.events.create(runId, hookEvent, {
+    const result = await createEvent(hookEvent, {
       requestId,
     });
 
@@ -130,10 +147,28 @@ export async function handleSuspension({
   run,
   span,
   requestId,
+  eventLog,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
   const workflowName = run.workflowName;
   const workflowStartedAt = run.startedAt ? +run.startedAt : Date.now();
+
+  // Create an event with the optimistic-concurrency guard when the caller
+  // supplied a loaded event log; otherwise create it directly (callers without
+  // a replay snapshot, e.g. tests). The guard reloads + retries on a stale
+  // (412) rejection, keeping `eventLog` current in place. All suspension events
+  // are non-run_created events on this run's `runId`.
+  const createGuarded = (
+    data: CreateEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> => {
+    if (!eventLog) {
+      return world.events.create(runId, data, params);
+    }
+    return withPreconditionRetry(runId, eventLog, (stateUpdatedAt) =>
+      world.events.create(runId, data, { ...params, stateUpdatedAt })
+    );
+  };
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
@@ -195,11 +230,11 @@ export async function handleSuspension({
     const results = await Promise.all(
       hookEvents.map(({ hookEvent, queueItem }) =>
         createHookEvent({
-          world,
           runId,
           hookEvent,
           queueItem,
           requestId,
+          createEvent: createGuarded,
         })
       )
     );
@@ -222,7 +257,7 @@ export async function handleSuspension({
           },
         };
         try {
-          await world.events.create(runId, hookDisposedEvent, { requestId });
+          await createGuarded(hookDisposedEvent, { requestId });
         } catch (err) {
           if (EntityConflictError.is(err)) {
             // Hook was already disposed by a concurrent invocation — safe to skip
@@ -297,7 +332,7 @@ export async function handleSuspension({
             },
           };
           try {
-            await world.events.create(runId, stepEvent, { requestId });
+            await createGuarded(stepEvent, { requestId });
           } catch (err) {
             if (EntityConflictError.is(err)) {
               runtimeLogger.info('Step already exists, continuing', {
@@ -352,7 +387,7 @@ export async function handleSuspension({
             },
           };
           try {
-            await world.events.create(runId, waitEvent, { requestId });
+            await createGuarded(waitEvent, { requestId });
           } catch (err) {
             if (EntityConflictError.is(err)) {
               runtimeLogger.info('Wait already exists, continuing', {

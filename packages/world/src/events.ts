@@ -414,6 +414,24 @@ export interface CreateEventParams {
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
   /**
+   * Epoch ms (the ULID time of the latest event the runtime has loaded during
+   * replay). Sent by replay-context creates so the backend can reject the event
+   * when a newer out-of-band event was recorded after this snapshot, enabling
+   * an optimistic-concurrency guard. Omitted by callers without a loaded event
+   * log.
+   *
+   * Backend contract (for World implementers who want to support the guard):
+   * maintain a per-run marker holding the ULID time of the most recent
+   * *externally-originated* event — a `hook_received` or `step_completed`
+   * created **without** a `stateUpdatedAt` (replay-origin events carry one and
+   * must not advance the marker). On a create that carries `stateUpdatedAt`,
+   * reject with 412 when `stateUpdatedAt < marker` (strictly older); an equal
+   * timestamp must pass (anti-livelock, so an up-to-date client is never
+   * rejected). A backend that ignores this field simply disables the guard —
+   * the client falls open and behaves as before.
+   */
+  stateUpdatedAt?: number;
+  /**
    * Timestamp for when the event occurred on the client side. Worlds that
    * support this can persist it separately from `createdAt`, which represents
    * when the backing service accepted or stored the event.

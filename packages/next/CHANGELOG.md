@@ -1,5 +1,29 @@
 # @workflow/next
 
+## 4.1.2
+
+### Patch Changes
+
+- [#3071](https://github.com/vercel/workflow/pull/3071) [`58fb594`](https://github.com/vercel/workflow/commit/58fb594768abc0c05f6327193867b908e8a60ef4) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Update `next` devDependency to 16.2.11 to address CVE-2026-64641
+
+- Updated dependencies []:
+  - @workflow/core@4.6.2
+  - @workflow/builders@4.1.3
+
+## 4.1.1
+
+### Patch Changes
+
+- [#2813](https://github.com/vercel/workflow/pull/2813) [`ad99be5`](https://github.com/vercel/workflow/commit/ad99be51029d4eb871c7a130d3e0d44ad3b4b232) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Ignore custom Next.js distDir output in the development workflow watcher.
+
+- [#2732](https://github.com/vercel/workflow/pull/2732) [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Respect framework base paths when routing workflow traffic and expose health checks on generated Next.js workflow routes.
+
+- [#2693](https://github.com/vercel/workflow/pull/2693) [`3b46dab`](https://github.com/vercel/workflow/commit/3b46dab14801c735848d90d173cf57c4fa132bc9) Thanks [@ijjk](https://github.com/ijjk)! - Disable Workflow loader source-map emission for node_modules files to avoid noisy SWC input source-map warnings.
+
+- Updated dependencies [[`0422a0e`](https://github.com/vercel/workflow/commit/0422a0e51b3299bbd8570e0055419659b8ba3fe1), [`f1f7e1d`](https://github.com/vercel/workflow/commit/f1f7e1dc25c7346f2ac65e3e8a0a15a6e4fd7ccd), [`b1d1a06`](https://github.com/vercel/workflow/commit/b1d1a066a5710fbd5f97b69ae4dd8a4d892b4d57), [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94)]:
+  - @workflow/core@4.6.1
+  - @workflow/builders@4.1.2
+
 ## 4.1.0
 
 ### Minor Changes

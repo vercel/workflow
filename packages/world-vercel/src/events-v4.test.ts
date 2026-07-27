@@ -5,7 +5,7 @@ import {
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { encode } from 'cbor-x';
+import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { describe, expect, it } from 'vitest';
 import {
@@ -226,6 +226,109 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     expect(result.runId).toBe('wrun_1');
     expect(result.createdAt).toBe('2026-06-10T00:00:00.000Z');
     expect(result.body.step).toMatchObject({ stepId: 'step_1' });
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('forwards stateUpdatedAt in the frame meta (precondition guard)', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+          const metaLen = new DataView(
+            bytes.buffer,
+            bytes.byteOffset,
+            bytes.byteLength
+          ).getUint32(0, false);
+          capturedMeta = decode(bytes.subarray(4, 4 + metaLen)) as Record<
+            string,
+            unknown
+          >;
+          return encode({ wait: { waitId: 'wait_1' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: 5,
+        correlationId: 'wait_1',
+        stateUpdatedAt: 1747742400000,
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.eventType).toBe('wait_created');
+    expect(capturedMeta?.stateUpdatedAt).toBe(1747742400000);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('omits stateUpdatedAt from the frame meta when not set', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+          const metaLen = new DataView(
+            bytes.buffer,
+            bytes.byteOffset,
+            bytes.byteLength
+          ).getUint32(0, false);
+          capturedMeta = decode(bytes.subarray(4, 4 + metaLen)) as Record<
+            string,
+            unknown
+          >;
+          return encode({ wait: { waitId: 'wait_1' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: 5,
+        correlationId: 'wait_1',
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.eventType).toBe('wait_created');
+    expect('stateUpdatedAt' in (capturedMeta ?? {})).toBe(false);
     agent.assertNoPendingInterceptors();
   });
 });
