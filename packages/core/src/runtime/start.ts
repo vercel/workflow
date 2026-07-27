@@ -17,6 +17,7 @@ import { isRetryableWorldError } from '../classify-error.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import type { Serializable } from '../schemas.js';
+import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
 import {
   dehydrateWorkflowArguments,
   SerializationFormat,
@@ -434,6 +435,21 @@ export async function start<TArgs extends unknown[], TResult>(
       });
       const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
 
+      // Derive and publish the run's X25519 public key so that cross-run
+      // writers (a hook resumption from another deployment, a sibling writing
+      // into a forwarded stream) can seal payloads *to* this run without
+      // holding its symmetric key — and without paying a `run-key` API call.
+      //
+      // Presence of this field is the writer-side gate for sealed envelopes,
+      // so it must only be stamped when this runtime could itself open one.
+      // That holds by construction here: derivation and `encp` dispatch live
+      // in the same package, so any core that can stamp can also open. Runs
+      // are pinned to their creating deployment, so the capability this
+      // attests to is still accurate at resume time.
+      const encryptionPublicKey = rawKey
+        ? bytesToBase64((await deriveRunKeyPair(rawKey)).publicKey)
+        : undefined;
+
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it
       // Compress workflow arguments only when the run itself is marked as
@@ -477,6 +493,7 @@ export async function start<TArgs extends unknown[], TResult>(
               workflowName: workflowName,
               input: workflowArguments,
               executionContext,
+              ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
               ...attributeSeed,
             },
           },
@@ -495,6 +512,7 @@ export async function start<TArgs extends unknown[], TResult>(
                     workflowName,
                     specVersion,
                     executionContext,
+                    ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
                     ...attributeSeed,
                   },
                 }

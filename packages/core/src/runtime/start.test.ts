@@ -15,6 +15,13 @@ import {
   vi,
 } from 'vitest';
 import { runtimeLogger } from '../logger.js';
+import {
+  base64ToBytes,
+  bytesToBase64,
+  deriveRunKeyPair,
+  open,
+  seal,
+} from '../sealed-box.js';
 import type { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
 import { _resetLatestNoOpWarnForTests, start } from './start.js';
@@ -460,6 +467,97 @@ describe('start', () => {
           deploymentId: 'deploy_explicit',
         })
       );
+    });
+
+    describe('encryptionPublicKey stamping', () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      function stampedKey(): string | undefined {
+        return mockEventsCreate.mock.calls[0][1].eventData.encryptionPublicKey;
+      }
+
+      it('stamps the run public key derived from the per-run key material', async () => {
+        const material = new Uint8Array(32).fill(0x5a);
+        mockGetEncryptionKeyForRun.mockResolvedValue(material);
+
+        await start(validWorkflow, []);
+
+        const runId = mockEventsCreate.mock.calls[0][0];
+        const expected = bytesToBase64(
+          (await deriveRunKeyPair(material)).publicKey
+        );
+
+        // The stamped key must be exactly what the owning deployment will
+        // re-derive from the same material at resume time — otherwise sealed
+        // payloads would be addressed to a key nobody holds the scalar for.
+        expect(stampedKey()).toBe(expected);
+        expect(runId).toMatch(/^wrun_/);
+      });
+
+      it('publishes a key that actually opens payloads sealed to it', async () => {
+        // End-to-end proof that the published key is usable: seal to the
+        // stamped value, then open with the keypair the run's own deployment
+        // would derive.
+        const material = new Uint8Array(32).fill(0x11);
+        mockGetEncryptionKeyForRun.mockResolvedValue(material);
+
+        await start(validWorkflow, []);
+
+        const publicKey = base64ToBytes(stampedKey()!);
+        expect(publicKey).toBeDefined();
+
+        const plaintext = new TextEncoder().encode('sealed by a stranger');
+        const sealed = await seal(publicKey!, plaintext);
+        const opened = await open(await deriveRunKeyPair(material), sealed);
+        expect(new TextDecoder().decode(opened)).toBe('sealed by a stranger');
+      });
+
+      it('omits the public key when encryption is disabled', async () => {
+        // No key material means encryption is off for this run; stamping a
+        // key would advertise a sealing capability the run cannot honor.
+        mockGetEncryptionKeyForRun.mockResolvedValue(undefined);
+
+        await start(validWorkflow, []);
+
+        expect(stampedKey()).toBeUndefined();
+        expect(
+          'encryptionPublicKey' in mockEventsCreate.mock.calls[0][1].eventData
+        ).toBe(false);
+      });
+
+      it('mirrors the public key onto the queued runInput for resilient start', async () => {
+        // If the run_created write fails, the server recreates the run from
+        // the queue payload. Without the key there, such a run would silently
+        // lose the ability to receive sealed writes.
+        const material = new Uint8Array(32).fill(0x77);
+        mockGetEncryptionKeyForRun.mockResolvedValue(material);
+
+        await start(validWorkflow, []);
+
+        const queuePayload = mockQueue.mock.calls[0][1];
+        expect(queuePayload.runInput.encryptionPublicKey).toBe(stampedKey());
+      });
+
+      it('derives distinct public keys for distinct runs', async () => {
+        // Per-run isolation: two runs on the same deployment get different
+        // key material, so their public keys must differ too.
+        mockGetEncryptionKeyForRun.mockImplementation(async (runId: string) => {
+          const material = new Uint8Array(32);
+          material.set(new TextEncoder().encode(runId.slice(-8)));
+          return material;
+        });
+
+        await start(validWorkflow, []);
+        await start(validWorkflow, []);
+
+        const first = mockEventsCreate.mock.calls[0][1].eventData;
+        const second = mockEventsCreate.mock.calls[1][1].eventData;
+        expect(first.encryptionPublicKey).toBeDefined();
+        expect(second.encryptionPublicKey).toBeDefined();
+        expect(first.encryptionPublicKey).not.toBe(second.encryptionPublicKey);
+      });
     });
   });
 
