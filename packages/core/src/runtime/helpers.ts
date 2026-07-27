@@ -399,12 +399,15 @@ function recordRequestedEventCursor(
 
 /**
  * Appends events whose IDs are not already present in `target`.
+ *
+ * Pass the IDs currently present in `target` when appending repeatedly to the
+ * same array. The set is updated alongside `target`.
  */
 export function appendUniqueEvents(
   target: Event[],
-  events: readonly Event[]
+  events: readonly Event[],
+  targetIds = new Set(target.map((event) => event.eventId))
 ): void {
-  const targetIds = new Set(target.map((event) => event.eventId));
   for (const event of events) {
     if (!targetIds.has(event.eventId)) {
       targetIds.add(event.eventId);
@@ -470,6 +473,7 @@ export async function loadWorkflowRunEvents(
       });
 
       const loadedEvents: Event[] = [];
+      const loadedEventIds = new Set<string>();
       const requestedCursors = new Set<string>();
       let cursor: string | null = afterCursor ?? null;
       let hasMore = true;
@@ -508,6 +512,7 @@ export async function loadWorkflowRunEvents(
               { workflowRunId: runId }
             );
             loadedEvents.length = 0;
+            loadedEventIds.clear();
             requestedCursors.clear();
             cursor = null;
             retriedWithoutCursor = true;
@@ -516,7 +521,7 @@ export async function loadWorkflowRunEvents(
           throw error;
         }
 
-        appendUniqueEvents(loadedEvents, response.data);
+        appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
         hasMore = response.hasMore;
         assertEventPaginationProgress(
           runId,
