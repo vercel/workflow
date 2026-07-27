@@ -76,10 +76,3 @@ export function createWorld(config?: APIConfig): World {
     resolveLatestDeploymentId: createResolveLatestDeploymentId(config),
   };
 }
-
-/**
- * @deprecated Use `createWorld()` instead.
- */
-export function createVercelWorld(config?: APIConfig): World {
-  return createWorld(config);
-}

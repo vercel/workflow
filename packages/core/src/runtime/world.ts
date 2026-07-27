@@ -18,10 +18,6 @@ const globalSymbols: typeof globalThis & {
 
 export type WorldFactoryModule = {
   createWorld?: () => World | Promise<World>;
-  /** @deprecated World packages should export `createWorld()` instead. */
-  createLocalWorld?: () => World | Promise<World>;
-  /** @deprecated World packages should export `createWorld()` instead. */
-  createVercelWorld?: () => World | Promise<World>;
   default?: (() => World | Promise<World>) | World;
 };
 
@@ -29,21 +25,14 @@ export type WorldFactoryModule = {
  * Create a World instance from a world factory module. Shared by
  * `createWorld()` (for the statically injected target world module) and
  * tooling that loads a world module dynamically (e.g. the Nitro dev
- * handler and `@workflow/world-testing`). Legacy world-specific factory
- * names are still accepted for compatibility, but world packages should
- * export `createWorld()`.
+ * handler and `@workflow/world-testing`). World packages should export
+ * `createWorld()`.
  */
 export function createWorldFromModule(
   mod: WorldFactoryModule
 ): World | Promise<World> {
   if (typeof mod.createWorld === 'function') {
     return mod.createWorld();
-  }
-  if (typeof mod.createLocalWorld === 'function') {
-    return mod.createLocalWorld();
-  }
-  if (typeof mod.createVercelWorld === 'function') {
-    return mod.createVercelWorld();
   }
   if (typeof mod.default === 'function') {
     return mod.default();
