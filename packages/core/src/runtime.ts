@@ -1,4 +1,3 @@
-import assert from 'node:assert/strict';
 import { types } from 'node:util';
 import {
   CorruptedEventLogError,
@@ -1090,15 +1089,22 @@ export function workflowEntrypoint(
                           let events = result.events;
                           let cursor = result.cursor ?? null;
                           if (result.hasMore) {
-                            assert(
-                              cursor,
-                              'Partial event preload has no cursor'
-                            );
                             const loaded = await loadWorkflowRunEvents(
                               runId,
-                              cursor
+                              cursor ?? undefined
                             );
-                            events = events.concat(loaded.events);
+                            if (cursor) {
+                              const preloadedIds = new Set(
+                                events.map((event) => event.eventId)
+                              );
+                              events = events.concat(
+                                loaded.events.filter(
+                                  (event) => !preloadedIds.has(event.eventId)
+                                )
+                              );
+                            } else {
+                              events = loaded.events;
+                            }
                             cursor = loaded.cursor ?? cursor;
                           }
                           preloadedEventLog = { events, cursor };
