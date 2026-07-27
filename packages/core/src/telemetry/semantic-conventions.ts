@@ -408,7 +408,7 @@ export const QueueSerializeTimeMs = SemanticConvention<number>(
   'workflow.queue.serialize_time_ms'
 );
 
-// Payload compression attributes (gzip codec, specVersion >= 5)
+// Payload compression attributes (zstd preferred, gzip fallback; specVersion >= 5)
 //
 // Sizes are measured at the compression boundary: before encryption on the
 // write path and after decryption on the read path. They therefore reflect
