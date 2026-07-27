@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { types } from 'node:util';
 import { runInContext, createContext as vmCreateContext } from 'node:vm';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import seedrandom from 'seedrandom';
@@ -8,6 +10,36 @@ export interface CreateContextOptions {
   seed: string;
   // Fixed timestamp for deterministic Date operations
   fixedTimestamp: number;
+}
+
+// WebCrypto digest algorithm names → node:crypto (OpenSSL) names.
+const DIGEST_ALGORITHMS: Record<string, string> = {
+  'SHA-1': 'sha1',
+  'SHA-256': 'sha256',
+  'SHA-384': 'sha384',
+  'SHA-512': 'sha512',
+};
+
+// WebCrypto BufferSource conversion. The `util.types` brand checks work
+// across vm realms, and node:crypto's `hash.update()` reads view ranges from
+// internal slots (own properties shadowing `byteOffset`/`byteLength` are
+// ignored) — matching WebCrypto, which also reads internal slots.
+function toDigestInput(
+  data: ArrayBuffer | ArrayBufferView
+): NodeJS.ArrayBufferView {
+  if (types.isTypedArray(data) || types.isDataView(data)) {
+    // WebCrypto's BufferSource excludes SharedArrayBuffer-backed views.
+    if (types.isSharedArrayBuffer(data.buffer)) {
+      throw new TypeError(
+        'crypto.subtle.digest does not accept SharedArrayBuffer-backed views'
+      );
+    }
+    return data;
+  }
+  if (!types.isArrayBuffer(data)) {
+    throw new TypeError('data must be an ArrayBuffer or ArrayBufferView');
+  }
+  return new Uint8Array(data);
 }
 
 /**
@@ -58,7 +90,52 @@ export function createContext(options: CreateContextOptions) {
 
   const randomUUID = createRandomUUID(rng);
 
-  const boundDigest = originalSubtle.digest.bind(originalSubtle);
+  // The sandbox must not hand workflow code a promise that settles on host
+  // timing or a way to observe host state (best-effort, for non-adversarial
+  // code): every promise a workflow creates settles either from the event log
+  // or within its own microtask cascade, so a suspended VM is fully quiescent
+  // and can be retained across inline steps.
+  //
+  // - `Atomics.waitAsync` is a wall-clock timer (via SharedArrayBuffer).
+  // - The async `WebAssembly` entry points resolve on compile-thread timing;
+  //   the synchronous `new WebAssembly.Module()` / `Instance()` remain.
+  // - `WeakRef.deref()` and finalizer callbacks observe GC timing.
+  // - Dynamic `import()` settles within a microtask (rejected: no
+  //   `importModuleDynamically`), so it needs no handling.
+  // - All `crypto.subtle` methods except the deterministic `digest` override
+  //   below throw explicitly (see the subtle proxy) — binding them to the
+  //   host subtle would hand workflows a host-timing promise.
+  const intrinsics = g as unknown as Record<string, Record<string, unknown>>;
+  delete intrinsics.Atomics.waitAsync;
+  delete intrinsics.WebAssembly.compile;
+  delete intrinsics.WebAssembly.instantiate;
+  delete intrinsics.WebAssembly.compileStreaming;
+  delete intrinsics.WebAssembly.instantiateStreaming;
+  delete intrinsics.WeakRef;
+  delete intrinsics.FinalizationRegistry;
+
+  // `crypto.subtle.digest` computes synchronously via node:crypto, so its
+  // promise settles on a deterministic microtask instead of host threadpool
+  // timing — a digest can never advance a suspended workflow, and
+  // digest-using VMs stay retainable. Values are byte-identical to WebCrypto.
+  const digest = async (
+    algorithm: string | { name: string },
+    data: ArrayBuffer | ArrayBufferView
+  ): Promise<ArrayBuffer> => {
+    const name = typeof algorithm === 'string' ? algorithm : algorithm.name;
+    const ossl = DIGEST_ALGORITHMS[name.toUpperCase()];
+    if (!ossl) {
+      throw new DOMException(
+        `Unrecognized algorithm name: ${name}`,
+        'NotSupportedError'
+      );
+    }
+    const hash = createHash(ossl).update(toDigestInput(data)).digest();
+    // Copy out: small Buffers share the internal pool allocation.
+    const out = new ArrayBuffer(hash.byteLength);
+    new Uint8Array(out).set(hash);
+    return out;
+  };
 
   g.crypto = new Proxy(originalCrypto, {
     get(target, prop) {
@@ -71,16 +148,20 @@ export function createContext(options: CreateContextOptions) {
       if (prop === 'subtle') {
         return new Proxy(originalSubtle, {
           get(target, prop) {
-            if (prop === 'generateKey') {
-              return () => {
-                throw new WorkflowRuntimeError(
-                  '`crypto.subtle.generateKey()` is not available inside a workflow function. Move key generation to a step function where full Node.js crypto is available.'
-                );
-              };
-            } else if (prop === 'digest') {
-              return boundDigest;
+            if (prop === 'digest') {
+              return digest;
             }
-            return target[prop as keyof typeof originalSubtle];
+            const value = target[prop as keyof typeof originalSubtle];
+            if (typeof value !== 'function') {
+              return value;
+            }
+            // Every other subtle method (`encrypt`, `sign`, `importKey`, …)
+            // settles on host threadpool timing, which cannot be replayed.
+            return () => {
+              throw new WorkflowRuntimeError(
+                `\`crypto.subtle.${String(prop)}()\` is not available inside a workflow function. Move it to a step function where full Node.js crypto is available.`
+              );
+            };
           },
         });
       }
