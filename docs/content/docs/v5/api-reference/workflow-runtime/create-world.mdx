@@ -2,14 +2,14 @@
 title: createWorld
 description: Create a new World instance from environment configuration.
 type: reference
-summary: Use createWorld to instantiate a World from WORKFLOW_TARGET_WORLD environment configuration, bypassing the cached instance.
+summary: Use createWorld to construct a fresh instance of the build-injected World, bypassing the cached instance.
 prerequisites:
   - /docs/api-reference/workflow-runtime/get-world
 related:
   - /docs/api-reference/workflow-runtime/set-world
 ---
 
-Creates a new [World](/docs/api-reference/workflow-runtime/world) instance based on environment configuration. The `WORKFLOW_TARGET_WORLD` environment variable determines which World implementation is instantiated (for example the local development World or the Vercel production World).
+Creates a new [World](/docs/api-reference/workflow-runtime/world) instance by invoking the World factory that was statically injected into the bundle at build time. Which implementation that is (for example the local development World or the Vercel production World) is decided when the app is built, via the `WORKFLOW_TARGET_WORLD` environment variable — changing the variable at runtime has no effect.
 
 Unlike [`getWorld()`](/docs/api-reference/workflow-runtime/get-world), which caches a singleton instance, `createWorld()` constructs a fresh instance on every call. Application code should almost always use `getWorld()` — `createWorld()` is for infrastructure code that manages World lifecycles itself.
 
@@ -23,7 +23,7 @@ const world = await createWorld(); // [!code highlight]
 
 ### Parameters
 
-This function does not accept any parameters. Configuration is read from environment variables.
+This function does not accept any parameters. Configuration comes from the World that was injected at build time (World implementations typically read their own settings from environment variables when constructed).
 
 ### Returns
 

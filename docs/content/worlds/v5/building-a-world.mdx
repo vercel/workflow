@@ -36,18 +36,36 @@ interface WorldCapabilities {
   hookRetention?: {
     active: boolean;
   };
+  preconditionGuard?: boolean;
+  maxConcurrency?: boolean;
 }
 
 interface World extends Storage, Queue, Streamer {
+  specVersion: number;
   capabilities?: WorldCapabilities;
+  analytics?: Analytics;
   start?(): Promise<void>;
   close?(): Promise<void>;
   getEncryptionKeyForRun?(run: WorkflowRun): Promise<Uint8Array | undefined>;
   getEncryptionKeyForRun?(runId: string, context?: Record<string, unknown>): Promise<Uint8Array | undefined>;
+  createRunId?(options?: Readonly<Record<string, unknown>>): string;
+  describeRun?(run: Readonly<Record<string, unknown>>): Record<string, string | null> | null | Promise<Record<string, string | null> | null>;
+  processExitTriggersQueueRedelivery?: boolean;
 }
 ```
 
-The optional `capabilities` object advertises additional behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention. The optional `start()` method initializes background tasks (for example, queue polling). The optional `close()` method releases resources like connection pools and listeners. The optional `getEncryptionKeyForRun()` method returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
+The required `specVersion` declares which Workflow protocol spec version the World implements — the runtime requires an exact match with its own current spec version before it will create or replay runs, so bump it together with SDK upgrades.
+
+The optional `capabilities` object advertises additional behavior, and every capability **fails closed**: a missing member means "unsupported", and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention. Set `preconditionGuard` only when the World actually rejects event creations carrying a stale `stateUpdatedAt` snapshot with a `PreconditionFailedError` — advertising it without the fence enables runtime optimizations with nothing behind them. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption (used by `WORKFLOW_SEQUENTIAL_REPLAYS=1`).
+
+The remaining optional members:
+
+- `analytics` provides metadata-only listings of runs, steps, events, hooks, waits, and attributes for observability surfaces — `workflow inspect` and the local web UI read from it, including attribute search.
+- `start()` initializes background tasks (for example, queue polling); `close()` releases resources like connection pools and listeners.
+- `getEncryptionKeyForRun()` returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
+- `createRunId()` mints the ID for a new run. Implementations may embed world-specific metadata as long as the result stays a valid ULID — this is how [multi-region placement](/worlds/vercel#multi-region) works: `@workflow/world-vercel` reads `options.region` (the `start()` options bag) and embeds a region tag. When omitted, the runtime generates a standard monotonic ULID.
+- `describeRun()` returns world-specific display fields for a run (for example, a region decoded from its ID) that tooling like `workflow inspect` renders as extra columns. It must be cheap, tolerate missing fields, and never throw.
+- `processExitTriggersQueueRedelivery` tells the runtime how to handle an exhausted replay budget: `true` means it exits and relies on queue redelivery; `false` (or absent) means it writes `run_failed` best-effort and returns.
 
 ## The Event Log Model
 
@@ -65,10 +83,13 @@ interface Storage {
   runs: {
     get(id: string, params?: GetWorkflowRunParams): Promise<WorkflowRun>;
     list(params?: ListWorkflowRunsParams): Promise<PaginatedResponse<WorkflowRun>>;
+    // Optional: backs setAttributes(). Omitting it means run attributes are
+    // unsupported on this World — the SDK helper no-ops with a warning.
+    experimentalSetAttributes?(runId: string, changes: AttributeChange[], options?: { allowReservedAttributes?: boolean }): Promise<ExperimentalSetAttributesResult>;
   };
 
   steps: {
-    get(runId: string | undefined, stepId: string, params?: GetStepParams): Promise<Step>;
+    get(runId: string, stepId: string, params?: GetStepParams): Promise<Step>;
     list(params: ListWorkflowRunStepsParams): Promise<PaginatedResponse<Step>>;
   };
 
@@ -157,6 +178,8 @@ The SDK also sends an internal `HealthCheckPayload` through the same workflow qu
 - Support configurable retry policies
 - Track attempt counts for observability
 - Implement idempotency using the `idempotencyKey` option when provided
+- Honor the `delaySeconds` option — waits (`sleep()`) are delivered as ordinary delayed continuations on the workflow queue, so a World that ignores `delaySeconds` redelivers immediately and busy-loops every sleeping run
+- Optionally honor the `region` option, a routing hint naming the region a message should be dispatched in; Worlds without a regional dimension ignore it
 
 ## Streamer Interface
 

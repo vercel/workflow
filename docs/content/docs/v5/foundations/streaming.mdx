@@ -490,6 +490,10 @@ async function uploadResult(stream: ReadableStream<Uint8Array>) {
 
 ## Best Practices
 
+**Batching and first-chunk latency:**
+
+Writes are flushed immediately by default — the leading chunk of an idle stream dispatches as soon as it is written, and chunks arriving while a flush is in flight coalesce into the next batch. If you write bursts of many tiny chunks and prefer fewer round trips over first-chunk latency, set a group-commit window with the World's `streamFlushIntervalMs` option or the `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` environment variable (see [Worlds configuration](/docs/configuration/worlds#streamflushintervalms)).
+
 **Release locks properly:**
 
 ```typescript lineNumbers
@@ -506,7 +510,7 @@ Stream locks acquired in a step only apply within that step, not across other st
 </Callout>
 
 <Callout type="warn">
-If a lock is not released, the step function's HTTP request cannot terminate. Even though the step returns and the workflow continues, the underlying request will remain active until it times out—wasting compute resources unnecessarily.
+If a lock is not released, the invocation that ran the step cannot terminate. Even though the step returns and the workflow continues, the underlying request will remain active until it times out—wasting compute resources unnecessarily.
 </Callout>
 
 **Close streams when done:**

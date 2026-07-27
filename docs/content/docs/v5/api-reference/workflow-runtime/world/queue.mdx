@@ -58,7 +58,7 @@ const { messageId } = await world.queue(queueName, payload, opts); // [!code hig
 |-----------|------|-------------|
 | `queueName` | `ValidQueueName` | The queue name (branded string) |
 | `message` | `QueuePayload` | Internal SDK payload |
-| `opts` | `QueueOptions` | Optional — `deploymentId`, `idempotencyKey`, `delaySeconds`, `headers` |
+| `opts` | `QueueOptions` | Optional — `deploymentId`, `idempotencyKey`, `delaySeconds`, `headers`, `region` (regional routing hint), `specVersion` |
 
 **Returns:** `{ messageId: MessageId | null }`
 

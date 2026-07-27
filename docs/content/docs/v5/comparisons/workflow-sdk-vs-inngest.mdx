@@ -59,7 +59,7 @@ Both are strong here. Inngest offers `step.ai.wrap()` (wrap Vercel AI SDK calls 
 | `step.run()` | `"use step"` function | Named async function with Node.js access. |
 | `step.sleep()` / `step.sleepUntil()` | `sleep('5m')` / `sleep(date)` | Import from `workflow`. |
 | `step.waitForEvent()` | `createHook()` / `createWebhook()` | Token encodes the routing; no event schema. |
-| `step.invoke()` | `"use step"` wrappers around `start()` / `getRun()` | Spawn a child run. |
+| `step.invoke()` | [`start()`](/docs/foundations/starting-workflows) called directly from the workflow | Spawn a child run. |
 | `inngest.send()` / event triggers | `start()` from your app boundary | Start workflows directly. |
 | Retry config (`retries`) | `maxRetries`, `RetryableError`, `FatalError` | Retries live at the step boundary. |
 | `step.realtime.publish()` / Realtime | `getWritable()` / named streams | Clients read from the stream. |

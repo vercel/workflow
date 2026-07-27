@@ -58,7 +58,7 @@ export async function onboardUser(userId: string) {
 **The key insight:** Workflows resume from suspension by replaying their code using cached step results from the [event log](/docs/how-it-works/event-sourcing). When a step like `await fetchUserData(userId)` is called:
 
 - **If already executed:** Returns the cached result immediately from the event log
-- **If not yet executed:** Suspends the workflow, enqueues the step for background execution, and resumes later with the result
+- **If not yet executed:** Suspends the workflow and executes the step — usually inline in the same invocation, falling back to the queue when the invocation runs out of inline budget or nears its timeout — then resumes with the result
 
 This replay mechanism requires deterministic code. If `Math.random()` weren't seeded, the first execution might return `0.7` (sending the email) but replay might return `0.3` (skipping it), thus breaking resumption. The Workflow SDK sandbox provides seeded `Math.random()` and `Date` to ensure consistent behavior across replays.
 

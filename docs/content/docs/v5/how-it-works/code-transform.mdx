@@ -52,30 +52,33 @@ The compiler operates in three distinct modes, transforming the same source code
 flowchart LR
     A["Source Code<br/>with directives"] --> B["Step Mode"]
     A --> C["Workflow Mode"]
-    A --> D["Client Mode"]
+    A --> D["Detect Mode"]
     B --> E["Step registration bundle"]
+    B --> G["Your App Code<br/>(Enables `start`)"]
     C --> F["Workflow bundle"]
     E --> H["Combined flow handler"]
     F --> H
-    D --> G["Your App Code<br/>(Enables `start`)"]
+    D --> I["Build manifest<br/>(discovery)"]
 ```
 
 ### Comparison Table
 
 | Mode     | Used In    | Purpose                        | Runtime role | Required? |
 |----------|------------|--------------------------------|--------------|-----------|
-| Step     | Build time | Registers executable step functions | Imported by the combined flow handler | Yes |
+| Step     | Build time + your app code | Registers executable step functions; gives app code workflow IDs for `start()` | Imported by the combined flow handler, and applied to application code by the framework loader | Yes |
 | Workflow | Build time | Bundles workflow orchestrators | Executed by `.well-known/workflow/v1/flow` | Yes |
-| Client   | Build/Runtime | Provides workflow IDs and types to `start` | Your application code | Optional* |
+| Detect   | Build time | Discovers workflows, steps, and serialization classes without transforming code | Feeds the build's discovery phase and manifest | Yes (build-internal) |
 
-\* Client mode is **recommended** for better developer experience—it provides automatic ID generation and type safety. Without it, you must manually construct workflow IDs or use the build manifest.
+<Callout type="info">
+  Earlier releases had a separate **client mode** for application code. In 5.0 it merged into step mode, which produces the same app-code behavior (workflow functions throw on direct calls and carry `workflowId` for `start()`) while also registering step functions. Build integrations that passed `mode: "client"` now pass `mode: "step"`.
+</Callout>
 
 ## Detailed Transformation Examples
 
-<Tabs items={["Step Mode", "Workflow Mode", "Client Mode"]}>
+<Tabs items={["Step Mode", "Workflow Mode", "Detect Mode"]}>
 <Tab value="Step Mode">
 
-**Step Mode** creates a registration bundle that the combined flow handler imports. It is not an HTTP route.
+**Step Mode** creates the registration bundle that the combined flow handler imports (it is not an HTTP route), and is also the transform framework loaders apply to your application code.
 
 **Input:**
 
@@ -84,6 +87,12 @@ flowchart LR
 export async function createUser(email: string) {
   "use step";
   return { id: crypto.randomUUID(), email };
+}
+
+export async function handleUserSignup(email: string) {
+  "use workflow";
+  const user = await createUser(email);
+  return { userId: user.id };
 }
 ```
 
@@ -99,16 +108,23 @@ export async function createUser(email: string) {
     __wf_reg.set(__wf_id, __wf_fn); // [!code highlight]
     __wf_fn.stepId = __wf_id; // [!code highlight]
 })(createUser, "step//workflows/user.js//createUser"); // [!code highlight]
+
+export async function handleUserSignup(email: string) {
+  throw new Error("You attempted to execute ..."); // [!code highlight]
+}
+handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; // [!code highlight]
 ```
 
 **What happens:**
 
 - The `"use step"` directive is removed
-- The function body is kept completely intact (no transformation)
-- The function is registered with the runtime via an inline IIFE (no imports needed)
+- Step function bodies are kept completely intact (no transformation)
+- Each step function is registered with the runtime via an inline IIFE (no imports needed)
 - Step functions run with full Node.js/Deno/Bun access
+- Workflow function bodies are **replaced** with an error throw, and a `workflowId` property is attached — workflow functions must be launched with [`start()`](/docs/api-reference/workflow-api/start), never called directly, and the ID is what `start()` uses to identify the workflow
+- A dead-code-elimination pass removes code reachable only from the replaced workflow bodies
 
-**Why no transformation?** Step functions execute in your main runtime with full access to Node.js APIs, file system, databases, etc. They don't need any special handling—they just run normally.
+**Why no step transformation?** Step functions execute in your main runtime with full access to Node.js APIs, file system, databases, etc. They don't need any special handling—they just run normally.
 
 **ID Format:** Step IDs follow the pattern `step//{filepath}//{functionName}`, where the filepath is relative to your project root.
 
@@ -159,14 +175,14 @@ handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; /
 
 1. Checks if the step has already been executed (in the event log)
 2. If yes: Returns the cached result
-3. If no: Triggers a suspension and enqueues the step for background execution
+3. If no: Suspends the replay and executes the step — usually inline in the same invocation, with the run only handed back to the queue when the invocation's inline budget is exhausted or its timeout approaches
 
 **ID Format:** Workflow IDs follow the pattern `workflow//{filepath}//{functionName}`. The `workflowId` property is attached to the function to allow [`start()`](/docs/api-reference/workflow-api/start) to work at runtime.
 
 </Tab>
-<Tab value="Client Mode">
+<Tab value="Detect Mode">
 
-**Client Mode** transforms workflow functions in your application code to prevent direct execution.
+**Detect Mode** is a lightweight, non-transforming mode used during the build's discovery phase.
 
 **Input:**
 
@@ -183,29 +199,24 @@ export async function handleUserSignup(email: string) {
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript
+/**__internal_workflows{"workflows":{"user.js":{"handleUserSignup":{"workflowId":"workflow//workflows/user.js//handleUserSignup"}}}}*/; // [!code highlight]
 export async function handleUserSignup(email: string) {
-  throw new Error("You attempted to execute ..."); // [!code highlight]
+  "use workflow";
+  const user = await createUser(email);
+  return { userId: user.id };
 }
-handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; // [!code highlight]
 ```
 
 **What happens:**
 
-- Workflow function bodies are **replaced** with an error throw
-- The `workflowId` property is added (same as workflow mode)
-- Step functions are not transformed in client mode
+- The code is **not modified** — detect mode only walks the AST
+- Discovered workflows, steps, and custom-serialization classes are emitted as a JSON manifest comment
+- The build uses this to decide which files feed the step and workflow bundles
 
-**Why this transformation?** Workflow functions cannot be called directly from application code—they must be started using [`start()`](/docs/api-reference/workflow-api/start). The error prevents accidental direct execution while the `workflowId` property allows the `start()` function to identify which workflow to launch.
-
-The IDs are generated exactly like in workflow mode to ensure they can be directly referenced at runtime.
+**Why a separate mode?** The build system first runs a fast regexp pre-scan to find candidate files containing directive-like strings, then runs detect mode on those candidates to validate at the AST level. False positives — for example, a directive-like string inside a template literal — are eliminated because the plugin only recognizes genuine directive statements.
 
 <Callout type="info">
-  **Client mode is optional:** While recommended for better developer experience (automatic IDs and type safety), you can skip client mode and instead:
-  - Manually construct workflow IDs using the pattern `workflow//{filepath}//{functionName}`
-  - Use the workflow manifest file generated during build to lookup IDs
-  - Pass IDs directly to `start()` as strings
-
-  All framework integrations include client mode as a loader by default.
+  **Working without the app-code loader:** Frameworks apply the step-mode transform to application code by default, which is what gives `start(handleUserSignup)` its automatic IDs and type safety. If your setup can't run the loader, you can instead construct workflow IDs manually using the pattern `workflow//{filepath}//{functionName}`, look them up in the build manifest, and pass them to `start()` as strings.
 </Callout>
 
 </Tab>
@@ -275,16 +286,16 @@ Contains webhook handling logic for delivering external data to running workflow
 
 The multi-mode transformation enables the Workflow SDK's durable execution model:
 
-1. **Step Mode** (required) - Bundles executable step functions that can access the full runtime
+1. **Step Mode** (required) - Bundles executable step functions that can access the full runtime, and doubles as the app-code transform that prevents direct workflow execution and enables type-safe `start()` references
 2. **Workflow Mode** (required) - Creates orchestration logic that can replay from event logs
-3. **Client Mode** (optional) - Prevents direct execution and enables type-safe workflow references
+3. **Detect Mode** (build-internal) - Discovers directive-marked functions for the build without touching the code
 
 This separation allows:
 
 - **Deterministic replay**: Workflows can be safely replayed from event logs without re-executing side effects
 - **Sandboxed orchestration**: Workflow logic runs in a controlled VM without direct runtime access
 - **Stateless execution**: Your compute can scale to zero and resume from any point in the workflow
-- **Type safety**: TypeScript works seamlessly with workflow references (when using client mode)
+- **Type safety**: TypeScript works seamlessly with workflow references passed to `start()`
 
 ## Determinism and Replay
 

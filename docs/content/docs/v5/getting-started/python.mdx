@@ -93,7 +93,7 @@ async def summarize_draft(*, draft: str):
     return summary
 ```
 
-Each step compiles into an isolated route. While the step executes, the workflow suspends without consuming resources. When the step completes, the workflow resumes automatically where it left off.
+Each step executes separately from the workflow orchestrator. While the step executes, the workflow suspends without consuming resources. When the step completes, the workflow resumes automatically where it left off.
 
 ## Sleep
 

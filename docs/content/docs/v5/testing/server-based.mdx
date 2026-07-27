@@ -148,7 +148,7 @@ export async function teardown() { // [!code highlight]
 
 These JSON log lines are intentional. They give CI jobs, local tooling, and agents stable events to watch for (`server_starting`, `server_stdout`, `server_stderr`, `server_ready`, `server_exit`), and the thrown timeout error includes the command, expected `WORKFLOW_LOCAL_BASE_URL`, and buffered stdout/stderr so a failed setup is actionable without interactive debugging.
 
-The setup script sets `WORKFLOW_LOCAL_BASE_URL` so the workflow runtime sends step execution requests to the running server.
+The setup script sets `WORKFLOW_LOCAL_BASE_URL` so the workflow runtime sends flow-route requests (workflow orchestration and step execution) to the running server.
 
 <Callout type="info">
 You can use any server framework that supports the workflow runtime. The example above uses [Nitro](https://v3.nitro.build), but you could also use [Next.js](https://nextjs.org), [Hono](https://hono.dev), or any other supported server.

@@ -98,6 +98,7 @@ Everything that crosses a workflow/step boundary is serialized, and v5 widens wh
 ```typescript lineNumbers
 import { WorkflowRunFailedError } from "workflow/errors";
 import { getRun } from "workflow/api";
+declare class PaymentDeclinedError extends Error {} // @setup
 
 try {
   await getRun(runId).returnValue;

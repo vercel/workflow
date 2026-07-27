@@ -190,7 +190,7 @@ const step = await world.steps.get(runId, stepId); // [!code highlight]
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `runId` | `string \| undefined` | The workflow run ID |
+| `runId` | `string` | The workflow run ID that owns the step |
 | `stepId` | `string` | The step ID |
 | `params.resolveData` | `'all' \| 'none'` | Whether to include input/output data. Default: `'all'` |
 

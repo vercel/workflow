@@ -53,10 +53,10 @@ This guide assumes **Standard** workflows. Express workflows have different sema
 | Choice state | `if` / `else` / `switch` | Native control flow. |
 | Wait state | `sleep()` | `sleep('1m')` or `sleep(date)`. |
 | Parallel state | `Promise.all()` | Standard concurrency. |
-| Map state | `for` loop / bounded `Promise.all` (e.g. `p-limit`) / step-wrapped `start()` per item for large fan-out | Match the original concurrency mode. |
+| Map state | `for` loop / bounded `Promise.all` (e.g. `p-limit`) / [`start()`](/docs/foundations/starting-workflows) per item for large fan-out | Match the original concurrency mode. |
 | Retry / Catch | `maxRetries`, `RetryableError`, `FatalError`; `try/catch` for compensation | Retry logic moves to step boundaries. |
 | `.waitForTaskToken` | `createHook()` / `createWebhook()` | Hooks for typed signals; webhooks for HTTP. |
-| Child state machine (`StartExecution`) | `"use step"` wrapper around `start()` / `getRun()` | Return the `Run` object for deep-linking. |
+| Child state machine (`StartExecution`) | Call [`start()`](/docs/foundations/starting-workflows) directly from the workflow | Child runs are tagged with `$parentRunId` / `$rootRunId` automatically. |
 
 A single `Task` state and its Lambda collapse into two directive-tagged functions:
 
@@ -103,7 +103,7 @@ Each row is a Step Functions capability the Workflow SDK does not replicate one-
 | Step Functions feature | How to cover it with the Workflow SDK |
 | --- | --- |
 | Express workflows | At-least-once and 5-minute duration fit the durable-replay model poorly; keep them on Step Functions or move to a queue consumer |
-| Distributed Map (up to 10,000 concurrent children, S3 item sources) | Fan out with step-wrapped `start()` per item, then bound concurrency with `p-limit` |
+| Distributed Map (up to 10,000 concurrent children, S3 item sources) | Fan out with `start()` per item directly from the workflow, then bound concurrency with `p-limit` |
 | Optimized AWS service integrations | Become ordinary SDK calls inside steps; `.sync` waits become explicit polling or hooks |
 | Per-state IAM roles | Steps share the deployment's credentials; scope secrets at deploy time |
 

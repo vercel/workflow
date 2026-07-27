@@ -153,7 +153,7 @@ try {
   const result = await run.returnValue;
 } catch (err) {
   if (WorkflowRunFailedError.is(err)) {
-    console.log(err.errorCode); // "USER_ERROR", "RUNTIME_ERROR", or undefined
+    console.log(err.errorCode); // e.g. "USER_ERROR", "MAX_EVENTS_EXCEEDED", or undefined
     // `cause` is the original thrown value, hydrated through the workflow
     // serialization pipeline. It can be any thrown value, so check shape.
     if (err.cause instanceof Error) {
@@ -166,7 +166,13 @@ try {
 | Code | Meaning |
 | --- | --- |
 | `USER_ERROR` | An error thrown in your workflow or step code (including propagated step failures like `FatalError`) |
-| `RUNTIME_ERROR` | An internal runtime error such as a corrupted event log or missing data. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |
+| `MAX_EVENTS_EXCEEDED` | The run reached the World's per-run event ceiling (25,000 on the Local and Vercel Worlds). Split unbounded loops into [child workflows](/cookbook/advanced/child-workflows); see [Limits](/docs/configuration/runtime-tuning#limits) |
+| `MAX_DELIVERIES_EXCEEDED` | The run exceeded the maximum number of queue deliveries |
+| `REPLAY_TIMEOUT` | A workflow replay exceeded the maximum allowed duration |
+| `REPLAY_DIVERGENCE` | A replay could not consume the event log deterministically — usually non-deterministic workflow code |
+| `CORRUPTED_EVENT_LOG` | The event log contains orphaned or mismatched events and cannot be replayed. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |
+| `WORLD_CONTRACT_ERROR` | A World response violated the SDK contract; points at a World implementation bug |
+| `RUNTIME_ERROR` | An internal runtime error. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |
 
 <Callout type="info">
   The error code is also available on the run entity via the CLI (`npx workflow inspect runs <runId>`) in the `error.code` field, and as an OTEL span attribute (`workflow.error.code`) for observability.

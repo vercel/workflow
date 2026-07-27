@@ -56,7 +56,7 @@ Both invest heavily in AI. trigger.dev offers AI SDK tool wrapping, a native `us
 | Inline `run` body | `"use step"` functions | Side effects move into named steps. |
 | `wait.for` / `wait.until` | `sleep('5m')` / `sleep(date)` | Import from `workflow`. |
 | `wait.forToken({ timeout })` | `createHook()` + `Promise.race` with `sleep()` | Hooks carry a typed token. |
-| `triggerAndWait()` | `"use step"` wrappers around `start()` / `getRun()` | Spawn + collect. |
+| `triggerAndWait()` | [`start()`](/docs/foundations/starting-workflows) called directly from the workflow, then await the returned `Run` | Spawn + collect. |
 | `batch.triggerAndWait()` | `Promise.all` over collected `Run` handles | Standard concurrency. |
 | `metadata.stream()` / Realtime | `getWritable()` / named streams | Clients read from the stream. |
 | `AbortTaskRunError` | `FatalError` | Stops retries immediately. |
