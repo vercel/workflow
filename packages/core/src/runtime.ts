@@ -38,7 +38,6 @@ import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
-import { appendUniqueEvents } from './runtime/append-unique-events.js';
 import {
   getMaxEventsOverride,
   getMaxQueueDeliveries,
@@ -48,6 +47,7 @@ import {
 } from './runtime/constants.js';
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
+  appendUniqueEvents,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,

@@ -25,7 +25,6 @@ import { runtimeLogger } from '../logger.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
-import { appendUniqueEvents } from './append-unique-events.js';
 import { getWorldLazy } from './get-world-lazy.js';
 
 /** Default timeout for health checks in milliseconds */
@@ -398,6 +397,22 @@ function recordRequestedEventCursor(
   requestedCursors.add(cursor);
 }
 
+/**
+ * Appends events whose IDs are not already present in `target`.
+ */
+export function appendUniqueEvents(
+  target: Event[],
+  events: readonly Event[]
+): void {
+  const targetIds = new Set(target.map((event) => event.eventId));
+  for (const event of events) {
+    if (!targetIds.has(event.eventId)) {
+      targetIds.add(event.eventId);
+      target.push(event);
+    }
+  }
+}
+
 function assertEventPaginationProgress(
   runId: string,
   hasMore: boolean,
@@ -455,7 +470,6 @@ export async function loadWorkflowRunEvents(
       });
 
       const loadedEvents: Event[] = [];
-      const loadedEventIds = new Set<string>();
       const requestedCursors = new Set<string>();
       let cursor: string | null = afterCursor ?? null;
       let hasMore = true;
@@ -494,7 +508,6 @@ export async function loadWorkflowRunEvents(
               { workflowRunId: runId }
             );
             loadedEvents.length = 0;
-            loadedEventIds.clear();
             requestedCursors.clear();
             cursor = null;
             retriedWithoutCursor = true;
@@ -503,7 +516,7 @@ export async function loadWorkflowRunEvents(
           throw error;
         }
 
-        appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
+        appendUniqueEvents(loadedEvents, response.data);
         hasMore = response.hasMore;
         assertEventPaginationProgress(
           runId,
