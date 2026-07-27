@@ -544,6 +544,112 @@ export async function open(
 }
 
 /**
+ * A writer-side session that amortizes one KEM operation across many sealed
+ * payloads — use it for streams, where one-shot {@link seal} would perform a
+ * fresh keygen + ECDH + HKDF for every frame.
+ *
+ * Safety rests on two properties:
+ *
+ * - Every payload still gets a **fresh random nonce** from `aesGcmEncrypt`, so
+ *   sharing the content key does not risk `(key, nonce)` reuse. (A counter
+ *   would: it restarts at zero whenever a writer restarts.)
+ * - The session is bound to one writer instance. A reconnect or a durable
+ *   replay constructs a new session, so a restarted writer never inherits a
+ *   previous incarnation's content key.
+ *
+ * The envelope layout is byte-identical to {@link seal}, so a reader cannot
+ * tell which was used and needs no matching session.
+ */
+export function createSealSession(
+  recipientPublicKey: Uint8Array,
+  aad?: Uint8Array
+): { seal(data: Uint8Array): Promise<Uint8Array> } {
+  let encapsulation:
+    | Promise<{ ephemeralPublicKey: Uint8Array; contentKey: CryptoKey }>
+    | undefined;
+
+  return {
+    async seal(data: Uint8Array): Promise<Uint8Array> {
+      // Lazily, so constructing a session for a stream that is never written
+      // to costs nothing.
+      encapsulation ??= encapsulate(recipientPublicKey);
+      const { ephemeralPublicKey, contentKey } = await encapsulation;
+      const encrypted = await aesGcmEncrypt(contentKey, data, aad);
+
+      const result = new Uint8Array(
+        ephemeralPublicKey.byteLength + encrypted.byteLength
+      );
+      result.set(ephemeralPublicKey, 0);
+      result.set(encrypted, ephemeralPublicKey.byteLength);
+      return result;
+    },
+  };
+}
+
+/**
+ * A reader-side session that caches decapsulation per sender.
+ *
+ * The mirror of {@link createSealSession}: because every frame from one writer
+ * carries the same ephemeral public key, this turns an ECDH per frame into an
+ * ECDH per writer. Correctness does not depend on the writer having used a
+ * session — a stream of independently sealed payloads simply misses the cache
+ * on each new ephemeral key.
+ *
+ * The cache is keyed by the ephemeral public key and holds one entry, which is
+ * the common case (one writer per stream). A second writer evicts the first
+ * rather than growing without bound.
+ */
+export function createOpenSession(
+  keyPair: RunKeyPair,
+  aad?: Uint8Array
+): { open(sealed: Uint8Array): Promise<Uint8Array> } {
+  let cachedSender: string | undefined;
+  let cachedKey: Promise<CryptoKey> | undefined;
+
+  return {
+    async open(sealed: Uint8Array): Promise<Uint8Array> {
+      const minLength = X25519_KEY_LENGTH + NONCE_LENGTH + TAG_BYTES;
+      if (sealed.byteLength < minLength) {
+        throw new RuntimeDecryptionError(
+          `Sealed payload too short: expected at least ${minLength} bytes, got ${sealed.byteLength}`,
+          { context: { operation: 'decrypt', byteLength: sealed.byteLength } }
+        );
+      }
+
+      const ephemeralPublicKey = sealed.subarray(0, X25519_KEY_LENGTH);
+      const encrypted = sealed.subarray(X25519_KEY_LENGTH);
+
+      const sender = keyCacheId(ephemeralPublicKey);
+      if (sender !== cachedSender || !cachedKey) {
+        cachedSender = sender;
+        cachedKey = decapsulate(keyPair, ephemeralPublicKey);
+      }
+
+      let contentKey: CryptoKey;
+      try {
+        contentKey = await cachedKey;
+      } catch (error) {
+        // Do not let one bad frame poison the cache for subsequent frames.
+        cachedSender = undefined;
+        cachedKey = undefined;
+        throw error;
+      }
+
+      return aesGcmDecrypt(contentKey, encrypted, aad);
+    },
+  };
+}
+
+/** Stable cache key for a 32-byte public key. */
+function keyCacheId(publicKey: Uint8Array): string {
+  let id = '';
+  for (let i = 0; i < publicKey.length; i++) {
+    id += publicKey[i].toString(16).padStart(2, '0');
+  }
+  return id;
+}
+
+/**
  * Build the additional authenticated data that binds a sealed payload to a
  * specific run.
  *
