@@ -281,14 +281,32 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         });
 
         if (hasWaitingConsumer) {
+          // A consumer is already awaiting, so this payload's delivery is
+          // pinned to this log position: capture the deferral HERE, while
+          // consuming the event, not at the end of the hydration slot below —
+          // same reasoning as step.ts. An earlier step or hook whose slot runs
+          // first on this serial queue has usually delivered, and so
+          // deregistered its barrier, before this slot ends. Read then, it
+          // would be invisible and this payload would skip both the gate AND
+          // `awaitEarlierDeliveries`' macrotask yield, letting it overtake the
+          // branch that earlier delivery just woke. Every event in one drain
+          // window is consumed before any slot runs, so capturing at
+          // consumption time sees all of them.
+          //
+          // The BUFFERED branch below deliberately does NOT do this — see the
+          // comment on `claim()`.
+          const earlierDelivered = awaitEarlierDeliveries(
+            ctx,
+            eventIndex,
+            'hook'
+          );
           const next = promises.shift();
           if (next) {
-            // A consumer is already awaiting. Hydrate through a promiseQueue
-            // slot (so async deserialization stays in event-log order), then
-            // defer behind earlier waits and steps before resolving. The
-            // deferral runs OFF the serial queue (it may wait on an earlier
-            // wait or step delivery and blocking a queue slot on that would
-            // deadlock the queue).
+            // Hydrate through a promiseQueue slot (so async deserialization
+            // stays in event-log order), then defer behind earlier waits and
+            // steps before resolving. The deferral runs OFF the serial queue
+            // (it may wait on an earlier wait or step delivery and blocking a
+            // queue slot on that would deadlock the queue).
             ctx.pendingDeliveries++;
             let hydrateOutcome:
               | { ok: true; value: T }
@@ -315,7 +333,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
               } finally {
                 ctx.pendingDeliveries--;
               }
-              void awaitEarlierDeliveries(ctx, eventIndex, 'hook').then(() => {
+              void earlierDelivered.then(() => {
                 barrier.markDelivered();
                 if (hydrateOutcome.ok) {
                   next.resolve(hydrateOutcome.value);
@@ -345,6 +363,15 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             // waits on workflow code: later step results may now be ordered
             // behind it.
             barrier.arm();
+            // Unlike every other delivery, the deferral is evaluated HERE, at
+            // claim time, rather than when the event was consumed. A buffered
+            // payload's delivery genuinely happens when the workflow reads the
+            // hook, which may be many deliveries later; a consumption-time
+            // snapshot would make the claim wait on — and pay the macrotask
+            // yield for — barriers that were relevant to a moment this payload
+            // never participated in. That is not theoretical: it stalls the
+            // second payload in the e2e `hookWithSleepWorkflow` long enough
+            // for the run to suspend before delivering it.
             return hydrated.promise
               .then(() => awaitEarlierDeliveries(ctx, eventIndex, 'hook'))
               .then(() => {

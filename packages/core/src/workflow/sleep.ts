@@ -101,6 +101,20 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         //    deliveries gated on it.
         const eventIndex = ctx.eventsConsumer.eventIndex;
         const barrier = registerDeliveryBarrier(ctx, eventIndex, 'wait');
+        // The deferral is captured HERE, while consuming the event, and not
+        // after the queue tail below — same reasoning as step.ts. An earlier
+        // step or hook whose hydration slot sits in that tail has usually
+        // delivered, and so deregistered its barrier, by the time the tail
+        // resolves. Read then, it would be invisible and this wait would skip
+        // both the gate AND `awaitEarlierDeliveries`' macrotask yield, letting
+        // it overtake the branch that earlier delivery just woke. Every event
+        // in one drain window is consumed before any slot runs, so capturing
+        // at consumption time sees all of them.
+        const earlierDelivered = awaitEarlierDeliveries(
+          ctx,
+          eventIndex,
+          'wait'
+        );
         // Defer + resolve in a DETACHED promise (not chained onto the serial
         // `promiseQueue`). `awaitEarlierDeliveries` may wait on an earlier
         // hook or step delivery whose own resolution is itself driven by the
@@ -109,7 +123,7 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         // hydration/ordering work runs in event-log order.
         const queueAtCompletion = ctx.promiseQueue;
         void queueAtCompletion
-          .then(() => awaitEarlierDeliveries(ctx, eventIndex, 'wait'))
+          .then(() => earlierDelivered)
           .then(() => {
             barrier.markDelivered();
             resolve();

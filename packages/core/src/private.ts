@@ -234,9 +234,21 @@ interface DeliveryBarrierEntry {
  *    are sequential same-entity payloads and must not block one another;
  *  - a wait defers behind earlier HOOKS and STEPS — not earlier waits, since a
  *    wait never needs to queue behind another wait;
- *  - a step defers behind earlier WAITS and HOOKS — not earlier steps, whose
- *    relative order the serial `promiseQueue` already fixes (each step's
- *    hydration slot runs, and therefore delivers, in log order).
+ *  - a step defers behind earlier WAITS, HOOKS and STEPS.
+ *
+ * The step-behind-step edge is not redundant with the serial `promiseQueue`.
+ * The queue fixes the order in which step results are HYDRATED, but a step no
+ * longer resolves inside its queue slot — it captures the outcome there and
+ * resolves from a detached continuation once its barrier clears. Two steps
+ * agree on that continuation's ordering only while they defer behind the same
+ * set, which holds when they are consumed in the same drain window but not
+ * across windows: a step consumed later can miss a wait/hook barrier that an
+ * earlier step is still parked on, because the barrier retired in between. The
+ * earlier step is then waiting out the macrotask yield below while the later
+ * one resolves on microtasks, and overtakes it — see
+ * `delivery-barrier-coverage.test.ts`. Deferring behind earlier steps
+ * closes that window structurally: the earlier step's barrier is still
+ * registered precisely because it has not delivered yet.
  *
  * Every edge points from a later log index to a strictly earlier one, so the
  * wait-for graph can never contain a cycle.
@@ -244,7 +256,7 @@ interface DeliveryBarrierEntry {
 const DEFER_BEHIND: Record<DeliveryKind, readonly DeliveryKind[]> = {
   hook: ['wait', 'step'],
   wait: ['hook', 'step'],
-  step: ['wait', 'hook'],
+  step: ['wait', 'hook', 'step'],
 };
 
 /**
@@ -252,16 +264,40 @@ const DEFER_BEHIND: Record<DeliveryKind, readonly DeliveryKind[]> = {
  * delivery it defers behind will likewise resolve on its own.
  *
  * A step delivery is always self-resolving: it skips uncommitted deliveries
- * (see {@link awaitEarlierDeliveries}), so nothing can hold it back.
+ * (see {@link awaitEarlierDeliveries}), and the earlier steps it does defer
+ * behind are self-resolving by the same argument, inducting down on index.
  *
- * Recursion terminates because every edge points to a strictly smaller index,
- * and the registry only ever holds the handful of deliveries currently in
- * flight.
+ * Recursion terminates because every edge points to a strictly smaller index.
+ * `memo` is required rather than an optimization: without it the walk is
+ * exponential in the number of live hook/wait barriers (each armed entry
+ * re-walks every earlier entry of the opposite kind, T(n) = Σ T(j)), and the
+ * registry is not small by construction — `EventsConsumer` drains
+ * consecutively consumable events synchronously while barriers only retire on
+ * microtask-driven deliveries, so a fan-out of `Promise.race([hook, sleep])`
+ * branches accumulates one barrier per branch per kind. Memoized, the walk is
+ * linear in registry size. The memo MUST be per-call: `armed` mutates between
+ * calls as buffered payloads are claimed.
  */
 function resolvesOnItsOwn(
   barriers: Map<number, DeliveryBarrierEntry>,
   index: number,
-  entry: DeliveryBarrierEntry
+  entry: DeliveryBarrierEntry,
+  memo: Map<number, boolean>
+): boolean {
+  const cached = memo.get(index);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const result = computeResolvesOnItsOwn(barriers, index, entry, memo);
+  memo.set(index, result);
+  return result;
+}
+
+function computeResolvesOnItsOwn(
+  barriers: Map<number, DeliveryBarrierEntry>,
+  index: number,
+  entry: DeliveryBarrierEntry,
+  memo: Map<number, boolean>
 ): boolean {
   if (!entry.armed) {
     return false;
@@ -274,7 +310,7 @@ function resolvesOnItsOwn(
     if (
       otherIndex < index &&
       deferBehind.includes(other.kind) &&
-      !resolvesOnItsOwn(barriers, otherIndex, other)
+      !resolvesOnItsOwn(barriers, otherIndex, other, memo)
     ) {
       return false;
     }
@@ -323,11 +359,16 @@ export async function awaitEarlierDeliveries(
   const barriers = ctx.pendingDeliveryBarriers;
   const deferBehind = DEFER_BEHIND[kind];
   const earlier: Promise<void>[] = [];
+  // Shared across this call only — see `resolvesOnItsOwn`.
+  const selfResolving = new Map<number, boolean>();
   for (const [index, entry] of barriers) {
     if (index >= eventIndex || !deferBehind.includes(entry.kind)) {
       continue;
     }
-    if (kind === 'step' && !resolvesOnItsOwn(barriers, index, entry)) {
+    if (
+      kind === 'step' &&
+      !resolvesOnItsOwn(barriers, index, entry, selfResolving)
+    ) {
       continue;
     }
     earlier.push(entry.delivered);
