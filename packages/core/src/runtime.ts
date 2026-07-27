@@ -545,6 +545,7 @@ export function workflowEntrypoint(
                   let workflowStartedAt = -1;
                   let preloadedEvents: Event[] | undefined;
                   let preloadedEventsCursor: string | null | undefined;
+                  let preloadedEventsHasMore = false;
 
                   // Latency telemetry (TTFS) state — see runtime/step-latency.ts.
                   // Whether this invocation's FIRST event snapshot contained
@@ -1089,15 +1090,24 @@ export function workflowEntrypoint(
                         // Anchors RSFS — see the declaration above.
                         runStartedReceivedAtMs = Date.now();
 
-                        // If the response includes events, use them to skip
-                        // the initial events.list call and reduce TTFB.
+                        // If the response includes events, use them as the
+                        // beginning of the replay snapshot. A complete page
+                        // skips the initial events.list entirely. A partial
+                        // page is continued strictly after its cursor, so the
+                        // runtime never re-reads the preloaded prefix.
+                        //
+                        // hasMore:true without a cursor violates the World
+                        // pagination contract. Ignore that unusable preload
+                        // and retain the full-load fallback for compatibility.
                         if (
                           result.events &&
                           result.events.length > 0 &&
-                          result.hasMore !== true
+                          (result.hasMore !== true ||
+                            typeof result.cursor === 'string')
                         ) {
                           preloadedEvents = result.events;
                           preloadedEventsCursor = result.cursor;
+                          preloadedEventsHasMore = result.hasMore === true;
                         }
 
                         if (!workflowRun.startedAt) {
@@ -1279,8 +1289,20 @@ export function workflowEntrypoint(
                         // First iteration: use preloaded events if available,
                         // otherwise do a full load with cursor.
                         if (preloadedEvents) {
-                          events = preloadedEvents;
+                          events = [...preloadedEvents];
                           eventsCursor = preloadedEventsCursor ?? null;
+                          if (preloadedEventsHasMore && eventsCursor) {
+                            // Continue from the mutation response's cursor
+                            // rather than loading from the beginning. The list
+                            // request omits a limit intentionally: each World
+                            // controls its largest safe streaming page size.
+                            const loaded = await loadWorkflowRunEvents(
+                              runId,
+                              eventsCursor
+                            );
+                            events.push(...loaded.events);
+                            eventsCursor = loaded.cursor ?? eventsCursor;
+                          }
                         } else {
                           const loaded = await loadWorkflowRunEvents(runId);
                           events = loaded.events;

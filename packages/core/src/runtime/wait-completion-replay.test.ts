@@ -182,6 +182,12 @@ async function runStaleWaitReplayScenario(options: {
   ];
 
   const staleEventsCursor = 'cursor-after-stale-events';
+  const partialPreloadCursor = 'cursor-after-partial-preload';
+  const preloadedEventCount = options.preloadedHasMore ? 3 : staleEvents.length;
+  const preloadedEvents = staleEvents.slice(0, preloadedEventCount);
+  const preloadedCursor = options.preloadedHasMore
+    ? partialPreloadCursor
+    : staleEventsCursor;
   const hookReceivedEvent = event({
     eventType: 'hook_received',
     specVersion: SPEC_VERSION_CURRENT,
@@ -212,12 +218,25 @@ async function runStaleWaitReplayScenario(options: {
     }) => {
       // Cursor reads simulate the optimized delta fetch. Without a cursor, the
       // runtime has fallen back to a full reload from the beginning.
-      let data =
-        params.pagination?.cursor === staleEventsCursor
-          ? durableEvents.slice(staleEvents.length)
-          : [...durableEvents];
+      const requestedCursor = params.pagination?.cursor;
+      let data: Event[];
+      if (requestedCursor === partialPreloadCursor) {
+        data = durableEvents.slice(preloadedEventCount);
+      } else if (requestedCursor === staleEventsCursor) {
+        data = durableEvents.slice(staleEvents.length);
+      } else if (requestedCursor) {
+        const cursorIndex = durableEvents.findIndex(
+          (event) => event.eventId === requestedCursor
+        );
+        data =
+          cursorIndex >= 0
+            ? durableEvents.slice(cursorIndex + 1)
+            : [...durableEvents];
+      } else {
+        data = [...durableEvents];
+      }
       if (
-        params.pagination?.cursor === staleEventsCursor &&
+        requestedCursor === staleEventsCursor &&
         options.omitWaitCompletionFromDelta
       ) {
         data = data.filter((event) => event.eventType !== 'wait_completed');
@@ -226,9 +245,7 @@ async function runStaleWaitReplayScenario(options: {
       return {
         data,
         hasMore: false,
-        cursor: params.pagination?.cursor
-          ? (data.at(-1)?.eventId ?? null)
-          : staleEventsCursor,
+        cursor: data.at(-1)?.eventId ?? requestedCursor ?? null,
       };
     }
   );
@@ -240,10 +257,10 @@ async function runStaleWaitReplayScenario(options: {
 
   const runStartedResponse = {
     run: workflowRun,
-    events: [...staleEvents],
+    events: [...preloadedEvents],
     ...(options.includePreloadedCursor
       ? {
-          cursor: staleEventsCursor,
+          cursor: preloadedCursor,
           hasMore: options.preloadedHasMore ?? false,
         }
       : {}),
@@ -400,6 +417,8 @@ async function runStaleWaitReplayScenario(options: {
     listEvents,
     listedPages,
     queue,
+    preloadedEvents,
+    preloadedCursor,
     staleEventsCursor,
     waitCorrelationId,
   };
@@ -495,44 +514,52 @@ describe('workflow handler wait completion replay', () => {
     expectHookBranchQueued(result);
   });
 
-  it('falls back to a full reload when preloaded events are partial', async () => {
-    // A run_started response can return a preloaded page and still say more
-    // pages exist. That page is not a complete replay input, so the handler
-    // must discard it and load from the beginning before completing waits.
+  it('continues a partial preload from its cursor without rereading the prefix', async () => {
+    // A run_started response can return a first page and report that more pages
+    // exist. The runtime must retain that prefix and load only its suffix.
     const result = await runStaleWaitReplayScenario({
       includePreloadedCursor: true,
       preloadedHasMore: true,
     });
 
-    // Full reload (partial preload discarded), cursor delta after wait
-    // completion, then the next loop iteration's incremental fetch after
-    // the inline drainStep execution.
+    // Partial-preload continuation, cursor delta after wait completion, then
+    // the next loop iteration's incremental fetch after the inline drainStep.
     expect(result.listEvents).toHaveBeenCalledTimes(3);
-    expect(result.listEvents.mock.calls[0]?.[0].pagination).toEqual(
-      expect.objectContaining({
-        sortOrder: 'asc',
-        cursor: undefined,
-      })
-    );
-    expect(result.listEvents.mock.calls[1]?.[0].pagination).toEqual(
-      expect.objectContaining({
-        sortOrder: 'asc',
-        cursor: result.staleEventsCursor,
-      })
-    );
+    expect(result.listEvents.mock.calls[0]?.[0].pagination).toEqual({
+      sortOrder: 'asc',
+      cursor: result.preloadedCursor,
+    });
+    expect(
+      result.listEvents.mock.calls.every(
+        ([params]) => params.pagination?.cursor !== undefined
+      )
+    ).toBe(true);
     expect(result.listedPages[0]?.map((event) => event.eventType)).toEqual([
-      'run_created',
-      'run_started',
-      'hook_created',
       'step_created',
       'step_started',
       'step_completed',
       'wait_created',
     ]);
+    expect(
+      result.listedPages[0]?.some((listed) =>
+        result.preloadedEvents.some(
+          (preloaded) => preloaded.eventId === listed.eventId
+        )
+      )
+    ).toBe(false);
     expect(result.listedPages[1]?.map((event) => event.eventType)).toEqual([
       'hook_received',
       'wait_completed',
     ]);
+    expect(
+      result.listedPages
+        .flat()
+        .some((listed) =>
+          result.preloadedEvents.some(
+            (preloaded) => preloaded.eventId === listed.eventId
+          )
+        )
+    ).toBe(false);
     expectHookBranchQueued(result);
   });
 
