@@ -60,7 +60,7 @@ The optional `capabilities` object advertises additional behavior, and every cap
 
 The remaining optional members:
 
-- `analytics` provides metadata-only listings of runs, steps, events, hooks, waits, and attributes for observability surfaces — `workflow inspect` and the local web UI read from it, including attribute search.
+- `analytics` provides metadata-only listings of runs, steps, events, hooks, waits, and attributes for observability surfaces — `workflow inspect` and the local web UI read from it, including attribute search. See [Analytics Interface](#analytics-interface-optional).
 - `start()` initializes background tasks (for example, queue polling); `close()` releases resources like connection pools and listeners.
 - `getEncryptionKeyForRun()` returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
 - `createRunId()` mints the ID for a new run. Implementations may embed world-specific metadata as long as the result stays a valid ULID — this is how [multi-region placement](/worlds/vercel#multi-region) works: `@workflow/world-vercel` reads `options.region` (the `start()` options bag) and embeds a region tag. When omitted, the runtime generates a standard monotonic ULID.
@@ -238,6 +238,51 @@ Streams are identified by a combination of `runId` and `name`. Each workflow run
 `writeMulti()` is an optional optimization for batching multiple writes.
 
 `getChunks` returns a paginated snapshot of currently available chunks (unlike `get` which returns a live `ReadableStream` that waits for new chunks). `getInfo` returns the tail index (last chunk index, 0-based, or `-1` when empty) and whether the stream is complete — useful for resolving negative `startIndex` values into absolute positions.
+
+## Analytics Interface (Optional)
+
+The optional `analytics` namespace serves observability surfaces — dashboards, `workflow inspect`, the local web UI — with **metadata-only** listings that can scan large numbers of runs without touching payload data. Tooling feature-detects it: when `world.analytics` is present it is preferred for listings and attribute search, and when it is absent, tooling falls back to the Storage APIs. Of the first-party Worlds, only the [Vercel World](/worlds/vercel) implements it (backed by the observability data pipeline); the Local and Postgres Worlds leave it `undefined`.
+
+{/* @skip-typecheck - interface definition, not runnable code */}
+```typescript
+interface Analytics {
+  runs: {
+    get(runId: string): Promise<AnalyticsRun>;
+    list(params?: AnalyticsListRunsParams): Promise<PaginatedResponse<AnalyticsRun>>;
+  };
+  attributes: {
+    // Distinct attribute keys observed on runs in the window, with run
+    // counts and first/last-seen timestamps, ordered alphabetically.
+    list(params?: AnalyticsListAttributesParams): Promise<PaginatedResponse<AnalyticsAttributeKey>>;
+  };
+  steps: {
+    get(runId: string, stepId: string): Promise<AnalyticsStep>;
+    list(params: AnalyticsListRunScopedParams): Promise<PaginatedResponse<AnalyticsStep>>;
+  };
+  events: {
+    get(runId: string, eventId: string): Promise<AnalyticsEvent>;
+    list(params: AnalyticsListEventsParams): Promise<PaginatedResponse<AnalyticsEvent>>;
+    listByCorrelationId(params: AnalyticsListEventsByCorrelationIdParams): Promise<PaginatedResponse<AnalyticsEvent>>;
+  };
+  hooks: {
+    get(hookId: string, params?: { runId?: string }): Promise<AnalyticsHook>;
+    list(params: AnalyticsListHooksParams): Promise<PaginatedResponse<AnalyticsHook>>;
+  };
+  waits: {
+    get(runId: string, waitId: string): Promise<AnalyticsWait>;
+    list(params: AnalyticsListWaitsParams): Promise<PaginatedResponse<AnalyticsWait>>;
+  };
+}
+```
+
+If you implement it, honor the contract that makes the namespace safe to expose broadly:
+
+- **Metadata only.** Rows must never include run inputs/outputs, step data, or hook tokens — the `Analytics*` row schemas in `@workflow/world` define exactly which fields are allowed. There is no `resolveData` escape hatch here; payload access stays on the Storage APIs.
+- **Attribute filtering is latest-write-wins.** `runs.list({ attributes })` matches a run's most recent value for each key (up to 8 pairs), and reserved `$`-prefixed keys are valid in filters even though user writes to them are rejected.
+- **Time windows are the query contract.** `startTime`/`endTime` must be provided together; a bounded window lets the backend prune its scan. Responses may carry an optional `pageInfo` describing the scannable window (lookback days, window starts, upgrade availability) — return it if your backend has retention limits so tools can size date pickers.
+- **Eventual consistency is acceptable.** Analytics data may trail live state by a few seconds; tools treat it as a listing surface, not a source of truth.
+
+See the [Analytics API reference](/docs/api-reference/workflow-runtime/world/analytics) for per-method parameters, row shapes, and `pageInfo` semantics.
 
 ## Reference Implementations
 
