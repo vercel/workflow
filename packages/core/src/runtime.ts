@@ -282,16 +282,10 @@ function rootRunIdFrom(
  * `wait_completed`, which the wait timer can resolve with
  * `wait_completed`).
  *
- * This gates the inline-delta fast path (per kind — see the gate) and the
- * turbo forced-optimistic-start latch. The delta returned by the
- * step-terminal write is the event log as of that write; it is consumed
- * on the NEXT loop iteration, so any event a concurrent writer appends in
- * that window would be present in a real `events.list` fetch but absent
- * from the stale delta — the replay observes it one iteration later than
- * the fetch path would. When no hook or wait is open, the only
- * out-of-band writer is cancellation, which is benign to observe one
- * iteration late (the next entity write is rejected against the terminal
- * run and the run is already terminal), so the fast path is safe.
+ * This gates the inline-delta fast path and turbo's forced optimistic start.
+ * A terminal-step delta can omit an event appended concurrently after that
+ * write. With no open hook or wait, only cancellation can do so, and observing
+ * it one replay late is safe because the next entity write is rejected.
  *
  * Step-body `attr_set` writes are NOT a concern: they land before the
  * step's terminal write and are therefore already inside the returned
@@ -481,30 +475,9 @@ export function workflowEntrypoint(
           traceContext
         );
 
-        // --- Replay budget bookkeeping ---
-        // The replay budget bounds the *non-step* portion of a single
-        // handler invocation: deterministic event-log replay, workflow-VM
-        // execution between step boundaries, suspension handling, queue
-        // round-trips, etc. Inline step bodies (`"use step"` functions
-        // invoked via `executeStep`) are intentionally excluded — they are
-        // bounded by the platform's function `maxDuration` and the
-        // `NO_INLINE_REPLAY_AFTER_MS` early-return guard below.
-        //
-        // The budget is checked at loop boundaries (top of each `while`
-        // iteration). Note this is *less responsive* than the old
-        // `setTimeout`-based approach: a single pathological `runWorkflow`
-        // call processing a huge event log can overshoot the budget by up
-        // to one iteration before bailing. In practice the headroom built
-        // into `MAX_REPLAY_TIMEOUT_MS` (and the platform `maxDuration`
-        // SIGTERM as ultimate backstop) gives us slack — the previous
-        // `setTimeout` approach also relied on the platform kill as the
-        // hard backstop. Do *not* "fix" this by adding a `setInterval`;
-        // it would risk the same bug we just removed (bounding step
-        // bodies).
-        //
-        // Earlier versions (pre-#2009 fix) used a single `setTimeout`
-        // that also bounded step bodies, which broke any workflow with a
-        // single step longer than the budget.
+        // The replay budget covers orchestration work between steps, not inline
+        // step bodies. It is checked between loop iterations; step bodies use
+        // the platform timeout and NO_INLINE_REPLAY_AFTER_MS guard instead.
         const replayBudget = new ReplayBudget();
 
         // In linked mode the run-origin context is NOT restored as the
@@ -2588,11 +2561,8 @@ export function workflowEntrypoint(
                           );
                         }
 
-                        // If any inline step had pending background ops (e.g.,
-                        // stream writes to S3), break the loop and queue a plain
-                        // continuation so waitUntil can flush them before the
-                        // next replay reads them. This matches V1 behavior where
-                        // each step ran in a separate function invocation.
+                        // Let pending background operations flush before the next
+                        // replay reads their results.
                         if (anyPendingOps) {
                           runtimeLogger.debug(
                             'Breaking loop: inline step has pending ops',
@@ -2858,12 +2828,12 @@ export function workflowEntrypoint(
                         return;
                       }
                     }
-                  } // End while loop
+                  }
                 }
-              ); // End trace
+              );
             }
-          ); // End withWorkflowBaggage
-        }); // End withTraceContext
+          );
+        });
       }
     );
 
