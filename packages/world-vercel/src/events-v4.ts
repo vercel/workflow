@@ -21,7 +21,9 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
+import type { Event } from '@workflow/world';
 import { decode } from 'cbor-x';
+import { coerceEventDates } from './event-coerce.js';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getEventsDispatcher } from './http-client.js';
 import {
@@ -207,6 +209,34 @@ export interface CreateEventV4Input {
    * without a loaded event log; older servers ignore it entirely.
    */
   stateUpdatedAt?: number;
+  /**
+   * Number of loaded events at or below `stateUpdatedAt` (i.e. the loaded
+   * log's length). Sent with `stateUpdatedAt` so the backend can also reject
+   * a snapshot that is *missing* an event at or below its watermark — the
+   * corruption case a watermark alone cannot detect. Older servers ignore it.
+   */
+  stateEventCount?: number;
+  /**
+   * The runtime's event-log cursor at snapshot time. Advisory: sent so a
+   * rejecting backend MAY return the missing events on the 412 body, saving a
+   * follow-up events.list. Distinct from `sinceCursor`, which the server acts
+   * on for the *accepted* path.
+   */
+  stateCursor?: string;
+}
+
+/**
+ * Shape the v4 client attaches to `PreconditionFailedError.details` when a
+ * rejecting server returned the missing events inline. `@workflow/errors`
+ * types `details` as `unknown` (it cannot depend on the event type), so
+ * consumers narrow structurally — this interface is the contract they narrow
+ * to.
+ */
+export interface PreconditionFailureDetails {
+  /** The events the client's snapshot was missing, in server order. */
+  events: Event[];
+  /** Cursor positioned after the returned events, when the server sent one. */
+  cursor?: string;
 }
 
 export interface CreateEventV4Result {
@@ -305,6 +335,10 @@ function buildPostFrameMeta(
   if (input.stateUpdatedAt !== undefined) {
     meta.stateUpdatedAt = input.stateUpdatedAt;
   }
+  if (input.stateEventCount !== undefined) {
+    meta.stateEventCount = input.stateEventCount;
+  }
+  if (input.stateCursor !== undefined) meta.stateCursor = input.stateCursor;
   return meta;
 }
 
@@ -326,10 +360,17 @@ function errorFromV4Response(
 ): Error {
   let message = `v4 ${opName} failed: HTTP ${statusCode}`;
   let code: string | undefined;
+  let details: unknown;
   try {
-    const json = JSON.parse(errorBody) as { message?: string; code?: string };
+    const json = JSON.parse(errorBody) as {
+      message?: string;
+      code?: string;
+      events?: unknown;
+      cursor?: unknown;
+    };
     if (typeof json.message === 'string') message = json.message;
     if (typeof json.code === 'string') code = json.code;
+    if (statusCode === 412) details = decodePreconditionDetails(json);
   } catch {
     // body wasn't JSON — keep the default message, append raw text below
     if (errorBody) message += ` ${errorBody}`;
@@ -345,7 +386,43 @@ function errorFromV4Response(
     code,
     url,
     mitigated: readHeader(responseHeaders, 'x-vercel-mitigated'),
+    ...(details !== undefined ? { details } : {}),
   });
+}
+
+/**
+ * Pick the inline event delta off a 412 body.
+ *
+ * A rejecting server MAY attach the events the client's snapshot was missing,
+ * so the runtime can correct its event log without a follow-up events.list.
+ * The *presence* of `events` is the server's completeness signal — it omits
+ * them entirely when it cannot prove the set accounts for the whole
+ * discrepancy — which also means an older or non-supporting server produces
+ * the same "no delta" shape as one that declined to prove it, and the client
+ * needs a single fallback path for both.
+ *
+ * Anything unexpected in the payload is dropped rather than repaired: this is
+ * untrusted-shaped data on a failure path, and the fallback (a full reload) is
+ * always correct.
+ */
+function decodePreconditionDetails(json: {
+  events?: unknown;
+  cursor?: unknown;
+}): PreconditionFailureDetails | undefined {
+  if (!Array.isArray(json.events) || json.events.length === 0) return undefined;
+  const events: Event[] = [];
+  for (const raw of json.events) {
+    if (typeof raw !== 'object' || raw === null) return undefined;
+    const candidate = raw as Record<string, unknown>;
+    if (typeof candidate.eventId !== 'string') return undefined;
+    // Same decoder the success-path delta uses: the JSON body carries nested
+    // eventData dates as ISO strings and the runtime calls .getTime() on them.
+    events.push(coerceEventDates(candidate));
+  }
+  return {
+    events,
+    ...(typeof json.cursor === 'string' ? { cursor: json.cursor } : {}),
+  };
 }
 
 /**
