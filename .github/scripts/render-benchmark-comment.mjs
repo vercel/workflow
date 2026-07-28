@@ -253,10 +253,86 @@ function formatDeltaValue(delta, unit = '') {
   return `${delta >= 0 ? '+' : ''}${Math.round(delta)}${unit}`;
 }
 
-/** Renders one STSO row's cumulative-time line plus its bucketed histogram
- * table (run 2 vs run 1). Bin width is chosen from this row's own sample
- * range, so every scenario gets a histogram that actually spreads across
- * multiple buckets rather than overflowing into one. */
+/** Non-empty (bucket label, run 1 count, run 2 count) triples for a
+ * histogram, including the overflow bucket (labeled `${max}+`) when either
+ * run has samples there. Shared by the bar chart and the table so both
+ * render from the exact same bucketing. */
+function nonEmptyBuckets(current, baseline, binWidth, binCount) {
+  const buckets = [];
+  for (let i = 0; i < binCount; i++) {
+    if (current.counts[i] === 0 && baseline.counts[i] === 0) continue;
+    buckets.push({
+      label: `${i * binWidth}-${(i + 1) * binWidth}`,
+      base: baseline.counts[i],
+      cur: current.counts[i],
+    });
+  }
+  if (current.overflow > 0 || baseline.overflow > 0) {
+    buckets.push({
+      label: `${binCount * binWidth}+`,
+      base: baseline.overflow,
+      cur: current.overflow,
+    });
+  }
+  return buckets;
+}
+
+// Bar width (characters) for the ASCII histogram overlay.
+const BAR_CHART_WIDTH = 24;
+
+/**
+ * Renders one bucket as a single overlay bar: a solid `█` run for run 1's
+ * count, a `┃` notch marking exactly where run 2's count lands, and — only
+ * when run 2 exceeds run 1 — a lighter `░` run bridging the gap between them
+ * so the extension past the base bar is visually distinct from the base
+ * itself. One glance shows both run 1's magnitude (bar length/shade) and run
+ * 2's relative position (the notch) without needing two separate bars.
+ */
+function renderOverlayBar(base, cur, maxCount) {
+  if (maxCount <= 0) return '';
+  const scale = (count) =>
+    count <= 0
+      ? 0
+      : Math.max(1, Math.round((count / maxCount) * BAR_CHART_WIDTH));
+  const baseWidth = scale(base);
+  const notchPos = scale(cur);
+  if (notchPos <= baseWidth) {
+    // Notch sits inside (or right at the end of) the solid base bar.
+    const notchIndex = Math.max(0, notchPos - 1);
+    return (
+      '█'.repeat(notchIndex) +
+      '┃' +
+      '█'.repeat(Math.max(0, baseWidth - notchIndex - 1))
+    );
+  }
+  // Run 2 exceeds run 1: extend past the base in a lighter shade, capped by
+  // the notch marking run 2's exact value.
+  return `${'█'.repeat(baseWidth)}${'░'.repeat(notchPos - baseWidth - 1)}┃`;
+}
+
+/** Renders run 1 vs run 2 as one overlay bar per bucket (a fenced code
+ * block keeps bars aligned in a monospace font), so the shape of the two
+ * distributions — and exactly how far run 2 diverged from run 1 — is
+ * visible at a glance instead of only as numbers in a table. */
+function renderStsoBarChart(buckets) {
+  const maxCount = Math.max(1, ...buckets.map((b) => Math.max(b.base, b.cur)));
+  const labelWidth = Math.max(...buckets.map((b) => b.label.length));
+  const lines = ['```'];
+  for (const { label, base, cur } of buckets) {
+    const bar = renderOverlayBar(base, cur, maxCount).padEnd(BAR_CHART_WIDTH);
+    lines.push(
+      `${label.padStart(labelWidth)} ms  ${bar}  R1 ${base}  R2 ${cur}`
+    );
+  }
+  lines.push('```');
+  return lines.join('\n');
+}
+
+/** Renders one STSO row's cumulative-time line, an ASCII bar-chart overlay,
+ * and a bucketed histogram table (run 2 vs run 1). Bin width is chosen from
+ * this row's own sample range, so every scenario gets a histogram that
+ * actually spreads across multiple buckets rather than overflowing into
+ * one. */
 function renderStsoRowDiff(row) {
   const maxValue = Math.max(...row.raw, ...row.baselineRaw);
   const binWidth = chooseBinWidth(maxValue, STSO_HISTOGRAM_TARGET_BINS);
@@ -274,26 +350,25 @@ function renderStsoRowDiff(row) {
   const pctSuffix =
     totalPct === undefined ? '' : `, ${formatDeltaValue(totalPct)}%`;
 
+  const buckets = nonEmptyBuckets(current, baseline, binWidth, binCount);
+
   const lines = [
     '',
     `_${row.scenario}_`,
     '',
     `Cumulative STSO time: run 1 ${Math.round(baselineTotal)}ms → run 2 ${Math.round(currentTotal)}ms (Δ ${formatDeltaValue(totalDelta, 'ms')}${pctSuffix})`,
     '',
-    '| Bucket (ms) | Run 1 steps | Run 2 steps | Δ |',
-    '|---|---:|---:|---:|',
   ];
-  for (let i = 0; i < binCount; i++) {
-    if (current.counts[i] === 0 && baseline.counts[i] === 0) continue;
-    const from = i * binWidth;
-    const to = from + binWidth;
-    lines.push(
-      `| ${from}-${to} | ${baseline.counts[i]} | ${current.counts[i]} | ${formatDeltaValue(current.counts[i] - baseline.counts[i])} |`
-    );
+  if (buckets.length > 0) {
+    lines.push(renderStsoBarChart(buckets), '');
   }
-  if (current.overflow > 0 || baseline.overflow > 0) {
+  lines.push(
+    '| Bucket (ms) | Run 1 steps | Run 2 steps | Δ |',
+    '|---|---:|---:|---:|'
+  );
+  for (const { label, base, cur } of buckets) {
     lines.push(
-      `| ${binCount * binWidth}+ | ${baseline.overflow} | ${current.overflow} | ${formatDeltaValue(current.overflow - baseline.overflow)} |`
+      `| ${label} | ${base} | ${cur} | ${formatDeltaValue(cur - base)} |`
     );
   }
   return lines.join('\n');
