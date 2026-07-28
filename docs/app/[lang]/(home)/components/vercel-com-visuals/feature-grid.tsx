@@ -65,7 +65,7 @@ function FeatureCardWide({ title, description, visual }: Feature): JSX.Element {
 
 export function FeatureGrid(): JSX.Element {
   return (
-    <div className="grid lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x">
+    <div className="grid lg:grid-cols-2 divide-y lg:divide-y-0">
       {features.slice(0, 2).map((feature) => (
         <FeatureCard key={feature.title} {...feature} />
       ))}
@@ -77,7 +77,7 @@ export function FeatureGridExtended(): JSX.Element {
   return (
     <>
       {/* AI SDK + Agents — 2 col */}
-      <div className="grid lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x">
+      <div className="grid lg:grid-cols-2 divide-y lg:divide-y-0">
         {features.slice(0, 2).map((feature) => (
           <FeatureCard key={feature.title} {...feature} />
         ))}
