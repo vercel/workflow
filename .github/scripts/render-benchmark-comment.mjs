@@ -230,29 +230,42 @@ function buildHistogram(samples, binWidth, maxBins) {
   return { counts, overflow };
 }
 
-// Bucket width and count for the STSO histogram diff. Provisional, tuned for
-// the 1-20 step-index range (sub-100ms samples); revisit once we've seen the
-// shape of the real distributions.
-const STSO_HISTOGRAM_BIN_WIDTH_MS = 5;
-const STSO_HISTOGRAM_MAX_BINS = 20;
+// Target bin count for the STSO histogram diff — the actual bin *width* is
+// derived per-row from the observed sample range (see chooseBinWidth), since
+// a fixed width picked for one scenario's typical latency (e.g. sub-100ms)
+// silently dumps every sample into a single overflow bucket for another
+// (e.g. a colder run at 200-500ms/step).
+const STSO_HISTOGRAM_TARGET_BINS = 12;
+
+/** Rounds a raw bin width up to a "nice" 1/2/5 * 10^n step, so bucket
+ * boundaries read cleanly (e.g. 20ms, 50ms) instead of arbitrary fractions. */
+function chooseBinWidth(maxValue, targetBins) {
+  if (!Number.isFinite(maxValue) || maxValue <= 0) return 1;
+  const raw = maxValue / targetBins;
+  const magnitude = 10 ** Math.floor(Math.log10(raw));
+  const normalized = raw / magnitude;
+  const niceNormalized =
+    normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return niceNormalized * magnitude;
+}
 
 function formatDeltaValue(delta, unit = '') {
   return `${delta >= 0 ? '+' : ''}${Math.round(delta)}${unit}`;
 }
 
 /** Renders one STSO row's cumulative-time line plus its bucketed histogram
- * table (run 2 vs run 1). */
+ * table (run 2 vs run 1). Bin width is chosen from this row's own sample
+ * range, so every scenario gets a histogram that actually spreads across
+ * multiple buckets rather than overflowing into one. */
 function renderStsoRowDiff(row) {
-  const current = buildHistogram(
-    row.raw,
-    STSO_HISTOGRAM_BIN_WIDTH_MS,
-    STSO_HISTOGRAM_MAX_BINS
-  );
-  const baseline = buildHistogram(
-    row.baselineRaw,
-    STSO_HISTOGRAM_BIN_WIDTH_MS,
-    STSO_HISTOGRAM_MAX_BINS
-  );
+  const maxValue = Math.max(...row.raw, ...row.baselineRaw);
+  const binWidth = chooseBinWidth(maxValue, STSO_HISTOGRAM_TARGET_BINS);
+  // +1 bin of headroom so the max sample lands inside the range rather than
+  // exactly on (and thus overflowing) the last edge.
+  const binCount = Math.ceil(maxValue / binWidth) + 1;
+
+  const current = buildHistogram(row.raw, binWidth, binCount);
+  const baseline = buildHistogram(row.baselineRaw, binWidth, binCount);
   const currentTotal = sum(row.raw);
   const baselineTotal = sum(row.baselineRaw);
   const totalDelta = currentTotal - baselineTotal;
@@ -270,17 +283,17 @@ function renderStsoRowDiff(row) {
     '| Bucket (ms) | Run 1 steps | Run 2 steps | Δ |',
     '|---|---:|---:|---:|',
   ];
-  for (let i = 0; i < STSO_HISTOGRAM_MAX_BINS; i++) {
+  for (let i = 0; i < binCount; i++) {
     if (current.counts[i] === 0 && baseline.counts[i] === 0) continue;
-    const from = i * STSO_HISTOGRAM_BIN_WIDTH_MS;
-    const to = from + STSO_HISTOGRAM_BIN_WIDTH_MS;
+    const from = i * binWidth;
+    const to = from + binWidth;
     lines.push(
       `| ${from}-${to} | ${baseline.counts[i]} | ${current.counts[i]} | ${formatDeltaValue(current.counts[i] - baseline.counts[i])} |`
     );
   }
   if (current.overflow > 0 || baseline.overflow > 0) {
     lines.push(
-      `| ${STSO_HISTOGRAM_MAX_BINS * STSO_HISTOGRAM_BIN_WIDTH_MS}+ | ${baseline.overflow} | ${current.overflow} | ${formatDeltaValue(current.overflow - baseline.overflow)} |`
+      `| ${binCount * binWidth}+ | ${baseline.overflow} | ${current.overflow} | ${formatDeltaValue(current.overflow - baseline.overflow)} |`
     );
   }
   return lines.join('\n');
