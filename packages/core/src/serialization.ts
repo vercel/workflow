@@ -6,7 +6,7 @@ import {
 import { envNumber } from '@workflow/world';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
-import { decodeRunPublicKey } from './sealed-box.js';
+import { bytesToBase64, decodeRunPublicKey } from './sealed-box.js';
 import { importKey } from './encryption.js';
 import {
   createFlushableState,
@@ -3154,6 +3154,35 @@ function getStepRevivers(
       }
       // Keep the owner's public key on the handle so a further forward stays on
       // the zero-lookup sealed path.
+      //
+      // When the descriptor carries no key and the stream belongs to THIS run,
+      // derive it. A writable taken with `getWritable()` in a workflow body has
+      // only a name on it — the workflow VM holds no key material by design —
+      // so nothing could publish the key when the handle was created. Reviving
+      // happens in a step, which does hold this run's key, and any later
+      // forward then just copies the symbol.
+      //
+      // It has to happen here rather than at serialization time: `start()`
+      // dehydrates its arguments with the CHILD's runId and the CHILD's key, so
+      // the owning run's key is no longer in scope by then.
+      //
+      // `targetRunId === runId` is the guard that matters. For a stream another
+      // run owns we must not advertise our key — the receiver would seal to us
+      // and the real owner could never open what it wrote.
+      if (
+        typeof value.encryptionPublicKey !== 'string' &&
+        targetRunId === runId &&
+        isRunPayloadKeys(cryptoKey)
+      ) {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
+          {
+            value: bytesToBase64(cryptoKey.keyPair.publicKey),
+            writable: false,
+          }
+        );
+      }
       if (typeof value.encryptionPublicKey === 'string') {
         Object.defineProperty(
           serialize.writable,
