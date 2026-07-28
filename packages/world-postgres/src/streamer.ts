@@ -93,6 +93,9 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
   const { streams } = Schema;
   const genChunkId = () => `chnk_${ulid()}` as const;
   const mutexes = new Map<string, Rc<{ drop(): void; mutex: Mutex }>>();
+  // Idempotent cleanup functions for active stream readers, so that
+  // `close()` can detach any listeners still registered on `events`.
+  const readerCleanups = new Set<() => void>();
   const getMutex = (key: string) => {
     let mutex = mutexes.get(key);
     if (!mutex) {
@@ -353,6 +356,14 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         startIndex?: number
       ): Promise<ReadableStream<Uint8Array>> {
         const cleanups: (() => void)[] = [];
+        let cleanedUp = false;
+        const cleanup = () => {
+          if (cleanedUp) return;
+          cleanedUp = true;
+          readerCleanups.delete(cleanup);
+          cleanups.forEach((fn) => void fn());
+        };
+        readerCleanups.add(cleanup);
 
         return new ReadableStream<Uint8Array>({
           async start(controller) {
@@ -381,6 +392,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
                 controller.enqueue(new Uint8Array(msg.data));
               }
               if (msg.eof) {
+                cleanup();
                 controller.close();
               }
               lastChunkId = msg.id;
@@ -398,15 +410,21 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
               events.off(`strm:${name}`, onData);
             });
 
-            const chunks = await drizzle
-              .select({
-                id: streams.chunkId,
-                eof: streams.eof,
-                data: streams.chunkData,
-              })
-              .from(streams)
-              .where(and(eq(streams.streamId, name)))
-              .orderBy(streams.chunkId);
+            let chunks: StreamChunkEvent[];
+            try {
+              chunks = await drizzle
+                .select({
+                  id: streams.chunkId,
+                  eof: streams.eof,
+                  data: streams.chunkData,
+                })
+                .from(streams)
+                .where(and(eq(streams.streamId, name)))
+                .orderBy(streams.chunkId);
+            } catch (err) {
+              cleanup();
+              throw err;
+            }
 
             // Resolve negative offset relative to the data chunk count
             // (excluding the trailing EOF marker, if present)
@@ -424,7 +442,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
             buffer = null;
           },
           cancel() {
-            cleanups.forEach((fn) => void fn());
+            cleanup();
           },
         });
       },
@@ -441,6 +459,9 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
     },
 
     async close() {
+      for (const cleanup of [...readerCleanups]) {
+        cleanup();
+      }
       const sub = await listenSubscription.catch(() => undefined);
       if (sub) await sub.close();
     },
