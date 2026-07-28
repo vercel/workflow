@@ -16,7 +16,19 @@ import {
 } from 'vitest';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
-import { dehydrateWorkflowReturnValue } from '../serialization.js';
+import {
+  base64ToBytes,
+  bytesToBase64,
+  deriveRunKeyPair,
+  open,
+  seal,
+} from '../sealed-box.js';
+import {
+  hydrateWorkflowArguments,
+  peekFormatPrefix,
+  runPayloadKeys,
+  SerializationFormat,
+} from '../serialization.js';
 import type { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
 import { _resetLatestNoOpWarnForTests, start } from './start.js';
@@ -406,11 +418,7 @@ describe('start', () => {
   describe('encryption', () => {
     let mockEventsCreate: ReturnType<typeof vi.fn>;
     let mockQueue: ReturnType<typeof vi.fn>;
-    let mockRunsGet: ReturnType<typeof vi.fn>;
     let mockGetEncryptionKeyForRun: ReturnType<typeof vi.fn>;
-    const validWorkflow = Object.assign(() => Promise.resolve('result'), {
-      workflowId: 'test-workflow',
-    });
 
     beforeEach(() => {
       mockEventsCreate = vi.fn().mockImplementation((runId) => {
@@ -419,13 +427,11 @@ describe('start', () => {
         });
       });
       mockQueue = vi.fn().mockResolvedValue(undefined);
-      mockRunsGet = vi.fn();
       mockGetEncryptionKeyForRun = vi.fn().mockResolvedValue(undefined);
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_resolved'),
-        runs: { get: mockRunsGet },
         events: { create: mockEventsCreate },
         queue: mockQueue,
         getEncryptionKeyForRun: mockGetEncryptionKeyForRun,
@@ -438,6 +444,10 @@ describe('start', () => {
     });
 
     it('should pass resolved deploymentId to getEncryptionKeyForRun even when not in opts', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
       // Call start() without explicit deploymentId in options — it should
       // be resolved from world.getDeploymentId() and forwarded to
       // getEncryptionKeyForRun so the key can be fetched.
@@ -452,6 +462,10 @@ describe('start', () => {
     });
 
     it('should pass explicit deploymentId from opts to getEncryptionKeyForRun', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
       await start(validWorkflow, [], { deploymentId: 'deploy_explicit' });
 
       expect(mockGetEncryptionKeyForRun).toHaveBeenCalledWith(
@@ -462,23 +476,95 @@ describe('start', () => {
       );
     });
 
-    it('should reuse the resolved key on the returned run handle', async () => {
-      const rawKey = new Uint8Array(32).fill(7);
-      mockGetEncryptionKeyForRun.mockResolvedValue(rawKey);
-      const run = await start(validWorkflow, []);
-      mockRunsGet.mockResolvedValue({
-        runId: run.runId,
-        status: 'completed',
-        output: await dehydrateWorkflowReturnValue(
-          'result',
-          run.runId,
-          await importKey(rawKey)
-        ),
+    describe('encryptionPublicKey stamping', () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
       });
 
-      await expect(run.returnValue).resolves.toBe('result');
-      expect(mockRunsGet).toHaveBeenCalledTimes(1);
-      expect(mockGetEncryptionKeyForRun).toHaveBeenCalledTimes(1);
+      function stampedKey(): string | undefined {
+        return mockEventsCreate.mock.calls[0][1].eventData.encryptionPublicKey;
+      }
+
+      it('stamps the run public key derived from the per-run key material', async () => {
+        const material = new Uint8Array(32).fill(0x5a);
+        mockGetEncryptionKeyForRun.mockResolvedValue(material);
+
+        await start(validWorkflow, []);
+
+        const runId = mockEventsCreate.mock.calls[0][0];
+        const expected = bytesToBase64(
+          (await deriveRunKeyPair(material)).publicKey
+        );
+
+        // The stamped key must be exactly what the owning deployment will
+        // re-derive from the same material at resume time — otherwise sealed
+        // payloads would be addressed to a key nobody holds the scalar for.
+        expect(stampedKey()).toBe(expected);
+        expect(runId).toMatch(/^wrun_/);
+      });
+
+      it('publishes a key that actually opens payloads sealed to it', async () => {
+        // End-to-end proof that the published key is usable: seal to the
+        // stamped value, then open with the keypair the run's own deployment
+        // would derive.
+        const material = new Uint8Array(32).fill(0x11);
+        mockGetEncryptionKeyForRun.mockResolvedValue(material);
+
+        await start(validWorkflow, []);
+
+        const publicKey = base64ToBytes(stampedKey()!);
+        expect(publicKey).toBeDefined();
+
+        const plaintext = new TextEncoder().encode('sealed by a stranger');
+        const sealed = await seal(publicKey!, plaintext);
+        const opened = await open(await deriveRunKeyPair(material), sealed);
+        expect(new TextDecoder().decode(opened)).toBe('sealed by a stranger');
+      });
+
+      it('omits the public key when encryption is disabled', async () => {
+        // No key material means encryption is off for this run; stamping a
+        // key would advertise a sealing capability the run cannot honor.
+        mockGetEncryptionKeyForRun.mockResolvedValue(undefined);
+
+        await start(validWorkflow, []);
+
+        expect(stampedKey()).toBeUndefined();
+        expect(
+          'encryptionPublicKey' in mockEventsCreate.mock.calls[0][1].eventData
+        ).toBe(false);
+      });
+
+      it('mirrors the public key onto the queued runInput for resilient start', async () => {
+        // If the run_created write fails, the server recreates the run from
+        // the queue payload. Without the key there, such a run would silently
+        // lose the ability to receive sealed writes.
+        const material = new Uint8Array(32).fill(0x77);
+        mockGetEncryptionKeyForRun.mockResolvedValue(material);
+
+        await start(validWorkflow, []);
+
+        const queuePayload = mockQueue.mock.calls[0][1];
+        expect(queuePayload.runInput.encryptionPublicKey).toBe(stampedKey());
+      });
+
+      it('derives distinct public keys for distinct runs', async () => {
+        // Per-run isolation: two runs on the same deployment get different
+        // key material, so their public keys must differ too.
+        mockGetEncryptionKeyForRun.mockImplementation(async (runId: string) => {
+          const material = new Uint8Array(32);
+          material.set(new TextEncoder().encode(runId.slice(-8)));
+          return material;
+        });
+
+        await start(validWorkflow, []);
+        await start(validWorkflow, []);
+
+        const first = mockEventsCreate.mock.calls[0][1].eventData;
+        const second = mockEventsCreate.mock.calls[1][1].eventData;
+        expect(first.encryptionPublicKey).toBeDefined();
+        expect(second.encryptionPublicKey).toBeDefined();
+        expect(first.encryptionPublicKey).not.toBe(second.encryptionPublicKey);
+      });
     });
   });
 
@@ -1148,6 +1234,127 @@ describe('start', () => {
         expect.anything(),
         expect.objectContaining({ deploymentId: 'dpl_other' })
       );
+    });
+
+    describe('run public key from the capability probe', () => {
+      const MATERIAL = new Uint8Array(32).fill(0x8c);
+
+      /** A world whose probe responds with the given extra fields. */
+      function worldWithProbe(
+        extra: Record<string, unknown>,
+        getEncryptionKeyForRun?: ReturnType<typeof vi.fn>
+      ) {
+        const response = JSON.stringify({
+          healthy: true,
+          endpoint: 'workflow',
+          specVersion: SPEC_VERSION_CURRENT,
+          workflowCoreVersion: '0.0.0-test',
+          ...extra,
+        });
+        setWorld({
+          specVersion: SPEC_VERSION_CURRENT,
+          getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+          events: { create: mockEventsCreate },
+          queue: mockQueue,
+          getEncryptionKeyForRun,
+          streams: {
+            get: vi.fn(
+              async () =>
+                new ReadableStream<Uint8Array>({
+                  start(controller) {
+                    controller.enqueue(new TextEncoder().encode(response));
+                    controller.close();
+                  },
+                })
+            ),
+          },
+        });
+      }
+
+      it('asks the probe for the run it is about to create', async () => {
+        // The runId has to be minted before the probe for this to work, so
+        // this also guards the ordering.
+        worldWithProbe({});
+
+        await start(validWorkflow, [], { deploymentId: 'dpl_other' });
+
+        const probeCall = mockQueue.mock.calls.find((c) =>
+          String(c[0]).endsWith('health_check')
+        );
+        expect(probeCall?.[1]).toMatchObject({
+          __healthCheck: true,
+          runId: expect.stringMatching(/^wrun_/),
+        });
+        // ...and it is the same run that actually gets created.
+        expect(probeCall?.[1].runId).toBe(mockEventsCreate.mock.calls[0][0]);
+      });
+
+      it('seals the arguments with the probed key and skips the key lookup', async () => {
+        const { publicKey } = await deriveRunKeyPair(MATERIAL);
+        const getEncryptionKeyForRun = vi.fn().mockResolvedValue(MATERIAL);
+        worldWithProbe(
+          { encryptionPublicKey: bytesToBase64(publicKey) },
+          getEncryptionKeyForRun
+        );
+
+        await start(validWorkflow, ['hello'], { deploymentId: 'dpl_other' });
+
+        // The whole point: no key-lookup request on this path.
+        expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+
+        const eventData = mockEventsCreate.mock.calls[0][1].eventData;
+        expect(peekFormatPrefix(eventData.input)).toBe(
+          SerializationFormat.SEALED
+        );
+        // The run still advertises the key so later cross-run writers can
+        // seal to it too.
+        expect(eventData.encryptionPublicKey).toBe(bytesToBase64(publicKey));
+      });
+
+      it('produces arguments the target deployment can actually open', async () => {
+        const keyPair = await deriveRunKeyPair(MATERIAL);
+        worldWithProbe({
+          encryptionPublicKey: bytesToBase64(keyPair.publicKey),
+        });
+
+        await start(validWorkflow, ['hello', 42], {
+          deploymentId: 'dpl_other',
+        });
+
+        const { input } = mockEventsCreate.mock.calls[0][1].eventData;
+        const keys = runPayloadKeys(await importKey(MATERIAL), keyPair);
+        await expect(
+          hydrateWorkflowArguments(input, 'wrun_x', keys)
+        ).resolves.toEqual(['hello', 42]);
+      });
+
+      it('falls back to the key lookup when the probe returns no key', async () => {
+        // Older target deployment, or a probe that timed out.
+        const getEncryptionKeyForRun = vi.fn().mockResolvedValue(MATERIAL);
+        worldWithProbe({}, getEncryptionKeyForRun);
+
+        await start(validWorkflow, [], { deploymentId: 'dpl_other' });
+
+        expect(getEncryptionKeyForRun).toHaveBeenCalled();
+        expect(
+          peekFormatPrefix(mockEventsCreate.mock.calls[0][1].eventData.input)
+        ).toBe(SerializationFormat.ENCRYPTED);
+      });
+
+      it('ignores a malformed probed key and falls back', async () => {
+        const getEncryptionKeyForRun = vi.fn().mockResolvedValue(MATERIAL);
+        worldWithProbe(
+          { encryptionPublicKey: 'not-a-valid-key' },
+          getEncryptionKeyForRun
+        );
+
+        await start(validWorkflow, [], { deploymentId: 'dpl_other' });
+
+        expect(getEncryptionKeyForRun).toHaveBeenCalled();
+        expect(
+          peekFormatPrefix(mockEventsCreate.mock.calls[0][1].eventData.input)
+        ).toBe(SerializationFormat.ENCRYPTED);
+      });
     });
   });
 });

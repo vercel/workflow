@@ -44,6 +44,16 @@ describe('workflow world target', () => {
     ).toBe('@workflow/world-vercel');
   });
 
+  it('defaults to Vercel for a prebuilt build, which has no deployment ID yet', () => {
+    const env: Record<string, string | undefined> = {
+      VERCEL: '1',
+      VERCEL_ENV: 'production',
+    };
+
+    expect(ensureWorkflowTargetWorldEnv(env)).toBe('@workflow/world-vercel');
+    expect(env.WORKFLOW_TARGET_WORLD).toBe('@workflow/world-vercel');
+  });
+
   it('writes the normalized target back to the env object', () => {
     const env = { WORKFLOW_TARGET_WORLD: 'local' };
 

@@ -2,4 +2,4 @@
 '@workflow/core': patch
 ---
 
-Reuse resolved workflow encryption keys during suspension handling and on run handles returned by `start()`.
+Reuse resolved workflow encryption keys during suspension handling and avoid duplicate run lookups while hydrating return values.

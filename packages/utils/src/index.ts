@@ -20,6 +20,7 @@ export {
 } from './workflow-routes.js';
 export {
   getWorldImport,
+  isVercelDeploymentEnv,
   isVercelWorldTarget,
   normalizeWorkflowTargetWorldImport,
   resolveWorkflowTargetWorld,

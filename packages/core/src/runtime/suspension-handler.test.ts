@@ -1,7 +1,7 @@
 import type { CreateEventRequest, WorkflowRun, World } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
-import { importKey } from '../encryption.js';
 import { WorkflowSuspension } from '../global.js';
+import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import {
   hydrateStepArguments,
   peekFormatPrefix,
@@ -79,7 +79,9 @@ describe('handleSuspension', () => {
       event,
     }));
     const world = createWorld(eventsCreate);
-    const encryptionKey = await importKey(new Uint8Array(32).fill(7));
+    const encryptionKey = await deriveRunPayloadKeys(
+      new Uint8Array(32).fill(7)
+    );
     const pending = new Map([
       [
         'hook_with_metadata',

@@ -1,4 +1,8 @@
-import { decrypt as aesGcmDecrypt, importKey } from '@workflow/core/encryption';
+import {
+  decryptEnvelope,
+  deriveRunPayloadKeys,
+  type PayloadKey,
+} from '@workflow/core/serialization-format';
 import {
   hydrateData,
   isEncryptedData,
@@ -67,7 +71,7 @@ export function useStreamReader(
   const processFrame = useCallback(
     async (
       rawFrame: Uint8Array,
-      cryptoKey: CryptoKey | undefined,
+      cryptoKey: PayloadKey | undefined,
       revivers: ReturnType<typeof getWebRevivers>
     ): Promise<
       { encrypted: true } | { encrypted: false; chunk: StreamChunk }
@@ -102,9 +106,12 @@ export function useStreamReader(
           if (!cryptoKey) {
             return { encrypted: true };
           }
-          const payload = frameData.slice(4);
+          // Envelope-aware: frames may be symmetric ('encr', written by the
+          // run itself) or sealed ('encp', written by another run into a
+          // forwarded stream). `decryptEnvelope` dispatches on the prefix and
+          // strips it, so no manual slice here.
           hydrated = hydrateData(
-            await aesGcmDecrypt(cryptoKey, payload),
+            (await decryptEnvelope(frameData, cryptoKey)) as Uint8Array,
             revivers
           );
         } else {
@@ -164,7 +171,7 @@ export function useStreamReader(
      */
     const fetchAndParse = async (
       targetBuffer: StreamChunk[],
-      cryptoKey: CryptoKey | undefined,
+      cryptoKey: PayloadKey | undefined,
       options?: { skipFrames?: number; cursor?: string | null }
     ): Promise<
       | { encrypted: true }
@@ -300,8 +307,10 @@ export function useStreamReader(
 
     const readStreamData = async () => {
       try {
+        // Full capability so sealed ('encp') frames written by other runs
+        // decrypt too, not just this run's own symmetric frames.
         const cryptoKey = encryptionKey
-          ? await importKey(encryptionKey)
+          ? await deriveRunPayloadKeys(encryptionKey)
           : undefined;
 
         const initialChunks: StreamChunk[] = [];

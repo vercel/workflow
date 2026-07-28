@@ -17,7 +17,6 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-import type { CryptoKey } from '../encryption.js';
 import type {
   AttributeInvocationQueueItem,
   HookInvocationQueueItem,
@@ -26,6 +25,7 @@ import type {
   WorkflowSuspension,
 } from '../global.js';
 import { runtimeLogger } from '../logger.js';
+import type { PayloadKey } from '../serialization/encryption.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
@@ -41,7 +41,7 @@ export interface SuspensionHandlerParams {
    * this with replay payload hydration and suspension serialization so the
    * World is not asked to derive or fetch the same key twice.
    */
-  encryptionKey: CryptoKey | undefined;
+  encryptionKey: PayloadKey | undefined;
   span?: Span;
   requestId?: string;
   /**

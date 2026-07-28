@@ -3,9 +3,18 @@ import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from '../class-serialization.js';
 import { importKey } from '../encryption.js';
+import { deriveRunKeyPair, runAad } from '../sealed-box.js';
 import * as client from './client.js';
 import { devalueCodec } from './codec-devalue.js';
-import { decrypt, encrypt } from './encryption.js';
+import {
+  aesKeyOf,
+  decrypt,
+  encrypt,
+  isRunPayloadKeys,
+  isSealTarget,
+  runPayloadKeys,
+  sealTo,
+} from './encryption.js';
 import {
   decodeFormatPrefix,
   encodeWithFormatPrefix,
@@ -360,6 +369,170 @@ describe('decrypt', () => {
     expect(error.context).toMatchObject({
       operation: 'decrypt',
       formatPrefix: 'encr',
+    });
+  });
+});
+
+// ============================================================================
+// encryption.ts — sealed ('encp') envelopes and the PayloadKey variants
+// ============================================================================
+
+describe('sealed envelopes', () => {
+  const K = new Uint8Array(32).fill(0x21);
+
+  /** The key bundle a run's own runtime holds: symmetric key + keypair. */
+  async function makeRunKeys(material = K) {
+    const [aes, keyPair] = await Promise.all([
+      importKey(material),
+      deriveRunKeyPair(material),
+    ]);
+    return { keys: runPayloadKeys(aes, keyPair), keyPair, aes };
+  }
+
+  const payload = () =>
+    encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      new TextEncoder().encode('"secret"')
+    ) as Uint8Array;
+
+  it('seals with a SealTarget and emits the encp prefix', async () => {
+    const { keyPair } = await makeRunKeys();
+    const sealed = (await encrypt(
+      payload(),
+      sealTo(keyPair.publicKey)
+    )) as Uint8Array;
+
+    expect(peekFormatPrefix(sealed)).toBe(SerializationFormat.SEALED);
+    // Sealed data must not be mistaken for symmetrically encrypted data by
+    // anything dispatching on the prefix.
+    expect(isEncrypted(sealed)).toBe(false);
+  });
+
+  it('round-trips: cross-run writer seals, owning run opens', async () => {
+    const { keys, keyPair } = await makeRunKeys();
+
+    // The writer holds only the public key.
+    const sealed = await encrypt(payload(), sealTo(keyPair.publicKey));
+    // The owning run holds the full bundle.
+    const opened = await decrypt(sealed, keys);
+
+    expect(opened).toEqual(payload());
+  });
+
+  it("keeps a run's own payloads symmetric even when it could seal", async () => {
+    // RunPayloadKeys can seal, but writing own payloads with it must still
+    // produce `encr` — sealing to yourself costs an ECDH and 32 bytes for no
+    // security benefit.
+    const { keys } = await makeRunKeys();
+    const encrypted = (await encrypt(payload(), keys)) as Uint8Array;
+
+    expect(peekFormatPrefix(encrypted)).toBe(SerializationFormat.ENCRYPTED);
+    expect(await decrypt(encrypted, keys)).toEqual(payload());
+  });
+
+  it('honors AAD binding a sealed payload to its recipient run', async () => {
+    const { aes, keyPair } = await makeRunKeys();
+    const aad = runAad('prj_1', 'wrun_1');
+
+    const sealed = await encrypt(payload(), sealTo(keyPair.publicKey, aad));
+    expect(await decrypt(sealed, runPayloadKeys(aes, keyPair, aad))).toEqual(
+      payload()
+    );
+
+    // Same keys, different run context — must not open.
+    const wrongAad = runAad('prj_1', 'wrun_2');
+    await expect(
+      decrypt(sealed, runPayloadKeys(aes, keyPair, wrongAad))
+    ).rejects.toThrow(RuntimeDecryptionError);
+  });
+
+  describe('capability enforcement', () => {
+    it('refuses to open a sealed payload with only a symmetric key', async () => {
+      const { aes, keyPair } = await makeRunKeys();
+      const sealed = await encrypt(payload(), sealTo(keyPair.publicKey));
+
+      // A bare CryptoKey is the legacy "symmetric only" shape. It has no
+      // scalar, so it cannot open a sealed payload — and must say so clearly
+      // rather than failing an auth tag somewhere deeper.
+      const error = await decrypt(sealed, aes).catch((e) => e);
+      expect(RuntimeDecryptionError.is(error)).toBe(true);
+      expect(error.message).toMatch(/no run keypair is available/);
+      expect(error.context).toMatchObject({
+        operation: 'decrypt',
+        formatPrefix: 'encp',
+      });
+    });
+
+    it('refuses to open a sealed payload with a write-only seal target', async () => {
+      const { keyPair } = await makeRunKeys();
+      const sealed = await encrypt(payload(), sealTo(keyPair.publicKey));
+
+      await expect(decrypt(sealed, sealTo(keyPair.publicKey))).rejects.toThrow(
+        /no run keypair is available/
+      );
+    });
+
+    it('refuses to open a sealed payload with no key at all', async () => {
+      const { keyPair } = await makeRunKeys();
+      const sealed = await encrypt(payload(), sealTo(keyPair.publicKey));
+
+      await expect(decrypt(sealed, undefined)).rejects.toThrow(
+        /no run keypair is available/
+      );
+    });
+
+    it('refuses to open a symmetric payload with a write-only seal target', async () => {
+      const { aes, keyPair } = await makeRunKeys();
+      const encrypted = await encrypt(payload(), aes);
+
+      // A seal target carries no symmetric capability, so it must be treated
+      // exactly like "no key" rather than silently coerced.
+      const error = await decrypt(encrypted, sealTo(keyPair.publicKey)).catch(
+        (e) => e
+      );
+      expect(RuntimeDecryptionError.is(error)).toBe(true);
+      expect(error.message).toMatch(/no encryption key is available/);
+    });
+
+    it('cannot be opened by a different run', async () => {
+      const recipient = await makeRunKeys();
+      const other = await makeRunKeys(new Uint8Array(32).fill(0x99));
+      const sealed = await encrypt(
+        payload(),
+        sealTo(recipient.keyPair.publicKey)
+      );
+
+      await expect(decrypt(sealed, other.keys)).rejects.toThrow(
+        RuntimeDecryptionError
+      );
+    });
+  });
+
+  describe('type-confusion guards', () => {
+    it('distinguishes a seal target from a symmetric key at runtime', async () => {
+      const { aes, keyPair } = await makeRunKeys();
+      const target = sealTo(keyPair.publicKey);
+
+      expect(isSealTarget(target)).toBe(true);
+      expect(isSealTarget(aes)).toBe(false);
+      expect(isRunPayloadKeys(target)).toBe(false);
+      expect(isRunPayloadKeys(runPayloadKeys(aes, keyPair))).toBe(true);
+
+      // `aesKeyOf` is the single funnel every symmetric operation goes
+      // through, so a seal target can never reach AES-GCM as a key.
+      expect(aesKeyOf(target)).toBeUndefined();
+      expect(aesKeyOf(aes)).toBe(aes);
+      expect(aesKeyOf(runPayloadKeys(aes, keyPair))).toBe(aes);
+      expect(aesKeyOf(undefined)).toBeUndefined();
+    });
+
+    it('does not treat plain objects as key variants', () => {
+      expect(isSealTarget({ recipientPublicKey: new Uint8Array(32) })).toBe(
+        false
+      );
+      expect(isSealTarget(null)).toBe(false);
+      expect(isSealTarget(new Uint8Array(32))).toBe(false);
+      expect(isRunPayloadKeys({ aes: 1, keyPair: 2 })).toBe(false);
     });
   });
 });

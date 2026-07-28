@@ -10,6 +10,33 @@ import { getEventDataRefFields } from '@workflow/world';
 import { parse, unflatten } from 'devalue';
 
 // ---------------------------------------------------------------------------
+// Key material (browser-safe re-exports)
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-exported from the envelope layer so browser consumers (web dashboard,
+ * web-shared) can resolve key material without importing
+ * `@workflow/core/serialization`, whose module graph reaches Node built-ins
+ * (`node:util`, `node:async_hooks`) and cannot be bundled for the browser.
+ *
+ * Everything below is Web Crypto only: `serialization/encryption.ts`,
+ * `encryption.ts` and `sealed-box.ts` are all free of Node dependencies.
+ */
+export {
+  type DecryptionKey,
+  decrypt as decryptEnvelope,
+  deriveRunPayloadKeys,
+  encrypt as encryptEnvelope,
+  isRunPayloadKeys,
+  isSealTarget,
+  type PayloadKey,
+  type RunPayloadKeys,
+  runPayloadKeys,
+  type SealTarget,
+  sealTo,
+} from './serialization/encryption.js';
+
+// ---------------------------------------------------------------------------
 // Format prefix constants and encoding/decoding
 // ---------------------------------------------------------------------------
 
@@ -388,32 +415,34 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
  * decryption. Used by o11y tooling (web UI, CLI) when the user requests
  * decryption.
  *
- * @param value - The value to hydrate (may be encrypted)
+ * @param value - The value to hydrate (may be encrypted or sealed)
  * @param revivers - Devalue revivers for deserialization
- * @param key - AES-256 encryption key (if provided, encrypted data will be decrypted)
+ * @param key - The run's key material. Pass `RunPayloadKeys` (from
+ *   `deriveRunPayloadKeys`) to open both symmetric (`encr`) and sealed
+ *   (`encp`) payloads; a bare `CryptoKey` opens only the symmetric ones.
+ *   Typed as a read capability so a write-only seal target — which could open
+ *   neither scheme — is rejected at compile time rather than failing here.
  */
 export async function hydrateDataWithKey(
   value: unknown,
   revivers: Revivers,
-  key: import('./encryption.js').CryptoKey | undefined
+  key: import('./serialization/encryption.js').DecryptionKey | undefined
 ): Promise<unknown> {
   let data = value;
-  if (
-    data instanceof Uint8Array &&
-    isEncryptedData(data) &&
-    !isSealedData(data) &&
-    key
-  ) {
-    // Decrypt: strip 'encr' prefix, AES-GCM decrypt, then hydrate the result.
-    //
-    // Sealed ('encp') payloads are deliberately excluded: they are encrypted
-    // to the run's X25519 public key, so opening them needs the private
-    // scalar, not the symmetric key this function receives. Feeding them to
-    // AES-GCM would fail the auth tag and surface as a spurious decryption
-    // error, so they fall through untouched and render as ciphertext instead.
-    const { decrypt } = await import('./encryption.js');
-    const { payload } = decodeFormatPrefix(data);
-    data = await decrypt(key, payload);
+  if (data instanceof Uint8Array && isEncryptedData(data) && key) {
+    // Envelope-aware decrypt: handles both `encr` (AES-GCM under the run's
+    // symmetric key) and `encp` (sealed to the run's X25519 public key by
+    // some other run), dispatching on the format prefix.
+    const { decrypt, isRunPayloadKeys } = await import(
+      './serialization/encryption.js'
+    );
+    // Opening a sealed payload needs the run's private scalar. If the caller
+    // supplied only a symmetric key, leave the bytes as ciphertext so the UI
+    // keeps showing its "Encrypted" affordance, rather than surfacing a
+    // decryption error for something that was never openable with this key.
+    if (!isSealedData(data) || isRunPayloadKeys(key)) {
+      data = await decrypt(data, key);
+    }
   }
   if (data instanceof Uint8Array && isCompressedData(data)) {
     // Decompress: strip the codec prefix and inflate. gzip uses the

@@ -1,7 +1,7 @@
 import { FatalError } from '@workflow/errors';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { experimental_setAttributes, setAttributes } from './set-attributes.js';
+import { setAttributes } from './set-attributes.js';
 import { contextStorage, type StepContext } from './step/context-storage.js';
 
 const WORLD_CACHE = Symbol.for('@workflow/world//cache');
@@ -165,10 +165,6 @@ describe('setAttributes (host-side)', () => {
     // Barrier rejection is swallowed for ordering only — the write still fires
     // and would surface a genuine run-not-found error from the World itself.
     expect(create).toHaveBeenCalledTimes(1);
-  });
-
-  it('keeps the deprecated experimental_setAttributes alias working', async () => {
-    expect(experimental_setAttributes).toBe(setAttributes);
   });
 
   it('rejects validation errors before posting from a step', async () => {
