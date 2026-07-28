@@ -44,7 +44,11 @@ export {
   type SerdeClassCheckResult,
 } from './serde-checker.js';
 export { StandaloneBuilder } from './standalone.js';
-export { createSwcPlugin } from './swc-esbuild-plugin.js';
+export {
+  createSwcPlugin,
+  type WorkflowAfterTransformHook,
+  type WorkflowTransformResult,
+} from './swc-esbuild-plugin.js';
 export {
   detectWorkflowPatterns,
   generatedWorkflowPathPattern,

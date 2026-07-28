@@ -30,6 +30,32 @@ class MyBuilder extends BaseBuilder {
 }
 ```
 
+### Observing transforms
+
+Builder configurations can provide an optional `onAfterTransform` observer for
+tooling that derives metadata from the exact SWC output used by a build:
+
+```typescript
+const builder = new MyBuilder({
+  // Other builder configuration...
+  onAfterTransform: async ({
+    mode,
+    filename,
+    absolutePath,
+    source,
+    code,
+    workflowManifest,
+  }) => {
+    // Observe the accepted transform result.
+  },
+});
+```
+
+The observer is awaited after the transform's manifest entries have been
+accepted. It cannot replace the generated code, and throwing aborts the build.
+A source file may be observed multiple times across transform modes, bundles,
+and watch rebuilds, so consumers should deduplicate results when necessary.
+
 ## Architecture
 
 The builder system uses:
