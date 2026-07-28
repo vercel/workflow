@@ -13,6 +13,8 @@ export {
   ResolveHookModal,
   useHookActions,
 } from './hook-actions';
+export { CopyButton } from './new-trace-viewer/components/copy-button';
+export { MiddleTruncate } from './new-trace-viewer/components/middle-truncate/middle-truncate';
 export { TraceViewerSkeleton } from './new-trace-viewer/components/trace-viewer-skeleton';
 export { RunTraceView } from './run-trace-view';
 export { ConversationView } from './sidebar/conversation-view';

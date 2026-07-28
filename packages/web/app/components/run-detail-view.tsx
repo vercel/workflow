@@ -1,11 +1,13 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { FetchSpanDetail } from '@workflow/web-shared';
 import {
+  CopyButton,
   DecryptButton,
   describeStreamId,
   ErrorBoundary,
   EventListView,
   hydrateResourceIOAsync,
+  MiddleTruncate,
   NewTraceViewer,
   type SidebarDataContextValue,
   StreamViewer,
@@ -194,6 +196,35 @@ function GraphTabContent({
       execution={execution || undefined}
       env={env}
     />
+  );
+}
+
+/**
+ * A stream ID rendered with middle truncation, plus a hover-revealed copy
+ * action that always copies the full untruncated ID.
+ */
+function StreamIdLine({
+  streamId,
+  primary,
+}: {
+  streamId: string;
+  primary?: boolean;
+}) {
+  return (
+    <div
+      className={`flex items-center gap-1 text-label-14-mono ${
+        primary ? 'text-gray-1000' : 'mt-0.5 text-gray-700'
+      }`}
+    >
+      <span className="min-w-0 flex-1">
+        <MiddleTruncate value={streamId} />
+      </span>
+      <CopyButton
+        copyText={streamId}
+        ariaLabel={`Copy stream ID ${streamId}`}
+        className="flex-none opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+      />
+    </div>
   );
 }
 
@@ -825,32 +856,36 @@ export function RunDetailView({
                               const description = describeStreamId(streamId);
                               const isSelected = selectedStreamId === streamId;
                               return (
-                                <div key={streamId} role="presentation">
-                                  <button
-                                    type="button"
-                                    role="option"
-                                    aria-selected={isSelected}
-                                    onClick={() =>
-                                      setSelectedStreamId(streamId)
+                                <div
+                                  key={streamId}
+                                  role="option"
+                                  aria-selected={isSelected}
+                                  tabIndex={0}
+                                  onClick={() => setSelectedStreamId(streamId)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      setSelectedStreamId(streamId);
                                     }
-                                    className="block w-full text-left pl-4 pr-2 py-2 transition-colors hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200"
-                                    title={streamId}
-                                  >
-                                    <div
-                                      className={`truncate text-label-14 text-gray-1000 ${
-                                        description.kind === 'user-named'
-                                          ? 'font-mono'
-                                          : ''
-                                      }`}
-                                    >
-                                      {description.label}
-                                    </div>
-                                    {description.label !== streamId && (
-                                      <div className="truncate text-[11px] font-mono mt-0.5 text-gray-700">
-                                        {streamId}
+                                  }}
+                                  className="group cursor-pointer pl-4 pr-2 py-2 transition-colors hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--ds-focus-color)]"
+                                >
+                                  {description.label !== streamId ? (
+                                    <>
+                                      <div
+                                        className={`truncate text-label-14 text-gray-1000 ${
+                                          description.kind === 'user-named'
+                                            ? 'font-mono'
+                                            : ''
+                                        }`}
+                                      >
+                                        {description.label}
                                       </div>
-                                    )}
-                                  </button>
+                                      <StreamIdLine streamId={streamId} />
+                                    </>
+                                  ) : (
+                                    <StreamIdLine streamId={streamId} primary />
+                                  )}
                                 </div>
                               );
                             })}

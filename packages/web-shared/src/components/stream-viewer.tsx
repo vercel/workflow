@@ -5,6 +5,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { describeStreamId } from '../lib/stream-id';
 import { CopyButton } from './new-trace-viewer/components/copy-button';
+import { MiddleTruncate } from './new-trace-viewer/components/middle-truncate/middle-truncate';
 import { DataInspector } from './ui/data-inspector';
 import { Skeleton } from './ui/skeleton';
 
@@ -440,11 +441,15 @@ function StreamHeader({
           {description.label}
         </span>
         {description.label !== streamId && (
-          <span
-            className="truncate font-mono text-[11px] text-gray-700"
-            title={streamId}
-          >
-            {streamId}
+          <span className="flex min-w-0 items-center gap-1 font-mono text-[11px] text-gray-700">
+            <span className="min-w-0">
+              <MiddleTruncate value={streamId} />
+            </span>
+            <CopyButton
+              copyText={streamId}
+              ariaLabel={`Copy stream ID ${streamId}`}
+              className="flex-none"
+            />
           </span>
         )}
       </div>
