@@ -755,6 +755,103 @@ describe('workflow arguments', () => {
     expect(wire).toContain(ownerPublicKey);
   });
 
+  it('publishes this run public key when a step revives a workflow-body writable', async () => {
+    // `getWritable()` in a workflow body returns a handle with only a name: the
+    // workflow VM holds no key material, so nothing can publish the owner key
+    // there. The handle reaches a step, and reviving it is the first moment the
+    // run's own key is in scope — so that is where the key gets attached.
+    //
+    // It cannot be done later at serialization time: `start()` dehydrates its
+    // arguments with the CHILD's runId and key, so the owner's key is gone by
+    // then. This is the shape eve uses — a driver workflow takes a writable in
+    // its workflow body and forwards it into per-turn child runs.
+    const material = new Uint8Array(32).fill(0x5c);
+    const keys = runPayloadKeys(
+      await importKey(material),
+      await deriveRunKeyPair(material)
+    );
+
+    const handle = new WritableStream();
+    Object.defineProperty(handle, STREAM_NAME_SYMBOL, {
+      value: 'strm_fromworkflowbody',
+      writable: false,
+    });
+    // Deliberately no public-key symbol — that is the case under test.
+
+    const toStep = await dehydrateStepArguments(
+      handle,
+      'wrun_owner',
+      noEncryptionKey
+    );
+    const ops: Promise<void>[] = [];
+    const revived = (await hydrateStepArguments(
+      toStep,
+      'wrun_owner',
+      keys,
+      ops,
+      globalThis,
+      {},
+      'dpl_owner'
+    )) as WritableStream<string>;
+
+    expect((revived as any)[STREAM_SERVER_PUBLIC_KEY_SYMBOL]).toBe(
+      bytesToBase64(keys.keyPair.publicKey)
+    );
+
+    // And it survives the forward that `start()` performs, which is what puts
+    // the receiving run on the sealed path.
+    const forwarded = new TextDecoder().decode(
+      (await dehydrateWorkflowArguments(
+        revived,
+        'wrun_child',
+        noEncryptionKey
+      )) as Uint8Array
+    );
+    expect(forwarded).toContain(bytesToBase64(keys.keyPair.publicKey));
+  });
+
+  it('does NOT publish its own key when reviving another run stream', async () => {
+    // The guard that matters. Advertising our key on a stream someone else owns
+    // would make the receiver seal to us, and the real owner could never open
+    // what was written.
+    const material = new Uint8Array(32).fill(0x5c);
+    const keys = runPayloadKeys(
+      await importKey(material),
+      await deriveRunKeyPair(material)
+    );
+
+    const handle = new WritableStream();
+    for (const [sym, v] of [
+      [STREAM_NAME_SYMBOL, 'strm_someoneelse'],
+      [STREAM_SERVER_RUN_ID_SYMBOL, 'wrun_a_different_run'],
+    ] as const) {
+      Object.defineProperty(handle, sym, { value: v, writable: false });
+    }
+
+    const toStep = await dehydrateStepArguments(
+      handle,
+      'wrun_owner',
+      noEncryptionKey
+    );
+    const ops: Promise<void>[] = [];
+    const revived = (await hydrateStepArguments(
+      toStep,
+      'wrun_owner',
+      keys,
+      ops,
+      globalThis,
+      {},
+      'dpl_owner'
+    )) as WritableStream<string>;
+
+    // Sanity: the foreign owner really did survive, so the assertion below is
+    // about the guard and not about a handle that lost its identity.
+    expect((revived as any)[STREAM_SERVER_RUN_ID_SYMBOL]).toBe(
+      'wrun_a_different_run'
+    );
+    expect((revived as any)[STREAM_SERVER_PUBLIC_KEY_SYMBOL]).toBeUndefined();
+  });
+
   it('falls back to the symmetric path when the descriptor has no public key', async () => {
     // Descriptors written by older SDKs carry no key; those must keep working.
     const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
