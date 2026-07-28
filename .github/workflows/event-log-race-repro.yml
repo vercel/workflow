@@ -50,6 +50,10 @@ on:
         description: 'Per-run timeout before classifying as stuck'
         required: false
         default: '240000'
+      budget_ms:
+        description: 'Wall-clock budget for launching attempts. Must stay far enough below the job timeout to leave room for rendering the summary'
+        required: false
+        default: '4500000'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -122,6 +126,7 @@ jobs:
           EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS: ${{ inputs.hook_resume_stagger_ms || '400' }}
           EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS: ${{ inputs.poke_interval_ms || '750' }}
           EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS: ${{ inputs.run_timeout_ms || '240000' }}
+          EVENT_LOG_RACE_REPRO_BUDGET_MS: ${{ inputs.budget_ms || '4500000' }}
 
       - name: Fetch previous repro comment
         if: always() && github.event_name == 'pull_request'

@@ -68,6 +68,12 @@ interface ReproConfig {
   hookStormAttempts: number;
   hookSleepAttempts: number;
   concurrency: number;
+  /** Wall-clock budget for *launching* attempts. Once it is spent no new
+   *  attempt is claimed, in-flight ones are allowed to finish, and whatever
+   *  landed is reported. This is what keeps the job inside its own
+   *  `timeout-minutes`: a cap that fires before the runner's leaves time to
+   *  render the summary, while one that fires after it discards the whole run. */
+  budgetMs: number;
   runTimeoutMs: number;
   hookTimeoutMs: number;
   /** Rounds of racing branches per run. More rounds = more chances for a bad
@@ -144,6 +150,10 @@ const config: ReproConfig = {
   hookStormAttempts: envNumber('EVENT_LOG_RACE_REPRO_HOOK_STORM_ATTEMPTS', 600),
   hookSleepAttempts: envNumber('EVENT_LOG_RACE_REPRO_ATTEMPTS', 200),
   concurrency: envNumber('EVENT_LOG_RACE_REPRO_CONCURRENCY', 40),
+  // 75 min leaves ~20 min of the job's 120-min cap for checkout, build, the
+  // deployment wait, and rendering the summary, even at the worst case of one
+  // in-flight attempt draining its full `runTimeoutMs` after the budget ends.
+  budgetMs: envNumber('EVENT_LOG_RACE_REPRO_BUDGET_MS', 75 * 60_000),
   runTimeoutMs: envNumber('EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS', 240_000),
   hookTimeoutMs: envNumber('EVENT_LOG_RACE_REPRO_HOOK_TIMEOUT_MS', 60_000),
   rounds: envNumber('EVENT_LOG_RACE_REPRO_ROUNDS', 6),
@@ -816,6 +826,13 @@ async function mapLimit<T, R>(
 
   async function worker() {
     while (index < items.length) {
+      // Checked before claiming, never mid-attempt: an attempt that has already
+      // started owns a real workflow run, and abandoning it would report a
+      // stuck run the harness itself caused.
+      if (Date.now() >= launchDeadline) {
+        budgetExhausted = true;
+        return;
+      }
       const currentIndex = index;
       index += 1;
       const item = items[currentIndex];
@@ -865,13 +882,37 @@ function summarizeByScenario(results: ReproRunResult[]) {
   );
 }
 
-function writeResults(results: ReproRunResult[]) {
+/** Minimum gap between checkpoint writes. The file is rewritten whole, so this
+ *  trades staleness on a kill against re-serializing every landing attempt. */
+const CHECKPOINT_INTERVAL_MS = 10_000;
+
+/** Everything that has landed so far, across all scenarios. Attempts push here
+ *  as they settle rather than being collected at the end, so a cancelled or
+ *  timed-out job still reports the runs it paid for. */
+const collected: ReproRunResult[] = [];
+const plannedAttempts =
+  config.stepStormAttempts +
+  config.hookStormAttempts +
+  config.hookSleepAttempts;
+let overallDeadline = Number.POSITIVE_INFINITY;
+let launchDeadline = Number.POSITIVE_INFINITY;
+let remainingPlanned = plannedAttempts;
+let budgetExhausted = false;
+let lastCheckpointAt = 0;
+
+function writeResults(results: ReproRunResult[], complete: boolean) {
   fs.writeFileSync(
     RESULT_PATH,
     JSON.stringify(
       {
         completedAt: new Date().toISOString(),
         deploymentUrl,
+        // `partial` is the renderer's signal that the distribution below counts
+        // fewer runs than were planned, so its rates are still meaningful but
+        // its totals are not comparable to a full run's.
+        partial: !complete,
+        budgetExhausted,
+        plannedAttempts,
         config: { ...config, attempts: results.length },
         distribution: summarize(results),
         scenarioDistribution: summarizeByScenario(results),
@@ -881,6 +922,14 @@ function writeResults(results: ReproRunResult[]) {
       2
     )
   );
+  lastCheckpointAt = Date.now();
+}
+
+function recordResult(result: ReproRunResult) {
+  collected.push(result);
+  if (Date.now() - lastCheckpointAt >= CHECKPOINT_INTERVAL_MS) {
+    writeResults(collected, false);
+  }
 }
 
 async function runScenario(
@@ -891,19 +940,36 @@ async function runScenario(
   if (attempts <= 0) {
     return [];
   }
+  // Each scenario gets the share of the remaining budget its remaining planned
+  // attempts represent, so a truncated run still carries data for every
+  // scenario — including the `hook-sleep` control, which runs last and would
+  // otherwise be the first thing a single global deadline dropped. A scenario
+  // that finishes under its slice hands the surplus to the next one, since the
+  // slice is recomputed from the wall-clock left until `overallDeadline`.
+  const now = Date.now();
+  launchDeadline = Math.min(
+    overallDeadline,
+    now + ((overallDeadline - now) * attempts) / remainingPlanned
+  );
+  remainingPlanned -= attempts;
   const attemptNumbers = Array.from(
     { length: attempts },
     (_, index) => index + 1
   );
-  return await mapLimit(attemptNumbers, concurrency, run);
+  return await mapLimit(attemptNumbers, concurrency, async (attempt) => {
+    const result = await run(attempt);
+    recordResult(result);
+    return result;
+  });
 }
 
-const totalAttempts =
-  config.stepStormAttempts +
-  config.hookStormAttempts +
-  config.hookSleepAttempts;
-const testTimeoutMs =
-  config.runTimeoutMs * Math.ceil(totalAttempts / config.concurrency) + 60_000;
+// Derived from the launch budget, not from the attempt count: the budget is
+// what actually bounds the run, and the tail is one in-flight attempt draining
+// at its own timeout plus the final write. Deriving it from
+// `runTimeoutMs * ceil(attempts / concurrency)` instead produces a timeout
+// longer than the job's own `timeout-minutes`, so the runner kills the job
+// first and no summary is ever rendered.
+const testTimeoutMs = config.budgetMs + config.runTimeoutMs + 60_000;
 
 describe('event log race repro', () => {
   beforeAll(() => {
@@ -957,24 +1023,39 @@ describe('event log race repro', () => {
     'event log races do not corrupt, stall, or take stale branches',
     { timeout: testTimeoutMs },
     async () => {
-      const results = [
-        ...(await runScenario(
-          config.stepStormAttempts,
-          config.concurrency,
-          runStepStormAttempt
-        )),
-        ...(await runScenario(
-          config.hookStormAttempts,
-          config.concurrency,
-          runHookStormAttempt
-        )),
-        ...(await runScenario(
-          config.hookSleepAttempts,
-          config.concurrency,
-          runHookSleepAttempt
-        )),
-      ];
-      writeResults(results);
+      overallDeadline = Date.now() + config.budgetMs;
+      // Written up front so a kill before the first checkpoint still produces a
+      // file the renderer can report against, rather than nothing at all.
+      writeResults(collected, false);
+
+      await runScenario(
+        config.stepStormAttempts,
+        config.concurrency,
+        runStepStormAttempt
+      );
+      await runScenario(
+        config.hookStormAttempts,
+        config.concurrency,
+        runHookStormAttempt
+      );
+      await runScenario(
+        config.hookSleepAttempts,
+        config.concurrency,
+        runHookSleepAttempt
+      );
+
+      const results = collected;
+      // A budget-exhausted run launched fewer than `plannedAttempts` attempts,
+      // so its totals are short of a full run. Stamp it `partial` so the
+      // renderer surfaces that (its rates stay valid; its totals do not).
+      writeResults(results, !budgetExhausted);
+      if (budgetExhausted) {
+        console.warn(
+          `[event-log-race-repro] launch budget (${config.budgetMs}ms) spent after ` +
+            `${results.length} of ${plannedAttempts} planned attempts. Reported rates ` +
+            `are still valid; totals are not comparable to a full run.`
+        );
+      }
 
       // Only event-log regressions fail the job. `infra` outcomes are
       // harness-side timing races (hook resume vs. watchdog budget) and
