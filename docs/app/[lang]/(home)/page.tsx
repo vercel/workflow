@@ -47,7 +47,7 @@ const Home = () => (
           />
         </div>
       )}
-      <div className="grid divide-y border-y sm:border-x">
+      <div>
         <Intro />
         <Implementation />
         <Frameworks />
