@@ -112,8 +112,8 @@ This file is not optional, and it does two jobs.
 **Loading definitions.** Steps execute in the flow handler process, which does not run your route handlers. The side-effect import guarantees your Mastra workflow definitions are registered there, so the runner can look up the step graph when it resumes.
 </Callout>
 
-<Callout type="warn">
-Step IDs for code shipped by a package embed that package's version, so upgrading `@mastra/workflow` renames every step it ships and runs already in flight cannot replay across the change. Let in-flight runs drain before you upgrade.
+<Callout type="info">
+Step IDs for code shipped by a package embed that package's version, so upgrading `@mastra/workflow` renames every step it ships. Runs are pinned to the deployment that started them, so this is safe: after you deploy the upgrade, new runs use the new version and runs already in flight keep replaying on the deployment that recorded their IDs.
 </Callout>
 
 </Step>
