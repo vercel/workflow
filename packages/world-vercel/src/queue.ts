@@ -176,7 +176,12 @@ const FALLBACK_REGION = 'iad1';
 
 /**
  * Extract the workflow run ID from a queue payload, returning `undefined` for
- * payloads that don't carry one (e.g. health-check messages).
+ * payloads that don't carry one.
+ *
+ * Health-check payloads usually have no run ID, but a probe issued to prepare a
+ * cross-deployment `start()` carries the run id it is about to create. Reading
+ * it here is intentional: it routes the probe to the region the run will live
+ * in, matching the invoke that follows.
  */
 function getRunIdFromPayload(payload: QueuePayload): string | undefined {
   if ('runId' in payload && typeof payload.runId === 'string') {
@@ -313,6 +318,13 @@ function getPhysicalQueueName(
       '[workflow] WORKFLOW_SEQUENTIAL_REPLAYS=1: routing flow messages to per-run queue topics'
     );
   }
+  // Health checks are matched before the runId branch: a probe issued to
+  // prepare a cross-deployment `start()` carries the run id it is about to
+  // create, and must still get its per-probe topic rather than being routed to
+  // that run's serialized replay topic.
+  if ('__healthCheck' in payload && typeof payload.correlationId === 'string') {
+    return `${queueName}_${payload.correlationId}`;
+  }
   if ('runId' in payload && typeof payload.runId === 'string') {
     // Inline step execution: full parallelism via a per-step topic.
     if ('stepId' in payload && typeof payload.stepId === 'string') {
@@ -320,9 +332,6 @@ function getPhysicalQueueName(
     }
     // Orchestrator replay: serialize per run.
     return `${queueName}_${payload.runId}`;
-  }
-  if ('__healthCheck' in payload && typeof payload.correlationId === 'string') {
-    return `${queueName}_${payload.correlationId}`;
   }
   return queueName;
 }

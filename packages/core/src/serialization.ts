@@ -6,7 +6,8 @@ import {
 import { envNumber } from '@workflow/world';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
-import { type CryptoKey, importKey } from './encryption.js';
+import { bytesToBase64, decodeRunPublicKey } from './sealed-box.js';
+import { importKey } from './encryption.js';
 import {
   createFlushableState,
   flushablePipe,
@@ -35,12 +36,17 @@ import {
 import {
   aesKeyOf,
   decrypt,
+  deriveRunPayloadKeys,
   type EncryptionKeyParam,
   encrypt,
   isRunPayloadKeys,
   isSealTarget,
   type PayloadKey,
   resolveEncryptionKey,
+  type RunPayloadKeys,
+  runPayloadKeys,
+  type SealTarget,
+  sealTo,
 } from './serialization/encryption.js';
 import {
   formatSerializationError,
@@ -84,6 +90,7 @@ import {
   STREAM_FRAMING_SYMBOL,
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+  STREAM_SERVER_PUBLIC_KEY_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
@@ -108,6 +115,16 @@ export {
   compress,
   decompress,
   type EncryptionKeyParam,
+  // Sealed-box ('encp') key variants — see serialization/encryption.ts.
+  type PayloadKey,
+  type RunPayloadKeys,
+  type SealTarget,
+  sealTo,
+  runPayloadKeys,
+  deriveRunPayloadKeys,
+  isSealTarget,
+  isRunPayloadKeys,
+  aesKeyOf,
 };
 
 // Re-export the legacy SerializationFormatType for backwards compatibility.
@@ -1850,6 +1867,12 @@ export function getExternalReducers(
           name: existingName,
           runId: existingRunId,
         };
+        const existingPublicKey = (value as any)[
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL
+        ];
+        if (typeof existingPublicKey === 'string') {
+          descriptor.encryptionPublicKey = existingPublicKey;
+        }
         const existingDeploymentId = (value as any)[
           STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
         ];
@@ -1956,6 +1979,10 @@ export function getWorkflowReducers(
       const foreignDeploymentId = value[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL];
       if (typeof foreignDeploymentId === 'string') {
         s.deploymentId = foreignDeploymentId;
+      }
+      const foreignPublicKey = value[STREAM_SERVER_PUBLIC_KEY_SYMBOL];
+      if (typeof foreignPublicKey === 'string') {
+        s.encryptionPublicKey = foreignPublicKey;
       }
       return s;
     },
@@ -2106,6 +2133,10 @@ function getStepReducers(
 
       const s: SerializableSpecial['WritableStream'] = { name };
       if (typeof foreignRunId === 'string') s.runId = foreignRunId;
+      const foreignPublicKey = (value as any)[STREAM_SERVER_PUBLIC_KEY_SYMBOL];
+      if (typeof foreignPublicKey === 'string') {
+        s.encryptionPublicKey = foreignPublicKey;
+      }
       const foreignDeploymentId = (value as any)[
         STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
       ];
@@ -2464,14 +2495,31 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 }
 
 /**
- * Resolve the encrypt-only key needed when a child writes into another run's
- * stream. New descriptors include the owner's deployment ID; descriptors
- * created by older SDK versions fall back to loading the owning run.
+ * Resolve the write-only key a run needs when writing into another run's
+ * forwarded stream.
+ *
+ * Three tiers, cheapest first:
+ *
+ * 1. The descriptor carries the owner's X25519 public key — seal to it with
+ *    no I/O whatsoever. The owner published the key when it created the
+ *    stream, so this is the zero-round-trip path.
+ * 2. The descriptor carries the owner's deployment ID — resolve the owner's
+ *    symmetric key, which cross-deployment means a key-API round trip.
+ * 3. Neither (descriptors written by older SDKs) — load the owning run first,
+ *    then resolve its symmetric key.
+ *
+ * Tiers 2 and 3 import the key encrypt-only, which is an honor-system
+ * restriction: the same bytes could decrypt. Tier 1 makes it a cryptographic
+ * guarantee — a public key cannot read anything.
  */
 async function getForwardedWritableEncryptionKey(
   runId: string,
-  deploymentId: string | undefined
-): Promise<CryptoKey | undefined> {
+  deploymentId: string | undefined,
+  encryptionPublicKey: string | undefined
+): Promise<PayloadKey | undefined> {
+  const ownerPublicKey = decodeRunPublicKey(encryptionPublicKey);
+  if (ownerPublicKey) return sealTo(ownerPublicKey);
+
   const world = await getWorldLazy();
   if (!world.getEncryptionKeyForRun) return undefined;
 
@@ -2624,7 +2672,11 @@ export function getExternalRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(targetRunId, value.deploymentId);
+          : getForwardedWritableEncryptionKey(
+              targetRunId,
+              value.deploymentId,
+              value.encryptionPublicKey
+            );
 
       const serialize = getSerializeStream(
         getExternalReducers(global, ops, targetRunId, targetKey),
@@ -2661,6 +2713,18 @@ export function getExternalRevivers(
           STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
           {
             value: value.deploymentId,
+            writable: false,
+          }
+        );
+      }
+      // Keep the owner's public key on the handle so a further forward stays on
+      // the zero-lookup sealed path.
+      if (typeof value.encryptionPublicKey === 'string') {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
+          {
+            value: value.encryptionPublicKey,
             writable: false,
           }
         );
@@ -2777,6 +2841,16 @@ export function getWorkflowRevivers(
       if (typeof value.deploymentId === 'string') {
         descriptor[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL] = {
           value: value.deploymentId,
+          writable: false,
+        };
+      }
+      // Preserve the owner's public key for the same reason as the runId
+      // above. Without it, forwarding a writable through a workflow to a step
+      // silently drops the key, and the step falls back to fetching the
+      // owner's symmetric key — the round trip sealing exists to remove.
+      if (typeof value.encryptionPublicKey === 'string') {
+        descriptor[STREAM_SERVER_PUBLIC_KEY_SYMBOL] = {
+          value: value.encryptionPublicKey,
           writable: false,
         };
       }
@@ -3027,7 +3101,11 @@ function getStepRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(targetRunId, targetDeploymentId);
+          : getForwardedWritableEncryptionKey(
+              targetRunId,
+              targetDeploymentId,
+              value.encryptionPublicKey
+            );
 
       const serialize = getSerializeStream(
         getStepReducers(global, ops, targetRunId, targetKey),
@@ -3070,6 +3148,47 @@ function getStepRevivers(
           STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
           {
             value: targetDeploymentId,
+            writable: false,
+          }
+        );
+      }
+      // Keep the owner's public key on the handle so a further forward stays on
+      // the zero-lookup sealed path.
+      //
+      // When the descriptor carries no key and the stream belongs to THIS run,
+      // derive it. A writable taken with `getWritable()` in a workflow body has
+      // only a name on it — the workflow VM holds no key material by design —
+      // so nothing could publish the key when the handle was created. Reviving
+      // happens in a step, which does hold this run's key, and any later
+      // forward then just copies the symbol.
+      //
+      // It has to happen here rather than at serialization time: `start()`
+      // dehydrates its arguments with the CHILD's runId and the CHILD's key, so
+      // the owning run's key is no longer in scope by then.
+      //
+      // `targetRunId === runId` is the guard that matters. For a stream another
+      // run owns we must not advertise our key — the receiver would seal to us
+      // and the real owner could never open what it wrote.
+      if (
+        typeof value.encryptionPublicKey !== 'string' &&
+        targetRunId === runId &&
+        isRunPayloadKeys(cryptoKey)
+      ) {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
+          {
+            value: bytesToBase64(cryptoKey.keyPair.publicKey),
+            writable: false,
+          }
+        );
+      }
+      if (typeof value.encryptionPublicKey === 'string') {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
+          {
+            value: value.encryptionPublicKey,
             writable: false,
           }
         );

@@ -12,8 +12,10 @@ import {
   decrypt as aesGcmDecrypt,
   encrypt as aesGcmEncrypt,
   type CryptoKey,
+  importKey as importAesKey,
 } from '../encryption.js';
 import {
+  deriveRunKeyPair,
   open as openSealed,
   type RunKeyPair,
   seal as sealToPublicKey,
@@ -96,6 +98,17 @@ export interface RunPayloadKeys {
 export type PayloadKey = CryptoKey | SealTarget | RunPayloadKeys;
 
 /**
+ * The subset of {@link PayloadKey} that can actually *read* a payload.
+ *
+ * Excludes {@link SealTarget}, which is write-only by construction: it holds a
+ * public key, so it can open neither `encp` (needs the private scalar) nor
+ * `encr` (needs the symmetric key). Decrypt-side signatures should take this
+ * rather than `PayloadKey`, so passing a seal target is a compile error instead
+ * of a guaranteed runtime failure.
+ */
+export type DecryptionKey = CryptoKey | RunPayloadKeys;
+
+/**
  * Build a write-only seal capability for a recipient run's public key.
  *
  * @param recipientPublicKey - The recipient run's raw 32-byte X25519 public key
@@ -118,6 +131,25 @@ export function runPayloadKeys(
   aad?: Uint8Array
 ): RunPayloadKeys {
   return { [RUN_KEYS_BRAND]: true, aes, keyPair, aad };
+}
+
+/**
+ * Build the full key capability for a run from its raw 32-byte key material —
+ * the value `World.getEncryptionKeyForRun()` returns.
+ *
+ * Use this anywhere a run reads its own event log: it yields a key that opens
+ * both its own symmetric (`encr`) payloads and sealed (`encp`) payloads other
+ * runs wrote to it. Resolving only `importKey(material)` would leave the
+ * reader unable to open sealed writes.
+ */
+export async function deriveRunPayloadKeys(
+  runKeyMaterial: Uint8Array
+): Promise<RunPayloadKeys> {
+  const [aes, keyPair] = await Promise.all([
+    importAesKey(runKeyMaterial),
+    deriveRunKeyPair(runKeyMaterial),
+  ]);
+  return runPayloadKeys(aes, keyPair);
 }
 
 export function isSealTarget(value: unknown): value is SealTarget {

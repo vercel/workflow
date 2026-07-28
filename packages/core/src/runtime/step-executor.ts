@@ -18,7 +18,7 @@ import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
-import type { CryptoKey } from '../encryption.js';
+import type { PayloadKey } from '../serialization/encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import {
@@ -85,7 +85,7 @@ export interface StepExecutorParams {
   rootRunId?: string;
   stepId: string;
   stepName: string;
-  encryptionKey?: CryptoKey;
+  encryptionKey?: PayloadKey;
   /**
    * The workflow run's specVersion, used to gate payload compression.
    * Step outputs/errors are only compressed when the run is marked as

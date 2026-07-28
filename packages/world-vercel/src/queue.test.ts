@@ -539,6 +539,32 @@ describe('createQueue', () => {
       );
     });
 
+    it('keeps a per-probe topic for a health check that carries a runId', async () => {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+
+      const queue = createQueue();
+      // A probe issued to prepare a cross-deployment `start()` carries the run
+      // id it is about to create. It must still get its per-probe topic rather
+      // than being routed to that run's serialized replay topic, which would
+      // queue the probe behind the run it is trying to prepare.
+      await queue.queue('__wkf_workflow_health_check', {
+        __healthCheck: true as const,
+        correlationId: 'corr_123',
+        runId: 'wrun_abc',
+      });
+
+      expect(mockSend.mock.calls[0][0]).toBe(
+        '__wkf_workflow_health_check_corr_123'
+      );
+      // The payload must survive intact so the handler dispatches it as a
+      // health check rather than as a workflow invoke.
+      expect(mockSend.mock.calls[0][1].payload).toEqual({
+        __healthCheck: true,
+        correlationId: 'corr_123',
+        runId: 'wrun_abc',
+      });
+    });
+
     it('does not rewrite health check topics when the flag is unset', async () => {
       delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
 
