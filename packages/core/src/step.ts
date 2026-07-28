@@ -4,6 +4,8 @@ import { EventConsumerResult } from './events-consumer.js';
 import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { stepLogger } from './logger.js';
 import {
+  awaitEarlierDeliveries,
+  registerDeliveryBarrier,
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from './private.js';
@@ -138,6 +140,20 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           ctx.invocationsQueue.delete(event.correlationId);
           // Step failed - chain through promiseQueue to ensure
           // deterministic ordering of all promise resolutions/rejections.
+          //
+          // The rejection is as branch-deciding as a success: it decides
+          // whether a `try`/`catch` continuation runs, and therefore which
+          // ULIDs the follow-up `useStep` calls draw. So it is ordered by
+          // event-log position exactly like `step_completed` below — see there
+          // for why the deferral is captured here, at event-consumption time,
+          // and awaited off the serial queue.
+          const eventIndex = ctx.eventsConsumer.eventIndex;
+          const barrier = registerDeliveryBarrier(ctx, eventIndex, 'step');
+          const earlierDelivered = awaitEarlierDeliveries(
+            ctx,
+            eventIndex,
+            'step'
+          );
           ctx.promiseQueue = ctx.promiseQueue.then(() => {
             const errorData = event.eventData.error;
             const isErrorObject =
@@ -157,7 +173,10 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             if (errorStack) {
               error.stack = errorStack;
             }
-            reject(error);
+            void earlierDelivered.then(() => {
+              barrier.markDelivered();
+              reject(error);
+            });
           });
           return EventConsumerResult.Finished;
         }
@@ -178,15 +197,65 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // across an invocation for a sequential N-step workflow. The
           // per-run `stepHydrationCache` short-circuits that work on
           // subsequent replays. Crucially, the cache lookup happens INSIDE
-          // this same promiseQueue slot (and still resolves via `resolve`),
-          // so a cache hit occupies the exact same position in the ordered
-          // delivery chain a re-hydrate would have — preserving the
-          // determinism that pendingDeliveries, the delivery barriers, and
-          // Promise.race/all replay depend on. Only primitive results are
-          // memoized; non-primitives re-hydrate fresh each replay so a shared
-          // reference can never carry a mutation between replays.
+          // this same promiseQueue slot, so a cache hit occupies the exact
+          // same position in the ordered delivery chain a re-hydrate would
+          // have — preserving the determinism that pendingDeliveries, the
+          // delivery barriers, and Promise.race/all replay depend on. Only
+          // primitive results are memoized; non-primitives re-hydrate fresh
+          // each replay so a shared reference can never carry a mutation
+          // between replays.
+          //
+          // Hydration cost is what makes this delivery's timing unstable
+          // across replays of one invocation: the first replay pays the full
+          // decrypt/decompress/revive, later replays memo-hit a primitive
+          // result in `stepHydrationCache` and finish in a hop or two. A
+          // workflow awaiting this result on one branch and a `sleep()` or
+          // hook payload on another would therefore allocate its follow-up
+          // step ULIDs in a different order on a warm replay than the
+          // invocation that WROTE those `step_created` events did — a
+          // permanent `ReplayDivergenceError`. So the result is ordered by
+          // event-log position through the delivery-barrier registry (see
+          // `ctx.pendingDeliveryBarriers`):
+          //  - Register a 'step' barrier at this event's index so a
+          //    LATER-in-log wait/hook delivery is handed over only after it.
+          //  - Hydrate inside this serial queue slot (keeping async
+          //    deserialization in event-log order) but only CAPTURE the
+          //    outcome; then defer behind every EARLIER-in-log wait and hook
+          //    delivery before resolving, and mark this step delivered.
+          //
+          // The deferral is captured HERE, while consuming the event, and not
+          // inside the queue slot. Two reasons, both load-bearing:
+          //  - Determinism: the set of earlier deliveries is then a function of
+          //    log position alone. Captured later it would depend on how much
+          //    hydration the earlier deliveries had already finished — the very
+          //    coupling this barrier exists to remove.
+          //  - Coverage: an earlier delivery whose own hydration slot runs
+          //    first on this serial queue has usually already resolved (and so
+          //    deregistered its barrier) by the time a later slot starts. Read
+          //    at slot start, its barrier would be invisible and this step
+          //    would not defer at all. Every event in one drain window is
+          //    consumed before any slot runs, so capturing at consumption time
+          //    sees all of them.
+          //
+          // The deferral runs OFF the serial queue: it may wait on an earlier
+          // wait/hook delivery whose own resolution is driven by this queue,
+          // and blocking a queue slot on that would deadlock the queue (the
+          // same constraint sleep.ts and hook.ts document). `pendingDeliveries`
+          // is likewise released inside the slot, before the detached defer, so
+          // `scheduleWhenIdle` can still reach idle and retire the barriers
+          // this deferral may be waiting on.
           const completedEventId = event.eventId;
           const serializedResult = event.eventData.result;
+          const eventIndex = ctx.eventsConsumer.eventIndex;
+          const barrier = registerDeliveryBarrier(ctx, eventIndex, 'step');
+          let outcome:
+            | { ok: true; value: Result }
+            | { ok: false; error: unknown };
+          const earlierDelivered = awaitEarlierDeliveries(
+            ctx,
+            eventIndex,
+            'step'
+          );
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
@@ -201,12 +270,20 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
                     ctx.globalThis
                   )
               );
-              resolve(hydratedResult as Result);
+              outcome = { ok: true, value: hydratedResult as Result };
             } catch (error) {
-              reject(error);
+              outcome = { ok: false, error };
             } finally {
               ctx.pendingDeliveries--;
             }
+            void earlierDelivered.then(() => {
+              barrier.markDelivered();
+              if (outcome.ok) {
+                resolve(outcome.value);
+              } else {
+                reject(outcome.error);
+              }
+            });
           });
           return EventConsumerResult.Finished;
         }
