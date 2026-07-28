@@ -96,7 +96,7 @@ function ViewToggle({
     { id: 'text', label: 'Text' },
   ];
   return (
-    <div className="flex overflow-hidden rounded-md border border-gray-alpha-400 divide-x divide-gray-alpha-400 bg-background-100 shadow-sm">
+    <div className="flex overflow-hidden rounded-md border border-gray-alpha-400 divide-x divide-gray-alpha-400">
       {modes.map((mode) => {
         const active = view === mode.id;
         return (
@@ -411,10 +411,10 @@ function ErrorState({ error }: { error: string }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Floating view controls — top-right overlay so the content runs edge to edge
+// Header bar — stream state and view controls; identity lives in the sidebar
 // ──────────────────────────────────────────────────────────────────────────
 
-function ViewControls({
+function StreamHeader({
   isLive,
   showViewToggle,
   view,
@@ -425,9 +425,8 @@ function ViewControls({
   view: ViewMode;
   onViewChange: (view: ViewMode) => void;
 }) {
-  if (!isLive && !showViewToggle) return null;
   return (
-    <div className="absolute right-4 top-2 z-10 flex items-center gap-3">
+    <div className="flex h-10 min-h-10 flex-none items-center justify-end gap-3 border-b border-gray-alpha-400 pl-4 pr-2">
       {isLive && <LiveIndicator />}
       {showViewToggle && <ViewToggle view={view} onChange={onViewChange} />}
     </div>
@@ -501,8 +500,14 @@ export function StreamViewer({
   const view = chosenView ?? defaultView;
 
   return (
-    <div className="relative h-full">
-      <div className="h-full min-h-0">
+    <div className="flex flex-col h-full">
+      <StreamHeader
+        isLive={isLive}
+        showViewToggle={hasTextChunks}
+        view={view}
+        onViewChange={setChosenView}
+      />
+      <div className="flex-1 min-h-0">
         <StreamContent
           error={error}
           isInitialLoad={Boolean(isLoading) && chunks.length === 0}
@@ -513,14 +518,6 @@ export function StreamViewer({
           onScrollEnd={onScrollEnd}
         />
       </div>
-      {chunks.length > 0 && (
-        <ViewControls
-          isLive={isLive}
-          showViewToggle={hasTextChunks}
-          view={view}
-          onViewChange={setChosenView}
-        />
-      )}
     </div>
   );
 }
