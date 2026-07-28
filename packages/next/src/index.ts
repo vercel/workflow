@@ -361,9 +361,9 @@ export function withWorkflow(
   const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
   if (workflowTargetWorld === '@workflow/world-local') {
     process.env.WORKFLOW_LOCAL_DATA_DIR ??= '.next/workflow-data';
-  }
 
-  if (!process.env.VERCEL_DEPLOYMENT_ID) {
+    // `workflows.local.port` configures where the local world addresses its own
+    // queue callbacks, so it only applies when that world is the target.
     const maybePort = workflows?.local?.port;
     if (maybePort) {
       process.env.PORT = maybePort.toString();
