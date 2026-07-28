@@ -1,9 +1,10 @@
 import type { Storage, World } from '@workflow/world';
-import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
+import { reenqueueRecoverableRuns } from './recovery.js';
 import {
   createEventsStorage,
   createHooksStorage,
@@ -72,12 +73,13 @@ export function createWorld(
     }),
     async start() {
       await queue.start();
-      await reenqueueActiveRuns(
-        storage.runs,
-        queue.queue,
-        'world-postgres',
-        config.namespace
-      );
+      await reenqueueRecoverableRuns({
+        runs: storage.runs,
+        drizzle,
+        enqueue: queue.queue,
+        label: 'world-postgres',
+        namespace: config.namespace,
+      });
     },
     async close() {
       await queue.close();
