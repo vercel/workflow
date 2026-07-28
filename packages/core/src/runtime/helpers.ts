@@ -20,6 +20,7 @@ import {
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
+import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
 import {
   deriveRunPayloadKeys,
   type PayloadKey,
@@ -88,6 +89,15 @@ export interface HealthCheckResult {
    * or a non-JSON plain-text health response.
    */
   workflowCoreVersion?: string;
+  /**
+   * The target run's X25519 public key (base64), returned only when the probe
+   * carried a `runId` and the responding deployment has encryption enabled.
+   *
+   * Lets a cross-deployment `start()` seal the workflow arguments using a
+   * response it was already waiting on, instead of making a separate
+   * key-lookup request.
+   */
+  encryptionPublicKey?: string;
 }
 
 /**
@@ -126,11 +136,43 @@ export async function handleHealthCheckMessage(
 ): Promise<void> {
   const world = await getWorldLazy();
   const streamName = getHealthCheckStreamName(healthCheck.correlationId);
+
+  // When the probe names a run the caller is about to create, publish that
+  // run's public key. We are executing inside the target deployment, so its
+  // key material is available locally (no API call), and the caller can then
+  // seal the workflow arguments straight from this response rather than
+  // making a separate key-lookup request.
+  //
+  // Only a *public* key may travel this way: the probe response stream is
+  // deliberately unauthenticated, so anything secret would be exposed.
+  // Best-effort — a failure here must not fail the health check itself, which
+  // callers also rely on for plain capability detection.
+  let encryptionPublicKey: string | undefined;
+  if (healthCheck.runId) {
+    try {
+      const rawKey = await world.getEncryptionKeyForRun?.(healthCheck.runId);
+      if (rawKey) {
+        encryptionPublicKey = bytesToBase64(
+          (await deriveRunKeyPair(rawKey)).publicKey
+        );
+      }
+    } catch (err) {
+      runtimeLogger.warn(
+        'Health check could not derive a run public key; the caller will fall back to a key lookup',
+        {
+          correlationId: healthCheck.correlationId,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      );
+    }
+  }
+
   const response = JSON.stringify({
     healthy: true,
     correlationId: healthCheck.correlationId,
     specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
     workflowCoreVersion,
+    ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
     timestamp: Date.now(),
   });
   // Use a deterministic fake runId derived from the correlationId so that
@@ -145,6 +187,13 @@ export interface HealthCheckOptions {
   timeout?: number;
   /** Deployment ID to send the health check to. Falls back to process.env.VERCEL_DEPLOYMENT_ID. */
   deploymentId?: string;
+  /**
+   * The run id the caller is about to create. When set, the responding
+   * deployment derives that run's public key locally and returns it as
+   * `encryptionPublicKey`, letting a cross-deployment `start()` seal the
+   * workflow arguments without a separate key lookup.
+   */
+  runId?: string;
   /**
    * Queue namespace of the target deployment (e.g. `'eve'` for topics like
    * `__eve_wkf_workflow_*`). Falls back to `WORKFLOW_QUEUE_NAMESPACE` in the
@@ -234,6 +283,7 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
   healthy: boolean;
   specVersion?: number;
   workflowCoreVersion?: string;
+  encryptionPublicKey?: string;
 } | null {
   if (chunks.length === 0) return null;
 
@@ -273,6 +323,7 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
     healthy: boolean;
     specVersion?: number;
     workflowCoreVersion?: string;
+    encryptionPublicKey?: string;
   } = {
     healthy: r.healthy as boolean,
   };
@@ -281,6 +332,9 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
   }
   if (typeof r.workflowCoreVersion === 'string') {
     parsed.workflowCoreVersion = r.workflowCoreVersion;
+  }
+  if (typeof r.encryptionPublicKey === 'string') {
+    parsed.encryptionPublicKey = r.encryptionPublicKey;
   }
   return parsed;
 }
@@ -309,7 +363,11 @@ export async function healthCheck(
   try {
     await world.queue(
       queueName,
-      { __healthCheck: true, correlationId },
+      {
+        __healthCheck: true,
+        correlationId,
+        ...(options?.runId ? { runId: options.runId } : {}),
+      },
       {
         // Use JSON transport so the health check works against both
         // old (JSON-only) and new (dual) deployments.

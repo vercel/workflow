@@ -17,9 +17,15 @@ import { isRetryableWorldError } from '../classify-error.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import type { Serializable } from '../schemas.js';
-import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
+import {
+  bytesToBase64,
+  decodeRunPublicKey,
+  deriveRunKeyPair,
+} from '../sealed-box.js';
 import {
   dehydrateWorkflowArguments,
+  type PayloadKey,
+  sealTo,
   SerializationFormat,
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
@@ -317,29 +323,6 @@ export async function start<TArgs extends unknown[], TResult>(
       //
       // Worlds that don't expose the `streams` API (e.g. minimal test
       // mocks) can't service health checks, so we skip the probe for them.
-      let framedByteStreams: boolean;
-      let targetSupportsCompression: boolean;
-      if (deploymentId === currentDeploymentId) {
-        framedByteStreams = true;
-        targetSupportsCompression = true;
-      } else if (typeof world.streams?.get !== 'function') {
-        framedByteStreams = false;
-        targetSupportsCompression = false;
-      } else {
-        const probe = await healthCheck(world, {
-          deploymentId,
-          timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
-          namespace: opts.namespace,
-        }).catch(() => undefined);
-        const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
-        framedByteStreams = capabilities.framedByteStreams;
-        targetSupportsCompression = capabilities.supportedFormats.has(
-          SerializationFormat.GZIP
-        );
-      }
-
-      const ops: Promise<void>[] = [];
-
       // Generate runId client-side so we have it before serialization
       // (required for future E2E encryption where runId is part of the
       // encryption context). When the World provides a `createRunId()`
@@ -352,6 +335,41 @@ export async function start<TArgs extends unknown[], TResult>(
           ? world.createRunId(opts as Readonly<Record<string, unknown>>)
           : ulid()
       }`;
+
+      let framedByteStreams: boolean;
+      let targetSupportsCompression: boolean;
+      // Public key of the target run, when the capability probe was able to
+      // supply one (cross-deployment only).
+      let probedRunPublicKey: string | undefined;
+      if (deploymentId === currentDeploymentId) {
+        framedByteStreams = true;
+        targetSupportsCompression = true;
+      } else if (typeof world.streams?.get !== 'function') {
+        framedByteStreams = false;
+        targetSupportsCompression = false;
+      } else {
+        // Ask for this run's public key while we're here. The probe already
+        // blocks `start()` on every cross-deployment call, and the responder
+        // executes inside the target deployment where the key material is
+        // local — so the key comes back for free on a response we are
+        // already awaiting, and we can skip the key-lookup API request
+        // entirely. Best-effort: on timeout or an older target, no key comes
+        // back and we fall through to the regular lookup below.
+        const probe = await healthCheck(world, {
+          deploymentId,
+          runId,
+          timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
+          namespace: opts.namespace,
+        }).catch(() => undefined);
+        probedRunPublicKey = probe?.encryptionPublicKey;
+        const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
+        framedByteStreams = capabilities.framedByteStreams;
+        targetSupportsCompression = capabilities.supportedFormats.has(
+          SerializationFormat.GZIP
+        );
+      }
+
+      const ops: Promise<void>[] = [];
 
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
@@ -429,26 +447,45 @@ export async function start<TArgs extends unknown[], TResult>(
       // deploymentId (not just the raw opts) so the World can use it for
       // key resolution even when deploymentId was inferred from the environment
       // rather than explicitly provided in opts (e.g., in e2e test runners).
-      const rawKey = await world.getEncryptionKeyForRun?.(runId, {
-        ...opts,
-        deploymentId,
-      });
-      const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
-
-      // Derive and publish the run's X25519 public key so that cross-run
-      // writers (a hook resumption from another deployment, a sibling writing
-      // into a forwarded stream) can seal payloads *to* this run without
-      // holding its symmetric key — and without paying a `run-key` API call.
+      // Resolve how to encrypt the workflow arguments.
       //
-      // Presence of this field is the writer-side gate for sealed envelopes,
-      // so it must only be stamped when this runtime could itself open one.
-      // That holds by construction here: derivation and `encp` dispatch live
-      // in the same package, so any core that can stamp can also open. Runs
-      // are pinned to their creating deployment, so the capability this
-      // attests to is still accurate at resume time.
-      const encryptionPublicKey = rawKey
-        ? bytesToBase64((await deriveRunKeyPair(rawKey)).publicKey)
-        : undefined;
+      // Preferred: the capability probe already told us this run's public
+      // key, so seal to it. That skips `getEncryptionKeyForRun`, which for a
+      // cross-deployment start is a `run-key` API request — the last one left
+      // on this path. It is also a privilege reduction: the caller ends up
+      // able to write the arguments but not read them back, whereas fetching
+      // the symmetric key grants full read access to a run it merely
+      // launched.
+      const probedPublicKey = decodeRunPublicKey(probedRunPublicKey);
+
+      let encryptionKey: PayloadKey | undefined;
+      let encryptionPublicKey: string | undefined;
+
+      if (probedPublicKey) {
+        encryptionKey = sealTo(probedPublicKey);
+        encryptionPublicKey = probedRunPublicKey;
+      } else {
+        const rawKey = await world.getEncryptionKeyForRun?.(runId, {
+          ...opts,
+          deploymentId,
+        });
+        encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+
+        // Publish the run's X25519 public key so that cross-run writers (a
+        // hook resumption from another deployment, a sibling writing into a
+        // forwarded stream) can seal payloads *to* this run without holding
+        // its symmetric key.
+        //
+        // Presence of this field is the writer-side gate for sealed
+        // envelopes, so it must only be stamped when this runtime could
+        // itself open one. That holds by construction here: derivation and
+        // `encp` dispatch live in the same package, so any core that can
+        // stamp can also open. Runs are pinned to their creating deployment,
+        // so the capability this attests to is still accurate at resume time.
+        encryptionPublicKey = rawKey
+          ? bytesToBase64((await deriveRunKeyPair(rawKey)).publicKey)
+          : undefined;
+      }
 
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it

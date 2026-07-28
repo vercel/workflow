@@ -154,9 +154,15 @@ function renderResult(entry) {
   }
   const infra = entry.infraCount ?? infraCount(entry.distribution ?? {});
   const infraSuffix = infra > 0 ? ` (+${infra} infra)` : '';
+  // A partial run's rates are still meaningful but its totals are not
+  // comparable to a full run's, so the row says so rather than letting a
+  // short run read as a clean one.
+  const partialSuffix = entry.partial
+    ? ` — partial${entry.plannedAttempts ? ` (${entry.total} of ${entry.plannedAttempts} planned)` : ''}`
+    : '';
   return entry.failedCount === 0
-    ? `no regressions${infraSuffix}`
-    : `${entry.failedCount}/${entry.total} regressions${infraSuffix}`;
+    ? `no regressions${infraSuffix}${partialSuffix}`
+    : `${entry.failedCount}/${entry.total} regressions${infraSuffix}${partialSuffix}`;
 }
 
 function renderConfig(entry) {
@@ -231,6 +237,9 @@ function compactHistoryEntry(entry, keepFailures = false) {
     runUrl: entry.runUrl,
     deploymentUrl: entry.deploymentUrl,
     missingResults: entry.missingResults,
+    partial: entry.partial ?? false,
+    budgetExhausted: entry.budgetExhausted ?? false,
+    plannedAttempts: entry.plannedAttempts ?? 0,
     distribution: entry.distribution ?? emptyDistribution(),
     scenarioDistribution: entry.scenarioDistribution ?? {},
     failedCount: entry.failedCount ?? 0,
@@ -252,6 +261,9 @@ function buildEntry(resultsFile) {
       runUrl,
       deploymentUrl: '',
       missingResults: true,
+      partial: false,
+      budgetExhausted: false,
+      plannedAttempts: 0,
       distribution: emptyDistribution(),
       failedCount: 1,
       total: 0,
@@ -294,6 +306,12 @@ function buildEntry(resultsFile) {
     runUrl,
     deploymentUrl: resultsFile.deploymentUrl,
     missingResults: false,
+    // The harness checkpoints the file as it goes and only stamps
+    // `partial: false` on its final write, so a job killed by cancellation or
+    // its own `timeout-minutes` still reports whatever landed.
+    partial: resultsFile.partial ?? false,
+    budgetExhausted: resultsFile.budgetExhausted ?? false,
+    plannedAttempts: resultsFile.plannedAttempts ?? 0,
     distribution,
     scenarioDistribution,
     failedCount,
@@ -408,14 +426,20 @@ function render(resultsFile, previousComment) {
         'these are reported but do not fail the job.'
       : '';
 
+  const partialNote = latest.partial
+    ? ` Results are **partial**: ${latest.total} of ${latest.plannedAttempts || 'the'} planned runs completed` +
+      `${latest.budgetExhausted ? ', because the launch budget was spent' : ', because the job ended before the harness finished'}` +
+      '. Rates are still comparable; totals are not.'
+    : '';
+
   console.log('<!-- event-log-race-repro-results -->');
   console.log('## Event Log Race Repro\n');
   console.log(
     latest.missingResults
       ? 'No result file was produced by the latest repro job.'
       : latest.failedCount === 0
-        ? `No event-log regressions in the latest repro job.${infraNote}`
-        : `${latest.failedCount} of ${latest.total} latest repro runs hit event-log regressions.${infraNote}`
+        ? `No event-log regressions in the latest repro job.${partialNote}${infraNote}`
+        : `${latest.failedCount} of ${latest.total} latest repro runs hit event-log regressions.${partialNote}${infraNote}`
   );
   console.log('');
   console.log(historyMarkerStart);

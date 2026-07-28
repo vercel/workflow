@@ -2,7 +2,7 @@ import { PreconditionFailedError, WorkflowWorldError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { deriveRunKeyPair, seal } from '../sealed-box.js';
+import { bytesToBase64, deriveRunKeyPair, seal } from '../sealed-box.js';
 import {
   decrypt,
   encodeWithFormatPrefix,
@@ -12,6 +12,7 @@ import {
 } from '../serialization.js';
 import {
   getWorkflowQueueName,
+  handleHealthCheckMessage,
   healthCheck,
   latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
@@ -756,5 +757,97 @@ describe('memoizeEncryptionKey', () => {
   it('resolves undefined when encryption is not configured', async () => {
     const getKey = memoizeEncryptionKey(worldWithKey(undefined), 'wrun_1');
     await expect(getKey()).resolves.toBeUndefined();
+  });
+});
+
+describe('health check run public key', () => {
+  const MATERIAL = new Uint8Array(32).fill(0x5e);
+
+  /** Capture what the responder writes to the probe response stream. */
+  function responderWorld(getEncryptionKeyForRun?: unknown) {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const world = {
+      streams: { write, close: vi.fn().mockResolvedValue(undefined) },
+      getEncryptionKeyForRun,
+    } as unknown as World;
+    return { world, write };
+  }
+
+  function writtenResponse(write: ReturnType<typeof vi.fn>) {
+    return JSON.parse(write.mock.calls[0][2] as string);
+  }
+
+  it('returns the run public key when the probe names a run', async () => {
+    // The responder executes inside the target deployment, so it can derive
+    // the key locally — that is what lets a cross-deployment start() skip the
+    // key-lookup API request entirely.
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(
+      vi.fn().mockResolvedValue(MATERIAL)
+    );
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_1', runId: 'wrun_1' },
+      'workflow'
+    );
+
+    const { publicKey } = await deriveRunKeyPair(MATERIAL);
+    expect(writtenResponse(write).encryptionPublicKey).toBe(
+      bytesToBase64(publicKey)
+    );
+  });
+
+  it('omits the key when the probe names no run', async () => {
+    // Probes issued by the CLI health command or the dashboard carry no
+    // runId; they must not trigger key derivation at all.
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const getEncryptionKeyForRun = vi.fn().mockResolvedValue(MATERIAL);
+    const { world, write } = responderWorld(getEncryptionKeyForRun);
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_2' },
+      'workflow'
+    );
+
+    expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+    expect(writtenResponse(write).encryptionPublicKey).toBeUndefined();
+    expect(writtenResponse(write).healthy).toBe(true);
+  });
+
+  it('omits the key when encryption is not configured', async () => {
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(undefined);
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_3', runId: 'wrun_1' },
+      'workflow'
+    );
+
+    expect(writtenResponse(write).encryptionPublicKey).toBeUndefined();
+    expect(writtenResponse(write).healthy).toBe(true);
+  });
+
+  it('still reports healthy when key derivation fails', async () => {
+    // The probe doubles as plain capability detection, so a key problem must
+    // degrade to "no key" (caller falls back to a lookup) rather than fail
+    // the health check and lose the capability information too.
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(
+      vi.fn().mockRejectedValue(new Error('key service down'))
+    );
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_4', runId: 'wrun_1' },
+      'workflow'
+    );
+
+    const response = writtenResponse(write);
+    expect(response.healthy).toBe(true);
+    expect(response.encryptionPublicKey).toBeUndefined();
+    expect(response.workflowCoreVersion).toBeDefined();
   });
 });

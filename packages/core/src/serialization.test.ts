@@ -11,8 +11,12 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { decrypt, encrypt, importKey } from './encryption.js';
 import { getStepFunction, registerStepFunction } from './private.js';
-import { deriveRunKeyPair } from './sealed-box.js';
-import { runPayloadKeys, sealTo } from './serialization/encryption.js';
+import { bytesToBase64, deriveRunKeyPair } from './sealed-box.js';
+import {
+  decrypt as decryptEnvelope,
+  runPayloadKeys,
+  sealTo,
+} from './serialization/encryption.js';
 import {
   cancelAbortReaders,
   decodeFormatPrefix,
@@ -38,6 +42,7 @@ import {
   maybeEncrypt,
   SerializationFormat,
 } from './serialization.js';
+import { hydrateData } from './serialization-format.js';
 import {
   ABORT_HOOK_TOKEN,
   ABORT_READER_CANCEL,
@@ -45,6 +50,7 @@ import {
   STABLE_ULID,
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+  STREAM_SERVER_PUBLIC_KEY_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
 } from './symbols.js';
 import { createContext } from './vm/index.js';
@@ -606,6 +612,341 @@ describe('workflow arguments', () => {
     } finally {
       vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
     }
+  });
+
+  it('seals forwarded writes to the owner public key with no lookups', async () => {
+    // The whole point of carrying the public key in the descriptor: a child on
+    // another deployment must be able to write to the parent's stream without
+    // fetching the parent run OR its symmetric key. Either lookup would
+    // reintroduce the round trip this design removes.
+    const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+    const ownerMaterial = new Uint8Array(32).fill(0x2b);
+    const ownerKeyPair = await deriveRunKeyPair(ownerMaterial);
+
+    const getEncryptionKeyForRun = vi.fn();
+    const runsGet = vi.fn();
+    const world = {
+      ...makeMockWorld(),
+      runs: { get: runsGet },
+      getEncryptionKeyForRun,
+    } as any;
+    vi.mocked(getWorldLazy).mockReturnValue(world);
+
+    try {
+      const parentWritable = new WritableStream();
+      for (const [sym, value] of [
+        [STREAM_NAME_SYMBOL, 'strm_sealedparent'],
+        [STREAM_SERVER_RUN_ID_SYMBOL, 'wrun_parent'],
+        [STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, 'dpl_parent'],
+        [
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
+          bytesToBase64(ownerKeyPair.publicKey),
+        ],
+      ] as const) {
+        Object.defineProperty(parentWritable, sym, { value, writable: false });
+      }
+
+      const serialized = await dehydrateStepArguments(
+        parentWritable,
+        'wrun_child',
+        noEncryptionKey
+      );
+      const ops: Promise<void>[] = [];
+      const hydrated = (await hydrateStepArguments(
+        serialized,
+        'wrun_child',
+        noEncryptionKey,
+        ops,
+        globalThis,
+        {},
+        'dpl_child'
+      )) as WritableStream<string>;
+
+      const writer = hydrated.getWriter();
+      await writer.write('sealed-cross-deployment');
+      await writer.close();
+      await Promise.all(ops);
+
+      // Neither lookup happened — that is the whole win.
+      expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+      expect(runsGet).not.toHaveBeenCalled();
+
+      // And the frames really are sealed to the owner: decode what was
+      // written to the server and open it with the owner's keypair.
+      const written = world.streams.write.mock.calls
+        .map((c: any[]) => c[2])
+        .filter((c: unknown) => c instanceof Uint8Array) as Uint8Array[];
+      expect(written.length).toBeGreaterThan(0);
+
+      const frame = written[0];
+      // [4-byte length][encp][sealed...]
+      expect(new TextDecoder().decode(frame.subarray(4, 8))).toBe('encp');
+
+      const ownerKeys = runPayloadKeys(
+        await importKey(ownerMaterial),
+        ownerKeyPair
+      );
+      const opened = await decryptEnvelope(frame.subarray(4), ownerKeys);
+      expect(hydrateData(opened as Uint8Array, {})).toBe(
+        'sealed-cross-deployment'
+      );
+    } finally {
+      vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
+    }
+  });
+
+  it('keeps the owner public key across a workflow -> step forward', async () => {
+    // The end-to-end shape is two hops, not one: `start()` hands the parent's
+    // writable to the CHILD WORKFLOW, and the child workflow then hands it to
+    // the step that actually writes. So the handle is revived and re-serialized
+    // in between.
+    //
+    // The revivers used to re-attach only the stream name, runId and
+    // deploymentId, so the owner's public key was silently dropped on that
+    // middle hop and the step fell back to fetching the owner's symmetric key
+    // — reintroducing exactly the round trip this design removes. Sealing
+    // therefore never engaged for `start()`-forwarded streams in practice,
+    // even though the single-hop test above passed.
+    const ownerMaterial = new Uint8Array(32).fill(0x2b);
+    const ownerKeyPair = await deriveRunKeyPair(ownerMaterial);
+    const ownerPublicKey = bytesToBase64(ownerKeyPair.publicKey);
+
+    const parentWritable = new WritableStream();
+    for (const [sym, value] of [
+      [STREAM_NAME_SYMBOL, 'strm_sealedparent'],
+      [STREAM_SERVER_RUN_ID_SYMBOL, 'wrun_parent'],
+      [STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, 'dpl_parent'],
+      [STREAM_SERVER_PUBLIC_KEY_SYMBOL, ownerPublicKey],
+    ] as const) {
+      Object.defineProperty(parentWritable, sym, { value, writable: false });
+    }
+
+    // Hop 1: parent serializes into the child's workflow arguments, and the
+    // child's workflow revives the handle.
+    const forwarded = await dehydrateWorkflowArguments(
+      parentWritable,
+      'wrun_child',
+      noEncryptionKey
+    );
+    const inChildWorkflow = (await hydrateWorkflowArguments(
+      forwarded,
+      'wrun_child',
+      noEncryptionKey
+    )) as WritableStream<string>;
+
+    // The revived handle must still advertise the owner's key, or hop 2 has
+    // nothing to forward.
+    expect((inChildWorkflow as any)[STREAM_SERVER_PUBLIC_KEY_SYMBOL]).toBe(
+      ownerPublicKey
+    );
+
+    // Hop 2: the child workflow passes it to the step that writes. The
+    // descriptor the step receives is what decides sealed vs symmetric.
+    const toStep = (await dehydrateStepArguments(
+      inChildWorkflow,
+      'wrun_child',
+      noEncryptionKey
+    )) as any;
+
+    // The step payload is devalue-encoded bytes, so decode before matching —
+    // JSON-stringifying the Uint8Array would just yield a map of byte indices.
+    const wire = new TextDecoder().decode(toStep as Uint8Array);
+    expect(wire).toContain('encryptionPublicKey');
+    expect(wire).toContain(ownerPublicKey);
+  });
+
+  it('publishes this run public key when a step revives a workflow-body writable', async () => {
+    // `getWritable()` in a workflow body returns a handle with only a name: the
+    // workflow VM holds no key material, so nothing can publish the owner key
+    // there. The handle reaches a step, and reviving it is the first moment the
+    // run's own key is in scope — so that is where the key gets attached.
+    //
+    // It cannot be done later at serialization time: `start()` dehydrates its
+    // arguments with the CHILD's runId and key, so the owner's key is gone by
+    // then. This is the shape eve uses — a driver workflow takes a writable in
+    // its workflow body and forwards it into per-turn child runs.
+    const material = new Uint8Array(32).fill(0x5c);
+    const keys = runPayloadKeys(
+      await importKey(material),
+      await deriveRunKeyPair(material)
+    );
+
+    const handle = new WritableStream();
+    Object.defineProperty(handle, STREAM_NAME_SYMBOL, {
+      value: 'strm_fromworkflowbody',
+      writable: false,
+    });
+    // Deliberately no public-key symbol — that is the case under test.
+
+    const toStep = await dehydrateStepArguments(
+      handle,
+      'wrun_owner',
+      noEncryptionKey
+    );
+    const ops: Promise<void>[] = [];
+    const revived = (await hydrateStepArguments(
+      toStep,
+      'wrun_owner',
+      keys,
+      ops,
+      globalThis,
+      {},
+      'dpl_owner'
+    )) as WritableStream<string>;
+
+    expect((revived as any)[STREAM_SERVER_PUBLIC_KEY_SYMBOL]).toBe(
+      bytesToBase64(keys.keyPair.publicKey)
+    );
+
+    // And it survives the forward that `start()` performs, which is what puts
+    // the receiving run on the sealed path.
+    const forwarded = new TextDecoder().decode(
+      (await dehydrateWorkflowArguments(
+        revived,
+        'wrun_child',
+        noEncryptionKey
+      )) as Uint8Array
+    );
+    expect(forwarded).toContain(bytesToBase64(keys.keyPair.publicKey));
+  });
+
+  it('does NOT publish its own key when reviving another run stream', async () => {
+    // The guard that matters. Advertising our key on a stream someone else owns
+    // would make the receiver seal to us, and the real owner could never open
+    // what was written.
+    const material = new Uint8Array(32).fill(0x5c);
+    const keys = runPayloadKeys(
+      await importKey(material),
+      await deriveRunKeyPair(material)
+    );
+
+    const handle = new WritableStream();
+    for (const [sym, v] of [
+      [STREAM_NAME_SYMBOL, 'strm_someoneelse'],
+      [STREAM_SERVER_RUN_ID_SYMBOL, 'wrun_a_different_run'],
+    ] as const) {
+      Object.defineProperty(handle, sym, { value: v, writable: false });
+    }
+
+    const toStep = await dehydrateStepArguments(
+      handle,
+      'wrun_owner',
+      noEncryptionKey
+    );
+    const ops: Promise<void>[] = [];
+    const revived = (await hydrateStepArguments(
+      toStep,
+      'wrun_owner',
+      keys,
+      ops,
+      globalThis,
+      {},
+      'dpl_owner'
+    )) as WritableStream<string>;
+
+    // Sanity: the foreign owner really did survive, so the assertion below is
+    // about the guard and not about a handle that lost its identity.
+    expect((revived as any)[STREAM_SERVER_RUN_ID_SYMBOL]).toBe(
+      'wrun_a_different_run'
+    );
+    expect((revived as any)[STREAM_SERVER_PUBLIC_KEY_SYMBOL]).toBeUndefined();
+  });
+
+  it('falls back to the symmetric path when the descriptor has no public key', async () => {
+    // Descriptors written by older SDKs carry no key; those must keep working.
+    const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+    const getEncryptionKeyForRun = vi
+      .fn()
+      .mockResolvedValue(new Uint8Array(32).fill(7));
+    const world = {
+      ...makeMockWorld(),
+      runs: { get: vi.fn() },
+      getEncryptionKeyForRun,
+    } as any;
+    vi.mocked(getWorldLazy).mockReturnValue(world);
+
+    try {
+      const parentWritable = new WritableStream();
+      for (const [sym, value] of [
+        [STREAM_NAME_SYMBOL, 'strm_nokey'],
+        [STREAM_SERVER_RUN_ID_SYMBOL, 'wrun_parent'],
+        [STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, 'dpl_parent'],
+      ] as const) {
+        Object.defineProperty(parentWritable, sym, { value, writable: false });
+      }
+
+      const serialized = await dehydrateStepArguments(
+        parentWritable,
+        'wrun_child',
+        noEncryptionKey
+      );
+      const ops: Promise<void>[] = [];
+      const hydrated = (await hydrateStepArguments(
+        serialized,
+        'wrun_child',
+        noEncryptionKey,
+        ops,
+        globalThis,
+        {},
+        'dpl_child'
+      )) as WritableStream<string>;
+
+      const writer = hydrated.getWriter();
+      await writer.write('legacy');
+      await writer.close();
+      await Promise.all(ops);
+
+      expect(getEncryptionKeyForRun).toHaveBeenCalledWith('wrun_parent', {
+        deploymentId: 'dpl_parent',
+      });
+    } finally {
+      vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
+    }
+  });
+
+  it('keeps nonces unique across sealed frames sharing one content key', async () => {
+    // The KEM is amortized per writer, so all frames of one stream share an
+    // ephemeral key and content key. Safety therefore rests entirely on the
+    // per-frame random nonce: identical plaintext must still produce distinct
+    // ciphertext. A counter here would repeat `(key, nonce)` after a reconnect
+    // or a durable replay.
+    const ownerKeyPair = await deriveRunKeyPair(new Uint8Array(32).fill(0x3c));
+
+    async function writeFrames(count: number): Promise<Uint8Array[]> {
+      const frames: Uint8Array[] = [];
+      const serialize = getSerializeStream(
+        {} as any,
+        sealTo(ownerKeyPair.publicKey)
+      );
+      const read = (async () => {
+        const reader = serialize.readable.getReader();
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          frames.push(value);
+        }
+      })();
+      const writer = serialize.writable.getWriter();
+      for (let i = 0; i < count; i++) await writer.write('identical');
+      await writer.close();
+      await read;
+      return frames;
+    }
+
+    const frames = await writeFrames(20);
+    // Ephemeral public key sits after [4-byte length][encp]: one per stream.
+    const ephemerals = new Set(
+      frames.map((f) => Array.from(f.subarray(8, 40)).join(','))
+    );
+    expect(ephemerals.size).toBe(1);
+    // But every frame is still distinct, i.e. no nonce was reused.
+    expect(new Set(frames.map((f) => Array.from(f).join(','))).size).toBe(20);
+
+    // A second writer incarnation — a reconnect or a replay — must not inherit
+    // the first one's content key, so its ephemeral key differs.
+    const replayed = await writeFrames(20);
+    const replayEphemeral = Array.from(replayed[0].subarray(8, 40)).join(',');
+    expect(ephemerals.has(replayEphemeral)).toBe(false);
   });
 
   it('loads the owner run for forwarded descriptors from older deployments', async () => {
