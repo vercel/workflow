@@ -156,6 +156,12 @@ jobs:
       # run 2 against run 1, so a flagged regression means "this run was
       # slower than the other run of the exact same code," not "this commit
       # is slower than whatever main happened to measure."
+      # TEMPORARY (iterating on the histogram/cumulative-diff display): narrowed
+      # to just the sequential-steps scenario, step count capped at 20 (STSO
+      # bucket 1-20 only, skips the 101-120/1001-1020 buckets), iterations cut
+      # to 10, and pre-warm skipped — for fast turnaround instead of the usual
+      # ~20min/run. Revert (drop BENCH_SEQUENTIAL_STEP_COUNT/BENCH_STREAM_ITERATIONS
+      # /BENCH_PREWARM_CONCURRENCY and the -t filter) once the display is confirmed.
       - name: Run benchmarks (run 1)
         env:
           DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
@@ -174,8 +180,11 @@ jobs:
           # `permissions: id-token: write` is on the job).
           # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
           BENCH_OUTPUT_FILE: bench-results-run1-${{ matrix.target.app }}-${{ matrix.target.world }}.json
+          BENCH_SEQUENTIAL_STEP_COUNT: '20'
+          BENCH_STREAM_ITERATIONS: '10'
+          BENCH_PREWARM_CONCURRENCY: '1'
         run: |
-          pnpm vitest run packages/core/e2e/benchmark.test.ts
+          pnpm vitest run packages/core/e2e/benchmark.test.ts -t "scenario: sequential steps"
 
       - name: Run benchmarks (run 2)
         env:
@@ -189,8 +198,11 @@ jobs:
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.target.project-slug }}
           GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           BENCH_OUTPUT_FILE: bench-results-run2-${{ matrix.target.app }}-${{ matrix.target.world }}.json
+          BENCH_SEQUENTIAL_STEP_COUNT: '20'
+          BENCH_STREAM_ITERATIONS: '10'
+          BENCH_PREWARM_CONCURRENCY: '1'
         run: |
-          pnpm vitest run packages/core/e2e/benchmark.test.ts
+          pnpm vitest run packages/core/e2e/benchmark.test.ts -t "scenario: sequential steps"
 
       - name: Upload run 1 results
         # Partial results are still useful when a scenario failed
