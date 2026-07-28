@@ -139,7 +139,7 @@ Point the re-export at the package's dedicated workflows entry point rather than
 <Callout type="info">
 **IDs for code you ship embed your package version.** A step in `@acme/media` version `1.4.0` gets the ID `step//@acme/media/workflows@1.4.0//transcode`, so publishing `1.5.0` renames every workflow and step the package ships.
 
-That is safe, because runs are pinned to the deployment that started them. A run records its deployment ID and every resume targets that same deployment, so after a consumer upgrades, new runs execute the new version while runs already in flight keep replaying against the old one. Consumers do not need to drain anything before upgrading.
+That is safe on worlds with deployment pinning, such as Vercel, because runs are pinned to the deployment that started them. A run records its deployment ID and every resume targets that same deployment, so after a consumer upgrades, new runs execute the new version while runs already in flight keep replaying against the old one. Consumers do not need to drain anything before upgrading.
 
 The re-export file does not change any of this. An ID is derived from where the file lives, not from how it was imported, so a package file keeps its `name@version` ID whether or not a consumer re-exports it.
 </Callout>
