@@ -11,13 +11,13 @@ import {
   SerializationFormat,
 } from '../serialization.js';
 import {
+  appendUniqueEvents,
   getWorkflowQueueName,
   handleHealthCheckMessage,
   healthCheck,
   latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
-  mergeEvents,
   preconditionEventDelta,
   preconditionSnapshotParams,
 } from './helpers.js';
@@ -574,7 +574,7 @@ describe('preconditionSnapshotParams', () => {
   });
 });
 
-describe('mergeEvents', () => {
+describe('appendUniqueEvents', () => {
   it('appends in order without reordering and without warning', async () => {
     const { runtimeLogger } = await import('../logger.js');
     vi.mocked(runtimeLogger.warn).mockClear();
@@ -583,7 +583,7 @@ describe('mergeEvents', () => {
     const third = makeUlidEvent(1_700_000_002_000);
     const target = [first];
 
-    mergeEvents(target, [second, third]);
+    appendUniqueEvents(target, [second, third]);
 
     expect(target.map((e) => e.eventId)).toEqual([
       first.eventId,
@@ -601,7 +601,7 @@ describe('mergeEvents', () => {
     const middle = makeUlidEvent(1_700_000_001_000);
     const target = [older, newer];
 
-    mergeEvents(target, [middle]);
+    appendUniqueEvents(target, [middle]);
 
     expect(target.map((e) => e.eventId)).toEqual([
       older.eventId,
@@ -619,7 +619,7 @@ describe('mergeEvents', () => {
     const second = makeUlidEvent(1_700_000_001_000);
     const target = [first];
 
-    mergeEvents(target, [first, second, second]);
+    appendUniqueEvents(target, [first, second, second]);
 
     expect(target.map((e) => e.eventId)).toEqual([
       first.eventId,
@@ -636,7 +636,7 @@ describe('mergeEvents', () => {
     const b = makeEvent(`evnt_${ulid(time).slice(0, 10)}ZZZZZZZZZZZZZZZZ`);
     const target = [b];
 
-    mergeEvents(target, [a]);
+    appendUniqueEvents(target, [a]);
 
     expect(target.map((e) => e.eventId)).toEqual([a.eventId, b.eventId]);
   });
@@ -648,7 +648,7 @@ describe('mergeEvents', () => {
     const time = 1_700_000_002_000;
     const target = [makeUlidEvent(1_700_000_000_000), makeUlidEvent(time)];
 
-    mergeEvents(target, [makeUlidEvent(1_700_000_001_000)]);
+    appendUniqueEvents(target, [makeUlidEvent(1_700_000_001_000)]);
 
     expect(latestEventStateUpdatedAt(target)).toBe(time);
   });

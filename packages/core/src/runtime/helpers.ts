@@ -458,8 +458,11 @@ function recordRequestedEventCursor(
 }
 
 /**
- * Append the events of `events` that `target` does not already hold, keeping
+ * Appends events whose IDs are not already present in `target`, keeping
  * `target` sorted by event id.
+ *
+ * Pass the IDs currently present in `target` when appending repeatedly to the
+ * same array. The set is updated alongside `target`.
  *
  * Sort order matters beyond tidiness: the runtime treats the last element as
  * the newest event (it is the precondition snapshot's watermark, see
@@ -476,15 +479,20 @@ function recordRequestedEventCursor(
  */
 export function appendUniqueEvents(
   target: Event[],
-  targetIds: Set<string>,
-  events: Event[]
+  events: readonly Event[],
+  targetIds?: Set<string>
 ): void {
+  if (events.length === 0) {
+    return;
+  }
+
+  const ids = targetIds ?? new Set(target.map((event) => event.eventId));
   let outOfOrder = false;
   for (const event of events) {
-    if (targetIds.has(event.eventId)) {
+    if (ids.has(event.eventId)) {
       continue;
     }
-    targetIds.add(event.eventId);
+    ids.add(event.eventId);
     const tail = target[target.length - 1];
     if (tail && event.eventId < tail.eventId) {
       outOfOrder = true;
@@ -497,19 +505,6 @@ export function appendUniqueEvents(
       eventCount: target.length,
     });
   }
-}
-
-/**
- * Merge `incoming` into `target` in place, deduplicating by event id and
- * keeping `target` ordered. Convenience wrapper over
- * {@link appendUniqueEvents} for callers that do not already hold an id set.
- */
-export function mergeEvents(target: Event[], incoming: Event[]): void {
-  appendUniqueEvents(
-    target,
-    new Set(target.map((event) => event.eventId)),
-    incoming
-  );
 }
 
 function assertEventPaginationProgress(
@@ -617,7 +612,7 @@ export async function loadWorkflowRunEvents(
           throw error;
         }
 
-        appendUniqueEvents(loadedEvents, loadedEventIds, response.data);
+        appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
         hasMore = response.hasMore;
         assertEventPaginationProgress(
           runId,

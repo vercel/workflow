@@ -48,6 +48,7 @@ import {
 } from './runtime/constants.js';
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
+  appendUniqueEvents,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -55,7 +56,6 @@ import {
   type LoadedEventLog,
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
-  mergeEvents,
   parseHealthCheckPayload,
   preconditionEventDelta,
   preconditionSnapshotParams,
@@ -1347,9 +1347,7 @@ export function workflowEntrypoint(
                         // skew the prefix from the server's log.
                         const delta = pendingInlineDelta;
                         pendingInlineDelta = null;
-                        if (delta.events.length > 0) {
-                          mergeEvents(cachedEvents, delta.events);
-                        }
+                        appendUniqueEvents(cachedEvents, delta.events);
                         eventsCursor = delta.cursor ?? eventsCursor;
                         events = cachedEvents;
                       } else if (cachedEvents === null) {
@@ -1374,9 +1372,7 @@ export function workflowEntrypoint(
                         // the next loop observes the advanced cursor, so an
                         // incremental fetch can return events we already have
                         // locally.
-                        if (loaded.events.length > 0) {
-                          mergeEvents(cachedEvents, loaded.events);
-                        }
+                        appendUniqueEvents(cachedEvents, loaded.events);
                         eventsCursor = loaded.cursor ?? eventsCursor;
                         events = cachedEvents;
                       } else if (preloadedEvents) {
@@ -1507,7 +1503,7 @@ export function workflowEntrypoint(
                           );
 
                           if (sawAllWaitCompletions) {
-                            mergeEvents(events, loaded.events);
+                            appendUniqueEvents(events, loaded.events);
                             eventsCursor = loaded.cursor ?? eventsCursor;
                           } else {
                             const loaded = await loadWorkflowRunEvents(runId);

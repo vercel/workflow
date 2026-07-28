@@ -15,6 +15,7 @@ import {
   vi,
 } from 'vitest';
 import { z } from 'zod';
+import { UnwritableDataDirError } from './build-target-mismatch.js';
 import {
   assertSafeEntityId,
   clearCreatedFilesCache,
@@ -155,6 +156,33 @@ describe('fs utilities', () => {
       expect(await writeExclusive(path.join(locksDir, 'second'), '')).toBe(
         true
       );
+    });
+
+    it('names the unwritable directory instead of letting the write fail as ENOENT', async () => {
+      clearCreatedFilesCache();
+      const readOnlyDir = path.join(testDir, 'read-only', 'runs');
+      const rofs: NodeJS.ErrnoException = new Error('read-only file system');
+      rofs.code = 'EROFS';
+      vi.spyOn(fs, 'mkdir').mockRejectedValue(rofs);
+
+      const error = await ensureDir(readOnlyDir).catch((e) => e);
+
+      assert(UnwritableDataDirError.is(error));
+      expect(error.dataDir).toBe(readOnlyDir);
+      // The message has to name the build-time cause, since a Vercel deployment
+      // running the local world is the likeliest way to reach a read-only path.
+      expect(error.message).toContain('WORKFLOW_TARGET_WORLD=vercel');
+    });
+
+    it('still tolerates a permission error on a directory that already exists', async () => {
+      clearCreatedFilesCache();
+      const eacces: NodeJS.ErrnoException = new Error('permission denied');
+      eacces.code = 'EACCES';
+      vi.spyOn(fs, 'mkdir').mockRejectedValue(eacces);
+
+      // `testDir` exists, so the failure was incidental — a racing writer, or an
+      // unsearchable parent that `stat` can still resolve.
+      await expect(ensureDir(testDir)).resolves.toBeUndefined();
     });
   });
 

@@ -120,6 +120,13 @@
       "when": 1784937600000,
       "tag": "0016_add_encryption_public_key",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1785283200000,
+      "tag": "0017_add_hook_resume_context",
+      "breakpoints": true
     }
   ]
 }

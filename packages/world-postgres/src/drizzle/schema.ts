@@ -222,6 +222,9 @@ export const hooks = schema.table(
     specVersion: integer('spec_version'),
     isWebhook: boolean('is_webhook').default(true),
     isSystem: boolean('is_system').default(false),
+    // Server-synthesized resume slice. Not carried by the hook_created event,
+    // so this backend leaves it null; reads fall back to runs.get.
+    resumeContext: Cbor<NonNullable<Hook['resumeContext']>>()('resume_context'),
   } satisfies DrizzlishOfType<Cborized<Hook, 'metadata'>>,
   (tb) => [index().on(tb.runId), index().on(tb.token)]
 );

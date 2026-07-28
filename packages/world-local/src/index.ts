@@ -3,6 +3,7 @@ import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { QueuePrefix, World } from '@workflow/world';
 import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
+import { warnIfRunningInVercelDeployment } from './build-target-mismatch.js';
 import type { Config } from './config.js';
 import { config, resolveRecoverActiveRuns } from './config.js';
 import {
@@ -22,6 +23,7 @@ import { resetHookIndexEnsureCache } from './storage/hook-index.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
+export { UnwritableDataDirError } from './build-target-mismatch.js';
 // Re-export init types and utilities for consumers
 export {
   DataDirAccessError,
@@ -61,6 +63,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       )
     : {};
   const mergedConfig = { ...config.value, ...definedArgs };
+  warnIfRunningInVercelDeployment(mergedConfig.dataDir);
   const tag = mergedConfig.tag;
   const queue = createQueue(mergedConfig);
   const { clearCache: clearStorageCache, ...storage } = createStorage(
