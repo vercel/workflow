@@ -1,6 +1,7 @@
 ---
 '@workflow/core': minor
 '@workflow/web-shared': patch
+'@workflow/web': patch
 '@workflow/cli': patch
 ---
 
