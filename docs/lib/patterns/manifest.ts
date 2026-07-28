@@ -1449,7 +1449,7 @@ export const registryItems: RegistryItem[] = [
         "**Use `FatalError` for permanent failures** — regular errors trigger automatic retries (up to 3×). Throw `FatalError` when retrying won't help (insufficient funds, invalid input, etc.).",
         '**Capture values in closures carefully** — use block-scoped variables or copy values before pushing compensations to avoid referencing stale state.',
         "**Notifications don't need compensations** — fire-and-forget steps like sending emails or Slack messages typically don't register a compensation.",
-        "**The `emit()` streaming is optional** — remove the `SagaEvent` type and `emit()` calls if you don't need real-time UI progress.",
+        '**The `getStepMetadata()` dedupe is optional** — the example uses `stepId` to keep the demo ledger append-once under at-least-once retries. Drop it if your steps are already idempotent.',
       ],
       adaptingTitle: 'Adapting to your use case',
       keyApis: [
@@ -1466,8 +1466,8 @@ export const registryItems: RegistryItem[] = [
           url: '/docs/api-reference/workflow/fatal-error',
         },
         {
-          label: 'getWritable()',
-          url: '/docs/api-reference/workflow/get-writable',
+          label: 'getStepMetadata()',
+          url: '/docs/api-reference/workflow/get-step-metadata',
         },
       ],
     },

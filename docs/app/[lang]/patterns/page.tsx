@@ -7,7 +7,7 @@ import { registryItems } from '@/lib/patterns/manifest';
 export const metadata: Metadata = {
   title: 'Patterns | Workflow SDK',
   description:
-    'Installable Workflow patterns for popular providers — durable, cancellable, replay-safe recipes you drop into your app with one shadcn command.',
+    'Install and learn from these popular workflow recipes in your projects — durable, cancellable, replay-safe patterns you drop in with one shadcn command.',
 };
 
 export default function PatternsPage() {
@@ -21,8 +21,9 @@ export default function PatternsPage() {
               Patterns
             </h1>
             <p className="text-balance text-muted-foreground sm:text-xl leading-relaxed">
-              Installable Workflow patterns for popular providers. Durable,
-              cancellable, replay-safe recipes you drop into your app with one{' '}
+              Install and learn from these popular workflow recipes in your
+              projects. Durable, cancellable, replay-safe — drop one in with a
+              single{' '}
               <code className="font-mono text-base sm:text-lg bg-muted px-1.5 py-0.5 rounded">
                 shadcn
               </code>{' '}
@@ -52,7 +53,7 @@ export default function PatternsPage() {
               </Button>
               <Button asChild variant="outline" size="lg">
                 <a
-                  href="https://github.com/vercel/workflow"
+                  href="https://github.com/vercel/workflow/tree/main/workbench/vitest/workflows/patterns"
                   target="_blank"
                   rel="noopener noreferrer"
                 >
