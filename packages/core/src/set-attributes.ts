@@ -3,12 +3,9 @@ import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { normalizeAttributeChanges } from './attribute-changes.js';
 import { getWorldLazy } from './runtime/get-world-lazy.js';
 import { contextStorage } from './step/context-storage.js';
-import type {
-  ExperimentalSetAttributesOptions,
-  SetAttributesOptions,
-} from './workflow/set-attributes.js';
+import type { SetAttributesOptions } from './workflow/set-attributes.js';
 
-export type { ExperimentalSetAttributesOptions, SetAttributesOptions };
+export type { SetAttributesOptions };
 
 /**
  * Host-side implementation for `setAttributes`. Workflow bodies resolve
@@ -66,9 +63,3 @@ export async function setAttributes(
     },
   });
 }
-
-/**
- * @deprecated The feature is no longer experimental — use
- * {@link setAttributes} instead.
- */
-export const experimental_setAttributes = setAttributes;
