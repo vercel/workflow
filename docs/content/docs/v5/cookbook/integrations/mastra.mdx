@@ -11,7 +11,7 @@ related:
 ---
 
 <CopyPrompt
-  text="Set up Mastra workflows to run on Workflow SDK in this Next.js app. Install `@mastra/workflow`, `workflow`, `@mastra/core`, and `zod`. Wrap `next.config.ts` with `withWorkflow` from `workflow/next`. Create `workflows/mastra.ts` containing `export * from &quot;@mastra/workflow/workflows&quot;` plus a side-effect import of the Mastra entry file — this is required so the Workflow compiler assigns stable workflow IDs and the flow handler can load the definitions. In `src/mastra/workflows/index.ts`, call `init({ runner: mastraRunner })` to get `createWorkflow` and `createStep`, author a workflow with static string literal IDs, and call `.commit()`. Register the workflow on `new Mastra({ workflows: { ... } })`. Add a route handler that calls `mastra.getWorkflow(&quot;id&quot;).createRun()` then `run.start({ inputData })`. Verify with `npx workflow web` that each Mastra step appears as its own durable step in the run timeline."
+  text="Set up Mastra workflows to run on Workflow SDK in this Next.js app. Install `@mastra/workflow`, `workflow`, `@mastra/core`, and `zod`. Wrap `next.config.ts` with `withWorkflow` from `workflow/next`. Create `workflows/mastra.ts` containing `export * from &quot;@mastra/workflow/workflows&quot;` plus a side-effect import of the Mastra entry file — this is required so the Workflow compiler assigns stable workflow IDs and the flow handler can load the definitions. In `src/mastra/workflows/index.ts`, call `init({ runner: mastraRunner })` to get `createWorkflow` and `createStep`, author a workflow, and call `.commit()`. Register the workflow on `new Mastra({ workflows: { ... } })`. Add a route handler that calls `mastra.getWorkflow(&quot;id&quot;).createRun()` then `run.start({ inputData })`. To resume a suspended run from a different process, call `resumeHook` from `workflow/api` with the token `mastra:&#36;{runId}:&#36;{stepId}`. Verify with `npx workflow web` that each Mastra step appears as its own durable step in the run timeline."
 />
 
 [Mastra](https://mastra.ai/) is an open-source TypeScript framework for building AI agents and workflows. Workflows are authored with a builder API: [`createStep()`](https://mastra.ai/reference/workflows/step) defines a unit of work with input and output schemas, and [`createWorkflow()`](https://mastra.ai/reference/workflows/workflow) composes those steps with `.then()`, `.parallel()`, `.branch()`, `.dountil()`, `.foreach()`, and friends.
@@ -46,9 +46,9 @@ The rest of the Mastra run API maps onto Workflow SDK primitives:
 | `createStep({ execute })` | A `"use step"` function — journaled and retried |
 | `run.start({ inputData })` | [`start()`](/docs/api-reference/workflow-api/start) on the generic runner workflow |
 | `suspend()` inside a step | [`createHook()`](/docs/api-reference/workflow/create-hook) — the run parks, consuming nothing |
-| `run.resume({ step, resumeData })` | [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) |
+| `run.resume({ step, resumeData })` | [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) on the token `mastra:${runId}:${stepId}` |
 | `.sleep()` / `.sleepUntil()` | Durable [`sleep()`](/docs/api-reference/workflow/sleep) |
-| Watching a run | Namespaced [run streams](/docs/foundations/streaming#namespaced-streams) |
+| `run.watch()` / `run.stream()` | A namespaced [run stream](/docs/foundations/streaming#namespaced-streams) called `mastra:events` |
 | Cancelling a run | [`run.cancel()`](/docs/foundations/cancellation) |
 
 Because the runner is shipped by a library rather than written in your app, the integration follows the [publishing libraries](/docs/cookbook/advanced/publishing-libraries) pattern: the package ships the `"use workflow"` and `"use step"` source, and your app adds a one-file re-export so your build compiles it. That file is required — see [Add the re-export file](#add-the-re-export-file).
@@ -66,6 +66,8 @@ This walkthrough uses Next.js. Workflow SDK also supports [other frameworks](/do
 ```package-install
 npm i @mastra/workflow workflow @mastra/core zod
 ```
+
+`@mastra/workflow` expects `workflow` `>=5.0.0-beta.36 <6.0.0`, `@mastra/core` `>=1.50.0-0 <2.0.0-0`, and `zod` `^3.25.0 || ^4.0.0`.
 
 </Step>
 
@@ -143,9 +145,7 @@ workflow.commit();
 export { workflow as incrementWorkflow };
 ```
 
-<Callout type="info">
-Workflow and step `id`s must be static string literals. They identify the node in the serialized graph that the runner walks on replay, so a computed ID cannot be resolved after a cold start.
-</Callout>
+`init()` also returns `createTool`, `cloneStep`, and `cloneWorkflow`, all bound to the same runner.
 
 </Step>
 
@@ -179,9 +179,11 @@ export async function POST(req: Request) {
   const run = await mastra.getWorkflow("incrementWorkflow").createRun(); // [!code highlight]
   const result = await run.start({ inputData: { value } }); // [!code highlight]
 
-  return Response.json(result);
+  return Response.json({ runId: run.runId, result });
 }
 ```
+
+`run.start()` resolves to Mastra's usual `WorkflowResult`. Its `status` is `"success"`, `"failed"`, or `"suspended"`; alongside `input` and a `steps` record keyed by step id, you get `result` on success, `error` on failure, and `suspendPayload` plus `suspended` (an array of step paths, such as `[["approval"]]`) when a step parked the run.
 
 </Step>
 
@@ -235,36 +237,58 @@ workflow.commit();
 export { workflow as approvalWorkflow };
 ```
 
-Resume it from anywhere — an API route, a Slack action handler, a cron job — with the run ID you saved when you started the run:
+Resume it from anywhere — an API route, a Slack action handler, a cron job — with the run ID you saved when you started the run. Whatever resumes the run is almost always a different process from the one that started it, so resume the hook directly:
 
 ```typescript title="app/api/approve/route.ts" lineNumbers
-import { mastra } from "@/src/mastra";
+import { resumeHook } from "workflow/api";
 
 export async function POST(req: Request) {
   const { runId, approved } = await req.json();
 
-  const run = await mastra.getWorkflow("approvalWorkflow").createRun({ runId });
-  const result = await run.resume({ // [!code highlight]
-    step: "approval",
-    resumeData: { approved },
-  });
+  // Every suspendable Mastra step gets the token mastra:${runId}:${stepId}
+  await resumeHook(`mastra:${runId}:approval`, { approved }); // [!code highlight]
 
-  return Response.json(result);
+  return Response.json({ ok: true });
 }
 ```
 
+<Callout type="info">
+Mastra's own `run.resume({ step, resumeData })` works too, and reads better in a script or test that still holds the run it started. Awaiting its result currently only works in that same process, which is why the route above uses `resumeHook()` instead. The `mastra:${runId}:${stepId}` token shape is part of the integration's public contract, so it is safe to build on.
+</Callout>
+
 For the underlying primitive and its guarantees — token conflicts, expiry, and resuming from outside your app — see [Hooks & Webhooks](/docs/foundations/hooks).
+
+## Watching a Run
+
+`run.watch(cb)` and `run.stream()` behave as they do under any other Mastra runner. Underneath, the integration publishes every Mastra workflow event to a single namespaced run stream, which you can also read directly:
+
+```typescript title="app/api/progress/route.ts" lineNumbers
+import { getRun } from "workflow/api";
+
+export async function GET(req: Request) {
+  const runId = new URL(req.url).searchParams.get("runId")!;
+
+  const events = getRun(runId).getReadable({ namespace: "mastra:events" }); // [!code highlight]
+
+  return new Response(events, {
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+```
+
+The stream carries Mastra's own event types: `workflow-start`, `workflow-step-start`, `workflow-step-result`, `workflow-step-suspended`, `workflow-step-finish`, and `workflow-finish`.
 
 ## Limitations
 
 <Callout type="warn">
 `@mastra/workflow` is experimental. The following are not supported yet:
 
-- **Nested workflows** — using a workflow as a step in another workflow
-- **`.map()`** — inline input mapping between steps
+- **Nested workflows** — using a workflow as a step in another workflow throws a clear error
 - **[Time travel](https://mastra.ai/docs/workflows/time-travel)** — replaying an individual step from a finished run
+- **`streamLegacy()` and `perStep` streaming** — use `run.stream()` or the `mastra:events` stream instead
+- **`.map()`** — inline input mapping between steps is untested
 
-Workflow and step IDs must also be static string literals. Track progress on the package in [mastra-ai/mastra](https://github.com/mastra-ai/mastra).
+Awaiting the result of `run.resume()` also only works in the process that started the run; resume from anywhere else with `resumeHook()`. Track progress on the package in [mastra-ai/mastra](https://github.com/mastra-ai/mastra).
 </Callout>
 
 ## Further Reading
