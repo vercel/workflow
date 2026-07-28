@@ -458,24 +458,19 @@ function recordRequestedEventCursor(
 }
 
 /**
- * Appends events whose IDs are not already present in `target`, keeping
- * `target` sorted by event id.
+ * Appends events whose IDs are not already present in `target`.
  *
  * Pass the IDs currently present in `target` when appending repeatedly to the
  * same array. The set is updated alongside `target`.
  *
- * Sort order matters beyond tidiness: the runtime treats the last element as
- * the newest event (it is the precondition snapshot's watermark, see
- * {@link latestEventStateUpdatedAt}) and the replay consumes the log as an
- * ordered sequence. Event ids are unprefixed 26-character ULIDs, so
- * lexicographic id order *is* canonical backend order, including within a
- * single millisecond — re-sorting reproduces exactly the order a fresh ordered
- * load would return.
- *
- * Every append source should already be strictly above the tail (a
- * cursor-delimited page, or a write-response delta). The re-sort is therefore
- * defence in depth, and the warning is the point: it turns "this can't happen"
- * into a signal. Cost in the normal case is one string comparison per event.
+ * Events are appended in the order the World returned them, and are not
+ * re-sorted: a World's canonical order is its own, and the runtime cannot
+ * reproduce it from event ids alone. `world-vercel` orders by event id, while
+ * `world-local` orders by `(createdAt, eventId)` and deliberately re-mints keys
+ * so that the two diverge. Every append source is already in canonical order
+ * relative to the tail (a cursor-delimited page, or a write-response delta), so
+ * receipt order is the order to keep. Nothing downstream may assume the tail is
+ * the newest event — see {@link latestEventStateUpdatedAt}.
  */
 export function appendUniqueEvents(
   target: Event[],
@@ -487,23 +482,12 @@ export function appendUniqueEvents(
   }
 
   const ids = targetIds ?? new Set(target.map((event) => event.eventId));
-  let outOfOrder = false;
   for (const event of events) {
     if (ids.has(event.eventId)) {
       continue;
     }
     ids.add(event.eventId);
-    const tail = target[target.length - 1];
-    if (tail && event.eventId < tail.eventId) {
-      outOfOrder = true;
-    }
     target.push(event);
-  }
-  if (outOfOrder) {
-    target.sort((a, b) => (a.eventId < b.eventId ? -1 : 1));
-    runtimeLogger.warn('Event log merged out of order; re-sorted by eventId', {
-      eventCount: target.length,
-    });
   }
 }
 
@@ -684,11 +668,20 @@ export function isPreconditionGuardEnabled(): boolean {
 
 /**
  * The `stateUpdatedAt` value to send with a replay-context event creation: the
- * ULID time (epoch ms) of the latest event the runtime has loaded. The log is
- * kept sorted by event id (see {@link appendUniqueEvents}), so its tail *is*
- * its maximum ULID time — which is what lets the count sent alongside it be
- * read as "events at or below this watermark". Returns `undefined` when there
- * are no events or the latest id is not a decodable ULID.
+ * *maximum* ULID time (epoch ms) over the events the runtime has loaded. Returns
+ * `undefined` when there are no events or that id is not a decodable ULID.
+ *
+ * It is the maximum rather than the tail's because the loaded log is in the
+ * World's canonical order, which is not necessarily event-id order (see
+ * {@link appendUniqueEvents}). The maximum is what lets the count sent alongside
+ * it be read as "events at or below this watermark": every loaded event is at or
+ * below it, so the count is exactly `events.length`. Reading the tail instead
+ * would understate the watermark on a World whose order is not id-ordered, which
+ * is safe (it can only weaken detection) but needlessly imprecise.
+ *
+ * The maximum is found by lexicographic id comparison, decoding only once: the
+ * 26-character Crockford ULID encodes its timestamp in the leading 10
+ * characters, so the greatest id also carries the greatest time.
  *
  * Granularity: snapshots are epoch-milliseconds, and the backend allows an
  * equal-timestamp snapshot (an up-to-date client must not be rejected). Two
@@ -698,13 +691,18 @@ export function isPreconditionGuardEnabled(): boolean {
  * watermark differs even when the watermarks are equal.
  */
 export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
-  const last = events[events.length - 1];
-  if (!last) {
+  let latest: string | undefined;
+  for (const event of events) {
+    if (latest === undefined || event.eventId > latest) {
+      latest = event.eventId;
+    }
+  }
+  if (latest === undefined) {
     return undefined;
   }
   // Event IDs are prefixed ULIDs (e.g. `evnt_01ARYZ...`); ulidToDate only
   // decodes the bare 26-char ULID, so strip the prefix first.
-  const eventId = last.eventId;
+  const eventId = latest;
   const underscore = eventId.lastIndexOf('_');
   const rawUlid = underscore === -1 ? eventId : eventId.slice(underscore + 1);
   const time = ulidToDate(rawUlid)?.getTime();
@@ -744,7 +742,8 @@ export interface PreconditionSnapshotParams {
  * a cursor without either would invite a delta nobody asked for.
  *
  * `stateEventCount` is `events.length` because the watermark is the log's
- * *maximum* ULID time, so every loaded event is at or below it.
+ * *maximum* ULID time, so every loaded event is at or below it regardless of the
+ * order the World returned them in.
  */
 export function preconditionSnapshotParams(
   events: Event[],

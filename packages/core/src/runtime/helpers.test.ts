@@ -486,7 +486,7 @@ describe('latestEventStateUpdatedAt', () => {
     expect(latestEventStateUpdatedAt([])).toBeUndefined();
   });
 
-  it('decodes the ULID time of the last (newest) event, stripping the prefix', () => {
+  it('decodes the ULID time of the newest event, stripping the prefix', () => {
     const time = 1_700_000_000_000;
     // ULID time resolution is whole milliseconds.
     expect(
@@ -497,7 +497,21 @@ describe('latestEventStateUpdatedAt', () => {
     ).toBe(time);
   });
 
-  it('returns undefined when the latest event id is not a decodable ULID', () => {
+  it('reports the maximum, not the tail, when the log is not id-ordered', () => {
+    // A World's canonical order need not be event-id order (world-local orders
+    // by `(createdAt, eventId)`), so the watermark cannot be read off the tail.
+    const time = 1_700_000_002_000;
+
+    expect(
+      latestEventStateUpdatedAt([
+        makeUlidEvent(time),
+        makeUlidEvent(1_700_000_000_000),
+        makeUlidEvent(1_700_000_001_000),
+      ])
+    ).toBe(time);
+  });
+
+  it('returns undefined when the newest event id is not a decodable ULID', () => {
     expect(
       latestEventStateUpdatedAt([makeEvent('evnt_not-a-ulid')])
     ).toBeUndefined();
@@ -575,9 +589,7 @@ describe('preconditionSnapshotParams', () => {
 });
 
 describe('appendUniqueEvents', () => {
-  it('appends in order without reordering and without warning', async () => {
-    const { runtimeLogger } = await import('../logger.js');
-    vi.mocked(runtimeLogger.warn).mockClear();
+  it('appends in receipt order', () => {
     const first = makeUlidEvent(1_700_000_000_000);
     const second = makeUlidEvent(1_700_000_001_000);
     const third = makeUlidEvent(1_700_000_002_000);
@@ -590,12 +602,12 @@ describe('appendUniqueEvents', () => {
       second.eventId,
       third.eventId,
     ]);
-    expect(runtimeLogger.warn).not.toHaveBeenCalled();
   });
 
-  it('re-sorts to canonical order and warns when an append lands out of order', async () => {
-    const { runtimeLogger } = await import('../logger.js');
-    vi.mocked(runtimeLogger.warn).mockClear();
+  it('preserves the order the World returned, never re-sorting by event id', () => {
+    // A World's canonical order is its own: world-local orders by
+    // `(createdAt, eventId)` and re-mints keys so the two diverge, so an
+    // id-ordered re-sort here would produce an order no load would return.
     const older = makeUlidEvent(1_700_000_000_000);
     const newer = makeUlidEvent(1_700_000_002_000);
     const middle = makeUlidEvent(1_700_000_001_000);
@@ -605,13 +617,9 @@ describe('appendUniqueEvents', () => {
 
     expect(target.map((e) => e.eventId)).toEqual([
       older.eventId,
-      middle.eventId,
       newer.eventId,
+      middle.eventId,
     ]);
-    expect(runtimeLogger.warn).toHaveBeenCalledWith(
-      'Event log merged out of order; re-sorted by eventId',
-      expect.objectContaining({ eventCount: 3 })
-    );
   });
 
   it('deduplicates by event id', () => {
@@ -627,10 +635,7 @@ describe('appendUniqueEvents', () => {
     ]);
   });
 
-  it('orders a same-millisecond pair by its random component', () => {
-    // Event ids are unprefixed 26-char ULIDs, so lexicographic id order is
-    // canonical backend order even inside one millisecond — which is what
-    // makes re-sorting safe.
+  it('keeps a same-millisecond pair in receipt order', () => {
     const time = 1_700_000_000_000;
     const a = makeEvent(`evnt_${ulid(time).slice(0, 10)}AAAAAAAAAAAAAAAA`);
     const b = makeEvent(`evnt_${ulid(time).slice(0, 10)}ZZZZZZZZZZZZZZZZ`);
@@ -638,19 +643,24 @@ describe('appendUniqueEvents', () => {
 
     appendUniqueEvents(target, [a]);
 
-    expect(target.map((e) => e.eventId)).toEqual([a.eventId, b.eventId]);
+    expect(target.map((e) => e.eventId)).toEqual([b.eventId, a.eventId]);
   });
 
-  it('reports the maximum ULID time as the watermark after an out-of-order merge', () => {
-    // The direct link between the sort and the snapshot's correctness: the
-    // watermark is read off the tail, so an unsorted tail would understate it
-    // while the count still covered every loaded event.
+  it('leaves the watermark correct even when the merge is not id-ordered', () => {
+    // Why the merge needs no sort: the snapshot reads the maximum ULID time
+    // across the log rather than the tail, so an out-of-order tail costs nothing
+    // and every loaded event stays at or below the watermark.
     const time = 1_700_000_002_000;
     const target = [makeUlidEvent(1_700_000_000_000), makeUlidEvent(time)];
 
     appendUniqueEvents(target, [makeUlidEvent(1_700_000_001_000)]);
 
     expect(latestEventStateUpdatedAt(target)).toBe(time);
+    expect(preconditionSnapshotParams(target, 'eid:abc')).toEqual({
+      stateUpdatedAt: time,
+      stateEventCount: 3,
+      stateCursor: 'eid:abc',
+    });
   });
 });
 
