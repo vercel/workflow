@@ -71,7 +71,7 @@ for (const item of registryItems) {
     if (seenPaths.has(caption)) continue;
     seenPaths.add(caption);
     files.push({
-      path: snippet.caption,
+      path: caption,
       content: snippet.installCode ?? snippet.code,
     });
   }

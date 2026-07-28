@@ -1,9 +1,9 @@
 'use client';
 
+import { Button } from '@vercel/geistdocs/components/button';
 import { CheckIcon, CopyIcon } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 interface CodeBlock {

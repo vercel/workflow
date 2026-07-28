@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { Input } from '@vercel/geistdocs/components/input';
 import { Search } from 'lucide-react';
+import { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
 import { categoryLabels, patternTypeLabels } from '@/lib/patterns/manifest';
 import type {
   RegistryCategory,

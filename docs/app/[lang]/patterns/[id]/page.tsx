@@ -1,8 +1,8 @@
+import { Mermaid } from '@vercel/geistdocs/components/mermaid';
 import { AlertTriangle, ExternalLink, Info, Lightbulb } from 'lucide-react';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { codeToHtml } from 'shiki';
-import { Mermaid } from '@/components/geistdocs/mermaid';
 import { RegistryCodeTabs } from '@/components/patterns/RegistryCodeTabs';
 import { RegistryDetailHero } from '@/components/patterns/RegistryDetailHero';
 import {

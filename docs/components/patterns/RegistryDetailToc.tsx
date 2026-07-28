@@ -1,13 +1,16 @@
 'use client';
 
 import { SiGithub } from '@icons-pack/react-simple-icons';
-import { useEffect, useState } from 'react';
-import { AskAI } from '@/components/geistdocs/ask-ai';
-import { CopyPage } from '@/components/geistdocs/copy-page';
-import { Feedback } from '@/components/geistdocs/feedback';
-import { OpenInChat } from '@/components/geistdocs/open-in-chat';
-import { ScrollTop } from '@/components/geistdocs/scroll-top';
-import { Separator } from '@/components/ui/separator';
+import { Separator } from '@vercel/geistdocs/components/separator';
+import { AskAIButton } from '@vercel/geistdocs/controls';
+import { useCopyButton } from 'fumadocs-ui/utils/use-copy-button';
+import {
+  ArrowUpCircleIcon,
+  CheckIcon,
+  CopyIcon,
+  MessageCircleIcon,
+} from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
 
 export interface RegistryTocItem {
@@ -21,6 +24,38 @@ interface RegistryDetailTocProps {
   pageText: string;
   href: string;
   githubPath?: string;
+}
+
+// Shared styling for the plain-text actions beneath the outline.
+const ACTION_CLASS =
+  'flex items-center gap-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground';
+
+function ScrollTop() {
+  const handleScrollToTop = useCallback(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
+  return (
+    <button className={ACTION_CLASS} onClick={handleScrollToTop} type="button">
+      <ArrowUpCircleIcon className="size-3.5" />
+      <span>Scroll to top</span>
+    </button>
+  );
+}
+
+function CopyPage({ text }: { text: string }) {
+  const [checked, handleCopy] = useCopyButton(async () => {
+    await navigator.clipboard.writeText(text);
+  });
+
+  const Icon = checked ? CheckIcon : CopyIcon;
+
+  return (
+    <button className={ACTION_CLASS} onClick={handleCopy} type="button">
+      <Icon className="size-3.5" />
+      <span>Copy page</span>
+    </button>
+  );
 }
 
 export function RegistryDetailToc({
@@ -57,6 +92,12 @@ export function RegistryDetailToc({
     ? `https://github.com/vercel/workflow/edit/main/docs/lib/patterns/${githubPath}`
     : undefined;
 
+  const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http';
+  const pageUrl = new URL(
+    href,
+    `${protocol}://${process.env.NEXT_PUBLIC_VERCEL_PROJECT_PRODUCTION_URL}`
+  ).toString();
+
   return (
     <div>
       <p className="font-medium text-sm mb-3">On this page</p>
@@ -82,7 +123,7 @@ export function RegistryDetailToc({
         <Separator />
         {githubEditUrl && (
           <a
-            className="flex items-center gap-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground"
+            className={ACTION_CLASS}
             href={githubEditUrl}
             rel="noopener noreferrer"
             target="_blank"
@@ -92,10 +133,15 @@ export function RegistryDetailToc({
           </a>
         )}
         <ScrollTop />
-        <Feedback />
         <CopyPage text={pageText} />
-        <AskAI href={href} />
-        <OpenInChat href={href} />
+        <AskAIButton
+          className={cn(ACTION_CLASS, 'h-auto p-0 shadow-none')}
+          prompt={`Read this page, I want to ask questions about it. ${pageUrl}`}
+          variant="link"
+        >
+          <MessageCircleIcon className="size-3.5" />
+          <span>Ask AI about this page</span>
+        </AskAIButton>
       </div>
     </div>
   );

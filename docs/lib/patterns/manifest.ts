@@ -359,7 +359,7 @@ export const registryItems: RegistryItem[] = [
         '**Step limits** — combine with `maxSteps` on `DurableAgent` to cap execution even without a manual stop signal.',
         '**Multiple agents** — scope each `stopHook` to its own run ID so parallel agent chains never interfere.',
         '**Hard Cancellation as a fallback** — wire your stop endpoint to fall back to `getRun(runId).cancel()` if the hook resume errors with `not found` / `expired` (e.g. the hook was already consumed). This guarantees the run is terminated even when the Stop Signal path is unavailable.',
-        "**Using WorkflowAgent instead** — the example uses `DurableAgent`, which is deprecated in Workflow SDK v5 in favor of AI SDK v7's `WorkflowAgent`. The stop mechanics (hook + `Promise.race` + hard-cancel fallback) are identical with either.",
+        "**Using WorkflowAgent instead** — the example uses `DurableAgent`, which is deprecated in favor of AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent); follow the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent). The stop mechanics (hook + `Promise.race` + hard-cancel fallback) are identical with either.",
       ],
       keyApis: [
         {
@@ -375,8 +375,8 @@ export const registryItems: RegistryItem[] = [
           url: '/docs/api-reference/workflow/get-writable',
         },
         {
-          label: 'DurableAgent',
-          url: '/docs/api-reference/workflow-ai/durable-agent',
+          label: 'WorkflowAgent',
+          url: 'https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent',
         },
         {
           label: 'getRun()',
@@ -530,6 +530,7 @@ export const registryItems: RegistryItem[] = [
         "**Don't use `TransformStream.terminate()` to slice the stream** — throws `Invalid state` when late-arriving chunks hit the transform. Use a manual `ReadableStream` pump as shown.",
         "**Release the source reader, don't cancel it** — use `reader.releaseLock()` in the `finally` block; `source.cancel()` propagates upstream and closes the durable writable, breaking the next turn.",
         '**Handle stale `runId` gracefully** — wrap the follow-up path in a try/catch for `not found` / `expired` and fall through to the first-turn path to start a fresh workflow.',
+        '**`WorkflowChatTransport` moved to the AI SDK** — the version exported from `@workflow/ai` is deprecated. AI SDK ships a 1:1 port; use [`WorkflowChatTransport` from `@ai-sdk/workflow`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport) for new code. The wiring shown here is identical with either import.',
       ],
       adaptingTitle: 'Pitfalls',
       keyApis: [
@@ -557,7 +558,10 @@ export const registryItems: RegistryItem[] = [
           label: 'useChat()',
           url: 'https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat',
         },
-        { label: '"use step"', url: '/docs/foundations/workflows-and-steps#step-functions' },
+        {
+          label: '"use step"',
+          url: '/docs/foundations/workflows-and-steps#step-functions',
+        },
         {
           label: 'defineHook()',
           url: '/docs/api-reference/workflow/define-hook',
@@ -581,7 +585,7 @@ export const registryItems: RegistryItem[] = [
     description:
       'Replace a stateless AI agent with a durable one — tools as steps, streamed output, crash-safe by default.',
     longDescription:
-      "Use this pattern to make any AI SDK agent durable. The agent becomes a workflow, tools become steps, and the framework handles retries, streaming, and state persistence automatically. **`DurableAgent` is deprecated in Workflow SDK v5** — for new durable agent work on v5, use AI SDK v7's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent), which implements the same pattern from the AI SDK package. This pattern remains valid for v4 and for existing `DurableAgent` code.",
+      "Use this pattern to make any AI SDK agent durable. The agent becomes a workflow, tools become steps, and the framework handles retries, streaming, and state persistence automatically. **`DurableAgent` is deprecated** — for new durable agent work, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent), which implements the same pattern from the AI SDK package, and follow the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent). This pattern remains accurate for existing `DurableAgent` code.",
     tags: ['agents', 'ai', 'durable', 'tools', 'streaming'],
     categories: ['agent'],
     versions: ['v4', 'v5'],
@@ -635,7 +639,7 @@ export const registryItems: RegistryItem[] = [
       callout: {
         type: 'warn',
         content:
-          "`DurableAgent` is deprecated in Workflow SDK v5 and remains documented for existing code only. Use AI SDK v7's `WorkflowAgent` for new durable agent work — it provides the same durability guarantees with a cleaner API, built-in tool approval flows, and resumable streaming, and lives in the AI SDK package. [View WorkflowAgent docs →](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) Existing users can refer to the [`DurableAgent` API reference](https://workflow-sdk.dev/docs/api-reference/workflow-ai/durable-agent) while migrating.",
+          "`DurableAgent` is deprecated and remains documented for existing code only. Use AI SDK's `WorkflowAgent` for new durable agent work — it provides the same durability guarantees with a cleaner API, built-in tool approval flows, and resumable streaming, and lives in the AI SDK package. [View WorkflowAgent docs →](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) See the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent), or the [`DurableAgent` API reference](https://workflow-sdk.dev/docs/api-reference/workflow-ai/durable-agent) while migrating.",
       },
       sourceDescription:
         'Replace `Agent` with `DurableAgent`, wrap the function in `"use workflow"`, mark each tool with `"use step"`, and stream output through `getWritable()`.',
@@ -656,7 +660,7 @@ export const registryItems: RegistryItem[] = [
         '**Add tools** — define a new `"use step"` function with a Zod schema. Each tool automatically gets retries and persistence.',
         '**Workflow-level tools** — if a tool needs workflow primitives like `sleep()` or `createHook()`, omit `"use step"` so it runs in the workflow context instead.',
         '**Multi-turn** — pass `result.messages` plus new user messages to subsequent `agent.stream()` calls for multi-turn conversations.',
-        '**Client integration** — use `useChat()` from `@ai-sdk/react` with `WorkflowChatTransport` from `@workflow/ai` for a full chat UI with reconnection support.',
+        '**Client integration** — use `useChat()` from `@ai-sdk/react` with `WorkflowChatTransport` for a full chat UI with reconnection support. The `@workflow/ai` export is deprecated; prefer the 1:1 port in [`@ai-sdk/workflow`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport).',
       ],
       adaptingTitle: 'Adapting to your use case',
       keyApis: [
@@ -664,7 +668,10 @@ export const registryItems: RegistryItem[] = [
           label: '"use workflow"',
           url: '/docs/foundations/workflows-and-steps#workflow-functions',
         },
-        { label: '"use step"', url: '/docs/foundations/workflows-and-steps#step-functions' },
+        {
+          label: '"use step"',
+          url: '/docs/foundations/workflows-and-steps#step-functions',
+        },
         {
           label: 'DurableAgent',
           url: '/docs/api-reference/workflow-ai/durable-agent',
@@ -780,7 +787,7 @@ export const registryItems: RegistryItem[] = [
         "**Escalation** — if the first approver doesn't respond, use `sleep()` + another hook to escalate to a backup reviewer.",
         '**Adjust timeout** — use `"24h"` for production, shorter durations for demos.',
         '**Workflow-level vs step tools** — tools that use `sleep()`, `defineHook()`, or other workflow primitives must NOT use `"use step"`. Tools with only I/O (API calls, DB queries) should use `"use step"` for retries.',
-        "**Using WorkflowAgent instead** — the example uses `DurableAgent`, which is deprecated in Workflow SDK v5 in favor of AI SDK v7's `WorkflowAgent`. The approval-gate mechanics (hook + `sleep()` race inside a workflow-level tool) are identical with either.",
+        "**Using WorkflowAgent instead** — the example uses `DurableAgent`, which is deprecated in favor of AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent); follow the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent). The approval-gate mechanics (hook + `sleep()` race inside a workflow-level tool) are identical with either.",
       ],
       adaptingTitle: 'Adapting to your use case',
       keyApis: [
@@ -788,7 +795,10 @@ export const registryItems: RegistryItem[] = [
           label: '"use workflow"',
           url: '/docs/foundations/workflows-and-steps#workflow-functions',
         },
-        { label: '"use step"', url: '/docs/foundations/workflows-and-steps#step-functions' },
+        {
+          label: '"use step"',
+          url: '/docs/foundations/workflows-and-steps#step-functions',
+        },
         {
           label: 'defineHook()',
           url: '/docs/api-reference/workflow/define-hook',
@@ -799,8 +809,8 @@ export const registryItems: RegistryItem[] = [
           url: '/docs/api-reference/workflow/get-writable',
         },
         {
-          label: 'DurableAgent',
-          url: '/docs/api-reference/workflow-ai/durable-agent',
+          label: 'WorkflowAgent',
+          url: 'https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent',
         },
       ],
     },
@@ -1278,7 +1288,10 @@ export const registryItems: RegistryItem[] = [
           label: '"use workflow"',
           url: '/docs/foundations/workflows-and-steps#workflow-functions',
         },
-        { label: '"use step"', url: '/docs/foundations/workflows-and-steps#step-functions' },
+        {
+          label: '"use step"',
+          url: '/docs/foundations/workflows-and-steps#step-functions',
+        },
         {
           label: 'getStepMetadata()',
           url: '/docs/api-reference/workflow/get-step-metadata',
@@ -1444,7 +1457,10 @@ export const registryItems: RegistryItem[] = [
           label: '"use workflow"',
           url: '/docs/foundations/workflows-and-steps#workflow-functions',
         },
-        { label: '"use step"', url: '/docs/foundations/workflows-and-steps#step-functions' },
+        {
+          label: '"use step"',
+          url: '/docs/foundations/workflows-and-steps#step-functions',
+        },
         {
           label: 'FatalError',
           url: '/docs/api-reference/workflow/fatal-error',
