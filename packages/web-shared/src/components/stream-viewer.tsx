@@ -4,6 +4,7 @@ import { ArrowDown } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { describeStreamId } from '../lib/stream-id';
+import { CopyButton } from './new-trace-viewer/components/copy-button';
 import { DataInspector } from './ui/data-inspector';
 import { Skeleton } from './ui/skeleton';
 
@@ -162,7 +163,7 @@ const ChunkRow = React.memo(function ChunkRow({
 }) {
   return (
     <div
-      className="flex items-start gap-3 px-1 py-2"
+      className="group flex items-start gap-3 px-1 py-2"
       style={
         isLast ? undefined : { borderBottom: '1px solid var(--ds-gray-200)' }
       }
@@ -185,6 +186,11 @@ const ChunkRow = React.memo(function ChunkRow({
           <DataInspector data={chunk.value} expandLevel={1} />
         )}
       </div>
+      <CopyButton
+        copyText={stringifyChunkValue(chunk.value)}
+        ariaLabel={`Copy chunk ${index}`}
+        className="mt-0.5 flex-none opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+      />
     </div>
   );
 });
@@ -329,11 +335,17 @@ function TextView({ chunks }: { chunks: Chunk[] }) {
                   backgroundColor: 'var(--ds-background-200)',
                 }}
               >
-                <div
-                  className="mb-1 font-mono text-[11px] tabular-nums"
-                  style={{ color: 'var(--ds-gray-600)' }}
-                >
-                  [{index}] non-text chunk
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span
+                    className="font-mono text-[11px] tabular-nums"
+                    style={{ color: 'var(--ds-gray-600)' }}
+                  >
+                    [{index}] non-text chunk
+                  </span>
+                  <CopyButton
+                    copyText={stringifyChunkValue(chunk.value)}
+                    ariaLabel={`Copy chunk ${index} as JSON`}
+                  />
                 </div>
                 <pre
                   className="whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.55]"
