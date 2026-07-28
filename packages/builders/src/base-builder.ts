@@ -62,6 +62,19 @@ export type { DiscoveredEntries } from './fast-discovery.js';
 const EMIT_SOURCEMAPS_FOR_DEBUGGING =
   process.env.WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING === '1';
 
+/**
+ * esbuild treats import attributes (`import data from './x.json' with
+ * { type: 'json' }`) as unsupported syntax for the `es2022` target and
+ * silently strips them from the output. Any such import that ends up
+ * externalized (rather than inlined) then crashes at runtime on Node's
+ * ESM loader with ERR_IMPORT_ATTRIBUTE_MISSING (see issue #3157).
+ * All supported Node.js runtimes understand the `with` keyword, so mark
+ * the syntax as supported for every bundle that Node loads directly.
+ */
+const ESBUILD_SUPPORTED_FEATURES = {
+  'import-attributes': true,
+} as const;
+
 const VALID_SOURCEMAP_STRINGS = new Set([
   'inline',
   'linked',
@@ -1194,6 +1207,7 @@ export const __steps_registered = true;
       platform: 'node',
       conditions: ['node'],
       target: 'es2022',
+      supported: ESBUILD_SUPPORTED_FEATURES,
       write: true,
       treeShaking: true,
       keepNames: true,
@@ -1633,6 +1647,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
           format,
           platform: 'node',
           target: 'es2022',
+          supported: ESBUILD_SUPPORTED_FEATURES,
           write: true,
           keepNames: true,
           minify: false,
@@ -1832,6 +1847,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         format,
         platform: 'node',
         target: 'es2022',
+        supported: ESBUILD_SUPPORTED_FEATURES,
         write: true,
         keepNames: true,
         minify: false,
@@ -2012,6 +2028,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       platform: 'node',
       jsx: 'preserve',
       target: 'es2022',
+      supported: ESBUILD_SUPPORTED_FEATURES,
       write: true,
       treeShaking: true,
       external: ['@workflow/core'],
@@ -2118,6 +2135,7 @@ export const OPTIONS = handler;`;
       platform: 'node',
       conditions: ['import', 'module', 'node', 'default'],
       target: 'es2022',
+      supported: ESBUILD_SUPPORTED_FEATURES,
       write: true,
       treeShaking: true,
       keepNames: true,
