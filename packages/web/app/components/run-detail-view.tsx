@@ -816,14 +816,19 @@ export function RunDetailView({
                             No streams found for this run
                           </div>
                         ) : (
-                          <ul className="divide-y divide-gray-400">
+                          <div
+                            className="divide-y divide-gray-400"
+                            role="listbox"
+                            aria-label="Streams"
+                          >
                             {streams.map((streamId) => {
                               const description = describeStreamId(streamId);
                               const isSelected = selectedStreamId === streamId;
                               return (
-                                <li key={streamId}>
+                                <div key={streamId} role="presentation">
                                   <button
                                     type="button"
+                                    role="option"
                                     aria-selected={isSelected}
                                     onClick={() =>
                                       setSelectedStreamId(streamId)
@@ -846,10 +851,10 @@ export function RunDetailView({
                                       </div>
                                     )}
                                   </button>
-                                </li>
+                                </div>
                               );
                             })}
-                          </ul>
+                          </div>
                         )}
                       </div>
                     </div>
