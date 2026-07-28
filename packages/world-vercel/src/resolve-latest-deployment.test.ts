@@ -13,6 +13,7 @@ vi.mock('@vercel/oidc', () => ({
   getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
 }));
 
+import { missingDeploymentIdMessage } from './deployment-id.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';
 
 describe('createResolveLatestDeploymentId', () => {
@@ -67,7 +68,9 @@ describe('createResolveLatestDeploymentId', () => {
     });
 
     await expect(resolveLatest()).rejects.toThrow(
-      'VERCEL_DEPLOYMENT_ID environment variable is not set'
+      missingDeploymentIdMessage(
+        "Resolving the latest deployment for deploymentId: 'latest'"
+      )
     );
   });
 

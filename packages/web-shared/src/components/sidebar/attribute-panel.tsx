@@ -417,6 +417,8 @@ const attributeToDisplayFn: Record<
   receivedCount: (value: unknown) => String(value),
   lastReceivedAt: localMillisecondTimeOrNull,
   disposedAt: localMillisecondTimeOrNull,
+  // Internal resume plumbing — not surfaced in the UI
+  resumeContext: (_value: unknown) => null,
   // Event details
   eventType: (value: unknown) => String(value),
   correlationId: (value: unknown) => String(value),
