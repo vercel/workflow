@@ -113,7 +113,7 @@ This file is not optional, and it does two jobs.
 </Callout>
 
 <Callout type="info">
-Step IDs for code shipped by a package embed that package's version, so upgrading `@mastra/workflow` renames every step it ships. Runs are pinned to the deployment that started them, so this is safe: after you deploy the upgrade, new runs use the new version and runs already in flight keep replaying on the deployment that recorded their IDs.
+Step IDs for code shipped by a package embed that package's version, so upgrading `@mastra/workflow` renames every step it ships. On worlds with deployment pinning, such as Vercel, runs are pinned to the deployment that started them, so this is safe: after you deploy the upgrade, new runs use the new version and runs already in flight keep replaying on the deployment that recorded their IDs.
 </Callout>
 
 </Step>
