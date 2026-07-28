@@ -338,8 +338,13 @@ async function maybeDecryptFields<
 
   try {
     const rawKey = await resolver(runId);
-    const { importKey } = await import('@workflow/core/encryption');
-    const k = rawKey ? await importKey(rawKey) : undefined;
+    // Resolve the full key capability so `--decrypt` can open sealed
+    // ('encp') payloads that other runs wrote to this one, not just the
+    // run's own symmetric ('encr') payloads.
+    const { deriveRunPayloadKeys } = await import(
+      '@workflow/core/serialization'
+    );
+    const k = rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
 
     // Decrypt input/output/error fields (WorkflowRun, Step)
     result.input = await maybeDecrypt(result.input, k);

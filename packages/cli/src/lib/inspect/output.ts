@@ -1,5 +1,5 @@
-import { importKey } from '@workflow/core/encryption';
 import {
+  deriveRunPayloadKeys,
   type EncryptionKeyParam,
   getDeserializeStream,
   getExternalRevivers,
@@ -1039,7 +1039,9 @@ export const showStream = async (
     encryptionKey = (async () => {
       const run = await world.runs.get(opts.runId!);
       const rawKey = await world.getEncryptionKeyForRun?.(run);
-      return rawKey ? await importKey(rawKey) : undefined;
+      // Full capability, so sealed ('encp') stream frames written by other
+      // runs are readable too — not just the run's own symmetric frames.
+      return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
     })();
   } else if (opts.decrypt && !opts.runId) {
     logger.warn(
