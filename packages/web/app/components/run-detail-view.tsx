@@ -2,6 +2,7 @@ import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { FetchSpanDetail } from '@workflow/web-shared';
 import {
   DecryptButton,
+  describeStreamId,
   ErrorBoundary,
   EventListView,
   hydrateResourceIOAsync,
@@ -19,7 +20,7 @@ import {
   Loader2,
   Lock,
 } from 'lucide-react';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
@@ -430,6 +431,15 @@ export function RunDetailView({
     error: streamError,
   } = useStreamReader(env, selectedStreamId, runId, encryptionKey, run.status);
 
+  // Auto-select the first stream when the Streams tab opens without a
+  // streamId in the URL, so the first viewport shows data instead of a
+  // placeholder.
+  useEffect(() => {
+    if (activeTab === 'streams' && !selectedStreamId && streams.length > 0) {
+      setSelectedStreamId(streams[0]);
+    }
+  }, [activeTab, selectedStreamId, streams, setSelectedStreamId]);
+
   const handleCancelClick = () => {
     setShowCancelDialog(true);
   };
@@ -783,22 +793,28 @@ export function RunDetailView({
                 <div className="h-full flex gap-4">
                   {/* Stream list sidebar */}
                   <div
-                    className="w-64 flex-shrink-0 border rounded-lg overflow-hidden"
+                    className="w-64 flex-shrink-0 flex flex-col border rounded-lg overflow-hidden"
                     style={{
                       borderColor: 'var(--ds-gray-300)',
                       backgroundColor: 'var(--ds-background-100)',
                     }}
                   >
                     <div
-                      className="px-3 py-2 border-b text-xs font-medium"
+                      className="flex flex-none items-baseline justify-between px-3 py-2 border-b text-xs font-medium"
                       style={{
                         borderColor: 'var(--ds-gray-300)',
                         color: 'var(--ds-gray-900)',
                       }}
                     >
-                      Streams ({streams.length})
+                      Streams
+                      <span
+                        className="tabular-nums font-normal"
+                        style={{ color: 'var(--ds-gray-600)' }}
+                      >
+                        {streams.length}
+                      </span>
                     </div>
-                    <div className="overflow-auto max-h-[calc(100vh-400px)]">
+                    <div className="flex-1 min-h-0 overflow-auto">
                       {streamsLoading ? (
                         <div className="p-4 flex items-center justify-center">
                           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -815,24 +831,44 @@ export function RunDetailView({
                           No streams found for this run
                         </div>
                       ) : (
-                        streams.map((streamId) => (
-                          <button
-                            key={streamId}
-                            type="button"
-                            onClick={() => setSelectedStreamId(streamId)}
-                            className="w-full text-left px-3 py-2 text-xs font-mono truncate hover:bg-accent transition-colors"
-                            style={{
-                              backgroundColor:
-                                selectedStreamId === streamId
+                        streams.map((streamId) => {
+                          const description = describeStreamId(streamId);
+                          const isSelected = selectedStreamId === streamId;
+                          return (
+                            <button
+                              key={streamId}
+                              type="button"
+                              aria-current={isSelected || undefined}
+                              onClick={() => setSelectedStreamId(streamId)}
+                              className="w-full text-left px-3 py-2 hover:bg-accent transition-colors"
+                              style={{
+                                backgroundColor: isSelected
                                   ? 'var(--ds-gray-200)'
                                   : 'transparent',
-                              color: 'var(--ds-gray-1000)',
-                            }}
-                            title={streamId}
-                          >
-                            {streamId}
-                          </button>
-                        ))
+                              }}
+                              title={streamId}
+                            >
+                              <div
+                                className={`truncate text-xs ${
+                                  description.kind === 'user-named'
+                                    ? 'font-mono'
+                                    : ''
+                                }`}
+                                style={{ color: 'var(--ds-gray-1000)' }}
+                              >
+                                {description.label}
+                              </div>
+                              {description.label !== streamId && (
+                                <div
+                                  className="truncate text-[11px] font-mono mt-0.5"
+                                  style={{ color: 'var(--ds-gray-700)' }}
+                                >
+                                  {streamId}
+                                </div>
+                              )}
+                            </button>
+                          );
+                        })
                       )}
                     </div>
                   </div>
@@ -877,10 +913,9 @@ export function RunDetailView({
                       )
                     ) : (
                       <div
-                        className="h-full flex items-center justify-center rounded-lg border"
+                        className="h-full flex items-center justify-center rounded-lg border border-dashed"
                         style={{
                           borderColor: 'var(--ds-gray-300)',
-                          backgroundColor: 'var(--ds-gray-100)',
                         }}
                       >
                         <div
