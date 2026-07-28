@@ -41,7 +41,10 @@ export {
   createPseudoPackagePlugin,
   PSEUDO_PACKAGES,
 } from './pseudo-package-esbuild-plugin.js';
-export { NORMALIZE_REQUEST_CODE } from './request-converter.js';
+export {
+  NORMALIZE_REQUEST_CODE,
+  STREAMING_NORMALIZE_REQUEST_CODE,
+} from './request-converter.js';
 export {
   analyzeSerdeCompliance,
   extractClassEntries,

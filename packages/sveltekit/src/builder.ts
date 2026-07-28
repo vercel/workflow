@@ -16,6 +16,7 @@ import {
   createBaseBuilderConfig,
   NORMALIZE_REQUEST_CODE,
   resolveProjectRoot,
+  STREAMING_NORMALIZE_REQUEST_CODE,
   type SvelteKitConfig,
 } from '@workflow/builders';
 
@@ -171,12 +172,15 @@ export const POST = async ({request}) => {
       ''
     );
 
-    // Replace all HTTP method exports with SvelteKit-compatible handlers
+    // Replace all HTTP method exports with SvelteKit-compatible handlers.
+    // The webhook route is a public, pre-auth endpoint: the request body is
+    // passed through as a stream (not buffered) so that invalid-token
+    // requests are rejected without consuming the body.
     webhookRouteContent = webhookRouteContent.replace(
       /export const GET = handler;\nexport const POST = handler;\nexport const PUT = handler;\nexport const PATCH = handler;\nexport const DELETE = handler;\nexport const HEAD = handler;\nexport const OPTIONS = handler;/,
-      `${NORMALIZE_REQUEST_CODE}
+      `${STREAMING_NORMALIZE_REQUEST_CODE}
 const createSvelteKitHandler = (method) => async ({ request, params, platform }) => {
-  const normalRequest = await normalizeRequest(request);
+  const normalRequest = normalizeRequestStreaming(request);
   const response = await handler(normalRequest, params.token);
   return response;
 };
