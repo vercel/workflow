@@ -1045,7 +1045,10 @@ describe('event log race repro', () => {
       );
 
       const results = collected;
-      writeResults(results, true);
+      // A budget-exhausted run launched fewer than `plannedAttempts` attempts,
+      // so its totals are short of a full run. Stamp it `partial` so the
+      // renderer surfaces that (its rates stay valid; its totals do not).
+      writeResults(results, !budgetExhausted);
       if (budgetExhausted) {
         console.warn(
           `[event-log-race-repro] launch budget (${config.budgetMs}ms) spent after ` +
