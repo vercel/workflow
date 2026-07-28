@@ -13,6 +13,7 @@ import {
 } from '@workflow/world';
 import { decode as cborDecode, encode as cborEncode } from 'cbor-x';
 import { z } from 'zod/v4';
+import { missingDeploymentIdMessage } from './deployment-id.js';
 import { getDispatcher } from './http-client.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
@@ -377,9 +378,8 @@ export function createQueue(config?: APIConfig): Queue {
     const deploymentId = opts?.deploymentId ?? process.env.VERCEL_DEPLOYMENT_ID;
     if (!deploymentId) {
       throw new Error(
-        'No deploymentId provided and VERCEL_DEPLOYMENT_ID environment variable is not set. ' +
-          'Queue messages require a deployment ID to route correctly. ' +
-          'Either set VERCEL_DEPLOYMENT_ID or provide deploymentId in options.'
+        `${missingDeploymentIdMessage('Enqueuing a workflow message')} ` +
+          'Callers outside a deployment can instead pass an explicit deploymentId in options.'
       );
     }
 
@@ -524,10 +524,13 @@ export function createQueue(config?: APIConfig): Queue {
     };
   };
 
+  // `start()` resolves the current deployment before writing anything, so this
+  // is where a Vercel world running outside a deployment fails — ahead of any
+  // state write, and regardless of whether credentials happen to be valid.
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
     const deploymentId = process.env.VERCEL_DEPLOYMENT_ID;
     if (!deploymentId) {
-      throw new Error('VERCEL_DEPLOYMENT_ID environment variable is not set');
+      throw new Error(missingDeploymentIdMessage('Starting a workflow run'));
     }
     return deploymentId;
   };

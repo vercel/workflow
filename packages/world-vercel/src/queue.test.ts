@@ -47,6 +47,7 @@ vi.mock('./utils.js', () => ({
   getHeaders: vi.fn().mockReturnValue(new Map()),
 }));
 
+import { missingDeploymentIdMessage } from './deployment-id.js';
 import { createQueue } from './queue.js';
 import { getHttpUrl } from './utils.js';
 
@@ -160,7 +161,22 @@ describe('createQueue', () => {
         await expect(
           queue.queue('__wkf_workflow_test', { runId: 'run-123' })
         ).rejects.toThrow(
-          'No deploymentId provided and VERCEL_DEPLOYMENT_ID environment variable is not set'
+          missingDeploymentIdMessage('Enqueuing a workflow message')
+        );
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        }
+      }
+    });
+
+    it('should throw an actionable error from getDeploymentId, which start() calls before writing any state', async () => {
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      delete process.env.VERCEL_DEPLOYMENT_ID;
+
+      try {
+        await expect(createQueue().getDeploymentId()).rejects.toThrow(
+          missingDeploymentIdMessage('Starting a workflow run')
         );
       } finally {
         if (originalEnv !== undefined) {

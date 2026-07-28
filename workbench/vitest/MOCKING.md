@@ -37,7 +37,7 @@ The `@vite-ignore` comment tells Vite not to process this dynamic import. The mo
 A single workflow file can contain both `"use workflow"` and `"use step"` functions. The SWC plugin processes each file in one mode:
 
 - **client mode** (Vitest transform via `workflowTransformPlugin`): both workflow and step functions become stubs. Test files get function references with `.workflowId` for `start()`.
-- **step mode** (esbuild bundle): step functions retain their real implementations and call `registerStepFunction()`. Workflow functions become stubs.
+- **step mode** (esbuild bundle): step functions retain their real implementations. The SWC transform emits an inline IIFE that stores each function in a `globalThis` registry; workflow functions become stubs.
 - **workflow mode** (esbuild bundle): workflow functions are bundled as code strings for the VM. Step functions become stubs.
 
 The same source file must be compiled twice in different modes — once for the test file (client mode) and once for execution (step mode). This requires separate build artifacts that can't share Vitest's module graph.
