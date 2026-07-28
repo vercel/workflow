@@ -51,7 +51,7 @@ function FeatureCardWide({ title, description, visual }: Feature): JSX.Element {
   return (
     <div className="flex flex-col items-center gap-8 md:gap-12 px-4 py-8 sm:py-12 sm:px-12">
       <div className="flex flex-col items-center max-w-[800px] text-center mx-auto">
-        <h3 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl lg:text-[40px]">
+        <h3 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
           {title}
         </h3>
         <p className="text-balance text-lg text-muted-foreground mt-4">

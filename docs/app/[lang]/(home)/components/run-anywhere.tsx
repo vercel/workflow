@@ -119,7 +119,7 @@ export const RunAnywhere = () => (
   <div className="px-4 py-8 sm:py-12 sm:px-12 grid gap-10 items-center overflow-hidden">
     <div className="space-y-4">
       <div className="grid gap-4 max-w-lg text-center mx-auto">
-        <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl lg:text-[40px]">
+        <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
           Run anywhere, no lock‑in
         </h2>
         <p className="text-lg text-muted-foreground">

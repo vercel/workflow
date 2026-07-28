@@ -20,9 +20,7 @@ export const Features = () => (
   <div className="px-4 py-8 sm:py-12 sm:px-12 grid md:grid-cols-3 gap-8">
     {data.map((item) => (
       <div key={item.title}>
-        <h3 className="mb-2 font-semibold text-lg tracking-tight">
-          {item.title}
-        </h3>
+        <h3 className="mb-2 text-heading-20">{item.title}</h3>
         <p className="text-muted-foreground">{item.description}</p>
       </div>
     ))}

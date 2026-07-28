@@ -24,7 +24,7 @@ export const Hero = ({ title, description }: HeroProps) => {
   return (
     <section className="mt-[var(--fd-nav-height)] space-y-6 px-4 pt-24 sm:pt-32 pb-32 text-center">
       <div className="mx-auto w-full max-w-4xl space-y-5">
-        <h1 className="text-center font-semibold text-4xl leading-[1.1] tracking-tight lg:font-semibold sm:text-5xl! xl:text-6xl! text-balance">
+        <h1 className="text-center text-balance text-heading-40 sm:text-heading-48 xl:text-heading-64">
           {title}
         </h1>
         <p className="text-balance max-w-3xl mx-auto text-muted-foreground sm:text-xl leading-relaxed">

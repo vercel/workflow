@@ -40,7 +40,7 @@ const data = [
 export const Templates = () => (
   <div className="grid md:grid-cols-[1fr_2fr] md:divide-x">
     <div className="grid gap-4 content-start px-4 py-8 sm:py-12 sm:px-12">
-      <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl lg:text-[40px]">
+      <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
         Get started
       </h2>
       <p className="text-lg text-muted-foreground">

@@ -54,7 +54,7 @@ export async function sendWelcomeEmail(email) {
 export const Implementation = () => (
   <div className="px-4 py-8 sm:py-12 sm:px-12 grid gap-12">
     <div className="max-w-3xl text-balance grid gap-2">
-      <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl lg:text-[40px]">
+      <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
         Effortless setup
       </h2>
       <p className="text-balance text-lg text-muted-foreground">
@@ -67,7 +67,7 @@ export const Implementation = () => (
           key={item.caption}
           className="h-full flex flex-col [&_figure]:flex-1 [&_.fd-scroll-container]:h-full gap-4"
         >
-          <h3 className="text-lg sm:text-xl md:text-2xl font-semibold tracking-tight">
+          <h3 className="text-heading-16 sm:text-heading-20 md:text-heading-24">
             {item.caption}
           </h3>
           <CodeBlock

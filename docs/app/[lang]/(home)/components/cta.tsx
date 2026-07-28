@@ -3,7 +3,7 @@ import { Button } from '@vercel/geistdocs/components/button';
 
 export const CTA = () => (
   <section className="px-8 sm:px-12 py-10 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-    <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl lg:text-[40px]">
+    <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
       Create your first workflow today.
     </h2>
     <Button asChild size="lg" className="w-fit h-10">

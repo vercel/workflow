@@ -8,7 +8,7 @@ export function VercelSection(): JSX.Element {
     <div className="relative overflow-hidden">
       <div className="grid md:grid-cols-[1fr_1.5fr] px-4 py-8 sm:py-12 sm:px-12">
         <div className="grid gap-4 content-start">
-          <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl">
+          <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32">
             Workflow SDK on Vercel
           </h2>
           <p className="text-lg text-muted-foreground">
