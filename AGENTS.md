@@ -181,11 +181,16 @@ This project uses pnpm with workspace configuration. The required version is spe
 - Import type enforcement enabled
 - Explicit `any` is discouraged (Biome's `noExplicitAny` rule is currently disabled); exhaustive dependencies warnings enabled
 
+## Local Checks vs. CI
+
+Linting, formatting, and typechecking (`pnpm lint`, `pnpm format`, `pnpm typecheck`) are all facets of the same static-quality gate, and CI runs them on every PR. Treat them as **advisory** while working locally: run them and fix obvious issues when it's convenient, but a failure in any of them should **not** block you from committing, pushing, or opening a PR. CI is the source of truth and will report anything that matters — don't get stuck iterating locally just to make these pass before handing off.
+
 ## Documentation Standards
 
 - README.md files in each package must accurately reflect the current functionality and purpose of that package
 - READMEs should not contain outdated or incorrect information about package capabilities
 - When modifying package functionality, ensure corresponding README updates are included
+- Document every user-configurable environment variable in the docs.
 - When modifying skill files in `skills/`, always bump the `version` field in the frontmatter metadata
 
 ### Docs Preview Links in PR Descriptions
@@ -237,15 +242,19 @@ When backporting changes to `stable`, any conflicts involving docs app files (ou
 
 Backports are handled by a GitHub Action (`.github/workflows/backport.yml`) that runs on every push to `main`. For each commit, AI analyzes the change and decides whether to recommend a backport. The action **always opens a PR** against `stable` for human review — it never pushes directly. The changeset file is included in the cherry-pick, so the correct semver bump type is preserved on `stable`.
 
-**Decision criteria.** AI is instructed to recommend a backport for any commit that doesn't specifically build on `main`-only behavior, including:
+**Decision criteria.** `stable` is a maintenance branch and takes **stability fixes only** — feature work stays on `main`, however small or cleanly it would cherry-pick. AI is instructed to recommend a backport only for:
 
-- Bug fixes to existing functionality that at least partially exists on `stable`
-- Added test cases or edge-case fixes that may also apply on `stable`
-- Self-contained minor feature additions
-- Documentation fixes for content already on `stable`
-- Dependency bumps and infrastructure/CI changes
+- Bug fixes to functionality that already exists on `stable`
+- Correctness, data-loss, crash, hang, deadlock, and resource-leak fixes
+- Security fixes, including dependency bumps that address a known vulnerability
+- Fixes for regressions introduced by an earlier backport
+- Test-only changes covering behavior that also exists on `stable`, and flaky-test fixes
+- Build/CI/release-plumbing fixes needed to keep `stable` buildable and releasable
+- Documentation corrections for content already on `stable` (fixing what's wrong, not documenting new capabilities)
 
-When in doubt, AI is told to lean toward recommending a backport — a human reviews the resulting PR and can close it if it isn't worth merging. AI is told NOT to recommend backports for changes that build on `main`-only APIs, major breaking changes for the next major release, changes confined to directories not maintained on `stable` (the `docs/` app outside `docs/content/`, and `skills/`), or release plumbing like changeset/version-bump commits.
+AI is told to recommend AGAINST backporting anything else: new features and feature enhancements (including small, self-contained, additive ones), performance work and refactors that aren't fixing a user-visible defect, non-defect behavior changes to existing APIs, changes that build on `main`-only APIs, breaking changes for the next major, routine non-security dependency bumps, changes confined to directories not maintained on `stable` (the `docs/` app outside `docs/content/`, and `skills/`), and release plumbing like changeset/version-bump commits. Commits mixing a fix with feature work are declined, with the fix identified in the reasoning so a human can split it out.
+
+When in doubt, AI is told to decline: a missed fix can be forced through later via `workflow_dispatch`, while unwanted change on `stable` costs its users the stability they stayed behind for.
 
 **Manual override.** The workflow can be run manually from the GitHub Actions UI via `workflow_dispatch`, which accepts an optional `ref` input (a commit SHA on `main`; defaults to `main` HEAD) and an optional `model` input (the AI model used for AI-assisted decisions and conflict resolution, in `<provider>/<model>` form — defaults to the workflow's current default). Manual dispatch always forces a backport (skipping AI analysis). Use this when AI declined a backport that you want to ship to `stable`.
 
@@ -289,3 +298,8 @@ The `executionContext` field on workflow runs is a flexible JSONB/CBOR object th
 
 ### Observability Data Hydration
 `packages/core/src/observability.ts` contains `hydrateResourceIO` which strips certain fields (like `executionContext`) before UI display. If you need to display data from stripped fields, extract it before the stripping occurs.
+
+### Trace context propagation (world-vercel HTTP requests)
+Every outgoing HTTP request from `@workflow/world-vercel` to workflow-server (or the queue) MUST explicitly inject W3C trace context so the server can parent its spans to the caller and traces stay correlated end to end. Call `injectTraceContextIntoHeaders(headers)` (from `packages/world-vercel/src/telemetry.ts`) on the outgoing headers, inside the client span when one exists — `makeRequest` in `utils.ts` is the reference implementation. It is a no-op when no OpenTelemetry SDK is registered.
+
+Do **not** rely on ambient OpenTelemetry auto-instrumentation to do this: world-vercel's request paths use custom undici dispatchers / `global fetch`, which auto-instrumentation does not reliably hook. When you add a new request path or API version (e.g. a future v5 events API), wire the injection in the same place you build the request headers. The v4 events path (`fetchV4` in `events-v4.ts`) regressed cross-service correlation precisely by routing around `makeRequest` and skipping this step — workflow-server spans stopped joining the flow-route invocation trace until the injection was added back. Cover new paths with a test in `trace-propagation.test.ts`.

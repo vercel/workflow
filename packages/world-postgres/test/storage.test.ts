@@ -3,7 +3,9 @@ import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import type { Hook, Step, WorkflowRun } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { encode } from 'cbor-x';
+import { eq } from 'drizzle-orm';
 import { Pool } from 'pg';
+import { decodeTime, ulid } from 'ulid';
 import {
   afterAll,
   beforeAll,
@@ -12,6 +14,7 @@ import {
   expect,
   it,
   test,
+  vi,
 } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
 import * as DrizzleSchema from '../src/drizzle/schema.js';
@@ -233,6 +236,60 @@ describe('Storage (Postgres integration)', () => {
 
         expect(run.attributes).toEqual({ [key]: 'literal' });
       });
+
+      it('rejects a duplicate run_created with EntityConflictError', async () => {
+        const runId = `wrun_${ulid()}`;
+        const runData = {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array([1, 2]),
+        };
+        await events.create(runId, {
+          eventType: 'run_created',
+          eventData: runData,
+        });
+
+        await expect(
+          events.create(runId, {
+            eventType: 'run_created',
+            eventData: runData,
+          })
+        ).rejects.toMatchObject({ name: 'EntityConflictError' });
+      });
+
+      it('rejects run_created when resilient start already created the run', async () => {
+        // start() races events.create(run_created) against world.queue(). When
+        // the worker dequeues first, run_started on the not-yet-existent run
+        // takes the resilient start path and creates the run itself. The late
+        // run_created must lose loudly: start() treats EntityConflictError as
+        // benign, while a silent no-op both fails its `run` assertion and
+        // appends a duplicate run_created to the log.
+        const runId = `wrun_${ulid()}`;
+        const runData = {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array([1, 2]),
+        };
+        await events.create(runId, {
+          eventType: 'run_started',
+          eventData: runData,
+        });
+
+        await expect(
+          events.create(runId, {
+            eventType: 'run_created',
+            eventData: runData,
+          })
+        ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+        const result = await events.list({
+          runId,
+          pagination: { sortOrder: 'asc' },
+        });
+        expect(
+          result.data.filter((e) => e.eventType === 'run_created')
+        ).toHaveLength(1);
+      });
     });
 
     describe('get', () => {
@@ -253,6 +310,48 @@ describe('Storage (Postgres integration)', () => {
         await expect(runs.get('missing')).rejects.toMatchObject({
           name: 'WorkflowRunNotFoundError',
         });
+      });
+    });
+
+    describe('getMany', () => {
+      it('returns requested runs in order and keeps missing IDs as null', async () => {
+        const first = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'first-workflow',
+          input: new Uint8Array([1]),
+        });
+        const second = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'second-workflow',
+          input: new Uint8Array([2]),
+        });
+
+        const result = await runs.getMany(
+          [second.runId, 'wrun_missing', first.runId, second.runId],
+          { resolveData: 'none' }
+        );
+
+        expect(result.map((run) => run?.runId ?? null)).toEqual([
+          second.runId,
+          null,
+          first.runId,
+          second.runId,
+        ]);
+        expect(result[0]?.input).toBeUndefined();
+        expect(result[2]?.output).toBeUndefined();
+      });
+
+      it('uses one query regardless of duplicate requested IDs', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        });
+        const query = vi.spyOn(pool, 'query');
+
+        await runs.getMany([run.runId, 'wrun_missing', run.runId]);
+
+        expect(query).toHaveBeenCalledTimes(1);
       });
     });
 
@@ -702,6 +801,49 @@ describe('Storage (Postgres integration)', () => {
         expect(updated.attempt).toBe(1); // Incremented by step_started
       });
 
+      it('allocates the step_started event id after the guarded step update', async () => {
+        const stepId = 'step-start-lock';
+        await createStep(events, testRunId, {
+          stepId,
+          stepName: 'test-step',
+          input: new Uint8Array([1]),
+        });
+
+        const lockPool = new Pool({
+          connectionString: container.getConnectionUri(),
+          max: 1,
+        });
+        const client = await lockPool.connect();
+
+        try {
+          await client.query('BEGIN');
+          await client.query(
+            'SELECT 1 FROM workflow.workflow_steps WHERE run_id = $1 AND step_id = $2 FOR UPDATE',
+            [testRunId, stepId]
+          );
+
+          const started = events.create(testRunId, {
+            eventType: 'step_started',
+            correlationId: stepId,
+          });
+
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          const releasedAt = Date.now();
+          await client.query('COMMIT');
+
+          const result = await started;
+          if (!result.event) {
+            throw new Error('Expected step_started event');
+          }
+          expect(
+            decodeTime(result.event.eventId.slice('wevt_'.length))
+          ).toBeGreaterThanOrEqual(releasedAt);
+        } finally {
+          client.release();
+          await lockPool.end();
+        }
+      });
+
       it('should update step status to completed via step_completed event', async () => {
         await createStep(events, testRunId, {
           stepId: 'step-123',
@@ -743,6 +885,141 @@ describe('Storage (Postgres integration)', () => {
         expect(updated.status).toBe('failed');
         expect(updated.error).toEqual(serializedError);
         expect(updated.completedAt).toBeInstanceOf(Date);
+      });
+    });
+
+    describe('lazy step start', () => {
+      it('creates the step on the fly when step_started carries input', async () => {
+        const result = await events.create(testRunId, {
+          eventType: 'step_started',
+          correlationId: 'lazy-step-1',
+          eventData: {
+            stepName: 'lazy-step',
+            input: new Uint8Array([7, 8, 9]),
+          },
+        });
+
+        // Created + started in one call: running, attempt 1, ownership signal.
+        expect(result.step?.stepId).toBe('lazy-step-1');
+        expect(result.step?.stepName).toBe('lazy-step');
+        expect(result.step?.status).toBe('running');
+        expect(result.step?.attempt).toBe(1);
+        expect(result.step?.input).toEqual(new Uint8Array([7, 8, 9]));
+        expect(result.stepCreated).toBe(true);
+
+        const persisted = await steps.get(testRunId, 'lazy-step-1');
+        expect(persisted.status).toBe('running');
+        expect(persisted.input).toEqual(new Uint8Array([7, 8, 9]));
+      });
+
+      it('writes a synthetic step_created event (input there, not on step_started)', async () => {
+        await events.create(testRunId, {
+          eventType: 'step_started',
+          correlationId: 'lazy-step-2',
+          eventData: { stepName: 'lazy-step', input: new Uint8Array([1]) },
+        });
+
+        const evts = await events.listByCorrelationId({
+          correlationId: 'lazy-step-2',
+        });
+        const created = evts.data.find((e) => e.eventType === 'step_created');
+        const started = evts.data.find((e) => e.eventType === 'step_started');
+        expect(created).toBeDefined();
+        expect(started).toBeDefined();
+        expect(
+          (created?.eventData as { input?: unknown } | undefined)?.input
+        ).toBeDefined();
+        expect(
+          (started?.eventData as { input?: unknown } | undefined)?.input
+        ).toBeUndefined();
+      });
+
+      it('still rejects a bare step_started (no input) on a missing step', async () => {
+        await expect(
+          events.create(testRunId, {
+            eventType: 'step_started',
+            correlationId: 'never-created',
+            eventData: { stepName: 'legacy-step' },
+          })
+        ).rejects.toThrow('not found');
+      });
+
+      it('rejects a second lazy step_started for an existing step (concurrent loser)', async () => {
+        const first = await events.create(testRunId, {
+          eventType: 'step_started',
+          correlationId: 'lazy-step-3',
+          eventData: { stepName: 'lazy-step', input: new Uint8Array([1]) },
+        });
+        expect(first.step?.attempt).toBe(1);
+        expect(first.stepCreated).toBe(true);
+
+        // The step exists → this caller lost the create race → must not start
+        // or run the body. EntityConflictError → executeStep `skipped`.
+        await expect(
+          events.create(testRunId, {
+            eventType: 'step_started',
+            correlationId: 'lazy-step-3',
+            eventData: { stepName: 'lazy-step', input: new Uint8Array([1]) },
+          })
+        ).rejects.toMatchObject({ name: 'EntityConflictError' });
+      });
+
+      it('crash recovery re-starts via a non-lazy step_started on the existing step', async () => {
+        // Owner creates + starts lazily (attempt 1). On recovery the step
+        // already exists, so it is re-run via a NON-lazy step_started (no
+        // input), which re-starts the step (attempt 2) — at-least-once.
+        await events.create(testRunId, {
+          eventType: 'step_started',
+          correlationId: 'lazy-step-4',
+          eventData: { stepName: 'lazy-step', input: new Uint8Array([1]) },
+        });
+
+        const rerun = await updateStep(
+          events,
+          testRunId,
+          'lazy-step-4',
+          'step_started',
+          {}
+        );
+        expect(rerun.status).toBe('running');
+        expect(rerun.attempt).toBe(2);
+      });
+
+      it('rejects a lazy step_started on a terminal run', async () => {
+        await updateRun(events, testRunId, 'run_started');
+        await updateRun(events, testRunId, 'run_completed', {
+          output: new Uint8Array([1]),
+        });
+
+        await expect(
+          events.create(testRunId, {
+            eventType: 'step_started',
+            correlationId: 'lazy-on-terminal',
+            eventData: { stepName: 'lazy-step', input: new Uint8Array([1]) },
+          })
+        ).rejects.toThrow('terminal state');
+      });
+
+      it('a lazy step_started followed by step_failed marks the step failed', async () => {
+        // Regression guard for the unregistered-step path on the lazy inline
+        // route: executeStep sends the lazy step_started to materialize the
+        // deferred step, then writes step_failed. Failing a never-created step
+        // would hit the "step must exist" ordering guard and wedge the run.
+        await events.create(testRunId, {
+          eventType: 'step_started',
+          correlationId: 'lazy-step-fail',
+          eventData: { stepName: 'ghost-step', input: new Uint8Array([1]) },
+        });
+
+        const failed = await updateStep(
+          events,
+          testRunId,
+          'lazy-step-fail',
+          'step_failed',
+          { error: new Uint8Array([2, 3]) }
+        );
+        expect(failed.status).toBe('failed');
+        expect(failed.attempt).toBe(1);
       });
     });
 
@@ -2377,6 +2654,113 @@ describe('Storage (Postgres integration)', () => {
           token: 'new-token-cancelled',
         })
       ).rejects.toThrow(/terminal/i);
+    });
+
+    it('should reject hook_received on a completed run', async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(events, run.runId, {
+        hookId: 'hook_before_complete',
+        token: 'token-before-complete',
+      });
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array([1]),
+      });
+
+      // run_completed's hook/wait cleanup runs before hook_received is
+      // attempted here, so this sequential case surfaces as the hook no
+      // longer existing rather than the terminal-run guard below (which
+      // covers the case where hook_received's write is still in flight
+      // when the run terminates concurrently, see the next test).
+      await expect(
+        events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'HookNotFoundError' });
+    });
+
+    it('should reject hook_received with RunExpiredError when the run terminates after hook_received earlier checks (linearization guard)', async () => {
+      // Reproduces the race the transactional guard defends against:
+      // hook_received's earlier currentRun/hook-exists checks pass while
+      // the run is still running, then the run reaches a terminal state
+      // before hook_received's guarded transaction commits. Updating the
+      // run row directly (bypassing events.create's hook/wait cleanup)
+      // reproduces exactly that ordering without deleting the hook,
+      // isolating the assertion to the FOR UPDATE re-check inside the
+      // hook_received transaction.
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(events, run.runId, {
+        hookId: 'hook_race_terminal',
+        token: 'token-race-terminal',
+      });
+
+      await drizzle
+        .update(DrizzleSchema.runs)
+        .set({ status: 'completed', completedAt: new Date() })
+        .where(eq(DrizzleSchema.runs.runId, run.runId));
+
+      await expect(
+        events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
+    });
+
+    it('accepts hook_received on a live legacy run', async () => {
+      // Legacy runs (specVersion <= 1) are routed to
+      // handleLegacyEventPostgres, which bypasses the current-spec guard
+      // chain — the guard must be applied there too. Simulated by
+      // downgrading a real run's persisted specVersion.
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'legacy-workflow',
+        input: new Uint8Array(),
+      });
+      await drizzle
+        .update(DrizzleSchema.runs)
+        .set({ specVersion: 1 })
+        .where(eq(DrizzleSchema.runs.runId, run.runId));
+
+      const result = await events.create(run.runId, {
+        eventType: 'hook_received',
+        correlationId: 'hook_legacy_live',
+        eventData: { payload: {} },
+      });
+      expect(result.event?.eventType).toBe('hook_received');
+    });
+
+    it('rejects hook_received with RunExpiredError on a cancelled legacy run', async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'legacy-workflow',
+        input: new Uint8Array(),
+      });
+      await drizzle
+        .update(DrizzleSchema.runs)
+        .set({ specVersion: 1 })
+        .where(eq(DrizzleSchema.runs.runId, run.runId));
+
+      // Routed to the legacy run_cancelled handler (direct state update).
+      await events.create(run.runId, { eventType: 'run_cancelled' });
+
+      await expect(
+        events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: 'hook_legacy_cancelled',
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
     });
   });
 

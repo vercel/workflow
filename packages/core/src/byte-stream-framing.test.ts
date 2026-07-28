@@ -1,4 +1,4 @@
-import type { World } from '@workflow/world';
+import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setWorld } from './runtime/world.js';
 import {
@@ -267,6 +267,7 @@ function makeMockWorld(): World {
   );
 
   return {
+    specVersion: SPEC_VERSION_CURRENT,
     streams: {
       write,
       writeMulti: vi.fn(

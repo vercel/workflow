@@ -18,10 +18,13 @@ concurrency: backport-stable
 
 # AI model used by every opencode invocation in this workflow. The
 # `vercel/` provider prefix is added at each use site, so this should
-# be specified as `<provider>/<model>` (e.g. `anthropic/claude-fable-5`).
+# be specified as `<provider>/<model>` (e.g. `anthropic/claude-opus-5`).
+# The model slug must match an id the Vercel AI Gateway exposes (see
+# https://ai-gateway.vercel.sh/v1/models), or opencode fails with a
+# `ProviderModelNotFoundError`.
 # Manual `workflow_dispatch` runs may override this via the `model` input.
 env:
-  AI_MODEL: ${{ inputs.model || 'anthropic/claude-fable-5' }}
+  AI_MODEL: ${{ inputs.model || 'anthropic/claude-opus-5' }}
 
 jobs:
   backport:
@@ -186,7 +189,7 @@ jobs:
 
       - name: Install opencode
         if: steps.existing-pr.outputs.exists != 'true'
-        run: npm install -g opencode-ai@1.4.3
+        run: npm install -g opencode-ai@1.18.4
 
       - name: Configure opencode
         if: steps.existing-pr.outputs.exists != 'true'
@@ -253,29 +256,39 @@ jobs:
           {
             echo "You are deciding whether a commit on the \`main\` branch should be backported to the \`stable\` branch."
             echo ""
+            echo "\`main\` is the current GA line and receives all new work. \`stable\` is a **maintenance branch**: it exists so teams that cannot upgrade yet keep getting fixes. It receives stability fixes only. Feature work is never backported, no matter how small or self-contained."
+            echo ""
             echo "## Decision criteria"
             echo ""
-            echo "Recommend a backport for any commit that does NOT specifically build on behavior that exists only on \`main\`. In particular, recommend backport for:"
-            echo "- Bug fixes to existing functionality that at least partially exists on \`stable\`"
-            echo "- Added test cases or changes for edge cases that might also exist on \`stable\`"
-            echo "- Minor feature additions that are self-contained and not dependent on \`main\`-only changes"
-            echo "- Documentation fixes/improvements to content already on \`stable\`"
-            echo "- Dependency bumps, build/CI fixes, and other infrastructure changes that affect both branches"
+            echo "Recommend a backport ONLY when the commit's purpose is to keep the maintenance line working correctly:"
+            echo "- Bug fixes to functionality that already exists on \`stable\`"
+            echo "- Correctness, data-loss, crash, hang, deadlock, and resource-leak fixes"
+            echo "- Security fixes, including dependency bumps that address a known vulnerability"
+            echo "- Fixes for a regression introduced by an earlier backport"
+            echo "- Test-only changes covering behavior that also exists on \`stable\`, and fixes for flaky tests"
+            echo "- Build, CI, or release-plumbing fixes needed to keep \`stable\` buildable, testable, and releasable"
+            echo "- Documentation corrections for content already on \`stable\` — fixing something that is wrong or misleading, not documenting new capabilities"
             echo ""
-            echo "Recommend AGAINST backport for:"
+            echo "Recommend AGAINST a backport for everything else. In particular:"
+            echo "- **Any new feature or feature enhancement**, including ones that are small, self-contained, additive, and independent of \`main\`-only code. A change that adds a capability, option, config flag, API surface, CLI command, or export is feature work — even when it cherry-picks cleanly and carries a \`minor\` changeset."
+            echo "- Performance optimizations and refactors that are not fixing a user-visible defect. A performance change only qualifies if the current behavior is a genuine stability problem on \`stable\` (e.g. an unbounded allocation that OOMs), not merely slower than it could be."
+            echo "- Behavior changes to existing APIs that are not fixing a defect (changed defaults, relaxed validation, new response fields)"
             echo "- Changes that explicitly build on or require new APIs/behavior introduced only on \`main\`"
-            echo "- Major breaking changes intended exclusively for the next major release"
+            echo "- Breaking changes intended for the next major release"
+            echo "- Routine dependency bumps that are not motivated by a vulnerability or a bug that affects \`stable\`"
             echo "- Changes confined to files/directories that are not maintained on \`stable\`. **This list is exhaustive** — only the following paths qualify; assume every other path IS actively maintained on \`stable\` unless you verify otherwise (see below):"
             echo "  - the \`docs/\` app outside of \`docs/content/\` (i.e. \`docs/content/\` IS maintained on \`stable\`, the rest of the docs app is not)"
             echo "  - anything under \`skills/\`"
             echo "- Changesets-only commits, version bump commits (\"Version Packages\"), and similar release plumbing"
             echo "- Commits that revert something that only exists on \`main\`"
             echo ""
+            echo "A commit that mixes a fix with feature work counts as feature work: recommend against, and say in your reasoning which part is the fix so a human can decide whether to split it out and force a backport."
+            echo ""
             echo "## Your task"
             echo ""
             echo "Analyze the commit below and decide whether to recommend a backport."
             echo ""
-            echo "When in doubt, lean toward recommending a backport — humans review the resulting PR and can close it if it's not worth merging."
+            echo "When in doubt, recommend AGAINST. Shipping feature work to a maintenance line is worse than missing a fix: a missed fix can be forced through later via \`workflow_dispatch\`, whereas unwanted change on \`stable\` costs its users the stability they stayed behind for. Do not reason from how cleanly the commit would apply — a clean cherry-pick is not evidence that a change belongs on \`stable\`."
             echo ""
             echo "**Important:** before recommending AGAINST a backport on the grounds that a file or directory is not maintained on \`stable\`, you MUST verify your claim. The exhaustive list above is the only set of paths you may assume are absent or stubbed on \`stable\` without checking. For any other path, use the \`bash\` tool to run \`git ls-tree origin/stable -- <path>\` (or \`git show origin/stable:<path>\`) and confirm the path is actually absent or a stub on \`stable\` before citing it as a reason against backport. Do not guess based on file/directory names — for example, names containing words like \"docs\", \"preview\", \"tarball\", or \"workflow\" do not imply a path is main-only."
             echo ""
@@ -952,4 +965,53 @@ jobs:
                 `  --body "Manual backport of #${prNumber} (cherry-pick ${shortSha}) to \\\`stable\\\`."`,
                 '```'
               ].join('\n')
+            });
+
+      - name: Comment on backport failure
+        # Catch-all for task/infra failures that fail the job outright — e.g.
+        # the configured AI model not being found, AI Gateway errors, opencode
+        # crashes, or any other step erroring out. Without this, such failures
+        # only surface as a red workflow run with no signal on the source PR.
+        #
+        # This is deliberately disjoint from "Comment on conflict failure"
+        # above: that step handles the case where the AI ran cleanly but
+        # couldn't resolve conflicts (`resolved == 'false'`), which exits 0 and
+        # does NOT fail the job — so `failure()` is false there and we won't
+        # double-comment. We also skip if no source PR is associated (nowhere
+        # to comment) or if the failure occurred before the PR lookup ran.
+        if: |
+          failure() &&
+          steps.pr-lookup.outputs.pr_number != ''
+        uses: actions/github-script@v7
+        env:
+          SHA: ${{ steps.resolve.outputs.sha }}
+          PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const sha = process.env.SHA || '';
+            const prNumber = Number(process.env.PR_NUMBER);
+            const shortSha = sha ? sha.slice(0, 12) : '(unknown)';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const workflowUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/backport.yml`;
+            const lines = [
+              `**Backport to \`stable\` failed** for ${shortSha} due to a workflow error ([backport job run](${runUrl})).`,
+              '',
+              'This is usually an infrastructure problem (e.g. the configured AI model could not be found, an AI Gateway error, or an opencode crash) rather than a merge conflict. Check the job logs linked above for details.',
+            ];
+            if (sha) {
+              lines.push(
+                '',
+                `Once the underlying issue is fixed, re-run the [Backport to stable](${workflowUrl}) workflow manually via \`workflow_dispatch\` and paste this commit SHA into the \`ref\` input:`,
+                '',
+                '```',
+                sha,
+                '```'
+              );
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: lines.join('\n')
             });

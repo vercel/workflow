@@ -1,18 +1,22 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { runtimeLogger } from './logger.js';
+import { buildLogger, runtimeLogger } from './logger.js';
 
 describe('logger', () => {
   let errorSpy: ReturnType<typeof vi.spyOn>;
   let warnSpy: ReturnType<typeof vi.spyOn>;
+  let debugSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     errorSpy.mockRestore();
     warnSpy.mockRestore();
+    debugSpy.mockRestore();
   });
 
   // The logger composes `[workflow-sdk] <message>\n<formatted metadata>`
@@ -40,6 +44,19 @@ describe('logger', () => {
     runtimeLogger.debug('quieter');
     expect(errorSpy).not.toHaveBeenCalled();
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  test('build logger debug uses workflow:build namespace', () => {
+    buildLogger.debug('quiet');
+    expect(debugSpy).not.toHaveBeenCalled();
+
+    vi.stubEnv('DEBUG', 'workflow:build');
+    buildLogger.debug('verbose');
+    expect(debugSpy).toHaveBeenCalledWith('[workflow:build] verbose', '');
+
+    vi.stubEnv('DEBUG', 'workflow:*,-workflow:build');
+    buildLogger.debug('quiet again');
+    expect(debugSpy).toHaveBeenCalledTimes(1);
   });
 
   test('child() merges parent metadata into every call', () => {

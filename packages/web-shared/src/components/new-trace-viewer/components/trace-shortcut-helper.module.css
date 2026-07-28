@@ -1,0 +1,20 @@
+/* Only one hint is in the DOM at a time; it is remounted on each rotation
+   (keyed by index in React) so this short fade-in plays as a crossfade. */
+.hint {
+  animation: trace-shortcut-hint-fade 150ms ease-in-out;
+}
+
+@keyframes trace-shortcut-hint-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hint {
+    animation: none;
+  }
+}

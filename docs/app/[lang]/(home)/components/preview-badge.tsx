@@ -4,7 +4,7 @@ import { CheckIcon, CopyIcon, ExternalLinkIcon, EyeIcon } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Button } from '@vercel/geistdocs/components/button';
 import {
   Dialog,
   DialogContent,
@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
+} from '@vercel/geistdocs/components/dialog';
 
 type PreviewBadgeProps = {
   deploymentUrl: string;

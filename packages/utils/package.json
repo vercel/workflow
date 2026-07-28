@@ -1,7 +1,7 @@
 {
   "name": "@workflow/utils",
   "description": "Utility functions for Workflow SDK",
-  "version": "5.0.0-beta.3",
+  "version": "5.0.0-beta.6",
   "type": "module",
   "main": "dist/index.js",
   "files": [
@@ -45,6 +45,7 @@
     "@types/ms": "2.1.0",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
+    "typescript": "catalog:",
     "vitest": "catalog:"
   },
   "dependencies": {

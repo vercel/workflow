@@ -10,6 +10,10 @@ related:
   - /cookbook/common-patterns/webhooks
 ---
 
+<CopyPrompt
+  text="Add a deadline to this slow workflow operation. Import `sleep` from `workflow`. In the exported &quot;use workflow&quot; function, race the operation against a durable sleep: `await Promise.race([slowStep(...), deadline(&quot;10m&quot;)])`, where `deadline` is a helper that awaits `sleep(duration)` and returns a sentinel value or throws. Branch on the winner: continue normally on success, run the fallback or compensation path on timeout. Use the same pattern to bound hooks and webhooks. `Promise.race` does not cancel the loser — the underlying step keeps running in the background — so make non-idempotent side effects retry-safe with idempotency keys. Verify the fast path, the timeout path, and side-effect safety when the loser completes late."
+/>
+
 A common requirement is bounding how long a workflow waits for something to finish — a slow step, an external webhook, a human approval. Race the operation against a durable `sleep()` with `Promise.race()` — whichever finishes first wins, and the loser keeps running but its result is ignored.
 
 ## When to use this
@@ -83,7 +87,7 @@ export async function waitForApproval(requestId: string) {
 4. **Throw to fail the workflow** — inside a workflow function, throwing an `Error` exits the run with that error. Use `FatalError` inside steps; throw plain errors inside workflows.
 
 <Callout type="warn">
-**The losing operation keeps running.** `Promise.race` doesn't cancel — when the sleep wins, the underlying step (or model call, or HTTP request) continues to completion in the background. This is fine for idempotent reads but matters when the operation has side effects or costs money. For hard cancellation across processes, see [Distributed Abort Controller](/cookbook/advanced/distributed-abort-controller).
+**The losing operation keeps running.** `Promise.race` doesn't cancel — when the sleep wins, the underlying step (or model call, or HTTP request) continues to completion in the background. This is fine for idempotent reads but matters when the operation has side effects or costs money. Use idempotency keys for non-idempotent side effects. For hard cancellation across processes, see [Distributed Abort Controller](/cookbook/advanced/distributed-abort-controller), and see [Idempotency](/docs/foundations/idempotency) for retry-safe side effects.
 </Callout>
 
 ## Adapting to your use case
@@ -99,4 +103,5 @@ export async function waitForApproval(requestId: string) {
 - [`sleep()`](/docs/api-reference/workflow/sleep) — durable wait (survives restarts, zero compute cost)
 - [`createWebhook()`](/docs/api-reference/workflow/create-webhook) — create a webhook URL the workflow can race against
 - [`defineHook()`](/docs/api-reference/workflow/define-hook) — typed hook for in-process cancellation
+- [Idempotency](/docs/foundations/idempotency) — protect side effects that may keep running after a timeout
 - [`Promise.race()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race) — race operations against deadlines

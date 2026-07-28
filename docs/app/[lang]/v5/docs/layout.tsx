@@ -8,7 +8,11 @@ const Layout = async ({ children, params }: LayoutProps<'/[lang]/v5/docs'>) => {
   return (
     <div className="bg-background-100">
       <PreReleaseBanner pathname={`/${lang}/v5/docs`} />
-      <DocsLayout tree={getDocsTreeForVersion(lang, PRE_RELEASE_VERSION)}>
+      <DocsLayout
+        currentVersion={PRE_RELEASE_VERSION.id}
+        lang={lang}
+        tree={getDocsTreeForVersion(lang, PRE_RELEASE_VERSION)}
+      >
         {children}
       </DocsLayout>
     </div>

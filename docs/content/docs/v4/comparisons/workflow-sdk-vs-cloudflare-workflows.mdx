@@ -1,0 +1,71 @@
+---
+title: Workflow SDK vs Cloudflare Workflows
+description: How the Workflow SDK compares to Cloudflare Workflows — both are durable replay engines, but they handle versioning, encryption, portability, and global distribution very differently.
+type: conceptual
+summary: Cloudflare Workflows is a durable engine on Workers and Durable Objects. It and the Workflow SDK both replay, but differ on versioning safety, encryption, and lock-in.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/how-it-works/event-sourcing
+  - /docs/foundations/streaming
+  - /worlds/building-a-world
+---
+
+[Cloudflare Workflows](https://developers.cloudflare.com/workflows/) is a durable-execution engine built on Cloudflare Workers and SQLite-backed Durable Objects. It's the closest architectural peer to the Workflow SDK — both persist progress and replay to survive failures — which makes the differences in **versioning safety, encryption, and portability** the deciding factors.
+
+<Callout type="info">
+**Choose the Workflow SDK** when you want an open-source, portable engine that runs in your existing app (and off a single vendor), deployment-pinned versioning, and application-level E2E encryption. **Choose Cloudflare Workflows** when you're already all-in on Cloudflare.
+</Callout>
+
+## At a glance
+
+| | Workflow SDK | Cloudflare Workflows |
+| --- | --- | --- |
+| **Category** | Open-source durable-functions SDK; portable backends | Durable execution engine, hosted on Cloudflare |
+| **Durability model** | Event log + deterministic replay | Step-result **memoization** in SQLite-backed Durable Objects + deterministic re-calculation ("game-loop") |
+| **Authoring** | `"use workflow"` / `"use step"` in plain async TS, in your app | Class extends `WorkflowEntrypoint`; explicit `step.do(name, cb)` wrapping; Cloudflare Workers only |
+| **Where it runs** | Your platform (Vercel managed, or self-host) | Cloudflare only — both orchestration and execution run on-network (engine ↔ step over internal RPC) |
+| **Versioning** | Runs pinned to their immutable deployment — safe by default | **No version pinning** — running instances resume on the *latest* deployed code; changing step names/order can desync the cached replay. No patching API |
+| **Encryption** | Per-run AES-256-GCM **end-to-end** encryption | **At-rest only** (AES-256, Cloudflare-managed keys) + TLS; no E2E, no customer-managed keys |
+| **AI & streaming** | `WorkflowAgent` in the AI SDK; native resumable streaming | Durable agents via Workflows + the Agents SDK; resumable streaming buffered in SQLite (mid-call eviction needs opt-in `chatRecovery`) |
+| **Performance** | No-penalty resume; scale-to-zero; up to 100K concurrency (Vercel) | **~0 ms isolate cold starts**; 50K concurrent instances; global Anycast (330+ cities) — strongest cold-start and edge story |
+| **Portability** | Apache-2.0; World abstraction; self-hostable | Engine proprietary; tied to Durable Objects; **highest lock-in** of these tools |
+| **Pricing** | SDK free; pay your platform | Workers Standard: requests + CPU-time + storage + per-step ($0.80 / 100K steps); idle/sleep not billed |
+| **Limits** | 50 MB payloads; 2 GB/run; 10K steps ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | **1 MiB** step result & event payload; 1 GB state/instance; 10K steps (up to 25K) |
+
+**What the limits mean in practice:** Cloudflare's 1 MiB cap on step results and event payloads is the tightest in this section — a single large model response or document can exceed it, pushing anything sizable into R2/KV indirection — and instance state is capped at 1 GB. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) are 50 MB per payload and 2 GB of state per run.
+
+## Versioning: pinned vs. live code
+
+Both engines replay, so changing code mid-run is the key hazard — and they take opposite approaches:
+
+- **Cloudflare** does not pin a running instance to a code version. When an instance resumes (after a sleep, a wait, or a deploy), it runs against whatever code is currently deployed. Because step names act as the replay cache key, reordering, renaming, or inserting steps before already-completed ones can desync the replay of an in-flight instance. There is no patching API — just the documented "[Rules of Workflows](https://developers.cloudflare.com/workflows/build/rules-of-workflows/)" you must follow by hand.
+- **Workflow SDK** pins each run to the immutable deployment that started it, so a deploy never disturbs in-flight runs. Evolving code is safe by default and upgrades are explicit.
+
+## Encryption and portability
+
+Cloudflare encrypts Durable Object data at rest with Cloudflare-managed keys, but there is no application-level / end-to-end encryption and no customer-managed-key option — payloads are visible to the platform. The Workflow SDK encrypts each run's inputs, outputs, step I/O, and streams with a per-run AES-256-GCM key.
+
+On portability, Cloudflare Workflows is the most locked-in of the tools in this section: the API and Durable-Object-bound state are Cloudflare-specific, so moving means a rewrite. The Workflow SDK is Apache-2.0 and its [World abstraction](/worlds/building-a-world) lets you run the same code on Vercel, on Postgres, or on a backend you build.
+
+## Where Cloudflare leads
+
+Credit where due: Cloudflare's V8-isolate model gives **near-zero cold starts**, and code runs across its global Anycast network with no region selection. For latency-sensitive, globally-distributed workloads on Cloudflare's platform, that's a genuine strength. The Workflow SDK's performance depends on the World it runs on; on Vercel it benefits from Fluid Compute and a 100K concurrency ceiling, with multi-region rolling out.
+
+## Moving from Cloudflare Workflows
+
+There's no automated migration skill for Cloudflare specifically, but the mapping is direct:
+
+| Cloudflare Workflows | Workflow SDK |
+| --- | --- |
+| `class extends WorkflowEntrypoint` + `run(event, step)` | `"use workflow"` function started with `start()` |
+| `step.do(name, cb)` | `"use step"` function called with `await` |
+| `step.sleep` / `step.sleepUntil` | `sleep('1h')` / `sleep(date)` |
+| `step.waitForEvent` | `createHook()` / `createWebhook()` |
+| Per-step `retries` config | `maxRetries`, `RetryableError`, `FatalError` |
+| `env.MY_WORKFLOW.create(...)` binding | `start(workflow, [args])` from your app |
+
+Side effects that lived in `step.do` callbacks move into named `"use step"` functions; the orchestration becomes plain `await` / `if` / `Promise.all` instead of the `WorkflowEntrypoint` class.
+
+---
+*Compiled from public documentation. Verify current Cloudflare Workflows limits and pricing against [developers.cloudflare.com/workflows](https://developers.cloudflare.com/workflows/). Not based on head-to-head benchmarks.*

@@ -2,24 +2,47 @@
 
 import { ArrowLeft, ArrowRight } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { cn } from '../../../lib/utils';
-import type { Span } from '../types';
 import {
-  formatDuration,
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { cn } from '../../../lib/cn';
+import {
   formatDurationPrecise,
   getHighResInMs,
 } from '../../trace-viewer/util/timing';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
-import type { Segment, SegmentStatus, TimeMarker } from '../utils';
+import type { Span } from '../types';
+import type {
+  OffscreenMarkers,
+  Segment,
+  SegmentStatus,
+  SpanDelta,
+  TimeMarker,
+} from '../utils';
 import {
+  computeOffscreenMarkers,
+  computeSpanDelta,
   computeSpanGaps,
+  computeSpanMarkers,
   computeSpanSegments,
   getResourceColor,
   getSpanDurationMs,
+  isSpanErrored,
 } from '../utils';
-import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
+import {
+  cullCollidingMarkers,
+  MarkerLayer,
+  OffscreenMarkerIndicator,
+  projectMarkers,
+} from './span-markers';
 import styles from './timeline.module.css';
+import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -31,8 +54,9 @@ export const TIMELINE_PADDING_PX = 16;
 
 const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
   queued: 'bg-gray-400 border border-gray-500',
+  pending: 'bg-gray-200 border border-gray-500',
   retrying: 'bg-gray-400 border border-gray-500',
-  waiting: 'bg-gray-400 border border-gray-500',
+  waiting: 'bg-gray-200 border border-gray-500',
   running: 'bg-blue-200 border border-blue-500',
   completed: 'bg-blue-200 border border-blue-500',
   failed: 'bg-red-200 border border-red-500',
@@ -46,13 +70,21 @@ const TIMELINE_INSET_STYLE: CSSProperties = {
   right: TIMELINE_PADDING_PX,
 };
 
-const ACTIVE_SEGMENT_STATUSES: ReadonlySet<SegmentStatus> = new Set([
+const STRIPED_SEGMENT_STATUSES: ReadonlySet<SegmentStatus> = new Set([
+  'pending',
   'running',
   'received',
 ]);
 
-function RunningStripes(): ReactNode {
-  return <div aria-hidden className={styles.runningStripes} />;
+function AnimatedStripes({ status }: { status: SegmentStatus }): ReactNode {
+  return (
+    <div
+      aria-hidden
+      className={
+        status === 'pending' ? styles.pendingStripes : styles.runningStripes
+      }
+    />
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -193,9 +225,25 @@ function projectSegments(
 // Small render helpers
 // ---------------------------------------------------------------------------
 
-function DurationLabel({ label }: { label: string }): ReactNode {
+/** Estimated rendered width of a 10px-mono duration label (6px/glyph + padding). */
+function estimateLabelWidthPx(label: string): number {
+  return label.length * 6 + 12;
+}
+
+function DurationLabel({
+  label,
+  className,
+}: {
+  label: string;
+  className?: string;
+}): ReactNode {
   return (
-    <span className="pointer-events-none absolute inset-0 flex items-center justify-start overflow-hidden px-1 text-[10px] font-mono font-medium leading-none whitespace-nowrap text-left text-gray-1000 tabular-nums opacity-0 group-hover/timeline-row:opacity-100">
+    <span
+      className={cn(
+        'pointer-events-none absolute inset-0 flex items-center justify-start overflow-hidden px-1 text-[10px] font-mono font-medium leading-none whitespace-nowrap text-left text-gray-1000 tabular-nums opacity-0 group-hover/timeline-row:opacity-100',
+        className
+      )}
+    >
       {label}
     </span>
   );
@@ -257,27 +305,51 @@ function LeadInConnector({
   );
 }
 
-function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
+function SegmentBar({
+  segments,
+  showLabels = true,
+}: {
+  segments: VisibleSegment[];
+  /**
+   * When false, segment duration labels are suppressed. Used when a separate
+   * top layer (e.g. the resumption-marker duration overlay) renders the label
+   * above the markers instead, so we don't draw it twice.
+   */
+  showLabels?: boolean;
+}): ReactNode {
   return (
     <div className="relative h-6 w-full">
       {segments.map((seg, i) => {
         if (seg.status === 'queued') {
           const leadInLabel = formatDurationPrecise(seg.fullDurationMs);
           const showLeadInLabel =
-            seg.pixelWidth >= Math.max(40, leadInLabel.length * 6 + 12);
+            showLabels &&
+            seg.pixelWidth >= Math.max(40, estimateLabelWidthPx(leadInLabel));
+          const isFullWidthQueued = segments.length === 1;
           return (
-            <LeadInConnector
-              key={i}
-              leftPct={seg.leftPct}
-              widthPct={seg.widthPct}
-              label={showLeadInLabel ? leadInLabel : null}
-            />
+            <Fragment key={i}>
+              <LeadInConnector
+                leftPct={seg.leftPct}
+                widthPct={seg.widthPct}
+                label={showLeadInLabel ? leadInLabel : null}
+              />
+              {isFullWidthQueued ? (
+                <div
+                  className="absolute top-1/2 h-4 w-px -translate-y-1/2 bg-gray-500"
+                  style={{
+                    left: `calc(${seg.leftPct + seg.widthPct}% - 1.5px)`,
+                  }}
+                />
+              ) : null}
+            </Fragment>
           );
         }
 
         const label = formatDurationPrecise(seg.fullDurationMs);
         // Only render the label when there's enough room for it without clipping.
-        const showLabel = seg.pixelWidth >= Math.max(40, label.length * 6 + 12);
+        const showLabel =
+          showLabels &&
+          seg.pixelWidth >= Math.max(40, estimateLabelWidthPx(label));
 
         return (
           <div
@@ -293,8 +365,8 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
               minWidth: 1,
             }}
           >
-            {ACTIVE_SEGMENT_STATUSES.has(seg.status) ? (
-              <RunningStripes />
+            {STRIPED_SEGMENT_STATUSES.has(seg.status) ? (
+              <AnimatedStripes status={seg.status} />
             ) : null}
             {showLabel ? <DurationLabel label={label} /> : null}
           </div>
@@ -316,6 +388,7 @@ const TimelineBar = memo(function TimelineBar({
   isSelected,
   isDimmed,
   onSelect,
+  onRevealTime,
 }: {
   span: Span;
   viewStart: number;
@@ -324,6 +397,7 @@ const TimelineBar = memo(function TimelineBar({
   isSelected: boolean;
   isDimmed?: boolean;
   onSelect: (spanId: string) => void;
+  onRevealTime?: (timeMs: number) => void;
 }): ReactNode {
   const startMs = getHighResInMs(span.startTime);
   const endMs = getHighResInMs(span.endTime);
@@ -350,9 +424,42 @@ const TimelineBar = memo(function TimelineBar({
     [geometry, baseSegments, startMs, totalDurationMs]
   );
 
-  const workflowStatus = (span.attributes.data as Record<string, unknown>)
-    ?.status as string | undefined;
-  const isErrored = span.status.code === 2 || workflowStatus === 'failed';
+  const baseMarkers = useMemo(() => computeSpanMarkers(span), [span]);
+  const markers = useMemo(
+    () =>
+      geometry.mode.kind === 'full'
+        ? cullCollidingMarkers(
+            projectMarkers(
+              baseMarkers,
+              geometry.visibleStartMs,
+              geometry.visibleEndMs
+            ),
+            geometry.visiblePixelWidth
+          )
+        : [],
+    [geometry, baseMarkers]
+  );
+
+  // Markers that fall outside the visible window (scrolled off while zoomed in)
+  // — surfaced as edge indicators so they aren't silently lost.
+  const offscreen = useMemo<OffscreenMarkers>(
+    () =>
+      geometry.mode.kind === 'full'
+        ? computeOffscreenMarkers(
+            baseMarkers,
+            geometry.visibleStartMs,
+            geometry.visibleEndMs
+          )
+        : { left: null, right: null },
+    [geometry, baseMarkers]
+  );
+
+  // Markers (visible or off-screen) move the duration label into the overlay,
+  // so the in-bar segment label is suppressed.
+  const hasMarkers =
+    markers.length > 0 || offscreen.left !== null || offscreen.right !== null;
+
+  const isErrored = isSpanErrored(span);
   const colors = getResourceColor(span.resource);
   const fallbackBg = isErrored
     ? (colors.errorBg ?? 'var(--ds-red-200)')
@@ -363,7 +470,8 @@ const TimelineBar = memo(function TimelineBar({
 
   const totalLabel = formatDurationPrecise(totalDurationMs);
   const showTotalLabel =
-    geometry.visiblePixelWidth >= Math.max(40, totalLabel.length * 6 + 12);
+    geometry.visiblePixelWidth >=
+    Math.max(40, estimateLabelWidthPx(totalLabel));
 
   const handleClick = useCallback(() => {
     onSelect(span.spanId);
@@ -383,7 +491,7 @@ const TimelineBar = memo(function TimelineBar({
     >
       <div className="absolute inset-y-0" style={TIMELINE_INSET_STYLE}>
         <div
-          className="absolute top-1/2 h-6 -translate-y-1/2 rounded-[0.25rem]"
+          className="absolute top-1/2 h-6 -translate-y-1/2 overflow-hidden rounded-[0.25rem]"
           style={getBarPositionStyle(geometry)}
         >
           {geometry.mode.kind === 'arrow' ? (
@@ -394,7 +502,7 @@ const TimelineBar = memo(function TimelineBar({
               style={{ background: fallbackBg, borderColor: fallbackBorder }}
             />
           ) : segments.length > 0 ? (
-            <SegmentBar segments={segments} />
+            <SegmentBar segments={segments} showLabels={!hasMarkers} />
           ) : (
             <PlainBar
               bg={fallbackBg}
@@ -403,6 +511,38 @@ const TimelineBar = memo(function TimelineBar({
             />
           )}
         </div>
+        {/* Overlay (not clipped): ticks, off-screen indicators, then the duration label on top. */}
+        {hasMarkers ? (
+          <div
+            className="pointer-events-none absolute top-1/2 h-6 -translate-y-1/2"
+            style={getBarPositionStyle(geometry)}
+          >
+            {markers.length > 0 ? <MarkerLayer markers={markers} /> : null}
+            {offscreen.left ? (
+              <OffscreenMarkerIndicator
+                direction="left"
+                count={offscreen.left.count}
+                targetMs={offscreen.left.nearestMs}
+                onReveal={onRevealTime}
+              />
+            ) : null}
+            {offscreen.right ? (
+              <OffscreenMarkerIndicator
+                direction="right"
+                count={offscreen.right.count}
+                targetMs={offscreen.right.nearestMs}
+                onReveal={onRevealTime}
+              />
+            ) : null}
+            {showTotalLabel ? (
+              <DurationLabel
+                label={totalLabel}
+                // Shift clear of the left edge indicator so it isn't covered.
+                className={offscreen.left ? 'pl-10' : undefined}
+              />
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -411,45 +551,99 @@ const TimelineBar = memo(function TimelineBar({
 export { TimelineBar };
 
 // ---------------------------------------------------------------------------
-// DeltaIndicator (Alt-key gap overlay)
+// DeltaMeasureLine (Alt-key measurement overlays: the selected ↔ hovered
+// measurement, and the ambient consecutive-gap indicators shown without a
+// selection)
 // ---------------------------------------------------------------------------
 
-const DELTA_CAP_HEIGHT_PX = 8;
-// Vertical offset to sit the indicator inside the gap between row N and N+1,
-// aligned with where the bar starts in the next row (rows center a 24px bar
-// inside 40px, so bars start ~8px from the top of the row).
-const DELTA_ROW_OFFSET_PX = 8;
+// Horizontal distance between the anchor bar's measured edge and the vertical
+// guide — also the width of the connector stub bridging the two.
+const MEASURE_GUIDE_OUTSET_PX = 4;
 
-const DeltaIndicator = memo(function DeltaIndicator({
-  leftFrac,
-  rightFrac,
-  label,
-  rowIndex,
+const DeltaMeasureLine = memo(function DeltaMeasureLine({
+  delta,
+  anchorRowIndex,
+  hoveredRowIndex,
+  timelineWidth,
 }: {
-  leftFrac: number;
-  rightFrac: number;
-  label: string;
-  rowIndex: number;
+  delta: SpanDelta;
+  anchorRowIndex: number;
+  hoveredRowIndex: number;
+  timelineWidth: number;
 }) {
-  const centerY = DELTA_ROW_OFFSET_PX + (rowIndex + 1) * ROW_HEIGHT_PX;
+  // Both ends of the measurement align with the vertical middle of the bars
+  // (bars are centered in their rows, so bar center == row center).
+  const anchorCenterY = anchorRowIndex * ROW_HEIGHT_PX + ROW_HEIGHT_PX / 2;
+  const lineY = hoveredRowIndex * ROW_HEIGHT_PX + ROW_HEIGHT_PX / 2;
+
+  // Guide connecting the middle of the anchor bar down/up to the line, so
+  // the measurement's origin stays legible when the rows are far apart.
+  // It sits just outside the anchor bar's measured edge (so it doesn't blend
+  // into the bar's border), joined to the bar by a short horizontal stub. The
+  // line runs from the elbow corner (the guide's x) to the hovered span's
+  // measured edge — pulled short of the edge arrow when the hovered span is
+  // fully off-screen.
+  const guideTop = Math.min(anchorCenterY, lineY);
+  const guideBottom = Math.max(anchorCenterY, lineY);
+  const anchorX = delta.anchorFrac * timelineWidth;
+  const guideX =
+    anchorX +
+    (delta.anchorEdge === 'end'
+      ? MEASURE_GUIDE_OUTSET_PX
+      : -MEASURE_GUIDE_OUTSET_PX);
+  const arrowClearance =
+    delta.hoveredOffscreen === 'right'
+      ? -(TINY_BAR_BOX_SIZE_PX + 4)
+      : delta.hoveredOffscreen === 'left'
+        ? TINY_BAR_BOX_SIZE_PX + 4
+        : 0;
+  const hoveredX = delta.hoveredFrac * timelineWidth + arrowClearance;
+  const startX = Math.min(guideX, hoveredX);
+  const endX = Math.max(guideX, hoveredX);
+
+  const label = formatDurationPrecise(delta.deltaMs);
+  const labelWidthPx = estimateLabelWidthPx(label);
+  // Center the label on the line; when the line is too short, place it beside
+  // the right endpoint, flipping left near the viewport's right edge.
+  const labelPlacement =
+    endX - startX >= labelWidthPx
+      ? { left: (startX + endX) / 2, translate: '-translate-x-1/2' }
+      : endX + 4 + labelWidthPx <= timelineWidth
+        ? { left: endX + 4, translate: '' }
+        : { left: startX - 4, translate: '-translate-x-full' };
 
   return (
-    <div
-      className="absolute pointer-events-none"
-      style={{
-        left: `${leftFrac * 100}%`,
-        width: `${(rightFrac - leftFrac) * 100}%`,
-        top: centerY - DELTA_CAP_HEIGHT_PX / 2,
-        height: DELTA_CAP_HEIGHT_PX,
-      }}
-    >
-      <div className="absolute left-0 top-0 w-px h-full bg-amber-800" />
-      <div className="absolute left-0 right-0 top-1/2 h-px bg-amber-800" />
-      <div className="absolute right-0 top-0 w-px h-full bg-amber-800" />
-      <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-label-12 leading-none whitespace-nowrap rounded-xs px-1 py-0.5 text-gray-100 bg-amber-800">
+    <>
+      <div
+        className="absolute h-px bg-amber-800"
+        style={{
+          left: Math.min(anchorX, guideX),
+          width: MEASURE_GUIDE_OUTSET_PX,
+          top: anchorCenterY,
+        }}
+      />
+      <div
+        className="absolute w-px bg-amber-800"
+        style={{
+          left: guideX,
+          top: guideTop,
+          height: guideBottom - guideTop,
+        }}
+      />
+      <div
+        className="absolute h-px bg-amber-800"
+        style={{ left: startX, width: Math.max(endX - startX, 1), top: lineY }}
+      />
+      <span
+        className={cn(
+          'absolute -translate-y-1/2 font-mono text-[10px] font-medium leading-none tabular-nums whitespace-nowrap rounded-xs bg-background-100 px-1 py-0.5 text-amber-800',
+          labelPlacement.translate
+        )}
+        style={{ left: labelPlacement.left, top: lineY }}
+      >
         {label}
       </span>
-    </div>
+    </>
   );
 });
 
@@ -493,6 +687,13 @@ export function TimelineHeader({
 // Timeline
 // ---------------------------------------------------------------------------
 
+export interface TimelineHover {
+  /** Pointer x as a fraction of the timeline's content width, in [0, 1]. */
+  fraction: number;
+  /** Row index under the pointer; may be past the last row — not validated. */
+  rowIndex: number;
+}
+
 export function Timeline({
   spans,
   viewStart,
@@ -501,7 +702,8 @@ export function Timeline({
   selectedId,
   searchResult,
   onSelect,
-  hoverFraction,
+  onRevealTime,
+  hover,
   altHeld = false,
 }: {
   spans: Span[];
@@ -511,7 +713,8 @@ export function Timeline({
   selectedId: string | null;
   searchResult: SpanSearchResult;
   onSelect: (spanId: string) => void;
-  hoverFraction?: number | null;
+  onRevealTime?: (timeMs: number) => void;
+  hover?: TimelineHover | null;
   altHeld?: boolean;
 }): ReactNode {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -534,10 +737,44 @@ export function Timeline({
     return () => ro.disconnect();
   }, []);
 
-  const gaps = useMemo(
-    () => computeSpanGaps(spans, viewStart, viewEnd),
+  // Each consecutive gap renders as a measurement from the earlier span's end
+  // edge to the next span's start, in the same visual language as the
+  // selected ↔ hovered measurement.
+  const gapMeasurements = useMemo(
+    () =>
+      computeSpanGaps(spans, viewStart, viewEnd).map((gap) => ({
+        delta: {
+          deltaMs: gap.gapMs,
+          anchorFrac: gap.leftFrac,
+          hoveredFrac: gap.rightFrac,
+          anchorEdge: 'end',
+          hoveredOffscreen: null,
+        } satisfies SpanDelta,
+        anchorRowIndex: gap.rowIndex,
+        hoveredRowIndex: gap.rowIndex + 1,
+      })),
     [spans, viewStart, viewEnd]
   );
+
+  // With a span selected, Alt+hover measures selected ↔ hovered instead of
+  // showing the all-sibling-gaps overlay.
+  const anchorIndex = useMemo(
+    () => (selectedId ? spans.findIndex((s) => s.spanId === selectedId) : -1),
+    [spans, selectedId]
+  );
+
+  const measurement = useMemo(() => {
+    if (!altHeld || hover == null || hover.rowIndex === anchorIndex) {
+      return null;
+    }
+    const anchorSpan = spans[anchorIndex];
+    const hoveredSpan = spans[hover.rowIndex];
+    if (!anchorSpan || !hoveredSpan) return null;
+    const delta = computeSpanDelta(anchorSpan, hoveredSpan, viewStart, viewEnd);
+    return delta
+      ? { delta, anchorRowIndex: anchorIndex, hoveredRowIndex: hover.rowIndex }
+      : null;
+  }, [altHeld, anchorIndex, hover, spans, viewStart, viewEnd]);
 
   return (
     <div
@@ -561,14 +798,14 @@ export function Timeline({
           ) : null
         )}
       </div>
-      {hoverFraction != null && (
+      {hover != null && (
         <div
           className="absolute inset-y-0 pointer-events-none z-10"
           style={TIMELINE_INSET_STYLE}
         >
           <div
             className="absolute top-0 bottom-0 w-px bg-gray-alpha-500"
-            style={{ left: `${hoverFraction * 100}%` }}
+            style={{ left: `${hover.fraction * 100}%` }}
           />
         </div>
       )}
@@ -583,24 +820,32 @@ export function Timeline({
             isSelected={selectedId === span.spanId}
             isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
             onSelect={onSelect}
+            onRevealTime={onRevealTime}
           />
         ))}
       </div>
-      {altHeld && (
+      {altHeld && anchorIndex < 0 && (
         <div
           aria-hidden
           className="absolute inset-y-0 pointer-events-none"
           style={TIMELINE_INSET_STYLE}
         >
-          {gaps.map((gap) => (
-            <DeltaIndicator
-              key={gap.rowIndex}
-              leftFrac={gap.leftFrac}
-              rightFrac={gap.rightFrac}
-              label={formatDuration(gap.gapMs, true)}
-              rowIndex={gap.rowIndex}
+          {gapMeasurements.map((gap) => (
+            <DeltaMeasureLine
+              key={gap.anchorRowIndex}
+              {...gap}
+              timelineWidth={timelineWidth}
             />
           ))}
+        </div>
+      )}
+      {measurement && (
+        <div
+          aria-hidden
+          className="absolute inset-y-0 pointer-events-none z-20"
+          style={TIMELINE_INSET_STYLE}
+        >
+          <DeltaMeasureLine {...measurement} timelineWidth={timelineWidth} />
         </div>
       )}
     </div>

@@ -1,5 +1,110 @@
 # @workflow/web
 
+## 5.0.0-beta.36
+
+### Patch Changes
+
+- Updated dependencies [[`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3), [`850777a`](https://github.com/vercel/workflow/commit/850777a03bc1ad85fa7333d5e15a55a353ed6d23)]:
+  - @workflow/world-local@5.0.0-beta.30
+
+## 5.0.0-beta.35
+
+### Patch Changes
+
+- Updated dependencies [[`f72184d`](https://github.com/vercel/workflow/commit/f72184dc836cb5e04ae689e99802f6fa869f487a)]:
+  - @workflow/world-local@5.0.0-beta.29
+
+## 5.0.0-beta.34
+
+## 5.0.0-beta.33
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/world-local@5.0.0-beta.28
+
+## 5.0.0-beta.32
+
+## 5.0.0-beta.31
+
+### Patch Changes
+
+- Updated dependencies [[`7a1ea5a`](https://github.com/vercel/workflow/commit/7a1ea5a45afd07601934a2f3ff1d1044f3bd9db8)]:
+  - @workflow/world-local@5.0.0-beta.27
+
+## 5.0.0-beta.30
+
+### Patch Changes
+
+- [#2790](https://github.com/vercel/workflow/pull/2790) [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Centralize workflow event type classifiers and event-data payload field helpers.
+
+- Updated dependencies [[`84df8f3`](https://github.com/vercel/workflow/commit/84df8f3a05bb52ae4a8c45c9238b91e6958f300b), [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9)]:
+  - @workflow/world-local@5.0.0-beta.26
+
+## 5.0.0-beta.29
+
+### Patch Changes
+
+- Updated dependencies [[`79a9813`](https://github.com/vercel/workflow/commit/79a9813f25eb907809fcd329accb76ac4d274480)]:
+  - @workflow/world-local@5.0.0-beta.25
+
+## 5.0.0-beta.28
+
+### Patch Changes
+
+- [#2647](https://github.com/vercel/workflow/pull/2647) [`1518c48`](https://github.com/vercel/workflow/commit/1518c4860822986436711ec14b1b5b16192fefb5) Thanks [@karthikscale3](https://github.com/karthikscale3)! - The runs, steps, and events observability list views now read from the
+  metadata-only `world.analytics` namespace when the configured backend provides
+  one, and fall back to the runtime storage APIs otherwise. Event payloads are
+  still loaded lazily per event on the runtime path. Hooks listing, detail views,
+  payload resolution, streams, and mutations are unchanged.
+
+- [#2652](https://github.com/vercel/workflow/pull/2652) [`ae51f45`](https://github.com/vercel/workflow/commit/ae51f45166298e855885330b2f1d4e1f8d729faa) Thanks [@karthikscale3](https://github.com/karthikscale3)! - The hooks list now reads from the metadata-only `world.analytics` namespace when the backend provides one (falling back to the runtime storage APIs otherwise). A hook's secret token is no longer included in list rows — it is fetched one hook at a time via `world.hooks.get` only when the user copies the token or resumes the hook.
+
+- [#2804](https://github.com/vercel/workflow/pull/2804) [`cdfac39`](https://github.com/vercel/workflow/commit/cdfac39e07e2d15c95f7ab9ff8d244b8677931bd) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix `workflow web` for local and postgres backends after static world-target injection. The web server now constructs the local world directly and resolves other world packages from the inspected project, instead of calling the `createWorld()` static-injection stub (which throws when no build plugin aliased it).
+
+- [#2812](https://github.com/vercel/workflow/pull/2812) [`fe327e6`](https://github.com/vercel/workflow/commit/fe327e69e205417f864fc4109f6e8b79e92e141a) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Runs list: infinite scroll with SWR-cached pages (tab switches no longer refetch), a plan-aware time-window picker (default 24h), and status filtering without requiring a workflow filter.
+
+- Updated dependencies [[`c1d29f1`](https://github.com/vercel/workflow/commit/c1d29f14ca01e2219c5ccbaa4e9f62f9349dd75e), [`c1d29f1`](https://github.com/vercel/workflow/commit/c1d29f14ca01e2219c5ccbaa4e9f62f9349dd75e), [`7637196`](https://github.com/vercel/workflow/commit/7637196cf0f605ce62243bf8c7762a26153dcd36), [`e7e5a0e`](https://github.com/vercel/workflow/commit/e7e5a0e56d10778554b0ea23d0d66ff9feb66bd9), [`239031a`](https://github.com/vercel/workflow/commit/239031ad9e1d27942f8e30a59fd6fef254544fff), [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d), [`49a50e8`](https://github.com/vercel/workflow/commit/49a50e83d94656e1df123df1f27258fa7f1d3216)]:
+  - @workflow/world-local@5.0.0-beta.24
+
+## 5.0.0-beta.27
+
+### Patch Changes
+
+- [#2680](https://github.com/vercel/workflow/pull/2680) [`89f4726`](https://github.com/vercel/workflow/commit/89f4726b7308b02e8898c1e564b2c94272df6f4f) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Decompress gzip- and zstd-prefixed serialized data returned from Vercel Workflow storage, and route OSS web hydration through the async WASM-capable path for compressed payloads.
+
+## 5.0.0-beta.26
+
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- [`8393716`](https://github.com/vercel/workflow/commit/8393716687c77ec46c724cd48335aa7ea9176c8b) - Fix the run trace detail panel flickering its Input/Output sections when navigating between spans. Span detail is now driven by a single selection-derived state machine (`useSelectedSpanDetail`) whose loading state stays in phase with the selected span, replacing the fetch flag that lagged selection by a few renders.
+
+- [#2632](https://github.com/vercel/workflow/pull/2632) [`7c1e2a2`](https://github.com/vercel/workflow/commit/7c1e2a2c7e837ef76bafc771811c8f320d8c4053) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix run and event observability pages hanging (~16s) and showing no data in the bundled server build, caused by HTTP/2 requests failing to reach `node:http2`.
+
+## 5.0.0-beta.24
+
+## 5.0.0-beta.23
+
+## 5.0.0-beta.22
+
+### Patch Changes
+
+- [#2582](https://github.com/vercel/workflow/pull/2582) [`6855282`](https://github.com/vercel/workflow/commit/685528259ddf93c17f544c2bed841088d0973dcb) Thanks [@mitul-s](https://github.com/mitul-s)! - Add helper text that indicates keyboard shortcuts
+
+## 5.0.0-beta.21
+
+## 5.0.0-beta.20
+
+## 5.0.0-beta.19
+
+## 5.0.0-beta.18
+
+## 5.0.0-beta.17
+
+## 5.0.0-beta.16
+
 ## 5.0.0-beta.15
 
 ## 5.0.0-beta.14

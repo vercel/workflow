@@ -3,6 +3,7 @@ title: Building Durable AI Agents
 description: Build AI agents that survive crashes, scale across requests, and maintain state with durable LLM tool-call loops.
 type: overview
 summary: Convert a basic AI chat app into a durable, resumable agent using Workflow SDK.
+manualCards: true
 related:
   - /docs/foundations/workflows-and-steps
   - /docs/foundations/streaming
@@ -63,7 +64,7 @@ In order to connect to an LLM, we'll need to set up an API key. The easiest way 
 
 <Tab value="Gateway">
 
-Get a Gateway API key from the [Vercel Gateway](https://vercel.com/docs/gateway/api-reference/overview) page.
+Get a Gateway API key from the [Vercel Gateway](https://vercel.com/docs/ai-gateway/authentication) page.
 
 Then add it to your `.env.local` file:
 
@@ -381,7 +382,7 @@ export async function checkBaggageAllowance(
 
 With `"use step"`:
 
-- The tool execution runs in a separate step with full Node.js access. In production, each step is executed in a separate worker process, which scales automatically with your workload.
+- The tool execution runs as a durable step with full Node.js access. The combined runtime may execute it inline in the flow request or resume it through the workflow queue, and can scale queued work with your workload.
 - Failed tool calls are automatically retried (up to 3 times by default). See [Errors and Retries](/docs/foundations/errors-and-retries) for more details.
 - Each tool execution appears as a discrete step in observability tools. See [Observability](/docs/observability) for more details.
 </Step>

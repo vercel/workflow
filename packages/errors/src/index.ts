@@ -353,6 +353,30 @@ export class ReplayDivergenceError extends WorkflowRuntimeError {
 }
 
 /**
+ * Thrown when a run's event log reaches the server-supplied per-run event
+ * ceiling. Classified as `MAX_EVENTS_EXCEEDED` (see `classifyRunError`).
+ */
+export class MaxEventsExceededError extends WorkflowError {
+  readonly eventCount: number;
+  readonly limit: number;
+
+  constructor(
+    eventCount: number,
+    limit: number,
+    options?: WorkflowErrorOptions
+  ) {
+    super(`Workflow exceeded the maximum of ${limit} events per run`, options);
+    this.name = 'MaxEventsExceededError';
+    this.eventCount = eventCount;
+    this.limit = limit;
+  }
+
+  static is(value: unknown): value is MaxEventsExceededError {
+    return isError(value) && value.name === 'MaxEventsExceededError';
+  }
+}
+
+/**
  * Optional structured context attached to a {@link RuntimeDecryptionError},
  * carried over from the underlying decrypt call site to help diagnose the
  * failure without poking through stacks.
@@ -392,7 +416,7 @@ export interface RuntimeDecryptionErrorContext {
  */
 export class RuntimeDecryptionError extends WorkflowRuntimeError {
   /** Optional structured context about the failed encrypt/decrypt call. */
-  readonly context?: RuntimeDecryptionErrorContext;
+  declare readonly context?: RuntimeDecryptionErrorContext;
 
   constructor(
     message: string,
@@ -761,6 +785,31 @@ export class ThrottleError extends WorkflowWorldError {
 }
 
 /**
+ * Thrown when the backend rejects an event creation because the client's
+ * event-log snapshot is stale — a newer out-of-band event (e.g. a received
+ * hook or a completed step) was recorded after the snapshot the client
+ * replayed from (HTTP 412).
+ *
+ * The workflow runtime handles this automatically: it reloads the event log
+ * and retries, ultimately re-enqueueing the run if it cannot catch up. Users
+ * interacting with world storage backends directly may encounter it.
+ *
+ * @property retryAfter - Delay in seconds before retrying. Accepted for
+ *   forward-compatibility; the runtime currently reloads and retries
+ *   immediately and does not read this field.
+ */
+export class PreconditionFailedError extends WorkflowWorldError {
+  constructor(message: string, options?: { retryAfter?: number }) {
+    super(message, { status: 412, retryAfter: options?.retryAfter });
+    this.name = 'PreconditionFailedError';
+  }
+
+  static is(value: unknown): value is PreconditionFailedError {
+    return isError(value) && value.name === 'PreconditionFailedError';
+  }
+}
+
+/**
  * Thrown when awaiting `run.returnValue` on a workflow run that was cancelled.
  *
  * This error indicates that the workflow was explicitly cancelled (via
@@ -850,7 +899,7 @@ export class RunNotSupportedError extends WorkflowError {
  * Any error can opt into the non-retry behavior by setting a `fatal: true`
  * own property. This is how structured error classes that aren't direct
  * `FatalError` subclasses (e.g. context-violation errors) signal to the
- * step handler that retrying will never help — the user's code is calling
+ * step executor that retrying will never help — the user's code is calling
  * a workflow-only API from the wrong context, or similar — and burning
  * retry attempts just produces a wall of duplicated log output.
  */

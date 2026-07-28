@@ -1,5 +1,6 @@
 import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
+import { createWorkflowUrl } from '@workflow/utils';
 import {
   MessageId,
   parseQueueName,
@@ -12,7 +13,7 @@ import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
 import { z } from 'zod/v4';
 import type { Config } from './config.js';
-import { resolveBaseUrl } from './config.js';
+import { resolveBaseUrl, resolveDirectBaseUrl } from './config.js';
 import { jsonReplacer, jsonReviver } from './fs.js';
 import { getPackageInfo } from './init.js';
 
@@ -93,18 +94,6 @@ function isDetachedArrayBufferQueueError(error: unknown): boolean {
   return false;
 }
 
-function getQueueRoute(queueName: ValidQueueName): {
-  pathname: 'flow' | 'step';
-  prefix: QueuePrefix;
-} {
-  const { kind, prefix } = parseQueueName(queueName);
-
-  return {
-    pathname: kind === 'workflow' ? 'flow' : 'step',
-    prefix,
-  };
-}
-
 export function createQueue(config: Partial<Config>): LocalQueue {
   // Create a custom agent optimized for high-concurrency local workflows:
   // - headersTimeout: 0 allows long-running steps
@@ -147,15 +136,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     }
 
     const body = transport.serialize(message);
-    const { pathname, prefix } = getQueueRoute(queueName);
+    const { prefix } = parseQueueName(queueName);
     const messageId = MessageId.parse(`msg_${generateId()}`);
 
     // Extract identifiers from the message for structured logging.
-    // Workflow messages have `runId`, step messages have `workflowRunId` + `stepId`.
+    // Combined workflow messages carry `runId` and may include `stepId`.
     const msg = message as Record<string, unknown>;
-    const runId = (msg.runId ?? msg.workflowRunId ?? undefined) as
-      | string
-      | undefined;
+    const runId = (msg.runId ?? undefined) as string | undefined;
     const stepId = (msg.stepId ?? undefined) as string | undefined;
 
     if (opts?.idempotencyKey) {
@@ -186,46 +173,89 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         await semaphore.acquire();
       }
       // Safety limit to prevent infinite loops in the local queue.
-      // The actual max delivery enforcement happens in the workflow/step handlers
+      // The actual max delivery enforcement happens in the workflow handler
       // (at MAX_QUEUE_DELIVERIES = 48), so this just needs to be comfortably higher.
       const MAX_LOCAL_SAFETY_LIMIT = 256;
+      // Number of times the message has actually reached a handler (returned
+      // ok, a timeoutSeconds re-delivery, or an HTTP error response). This —
+      // not the loop counter — is the attempt the handler sees via
+      // `x-vqs-message-attempt`, which it counts against MAX_QUEUE_DELIVERIES.
+      // Transport-level failures (below) never reach the handler, so they must
+      // not advance this, or a burst of "fetch failed"/ETIMEDOUT timeouts under
+      // local load would exhaust the handler's delivery budget before its first
+      // real execution.
+      let delivery = 0;
       try {
-        for (let attempt = 0; attempt < MAX_LOCAL_SAFETY_LIMIT; attempt++) {
+        for (let loop = 0; loop < MAX_LOCAL_SAFETY_LIMIT; loop++) {
           const headers: Record<string, string> = {
             ...opts?.headers,
             'content-type': 'application/json',
             'x-vqs-queue-name': queueName,
             'x-vqs-message-id': messageId,
-            'x-vqs-message-attempt': String(attempt + 1),
+            'x-vqs-message-attempt': String(delivery + 1),
           };
           const directHandler = directHandlers.get(prefix);
           let response: Response;
 
-          if (directHandler) {
-            const req = new Request(
-              `http://localhost/.well-known/workflow/v1/${pathname}`,
+          try {
+            if (directHandler) {
+              const req = new Request(
+                createWorkflowUrl(resolveDirectBaseUrl(config), {
+                  type: 'flow',
+                }),
+                { method: 'POST', headers, body }
+              );
+              response = await directHandler(req);
+            } else {
+              const baseUrl = await resolveBaseUrl(config);
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+              response = await fetch(
+                createWorkflowUrl(baseUrl, { type: 'flow' }),
+                {
+                  method: 'POST',
+                  duplex: 'half',
+                  dispatcher: httpAgent,
+                  headers,
+                  body,
+                } as any
+              );
+            }
+          } catch (err) {
+            // The delivery never reached the handler: undici threw before a
+            // response. Under heavy local concurrency the single-process dev
+            // server can't accept every connection, so undici reports
+            // `TypeError: fetch failed` with an ETIMEDOUT/ECONNRESET cause.
+            // These are transient — back off and retry the *same* delivery
+            // rather than dropping the message (which would leave the step
+            // never started, with no retry). Two failures are not retryable:
+            //  - shutdown: close() aborted the agent / the backoff sleep.
+            //  - a detached-ArrayBuffer proxy misconfig, which never succeeds —
+            //    rethrow so the outer catch surfaces the actionable guidance.
+            const name = (err as { name?: string } | undefined)?.name;
+            if (
+              closeSignal.aborted ||
+              name === 'AbortError' ||
+              name === 'ResponseAborted'
+            ) {
+              return;
+            }
+            if (isDetachedArrayBufferQueueError(err)) throw err;
+
+            console.error(
+              `[world-local] Queue delivery failed at the transport (loop ${loop + 1}), retrying`,
               {
-                method: 'POST',
-                headers,
-                body,
+                queueName,
+                messageId,
+                ...(runId && { runId }),
+                ...(stepId && { stepId }),
+                error: String(err),
               }
             );
-            response = await directHandler(req);
-          } else {
-            const baseUrl = await resolveBaseUrl(config);
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-            response = await fetch(
-              `${baseUrl}/.well-known/workflow/v1/${pathname}`,
-              {
-                method: 'POST',
-                duplex: 'half',
-                dispatcher: httpAgent,
-                headers,
-                body,
-              } as any
-            );
+            await setTimeout(5000, undefined, { signal: closeSignal });
+            continue;
           }
 
+          delivery++;
           const text = await response.text();
 
           if (response.ok) {
@@ -251,7 +281,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           }
 
           console.error(
-            `[world-local] Queue message failed (attempt ${attempt + 1}, HTTP ${response.status})`,
+            `[world-local] Queue message failed (attempt ${delivery}, HTTP ${response.status})`,
             {
               queueName,
               messageId,

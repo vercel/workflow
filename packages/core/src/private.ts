@@ -3,9 +3,11 @@
  */
 
 import { withResolvers } from '@workflow/utils';
-import type { CryptoKey } from './encryption.js';
+import type { WorldCapabilities } from '@workflow/world';
+import type { PayloadKey } from './serialization/encryption.js';
 import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
+import type { ReplayPayloadCache } from './replay-payload-cache.js';
 import type { Serializable } from './schemas.js';
 
 export type StepFunction<
@@ -130,7 +132,8 @@ export function getStepFunction(stepId: string): StepFunction | undefined {
 
 export interface WorkflowOrchestratorContext {
   runId: string;
-  encryptionKey: CryptoKey | undefined;
+  encryptionKey: PayloadKey | undefined;
+  worldCapabilities?: WorldCapabilities;
   globalThis: typeof globalThis;
   eventsConsumer: EventsConsumer;
   /**
@@ -151,8 +154,10 @@ export interface WorkflowOrchestratorContext {
   promiseQueue: Promise<void>;
   /**
    * Counter of in-flight async data delivery operations (step result
-   * hydration, hook payload hydration). Suspensions must wait for this
-   * to reach 0 before firing, to avoid preempting data delivery.
+   * hydration, hook payload hydration, abort signal hydration). Suspensions
+   * must wait for this to reach 0 before firing, to avoid preempting data
+   * delivery — e.g. dehydrating a step's arguments while an abort that should
+   * be reflected in those arguments is still hydrating its reason.
    */
   pendingDeliveries: number;
   /**
@@ -186,6 +191,11 @@ export interface WorkflowOrchestratorContext {
    * that do not initialize it degrade gracefully to the previous behavior.
    */
   pendingDeliveryBarriers?: Map<number, DeliveryBarrierEntry>;
+  /**
+   * Invocation-scoped cache of prepared serialized payloads and immutable final
+   * values. Prepared bytes survive fresh replay VMs; object graphs do not.
+   */
+  replayPayloadCache: ReplayPayloadCache;
 }
 
 /** The kind of branch-deciding delivery a barrier represents. */
@@ -295,6 +305,18 @@ export function registerDeliveryBarrier(
  * if > 0, wait for promiseQueue → repeat. This handles the multi-round
  * delivery pattern where each hook payload delivery cycle appends new
  * async work to the promiseQueue.
+ *
+ * The initial `setTimeout(0)` macrotask is load-bearing and must NOT be
+ * downgraded to a microtask (`queueMicrotask`/`Promise.resolve().then`).
+ * `pendingDeliveries` only guards the host-side hydration window; between a
+ * delivery's `resolve()` and the workflow VM body running its continuation to
+ * register the next subscriber, `pendingDeliveries` is already 0 even though
+ * the VM is mid-reaction. Node does not guarantee a microtask scheduled in
+ * the host context settles after the cross-VM promise chain (resolve in host
+ * → workflow code in VM → subscribe back in host); the macrotask boundary
+ * gives that chain time to run, so the suspension does not preempt a sibling
+ * delivery still in flight. Empirically, replacing it with `queueMicrotask`
+ * breaks hook/sleep `Promise.race` ordering (CorruptedEventLogError).
  */
 export function scheduleWhenIdle(
   ctx: WorkflowOrchestratorContext,

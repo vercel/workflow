@@ -1,6 +1,16 @@
-import { HookConflictError, ReplayDivergenceError } from '@workflow/errors';
-import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
+import {
+  FatalError,
+  HookConflictError,
+  ReplayDivergenceError,
+} from '@workflow/errors';
+import { WORKFLOW_DESERIALIZE } from '@workflow/serde';
+import {
+  type PromiseWithResolvers,
+  parseDurationToDate,
+  withResolvers,
+} from '@workflow/utils';
 import type { HookConflictEvent } from '@workflow/world';
+import { getSerializationClass, RUN_CLASS_ID } from '../class-serialization.js';
 import type { Hook, HookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
@@ -11,8 +21,6 @@ import {
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from '../private.js';
-import { WORKFLOW_DESERIALIZE } from '@workflow/serde';
-import { getSerializationClass, RUN_CLASS_ID } from '../class-serialization.js';
 import type { Run } from '../runtime/run.js';
 import { hydrateStepReturnValue } from '../serialization.js';
 
@@ -57,9 +65,43 @@ function createConflictingRun(
 
 export function createCreateHook(ctx: WorkflowOrchestratorContext) {
   return function createHookImpl<T = any>(options: HookOptions = {}): Hook<T> {
+    // Reject an explicit empty-string token. A token must either be omitted
+    // (or `undefined`/`null`) to get a randomly generated one, or be an
+    // explicit non-empty string. An empty string is almost always an
+    // accidental value (e.g. an unset variable) and would otherwise slip
+    // through the `??` below — which only falls back for nullish values — and
+    // be used as a meaningless, non-deterministic token.
+    if (options.token === '') {
+      throw new Error(
+        '`createHook()` was called with an empty string token. Pass a non-empty token, or omit the `token` option to use a randomly generated one.'
+      );
+    }
+
+    if (
+      options.isWebhook === true &&
+      options.experimental_minRetention !== undefined
+    ) {
+      throw new Error(
+        'Webhook hooks do not support `experimental_minRetention`. Use a non-webhook `createHook()` with `resumeHook()`.'
+      );
+    }
+
+    if (
+      options.experimental_minRetention !== undefined &&
+      ctx.worldCapabilities?.hookRetention?.active !== true
+    ) {
+      throw new FatalError(
+        'The configured World does not support `experimental_minRetention` for Hooks.'
+      );
+    }
+
     // Generate hook ID and token
     const correlationId = `hook_${ctx.generateUlid()}`;
     const token = options.token ?? ctx.generateNanoid();
+    const tokenRetentionUntil =
+      options.experimental_minRetention === undefined
+        ? undefined
+        : parseDurationToDate(options.experimental_minRetention);
 
     // Add hook creation to invocations queue (using Map for O(1) operations)
     const isWebhook = options.isWebhook ?? false;
@@ -68,6 +110,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       type: 'hook',
       correlationId,
       token,
+      tokenRetentionUntil,
       metadata: options.metadata,
       isWebhook,
     });
@@ -150,6 +193,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         const queueItem = ctx.invocationsQueue.get(correlationId);
         if (queueItem && queueItem.type === 'hook') {
           queueItem.hasCreatedEvent = true;
+          queueItem.tokenRetentionUntil = event.eventData.tokenRetentionUntil;
         }
         hasCreated = true;
 
@@ -240,11 +284,19 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
               | { ok: false; error: unknown };
             ctx.promiseQueue = ctx.promiseQueue.then(async () => {
               try {
+                const prepared =
+                  await ctx.replayPayloadCache.prepareEventPayload(
+                    event.eventId,
+                    'payload',
+                    event.eventData.payload
+                  );
                 const payload = await hydrateStepReturnValue(
                   event.eventData.payload,
                   ctx.runId,
                   ctx.encryptionKey,
-                  ctx.globalThis
+                  ctx.globalThis,
+                  {},
+                  prepared
                 );
                 hydrateOutcome = { ok: true, value: payload as T };
               } catch (error) {
@@ -293,11 +345,18 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
+              const prepared = await ctx.replayPayloadCache.prepareEventPayload(
+                event.eventId,
+                'payload',
+                event.eventData.payload
+              );
               const payload = await hydrateStepReturnValue(
                 event.eventData.payload,
                 ctx.runId,
                 ctx.encryptionKey,
-                ctx.globalThis
+                ctx.globalThis,
+                {},
+                prepared
               );
               outcome = { ok: true, value: payload as T };
             } catch (error) {

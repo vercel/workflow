@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises';
 import { BaseBuilder } from './base-builder.js';
 import type { WorkflowConfig } from './types.js';
 
@@ -10,6 +11,11 @@ export class StandaloneBuilder extends BaseBuilder {
   }
 
   async build(): Promise<void> {
+    // Existing standalone output may still contain the retired step route.
+    await rm(this.resolvePath('.well-known/workflow/v1/step.mjs'), {
+      force: true,
+    });
+
     const inputFiles = await this.getInputFiles();
     const tsconfigPath = await this.findTsConfigPath();
 
@@ -20,7 +26,7 @@ export class StandaloneBuilder extends BaseBuilder {
     await this.ensureDirectory(stepsBundlePath);
     await this.ensureDirectory(workflowBundlePath);
 
-    console.log('Creating combined bundle');
+    this.logBaseBuilderInfo('Creating combined bundle');
 
     const { manifest } = await this.createCombinedBundle({
       inputFiles,
@@ -43,7 +49,10 @@ export class StandaloneBuilder extends BaseBuilder {
   }
 
   private async buildWebhookFunction(): Promise<void> {
-    console.log('Creating webhook bundle at', this.config.webhookBundlePath);
+    this.logBaseBuilderInfo(
+      'Creating webhook bundle at',
+      this.config.webhookBundlePath
+    );
 
     const webhookBundlePath = this.resolvePath(this.config.webhookBundlePath);
     await this.ensureDirectory(webhookBundlePath);

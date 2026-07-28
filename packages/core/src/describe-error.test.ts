@@ -108,6 +108,16 @@ describe('describeError', () => {
     expect(result.hint).toContain('SDK contract');
   });
 
+  test('MAX_EVENTS_EXCEEDED via precomputed errorCode is attributed to the user', () => {
+    const result = describeError(
+      undefined,
+      RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED
+    );
+    expect(result.attribution).toBe('user');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED);
+    expect(result.hint).toContain('maximum number of events');
+  });
+
   test('precomputed errorCode wins over classifyRunError when both are provided', () => {
     // A plain Error would classify as USER_ERROR, but passing REPLAY_TIMEOUT
     // explicitly overrides that — useful for callers that know the failure
@@ -191,6 +201,15 @@ describe('describeRunError', () => {
     });
     expect(result.attribution).toBe('sdk');
     expect(result.hint).toContain('max-delivery budget');
+  });
+
+  test('MAX_EVENTS_EXCEEDED errorCode is attributed to the user', () => {
+    const result = describeRunError({
+      errorCode: RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED,
+    });
+    expect(result.attribution).toBe('user');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED);
+    expect(result.hint).toContain('maximum number of events');
   });
 
   test('WORLD_CONTRACT_ERROR errorCode is attributed to the SDK', () => {

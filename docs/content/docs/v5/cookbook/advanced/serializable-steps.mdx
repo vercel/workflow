@@ -9,6 +9,10 @@ related:
   - /docs/foundations/workflows-and-steps#step-functions
 ---
 
+<CopyPrompt
+  text="Make this non-serializable dependency usable inside a durable workflow with the step-as-factory pattern. Instead of passing the object (AI SDK model, cloud SDK client) into the workflow, export a factory that returns an async callback marked with &quot;use step&quot; which constructs and returns the object at execution time, for example `export function openai(...args) { return async () => { &quot;use step&quot;; return openaiProvider(...args); }; }`. Pass the factory across the workflow boundary — the compiler serializes the function reference, not the instance — and invoke it inside steps where full Node.js access is available. Keep the factory's constructor arguments serializable. Verify the workflow builds, replays deterministically, and the dependency is only instantiated during step execution."
+/>
+
 <Callout>
 This is an advanced guide. It dives into workflow internals and is not required reading to use workflow.
 </Callout>
@@ -62,6 +66,10 @@ export function openai(...args: Parameters<typeof openaiProvider>) {
 The `DurableAgent` receives a function (`() => Promise<LanguageModel>`) instead of a model object. When the agent needs to call the LLM, it invokes the factory inside a step where the real provider can be constructed with full Node.js access.
 
 ## How `@workflow/ai` Uses This
+
+<Callout type="warn">
+`@workflow/ai`'s pre-wrapped providers and `DurableAgent` are deprecated. AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) resolves models from AI Gateway model strings (e.g. `"openai/gpt-4o"`), which usually removes the need for a model factory — see the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent). The serialization pattern on this page still applies to any non-serializable dependency you own (for example, cloud SDK clients).
+</Callout>
 
 The `@workflow/ai` package ships pre-wrapped providers for all major AI SDK backends. Each one follows the same pattern:
 
@@ -143,5 +151,5 @@ async function uploadFile(
 
 - [`"use step"`](/docs/foundations/workflows-and-steps#step-functions) — marks a function for extraction and serialization
 - [`"use workflow"`](/docs/foundations/workflows-and-steps#workflow-functions) — declares the orchestrator function
-- [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) — accepts a model factory for durable AI agent streaming
+- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) — AI SDK's durable agent (resolves models via AI Gateway strings; replaces `DurableAgent`)
 - [Custom class serialization](/docs/foundations/serialization#custom-class-serialization) — the companion pattern for classes you own (`WORKFLOW_SERIALIZE` / `WORKFLOW_DESERIALIZE`)

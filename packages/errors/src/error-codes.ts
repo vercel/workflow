@@ -14,6 +14,8 @@ export const RUN_ERROR_CODES = {
   REPLAY_DIVERGENCE: 'REPLAY_DIVERGENCE',
   /** Run exceeded the maximum number of queue deliveries */
   MAX_DELIVERIES_EXCEEDED: 'MAX_DELIVERIES_EXCEEDED',
+  /** Run exceeded the maximum number of events per run */
+  MAX_EVENTS_EXCEEDED: 'MAX_EVENTS_EXCEEDED',
   /** Workflow replay exceeded the maximum allowed duration */
   REPLAY_TIMEOUT: 'REPLAY_TIMEOUT',
   /** World response violated the SDK contract and cannot be retried safely */

@@ -20,6 +20,7 @@ export interface SwcPluginOptions {
   entriesToBundle?: string[];
   outdir?: string;
   projectRoot?: string;
+  moduleSpecifierRoot?: string;
   workflowManifest?: WorkflowManifest;
   /**
    * Rewrite TypeScript extensions (.ts, .tsx, .mts, .cts) to their JS
@@ -176,6 +177,11 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
       build.onStart(() => {
         stepIdsForCurrentBuild = new Map();
         workflowIdsForCurrentBuild = new Map();
+        if (options.workflowManifest) {
+          delete options.workflowManifest.steps;
+          delete options.workflowManifest.workflows;
+          delete options.workflowManifest.classes;
+        }
       });
 
       // everything is external unless explicitly configured
@@ -293,6 +299,8 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           const workingDir =
             build.initialOptions.absWorkingDir || process.cwd();
           const projectRoot = options.projectRoot || workingDir;
+          const moduleSpecifierRoot =
+            options.moduleSpecifierRoot || projectRoot;
 
           if (
             options.entriesToBundle &&
@@ -337,7 +345,10 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
               // of a discovered workflow/step/serde file via the check above.
               if (
                 options.bundleTransitiveLocalStepDependencies &&
-                isProjectLocalFile(normalizedResolvedPath, projectRoot) &&
+                isProjectLocalFile(
+                  normalizedResolvedPath,
+                  moduleSpecifierRoot
+                ) &&
                 parentHasChild(normalizedEntry, normalizedResolvedPath)
               ) {
                 shouldBundle = true;
@@ -425,6 +436,8 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           const workingDir =
             build.initialOptions.absWorkingDir || process.cwd();
           const projectRoot = options.projectRoot || workingDir;
+          const moduleSpecifierRoot =
+            options.moduleSpecifierRoot || projectRoot;
           // Normalize paths: convert backslashes to forward slashes and remove trailing slashes
           const normalizedWorkingDir = workingDir
             .replace(/\\/g, '/')
@@ -438,7 +451,7 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           const lowerPath = normalizedPath.toLowerCase();
 
           let relativeFilepath: string;
-          if (lowerPath.startsWith(lowerWd + '/')) {
+          if (lowerPath.startsWith(`${lowerWd}/`)) {
             // File is under working directory - manually calculate relative path
             // This ensures we get a relative path even with drive letter casing issues
             relativeFilepath = normalizedPath.substring(
@@ -488,7 +501,8 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
               normalizedSource,
               options.mode,
               args.path, // Pass absolute path for module specifier resolution
-              projectRoot
+              projectRoot,
+              moduleSpecifierRoot
             );
 
           if (!options.workflowManifest) {

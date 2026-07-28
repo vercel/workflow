@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import type { JSX, ReactNode } from 'react';
 
-import { Button } from '@/components/ui/button';
+import { Button } from '@vercel/geistdocs/components/button';
 import { AgentsVisual } from './agents-visual';
 import { AiSdkVisual } from './ai-sdk-visual';
 import { O11yVisual } from './o11y-visual';

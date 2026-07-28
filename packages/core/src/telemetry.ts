@@ -10,6 +10,97 @@ import * as Attr from './telemetry/semantic-conventions.js';
 // ============================================================
 
 /**
+ * Controls how workflow/step queue-handler spans relate to the run-origin
+ * trace context carried in queue messages:
+ *
+ * - `'linked'` (default): each invocation starts a NEW root trace; the
+ *   run-origin context (and the incoming delivery context) are attached as
+ *   span links. This keeps traces bounded per invocation instead of
+ *   stitching a long-lived run into one giant trace.
+ * - `'continuous'`: the restored run-origin context becomes the parent of
+ *   the invocation span (legacy behavior), producing a single trace that
+ *   spans the entire run.
+ */
+export type WorkflowTraceMode = 'linked' | 'continuous';
+
+/** Unrecognized `WORKFLOW_TRACE_MODE` values we already warned about. */
+const warnedUnrecognizedTraceModes = new Set<string>();
+
+/**
+ * Resolves the active trace mode from the `WORKFLOW_TRACE_MODE` env var.
+ * Defaults to `'linked'`; any value other than `'continuous'` selects it.
+ * Unrecognized non-empty values (e.g. typos like `continous`) emit a
+ * one-time warning so silent fallback to `linked` is at least visible.
+ */
+export function getWorkflowTraceMode(): WorkflowTraceMode {
+  const value = process.env.WORKFLOW_TRACE_MODE;
+  if (value === 'continuous') return 'continuous';
+  if (value && value !== 'linked' && !warnedUnrecognizedTraceModes.has(value)) {
+    warnedUnrecognizedTraceModes.add(value);
+    runtimeLogger.warn(
+      `Unrecognized WORKFLOW_TRACE_MODE value "${value}"; expected "linked" or "continuous". Falling back to "linked".`
+    );
+  }
+  return 'linked';
+}
+
+/**
+ * Returns whether a serialized trace carrier is usable, i.e. present and
+ * non-empty. `serializeTraceCarrier()` returns `{}` when no OTEL SDK is
+ * registered or no span is active, and `start()` always attaches the
+ * carrier to the first queue message — so an empty carrier must be treated
+ * the same as an absent one wherever the trace-mode logic branches.
+ */
+export function isUsableTraceCarrier(
+  carrier: Record<string, string> | undefined
+): carrier is Record<string, string> {
+  return carrier !== undefined && Object.keys(carrier).length > 0;
+}
+
+/**
+ * Returns the trace carrier to attach to messages the current invocation
+ * enqueues. In `linked` mode the ORIGINAL run-origin carrier is forwarded
+ * unchanged (when usable) so every future invocation links back to the same
+ * origin; otherwise — `continuous` mode, or no usable incoming carrier —
+ * the current (active) context is serialized, so the trace keeps chaining
+ * (continuous) or the first instrumented invocation becomes the de-facto
+ * origin (linked).
+ */
+export function getNextTraceCarrier(
+  traceMode: WorkflowTraceMode,
+  incomingCarrier: Record<string, string> | undefined
+): Promise<Record<string, string>> {
+  return traceMode === 'linked' && isUsableTraceCarrier(incomingCarrier)
+    ? Promise.resolve(incomingCarrier)
+    : serializeTraceCarrier();
+}
+
+/**
+ * Builds the span links for a queue-delivered invocation span
+ * (`workflow.execute` / `step.execute`):
+ *
+ * - In `linked` mode the invocation span is a CHILD of the local delivery
+ *   (flow-route) context, so the only link is to the run-origin context
+ *   from the message's trace carrier — connecting this bounded per-invocation
+ *   trace back to where the run was started. The run-origin context is a
+ *   link, never a parent, and re-enqueues forward the original carrier
+ *   unchanged, so the whole run is never stitched into one giant trace.
+ *   The link is skipped when the carrier is absent, empty, or invalid.
+ * - In `continuous` mode the run-origin context is restored as the parent
+ *   instead, and the link points at the incoming delivery context.
+ */
+export async function buildInvocationSpanLinks(
+  traceMode: WorkflowTraceMode,
+  incomingCarrier: Record<string, string> | undefined
+): Promise<api.Link[] | undefined> {
+  if (traceMode !== 'linked') return linkToCurrentContext();
+  const originLink = await linkToTraceCarrier(
+    isUsableTraceCarrier(incomingCarrier) ? incomingCarrier : undefined
+  );
+  return originLink ? [originLink] : undefined;
+}
+
+/**
  * Serializes the current trace context into a format that can be passed through queues
  * @returns A record of strings representing the trace context
  */
@@ -62,6 +153,17 @@ export async function withTraceContext<T>(
 }
 
 const OtelApi = once(async () => {
+  // `@opentelemetry/api` is an optional peer dependency. The static specifier
+  // is intentional: esbuild-bundled targets (the CLI's
+  // `vercel-build-output-api` build, Nitro, Astro) ship a self-contained
+  // bundle with no node_modules, so the package must be *inlined* at build
+  // time for spans to work at runtime — a runtime-built specifier is opaque to
+  // esbuild and would silently disable tracing there. Bundlers that reject an
+  // unresolvable static `import()` when the peer isn't installed (Rollup/Vite,
+  // e.g. SvelteKit) instead externalize `@opentelemetry/api` in the workflow
+  // framework integration, which keeps the build green and still loads real
+  // OTel when the peer is present. Runtime semantics: present → loaded, absent
+  // → caught and tracing disabled.
   try {
     return await import('@opentelemetry/api');
   } catch {
@@ -73,8 +175,52 @@ const OtelApi = once(async () => {
 const Tracer = once(async () => {
   const api = await OtelApi.value;
   if (!api) return null;
-  return api.trace.getTracer('workflow');
+  const tracer = api.trace.getTracer('workflow');
+  logOtelDiagnosticOnce(api, tracer);
+  return tracer;
 });
+
+/**
+ * One-shot runtime diagnostic (DEBUG=workflow:* only), same shape as the one
+ * world-vercel emits tagged `world-vercel`: prints how this module instance
+ * of `@opentelemetry/api` sees the global registration, so a deployment's
+ * logs show the two packages' views side by side.
+ */
+let otelDiagLogged = false;
+function logOtelDiagnosticOnce(otel: typeof api, tracer: api.Tracer): void {
+  const debugEnabled =
+    typeof process !== 'undefined' &&
+    typeof process.env.DEBUG === 'string' &&
+    (process.env.DEBUG.includes('workflow:') || process.env.DEBUG === '*');
+  if (otelDiagLogged || !debugEnabled) return;
+  otelDiagLogged = true;
+  try {
+    const g = (globalThis as Record<symbol, unknown>)[
+      Symbol.for('opentelemetry.js.api.1')
+    ] as { version?: string } | undefined;
+    const provider = otel.trace.getTracerProvider();
+    const delegate =
+      (provider as { getDelegate?: () => unknown }).getDelegate?.() ?? provider;
+    const probe = tracer.startSpan('workflow.otel.probe.core');
+    console.warn(
+      '[workflow:otel-diag] core',
+      JSON.stringify({
+        globalRegistrationVersion: g?.version ?? null,
+        providerCtor: provider?.constructor?.name ?? null,
+        delegateCtor: (delegate as object | null)?.constructor?.name ?? null,
+        tracerCtor: tracer?.constructor?.name ?? null,
+        probeCtor: probe?.constructor?.name ?? null,
+        probeRecording: probe.isRecording(),
+      })
+    );
+    probe.end();
+  } catch (error) {
+    console.warn(
+      '[workflow:otel-diag] core failed:',
+      error instanceof Error ? error.message : error
+    );
+  }
+}
 
 export async function trace<T>(
   spanName: string,
@@ -109,6 +255,23 @@ export async function trace<T>(
       span.end();
     }
   });
+}
+
+/**
+ * Emit a span whose start is back-dated to `startEpochMs` and whose end is now,
+ * so its duration reflects an interval only measurable at its end (e.g.
+ * time-to-first-chunk, known when the first chunk arrives). Unlike `trace()`,
+ * this records an already-elapsed span in one shot rather than wrapping a
+ * callback. No-op when OpenTelemetry is not available.
+ */
+export async function recordElapsedSpan(
+  spanName: string,
+  startEpochMs: number,
+  opts?: SpanOptions
+): Promise<void> {
+  const tracer = await Tracer.value;
+  if (!tracer) return;
+  tracer.startSpan(spanName, { ...opts, startTime: startEpochMs }).end();
 }
 
 /**
@@ -187,6 +350,25 @@ export function linkToCurrentContext(): Promise<[api.Link] | undefined> {
     if (!context) return;
     return [{ context }];
   });
+}
+
+/**
+ * Builds a span link pointing at the span context embedded in a serialized
+ * trace carrier (e.g. the run-origin context flowing through queue
+ * messages). Returns `undefined` when OTEL is unavailable, the carrier is
+ * absent, or it does not contain a valid span context.
+ */
+export async function linkToTraceCarrier(
+  carrier: Record<string, string> | undefined
+): Promise<api.Link | undefined> {
+  if (!carrier) return;
+  const [context, otel] = await Promise.all([
+    getSpanContextForTraceCarrier(carrier),
+    OtelApi.value,
+  ]);
+  if (!context || !otel) return;
+  if (!otel.trace.isSpanContextValid(context)) return;
+  return { context };
 }
 
 // ============================================================

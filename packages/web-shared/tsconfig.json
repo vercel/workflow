@@ -2,6 +2,7 @@
   "extends": "@workflow/tsconfig/base.json",
   "compilerOptions": {
     "outDir": "dist",
+    "rootDir": "./src",
     "target": "es2022",
     "lib": ["es2022", "dom", "dom.iterable", "webworker"],
     "jsx": "react-jsx",

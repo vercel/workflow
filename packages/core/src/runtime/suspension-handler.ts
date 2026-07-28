@@ -8,9 +8,12 @@ import {
 } from '@workflow/errors';
 import {
   AttributeValidationError,
+  type CreateEventParams,
   type CreateEventRequest,
+  type EventResult,
   type SerializedData,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
@@ -26,6 +29,8 @@ import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
+import { getMaxInlineSteps } from './constants.js';
+import { type MutableEventLog, withPreconditionRetry } from './helpers.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -33,6 +38,24 @@ export interface SuspensionHandlerParams {
   run: WorkflowRun;
   span?: Span;
   requestId?: string;
+  /**
+   * The runtime's loaded event log. Each event creation is sent with this
+   * snapshot's `stateUpdatedAt` and, if the backend rejects it as stale (412),
+   * the log is reloaded in place and the create is retried — see
+   * `withPreconditionRetry`. Guarding per-create (rather than the whole
+   * suspension) ensures a retry never re-issues an already-created event.
+   */
+  eventLog?: MutableEventLog;
+  /**
+   * Turbo mode only: a promise that resolves once the backgrounded
+   * `run_started` has landed (the run exists). When present, every world write
+   * this suspension performs (`hook_created`, `wait_created`, eager overflow
+   * `step_created`, …) is gated on it so the write never races ahead of the
+   * run's creation. The pure inline hot path defers all of its steps and writes
+   * nothing here, so it never awaits this barrier. `undefined` outside turbo,
+   * where `run_started` was already awaited up front.
+   */
+  runReadyBarrier?: Promise<unknown>;
 }
 
 /**
@@ -52,6 +75,24 @@ export interface SuspensionHandlerResult {
    */
   createdStepCorrelationIds: Set<string>;
   /**
+   * The steps whose `step_created` writes were intentionally deferred so the
+   * caller can run them inline via lazy `step_started` events (which create
+   * the step on the fly), saving one world round-trip per inline step. Up to
+   * `getMaxInlineSteps()` steps are deferred; the caller runs them inline in
+   * parallel and queues the rest. Empty when no step was deferred (nothing
+   * pending, or a `hook.getConflict()` awaiter is present so nothing is
+   * executed inline). The caller passes each `dehydratedInput` straight to
+   * `executeStep`, which sends it as the `step_started` payload. The atomic
+   * create-claim inside each `step_started` is the exactly-one-owner gate that
+   * the standalone `step_created` provided before: the loser of the race gets
+   * `EntityConflictError` → `skipped` and does not run the body.
+   */
+  lazyInlineSteps: Array<{
+    correlationId: string;
+    stepName: string;
+    dehydratedInput: SerializedData;
+  }>;
+  /**
    * The soonest pending wait, if any: seconds until it elapses and the
    * correlationId of the wait that produced that timeout. The
    * correlationId seeds the idempotency key for the wait-continuation
@@ -65,26 +106,44 @@ export interface SuspensionHandlerResult {
   hasAwaitedHookCreation: boolean;
   /** Whether native workflow attribute events were written for replay. */
   hasAttributeEvents: boolean;
+  /**
+   * Whether this suspension created any hook (`hook_created`) events. Unlike
+   * `hasHookConflict` / `hasAwaitedHookCreation`, this is true even for a plain
+   * fire-and-forget hook with no conflict and no awaiter. Turbo mode uses it to
+   * detect "a hook was created this suspension" and stop forcing optimistic
+   * inline start (a hook introduces later resume invocations that could race).
+   */
+  hasHookEvents: boolean;
+  /**
+   * Wall-clock ms spent committing this suspension's `hook_created` events
+   * (0 when it created none). The caller accumulates this across iterations
+   * and subtracts it from the TTFS latency measurement, so time spent
+   * durably creating the user's hooks doesn't count as runtime overhead.
+   */
+  hookCreationMs: number;
 }
 
 async function createHookEvent({
-  world,
   runId,
   hookEvent,
   queueItem,
   requestId,
+  createEvent,
 }: {
-  world: World;
   runId: string;
   hookEvent: CreateEventRequest;
   queueItem: HookInvocationQueueItem;
   requestId?: string;
+  createEvent: (
+    data: CreateEventRequest,
+    params?: CreateEventParams
+  ) => Promise<EventResult>;
 }): Promise<{
   hasHookConflict: boolean;
   hasAwaitedHookCreation: boolean;
 }> {
   try {
-    const result = await world.events.create(runId, hookEvent, {
+    const result = await createEvent(hookEvent, {
       requestId,
     });
 
@@ -144,8 +203,45 @@ export async function handleSuspension({
   run,
   span,
   requestId,
+  eventLog,
+  runReadyBarrier,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
+
+  // Turbo mode: hold every world write below until the backgrounded
+  // `run_started` has *settled*, so we never write a step/hook/wait event for a
+  // run that does not exist yet. A no-op outside turbo (barrier undefined) and
+  // on the pure inline hot path, which defers all steps and writes nothing.
+  // Awaiting the same (usually already-settled) promise more than once is cheap.
+  // A barrier rejection is swallowed for ordering only: if `run_started` truly
+  // failed the run does not exist, so the subsequent write surfaces the real
+  // error (run not found / gone) and the message redelivers.
+  const ensureRunReady = async (): Promise<void> => {
+    if (runReadyBarrier) {
+      try {
+        await runReadyBarrier;
+      } catch {
+        // intentional: ordering barrier only — see above.
+      }
+    }
+  };
+
+  // Create an event with the optimistic-concurrency guard when the caller
+  // supplied a loaded event log; otherwise create it directly (callers without
+  // a replay snapshot, e.g. tests). The guard reloads + retries on a stale
+  // (412) rejection, keeping `eventLog` current in place. All suspension events
+  // are non-run_created events on this run's `runId`.
+  const createGuarded = (
+    data: CreateEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> => {
+    if (!eventLog) {
+      return world.events.create(runId, data, params);
+    }
+    return withPreconditionRetry(runId, eventLog, (stateUpdatedAt) =>
+      world.events.create(runId, data, { ...params, stateUpdatedAt })
+    );
+  };
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
@@ -160,117 +256,146 @@ export async function handleSuspension({
     (item): item is AttributeInvocationQueueItem => item.type === 'attribute'
   );
 
-  // Split hooks by what actions they need
   const hooksNeedingCreation = allHookItems.filter(
     (item) => !item.hasCreatedEvent
   );
-  const hooksNeedingDisposal = allHookItems.filter((item) => item.disposed);
+
+  // Group hook items that need work by token, preserving queue-insertion
+  // (workflow code) order within each token. Operations on one token must
+  // apply in code order: a dispose() of an earlier hook releases the token
+  // before a later same-token hook's creation is validated — otherwise the
+  // new hook records a spurious hook_conflict against the run's own
+  // disposed hook — while a hook created and disposed within the same
+  // suspension is still created before it is disposed. Different tokens
+  // have no claim interaction, so token groups are processed in parallel.
+  const hookItemsByToken = new Map<string, HookInvocationQueueItem[]>();
+  for (const item of allHookItems) {
+    if (item.hasCreatedEvent && !item.disposed) {
+      continue; // already committed and still live — nothing to do
+    }
+    const group = hookItemsByToken.get(item.token);
+    if (group) {
+      group.push(item);
+    } else {
+      hookItemsByToken.set(item.token, [item]);
+    }
+  }
 
   // Resolve encryption key for this run
   const rawKey = await world.getEncryptionKeyForRun?.(run);
   const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
 
-  // Build and process hook_created events (same as V1)
-  const hookEvents = await Promise.all(
-    hooksNeedingCreation.map(async (queueItem) => {
-      const hookMetadata: SerializedData | undefined =
-        typeof queueItem.metadata === 'undefined'
-          ? undefined
-          : ((await dehydrateStepArguments(
-              queueItem.metadata,
-              runId,
-              encryptionKey,
-              suspension.globalThis
-            )) as SerializedData);
-      return {
-        queueItem,
-        hookEvent: {
-          eventType: 'hook_created' as const,
-          specVersion: SPEC_VERSION_CURRENT,
+  // Gate payload compression on the run's specVersion.
+  const compression =
+    (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
+
+  async function disposeHook(
+    queueItem: HookInvocationQueueItem
+  ): Promise<void> {
+    const hookDisposedEvent: CreateEventRequest = {
+      eventType: 'hook_disposed' as const,
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: queueItem.correlationId,
+      eventData: {
+        token: queueItem.token,
+      },
+    };
+    try {
+      await createGuarded(hookDisposedEvent, { requestId });
+    } catch (err) {
+      if (EntityConflictError.is(err)) {
+        // Hook was already disposed by a concurrent invocation — safe to skip
+        runtimeLogger.info(
+          'Hook already disposed, skipping duplicate disposal',
+          {
+            workflowRunId: runId,
+            correlationId: queueItem.correlationId,
+            message: err.message,
+          }
+        );
+      } else if (RunExpiredError.is(err)) {
+        runtimeLogger.info(
+          'Workflow run already completed, skipping hook disposal',
+          {
+            workflowRunId: runId,
+            correlationId: queueItem.correlationId,
+            message: err.message,
+          }
+        );
+      } else if (HookNotFoundError.is(err)) {
+        // Hook may have already been disposed or never created
+        runtimeLogger.info('Hook not found for disposal, continuing', {
+          workflowRunId: runId,
           correlationId: queueItem.correlationId,
-          eventData: {
-            token: queueItem.token,
-            metadata: hookMetadata,
-            isWebhook: queueItem.isWebhook ?? false,
-            ...(queueItem.isSystem && { isSystem: true }),
-          },
-        },
-      };
-    })
-  );
+          message: err.message,
+        });
+      } else {
+        throw err;
+      }
+    }
+  }
 
   // Process hooks first to prevent race conditions with webhook receivers.
-  // All hook creations run in parallel.
   // Track any hook conflicts that occur — these are returned to the caller
   // so the V2 handler can re-invoke immediately.
   let hasHookConflict = false;
   let hasAwaitedHookCreation = false;
+  let hookCreationMs = 0;
 
-  if (hookEvents.length > 0) {
-    const results = await Promise.all(
-      hookEvents.map(({ hookEvent, queueItem }) =>
-        createHookEvent({
-          world,
-          runId,
-          hookEvent,
-          queueItem,
-          requestId,
-        })
-      )
-    );
-    hasHookConflict = results.some((result) => result.hasHookConflict);
-    hasAwaitedHookCreation = results.some(
-      (result) => result.hasAwaitedHookCreation
-    );
-  }
-
-  // Process hook disposals — these release hook tokens for reuse by other workflows.
-  if (hooksNeedingDisposal.length > 0) {
+  if (hookItemsByToken.size > 0) {
+    const hookPhaseStart = Date.now();
+    await ensureRunReady();
     await Promise.all(
-      hooksNeedingDisposal.map(async (queueItem) => {
-        const hookDisposedEvent: CreateEventRequest = {
-          eventType: 'hook_disposed' as const,
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: queueItem.correlationId,
-          eventData: {
-            token: queueItem.token,
-          },
-        };
-        try {
-          await world.events.create(runId, hookDisposedEvent, { requestId });
-        } catch (err) {
-          if (EntityConflictError.is(err)) {
-            // Hook was already disposed by a concurrent invocation — safe to skip
-            runtimeLogger.info(
-              'Hook already disposed, skipping duplicate disposal',
-              {
-                workflowRunId: runId,
-                correlationId: queueItem.correlationId,
-                message: err.message,
-              }
-            );
-          } else if (RunExpiredError.is(err)) {
-            runtimeLogger.info(
-              'Workflow run already completed, skipping hook disposal',
-              {
-                workflowRunId: runId,
-                correlationId: queueItem.correlationId,
-                message: err.message,
-              }
-            );
-          } else if (HookNotFoundError.is(err)) {
-            // Hook may have already been disposed or never created
-            runtimeLogger.info('Hook not found for disposal, continuing', {
-              workflowRunId: runId,
+      [...hookItemsByToken.values()].map(async (items) => {
+        for (const queueItem of items) {
+          let creationConflicted = false;
+
+          if (!queueItem.hasCreatedEvent) {
+            const hookMetadata: SerializedData | undefined =
+              typeof queueItem.metadata === 'undefined'
+                ? undefined
+                : ((await dehydrateStepArguments(
+                    queueItem.metadata,
+                    runId,
+                    encryptionKey,
+                    suspension.globalThis,
+                    false,
+                    compression
+                  )) as SerializedData);
+            const hookEvent: CreateEventRequest = {
+              eventType: 'hook_created' as const,
+              specVersion: SPEC_VERSION_CURRENT,
               correlationId: queueItem.correlationId,
-              message: err.message,
+              eventData: {
+                token: queueItem.token,
+                tokenRetentionUntil: queueItem.tokenRetentionUntil,
+                metadata: hookMetadata,
+                isWebhook: queueItem.isWebhook ?? false,
+                ...(queueItem.isSystem && { isSystem: true }),
+              },
+            };
+            const result = await createHookEvent({
+              runId,
+              hookEvent,
+              queueItem,
+              requestId,
+              createEvent: createGuarded,
             });
-          } else {
-            throw err;
+            hasHookConflict ||= result.hasHookConflict;
+            hasAwaitedHookCreation ||= result.hasAwaitedHookCreation;
+            creationConflicted = result.hasHookConflict;
+          }
+
+          // Dispose after creation for hooks born and disposed within this
+          // batch. A hook whose creation conflicted was never created, so
+          // there is nothing to dispose.
+          if (queueItem.disposed && !creationConflicted) {
+            await disposeHook(queueItem);
           }
         }
       })
     );
+    hookCreationMs = Date.now() - hookPhaseStart;
   }
 
   // Process abort requests — resume the hook with abort payload and write stream packet
@@ -279,6 +404,7 @@ export async function handleSuspension({
   );
 
   if (hooksNeedingAbort.length > 0) {
+    await ensureRunReady();
     await Promise.all(
       hooksNeedingAbort.map(async (queueItem) => {
         try {
@@ -287,11 +413,13 @@ export async function handleSuspension({
             { aborted: true, reason: queueItem.abortReason },
             runId,
             encryptionKey,
-            suspension.globalThis
+            suspension.globalThis,
+            false,
+            compression
           );
 
           // Create hook_received event with abort payload
-          await world.events.create(runId, {
+          await createGuarded({
             eventType: 'hook_received' as const,
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: queueItem.correlationId,
@@ -360,6 +488,32 @@ export async function handleSuspension({
   // racing with concurrent handlers on step execution.
   const createdStepCorrelationIds = new Set<string>();
 
+  // Lazy inline start: defer the step_created write for up to
+  // `getMaxInlineSteps()` steps the caller will run inline (in parallel). Each
+  // step is created on the fly by the lazy `step_started` executeStep sends
+  // (saving a round-trip per step). We never defer when a `hook.getConflict()`
+  // awaiter is present, because in that case the caller executes nothing inline
+  // (it re-invokes immediately to resolve the awaiter), so deferring would
+  // leave the steps uncreated and unqueued. We pick the first N uncreated steps
+  // — matching the caller's inline-candidate selection — and dehydrate their
+  // input here so executeStep can ship it as the step_started payload.
+  const lazyInlineCorrelationIds = new Set<string>(
+    hasAwaitedHookCreation === false
+      ? stepItems
+          .filter((item) => stepsNeedingCreation.has(item.correlationId))
+          .slice(0, getMaxInlineSteps())
+          .map((item) => item.correlationId)
+      : []
+  );
+  // Collected by correlationId because the per-step ops below run concurrently
+  // and settle out of order. We rebuild the array in deterministic
+  // `lazyInlineCorrelationIds` order (the ordered slice above) after the ops
+  // settle, so the inline batch order is stable regardless of dehydration timing.
+  const lazyInlineByCorrelationId = new Map<
+    string,
+    SuspensionHandlerResult['lazyInlineSteps'][number]
+  >();
+
   const ops: Promise<void>[] = [];
 
   // Steps: create step_created events (no queuing — V2 returns pending steps to caller)
@@ -375,19 +529,37 @@ export async function handleSuspension({
             },
             runId,
             encryptionKey,
-            suspension.globalThis
+            suspension.globalThis,
+            false,
+            compression
           );
+          // Deferred (lazy) inline step: skip the step_created write — the
+          // caller's inline executeStep will send a lazy step_started carrying
+          // this input, and the world creates the step (entity + synthetic
+          // step_created event) atomically. We do NOT add it to
+          // createdStepCorrelationIds; ownership is decided by that lazy
+          // step_started's atomic create-claim instead.
+          if (lazyInlineCorrelationIds.has(queueItem.correlationId)) {
+            lazyInlineByCorrelationId.set(queueItem.correlationId, {
+              correlationId: queueItem.correlationId,
+              stepName: queueItem.stepName,
+              dehydratedInput: dehydratedInput as SerializedData,
+            });
+            return;
+          }
           const stepEvent: CreateEventRequest = {
             eventType: 'step_created' as const,
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: queueItem.correlationId,
             eventData: {
               stepName: queueItem.stepName,
+              workflowName: run.workflowName,
               input: dehydratedInput as SerializedData,
             },
           };
           try {
-            await world.events.create(runId, stepEvent, { requestId });
+            await ensureRunReady();
+            await createGuarded(stepEvent, { requestId });
             createdStepCorrelationIds.add(queueItem.correlationId);
           } catch (err) {
             if (EntityConflictError.is(err)) {
@@ -419,7 +591,8 @@ export async function handleSuspension({
             },
           };
           try {
-            await world.events.create(runId, waitEvent, { requestId });
+            await ensureRunReady();
+            await createGuarded(waitEvent, { requestId });
           } catch (err) {
             if (EntityConflictError.is(err)) {
               runtimeLogger.info('Wait already exists, continuing', {
@@ -440,6 +613,7 @@ export async function handleSuspension({
     ops.push(
       (async () => {
         try {
+          await ensureRunReady();
           await world.events.create(
             runId,
             {
@@ -475,7 +649,7 @@ export async function handleSuspension({
             // succeed. Surface it as a FatalError so the caller fails the
             // run with a clear error instead of wedging it in redelivery.
             const fatal = new FatalError(
-              `experimental_setAttributes failed World validation: ${
+              `setAttributes failed World validation: ${
                 err instanceof Error ? err.message : String(err)
               }`
             );
@@ -498,6 +672,15 @@ export async function handleSuspension({
   // message is not acked and VQS redelivers, re-creates the (idempotent)
   // step_created and re-dispatches, and recovers the run instead of orphaning it.
   await Promise.all(ops);
+
+  // Rebuild the inline batch in deterministic order. `lazyInlineCorrelationIds`
+  // is a Set seeded from the ordered first-N slice, so iterating it preserves
+  // stepItems order; every id in it was set by the lazy branch above.
+  const lazyInlineSteps: SuspensionHandlerResult['lazyInlineSteps'] = [];
+  for (const correlationId of lazyInlineCorrelationIds) {
+    const lazyStep = lazyInlineByCorrelationId.get(correlationId);
+    if (lazyStep) lazyInlineSteps.push(lazyStep);
+  }
 
   // Find the soonest pending wait (minimum timeout)
   const now = Date.now();
@@ -524,12 +707,15 @@ export async function handleSuspension({
   return {
     pendingSteps: stepItems,
     createdStepCorrelationIds,
+    lazyInlineSteps,
     // On hook conflict the caller re-invokes immediately and never reads
     // the wait timeout, so don't report one.
     waitTimeout: hasHookConflict ? undefined : soonestWait,
     hasHookConflict,
     hasAwaitedHookCreation,
     hasAttributeEvents: attributeItems.length > 0,
+    hasHookEvents: hooksNeedingCreation.length > 0,
+    hookCreationMs,
   };
 }
 

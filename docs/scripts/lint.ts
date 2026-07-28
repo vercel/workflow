@@ -1,14 +1,24 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Folder, Node, Root } from 'fumadocs-core/page-tree';
 import GithubSlugger from 'github-slugger';
 import {
   type FileObject,
   printErrors,
   validateFiles,
 } from 'next-validate-link';
-import { rewriteCookbookUrl } from '../lib/geistdocs/cookbook-source';
-import { source, v5Source } from '../lib/geistdocs/source';
+import {
+  getDocsTreeWithoutCookbook,
+  rewriteCookbookUrl,
+} from '../lib/geistdocs/cookbook-source';
+import { resolveSectionChildren } from '../lib/geistdocs/section-children';
+import {
+  source,
+  v5Source,
+  v5WorldsSource,
+  worldsSource,
+} from '../lib/geistdocs/source';
 import { getRegistryItemIds } from '../lib/patterns/manifest';
 import { getWorldIds } from '../lib/worlds-data';
 import nextConfig from '../next.config';
@@ -17,6 +27,7 @@ const DOCS_DIR = fileURLToPath(new URL('..', import.meta.url));
 const STATIC_APP_LINK_FILES = [
   'geistdocs.tsx',
   'app/[lang]/(home)/components/templates/index.tsx',
+  'app/[lang]/worlds/page.tsx',
 ];
 const KNOWN_APP_PATHS = new Set([
   '/',
@@ -32,15 +43,24 @@ type Scanned = {
   fallbackUrls: { url: RegExp; meta: UrlMeta }[];
 };
 
+// The geistdocs source bundle erases the collection's frontmatter/runtime
+// typing, so restore the fields the lint relies on structurally.
+type RawDocsPage = ReturnType<typeof source.getPages>[number] & {
+  absolutePath: string;
+  data: ReturnType<typeof source.getPages>[number]['data'] & {
+    getText(kind: 'raw'): Promise<string>;
+  };
+};
+
 type LoadedPage = {
-  page: ReturnType<typeof source.getPages>[number];
+  page: RawDocsPage;
   raw: string;
   hashes: string[];
 };
 
 async function loadPages(src: typeof source): Promise<LoadedPage[]> {
   return Promise.all(
-    src.getPages().map(async (page) => {
+    (src.getPages() as RawDocsPage[]).map(async (page) => {
       const raw = await page.data.getText('raw');
       return { page, raw, hashes: getHeadingsFromMarkdown(raw) };
     })
@@ -114,10 +134,27 @@ async function listFilesRecursive(dir: string, prefix = ''): Promise<string[]> {
 function buildSpaces(
   v4Pages: LoadedPage[],
   v5Pages: LoadedPage[],
+  worldsV4Pages: LoadedPage[],
+  worldsV5Pages: LoadedPage[],
   shared: Map<string, UrlMeta>
 ): { v4Space: Scanned; v5Space: Scanned } {
   const v4Space: Scanned = { urls: new Map(shared), fallbackUrls: [] };
   const v5Space: Scanned = { urls: new Map(shared), fallbackUrls: [] };
+
+  // World docs are versioned like the docs trees and rendered at /worlds/*
+  // (v4/current) and /v5/worlds/* (pre-release). They follow the same URL
+  // resolution model: on v5 pages, unversioned /worlds/... hrefs are
+  // rewritten to /v5/worlds/... at render time. Unlike the manifest-derived
+  // entries in getSharedUrls, these carry heading hashes.
+  for (const { page, hashes } of worldsV4Pages) {
+    v4Space.urls.set(page.url, { hashes });
+  }
+  for (const { page, hashes } of worldsV5Pages) {
+    const meta = { hashes };
+    v4Space.urls.set(`/v5${page.url}`, meta);
+    v5Space.urls.set(`/v5${page.url}`, meta);
+    v5Space.urls.set(page.url, meta);
+  }
 
   for (const { page, hashes } of v4Pages) {
     const meta = { hashes };
@@ -275,13 +312,22 @@ function checkFrontmatterRefs(
 }
 
 async function checkLinks() {
-  const [v4Pages, v5Pages, shared] = await Promise.all([
-    loadPages(source),
-    loadPages(v5Source),
-    getSharedUrls(),
-  ]);
+  const [v4Pages, v5Pages, worldsV4Pages, worldsV5Pages, shared] =
+    await Promise.all([
+      loadPages(source),
+      loadPages(v5Source),
+      loadPages(worldsSource),
+      loadPages(v5WorldsSource),
+      getSharedUrls(),
+    ]);
 
-  const { v4Space, v5Space } = buildSpaces(v4Pages, v5Pages, shared);
+  const { v4Space, v5Space } = buildSpaces(
+    v4Pages,
+    v5Pages,
+    worldsV4Pages,
+    worldsV5Pages,
+    shared
+  );
   await applyRedirects(v4Space, v5Space);
 
   const markdown = {
@@ -290,20 +336,38 @@ async function checkLinks() {
     },
   };
 
-  const [v4Errors, v5Errors] = await Promise.all([
-    validateFiles(toFileObjects(v4Pages), {
-      scanned: v4Space,
-      markdown,
-      checkRelativePaths: 'as-url',
-    }),
-    validateFiles(toFileObjects(v5Pages), {
-      scanned: v5Space,
-      markdown,
-      checkRelativePaths: 'as-url',
-    }),
-  ]);
+  const [v4Errors, v5Errors, worldsV4Errors, worldsV5Errors] =
+    await Promise.all([
+      validateFiles(toFileObjects(v4Pages), {
+        scanned: v4Space,
+        markdown,
+        checkRelativePaths: 'as-url',
+      }),
+      validateFiles(toFileObjects(v5Pages), {
+        scanned: v5Space,
+        markdown,
+        checkRelativePaths: 'as-url',
+      }),
+      // World pages resolve links version-relative, exactly like docs pages:
+      // v4 world pages against the v4 space, v5 world pages against the v5
+      // space (where unversioned /docs and /worlds hrefs are render-rewritten
+      // into the /v5 view).
+      validateFiles(toFileObjects(worldsV4Pages), {
+        scanned: v4Space,
+        markdown,
+        checkRelativePaths: 'as-url',
+      }),
+      validateFiles(toFileObjects(worldsV5Pages), {
+        scanned: v5Space,
+        markdown,
+        checkRelativePaths: 'as-url',
+      }),
+    ]);
 
-  printErrors([...v4Errors, ...v5Errors], true);
+  printErrors(
+    [...v4Errors, ...v5Errors, ...worldsV4Errors, ...worldsV5Errors],
+    true
+  );
 
   const frontmatterErrors: {
     href: string;
@@ -312,6 +376,8 @@ async function checkLinks() {
   }[] = [];
   checkFrontmatterRefs(v4Pages, v4Space, frontmatterErrors);
   checkFrontmatterRefs(v5Pages, v5Space, frontmatterErrors);
+  checkFrontmatterRefs(worldsV4Pages, v4Space, frontmatterErrors);
+  checkFrontmatterRefs(worldsV5Pages, v5Space, frontmatterErrors);
 
   if (frontmatterErrors.length > 0) {
     console.error('\nBroken frontmatter references:');
@@ -322,6 +388,193 @@ async function checkLinks() {
   }
 
   await checkStaticAppLinks();
+  checkSectionCards(v4Pages, v5Pages);
+  await checkMetaEntriesResolve();
+}
+
+/**
+ * Enforce that every section landing page accounts for all of its navigation
+ * children. A page passes if it either:
+ *   - renders `<AutoCards />` (cards are derived from the tree — drift is
+ *     structurally impossible), or
+ *   - declares `manualCards: true` in frontmatter (intentionally curated), or
+ *   - has a `<Card href>` for every child page in the section.
+ *
+ * The existing link validation already covers the reverse direction (cards that
+ * point at pages which don't exist), so together the two checks keep the card
+ * grid and the sidebar in lockstep.
+ */
+function sectionMissingCards(
+  folder: Folder,
+  tree: Root,
+  rawByUrl: Map<string, LoadedPage>
+): { sourcePath: string; missing: string[] } | null {
+  const sectionUrl = folder.index?.url;
+  if (!sectionUrl) return null;
+
+  const expected = resolveSectionChildren(tree, sectionUrl).map((c) =>
+    normalizePathname(c.url)
+  );
+  if (expected.length === 0) return null;
+
+  const loaded = rawByUrl.get(sectionUrl);
+  if (!loaded) return null;
+  const { raw, page } = loaded;
+
+  // Drift is impossible (AutoCards) or intentionally owned by the author.
+  if (/<AutoCards\b/.test(raw) || hasManualCardsFlag(raw)) return null;
+
+  const carded = new Set(
+    getCardHrefs(raw).map((href) => normalizePathname(href))
+  );
+  const missing = expected.filter((url) => !carded.has(url));
+  return missing.length > 0 ? { sourcePath: page.absolutePath, missing } : null;
+}
+
+function checkSectionCards(v4Pages: LoadedPage[], v5Pages: LoadedPage[]) {
+  const errors: { sourcePath: string; missing: string[] }[] = [];
+  for (const [pages, version] of [
+    [v4Pages, 'v4'],
+    [v5Pages, 'v5'],
+  ] as const) {
+    const tree = getDocsTreeWithoutCookbook('en', version);
+    const rawByUrl = new Map(pages.map((p) => [p.page.url, p]));
+    for (const folder of collectSectionFolders(tree.children)) {
+      const result = sectionMissingCards(folder, tree, rawByUrl);
+      if (result) errors.push(result);
+    }
+  }
+
+  if (errors.length > 0) {
+    console.error(
+      '\nSection landing pages missing cards for navigation children:'
+    );
+    for (const error of errors) {
+      console.error(`- ${error.sourcePath}: ${error.missing.join(', ')}`);
+    }
+    console.error(
+      '  Fix by using <AutoCards /> (recommended), adding the missing <Card> ' +
+        'entries, or setting `manualCards: true` if the page is intentionally curated.'
+    );
+    process.exitCode = 1;
+  }
+}
+
+/** Recursively collect folders that have an index page (section landing pages). */
+function collectSectionFolders(nodes: Node[]): Folder[] {
+  const folders: Folder[] = [];
+  for (const node of nodes) {
+    if (node.type !== 'folder') continue;
+    if (node.index) folders.push(node);
+    folders.push(...collectSectionFolders(node.children));
+  }
+  return folders;
+}
+
+function getCardHrefs(raw: string): string[] {
+  const hrefs: string[] = [];
+  const pattern = /<Card\b[^>]*?\bhref="([^"]+)"/g;
+  let match = pattern.exec(raw);
+  while (match !== null) {
+    hrefs.push(match[1].split('#')[0]);
+    match = pattern.exec(raw);
+  }
+  return hrefs;
+}
+
+function hasManualCardsFlag(raw: string): boolean {
+  const frontmatter = raw.match(/^---\n([\s\S]*?)\n---/)?.[1];
+  return frontmatter ? /^manualCards:\s*true\s*$/m.test(frontmatter) : false;
+}
+
+/**
+ * Validate that every plain-slug `pages` entry in a `meta.json` resolves to a
+ * real page file or sub-folder. Catches dangling navigation entries (e.g. a
+ * `cancellation` entry with no `cancellation.mdx`). Fumadocs control tokens
+ * (`...rest`, `---separators---`, `[label](url)` links, `!exclude`) are skipped.
+ */
+// Fumadocs control tokens that don't reference a page: rest globs, separators,
+// external links, and exclusions.
+function isMetaControlToken(entry: string): boolean {
+  return (
+    entry === 'index' ||
+    entry.startsWith('...') ||
+    entry.startsWith('---') ||
+    entry.startsWith('[') ||
+    entry.startsWith('!')
+  );
+}
+
+async function metaEntryResolves(dir: string, entry: string): Promise<boolean> {
+  return (
+    (await pathExists(join(dir, `${entry}.mdx`))) ||
+    (await pathExists(join(dir, `${entry}.md`))) ||
+    (await pathExists(join(dir, entry)))
+  );
+}
+
+async function unresolvedMetaEntries(metaPath: string): Promise<string[]> {
+  let pages: unknown;
+  try {
+    pages = JSON.parse(await readFile(metaPath, 'utf8')).pages;
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(pages)) return [];
+
+  const dir = metaPath.slice(0, metaPath.lastIndexOf('/'));
+  const unresolved: string[] = [];
+  for (const entry of pages) {
+    if (typeof entry !== 'string' || isMetaControlToken(entry)) continue;
+    if (!(await metaEntryResolves(dir, entry))) unresolved.push(entry);
+  }
+  return unresolved;
+}
+
+async function checkMetaEntriesResolve() {
+  const errors: { sourcePath: string; entry: string }[] = [];
+  const contentRoots = [
+    join(DOCS_DIR, 'content/docs'),
+    join(DOCS_DIR, 'content/worlds'),
+  ];
+
+  for (const contentRoot of contentRoots) {
+    for (const metaPath of await findFiles(contentRoot, 'meta.json')) {
+      for (const entry of await unresolvedMetaEntries(metaPath)) {
+        errors.push({ sourcePath: metaPath, entry });
+      }
+    }
+  }
+
+  if (errors.length > 0) {
+    console.error('\nmeta.json entries with no matching page or folder:');
+    for (const error of errors) {
+      console.error(`- ${error.sourcePath} -> "${error.entry}"`);
+    }
+    process.exitCode = 1;
+  }
+}
+
+async function findFiles(dir: string, name: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...(await findFiles(full, name)));
+    } else if (entry.name === name) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await stat(p);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function checkStaticAppLinks() {
@@ -369,7 +622,8 @@ function isKnownInternalPath(href: string) {
 
   return (
     KNOWN_APP_PATHS.has(pathname) ||
-    source.getPageByHref(pathname) !== undefined
+    source.getPageByHref(pathname) !== undefined ||
+    worldsSource.getPageByHref(pathname) !== undefined
   );
 }
 

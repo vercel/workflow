@@ -1,8 +1,14 @@
+import { connect } from 'node:net';
 import * as Stream from 'node:stream';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
+import {
+  createWorkflowBaseUrl,
+  createWorkflowHealthEndpoint,
+  createWorkflowUrl,
+} from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
-  getQueuePrefixKind,
   getQueueTopicPrefix,
   MessageId,
   parseQueueName,
@@ -13,7 +19,7 @@ import {
   type ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from '@workflow/world';
-import { createLocalWorld } from '@workflow/world-local';
+import { createWorld } from '@workflow/world-local';
 import {
   Logger,
   makeWorkerUtils,
@@ -48,6 +54,7 @@ function createGraphileLogger() {
 const graphileLogger = createGraphileLogger();
 const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
 const GraphileHelpers = z.object({
+  abortSignal: z.instanceof(AbortSignal).optional(),
   job: z.object({
     attempts: z.number().int().positive(),
   }),
@@ -63,15 +70,11 @@ type HttpExecutionResult =
       headers: Record<string, string>;
     };
 
+type RunnerStart = { controller: AbortController; promise: Promise<void> };
+type LoopbackTarget = { hosts: string[]; port: number };
+
 /**
- * The Postgres queue works by creating two job types in graphile-worker:
- * - `workflow` for workflow jobs
- *   - `step` for step jobs
- *
- * When a message is queued, it is sent to graphile-worker with the appropriate job type.
- * When a job is processed, it is deserialized and then re-queued into the _local world_, showing that
- * we can reuse the local world, mix and match worlds to build
- * hybrid architectures, and even migrate between worlds.
+ * The Postgres queue stores messages under one graphile-worker flow task.
  */
 export type PostgresQueue = Queue & {
   start(): Promise<void>;
@@ -83,7 +86,7 @@ export function createQueue(
   pool: Pool
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
-  const localWorld = createLocalWorld({ dataDir: undefined, port });
+  const localWorld = createWorld({ dataDir: undefined, port });
 
   // JSON transport that preserves Uint8Array values via a tagged
   // envelope ({ __type: 'Uint8Array', data: '<base64>' }).  Required
@@ -120,12 +123,9 @@ export function createQueue(
   };
   const generateMessageId = monotonicFactory();
 
-  function getJobQueueName(queuePrefix: QueuePrefix): string {
+  function getJobQueueName(): string {
     const jobPrefix = config.jobPrefix || 'workflow_';
-
-    return getQueuePrefixKind(queuePrefix) === 'workflow'
-      ? `${jobPrefix}flows`
-      : `${jobPrefix}steps`;
+    return `${jobPrefix}flows`;
   }
 
   const createQueueHandler = localWorld.createQueueHandler;
@@ -142,6 +142,8 @@ export function createQueue(
   >();
   let workerUtils: WorkerUtils | null = null;
   let runner: Runner | null = null;
+  let runnerStart: RunnerStart | null = null;
+  let closing = false;
   let startPromise: Promise<void> | null = null;
 
   function markMessageCompleted(idempotencyKey: string) {
@@ -156,7 +158,6 @@ export function createQueue(
   }
 
   async function addGraphileJob({
-    queuePrefix,
     queueId,
     body,
     messageId,
@@ -166,7 +167,6 @@ export function createQueue(
     delaySeconds,
     jobKey,
   }: {
-    queuePrefix: QueuePrefix;
     queueId: string;
     body: Buffer | Uint8Array;
     messageId: MessageId;
@@ -187,7 +187,7 @@ export function createQueue(
         : undefined;
 
     await utils.addJob(
-      getJobQueueName(queuePrefix),
+      getJobQueueName(),
       MessageData.encode({
         id: queueId,
         data: Buffer.from(body),
@@ -204,29 +204,124 @@ export function createQueue(
     );
   }
 
-  async function resolveExecutionBaseUrl(): Promise<string> {
+  async function getExecutionBaseUrl(): Promise<string | undefined> {
     if (process.env.WORKFLOW_LOCAL_BASE_URL) {
       return process.env.WORKFLOW_LOCAL_BASE_URL;
     }
 
     if (typeof port === 'number') {
-      return `http://localhost:${port}`;
+      return createWorkflowBaseUrl(`http://localhost:${port}`);
     }
 
     if (process.env.PORT) {
-      return `http://localhost:${process.env.PORT}`;
+      return createWorkflowBaseUrl(`http://localhost:${process.env.PORT}`);
     }
 
-    const detectedPort = await getWorkflowPort();
+    const detectedPort = await getWorkflowPort({
+      endpoint: createWorkflowHealthEndpoint(),
+    });
     if (typeof detectedPort === 'number') {
-      return `http://localhost:${detectedPort}`;
+      return createWorkflowBaseUrl(`http://localhost:${detectedPort}`);
     }
 
-    throw new Error('Unable to resolve base URL for workflow queue.');
+    return undefined;
   }
 
-  function getQueueRoute(queueName: ValidQueueName): 'flow' | 'step' {
-    return parseQueueName(queueName).kind === 'workflow' ? 'flow' : 'step';
+  function getLoopbackHosts(hostname: string): string[] {
+    if (hostname === 'localhost') {
+      return ['127.0.0.1', '::1'];
+    }
+    if (hostname === '[::1]') {
+      return ['::1'];
+    }
+    return hostname === '127.0.0.1' || hostname === '::1' ? [hostname] : [];
+  }
+
+  function getLoopbackTarget(baseUrl: string | undefined) {
+    if (!baseUrl) {
+      return undefined;
+    }
+
+    const url = new URL(baseUrl);
+    const hosts = getLoopbackHosts(url.hostname);
+    if (hosts.length === 0) {
+      return undefined;
+    }
+
+    return {
+      hosts,
+      port: Number(url.port || (url.protocol === 'https:' ? 443 : 80)),
+    };
+  }
+
+  async function canConnectToLoopbackTarget(
+    target: LoopbackTarget
+  ): Promise<boolean> {
+    for (const host of target.hosts) {
+      const reachable = await new Promise<boolean>((resolve) => {
+        const socket = connect({ host, port: target.port });
+        socket.unref();
+        const finish = (isReachable: boolean) => {
+          socket.destroy();
+          resolve(isReachable);
+        };
+
+        socket.setTimeout(200, () => finish(false));
+        socket.once('connect', () => finish(true));
+        socket.once('error', () => finish(false));
+      });
+
+      if (reachable) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  async function startRunnerUnlessAborted(controller: AbortController) {
+    if (controller.signal.aborted) {
+      return;
+    }
+
+    await setupListeners();
+  }
+
+  async function waitForLoopbackAndStartRunner(
+    controller: AbortController,
+    target: LoopbackTarget
+  ) {
+    while (
+      !controller.signal.aborted &&
+      !(await canConnectToLoopbackTarget(target))
+    ) {
+      await sleep(50, undefined, {
+        ref: false,
+      });
+    }
+
+    await startRunnerUnlessAborted(controller);
+  }
+
+  function deferRunnerStart(
+    controller: AbortController,
+    target: LoopbackTarget
+  ) {
+    const promise = waitForLoopbackAndStartRunner(controller, target)
+      .catch((err) => {
+        if (!controller.signal.aborted) {
+          console.warn(
+            '[world-postgres] Failed to start Graphile Worker after local workflow executor became reachable:',
+            err
+          );
+        }
+      })
+      .finally(() => {
+        if (runnerStart?.promise === promise) {
+          runnerStart = null;
+        }
+      });
+    runnerStart = { controller, promise };
   }
 
   async function executeMessageOverHttp({
@@ -235,12 +330,14 @@ export function createQueue(
     attempt,
     body,
     headers: extraHeaders,
+    abortSignal,
   }: {
     queueName: ValidQueueName;
     messageId: MessageId;
     attempt: number;
     body: Uint8Array;
     headers?: Record<string, string>;
+    abortSignal?: AbortSignal;
   }): Promise<HttpExecutionResult> {
     const headers: Record<string, string> = {
       ...extraHeaders,
@@ -249,18 +346,17 @@ export function createQueue(
       'x-vqs-message-id': messageId,
       'x-vqs-message-attempt': String(attempt),
     };
-    const baseUrl = await resolveExecutionBaseUrl();
-    const pathname = getQueueRoute(queueName);
-
-    const response = await fetch(
-      `${baseUrl}/.well-known/workflow/v1/${pathname}`,
-      {
-        method: 'POST',
-        duplex: 'half',
-        headers,
-        body,
-      } as any
-    );
+    const baseUrl = await getExecutionBaseUrl();
+    if (!baseUrl) {
+      throw new Error('Unable to resolve base URL for workflow queue.');
+    }
+    const response = await fetch(createWorkflowUrl(baseUrl, { type: 'flow' }), {
+      method: 'POST',
+      duplex: 'half',
+      headers,
+      body,
+      signal: abortSignal,
+    } as any);
     const text = await response.text();
 
     if (!response.ok) {
@@ -329,7 +425,43 @@ export function createQueue(
     }
   }
 
+  async function startRunnerWhenExecutorIsReady(): Promise<void> {
+    if (closing || runner || runnerStart) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const promise = (async () => {
+      const target = getLoopbackTarget(await getExecutionBaseUrl());
+      if (!target) {
+        await startRunnerUnlessAborted(controller);
+        return;
+      }
+
+      if (await canConnectToLoopbackTarget(target)) {
+        await startRunnerUnlessAborted(controller);
+        return;
+      }
+
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      deferRunnerStart(controller, target);
+    })().finally(() => {
+      if (runnerStart?.promise === promise) {
+        runnerStart = null;
+      }
+    });
+    runnerStart = { controller, promise };
+    await promise;
+  }
+
   async function start(): Promise<void> {
+    if (closing) {
+      return;
+    }
+
     if (!startPromise) {
       startPromise = (async () => {
         try {
@@ -339,7 +471,7 @@ export function createQueue(
           });
           await workerUtils.migrate();
           await migratePgBossJobs(workerUtils);
-          await setupListeners();
+          await startRunnerWhenExecutorIsReady();
         } catch (err) {
           startPromise = null;
           throw err;
@@ -347,15 +479,17 @@ export function createQueue(
       })();
     }
     await startPromise;
+    if (!closing && !runner && !runnerStart) {
+      await startRunnerWhenExecutorIsReady();
+    }
   }
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
     await start();
-    const { prefix: queuePrefix, id: queueId } = parseQueueName(queue);
+    const { id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
     await addGraphileJob({
-      queuePrefix,
       queueId,
       body,
       messageId,
@@ -368,33 +502,25 @@ export function createQueue(
     return { messageId };
   };
 
-  function createTaskHandler(queue: QueuePrefix) {
-    const queueKind = getQueuePrefixKind(queue);
+  async function deserializeMessageBody(data: Buffer): Promise<unknown> {
+    const bodyStream = Stream.Readable.toWeb(Stream.Readable.from([data]));
+    return transport.deserialize(bodyStream as ReadableStream<Uint8Array>);
+  }
 
+  function createTaskHandler(queue: QueuePrefix) {
     return async (payload: unknown, helpers: unknown) => {
       const messageData = MessageData.parse(payload);
-      const graphileAttempt = GraphileHelpers.safeParse(helpers);
-      const attempt = graphileAttempt.success
-        ? graphileAttempt.data.job.attempts
+      const graphileHelpers = GraphileHelpers.safeParse(helpers);
+      const attempt = graphileHelpers.success
+        ? graphileHelpers.data.job.attempts
         : messageData.attempt;
       const queueName = `${queue}${messageData.id}` as ValidQueueName;
-      const bodyStream = Stream.Readable.toWeb(
-        Stream.Readable.from([messageData.data])
-      );
-      const body = await transport.deserialize(
-        bodyStream as ReadableStream<Uint8Array>
-      );
+      const body = await deserializeMessageBody(messageData.data);
       QueuePayloadSchema.parse(body);
+      const workflowInvoke = WorkflowInvokePayloadSchema.safeParse(body);
       const workflowRunSerializationKey =
-        queueKind === 'workflow'
-          ? (() => {
-              const workflowInvoke =
-                WorkflowInvokePayloadSchema.safeParse(body);
-              if (!workflowInvoke.success) {
-                return undefined;
-              }
-              return `workflow:${workflowInvoke.data.runId}`;
-            })()
+        workflowInvoke.success && !workflowInvoke.data.stepId
+          ? `workflow:${workflowInvoke.data.runId}`
           : undefined;
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
         const result = await executeMessageOverHttp({
@@ -403,6 +529,9 @@ export function createQueue(
           attempt,
           body: messageData.data,
           headers: messageData.headers,
+          abortSignal: graphileHelpers.success
+            ? graphileHelpers.data.abortSignal
+            : undefined,
         });
 
         if (result.type === 'completed') {
@@ -413,7 +542,6 @@ export function createQueue(
           // Schedule the follow-up job before we return so a crash cannot
           // lose the wake-up request.
           await addGraphileJob({
-            queuePrefix: queue,
             queueId: messageData.id,
             body: messageData.data,
             messageId: messageData.messageId,
@@ -490,10 +618,7 @@ export function createQueue(
     > = {};
     const namespace = resolveQueueNamespace(config.namespace);
     const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
-    const stepPrefix = getQueueTopicPrefix('step', namespace);
-    taskList[getJobQueueName(workflowPrefix)] =
-      createTaskHandler(workflowPrefix);
-    taskList[getJobQueueName(stepPrefix)] = createTaskHandler(stepPrefix);
+    taskList[getJobQueueName()] = createTaskHandler(workflowPrefix);
 
     runner = await run({
       pgPool: pool,
@@ -508,6 +633,9 @@ export function createQueue(
       // docs/content/docs/changelog/eager-processing.mdx for context.
       concurrency: config.queueConcurrency || 50,
       logger: graphileLogger,
+      ...(config.applicationManagedShutdown === true && {
+        noHandleSignals: true,
+      }),
       pollInterval: 500, // 500ms = 0.5s (graphile-worker uses LISTEN/NOTIFY when available)
       taskList,
     });
@@ -519,8 +647,26 @@ export function createQueue(
     queue,
     start,
     async close() {
-      if (runner) {
-        await runner.stop();
+      closing = true;
+      if (runnerStart) {
+        runnerStart.controller.abort();
+        await runnerStart.promise;
+        runnerStart = null;
+      }
+      await startPromise?.catch(() => {});
+      const activeRunner = runner;
+      if (activeRunner) {
+        try {
+          await activeRunner.stop();
+        } catch (error) {
+          if (
+            !(error instanceof Error) ||
+            error.message !== 'Runner is already stopped'
+          ) {
+            throw error;
+          }
+        }
+        await activeRunner.promise.catch(() => {});
         runner = null;
       }
       if (workerUtils) {

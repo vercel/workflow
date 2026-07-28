@@ -164,7 +164,7 @@ describe('plain .message / lazy pretty rendering', () => {
 });
 
 describe('FatalError.is() gate', () => {
-  // The step handler uses FatalError.is() to decide retry vs bubble-up.
+  // The step executor uses FatalError.is() to decide retry vs bubble-up.
   // Context-violation errors can't succeed on retry — they signal the
   // user called a workflow-only API from the wrong context — so burning
   // three retry attempts just produces duplicated log output.

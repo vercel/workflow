@@ -11,6 +11,7 @@ import {
   isClassInstanceRef,
   isEncryptedData,
   isExpiredStub,
+  isSealedData,
   isStreamId,
   isStreamRef,
   observabilityRevivers,
@@ -204,8 +205,8 @@ describe('hydrateResourceIO', () => {
 
     const event = {
       eventId: 'evt_123',
+      eventType: 'step_completed',
       eventData: {
-        type: 'step_completed',
         result: resultPayload,
       },
     };
@@ -213,7 +214,6 @@ describe('hydrateResourceIO', () => {
     const hydrated = hydrateResourceIO(event, testRevivers);
     expect(hydrated.eventId).toBe('evt_123');
     expect(hydrated.eventData.result).toEqual({ key: 'value' });
-    expect(hydrated.eventData.type).toBe('step_completed');
   });
 
   it('should hydrate event eventData.output', () => {
@@ -221,8 +221,8 @@ describe('hydrateResourceIO', () => {
 
     const event = {
       eventId: 'evt_456',
+      eventType: 'run_completed',
       eventData: {
-        type: 'run_completed',
         output: outputPayload,
       },
     };
@@ -230,7 +230,20 @@ describe('hydrateResourceIO', () => {
     const hydrated = hydrateResourceIO(event, testRevivers);
     expect(hydrated.eventId).toBe('evt_456');
     expect(hydrated.eventData.output).toEqual({ message: 'done' });
-    expect(hydrated.eventData.type).toBe('run_completed');
+  });
+
+  it.each([
+    'run_started',
+    'step_started',
+  ] as const)('should hydrate eventData.input for %s events', (eventType) => {
+    const event = {
+      eventId: `evt_${eventType}`,
+      eventType,
+      eventData: { input: makeDevlPayload({ value: eventType }) },
+    };
+
+    const hydrated = hydrateResourceIO(event, testRevivers);
+    expect(hydrated.eventData.input).toEqual({ value: eventType });
   });
 
   it('should hydrate event eventData.metadata for hook_created events', () => {
@@ -238,8 +251,8 @@ describe('hydrateResourceIO', () => {
 
     const event = {
       eventId: 'evt_hook_created',
+      eventType: 'hook_created',
       eventData: {
-        type: 'hook_created',
         token: 'hook_tok_123',
         metadata: metadataPayload,
       },
@@ -259,8 +272,8 @@ describe('hydrateResourceIO', () => {
 
     const event = {
       eventId: 'evt_hook_received',
+      eventType: 'hook_received',
       eventData: {
-        type: 'hook_received',
         payload,
       },
     };
@@ -278,8 +291,8 @@ describe('hydrateResourceIO', () => {
 
     const event = {
       eventId: 'evt_step_failed',
+      eventType: 'step_failed',
       eventData: {
-        type: 'step_failed',
         error: errorPayload,
       },
     };
@@ -290,7 +303,6 @@ describe('hydrateResourceIO', () => {
       message: 'something blew up',
       stack: 'Error: something blew up\n    at foo:1:1',
     });
-    expect(hydrated.eventData.type).toBe('step_failed');
   });
 
   it('should hydrate hook metadata', () => {
@@ -460,6 +472,20 @@ describe('extractStreamIds', () => {
   it('should return empty array for no streams', () => {
     expect(extractStreamIds({ foo: 'bar' })).toEqual([]);
   });
+
+  it('should handle circular references without overflowing the stack', () => {
+    // devalue (which produces the hydrated o11y data this walks) supports
+    // circular references, so a step result containing a cycle reaches here.
+    const obj: Record<string, unknown> = { stream: 'strm_cycle' };
+    obj.self = obj;
+    expect(extractStreamIds(obj)).toEqual(['strm_cycle']);
+  });
+
+  it('should handle circular references through arrays', () => {
+    const arr: unknown[] = ['strm_in_arr'];
+    arr.push(arr);
+    expect(extractStreamIds(arr)).toEqual(['strm_in_arr']);
+  });
 });
 
 describe('truncateId', () => {
@@ -511,6 +537,16 @@ describe('encrypted data handling', () => {
     return result;
   }
 
+  /** Create a fake sealed cross-run payload: "encp" prefix + random bytes */
+  function makeSealedPayload(): Uint8Array {
+    const prefix = new TextEncoder().encode('encp');
+    const fakeSealedBody = new Uint8Array(60).fill(9);
+    const result = new Uint8Array(prefix.length + fakeSealedBody.length);
+    result.set(prefix, 0);
+    result.set(fakeSealedBody, prefix.length);
+    return result;
+  }
+
   describe('isEncryptedData', () => {
     it('should detect encr-prefixed Uint8Array', () => {
       expect(isEncryptedData(makeEncryptedPayload())).toBe(true);
@@ -531,6 +567,32 @@ describe('encrypted data handling', () => {
 
     it('should return false for Uint8Array shorter than 4 bytes', () => {
       expect(isEncryptedData(new Uint8Array([1, 2, 3]))).toBe(false);
+    });
+
+    it('should detect encp-prefixed (sealed) Uint8Array as ciphertext', () => {
+      // Display layers treat both schemes identically — a sealed cross-run
+      // payload is just as opaque as a symmetrically encrypted one.
+      expect(isEncryptedData(makeSealedPayload())).toBe(true);
+    });
+  });
+
+  describe('isSealedData', () => {
+    it('should detect encp-prefixed Uint8Array', () => {
+      expect(isSealedData(makeSealedPayload())).toBe(true);
+    });
+
+    it('should not detect encr-prefixed Uint8Array', () => {
+      expect(isSealedData(makeEncryptedPayload())).toBe(false);
+    });
+
+    it('should not detect devl-prefixed Uint8Array', () => {
+      expect(isSealedData(makeDevlPayload('hello'))).toBe(false);
+    });
+
+    it('should return false for non-Uint8Array and short values', () => {
+      expect(isSealedData('hello')).toBe(false);
+      expect(isSealedData(null)).toBe(false);
+      expect(isSealedData(new Uint8Array([1, 2, 3]))).toBe(false);
     });
   });
 
@@ -647,6 +709,103 @@ describe('encrypted data handling', () => {
         key
       );
       expect(result).toEqual(original);
+    });
+
+    it('rejects a write-only seal target at the type level', async () => {
+      // A seal target holds only a public key, so it can open neither scheme.
+      // Accepting it here would compile into a guaranteed runtime failure, so
+      // the signature takes a read capability instead.
+      const { sealTo, deriveRunPayloadKeys } = await import(
+        './serialization/encryption.js'
+      );
+      const target = sealTo(new Uint8Array(32).fill(1));
+
+      // @ts-expect-error - SealTarget is write-only and must not be accepted
+      void hydrateDataWithKey(
+        makeSealedPayload(),
+        observabilityRevivers,
+        target
+      );
+
+      // Both read capabilities remain accepted: the run's full key bundle...
+      const keys = await deriveRunPayloadKeys(testKeyRaw);
+      await expect(
+        hydrateDataWithKey(makeSealedPayload(), observabilityRevivers, keys)
+      ).rejects.toThrow(); // fake ciphertext, but it type-checks and is attempted
+      // ...and a bare symmetric key (which simply cannot open sealed data).
+      await expect(
+        hydrateDataWithKey(
+          makeSealedPayload(),
+          observabilityRevivers,
+          await getTestKey()
+        )
+      ).resolves.toBeInstanceOf(Uint8Array);
+    });
+
+    it('should pass sealed payloads through untouched even when a key is present', async () => {
+      // A sealed payload is encrypted to the run's X25519 public key, so the
+      // symmetric key this function receives cannot open it. Attempting an
+      // AES-GCM decrypt would fail the auth tag and surface a spurious
+      // decryption error, so it must fall through as ciphertext instead.
+      const sealed = makeSealedPayload();
+      const key = await getTestKey();
+
+      const result = await hydrateDataWithKey(
+        sealed,
+        observabilityRevivers,
+        key
+      );
+      expect(result).toBe(sealed);
+      expect(isEncryptedData(result)).toBe(true);
+    });
+
+    it('should open a real sealed payload when given the run keypair', async () => {
+      // The o11y decrypt path must handle payloads that other runs sealed to
+      // this one — a cross-deployment hook resumption, say. Without this the
+      // dashboard and CLI would show a lock icon on data the user is entitled
+      // to read and has supplied the key for.
+      const { deriveRunKeyPair, seal } = await import('./sealed-box.js');
+      const { deriveRunPayloadKeys } = await import(
+        './serialization/encryption.js'
+      );
+
+      const original = { approved: true, note: 'sealed by another run' };
+      const keyPair = await deriveRunKeyPair(testKeyRaw);
+      const sealed = encodeWithFormatPrefix(
+        SerializationFormat.SEALED,
+        await seal(keyPair.publicKey, makeDevlPayload(original))
+      ) as Uint8Array;
+
+      const keys = await deriveRunPayloadKeys(testKeyRaw);
+      await expect(
+        hydrateDataWithKey(sealed, observabilityRevivers, keys)
+      ).resolves.toEqual(original);
+    });
+
+    it('should still open symmetric payloads when given the run keypair', async () => {
+      // The same resolved key must serve both schemes — a run's event log
+      // mixes its own 'encr' payloads with 'encp' payloads written to it.
+      const { deriveRunPayloadKeys } = await import(
+        './serialization/encryption.js'
+      );
+      const original = { message: 'own payload' };
+      const encrypted = await encryptPayload(original);
+      const keys = await deriveRunPayloadKeys(testKeyRaw);
+
+      await expect(
+        hydrateDataWithKey(encrypted, observabilityRevivers, keys)
+      ).resolves.toEqual(original);
+    });
+
+    it('should not throw "Unsupported serialization format" for sealed payloads', async () => {
+      // Regression guard: before `encp` was recognized, o11y hydration hit the
+      // unknown-format branch and threw, breaking the CLI/dashboard entirely
+      // for any run that received a sealed cross-run write.
+      const sealed = makeSealedPayload();
+      await expect(
+        hydrateDataWithKey(sealed, observabilityRevivers, undefined)
+      ).resolves.toBe(sealed);
+      expect(() => hydrateData(sealed, {})).not.toThrow();
     });
 
     it('should handle non-Uint8Array values (legacy specVersion 1 data)', async () => {

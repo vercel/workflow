@@ -5,6 +5,7 @@
     "allowJs": true,
     "module": "NodeNext",
     "outDir": "dist",
+    "rootDir": ".",
     "lib": ["ES2024"]
   },
   "include": ["src", ".well-known"],

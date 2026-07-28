@@ -1,5 +1,7 @@
 import type { World } from '@workflow/world';
-import { SPEC_VERSION_SUPPORTS_ATTRIBUTES } from '@workflow/world';
+import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
+import { createAnalytics } from './analytics.js';
+import { createRunId, describeRun } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue } from './queue.js';
@@ -8,6 +10,8 @@ import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 import type { APIConfig } from './utils.js';
 
+export { createAnalytics } from './analytics.js';
+export { createRunId, describeRun, regionForRunId } from './create-run-id.js';
 export {
   createGetEncryptionKeyForRun,
   deriveRunKey,
@@ -18,18 +22,27 @@ export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';
 export type { APIConfig } from './utils.js';
 
-export function createVercelWorld(config?: APIConfig): World {
+export function createWorld(config?: APIConfig): World {
   // Project ID for HKDF key derivation context.
   // Use config value first (set correctly by CLI/web), fall back to env var (runtime).
   const projectId =
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
 
   return {
-    // Spec v4: the workflow-server materializes native `attr_set` events
-    // and accepts initial run attributes on creation. New runs are stamped
-    // with this version; the server must be at least this version (it
-    // rejects runs newer than its own SPEC_VERSION_CURRENT).
-    specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+    // Spec v5 adds client-side zstd/gzip payload compression. The server stores
+    // those payloads opaquely, and v5 remains a superset of v4 attributes.
+    specVersion: SPEC_VERSION_SUPPORTS_COMPRESSION,
+    capabilities: {
+      // workflow-server enforces the `stateUpdatedAt` optimistic-concurrency
+      // guard: creations carrying a stale snapshot are rejected with 412
+      // (PreconditionFailedError) when the run's outside-event marker is
+      // newer. See vercel/workflow-server#484.
+      preconditionGuard: true,
+      // Vercel Queues supports maxConcurrency-limited consumers, which
+      // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
+      // flow topics (see queue.ts and @workflow/builders).
+      maxConcurrency: true,
+    },
     // On Vercel the platform fails the function invocation when the
     // process exits non-zero, and VQS redelivers the queue message via a
     // fresh invocation. The core runtime uses this to decide whether
@@ -38,7 +51,17 @@ export function createVercelWorld(config?: APIConfig): World {
     processExitTriggersQueueRedelivery: true,
     ...createQueue(config),
     ...createStorage(config),
+    // Analytics list reads are served from an eventually-ingested store.
+    // Tooling that needs read-your-writes listings immediately after a
+    // write (e.g. deterministic e2e assertions) can force the CLI/world
+    // list paths back onto primary storage by disabling the namespace.
+    analytics:
+      process.env.WORKFLOW_DISABLE_ANALYTICS_READS === '1'
+        ? undefined
+        : createAnalytics(config),
     ...instrumentObject('world.streams', createStreamer(config)),
+    createRunId,
+    describeRun,
     getEncryptionKeyForRun: createGetEncryptionKeyForRun(
       projectId,
       config?.projectConfig?.teamId,

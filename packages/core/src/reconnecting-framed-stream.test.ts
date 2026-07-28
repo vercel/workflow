@@ -1,4 +1,4 @@
-import type { World } from '@workflow/world';
+import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./version.js', () => ({ version: '0.0.0-test' }));
@@ -79,6 +79,7 @@ function makeWorldWithScriptedStreams(
 ): { world: World; calls: number[] } {
   const calls: number[] = [];
   const world = {
+    specVersion: SPEC_VERSION_CURRENT,
     streams: {
       get: vi.fn(async (_runId: string, _name: string, startIndex?: number) => {
         const idx = startIndex ?? 0;
@@ -173,6 +174,54 @@ describe('createReconnectingFramedStream', () => {
     // First connection: startIndex=0. After 2 frames consumed, reconnect
     // opens a fresh stream at startIndex=2.
     expect(calls).toEqual([0, 2]);
+  });
+
+  it('retries the reopen itself against the budget instead of failing fatally', async () => {
+    // After 2 frames the connection drops (read error → reconnect at index 2).
+    // The first *reopen* attempt also fails — the server is briefly
+    // unavailable during the reconnect window. That transient failure of the
+    // reopen is the exact blip this wrapper exists to survive, so it must be
+    // counted against the budget and retried, not treated as fatal. The
+    // second reopen succeeds and the stream completes.
+    const calls: number[] = [];
+    let reopenAttempts = 0;
+    const world = {
+      specVersion: SPEC_VERSION_CURRENT,
+      streams: {
+        get: vi.fn(
+          async (_runId: string, _name: string, startIndex?: number) => {
+            const idx = startIndex ?? 0;
+            calls.push(idx);
+            if (idx === 0) {
+              return scriptedStream([
+                { kind: 'value', value: payloadFrame(1) },
+                { kind: 'value', value: payloadFrame(2) },
+                { kind: 'error', err: new Error('max-duration abort') },
+              ]);
+            }
+            // Reopen at index 2: throw on the first attempt, succeed on the next.
+            reopenAttempts++;
+            if (reopenAttempts === 1) {
+              throw new Error('reopen failed: server briefly unavailable');
+            }
+            return scriptedStream([
+              { kind: 'value', value: payloadFrame(3) },
+              { kind: 'close' },
+            ]);
+          }
+        ),
+      },
+    } as unknown as World;
+    setWorld(world);
+
+    const stream = createReconnectingFramedStream(RUN_ID, 's', 0);
+    const chunks = await readAll(stream);
+
+    // The failed reopen did not surface to the consumer; the stream recovered.
+    expect(chunks).toEqual([payloadFrame(1), payloadFrame(2), payloadFrame(3)]);
+    // index 0 once, then index 2 twice — the failed reopen and the retry both
+    // resume from the same position.
+    expect(calls).toEqual([0, 2, 2]);
   });
 
   it('respects an initial non-zero startIndex on reconnect', async () => {
@@ -274,7 +323,10 @@ describe('createReconnectingFramedStream', () => {
           { kind: 'close' },
         ])
     );
-    const world = { streams: { get: getSpy } } as unknown as World;
+    const world = {
+      specVersion: SPEC_VERSION_CURRENT,
+      streams: { get: getSpy },
+    } as unknown as World;
     setWorld(world);
 
     const stream = createReconnectingFramedStream('run-abc', 'my-stream', 3);
@@ -289,6 +341,7 @@ describe('createReconnectingFramedStream', () => {
     // forever.
     const calls: number[] = [];
     const world = {
+      specVersion: SPEC_VERSION_CURRENT,
       streams: {
         get: vi.fn(
           async (_runId: string, _name: string, startIndex?: number) => {
@@ -322,6 +375,7 @@ describe('createReconnectingFramedStream', () => {
     const lastIndex = FRAMED_STREAM_MAX_RECONNECTS + 5;
     const calls: number[] = [];
     const world = {
+      specVersion: SPEC_VERSION_CURRENT,
       streams: {
         get: vi.fn(
           async (_runId: string, _name: string, startIndex?: number) => {
@@ -360,6 +414,7 @@ describe('createReconnectingFramedStream', () => {
     // guards against a misbehaving backend turning reconnect into a hang.
     let calls = 0;
     const world = {
+      specVersion: SPEC_VERSION_CURRENT,
       streams: {
         get: vi.fn(async () => {
           calls++;

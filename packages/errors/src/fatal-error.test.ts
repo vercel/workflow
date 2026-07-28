@@ -10,7 +10,7 @@ describe('FatalError.is', () => {
     // The runtime uses `FatalError.is()` as its non-retry gate. Structured
     // error classes that aren't direct subclasses (e.g. context-violation
     // errors) opt in via a `fatal: true` own property — otherwise the
-    // step handler would burn three retry attempts on an error that will
+    // step executor would burn three retry attempts on an error that will
     // never succeed, producing a wall of duplicated log output.
     class ContextViolation extends Error {
       fatal = true;

@@ -9,6 +9,10 @@ related:
   - /docs/foundations/workflows-and-steps
 ---
 
+<CopyPrompt
+  text="In this Nitro app, run `npm i workflow`. In `nitro.config.ts`, use `defineConfig` from `nitro`, set `serverDir: &quot;./server&quot;`, and add `modules: [&quot;workflow/nitro&quot;]`. Add the TypeScript plugin `{ &quot;name&quot;: &quot;workflow&quot; }` to `tsconfig.json` if TypeScript is used. Create `workflows/user-signup.ts` with `handleUserSignup(email)`, `&quot;use workflow&quot;`, `sleep` from `workflow`, and `&quot;use step&quot;` helpers. Add `server/api/signup.post.ts` using `defineEventHandler` from `nitro/h3` and `start` from `workflow/api` to start the workflow from `{ email }`. Run `npm run dev`, call `curl -X POST --json '{&quot;email&quot;:&quot;hello@example.com&quot;}' http://localhost:3000/api/signup`, then inspect with `npx workflow web` or `npx workflow inspect runs`."
+/>
+
 <Steps>
 
 <Step>
@@ -66,7 +70,7 @@ export default defineConfig({
 | --- | --- | --- | --- |
 | `dirs` | `string[]` | — | Directories to scan for workflows and steps. By default, `workflows/` is scanned from the project root and all layer source directories. |
 | `runtime` | `string` | `'nodejs22.x'` | Node.js runtime version for Vercel Functions (e.g. `'nodejs22.x'`, `'nodejs24.x'`). |
-| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Set to `false` for smaller function bundles (useful for staying under the Vercel 250MB function size limit) at the cost of stack traces pointing at generated code. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable. |
+| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Defaults to `'inline'` in development and `false` in production (smaller function bundles — helps stay under the Vercel 250MB function size limit). Set it explicitly, or use the `WORKFLOW_SOURCEMAP` environment variable, to override in either environment. |
 
 <Accordion type="single" collapsible>
   <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
@@ -168,7 +172,7 @@ async function sendOnboardingEmail(user: { id: string; email: string }) {
 
 Taking a look at this code:
 
-- Business logic lives inside **steps**. When a step is invoked inside a **workflow**, it gets enqueued to run on a separate request while the workflow is suspended, just like `sleep`.
+- Business logic lives inside **steps**. When a workflow invokes a step, the workflow suspends while the step runs with full Node.js access. The combined handler may execute it inline; queued retries and continuations return through the same flow route.
 - If a step throws an error, like in `sendWelcomeEmail`, the step will automatically be retried until it succeeds (or hits the step's max retry count).
 - Steps can throw a `FatalError` if an error is intentional and should not be retried.
 
@@ -257,7 +261,7 @@ Check the [Deploying](/docs/deploying) section to learn how your workflows can b
 If you see this error:
 
 ```
-'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.
+'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.
 ```
 
 Check both of these first:

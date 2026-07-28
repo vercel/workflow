@@ -10,7 +10,13 @@
  * of making separate API calls for each entity type.
  */
 
-import type { Event, StepStatus } from '@workflow/world';
+import {
+  type Event,
+  isHookLifecycleEventType,
+  isStepEventType,
+  isWaitEventType,
+  type StepStatus,
+} from '@workflow/world';
 
 // ---------------------------------------------------------------------------
 // Materialized entity types
@@ -60,18 +66,18 @@ export interface MaterializedEntities {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: group events by correlationId prefix
+// Helper: group events by correlationId
 // ---------------------------------------------------------------------------
 
 function groupByCorrelationId(
   events: Event[],
-  prefixes: string[]
+  matchesEventType: (eventType: string) => boolean
 ): Map<string, Event[]> {
   const groups = new Map<string, Event[]>();
   for (const event of events) {
     const cid = event.correlationId;
     if (!cid) continue;
-    if (!prefixes.some((p) => cid.startsWith(p))) continue;
+    if (!matchesEventType(event.eventType)) continue;
     const existing = groups.get(cid);
     if (existing) {
       existing.push(event);
@@ -80,6 +86,14 @@ function groupByCorrelationId(
     }
   }
   return groups;
+}
+
+function getEventTimestamp(event: Event | undefined): Date | undefined {
+  const value = event?.occurredAt ?? event?.createdAt;
+  if (!value) return undefined;
+
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +107,7 @@ function groupByCorrelationId(
  * step_created event with no completion yet.
  */
 export function materializeSteps(events: Event[]): MaterializedStep[] {
-  const groups = groupByCorrelationId(events, ['step_']);
+  const groups = groupByCorrelationId(events, isStepEventType);
   const steps: MaterializedStep[] = [];
 
   for (const [correlationId, stepEvents] of groups) {
@@ -104,31 +118,31 @@ export function materializeSteps(events: Event[]): MaterializedStep[] {
     let attempt = 0;
     let startedAt: Date | undefined;
     let completedAt: Date | undefined;
-    let updatedAt = created.createdAt;
+    let updatedAt = getEventTimestamp(created) ?? created.createdAt;
 
     for (const e of stepEvents) {
       switch (e.eventType) {
         case 'step_started':
           status = 'running';
           attempt += 1;
-          if (!startedAt) startedAt = e.createdAt;
+          if (!startedAt) startedAt = getEventTimestamp(e) ?? e.createdAt;
           completedAt = undefined;
-          updatedAt = e.createdAt;
+          updatedAt = getEventTimestamp(e) ?? e.createdAt;
           break;
         case 'step_completed':
           status = 'completed';
-          completedAt = e.createdAt;
-          updatedAt = e.createdAt;
+          completedAt = getEventTimestamp(e) ?? e.createdAt;
+          updatedAt = getEventTimestamp(e) ?? e.createdAt;
           break;
         case 'step_failed':
           status = 'failed';
-          completedAt = e.createdAt;
-          updatedAt = e.createdAt;
+          completedAt = getEventTimestamp(e) ?? e.createdAt;
+          updatedAt = getEventTimestamp(e) ?? e.createdAt;
           break;
         case 'step_retrying':
           status = 'pending';
           completedAt = undefined;
-          updatedAt = e.createdAt;
+          updatedAt = getEventTimestamp(e) ?? e.createdAt;
           break;
       }
     }
@@ -142,7 +156,7 @@ export function materializeSteps(events: Event[]): MaterializedStep[] {
           : correlationId,
       status,
       attempt,
-      createdAt: created.createdAt,
+      createdAt: getEventTimestamp(created) ?? created.createdAt,
       startedAt,
       completedAt,
       updatedAt,
@@ -161,7 +175,7 @@ export function materializeSteps(events: Event[]): MaterializedStep[] {
  * Group hook_* events by correlationId and build Hook-like entities.
  */
 export function materializeHooks(events: Event[]): MaterializedHook[] {
-  const groups = groupByCorrelationId(events, ['hook_']);
+  const groups = groupByCorrelationId(events, isHookLifecycleEventType);
   const hooks: MaterializedHook[] = [];
 
   for (const [correlationId, hookEvents] of groups) {
@@ -181,10 +195,10 @@ export function materializeHooks(events: Event[]): MaterializedHook[] {
         created.eventType === 'hook_created'
           ? created.eventData?.token
           : undefined,
-      createdAt: created.createdAt,
+      createdAt: getEventTimestamp(created) ?? created.createdAt,
       receivedCount: receivedEvents.length,
-      lastReceivedAt: lastReceived?.createdAt,
-      disposedAt: disposed?.createdAt,
+      lastReceivedAt: getEventTimestamp(lastReceived),
+      disposedAt: getEventTimestamp(disposed),
       events: hookEvents,
     });
   }
@@ -200,7 +214,7 @@ export function materializeHooks(events: Event[]): MaterializedHook[] {
  * Group wait_* events by correlationId and build Wait-like entities.
  */
 export function materializeWaits(events: Event[]): MaterializedWait[] {
-  const groups = groupByCorrelationId(events, ['wait_']);
+  const groups = groupByCorrelationId(events, isWaitEventType);
   const waits: MaterializedWait[] = [];
 
   for (const [correlationId, waitEvents] of groups) {
@@ -213,12 +227,12 @@ export function materializeWaits(events: Event[]): MaterializedWait[] {
       waitId: correlationId,
       runId: created.runId,
       status: completed ? 'completed' : 'waiting',
-      createdAt: created.createdAt,
+      createdAt: getEventTimestamp(created) ?? created.createdAt,
       resumeAt:
         created.eventType === 'wait_created'
           ? created.eventData?.resumeAt
           : undefined,
-      completedAt: completed?.createdAt,
+      completedAt: getEventTimestamp(completed),
       events: waitEvents,
     });
   }

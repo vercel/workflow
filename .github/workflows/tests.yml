@@ -237,6 +237,15 @@ jobs:
         env:
           APP_NAME: "nextjs-turbopack"
 
+      # Regression test for the o2flow beta.26 incident: hook.resume() from a
+      # plain API route must resolve the workflow world inside an isolated
+      # (lambda-like) route bundle. Runs in this job because it also performs
+      # a production Turbopack build of the nextjs-turbopack workbench.
+      - name: Run Route Bundle Isolation Tests
+        run: pnpm vitest run packages/core/e2e/route-bundle-isolation.test.ts
+        env:
+          APP_NAME: "nextjs-turbopack"
+
   vitest-plugin:
     name: Vitest Plugin Tests
     runs-on: ubuntu-latest
@@ -343,6 +352,9 @@ jobs:
           - name: "fastify"
             project-id: "prj_5Yap0VDQ633v998iqQ3L3aQ25Cck"
             project-slug: "workbench-fastify-workflow"
+          - name: "nest"
+            project-id: "prj_AV3YrzooDhMlvfmZybqeugHRk48Y"
+            project-slug: "workbench-nestjs-workflow"
           - name: "astro"
             project-id: "prj_YDAXj3K8LM0hgejuIMhioz2yLgTI"
             project-slug: "workbench-astro-workflow"
@@ -353,7 +365,6 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
-      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.canary != true && (matrix.app.name == 'nextjs-turbopack' || matrix.app.name == 'nextjs-webpack') && '0' || '' }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -382,7 +393,7 @@ jobs:
         run: echo "ms=$(($(date +%s) * 1000))" >> "$GITHUB_OUTPUT"
 
       - name: Run E2E Tests
-        run: pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-prod-$APP_NAME.json"
+        run: pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-prod-$APP_NAME.json"
         env:
           NODE_OPTIONS: "--enable-source-maps"
           DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
@@ -437,6 +448,93 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  e2e-vercel-multi-region:
+    # Vercel-specific multi-region routing suite (start()'s `region`
+    # option). Deliberately separate from e2e-vercel-prod: that job runs
+    # the shared suite as a matrix across all worlds/frameworks, while
+    # this functionality only exists for @workflow/world-vercel and only
+    # the nextjs-turbopack workbench is deployed multi-region
+    # (workbench/nextjs-turbopack/vercel.json pins iad1+sfo1+fra1).
+    name: E2E Vercel Multi-Region Tests (nextjs-turbopack)
+    runs-on: ubuntu-latest
+    # 19 regions: the implicit-route cases pay one cold start each,
+    # sequentially.
+    timeout-minutes: 35
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
+    permissions:
+      id-token: write
+      contents: read
+      deployments: read
+      statuses: read
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'false'
+
+      - name: Build CLI
+        run: pnpm turbo run build --filter='@workflow/cli'
+
+      - name: Waiting for the Vercel deployment
+        id: waitForDeployment
+        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
+        with:
+          project-slug: "example-nextjs-workflow-turbopack"
+          timeout: 1000
+          check-interval: 15
+          environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+
+      - name: Run Multi-Region E2E Tests
+        run: pnpm vitest run packages/core/e2e/e2e-region.test.ts --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-multi-region-$APP_NAME.json"
+        env:
+          NODE_OPTIONS: "--enable-source-maps"
+          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
+          APP_NAME: "nextjs-turbopack"
+          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
+          WORKFLOW_VERCEL_PROJECT: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
+          WORKFLOW_VERCEL_PROJECT_SLUG: "example-nextjs-workflow-turbopack"
+          # See the note on e2e-vercel-prod: PRs point at the protected
+          # workflow-server preview; unset on main for production.
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+
+      - name: Capture runtime logs on failure
+        if: failure()
+        env:
+          APP_NAME: "nextjs-turbopack"
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
+          WORKFLOW_VERCEL_PROJECT: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
+          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
+        run: node .github/scripts/fetch-e2e-runtime-logs.mjs
+
+      - name: Upload E2E results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results-vercel-multi-region-nextjs-turbopack
+          path: |
+            e2e-vercel-multi-region-nextjs-turbopack.json
+            e2e-metadata-nextjs-turbopack-vercel.json
+            e2e-failures-nextjs-turbopack-vercel.json
+            e2e-diagnostics-nextjs-turbopack-vercel.json
+            e2e-runtime-logs-nextjs-turbopack-vercel.json
+          retention-days: 7
+          if-no-files-found: ignore
+
   getTestMatrix:
     name: Get Test Matrix
     runs-on: ubuntu-latest
@@ -477,7 +575,6 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
-      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.lazyDiscovery == false && '0' || matrix.app.lazyDiscovery == true && '1' || '' }}
 
     steps:
       - name: Checkout Repo
@@ -522,16 +619,19 @@ jobs:
 
       - name: Run E2E Tests
         run: |
-          cd "$WORKBENCH_APP_PATH" && pnpm dev &
+          export DEV_SERVER_LOG_PATH="$GITHUB_WORKSPACE/dev-server-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log"
+          rm -f "$DEV_SERVER_LOG_PATH"
+          (cd "$WORKBENCH_APP_PATH" && pnpm dev 2>&1 | tee "$DEV_SERVER_LOG_PATH") &
           echo "starting tests in 10 seconds" && sleep 10
           pnpm vitest run packages/core/e2e/dev.test.ts; sleep 10
-          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+          pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '5173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           DEV_TEST_CONFIG: ${{ toJSON(matrix.app) }}
+          WORKFLOW_DEV_HMR_LOGS: "1"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
 
       - name: Generate E2E summary
@@ -561,7 +661,6 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
-      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.lazyDiscovery == false && '0' || matrix.app.lazyDiscovery == true && '1' || '' }}
 
     steps:
       - name: Checkout Repo
@@ -612,9 +711,10 @@ jobs:
 
       - name: Run E2E Tests
         run: |
-          cd "$WORKBENCH_APP_PATH" && pnpm start &
+          export PROD_SERVER_LOG_PATH="$GITHUB_WORKSPACE/prod-server-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log"
+          (cd "$WORKBENCH_APP_PATH" && pnpm start 2>&1 | tee "$PROD_SERVER_LOG_PATH") &
           echo "starting tests in 10 seconds" && sleep 10
-          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+          pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
@@ -666,7 +766,6 @@ jobs:
       WORKFLOW_PUBLIC_MANIFEST: '1'
       WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
       WORKFLOW_POSTGRES_URL: "postgres://world:world@localhost:5432/world"
-      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.lazyDiscovery == false && '0' || matrix.app.lazyDiscovery == true && '1' || '' }}
 
     steps:
       - name: Checkout Repo
@@ -720,9 +819,10 @@ jobs:
 
       - name: Run E2E Tests
         run: |
-          cd "$WORKBENCH_APP_PATH" && pnpm start &
+          export PROD_SERVER_LOG_PATH="$GITHUB_WORKSPACE/prod-server-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log"
+          (cd "$WORKBENCH_APP_PATH" && pnpm start 2>&1 | tee "$PROD_SERVER_LOG_PATH") &
           echo "starting tests in 10 seconds" && sleep 10
-          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+          pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
@@ -785,6 +885,7 @@ jobs:
         run: |
           cd workbench/nextjs-turbopack
           $logFile = "$env:GITHUB_WORKSPACE/nextjs-server.log"
+          $env:DEV_SERVER_LOG_PATH = $logFile
           $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev *>&1 | Tee-Object -FilePath $using:logFile }
           Start-Sleep -Seconds 15
           cd ../..
@@ -839,7 +940,7 @@ jobs:
             exit 1
           }
 
-          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-windows-nextjs-turbopack.json
+          pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-windows-nextjs-turbopack.json
           $e2eExit = $LASTEXITCODE
           Stop-Job $job -ErrorAction SilentlyContinue
           exit $e2eExit
@@ -848,7 +949,13 @@ jobs:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: "nextjs-turbopack"
           DEPLOYMENT_URL: "http://localhost:3000"
-          DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/flow/__step_registrations.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000}'
+          # Use a real workflow file for the Windows HMR test. Most of this
+          # workbench's workflows are symlinks into workbench/example, and
+          # Windows/Turbopack can rebuild from the symlink path while still
+          # serving the previous module contents from the realpath cache.
+          DEV_TEST_CONFIG: '{"generatedStepRegistrationPath":"app/.well-known/workflow/v1/flow/__step_registrations.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000,"testWorkflowFile":"96_many_steps.ts"}'
+          DEV_SERVER_LOG_PATH: "${{ github.workspace }}/nextjs-server.log"
+          WORKFLOW_DEV_HMR_LOGS: "1"
 
       - name: Print Next.js server logs
         if: always()
@@ -927,8 +1034,10 @@ jobs:
       world-id: ${{ matrix.world.id }}
       world-name: ${{ matrix.world.name }}
       world-package: ${{ matrix.world.package }}
+      package-version: ${{ matrix.world.version }}
       service-type: ${{ matrix.world.service-type }}
       env-vars: ${{ matrix.world.env-vars }}
+      services: ${{ matrix.world.services }}
     secrets: inherit
 
   # Final job: Aggregate all E2E results and update PR comment
@@ -959,51 +1068,12 @@ jobs:
         run: |
           node .github/scripts/aggregate-e2e-results.js e2e-results --mode aggregate --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" | tee e2e-summary.md >> $GITHUB_STEP_SUMMARY
 
-      - name: Check E2E job statuses
-        id: check-status
-        run: |
-          VERCEL_STATUS="${{ needs.e2e-vercel-prod.result }}"
-          LOCAL_DEV_STATUS="${{ needs.e2e-local-dev.result }}"
-          LOCAL_PROD_STATUS="${{ needs.e2e-local-prod.result }}"
-          POSTGRES_STATUS="${{ needs.e2e-local-postgres.result }}"
-          WINDOWS_STATUS="${{ needs.e2e-windows.result }}"
-
-          echo "vercel=$VERCEL_STATUS" >> $GITHUB_OUTPUT
-          echo "local-dev=$LOCAL_DEV_STATUS" >> $GITHUB_OUTPUT
-          echo "local-prod=$LOCAL_PROD_STATUS" >> $GITHUB_OUTPUT
-          echo "postgres=$POSTGRES_STATUS" >> $GITHUB_OUTPUT
-          echo "windows=$WINDOWS_STATUS" >> $GITHUB_OUTPUT
-
-          if [[ "$VERCEL_STATUS" == "failure" || "$LOCAL_DEV_STATUS" == "failure" || "$LOCAL_PROD_STATUS" == "failure" || "$POSTGRES_STATUS" == "failure" || "$WINDOWS_STATUS" == "failure" ]]; then
-            echo "has_failures=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_failures=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Update PR comment with results
         if: github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
         with:
           header: e2e-test-results
           path: e2e-summary.md
-
-      - name: Append failure notice to PR comment
-        if: github.event_name == 'pull_request' && steps.check-status.outputs.has_failures == 'true'
-        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
-        with:
-          header: e2e-test-results
-          append: true
-          message: |
-
-            ---
-            ❌ **Some E2E test jobs failed:**
-            - Vercel Prod: ${{ needs.e2e-vercel-prod.result }}
-            - Local Dev: ${{ needs.e2e-local-dev.result }}
-            - Local Prod: ${{ needs.e2e-local-prod.result }}
-            - Local Postgres: ${{ needs.e2e-local-postgres.result }}
-            - Windows: ${{ needs.e2e-windows.result }}
-
-            Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
 
   # Final required check: passes only when unit + all E2E jobs succeed.
   # Community worlds are intentionally excluded — they are disabled on main.

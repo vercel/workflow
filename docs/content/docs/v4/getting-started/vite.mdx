@@ -9,6 +9,10 @@ related:
   - /docs/foundations/workflows-and-steps
 ---
 
+<CopyPrompt
+  text="In this Vite app, run `npm i workflow nitro`. In `vite.config.ts`, import `nitro` from `nitro/vite`, `workflow` from `workflow/vite`, and configure `plugins: [nitro(), workflow()]` plus `nitro: { serverDir: &quot;./&quot; }`. Add the TypeScript plugin `{ &quot;name&quot;: &quot;workflow&quot; }` to `tsconfig.json` if TypeScript is used. Create `workflows/user-signup.ts` with `&quot;use workflow&quot;`, `sleep`, and `&quot;use step&quot;` helpers. Add `api/signup.post.ts` using `defineEventHandler` from `nitro/h3` and `start` from `workflow/api`. Run `npm run dev`, call `curl -X POST --json '{&quot;email&quot;:&quot;hello@example.com&quot;}' http://localhost:3000/api/signup`, and inspect with `npx workflow web` or `npx workflow inspect runs`."
+/>
+
 This guide will walk through setting up your first workflow in a Vite app. Along the way, you'll learn more about the concepts that are fundamental to using the Workflow SDK in your own projects.
 
 ---
