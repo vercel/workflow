@@ -415,13 +415,11 @@ function ErrorState({ error }: { error: string }) {
 // ──────────────────────────────────────────────────────────────────────────
 
 function StreamHeader({
-  chunkCount,
   isLive,
   showViewToggle,
   view,
   onViewChange,
 }: {
-  chunkCount: number;
   isLive: boolean;
   showViewToggle: boolean;
   view: ViewMode;
@@ -430,9 +428,6 @@ function StreamHeader({
   return (
     <div className="flex h-10 min-h-10 flex-none items-center justify-end gap-3 border-b border-gray-alpha-400 pl-4 pr-2">
       {isLive && <LiveIndicator />}
-      <span className="text-xs tabular-nums text-gray-900">
-        {chunkCount} {chunkCount === 1 ? 'chunk' : 'chunks'}
-      </span>
       {showViewToggle && <ViewToggle view={view} onChange={onViewChange} />}
     </div>
   );
@@ -507,7 +502,6 @@ export function StreamViewer({
   return (
     <div className="flex flex-col h-full">
       <StreamHeader
-        chunkCount={chunks.length}
         isLive={isLive}
         showViewToggle={hasTextChunks}
         view={view}

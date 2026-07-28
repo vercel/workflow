@@ -825,12 +825,9 @@ export function RunDetailView({
                   <div className="h-full flex min-h-0">
                     {/* Stream list sidebar */}
                     <div className="w-64 flex-shrink-0 flex flex-col min-h-0 border-r border-gray-alpha-400">
-                      <div className="flex h-10 min-h-10 flex-none items-center justify-between border-b border-gray-alpha-400 pl-4 pr-2">
+                      <div className="flex h-10 min-h-10 flex-none items-center border-b border-gray-alpha-400 pl-4 pr-2">
                         <span className="text-label-14 text-gray-1000">
                           Streams
-                        </span>
-                        <span className="text-label-12 text-gray-900 tabular-nums">
-                          {streams.length}
                         </span>
                       </div>
                       <div className="flex-1 min-h-0 overflow-auto">
