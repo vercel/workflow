@@ -21,8 +21,9 @@
  *   - This is a "smooth" limiter (fixed spacing). For burst allowances,
  *     track a token count in the coordinator and only sleep when it's
  *     exhausted.
- *   - SLOT_RETRY_TIMEOUT bounds how long a caller queues before retrying;
- *     size it to queueDepth × intervalMs for your worst case.
+ *   - SLOT_RETRY_TIMEOUT bounds one whole slot attempt — the request to the
+ *     coordinator plus the time queued — before retrying; size it to
+ *     queueDepth × intervalMs for your worst case.
  *   - All callers for a key should pass the same intervalMs — the value
  *     used by whichever caller starts the coordinator wins.
  *
@@ -39,14 +40,20 @@ function limiterToken(key: string) {
   return `rate-limiter:${key}`;
 }
 
-// How long a waiter waits for its slot before re-requesting. Should exceed
-// the worst expected queue delay: queueDepth × intervalMs.
+// How long one slot attempt may take — the request to the coordinator plus
+// the time queued — before re-requesting. Should exceed the worst expected
+// queue delay: queueDepth × intervalMs.
 const SLOT_RETRY_TIMEOUT = '120s';
 const MAX_SLOT_ATTEMPTS = 5;
 // Recycle the coordinator run after this many grants so its event log
 // stays bounded. Senders transparently restart it; queued waiters that get
 // dropped by a recycle re-request after SLOT_RETRY_TIMEOUT.
 const RECYCLE_AFTER_GRANTS = 1000;
+// How hard a sender tries to reach the coordinator. The delays double from
+// 250ms up to MAX_SEND_BACKOFF_MS, so these give a cold coordinator ~30s to
+// boot and claim its token before the sender gives up.
+const SEND_ATTEMPTS = 10;
+const MAX_SEND_BACKOFF_MS = 4000;
 
 // COORDINATOR — grants one slot, then sleeps intervalMs before granting
 // the next. Queued requests buffer in the hook channel, giving you strict
@@ -90,25 +97,40 @@ async function grantSlot(grantToken: string): Promise<boolean> {
   }
 }
 
+// Two details matter when many callers hit a cold key at once:
+//   - Start the coordinator AT MOST ONCE per send. start() resolves as soon
+//     as the run is enqueued, but the token isn't claimed until that run
+//     actually executes its first instruction. Starting again on every
+//     failed resume just because the claim hasn't landed yet turns N
+//     concurrent callers into N x attempts throwaway runs.
+//   - Back off exponentially. A cold start is a whole workflow run booting;
+//     on a busy queue that can take seconds, not milliseconds.
 async function sendSlotRequest(
   key: string,
   intervalMs: number,
   grantToken: string
 ): Promise<void> {
   'use step';
-  for (let i = 0; i < 3; i++) {
+  let startedOne = false;
+  let backoffMs = 250;
+  for (let i = 0; i < SEND_ATTEMPTS; i++) {
     try {
       await rateLimiterEvents.resume(limiterToken(key), { grantToken });
       return;
     } catch {
-      // Coordinator not running (or just recycled) — start it and retry.
+      // No coordinator owns the token yet — it isn't running, was just
+      // recycled, or is still booting.
     }
-    try {
-      await start(rateLimiterCoordinator, [key, intervalMs]);
-    } catch {
-      // Another sender raced us to start it — retry the resume.
+    if (!startedOne) {
+      startedOne = true;
+      try {
+        await start(rateLimiterCoordinator, [key, intervalMs]);
+      } catch {
+        // Another sender raced us to start it — retry the resume.
+      }
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    backoffMs = Math.min(backoffMs * 2, MAX_SEND_BACKOFF_MS);
   }
   throw new Error(`Could not reach rate limiter coordinator for "${key}"`);
 }
@@ -125,11 +147,18 @@ export async function withRateLimit<T>(
 ): Promise<T> {
   for (let attempt = 0; attempt < MAX_SLOT_ATTEMPTS; attempt++) {
     const grant = createHook<{ granted: true }>();
+    // Start the retry timer BEFORE the request step, not after. Durable
+    // correlation IDs are handed out in call order, so a sleep() created
+    // after an await inherits step-completion order — which isn't stable
+    // across replays when several callers run concurrently. Allocating it
+    // up-front, next to the hook, keeps the order deterministic.
+    const retryTimer = sleep(SLOT_RETRY_TIMEOUT);
+
     await sendSlotRequest(key, intervalMs, grant.token);
 
     const granted = await Promise.race([
       grant.then(() => true as const),
-      sleep(SLOT_RETRY_TIMEOUT).then(() => false as const),
+      retryTimer.then(() => false as const),
     ]);
 
     if (!granted) {

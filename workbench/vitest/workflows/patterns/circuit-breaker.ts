@@ -57,6 +57,14 @@ const CHECK_TIMEOUT = '10s';
 // Recycle the coordinator after this many events once the circuit is
 // closed and quiet. Note: a recycle resets the failure count.
 const RECYCLE_AFTER_EVENTS = 2000;
+// How hard a sender tries to reach the coordinator. The delays double from
+// 250ms up to MAX_SEND_BACKOFF_MS, giving a cold coordinator ~6s to boot and
+// claim its token. Keep the total under CHECK_TIMEOUT: the send is awaited
+// before the verdict race, so a longer budget would stretch the fail-open
+// path past the deadline this pattern promises. Breaker bookkeeping must
+// never break the caller — or stall it.
+const SEND_ATTEMPTS = 5;
+const MAX_SEND_BACKOFF_MS = 2000;
 
 // COORDINATOR — the breaker state machine for one key. The main loop only
 // ever awaits the event channel, so checks are answered instantly in every
@@ -170,24 +178,39 @@ async function replyToCheck(
   }
 }
 
+// Two details matter when many callers hit a cold key at once:
+//   - Start the coordinator AT MOST ONCE per send. start() resolves as soon
+//     as the run is enqueued, but the token isn't claimed until that run
+//     actually executes its first instruction. Starting again on every
+//     failed resume just because the claim hasn't landed yet turns N
+//     concurrent callers into N x attempts throwaway runs.
+//   - Back off exponentially. A cold start is a whole workflow run booting;
+//     on a busy queue that can take seconds, not milliseconds.
 async function sendBreakerEvent(
   key: string,
   event: BreakerEvent
 ): Promise<void> {
   'use step';
-  for (let i = 0; i < 3; i++) {
+  let startedOne = false;
+  let backoffMs = 250;
+  for (let i = 0; i < SEND_ATTEMPTS; i++) {
     try {
       await breakerEvents.resume(breakerToken(key), event);
       return;
     } catch {
-      // Coordinator not running (or just recycled) — start it and retry.
+      // No coordinator owns the token yet — it isn't running, was just
+      // recycled, or is still booting.
     }
-    try {
-      await start(breakerCoordinator, [key]);
-    } catch {
-      // Another sender raced us to start it — retry the resume.
+    if (!startedOne) {
+      startedOne = true;
+      try {
+        await start(breakerCoordinator, [key]);
+      } catch {
+        // Another sender raced us to start it — retry the resume.
+      }
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    backoffMs = Math.min(backoffMs * 2, MAX_SEND_BACKOFF_MS);
   }
   // Don't throw — breaker bookkeeping must never break the caller.
 }
@@ -209,12 +232,21 @@ export async function withBreaker<T>(
   fn: () => Promise<T>
 ): Promise<T> {
   const reply = createHook<{ allowed: boolean; state: BreakerState }>();
+  // Start the timeout BEFORE the check step, not after. Durable correlation
+  // IDs are handed out in call order, so a sleep() created after an await
+  // inherits step-completion order — which isn't stable across replays when
+  // several calls run concurrently in one workflow. Allocating it up-front,
+  // next to the hook, keeps the order deterministic. The budget then covers
+  // the check step too, which is what you want anyway: it bounds the whole
+  // admission decision, not just the wait for the verdict.
+  const checkTimeout = sleep(CHECK_TIMEOUT);
+
   await sendBreakerEvent(key, { type: 'check', replyToken: reply.token });
 
   const verdict = await Promise.race([
     reply.then((v) => ({ ...v, timedOut: false })),
     // Fail open if the coordinator is unreachable — see CHECK_TIMEOUT note.
-    sleep(CHECK_TIMEOUT).then(() => ({
+    checkTimeout.then(() => ({
       allowed: true,
       state: 'closed' as const,
       timedOut: true,

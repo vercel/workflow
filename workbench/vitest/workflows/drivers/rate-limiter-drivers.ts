@@ -36,11 +36,52 @@ async function resetStats(): Promise<void> {
   seenSteps.clear();
 }
 
+/** Zero the shared counters. Run once before a fan-out. */
+export async function resetRateLimitStats() {
+  'use workflow';
+
+  await resetStats();
+}
+
+/** Read the recorded grant times. Run once after a fan-out has settled. */
+export async function readRateLimitStats() {
+  'use workflow';
+
+  return readGrantTimes();
+}
+
 /**
- * Fan out `count` concurrent rate-limited calls; record the wall-clock
- * time at which each slot was granted (= when fn starts running).
+ * One rate-limited caller, as its own workflow run, recording the
+ * wall-clock time its slot was granted (= when fn starts running).
+ *
+ * The fan-out is cross-run on purpose: the limiter's contract is one
+ * request per interval across ALL runs and machines, which is also how
+ * you'd really deploy it.
  */
-export async function rateLimitFanout(
+export async function rateLimitCaller(
+  key: string,
+  intervalMs: number,
+  id: number
+) {
+  'use workflow';
+
+  return withRateLimit(key, intervalMs, async () => {
+    await recordGrant();
+    return id;
+  });
+}
+
+/**
+ * `count` rate-limited callers fanned out *inside one run*.
+ *
+ * The cross-run fan-out above is the limiter's real contract, but callers
+ * do reach for `Promise.all(items.map(i => withRateLimit(...)))` to pace
+ * work within a single run — so that shape has to keep working too. It is
+ * also the shape that is sensitive to correlation-ID allocation order on
+ * replay, which is why withRateLimit() allocates its hook and retry timer
+ * in one synchronous prefix. Keep this test: it is the regression guard.
+ */
+export async function rateLimitInRunFanout(
   key: string,
   count: number,
   intervalMs: number

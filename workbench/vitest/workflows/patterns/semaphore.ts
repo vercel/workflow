@@ -23,9 +23,11 @@
  *     hooks and uses durable sleep).
  *   - All callers for a key should pass the same maxConcurrent — the value
  *     used by whichever caller starts the coordinator wins.
- *   - ACQUIRE_RETRY_TIMEOUT should exceed your longest typical hold time;
- *     waiters re-request after it elapses (they don't lose their place in
- *     a harmful way — they rejoin the queue).
+ *   - ACQUIRE_RETRY_TIMEOUT bounds one whole acquire attempt — the request
+ *     to the coordinator plus the wait for a grant — so it should exceed
+ *     your longest typical hold time. Waiters re-request after it elapses
+ *     (they don't lose their place in a harmful way — they rejoin the
+ *     queue).
  *   - The coordinator recycles after RECYCLE_AFTER_GRANTS once idle so its
  *     event log stays bounded.
  *
@@ -47,13 +49,19 @@ function semaphoreToken(key: string) {
   return `semaphore:${key}`;
 }
 
-// How long a waiter waits for a grant before re-requesting. Must exceed
-// the longest time a permit is typically held — see the pattern docs.
+// How long one acquire attempt may take — the request to the coordinator
+// plus the wait for a grant — before re-requesting. Must exceed the longest
+// time a permit is typically held; see the pattern docs.
 const ACQUIRE_RETRY_TIMEOUT = '60s';
 const MAX_ACQUIRE_ATTEMPTS = 10;
 // Recycle the coordinator run after this many grants (once idle) so its
 // event log stays bounded. Senders transparently restart it.
 const RECYCLE_AFTER_GRANTS = 500;
+// How hard a sender tries to reach the coordinator. The delays double from
+// 250ms up to MAX_SEND_BACKOFF_MS, so these give a cold coordinator ~30s to
+// boot and claim its token before the sender gives up.
+const SEND_ATTEMPTS = 10;
+const MAX_SEND_BACKOFF_MS = 4000;
 
 // COORDINATOR — owns the permit count for one semaphore key. Started
 // lazily by sendSemaphoreEvent(); exits when idle after enough traffic.
@@ -119,25 +127,41 @@ async function grantPermit(grantToken: string): Promise<boolean> {
 // Deliver an event to the coordinator, starting it if it isn't running.
 // The double-start race is harmless: the loser run detects the conflict
 // via getConflict() and returns { dedupedTo } without doing any work.
+//
+// Two details matter when many senders hit a cold key at once:
+//   - Start the coordinator AT MOST ONCE per send. start() resolves as soon
+//     as the run is enqueued, but the token isn't claimed until that run
+//     actually executes its first instruction. Starting again on every
+//     failed resume just because the claim hasn't landed yet turns N
+//     concurrent senders into N x attempts throwaway runs.
+//   - Back off exponentially. A cold start is a whole workflow run booting;
+//     on a busy queue that can take seconds, not milliseconds.
 async function sendSemaphoreEvent(
   key: string,
   maxConcurrent: number,
   event: SemaphoreEvent
 ): Promise<void> {
   'use step';
-  for (let i = 0; i < 3; i++) {
+  let startedOne = false;
+  let backoffMs = 250;
+  for (let i = 0; i < SEND_ATTEMPTS; i++) {
     try {
       await semaphoreEvents.resume(semaphoreToken(key), event);
       return;
     } catch {
-      // Coordinator not running (or just recycled) — start it and retry.
+      // No coordinator owns the token yet — it isn't running, was just
+      // recycled, or is still booting.
     }
-    try {
-      await start(semaphoreCoordinator, [key, maxConcurrent]);
-    } catch {
-      // Another sender raced us to start it. Fine — retry the resume.
+    if (!startedOne) {
+      startedOne = true;
+      try {
+        await start(semaphoreCoordinator, [key, maxConcurrent]);
+      } catch {
+        // Another sender raced us to start it. Fine — retry the resume.
+      }
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    backoffMs = Math.min(backoffMs * 2, MAX_SEND_BACKOFF_MS);
   }
   throw new Error(`Could not reach semaphore coordinator for "${key}"`);
 }
@@ -157,6 +181,15 @@ export async function withPermit<T>(
 ): Promise<T> {
   for (let attempt = 0; attempt < MAX_ACQUIRE_ATTEMPTS; attempt++) {
     const grant = createHook<{ granted: true }>();
+    // Start the retry timer BEFORE the request step, not after. Durable
+    // correlation IDs are handed out in call order, so a sleep() created
+    // after an await inherits step-completion order — which isn't stable
+    // across replays when several holders run concurrently. Allocating it
+    // up-front, next to the hook, keeps the order deterministic. The
+    // timeout budget then covers the request too, which is what you want
+    // anyway: it bounds the whole acquire, not just the grant wait.
+    const retryTimer = sleep(ACQUIRE_RETRY_TIMEOUT);
+
     await sendSemaphoreEvent(key, maxConcurrent, {
       type: 'acquire',
       grantToken: grant.token,
@@ -164,7 +197,7 @@ export async function withPermit<T>(
 
     const granted = await Promise.race([
       grant.then(() => true as const),
-      sleep(ACQUIRE_RETRY_TIMEOUT).then(() => false as const),
+      retryTimer.then(() => false as const),
     ]);
 
     if (!granted) {

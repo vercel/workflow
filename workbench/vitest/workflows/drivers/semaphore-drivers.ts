@@ -53,8 +53,55 @@ async function resetStats(): Promise<void> {
   seenSteps.clear();
 }
 
-/** Fan out `count` permit-holders; report observed max concurrency. */
-export async function semaphoreFanout(
+/** Zero the shared counters. Run once before a fan-out. */
+export async function resetSemaphoreStats() {
+  'use workflow';
+
+  await resetStats();
+}
+
+/** Read the shared counters. Run once after a fan-out has settled. */
+export async function readSemaphoreStats() {
+  'use workflow';
+
+  return readStats();
+}
+
+/**
+ * One permit holder, as its own workflow run.
+ *
+ * The fan-out is cross-run on purpose: "at most N concurrent across ALL
+ * runs and machines" is the semaphore's actual contract, and a distributed
+ * semaphore that only ever coordinated callers inside a single run wouldn't
+ * be worth having. Each holder is a single linear chain, which is also how
+ * you'd really deploy this.
+ */
+export async function semaphoreHolder(
+  key: string,
+  maxConcurrent: number,
+  id: number
+) {
+  'use workflow';
+
+  return withPermit(key, maxConcurrent, async () => {
+    await enterCritical(id);
+    await holdBriefly();
+    await exitCritical();
+    return id;
+  });
+}
+
+/**
+ * `count` permit-holders fanned out *inside one run*.
+ *
+ * The cross-run fan-out above is the semaphore's real contract, but callers
+ * do reach for `Promise.all(items.map(i => withPermit(...)))` to bound
+ * concurrency within a single run — so that shape has to keep working too.
+ * It is also the shape that is sensitive to correlation-ID allocation order
+ * on replay, which is why withPermit() allocates its hook and retry timer in
+ * one synchronous prefix. Keep this test: it is the regression guard.
+ */
+export async function semaphoreInRunFanout(
   key: string,
   count: number,
   maxConcurrent: number
@@ -99,25 +146,16 @@ export async function semaphoreReleaseOnThrow(key: string) {
   return { results };
 }
 
-/** withLock = withPermit(key, 1). */
-export async function lockSerializes(key: string) {
+/** withLock = withPermit(key, 1). One holder per run, as above. */
+export async function lockHolder(key: string, id: number) {
   'use workflow';
 
-  await resetStats();
-  await Promise.all([
-    withLock(key, async () => {
-      await enterCritical(0);
-      await holdBriefly();
-      await exitCritical();
-    }),
-    withLock(key, async () => {
-      await enterCritical(1);
-      await holdBriefly();
-      await exitCritical();
-    }),
-  ]);
-  const stats = await readStats();
-  return { maxObserved: stats.max };
+  return withLock(key, async () => {
+    await enterCritical(id);
+    await holdBriefly();
+    await exitCritical();
+    return id;
+  });
 }
 
 /** Cancel the coordinator run for `key` so tests don't leave live runs. */
