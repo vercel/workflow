@@ -37,13 +37,40 @@ export const config = defineConfig({
   // The package default list includes Workflow itself; drop it here since
   // linking to the site you're already on is redundant.
   navbarOssProducts: [
-    { href: 'https://eve.dev/', logo: <LogoEve height={12} /> },
-    { href: 'https://ai-sdk.dev/', logo: <LogoAiSdk height={12} /> },
-    { href: 'https://flags-sdk.dev/', logo: <LogoFlagsSdk height={20} /> },
-    { href: 'https://chat-sdk.dev/', logo: <LogoChatSdk height={20} /> },
-    { href: 'https://turborepo.dev/', logo: <LogoTurborepo height={14} /> },
+    {
+      href: 'https://eve.dev/',
+      id: 'eve',
+      label: 'eve',
+      logo: <LogoEve height={12} />,
+    },
+    {
+      href: 'https://ai-sdk.dev/',
+      id: 'ai-sdk',
+      label: 'AI SDK',
+      logo: <LogoAiSdk height={12} />,
+    },
+    {
+      href: 'https://flags-sdk.dev/',
+      id: 'flags-sdk',
+      label: 'Flags SDK',
+      logo: <LogoFlagsSdk height={20} />,
+    },
+    {
+      href: 'https://chat-sdk.dev/',
+      id: 'chat-sdk',
+      label: 'Chat SDK',
+      logo: <LogoChatSdk height={20} />,
+    },
+    {
+      href: 'https://turborepo.dev/',
+      id: 'turborepo',
+      label: 'Turborepo',
+      logo: <LogoTurborepo height={14} />,
+    },
     {
       href: 'https://elements.ai-sdk.dev/',
+      id: 'ai-elements',
+      label: 'AI Elements',
       logo: <LogoAiElements height={12} />,
     },
   ],
