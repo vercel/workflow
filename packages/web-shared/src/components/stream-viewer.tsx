@@ -97,11 +97,8 @@ function ViewToggle({
     { id: 'text', label: 'Text' },
   ];
   return (
-    <div
-      className="flex overflow-hidden rounded-md border"
-      style={{ borderColor: 'var(--ds-gray-300)' }}
-    >
-      {modes.map((mode, i) => {
+    <div className="flex overflow-hidden rounded-md border border-gray-alpha-400 divide-x divide-gray-alpha-400">
+      {modes.map((mode) => {
         const active = view === mode.id;
         return (
           <button
@@ -111,10 +108,9 @@ function ViewToggle({
             onClick={() => onChange(mode.id)}
             className="px-2 py-1 text-[11px] transition-colors"
             style={{
-              backgroundColor: active ? 'var(--ds-gray-200)' : 'transparent',
+              backgroundColor: active ? 'var(--ds-gray-100)' : 'transparent',
               color: active ? 'var(--ds-gray-1000)' : 'var(--ds-gray-700)',
               fontWeight: active ? 500 : 400,
-              borderLeft: i > 0 ? '1px solid var(--ds-gray-300)' : undefined,
             }}
           >
             {mode.label}
@@ -134,11 +130,8 @@ function JumpToLatest({ onClick }: { onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-medium"
+      className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 rounded-full border border-gray-alpha-400 px-3 py-1.5 text-[11px] font-medium bg-background-100 text-gray-1000"
       style={{
-        borderColor: 'var(--ds-gray-300)',
-        backgroundColor: 'var(--ds-background-100)',
-        color: 'var(--ds-gray-1000)',
         boxShadow: 'var(--ds-shadow-small)',
       }}
     >
@@ -163,7 +156,7 @@ const ChunkRow = React.memo(function ChunkRow({
 }) {
   return (
     <div
-      className="group flex items-start gap-3 px-1 py-2"
+      className="group flex items-start gap-3 pl-4 pr-2 py-2"
       style={
         isLast ? undefined : { borderBottom: '1px solid var(--ds-gray-200)' }
       }
@@ -320,7 +313,7 @@ function TextView({ chunks }: { chunks: Chunk[] }) {
         className="h-full overflow-auto"
       >
         <div
-          className="whitespace-pre-wrap break-words py-1 pr-3 text-[13px] leading-[1.65]"
+          className="whitespace-pre-wrap break-words py-2 pl-4 pr-3 text-[13px] leading-[1.65]"
           style={{ color: 'var(--ds-gray-1000)' }}
         >
           {chunks.map((chunk, index) =>
@@ -329,11 +322,7 @@ function TextView({ chunks }: { chunks: Chunk[] }) {
             ) : (
               <div
                 key={chunk.id}
-                className="my-2 rounded-md border px-3 py-2"
-                style={{
-                  borderColor: 'var(--ds-gray-300)',
-                  backgroundColor: 'var(--ds-background-200)',
-                }}
+                className="my-2 border border-gray-alpha-400 px-3 py-2"
               >
                 <div className="mb-1 flex items-center justify-between gap-2">
                   <span
@@ -369,9 +358,9 @@ function TextView({ chunks }: { chunks: Chunk[] }) {
 
 function StreamSkeleton() {
   return (
-    <div className="flex flex-col gap-4 animate-in fade-in pt-1">
+    <div className="flex flex-col gap-4 animate-in fade-in pt-2 pl-4 pr-2">
       {[1, 2, 3, 4].map((i) => (
-        <div key={i} className="flex items-start gap-3 px-1">
+        <div key={i} className="flex items-start gap-3">
           <Skeleton style={{ width: 36, height: 12, borderRadius: 4 }} />
           <Skeleton style={{ flex: 1, height: 12, borderRadius: 4 }} />
         </div>
@@ -410,10 +399,9 @@ function EmptyState({ isLive }: { isLive: boolean }) {
 function ErrorState({ error }: { error: string }) {
   return (
     <div
-      className="text-[11px] rounded-md border p-3"
+      className="text-[11px] border p-3 mx-4 mt-2"
       style={{
         borderColor: 'var(--ds-red-300)',
-        backgroundColor: 'var(--ds-red-100)',
         color: 'var(--ds-red-700)',
       }}
     >
@@ -444,30 +432,25 @@ function StreamHeader({
 }) {
   const description = describeStreamId(streamId);
   return (
-    <div className="flex flex-none items-center justify-between gap-4 pb-2">
-      <div className="min-w-0">
-        <div
-          className={`truncate text-[13px] font-medium ${description.kind === 'user-named' ? 'font-mono' : ''}`}
-          style={{ color: 'var(--ds-gray-1000)' }}
+    <div className="flex h-10 min-h-10 flex-none items-center justify-between gap-4 border-b border-gray-alpha-400 pl-4 pr-2">
+      <div className="flex min-w-0 items-baseline gap-2">
+        <span
+          className={`truncate text-label-14 text-gray-1000 ${description.kind === 'user-named' ? 'font-mono' : ''}`}
         >
           {description.label}
-        </div>
+        </span>
         {description.label !== streamId && (
-          <div
-            className="mt-0.5 truncate font-mono text-[11px]"
-            style={{ color: 'var(--ds-gray-700)' }}
+          <span
+            className="truncate font-mono text-[11px] text-gray-700"
             title={streamId}
           >
             {streamId}
-          </div>
+          </span>
         )}
       </div>
       <div className="flex flex-none items-center gap-3">
         {isLive && <LiveIndicator />}
-        <span
-          className="text-xs tabular-nums"
-          style={{ color: 'var(--ds-gray-900)' }}
-        >
+        <span className="text-xs tabular-nums text-gray-900">
           {chunkCount} {chunkCount === 1 ? 'chunk' : 'chunks'}
         </span>
         {showViewToggle && <ViewToggle view={view} onChange={onViewChange} />}

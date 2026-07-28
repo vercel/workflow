@@ -790,144 +790,106 @@ export function RunDetailView({
 
             <TabsContent value="streams" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load stream data">
-                <div className="h-full flex gap-4">
-                  {/* Stream list sidebar */}
-                  <div
-                    className="w-64 flex-shrink-0 flex flex-col border rounded-lg overflow-hidden"
-                    style={{
-                      borderColor: 'var(--ds-gray-300)',
-                      backgroundColor: 'var(--ds-background-100)',
-                    }}
-                  >
-                    <div
-                      className="flex flex-none items-baseline justify-between px-3 py-2 border-b text-xs font-medium"
-                      style={{
-                        borderColor: 'var(--ds-gray-300)',
-                        color: 'var(--ds-gray-900)',
-                      }}
-                    >
-                      Streams
-                      <span
-                        className="tabular-nums font-normal"
-                        style={{ color: 'var(--ds-gray-600)' }}
-                      >
-                        {streams.length}
-                      </span>
+                <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
+                  <div className="h-full flex min-h-0">
+                    {/* Stream list sidebar */}
+                    <div className="w-64 flex-shrink-0 flex flex-col min-h-0 border-r border-gray-alpha-400">
+                      <div className="flex h-10 min-h-10 flex-none items-center justify-between border-b border-gray-alpha-400 pl-4 pr-2">
+                        <span className="text-label-14 text-gray-1000">
+                          Streams
+                        </span>
+                        <span className="text-label-12 text-gray-900 tabular-nums">
+                          {streams.length}
+                        </span>
+                      </div>
+                      <div className="flex-1 min-h-0 overflow-auto">
+                        {streamsLoading ? (
+                          <div className="p-4 flex items-center justify-center">
+                            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                          </div>
+                        ) : streamsError ? (
+                          <div className="p-4 text-xs text-destructive">
+                            {streamsError.message}
+                          </div>
+                        ) : streams.length === 0 ? (
+                          <div className="p-4 text-label-13 text-gray-600">
+                            No streams found for this run
+                          </div>
+                        ) : (
+                          <ul className="divide-y divide-gray-400">
+                            {streams.map((streamId) => {
+                              const description = describeStreamId(streamId);
+                              const isSelected = selectedStreamId === streamId;
+                              return (
+                                <li key={streamId}>
+                                  <button
+                                    type="button"
+                                    aria-selected={isSelected}
+                                    onClick={() =>
+                                      setSelectedStreamId(streamId)
+                                    }
+                                    className="block w-full text-left pl-4 pr-2 py-2 transition-colors hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200"
+                                    title={streamId}
+                                  >
+                                    <div
+                                      className={`truncate text-label-14 text-gray-1000 ${
+                                        description.kind === 'user-named'
+                                          ? 'font-mono'
+                                          : ''
+                                      }`}
+                                    >
+                                      {description.label}
+                                    </div>
+                                    {description.label !== streamId && (
+                                      <div className="truncate text-[11px] font-mono mt-0.5 text-gray-700">
+                                        {streamId}
+                                      </div>
+                                    )}
+                                  </button>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        )}
+                      </div>
                     </div>
-                    <div className="flex-1 min-h-0 overflow-auto">
-                      {streamsLoading ? (
-                        <div className="p-4 flex items-center justify-center">
-                          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                        </div>
-                      ) : streamsError ? (
-                        <div className="p-4 text-xs text-destructive">
-                          {streamsError.message}
-                        </div>
-                      ) : streams.length === 0 ? (
-                        <div
-                          className="p-4 text-xs"
-                          style={{ color: 'var(--ds-gray-600)' }}
-                        >
-                          No streams found for this run
-                        </div>
+
+                    {/* Stream viewer */}
+                    <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+                      {selectedStreamId ? (
+                        streamError?.includes('encrypted') && !encryptionKey ? (
+                          <div className="h-full flex flex-col items-center justify-center gap-3 p-4">
+                            <Lock className="h-6 w-6 text-gray-700" />
+                            <div className="text-sm text-gray-900">
+                              This stream is encrypted.
+                            </div>
+                            <DecryptButton
+                              onClick={handleDecrypt}
+                              loading={isDecrypting}
+                            />
+                          </div>
+                        ) : (
+                          <StreamViewer
+                            streamId={selectedStreamId}
+                            chunks={streamChunks}
+                            isLive={streamIsLive}
+                            error={
+                              streamError?.includes('encrypted')
+                                ? null
+                                : streamError
+                            }
+                          />
+                        )
                       ) : (
-                        streams.map((streamId) => {
-                          const description = describeStreamId(streamId);
-                          const isSelected = selectedStreamId === streamId;
-                          return (
-                            <button
-                              key={streamId}
-                              type="button"
-                              aria-current={isSelected || undefined}
-                              onClick={() => setSelectedStreamId(streamId)}
-                              className="w-full text-left px-3 py-2 hover:bg-accent transition-colors"
-                              style={{
-                                backgroundColor: isSelected
-                                  ? 'var(--ds-gray-200)'
-                                  : 'transparent',
-                              }}
-                              title={streamId}
-                            >
-                              <div
-                                className={`truncate text-xs ${
-                                  description.kind === 'user-named'
-                                    ? 'font-mono'
-                                    : ''
-                                }`}
-                                style={{ color: 'var(--ds-gray-1000)' }}
-                              >
-                                {description.label}
-                              </div>
-                              {description.label !== streamId && (
-                                <div
-                                  className="truncate text-[11px] font-mono mt-0.5"
-                                  style={{ color: 'var(--ds-gray-700)' }}
-                                >
-                                  {streamId}
-                                </div>
-                              )}
-                            </button>
-                          );
-                        })
+                        <div className="h-full flex items-center justify-center">
+                          <div className="text-sm text-gray-600">
+                            {streams.length > 0
+                              ? 'Select a stream to view its data'
+                              : 'No streams available'}
+                          </div>
+                        </div>
                       )}
                     </div>
-                  </div>
-
-                  {/* Stream viewer */}
-                  <div className="flex-1 min-w-0">
-                    {selectedStreamId ? (
-                      streamError?.includes('encrypted') && !encryptionKey ? (
-                        <div
-                          className="h-full flex flex-col items-center justify-center gap-3 rounded-lg border p-4"
-                          style={{
-                            borderColor: 'var(--ds-gray-300)',
-                            backgroundColor: 'var(--ds-gray-100)',
-                          }}
-                        >
-                          <Lock
-                            className="h-6 w-6"
-                            style={{ color: 'var(--ds-gray-700)' }}
-                          />
-                          <div
-                            className="text-sm"
-                            style={{ color: 'var(--ds-gray-900)' }}
-                          >
-                            This stream is encrypted.
-                          </div>
-                          <DecryptButton
-                            onClick={handleDecrypt}
-                            loading={isDecrypting}
-                          />
-                        </div>
-                      ) : (
-                        <StreamViewer
-                          streamId={selectedStreamId}
-                          chunks={streamChunks}
-                          isLive={streamIsLive}
-                          error={
-                            streamError?.includes('encrypted')
-                              ? null
-                              : streamError
-                          }
-                        />
-                      )
-                    ) : (
-                      <div
-                        className="h-full flex items-center justify-center rounded-lg border border-dashed"
-                        style={{
-                          borderColor: 'var(--ds-gray-300)',
-                        }}
-                      >
-                        <div
-                          className="text-sm"
-                          style={{ color: 'var(--ds-gray-600)' }}
-                        >
-                          {streams.length > 0
-                            ? 'Select a stream to view its data'
-                            : 'No streams available'}
-                        </div>
-                      </div>
-                    )}
                   </div>
                 </div>
               </ErrorBoundary>
