@@ -34,7 +34,7 @@
     "format": "biome format --write",
     "changeset": "changeset",
     "ci:version": "changeset version",
-    "ci:publish": "pnpm build && changeset publish --tag previous",
+    "ci:publish": "pnpm build && changeset publish",
     "release:notes": "node scripts/generate-release-notes.mjs",
     "workbench:stage": "node scripts/stage-workbench-with-tarballs.mjs"
   },
