@@ -203,7 +203,6 @@ When modifying the SWC compiler plugin (`packages/swc-plugin-workflow`), you mus
 
 ## Changesets
 
-- This branch is the 4.x maintenance line. `main` carries the current GA line (5.x) and owns the `latest` npm dist-tag, so `ci:publish` here passes `--tag previous` — releases from this branch are installable as `workflow@previous` and never move `latest`. npm rejects range-like tag names (`v4`, `4.x`), which is why the tag is not version-numbered.
 - `workflow` and `@workflow/core` use changesets' "fixed" versioning strategy - they always have the same version number
 - Every PR requires a changeset to be included before it will be merged
 - To check if one is needed, run `pnpm changeset status --since=main >/dev/null 2>&1 && echo "no changeset needed" || echo "changeset needed"`
