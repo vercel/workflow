@@ -136,10 +136,12 @@ Without re-exporting, the workflow runtime cannot match a running workflow to it
 
 Point the re-export at the package's dedicated workflows entry point rather than a deep path into `dist/`. Files reachable through the package's `exports` map get an ID of the form `name/subpath@version`; a deep, non-exported file falls back to a path-based ID instead.
 
-<Callout type="warn">
-**Upgrading a workflow library breaks runs that are still in flight.** IDs for code shipped by a package embed the package version — `step//@acme/media/workflows@1.4.0//transcode` — so publishing `1.5.0` renames every workflow and step the package ships, and a run that started on the old version cannot replay against the new one. Let in-flight runs drain before you ship an upgrade.
+<Callout type="info">
+**IDs for code you ship embed your package version.** A step in `@acme/media` version `1.4.0` gets the ID `step//@acme/media/workflows@1.4.0//transcode`, so publishing `1.5.0` renames every workflow and step the package ships.
 
-The re-export file does not change this. An ID is derived from where the file lives, not from how it was imported, so a package file keeps its `name@version` ID whether or not a consumer re-exports it.
+That is safe, because runs are pinned to the deployment that started them. A run records its deployment ID and every resume targets that same deployment, so after a consumer upgrades, new runs execute the new version while runs already in flight keep replaying against the old one. Consumers do not need to drain anything before upgrading.
+
+The re-export file does not change any of this. An ID is derived from where the file lives, not from how it was imported, so a package file keeps its `name@version` ID whether or not a consumer re-exports it.
 </Callout>
 
 ## Keeping Step I/O Clean
@@ -330,7 +332,6 @@ Before publishing a workflow library:
 - [ ] Separate `./workflows` export in `package.json` for the raw workflow functions
 - [ ] `workflow` is marked as **external** in your bundler config
 - [ ] Documentation tells consumers to re-export from `@your-lib/workflows`
-- [ ] Release notes tell consumers to drain in-flight runs before upgrading
 - [ ] Credentials are either resolved from environment variables or passed explicitly (both are safe with encryption enabled)
 - [ ] All step I/O uses [supported serializable types](/docs/foundations/serialization)
 - [ ] Integration tests use a test server with re-exported workflows
