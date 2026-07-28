@@ -6,5 +6,4 @@
 '@workflow/world-vercel': patch
 ---
 
-Infer required run and step entities, including their start times, from
-`events.create` request types.
+Infer required run and step entities from `events.create` request types.

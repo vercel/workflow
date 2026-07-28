@@ -141,8 +141,6 @@ export const WorkflowRunSchema = z.discriminatedUnion('status', [
 
 // Inferred types
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
-/** A workflow run with its first start time materialized. */
-export type StartedWorkflowRun = WorkflowRun & { startedAt: Date };
 
 /**
  * WorkflowRun with input/output fields excluded (when resolveData='none').

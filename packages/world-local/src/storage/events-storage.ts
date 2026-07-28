@@ -855,6 +855,9 @@ export function createEventsStorage(
         if (data.eventType === 'attr_set' && !currentRun) {
           throw new WorkflowRunNotFoundError(effectiveRunId);
         }
+        if (data.eventType === 'run_started' && !currentRun) {
+          throw new WorkflowRunNotFoundError(effectiveRunId);
+        }
 
         // ============================================================
         // VERSION COMPATIBILITY: Check run spec version

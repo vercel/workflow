@@ -651,6 +651,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       if (data.eventType === 'attr_set' && !currentRun) {
         throw new WorkflowRunNotFoundError(effectiveRunId);
       }
+      if (data.eventType === 'run_started' && !currentRun) {
+        throw new WorkflowRunNotFoundError(effectiveRunId);
+      }
 
       // Lazy step start: a step_started carrying step-creation data
       // (stepName + input) may arrive with no prior step_created — it creates

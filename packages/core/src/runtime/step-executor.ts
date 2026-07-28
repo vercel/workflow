@@ -6,18 +6,14 @@ import {
   RunExpiredError,
   ThrottleError,
   TooEarlyError,
+  WorkflowRuntimeError,
 } from '@workflow/errors';
 import {
   createWorkflowBaseUrl,
   pluralize,
   stepDisplayName,
 } from '@workflow/utils';
-import type {
-  Event,
-  SerializedData,
-  StartedStep,
-  World,
-} from '@workflow/world';
+import type { Event, SerializedData, Step, World } from '@workflow/world';
 import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -504,7 +500,7 @@ export async function executeStep(
         (params.forceOptimisticStart === true &&
           !isOptimisticInlineStartExplicitlyDisabled()));
 
-    let step: StartedStep;
+    let step: Step;
     // `Date.now()` taken immediately before the `step_started` create is
     // issued (either path below) — anchors RSFS's end point. See
     // StepLatencyEventData.rsfs and the call sites below.
@@ -761,6 +757,11 @@ export async function executeStep(
     try {
       const attempt = step.attempt;
 
+      if (!step.startedAt) {
+        throw new WorkflowRuntimeError(
+          `Step "${stepId}" has no "startedAt" timestamp`
+        );
+      }
       const stepStartedAt = step.startedAt;
       // Use the provided encryption key when available, otherwise resolve
       // through the memoized accessor declared at the top of this trace.

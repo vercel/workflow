@@ -290,6 +290,15 @@ describe('Storage', () => {
         );
       });
 
+      it('should reject run_started on a non-existent run', async () => {
+        await expect(
+          storage.events.create('wrun_nonexistent', {
+            eventType: 'run_started',
+            specVersion: SPEC_VERSION_CURRENT,
+          })
+        ).rejects.toMatchObject({ name: 'WorkflowRunNotFoundError' });
+      });
+
       it('should update run status to completed via run_completed event', async () => {
         const created = await createRun(storage, {
           deploymentId: 'deployment-123',

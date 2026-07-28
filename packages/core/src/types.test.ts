@@ -3,8 +3,7 @@ import { FatalError } from '@workflow/errors';
 import type {
   EventRequestOfType,
   EventResultFor,
-  StartedStep,
-  StartedWorkflowRun,
+  Step,
   WorkflowRun,
 } from '@workflow/world';
 import { describe, expect, expectTypeOf, it } from 'vitest';
@@ -17,10 +16,16 @@ describe('EventResultFor', () => {
     >().toEqualTypeOf<WorkflowRun>();
     expectTypeOf<
       EventResultFor<EventRequestOfType<'run_started'>>['run']
-    >().toEqualTypeOf<StartedWorkflowRun>();
+    >().toEqualTypeOf<WorkflowRun>();
     expectTypeOf<
       EventResultFor<EventRequestOfType<'step_started'>>['step']
-    >().toEqualTypeOf<StartedStep>();
+    >().toEqualTypeOf<Step>();
+    expectTypeOf<
+      EventResultFor<EventRequestOfType<'run_started'>>['run']['startedAt']
+    >().toEqualTypeOf<Date | undefined>();
+    expectTypeOf<
+      EventResultFor<EventRequestOfType<'step_started'>>['step']['startedAt']
+    >().toEqualTypeOf<Date | undefined>();
   });
 });
 

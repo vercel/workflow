@@ -608,10 +608,26 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     // the next queue delivery. Non-retryable
     // types (step_started, step_retrying, hook_received) run once. See
     // ./event-retry for the validated per-event classification.
-    return (await withEventPostRetry(
+    const result = await withEventPostRetry(
       () => createWorkflowRunEventInner(id, data, params, config),
       data.eventType
-    )) as EventResultFor<T>;
+    );
+    if (
+      (data.eventType === 'run_created' || data.eventType === 'run_started') &&
+      !result.run
+    ) {
+      throw new WorkflowWorldError(
+        `${data.eventType} response is missing the run entity`,
+        { code: 'SCHEMA_VALIDATION' }
+      );
+    }
+    if (data.eventType === 'step_started' && !result.step) {
+      throw new WorkflowWorldError(
+        'step_started response is missing the step entity',
+        { code: 'SCHEMA_VALIDATION' }
+      );
+    }
+    return result as EventResultFor<T>;
   } catch (err) {
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
