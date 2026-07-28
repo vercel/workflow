@@ -308,7 +308,9 @@ Learn more about [Workflows and Steps](/docs/foundations/workflows-and-steps).
 
 ## ID Generation
 
-The compiler generates stable IDs for workflows and steps based on file paths and function names:
+The compiler generates stable IDs for workflows and steps. The ID form depends on where the function is defined:
+
+**Local files** — application code and package files that aren't reachable through a package's `exports`:
 
 **Pattern:** `{type}//{filepath}//{functionName}`
 
@@ -318,9 +320,21 @@ The compiler generates stable IDs for workflows and steps based on file paths an
 - `step//workflows/user-signup.js//createUser`
 - `step//workflows/payments/checkout.ts//processPayment`
 
+**Package-shipped files** — files in an npm or workspace package that are reachable through the package's `exports`:
+
+**Pattern:** `{type}//{packageName}[/{subpath}]@{version}//{functionName}`
+
+**Examples:**
+
+- `step//@myorg/tasks@2.0.0//processOrder`
+- `step//@myorg/agent/server@1.0.0//sendMessage`
+- `workflow//shared-package@1.0.0//handleOrder`
+
+Package-shipped IDs are derived from the package specifier (name, export subpath, and version), not from the file's location in your project. Re-exporting a package's workflow or step from your own files doesn't change its ID, and upgrading the package version produces new IDs.
+
 **Key properties:**
 
-- **Stable**: IDs don't change unless you rename files or functions
+- **Stable**: IDs don't change unless you rename files or functions (or, for package-shipped steps, change the package version)
 - **Unique**: Each workflow/step has a unique identifier
 - **Portable**: Works across different runtimes and deployments
 
