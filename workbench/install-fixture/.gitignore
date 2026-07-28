@@ -6,3 +6,4 @@ app/.well-known
 app/workflows/*
 !app/workflows/.gitkeep
 lib/
+tsconfig.tsbuildinfo

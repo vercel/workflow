@@ -18,9 +18,9 @@
     "ai": "catalog:",
     "chat": "4.30.0",
     "ms": "2.1.3",
-    "next": "16.2.1",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
+    "next": "16.2.11",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
     "resend": "6.12.4",
     "stripe": "22.2.0",
     "workflow": "workspace:*",
@@ -29,7 +29,7 @@
   "devDependencies": {
     "@types/ms": "2.1.0",
     "@types/node": "catalog:",
-    "@types/react": "19.2.4",
+    "@types/react": "^19",
     "typescript": "catalog:"
   }
 }
