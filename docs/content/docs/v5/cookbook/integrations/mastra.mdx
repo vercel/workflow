@@ -11,7 +11,7 @@ related:
 ---
 
 <CopyPrompt
-  text="Set up Mastra workflows to run on Workflow SDK in this Next.js app. Install `@mastra/workflow`, `workflow`, `@mastra/core`, and `zod`. Wrap `next.config.ts` with `withWorkflow` from `workflow/next`. Create `workflows/mastra.ts` containing `export * from &quot;@mastra/workflow/workflows&quot;` plus a side-effect import of the Mastra entry file — this is required so the Workflow compiler assigns stable workflow IDs and the flow handler can load the definitions. In `src/mastra/workflows/index.ts`, call `init({ runner: mastraRunner })` to get `createWorkflow` and `createStep`, author a workflow, and call `.commit()`. Register the workflow on `new Mastra({ workflows: { ... } })`. Add a route handler that calls `mastra.getWorkflow(&quot;id&quot;).createRun()` then `run.start({ inputData })`. To resume a suspended run from a different process, call `resumeHook` from `workflow/api` with the token `mastra:&#36;{runId}:&#36;{stepId}`. Verify with `npx workflow web` that each Mastra step appears as its own durable step in the run timeline."
+  text="Set up Mastra workflows to run on Workflow SDK in this Next.js app. Install `@mastra/workflow`, `workflow`, `@mastra/core`, and `zod`. Wrap `next.config.ts` with `withWorkflow` from `workflow/next`. Create `workflows/mastra.ts` containing `export * from &quot;@mastra/workflow/workflows&quot;` plus a side-effect import of the Mastra entry file — this is required so the Workflow compiler discovers the package's workflow and step files and the flow handler can load the definitions. In `src/mastra/workflows/index.ts`, call `init({ runner: mastraRunner })` to get `createWorkflow` and `createStep`, author a workflow, and call `.commit()`. Register the workflow on `new Mastra({ workflows: { ... } })`. Add a route handler that calls `mastra.getWorkflow(&quot;id&quot;).createRun()` then `run.start({ inputData })`. To resume a suspended run from a different process, call `resumeHook` from `workflow/api` with the token `mastra:&#36;{runId}:&#36;{stepId}`. Verify with `npx workflow web` that each Mastra step appears as its own durable step in the run timeline."
 />
 
 [Mastra](https://mastra.ai/) is an open-source TypeScript framework for building AI agents and workflows. Workflows are authored with a builder API: [`createStep()`](https://mastra.ai/reference/workflows/step) defines a unit of work with input and output schemas, and [`createWorkflow()`](https://mastra.ai/reference/workflows/workflow) composes those steps with `.then()`, `.parallel()`, `.branch()`, `.dountil()`, `.foreach()`, and friends.
@@ -97,7 +97,7 @@ export default withWorkflow(nextConfig); // [!code highlight]
 Create one file in your `workflows/` directory that re-exports the runner and imports your Mastra entry file for its side effects.
 
 ```typescript title="workflows/mastra.ts" lineNumbers
-// Re-export the runner so your build compiles it and assigns stable IDs
+// Re-export the runner so your build discovers and compiles it
 export * from "@mastra/workflow/workflows"; // [!code highlight]
 
 // Side-effect import: registers your Mastra workflow definitions
@@ -107,9 +107,13 @@ import "../src/mastra"; // [!code highlight]
 <Callout type="info">
 This file is not optional, and it does two jobs.
 
-**Stable workflow IDs.** The Workflow compiler assigns each workflow and step an ID from its position in the source tree your build processes. Code resolved straight out of `node_modules` gets an ID that embeds the package version — `step//@mastra/workflow@1.2.3//…` — so upgrading `@mastra/workflow` renames every ID and breaks replay for runs already in flight. Re-exporting pins the IDs to your source tree instead, where they survive both package upgrades and cold starts. See [Re-exporting for workflow ID stability](/docs/cookbook/advanced/publishing-libraries#re-exporting-for-workflow-id-stability).
+**Discovery.** The Workflow compiler only transforms `"use workflow"` and `"use step"` files it can reach from your source tree. Re-exporting the runner from `workflows/` puts the package's directive files on that path so your build compiles them. See [publishing libraries](/docs/cookbook/advanced/publishing-libraries).
 
 **Loading definitions.** Steps execute in the flow handler process, which does not run your route handlers. The side-effect import guarantees your Mastra workflow definitions are registered there, so the runner can look up the step graph when it resumes.
+</Callout>
+
+<Callout type="warn">
+Step IDs for code shipped by a package embed that package's version, so upgrading `@mastra/workflow` renames every step it ships and runs already in flight cannot replay across the change. Let in-flight runs drain before you upgrade.
 </Callout>
 
 </Step>
