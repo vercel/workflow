@@ -3,9 +3,7 @@
 import { ArrowDown } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { describeStreamId } from '../lib/stream-id';
 import { CopyButton } from './new-trace-viewer/components/copy-button';
-import { MiddleTruncate } from './new-trace-viewer/components/middle-truncate/middle-truncate';
 import { DataInspector } from './ui/data-inspector';
 import { Skeleton } from './ui/skeleton';
 
@@ -413,53 +411,29 @@ function ErrorState({ error }: { error: string }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Header — stream identity on the left, state and view controls on the right
+// Header bar — stream state and view controls; identity lives in the sidebar
 // ──────────────────────────────────────────────────────────────────────────
 
 function StreamHeader({
-  streamId,
   chunkCount,
   isLive,
   showViewToggle,
   view,
   onViewChange,
 }: {
-  streamId: string;
   chunkCount: number;
   isLive: boolean;
   showViewToggle: boolean;
   view: ViewMode;
   onViewChange: (view: ViewMode) => void;
 }) {
-  const description = describeStreamId(streamId);
   return (
-    <div className="flex h-10 min-h-10 flex-none items-center justify-between gap-4 border-b border-gray-alpha-400 pl-4 pr-2">
-      <div className="flex min-w-0 items-baseline gap-2">
-        <span
-          className={`truncate text-label-14 text-gray-1000 ${description.kind === 'user-named' ? 'font-mono' : ''}`}
-        >
-          {description.label}
-        </span>
-        {description.label !== streamId && (
-          <span className="flex min-w-0 items-center gap-1 font-mono text-[11px] text-gray-700">
-            <span className="min-w-0">
-              <MiddleTruncate value={streamId} />
-            </span>
-            <CopyButton
-              copyText={streamId}
-              ariaLabel={`Copy stream ID ${streamId}`}
-              className="flex-none"
-            />
-          </span>
-        )}
-      </div>
-      <div className="flex flex-none items-center gap-3">
-        {isLive && <LiveIndicator />}
-        <span className="text-xs tabular-nums text-gray-900">
-          {chunkCount} {chunkCount === 1 ? 'chunk' : 'chunks'}
-        </span>
-        {showViewToggle && <ViewToggle view={view} onChange={onViewChange} />}
-      </div>
+    <div className="flex h-10 min-h-10 flex-none items-center justify-end gap-3 border-b border-gray-alpha-400 pl-4 pr-2">
+      {isLive && <LiveIndicator />}
+      <span className="text-xs tabular-nums text-gray-900">
+        {chunkCount} {chunkCount === 1 ? 'chunk' : 'chunks'}
+      </span>
+      {showViewToggle && <ViewToggle view={view} onChange={onViewChange} />}
     </div>
   );
 }
@@ -510,7 +484,7 @@ function StreamContent({
  * of complex types (Map, Set, Date, custom classes, etc.).
  */
 export function StreamViewer({
-  streamId,
+  streamId: _streamId,
   chunks,
   isLive,
   error,
@@ -533,7 +507,6 @@ export function StreamViewer({
   return (
     <div className="flex flex-col h-full">
       <StreamHeader
-        streamId={streamId}
         chunkCount={chunks.length}
         isLive={isLive}
         showViewToggle={hasTextChunks}
