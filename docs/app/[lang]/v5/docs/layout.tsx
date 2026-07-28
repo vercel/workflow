@@ -6,7 +6,7 @@ import { PRE_RELEASE_VERSION } from '@/lib/geistdocs/versions';
 const Layout = async ({ children, params }: LayoutProps<'/[lang]/v5/docs'>) => {
   const { lang } = await params;
   return (
-    <div className="bg-background-100">
+    <div className="bg-background-200">
       <PreReleaseBanner pathname={`/${lang}/v5/docs`} />
       <DocsLayout
         currentVersion={PRE_RELEASE_VERSION.id}
