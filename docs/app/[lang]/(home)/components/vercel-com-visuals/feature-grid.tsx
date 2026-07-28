@@ -36,9 +36,8 @@ const features: Feature[] = [
 function FeatureCard({ title, description, visual }: Feature): JSX.Element {
   return (
     <div className="flex flex-col items-stretch justify-between gap-6 md:gap-10 px-4 py-8 sm:py-12 sm:px-12">
-      <p className="text-[20px] leading-[26px] tracking-[-0.4px] font-medium text-gray-900 lg:text-[24px] lg:leading-[32px] lg:tracking-[-0.96px]">
-        <strong className="font-semibold text-gray-1000">{title}</strong>{' '}
-        {description}
+      <p className="text-heading-20 lg:text-heading-24 text-gray-900">
+        <strong className="text-gray-1000!">{title}</strong> {description}
       </p>
       <div className="@container flex items-center justify-center overflow-hidden">
         {visual}
