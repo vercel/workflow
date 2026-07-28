@@ -14,7 +14,7 @@ import {
   runPayloadKeys,
   SerializationFormat,
 } from '../serialization.js';
-import { resumeHook } from './resume-hook.js';
+import { resumeHook, resumeWebhook } from './resume-hook.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -136,6 +136,87 @@ describe('resumeHook', () => {
 
       await resumeHook('order:1', { approved: true });
 
+      expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+      expect(peekFormatPrefix(capturedPayload(createEvent))).toBe(
+        SerializationFormat.SEALED
+      );
+    });
+
+    it('seals via the stored resume context without reading the run or a key', async () => {
+      // Option 1 fast path: when the hook carries a resumeContext with the
+      // run's public key inline, a resume needs neither `runs.get` NOR
+      // `getEncryptionKeyForRun` — a single `hooks.getByToken`, then seal. This
+      // is what folds the public-key hop into the same read that already
+      // skips the run fetch.
+      const { publicKey } = await deriveRunKeyPair(RUN_KEY_MATERIAL);
+      const hook = {
+        ...makeHook(),
+        resumeContext: {
+          deploymentId: 'deployment_1',
+          workflowName: 'processOrder',
+          runSpecVersion: SPEC_VERSION_CURRENT,
+          workflowCoreVersion: '5.0.0-beta.40',
+          encryptionPublicKey: bytesToBase64(publicKey),
+        },
+      } as Hook;
+      const runsGet = vi.fn();
+      const createEvent = vi.fn().mockResolvedValue(undefined);
+      const getEncryptionKeyForRun = vi.fn();
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken: vi.fn().mockResolvedValue(hook) },
+        runs: { get: runsGet },
+        events: { create: createEvent },
+        getEncryptionKeyForRun,
+        queue: vi.fn().mockResolvedValue(undefined),
+        getDeploymentId: vi.fn().mockResolvedValue('deployment_2'),
+      } as unknown as World);
+
+      await resumeHook('order:1', { approved: true });
+
+      // Single read: no run fetch and no run-key API round trip.
+      expect(runsGet).not.toHaveBeenCalled();
+      expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+      expect(peekFormatPrefix(capturedPayload(createEvent))).toBe(
+        SerializationFormat.SEALED
+      );
+    });
+
+    it('resumeWebhook default seals the payload with no key lookup', async () => {
+      // End-to-end through the webhook entrypoint: a default webhook (no
+      // metadata) must resolve no key and still emit a sealed (`encp`) payload,
+      // keyed off the run's public key in the resume context. This is the P1
+      // fix observed at the byte level.
+      const { publicKey } = await deriveRunKeyPair(RUN_KEY_MATERIAL);
+      const hook = {
+        ...makeHook(),
+        isWebhook: true,
+        resumeContext: {
+          deploymentId: 'deployment_1',
+          workflowName: 'processOrder',
+          runSpecVersion: SPEC_VERSION_CURRENT,
+          workflowCoreVersion: '5.0.0-beta.40',
+          encryptionPublicKey: bytesToBase64(publicKey),
+        },
+      } as Hook;
+      const runsGet = vi.fn();
+      const createEvent = vi.fn().mockResolvedValue(undefined);
+      const getEncryptionKeyForRun = vi.fn();
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken: vi.fn().mockResolvedValue(hook) },
+        runs: { get: runsGet },
+        events: { create: createEvent },
+        getEncryptionKeyForRun,
+        queue: vi.fn().mockResolvedValue(undefined),
+        getDeploymentId: vi.fn().mockResolvedValue('deployment_2'),
+      } as unknown as World);
+
+      const response = await resumeWebhook('order:1', new Request('http://x'));
+
+      expect(response.status).toBe(202);
+      expect(runsGet).not.toHaveBeenCalled();
       expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
       expect(peekFormatPrefix(capturedPayload(createEvent))).toBe(
         SerializationFormat.SEALED
