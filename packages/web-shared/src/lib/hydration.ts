@@ -487,7 +487,7 @@ export async function hydrateResourceIOAsync<T>(
   resource: T,
   key?: Uint8Array
 ): Promise<T> {
-  const { hydrateDataWithKey } = await import(
+  const { hydrateDataWithKey, deriveRunPayloadKeys } = await import(
     '@workflow/core/serialization-format'
   );
   // Payloads may be zstd-compressed (the Web DecompressionStream has no zstd);
@@ -497,11 +497,17 @@ export async function hydrateResourceIOAsync<T>(
     './zstd-browser-decoder.js'
   );
   ensureZstdDecoderRegistered();
-  const cryptoKey = key
-    ? await import('@workflow/core/encryption').then(({ importKey }) =>
-        importKey(key)
-      )
-    : undefined;
+  // Resolve the *full* key capability, not just the symmetric key: a run's
+  // event log can contain sealed ('encp') payloads that another run wrote to
+  // it (a cross-deployment hook resumption, say), and opening those needs the
+  // run's X25519 scalar in addition to its AES key. Both are derived from the
+  // same 32 bytes the key-retrieval endpoint returns.
+  // Resolve the *full* key capability, not just the symmetric key: a run's
+  // event log can contain sealed ('encp') payloads that another run wrote to
+  // it (a cross-deployment hook resumption, say), and opening those needs the
+  // run's X25519 scalar in addition to its AES key. Both derive from the same
+  // 32 bytes the key-retrieval endpoint returns.
+  const cryptoKey = key ? await deriveRunPayloadKeys(key) : undefined;
   const revivers = getRevivers();
 
   async function hydrateField(value: unknown): Promise<unknown> {
