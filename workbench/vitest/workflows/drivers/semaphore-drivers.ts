@@ -1,6 +1,10 @@
 import { getStepMetadata } from 'workflow';
 import { getHookByToken, getRun } from 'workflow/api';
-import { withLock, withPermit } from '../patterns/semaphore.js';
+import {
+  semaphoreEvents,
+  withLock,
+  withPermit,
+} from '../patterns/semaphore.js';
 
 // Module state lives in the step bundle — every step invocation in this
 // file shares it, and results flow back to the test via return values.
@@ -156,6 +160,46 @@ export async function lockHolder(key: string, id: number) {
     await exitCritical();
     return id;
   });
+}
+
+async function holdFor(ms: number): Promise<void> {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** One holder that occupies the only permit for a known length of time. */
+export async function longHolder(key: string, id: number, holdMs: number) {
+  'use workflow';
+
+  return withPermit(key, 1, async () => {
+    await enterCritical(id);
+    await holdFor(holdMs);
+    await exitCritical();
+    return id;
+  });
+}
+
+async function sendUnknownRelease(key: string): Promise<void> {
+  'use step';
+  await semaphoreEvents.resume(`semaphore:${key}`, {
+    type: 'release',
+    grantToken: 'never-granted',
+  });
+}
+
+/**
+ * Deliver a release the coordinator never granted.
+ *
+ * This is a stand-in for the real hazard: event delivery is at-least-once,
+ * so a release that landed can be re-sent by its sender. Applying the same
+ * release twice would hand back capacity nobody gave up, letting an extra
+ * holder into the critical section. A release for an unknown token
+ * exercises the identical code path deterministically.
+ */
+export async function spuriousRelease(key: string) {
+  'use workflow';
+
+  await sendUnknownRelease(key);
 }
 
 /** Cancel the coordinator run for `key` so tests don't leave live runs. */

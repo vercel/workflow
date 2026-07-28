@@ -1,13 +1,15 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { start } from 'workflow/api';
 import {
   cancelCoordinator,
   lockHolder,
+  longHolder,
   readSemaphoreStats,
   resetSemaphoreStats,
   semaphoreHolder,
   semaphoreInRunFanout,
   semaphoreReleaseOnThrow,
+  spuriousRelease,
 } from '../workflows/drivers/semaphore-drivers.js';
 
 // The local world persists across vitest invocations — coordinators from a
@@ -18,6 +20,7 @@ const KEYS = {
   inRun: `sem-in-run-${RUN}`,
   throw: `sem-throw-${RUN}`,
   lock: `sem-lock-${RUN}`,
+  dupRelease: `sem-dup-release-${RUN}`,
 };
 
 // Holders are separate runs, so the counters they share live in the step
@@ -73,6 +76,41 @@ describe('semaphore', () => {
     const result = await run.returnValue;
 
     expect(result.results).toEqual(['threw', 'reacquired']);
+  });
+
+  // Event delivery is at-least-once: a release that actually landed can look
+  // like a failure to its sender and be re-sent. If the coordinator applied
+  // both copies it would hand back capacity nobody gave up, and an extra
+  // holder would slip into the critical section. Releases are keyed by grant
+  // token and the coordinator only credits tokens it currently has out, so a
+  // release it can't match is a no-op. An unknown token exercises exactly
+  // that path, deterministically.
+  it('ignores a release it never granted instead of freeing capacity', async () => {
+    await resetStats();
+    const key = KEYS.dupRelease;
+
+    // Occupy the single permit for 4s.
+    const holder = await start(longHolder, [key, 0, 4000]);
+    await vi.waitFor(
+      async () => {
+        expect((await readStats()).order).toHaveLength(1);
+      },
+      { timeout: 15_000, interval: 100 }
+    );
+
+    // Free capacity that was never taken — then try to use it.
+    await (await start(spuriousRelease, [key])).returnValue;
+    const second = await start(longHolder, [key, 1, 10]);
+
+    // Well inside the first holder's 4s hold: long enough for the second
+    // holder's acquire to reach the coordinator and (buggily) be granted.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect((await readStats()).max).toBe(1);
+
+    await Promise.all([holder.returnValue, second.returnValue]);
+    const stats = await readStats();
+    expect(stats.order).toEqual([0, 1]);
+    expect(stats.max).toBe(1);
   });
 
   it('withLock serializes critical sections (max concurrency 1)', async () => {

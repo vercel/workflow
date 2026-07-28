@@ -36,9 +36,16 @@
 import { createHook, defineHook, sleep } from 'workflow';
 import { resumeHook, start } from 'workflow/api';
 
+// Both events carry the holder's grant token. Event delivery is
+// at-least-once — a send that actually landed can still look like a
+// failure to its sender and get retried — so the coordinator has to be
+// able to recognise a message it has already applied. Keying releases is
+// what makes that possible: an unkeyed `{ type: 'release' }` is
+// indistinguishable from a duplicate, and applying one twice hands out
+// capacity that nobody gave back.
 type SemaphoreEvent =
   | { type: 'acquire'; grantToken: string }
-  | { type: 'release' };
+  | { type: 'release'; grantToken: string };
 
 // Single event channel per semaphore key. One consumer (the coordinator)
 // reads it in a loop, so messages are processed in order and never lost to
@@ -80,13 +87,22 @@ export async function semaphoreCoordinator(key: string, maxConcurrent: number) {
   let inFlight = 0;
   let grants = 0;
   const waiting: string[] = [];
+  // Tokens currently holding a permit. This is the idempotency ledger:
+  // `inFlight` is just its size, and every mutation is guarded by a
+  // membership test, so replaying any event is a no-op.
+  const held = new Set<string>();
 
   for (;;) {
     const ev = await events;
 
     if (ev.type === 'acquire') {
-      waiting.push(ev.grantToken);
-    } else {
+      // Ignore a re-sent acquire for a token already queued or holding.
+      if (!held.has(ev.grantToken) && !waiting.includes(ev.grantToken)) {
+        waiting.push(ev.grantToken);
+      }
+    } else if (held.delete(ev.grantToken)) {
+      // Only a token we actually granted can give capacity back, and only
+      // once. A duplicate release finds nothing to delete and does nothing.
       inFlight = Math.max(0, inFlight - 1);
     }
 
@@ -97,6 +113,7 @@ export async function semaphoreCoordinator(key: string, maxConcurrent: number) {
       // A failed grant means the waiter timed out and disposed its hook —
       // skip it without consuming capacity.
       if (granted) {
+        held.add(grantToken);
         inFlight++;
         grants++;
       }
@@ -210,7 +227,10 @@ export async function withPermit<T>(
     try {
       return await fn();
     } finally {
-      await sendSemaphoreEvent(key, maxConcurrent, { type: 'release' });
+      await sendSemaphoreEvent(key, maxConcurrent, {
+        type: 'release',
+        grantToken: grant.token,
+      });
     }
   }
   throw new Error(`Failed to acquire semaphore "${key}"`);
