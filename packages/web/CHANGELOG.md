@@ -1,5 +1,16 @@
 # @workflow/web
 
+## 5.0.0-beta.37
+
+### Patch Changes
+
+- [#3146](https://github.com/vercel/workflow/pull/3146) [`e8bc7d6`](https://github.com/vercel/workflow/commit/e8bc7d6aadcdb5f89de1be71cfcafe5e9085ed25) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Let observability tooling decrypt sealed (`encp`) payloads: key resolution now yields the run's full key capability, and `hydrateDataWithKey` dispatches on the envelope format.
+
+- [#3061](https://github.com/vercel/workflow/pull/3061) [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Check only the combined workflow endpoint in the observability health check.
+
+- Updated dependencies [[`b4ba79e`](https://github.com/vercel/workflow/commit/b4ba79ebc501248408474efdd6e353f1753d83e3), [`49276f2`](https://github.com/vercel/workflow/commit/49276f2d0b11d7552ac4504936cbca51df4ce98d), [`4ada27d`](https://github.com/vercel/workflow/commit/4ada27d35af197d66196288919581d839f87c9a3), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91)]:
+  - @workflow/world-local@5.0.0-beta.31
+
 ## 5.0.0-beta.36
 
 ### Patch Changes
