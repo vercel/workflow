@@ -19,9 +19,11 @@ import {
   ulidToDate,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-
-import { type CryptoKey, importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
+import {
+  deriveRunPayloadKeys,
+  type PayloadKey,
+} from '../serialization/encryption.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
@@ -792,13 +794,21 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
 }
 
 /**
- * Returns a memoized accessor for the per-run AES-256 encryption key.
+ * Returns a memoized accessor for a run's full encryption capability.
  *
- * The first call resolves the key via `world.getEncryptionKeyForRun` (which
- * may do HKDF derivation locally on Vercel, or a network fetch from
- * external contexts) and imports it as a `CryptoKey`; subsequent calls
- * await the same cached promise. If the world doesn't support encryption
- * or the run has no key configured, the cached value is `undefined`.
+ * The first call resolves the run's key material via
+ * `world.getEncryptionKeyForRun` (which may do HKDF derivation locally on
+ * Vercel, or a network fetch from external contexts) and derives a
+ * {@link PayloadKey} from it; subsequent calls await the same cached promise.
+ * If the world doesn't support encryption or the run has no key configured,
+ * the cached value is `undefined`.
+ *
+ * The resolved value is deliberately the *full* capability — the symmetric AES
+ * key plus the run's X25519 keypair — not just a `CryptoKey`. A run reading
+ * its own event log can encounter sealed (`encp`) payloads that another run
+ * wrote to it (a cross-deployment hook resumption, say), and opening those
+ * needs the keypair. Resolving only the symmetric key would leave those
+ * payloads unopenable and wedge the run.
  *
  * Used by step / workflow handlers to defer the (potentially expensive)
  * key fetch until the first code path that actually needs it — typically
@@ -816,8 +826,8 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
 export function memoizeEncryptionKey(
   world: World,
   runOrId: WorkflowRun | string
-): () => Promise<CryptoKey | undefined> {
-  let cached: Promise<CryptoKey | undefined> | undefined;
+): () => Promise<PayloadKey | undefined> {
+  let cached: Promise<PayloadKey | undefined> | undefined;
   return () => {
     if (!cached) {
       cached = (async () => {
@@ -828,7 +838,11 @@ export function memoizeEncryptionKey(
           typeof runOrId === 'string'
             ? await world.getEncryptionKeyForRun?.(runOrId)
             : await world.getEncryptionKeyForRun?.(runOrId);
-        return rawKey ? await importKey(rawKey) : undefined;
+        // Resolve the *full* capability, not just the symmetric key: a run
+        // reading its own event log may encounter sealed (`encp`) payloads
+        // that another run wrote to it, and opening those needs the run's
+        // X25519 scalar as well.
+        return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
       })();
     }
     return cached;
