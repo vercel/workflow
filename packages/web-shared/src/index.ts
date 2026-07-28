@@ -56,6 +56,8 @@ export {
   truncateId,
 } from './lib/hydration';
 export type { DecodedStreamChunkSource } from './lib/stream-display';
+export type { StreamIdDescription, StreamIdKind } from './lib/stream-id';
+export { describeStreamId } from './lib/stream-id';
 export type { ToastAdapter } from './lib/toast';
 export { ToastProvider, useToast } from './lib/toast';
 export type { StreamStep } from './lib/utils';
