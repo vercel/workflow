@@ -8,7 +8,7 @@ import type { WorkflowRun } from '@workflow/world';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { dehydrateWorkflowArguments } from './serialization.js';
-import { executeWorkflow } from './workflow.js';
+import { replayWorkflow } from './workflow.js';
 
 const exporter = new InMemorySpanExporter();
 const provider = new BasicTracerProvider();
@@ -45,8 +45,7 @@ describe('retained workflow telemetry', () => {
       async function workflow() { await step(); }
       globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
-    const result = await executeWorkflow({
-      type: 'replay',
+    const result = await replayWorkflow({
       workflowCode,
       workflowRun,
       events: [],

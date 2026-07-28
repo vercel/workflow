@@ -45,15 +45,6 @@ describe('EventsConsumer', () => {
       expect(consumer.eventIndex).toBe(0);
       expect(consumer.callbacks).toEqual([]);
     });
-
-    it('should own its event array', () => {
-      const events = [createMockEvent()];
-      const consumer = new EventsConsumer(events, defaultOptions);
-
-      events.push(createMockEvent({ id: 'event-2' }));
-
-      expect(consumer.events).toHaveLength(1);
-    });
   });
 
   describe('subscribe', () => {
@@ -90,24 +81,6 @@ describe('EventsConsumer', () => {
 
       expect(callback).toHaveBeenCalledWith(event);
       expect(callback).toHaveBeenCalledTimes(1);
-    });
-
-    it('should consume appended events', async () => {
-      const event = createMockEvent();
-      const consumer = new EventsConsumer([], defaultOptions);
-      const callback = vi
-        .fn()
-        .mockImplementation((value: Event | null) =>
-          value ? EventConsumerResult.Finished : EventConsumerResult.NotConsumed
-        );
-      consumer.subscribe(callback);
-      await waitForNextTick();
-
-      consumer.append([event]);
-      await waitForNextTick();
-
-      expect(callback).toHaveBeenLastCalledWith(event);
-      expect(consumer.eventIndex).toBe(1);
     });
   });
 

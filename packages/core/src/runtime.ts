@@ -101,7 +101,8 @@ import {
 import { getErrorName, getErrorStack, normalizeUnknownError } from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
 import {
-  executeWorkflow,
+  replayWorkflow,
+  resumeWorkflow,
   type WorkflowExecutionResult,
   type WorkflowSession,
 } from './workflow.js';
@@ -1208,7 +1209,7 @@ export function workflowEntrypoint(
                   } // end if (!workflowRun)
 
                   // Resolve the encryption key for this run's deployment.
-                  // Used eagerly here since both executeWorkflow (input
+                  // Used eagerly here since both workflow execution (input
                   // hydration / hook payload decryption) and the run_failed
                   // dehydrate path below need it. Memoized accessor: first
                   // call triggers the actual fetch / HKDF derivation,
@@ -1580,17 +1581,15 @@ export function workflowEntrypoint(
                       );
                       let workflowResult: WorkflowExecutionResult =
                         workflowExecution.type === 'retained'
-                          ? await executeWorkflow({
-                              type: 'resume',
-                              session: workflowExecution.session,
-                              events,
-                            })
+                          ? await resumeWorkflow(
+                              workflowExecution.session,
+                              events
+                            )
                           : { type: 'replay' };
 
                       if (workflowResult.type === 'replay') {
                         workflowExecution = { type: 'replay' };
-                        workflowResult = await executeWorkflow({
-                          type: 'replay',
+                        workflowResult = await replayWorkflow({
                           workflowCode,
                           workflowRun,
                           events,
@@ -1668,7 +1667,7 @@ export function workflowEntrypoint(
                       return;
                     } catch (err) {
                       if (WorkflowSuspension.is(err)) {
-                        // Synchronous `executeWorkflow` duration for THIS
+                        // Synchronous workflow-execution duration for THIS
                         // suspension only — anchors the `finalSchedulingReplay`
                         // telemetry field below (see
                         // StepLatencyTracking.replayMs). This is the FINAL

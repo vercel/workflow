@@ -1,3 +1,4 @@
+import type { Span } from '@opentelemetry/api';
 import {
   ERROR_SLUGS,
   ReplayDivergenceError,
@@ -153,15 +154,8 @@ interface WorkflowSessionOptions {
   readonly worldCapabilities?: WorldCapabilities;
 }
 
-type WorkflowExecutionRequest =
-  | ({ readonly type: 'replay' } & WorkflowSessionOptions)
-  | {
-      readonly type: 'resume';
-      readonly session: WorkflowSession;
-      readonly events: Event[];
-    };
-
-type WorkflowReplayResult =
+/** A finished execution attempt: the workflow's output or a live boundary. */
+type WorkflowOutcome =
   | { readonly type: 'completed'; readonly output: unknown }
   | {
       readonly type: 'suspended';
@@ -169,81 +163,96 @@ type WorkflowReplayResult =
       readonly session: WorkflowSession;
     };
 
+/** `resumeWorkflow`'s result: `replay` means "cold-replay me instead". */
 export type WorkflowExecutionResult =
-  | { readonly type: 'replay' }
-  | WorkflowReplayResult;
+  | WorkflowOutcome
+  | { readonly type: 'replay' };
 
-// A fresh replay always completes or suspends; only resuming a session can
-// request another replay (stale session or diverged event prefix).
-export async function executeWorkflow(
-  request: { readonly type: 'replay' } & WorkflowSessionOptions
-): Promise<WorkflowReplayResult>;
-export async function executeWorkflow(
-  request: WorkflowExecutionRequest
-): Promise<WorkflowExecutionResult>;
-export async function executeWorkflow(
-  request: WorkflowExecutionRequest
+/**
+ * Cold-start: build a fresh VM session and replay it over `events`. A fresh
+ * replay always completes or suspends.
+ */
+export function replayWorkflow(
+  options: WorkflowSessionOptions
+): Promise<WorkflowOutcome> {
+  return traceExecution(
+    'replay',
+    options.workflowRun,
+    options.events,
+    async (span) => {
+      const { session, execution } = await createWorkflowSession(options);
+      return awaitOutcome(session, execution, span);
+    }
+  );
+}
+
+/**
+ * Warm-start: advance a retained session by appending events. Returns
+ * `{ type: 'replay' }` when the session declines (demoted, or `events` is
+ * not a strict extension of what it already consumed).
+ */
+export function resumeWorkflow(
+  session: WorkflowSession,
+  events: Event[]
 ): Promise<WorkflowExecutionResult> {
-  const workflowRun =
-    request.type === 'replay'
-      ? request.workflowRun
-      : request.session.workflowRun;
-  const mode = request.type === 'replay' ? 'replay' : 'retained';
+  return traceExecution(
+    'retained',
+    session.workflowRun,
+    events,
+    async (span) => {
+      const resumed = session.resume(events);
+      if (resumed.type === 'replay') return resumed;
+      return awaitOutcome(session, resumed.execution, span);
+    }
+  );
+}
 
-  return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
+function traceExecution<T>(
+  mode: 'replay' | 'retained',
+  workflowRun: WorkflowRun,
+  events: Event[],
+  fn: (span: Span | undefined) => Promise<T>
+): Promise<T> {
+  return trace(`workflow.run ${workflowRun.workflowName}`, (span) => {
     span?.setAttributes({
       ...Attribute.WorkflowName(workflowRun.workflowName),
       ...Attribute.WorkflowRunId(workflowRun.runId),
       ...Attribute.WorkflowRunStatus(workflowRun.status),
-      ...Attribute.WorkflowEventsCount(request.events.length),
+      ...Attribute.WorkflowEventsCount(events.length),
       ...Attribute.WorkflowExecutionMode(mode),
     });
-
-    let session: WorkflowSession;
-    let execution: Promise<WorkflowCompletion>;
-    switch (request.type) {
-      case 'replay': {
-        const started = await createWorkflowSession(request);
-        session = started.session;
-        execution = started.execution;
-        break;
-      }
-      case 'resume': {
-        session = request.session;
-        const resumed = session.resume(request.events);
-        if (resumed.type === 'replay') return resumed;
-        execution = resumed.execution;
-        break;
-      }
-      // No default: exhaustiveness is enforced by definite assignment of
-      // `session`/`execution` above.
-    }
-
-    span?.setAttributes({
-      ...Attribute.WorkflowArgumentsCount(session.argumentCount),
-    });
-
-    try {
-      const completed = await execution;
-      span?.setAttributes({
-        ...Attribute.WorkflowResultType(completed.resultType),
-      });
-      return { type: 'completed', output: completed.output };
-    } catch (error) {
-      if (WorkflowSuspension.is(error)) {
-        if (span) applyWorkflowSuspensionToSpan(error, span);
-        return { type: 'suspended', suspension: error, session };
-      }
-      throw error;
-    }
+    return fn(span);
   });
+}
+
+/** Await the execution attempt, converting a suspension into an outcome. */
+async function awaitOutcome(
+  session: WorkflowSession,
+  execution: Promise<WorkflowCompletion>,
+  span: Span | undefined
+): Promise<WorkflowOutcome> {
+  span?.setAttributes({
+    ...Attribute.WorkflowArgumentsCount(session.argumentCount),
+  });
+  try {
+    const completed = await execution;
+    span?.setAttributes({
+      ...Attribute.WorkflowResultType(completed.resultType),
+    });
+    return { type: 'completed', output: completed.output };
+  } catch (error) {
+    if (WorkflowSuspension.is(error)) {
+      if (span) applyWorkflowSuspensionToSpan(error, span);
+      return { type: 'suspended', suspension: error, session };
+    }
+    throw error;
+  }
 }
 
 /**
  * Single-shot replay: execute the workflow over `events` and either return
  * its output or throw its suspension. Kept for the extensive existing test
- * suites — production code goes through `executeWorkflow`, which can also
- * resume a retained session.
+ * suites — production code goes through `replayWorkflow`/`resumeWorkflow`.
  */
 export async function runWorkflow(
   workflowCode: string,
@@ -270,8 +279,7 @@ export async function runWorkflow(
    */
   worldCapabilities?: WorldCapabilities
 ): Promise<Uint8Array | unknown> {
-  const result = await executeWorkflow({
-    type: 'replay',
+  const result = await replayWorkflow({
     workflowCode,
     workflowRun,
     events,
