@@ -14,6 +14,7 @@ import {
   it,
   vi,
 } from 'vitest';
+import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import {
   base64ToBytes,
@@ -22,6 +23,12 @@ import {
   open,
   seal,
 } from '../sealed-box.js';
+import {
+  hydrateWorkflowArguments,
+  peekFormatPrefix,
+  runPayloadKeys,
+  SerializationFormat,
+} from '../serialization.js';
 import type { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
 import { _resetLatestNoOpWarnForTests, start } from './start.js';
@@ -1227,6 +1234,127 @@ describe('start', () => {
         expect.anything(),
         expect.objectContaining({ deploymentId: 'dpl_other' })
       );
+    });
+
+    describe('run public key from the capability probe', () => {
+      const MATERIAL = new Uint8Array(32).fill(0x8c);
+
+      /** A world whose probe responds with the given extra fields. */
+      function worldWithProbe(
+        extra: Record<string, unknown>,
+        getEncryptionKeyForRun?: ReturnType<typeof vi.fn>
+      ) {
+        const response = JSON.stringify({
+          healthy: true,
+          endpoint: 'workflow',
+          specVersion: SPEC_VERSION_CURRENT,
+          workflowCoreVersion: '0.0.0-test',
+          ...extra,
+        });
+        setWorld({
+          specVersion: SPEC_VERSION_CURRENT,
+          getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+          events: { create: mockEventsCreate },
+          queue: mockQueue,
+          getEncryptionKeyForRun,
+          streams: {
+            get: vi.fn(
+              async () =>
+                new ReadableStream<Uint8Array>({
+                  start(controller) {
+                    controller.enqueue(new TextEncoder().encode(response));
+                    controller.close();
+                  },
+                })
+            ),
+          },
+        });
+      }
+
+      it('asks the probe for the run it is about to create', async () => {
+        // The runId has to be minted before the probe for this to work, so
+        // this also guards the ordering.
+        worldWithProbe({});
+
+        await start(validWorkflow, [], { deploymentId: 'dpl_other' });
+
+        const probeCall = mockQueue.mock.calls.find((c) =>
+          String(c[0]).endsWith('health_check')
+        );
+        expect(probeCall?.[1]).toMatchObject({
+          __healthCheck: true,
+          runId: expect.stringMatching(/^wrun_/),
+        });
+        // ...and it is the same run that actually gets created.
+        expect(probeCall?.[1].runId).toBe(mockEventsCreate.mock.calls[0][0]);
+      });
+
+      it('seals the arguments with the probed key and skips the key lookup', async () => {
+        const { publicKey } = await deriveRunKeyPair(MATERIAL);
+        const getEncryptionKeyForRun = vi.fn().mockResolvedValue(MATERIAL);
+        worldWithProbe(
+          { encryptionPublicKey: bytesToBase64(publicKey) },
+          getEncryptionKeyForRun
+        );
+
+        await start(validWorkflow, ['hello'], { deploymentId: 'dpl_other' });
+
+        // The whole point: no key-lookup request on this path.
+        expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+
+        const eventData = mockEventsCreate.mock.calls[0][1].eventData;
+        expect(peekFormatPrefix(eventData.input)).toBe(
+          SerializationFormat.SEALED
+        );
+        // The run still advertises the key so later cross-run writers can
+        // seal to it too.
+        expect(eventData.encryptionPublicKey).toBe(bytesToBase64(publicKey));
+      });
+
+      it('produces arguments the target deployment can actually open', async () => {
+        const keyPair = await deriveRunKeyPair(MATERIAL);
+        worldWithProbe({
+          encryptionPublicKey: bytesToBase64(keyPair.publicKey),
+        });
+
+        await start(validWorkflow, ['hello', 42], {
+          deploymentId: 'dpl_other',
+        });
+
+        const { input } = mockEventsCreate.mock.calls[0][1].eventData;
+        const keys = runPayloadKeys(await importKey(MATERIAL), keyPair);
+        await expect(
+          hydrateWorkflowArguments(input, 'wrun_x', keys)
+        ).resolves.toEqual(['hello', 42]);
+      });
+
+      it('falls back to the key lookup when the probe returns no key', async () => {
+        // Older target deployment, or a probe that timed out.
+        const getEncryptionKeyForRun = vi.fn().mockResolvedValue(MATERIAL);
+        worldWithProbe({}, getEncryptionKeyForRun);
+
+        await start(validWorkflow, [], { deploymentId: 'dpl_other' });
+
+        expect(getEncryptionKeyForRun).toHaveBeenCalled();
+        expect(
+          peekFormatPrefix(mockEventsCreate.mock.calls[0][1].eventData.input)
+        ).toBe(SerializationFormat.ENCRYPTED);
+      });
+
+      it('ignores a malformed probed key and falls back', async () => {
+        const getEncryptionKeyForRun = vi.fn().mockResolvedValue(MATERIAL);
+        worldWithProbe(
+          { encryptionPublicKey: 'not-a-valid-key' },
+          getEncryptionKeyForRun
+        );
+
+        await start(validWorkflow, [], { deploymentId: 'dpl_other' });
+
+        expect(getEncryptionKeyForRun).toHaveBeenCalled();
+        expect(
+          peekFormatPrefix(mockEventsCreate.mock.calls[0][1].eventData.input)
+        ).toBe(SerializationFormat.ENCRYPTED);
+      });
     });
   });
 });
