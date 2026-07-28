@@ -105,7 +105,7 @@ import "../src/mastra"; // [!code highlight]
 <Callout type="info">
 This file is not optional, and it does two jobs.
 
-**Stable workflow IDs.** The Workflow compiler assigns each workflow function an ID based on its position in the source files your build processes. An npm package's pre-built output is never compiled by your build, so without a re-export the runner has no ID your app can resolve, and replay after a cold start fails. Re-exporting puts the runner in your source tree, so the IDs are yours and stay stable across deployments. See [Publishing Libraries](/docs/cookbook/advanced/publishing-libraries#re-exporting-for-workflow-id-stability).
+**Stable workflow IDs.** The Workflow compiler assigns each workflow and step an ID from its position in the source tree your build processes. Code resolved straight out of `node_modules` gets an ID that embeds the package version — `step//@mastra/workflow@1.2.3//…` — so upgrading `@mastra/workflow` renames every ID and breaks replay for runs already in flight. Re-exporting pins the IDs to your source tree instead, where they survive both package upgrades and cold starts. See [Re-exporting for workflow ID stability](/docs/cookbook/advanced/publishing-libraries#re-exporting-for-workflow-id-stability).
 
 **Loading definitions.** Steps execute in the flow handler process, which does not run your route handlers. The side-effect import guarantees your Mastra workflow definitions are registered there, so the runner can look up the step graph when it resumes.
 </Callout>
