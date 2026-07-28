@@ -37,7 +37,7 @@ export default async function CompareBenchmarksPage() {
         {/* Hero Section */}
         <section className="mt-[var(--fd-nav-height)] space-y-6 px-4 pt-16 sm:pt-24 pb-12 text-center border-b">
           <div className="mx-auto w-full max-w-3xl space-y-4">
-            <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
+            <h1 className="text-heading-40 sm:text-heading-48">
               Benchmark Comparison
             </h1>
             <p className="text-lg text-muted-foreground max-w-2xl mx-auto text-balance">
@@ -58,7 +58,7 @@ export default async function CompareBenchmarksPage() {
         {/* Comparison Table */}
         <section className="px-4 py-8 sm:py-12 sm:px-12 border-b">
           <div className="space-y-6">
-            <h2 className="font-semibold text-xl tracking-tight sm:text-2xl">
+            <h2 className="text-heading-20 sm:text-heading-24">
               Performance Overview
             </h2>
             <p className="text-muted-foreground">
@@ -72,7 +72,7 @@ export default async function CompareBenchmarksPage() {
         {/* Individual Benchmark Bars */}
         <section className="px-4 py-8 sm:py-12 sm:px-12">
           <div className="space-y-8">
-            <h2 className="font-semibold text-xl tracking-tight sm:text-2xl">
+            <h2 className="text-heading-20 sm:text-heading-24">
               Individual Benchmarks
             </h2>
             {sortedBenchmarks.map((benchName) => (

@@ -165,7 +165,7 @@ export function WorldTestingPerformance({
       <div className="space-y-8">
         {/* E2E Tests Subsection */}
         <div className="space-y-4">
-          <h3 className="font-semibold text-lg tracking-tight">E2E Tests</h3>
+          <h3 className="text-heading-20">E2E Tests</h3>
           {hasE2E ? (
             <>
               {/* Summary - based on nextjs-turbopack for canonical scoring */}
@@ -281,7 +281,7 @@ export function WorldTestingPerformance({
         {/* Benchmarks — only visible on preview deployments */}
         {showBenchmarks && (
           <div className="space-y-4">
-            <h3 className="font-semibold text-lg tracking-tight">Benchmarks</h3>
+            <h3 className="text-heading-20">Benchmarks</h3>
             {hasBenchmarks ? (
               <>
                 <p className="text-sm text-muted-foreground">

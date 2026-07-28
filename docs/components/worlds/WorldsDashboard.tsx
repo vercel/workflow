@@ -114,7 +114,7 @@ export function WorldsDashboard({ data }: WorldsDashboardProps) {
         <TabsContent value="benchmarks" className="space-y-8 pt-4">
           {/* Benchmark comparison */}
           <div className="space-y-4">
-            <h3 className="text-lg font-semibold">Performance Comparison</h3>
+            <h3 className="text-heading-20">Performance Comparison</h3>
             <p className="text-sm text-muted-foreground">
               Average workflow execution time across all worlds. Lower is
               better.
