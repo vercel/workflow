@@ -1,14 +1,14 @@
 {
-  "lastUpdated": "2026-07-28T02:05:29.300Z",
-  "commit": "0b1ca15dec3a4f56c32d33c5cf5add3ea208c54c",
+  "lastUpdated": "2026-07-28T03:07:36.431Z",
+  "commit": "8a95d36c9a166351829f3c6382cddb68335b54d2",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
       "status": "partial",
-      "total": 4312,
-      "passed": 3753,
-      "failed": 1,
+      "total": 4466,
+      "passed": 3906,
+      "failed": 2,
       "skipped": 558,
       "frameworks": {
         "astro": {
@@ -32,8 +32,8 @@
           "failed": 0
         },
         "nextjs-turbopack": {
-          "total": 616,
-          "passed": 578,
+          "total": 770,
+          "passed": 732,
           "failed": 0
         },
         "nextjs-webpack": {
@@ -48,8 +48,8 @@
         },
         "nuxt": {
           "total": 308,
-          "passed": 256,
-          "failed": 0
+          "passed": 255,
+          "failed": 1
         },
         "sveltekit": {
           "total": 308,
@@ -66,10 +66,10 @@
     },
     "postgres": {
       "status": "passing",
-      "total": 2002,
-      "passed": 1749,
+      "total": 2156,
+      "passed": 1877,
       "failed": 0,
-      "skipped": 253,
+      "skipped": 279,
       "frameworks": {
         "astro": {
           "total": 154,
@@ -106,6 +106,11 @@
           "passed": 128,
           "failed": 0
         },
+        "nuxt": {
+          "total": 154,
+          "passed": 128,
+          "failed": 0
+        },
         "sveltekit": {
           "total": 154,
           "passed": 147,
@@ -121,27 +126,12 @@
     },
     "vercel": {
       "status": "passing",
-      "total": 2002,
-      "passed": 1707,
+      "total": 1386,
+      "passed": 1203,
       "failed": 0,
-      "skipped": 295,
+      "skipped": 183,
       "frameworks": {
-        "astro": {
-          "total": 154,
-          "passed": 126,
-          "failed": 0
-        },
-        "express": {
-          "total": 154,
-          "passed": 126,
-          "failed": 0
-        },
         "fastify": {
-          "total": 154,
-          "passed": 126,
-          "failed": 0
-        },
-        "hono": {
           "total": 154,
           "passed": 126,
           "failed": 0
@@ -170,14 +160,9 @@
           "total": 154,
           "passed": 145,
           "failed": 0
-        },
-        "vite": {
-          "total": 154,
-          "passed": 126,
-          "failed": 0
         }
       },
-      "progress": 85
+      "progress": 87
     }
   }
 }
