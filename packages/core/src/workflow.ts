@@ -68,7 +68,12 @@ async function drainPendingQueueItems(
   pendingQueue: Map<string, QueueItem>,
   vmGlobalThis: typeof globalThis,
   workflowRun: WorkflowRun,
-  outcome: 'completed' | 'failed'
+  outcome: 'completed' | 'failed',
+  /**
+   * In turbo mode, gates final `*_created` writes on backgrounded
+   * `run_started`. Undefined when `run_started` is awaited.
+   */
+  runReadyBarrier?: Promise<unknown>
 ): Promise<void> {
   if (pendingQueue.size === 0) return;
   // Implicitly dispose any abort hooks (system hooks) that are still alive at
@@ -94,6 +99,7 @@ async function drainPendingQueueItems(
       suspension: synthesized,
       world,
       run: workflowRun,
+      runReadyBarrier,
     });
   } catch (err) {
     runtimeLogger.warn(
@@ -119,6 +125,13 @@ export async function runWorkflow(
   replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache(
     encryptionKey
   ),
+  /**
+   * Turbo mode only: resolves once the backgrounded `run_started` has landed.
+   * Threaded into the end-of-run drain so fire-and-forget `*_created` writes
+   * committed at workflow completion order after the run's creation. Undefined
+   * outside turbo, where `run_started` is awaited up front.
+   */
+  runReadyBarrier?: Promise<unknown>,
   /**
    * Features supported by the World executing this workflow. Missing
    * capabilities are treated as unsupported.
@@ -837,7 +850,8 @@ export async function runWorkflow(
         workflowContext.invocationsQueue,
         vmGlobalThis,
         workflowRun,
-        'completed'
+        'completed',
+        runReadyBarrier
       );
 
       return dehydrated;
@@ -853,7 +867,8 @@ export async function runWorkflow(
         workflowContext.invocationsQueue,
         vmGlobalThis,
         workflowRun,
-        'failed'
+        'failed',
+        runReadyBarrier
       );
 
       throw err;

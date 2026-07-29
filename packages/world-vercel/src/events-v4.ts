@@ -189,6 +189,11 @@ export interface CreateEventV4Input {
    *  other event types; older servers ignore it entirely (the runtime then
    *  falls back to events.list). */
   sinceCursor?: string;
+  /** Run-started preload opt-out. Turbo backgrounds run_started as a write
+   *  barrier only and never reads the preloaded log, so it asks the server to
+   *  skip the list+resolve. Acted on by the server only for run_started;
+   *  older servers ignore it and preload as before. */
+  skipPreload?: boolean;
   /**
    * Epoch ms (the ULID time of the latest event the runtime has loaded
    * during replay). Sent by replay-context creates so the backend can
@@ -292,6 +297,7 @@ function buildPostFrameMeta(
     meta.optimizations = input.optimizations;
   }
   if (input.sinceCursor !== undefined) meta.sinceCursor = input.sinceCursor;
+  if (input.skipPreload !== undefined) meta.skipPreload = input.skipPreload;
   if (input.stateUpdatedAt !== undefined) {
     meta.stateUpdatedAt = input.stateUpdatedAt;
   }
@@ -362,7 +368,8 @@ export function throwForErrorResponse(
  * POST /api/v4/runs/:runId/events/:eventType
  *
  * Sends the full request as a single v4 frame. A run_started response may
- * include the first event page as frames; other responses use CBOR.
+ * include the first event page as frames; skipPreload and other events use
+ * CBOR.
  *
  * The trailing `:eventType` path segment is an alias of the canonical
  * `/events` route: it exists purely so the event type is visible in
@@ -379,7 +386,7 @@ export async function createWorkflowRunEventV4(
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   headers.set('Content-Type', 'application/octet-stream');
-  if (input.eventType === 'run_started') {
+  if (input.eventType === 'run_started' && !input.skipPreload) {
     headers.set('Accept', V4_FRAME_CONTENT_TYPE);
   }
 

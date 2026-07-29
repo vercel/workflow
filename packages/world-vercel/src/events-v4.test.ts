@@ -489,6 +489,60 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('keeps the CBOR response when run_started skips the preload', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+        headers: (headers) => headers.accept === '*/*',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+          const metaLen = new DataView(
+            bytes.buffer,
+            bytes.byteOffset,
+            bytes.byteLength
+          ).getUint32(0, false);
+          capturedMeta = decode(bytes.subarray(4, 4 + metaLen)) as Record<
+            string,
+            unknown
+          >;
+          return encode({ run: { runId: 'wrun_1', status: 'running' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_2',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    const result = await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'run_started',
+        specVersion: 5,
+        skipPreload: true,
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.skipPreload).toBe(true);
+    expect(result.type).toBe('event');
+    expect(result.body.run).toMatchObject({ status: 'running' });
+    agent.assertNoPendingInterceptors();
+  });
+
   it('forwards stateUpdatedAt in the frame meta (precondition guard)', async () => {
     const origin = 'https://vercel-workflow.com';
     const agent = new MockAgent();

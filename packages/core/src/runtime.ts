@@ -541,7 +541,7 @@ export function workflowEntrypoint(
                   // or the run_started setup below.
                   let workflowRun: WorkflowRun | undefined;
                   // Server-supplied per-run event ceiling from the run_started
-                  // response. Undefined means an older World supplied no limit.
+                  // response. Undefined ⇒ no enforcement (older servers, turbo).
                   let maxEventsLimit: number | undefined;
                   let workflowStartedAt = -1;
                   let preloadedEventLog: MutableEventLog | undefined;
@@ -557,6 +557,10 @@ export function workflowEntrypoint(
                   // Epoch ms the `run_started` response was received/parsed
                   // by the SDK — anchors RSFS (run_started → first step's
                   // start POST). Set once, in the run_started setup below.
+                  // Under turbo, run_started is backgrounded rather than
+                  // awaited, so this is stamped at the point the run is
+                  // synthesized locally instead of the real response — see
+                  // StepLatencyTracking.rsfsAnchorMs.
                   let runStartedReceivedAtMs: number | undefined;
                   // Wall-clock ms spent committing hook_created events before
                   // the first step ran, accumulated across suspension passes
@@ -571,7 +575,9 @@ export function workflowEntrypoint(
                   let preStepBlockingBeforeAttrMs: number | undefined;
 
                   // Turbo mode fast-paths the very first delivery of the very
-                  // first invocation by forcing optimistic inline start (no
+                  // first invocation, where it is provably safe to: background
+                  // `run_started`, skip the initial event-log load (nothing has
+                  // been written yet), and force optimistic inline start (no
                   // concurrent peer handler exists to race the create-claim).
                   // `runInput` is only present on the start()-enqueued message,
                   // and `attempt === 1` (1-based) means this is the first
@@ -601,6 +607,30 @@ export function workflowEntrypoint(
                     incomingStepId === undefined &&
                     !replayDivergence;
                   span?.setAttributes(Attribute.WorkflowTurbo(turbo));
+
+                  // Turbo mode only: resolves once the backgrounded
+                  // `run_started` has landed (or rejects if it failed). Threaded
+                  // into handleSuspension and executeStep so no step/hook/wait
+                  // write races ahead of the run's creation. Undefined outside
+                  // turbo, where `run_started` is awaited up front.
+                  let runReadyBarrier: Promise<unknown> | undefined;
+
+                  // Order a terminal run write (run_completed / run_failed) after
+                  // the backgrounded run_started in turbo mode — a no-step
+                  // workflow can otherwise reach run_completed before the run
+                  // exists. Best-effort: a barrier rejection is swallowed for
+                  // ordering only; if run_started truly failed the terminal write
+                  // surfaces the real error (run not found / gone) and the message
+                  // redelivers. No-op outside turbo.
+                  const awaitRunReady = async (): Promise<void> => {
+                    if (runReadyBarrier) {
+                      try {
+                        await runReadyBarrier;
+                      } catch {
+                        // intentional: ordering barrier only — see above.
+                      }
+                    }
+                  };
 
                   // Re-invoke the orchestrator. Outside turbo this returns
                   // `{ timeoutSeconds }`, which makes the queue reschedule the
@@ -948,84 +978,194 @@ export function workflowEntrypoint(
                           }
                         : {}),
                     };
-                    let startedRun: StartedWorkflowRun;
-                    try {
-                      span?.addEvent('workflow.run_started.create.start');
-                      const result = await world.events.create(
+                    const recordRunStartedCreateStart = (
+                      skipPreload: boolean
+                    ) => {
+                      span?.addEvent('workflow.run_started.create.start', {
+                        'workflow.run_started.skip_preload': skipPreload,
+                      });
+                    };
+
+                    if (turbo && runInput) {
+                      // Turbo: background `run_started` and synthesize the run
+                      // entity locally so replay can begin without waiting for
+                      // the round-trip. Safe here because this is the first
+                      // delivery of the first invocation — start() created the
+                      // run moments ago and no events have been written yet. The
+                      // barrier is consumed by every downstream write (suspension
+                      // handler, optimistic step_started, terminal run writes) so
+                      // nothing is written before the run exists.
+                      recordRunStartedCreateStart(true);
+                      const startedPromise = world.events.create(
                         runId,
                         runStartedEvent,
-                        { requestId }
+                        // We background this purely as a write barrier and
+                        // never read its preloaded events, so skip the
+                        // run_started event-log preload. That trims the
+                        // run_started request the chained first step_started
+                        // waits on — shortening time-to-second-step — and the
+                        // wasted list+resolve it would otherwise compute.
+                        { requestId, skipPreload: true }
                       );
-                      startedRun = result.run;
-                      workflowRun = startedRun;
-                      maxEventsLimit = clampMaxEvents(result.maxEvents);
-                      runStartedReceivedAtMs = Date.now();
-
-                      if (result.events?.length) {
-                        let events = result.events;
-                        let cursor = result.cursor ?? null;
-                        if (result.hasMore) {
-                          const loaded = await loadWorkflowRunEvents(
-                            runId,
-                            cursor ?? undefined
-                          );
-                          if (cursor) {
-                            const preloadedIds = new Set(
-                              events.map((event) => event.eventId)
-                            );
-                            events = events.concat(
-                              loaded.events.filter(
-                                (event) => !preloadedIds.has(event.eventId)
-                              )
-                            );
-                          } else {
-                            events = loaded.events;
-                          }
-                          cursor = loaded.cursor ?? cursor;
-                        }
-                        preloadedEventLog = { events, cursor };
-                      }
-                    } catch (err) {
-                      if (
-                        EntityConflictError.is(err) ||
-                        RunExpiredError.is(err)
-                      ) {
-                        runtimeLogger.info(
-                          'Run already finished during setup, skipping',
-                          { workflowRunId: runId, message: err.message }
+                      runReadyBarrier = startedPromise;
+                      // Turbo backgrounds run_started, so the non-turbo assignment
+                      // below never runs — thread the per-run event ceiling off the
+                      // backgrounded response here instead. The guard re-checks
+                      // maxEventsLimit every loop iteration, so a value that lands
+                      // shortly after start still enforces well before a runaway
+                      // log approaches the ceiling.
+                      startedPromise.then(
+                        (r) => {
+                          const limit = clampMaxEvents(r?.maxEvents);
+                          if (limit !== undefined) maxEventsLimit = limit;
+                        },
+                        () => {}
+                      );
+                      // Attach a no-op rejection handler so an early failure
+                      // never surfaces as an unhandledRejection before a consumer
+                      // (await/then) is attached; consumers still observe it.
+                      startedPromise.catch(() => {});
+                      // Skip the initial events.list: nothing has been written to
+                      // the log yet on a first delivery (run_started is still in
+                      // flight). An empty preload routes iteration 1 through
+                      // the no-load preloaded branch; iteration 2 then takes the
+                      // existing post-preloaded full reload to pick up a cursor
+                      // without a spurious "cursor missing" warning.
+                      preloadedEventLog = { events: [], cursor: null };
+                      const now = new Date();
+                      workflowRun = {
+                        runId,
+                        status: 'running',
+                        deploymentId: runInput.deploymentId,
+                        workflowName: runInput.workflowName,
+                        specVersion: runInput.specVersion,
+                        executionContext: runInput.executionContext,
+                        input: runInput.input,
+                        // Seed attributes from start() ride along in `runInput`
+                        // (they live in `run_created`'s eventData, not separate
+                        // `attr_set` events), so the synthesized snapshot carries
+                        // them even though we skip the initial events.list. This
+                        // is correct ONLY while attributes are write-only:
+                        // there is no in-workflow read API today (see workflow.ts
+                        // "structural until a read API is introduced"), so the
+                        // empty preloaded log can't diverge on a read. If a read
+                        // API is ever added it MUST read from this snapshot, not
+                        // by replaying run_created/attr_set events — otherwise
+                        // turbo's empty initial log would surface seed attributes
+                        // as `{}` on the first delivery only.
+                        attributes: runInput.attributes ?? {},
+                        startedAt: now,
+                        createdAt: now,
+                        updatedAt: now,
+                      };
+                      workflowStartedAt = +now;
+                      // See the `runStartedReceivedAtMs` declaration above:
+                      // turbo synthesizes the run before the real
+                      // `run_started` response lands, so anchor RSFS here
+                      // rather than at an actual response instant.
+                      runStartedReceivedAtMs = +now;
+                      span?.setAttributes({
+                        ...Attribute.WorkflowRunStatus('running'),
+                        ...Attribute.WorkflowStartedAt(workflowStartedAt),
+                      });
+                    } else {
+                      let startedRun: StartedWorkflowRun;
+                      try {
+                        recordRunStartedCreateStart(false);
+                        const result = await world.events.create(
+                          runId,
+                          runStartedEvent,
+                          { requestId }
                         );
+                        startedRun = result.run;
+                        workflowRun = startedRun;
+                        maxEventsLimit = clampMaxEvents(result.maxEvents);
+                        // Anchors RSFS — see the declaration above.
+                        runStartedReceivedAtMs = Date.now();
+
+                        if (result.events?.length) {
+                          let events = result.events;
+                          let cursor = result.cursor ?? null;
+                          if (result.hasMore) {
+                            const loaded = await loadWorkflowRunEvents(
+                              runId,
+                              cursor ?? undefined
+                            );
+                            if (cursor) {
+                              const preloadedIds = new Set(
+                                events.map((event) => event.eventId)
+                              );
+                              events = events.concat(
+                                loaded.events.filter(
+                                  (event) => !preloadedIds.has(event.eventId)
+                                )
+                              );
+                            } else {
+                              events = loaded.events;
+                            }
+                            cursor = loaded.cursor ?? cursor;
+                          }
+                          preloadedEventLog = { events, cursor };
+                        }
+                      } catch (err) {
+                        // Run was concurrently completed/failed/cancelled
+                        if (
+                          EntityConflictError.is(err) ||
+                          RunExpiredError.is(err)
+                        ) {
+                          // EntityConflictError: run was concurrently
+                          // completed/failed/cancelled during setup.
+                          // RunExpiredError: run already in terminal state.
+                          // In both cases, skip processing this message.
+                          runtimeLogger.info(
+                            'Run already finished during setup, skipping',
+                            { workflowRunId: runId, message: err.message }
+                          );
+                          return;
+                        } else {
+                          const errorCode = getWorkflowSetupErrorCode(err);
+                          if (!errorCode) {
+                            throw err;
+                          }
+                          await recordFatalRunError({
+                            world,
+                            workflowRun,
+                            runId,
+                            requestId,
+                            err,
+                            errorCode,
+                            logMessage:
+                              'Fatal runtime error during workflow setup',
+                          });
+                          return;
+                        }
+                      }
+                      workflowStartedAt = +startedRun.startedAt;
+
+                      span?.setAttributes({
+                        ...Attribute.WorkflowRunStatus(startedRun.status),
+                        ...Attribute.WorkflowStartedAt(workflowStartedAt),
+                      });
+
+                      if (startedRun.status !== 'running') {
+                        // Workflow has already completed or failed, so we can skip it
+                        runtimeLogger.info(
+                          'Workflow already completed or failed, skipping',
+                          {
+                            workflowRunId: runId,
+                            status: startedRun.status,
+                          }
+                        );
+
+                        // TODO: for `cancel`, we actually want to propagate a WorkflowCancelled event
+                        // inside the workflow context so the user can gracefully exit. this is SIGTERM
+                        // TODO: furthermore, there should be a timeout or a way to force cancel SIGKILL
+                        // so that we actually exit here without replaying the workflow at all, in the case
+                        // the replaying the workflow is itself failing.
+
                         return;
                       }
-                      const errorCode = getWorkflowSetupErrorCode(err);
-                      if (!errorCode) throw err;
-                      await recordFatalRunError({
-                        world,
-                        workflowRun,
-                        runId,
-                        requestId,
-                        err,
-                        errorCode,
-                        logMessage: 'Fatal runtime error during workflow setup',
-                      });
-                      return;
-                    }
-                    workflowStartedAt = +startedRun.startedAt;
-
-                    span?.setAttributes({
-                      ...Attribute.WorkflowRunStatus(startedRun.status),
-                      ...Attribute.WorkflowStartedAt(workflowStartedAt),
-                    });
-
-                    if (startedRun.status !== 'running') {
-                      runtimeLogger.info(
-                        'Workflow already completed or failed, skipping',
-                        {
-                          workflowRunId: runId,
-                          status: startedRun.status,
-                        }
-                      );
-                      return;
-                    }
+                    } // end else (non-turbo run_started)
                   } // end if (!workflowRun)
 
                   // Resolve the encryption key for this run's deployment.
@@ -1049,6 +1189,7 @@ export function workflowEntrypoint(
                   );
 
                   // Main replay loop
+                  // biome-ignore lint/correctness/noConstantCondition: intentional loop
                   while (true) {
                     loopIteration++;
 
@@ -1395,6 +1536,11 @@ export function workflowEntrypoint(
                         events,
                         encryptionKey,
                         replayPayloadCache,
+                        // Turbo: the end-of-run drain inside runWorkflow commits
+                        // fire-and-forget `*_created` events before the terminal
+                        // `awaitRunReady()` below, so gate those writes on the
+                        // backgrounded run_started too. Undefined outside turbo.
+                        runReadyBarrier,
                         world.capabilities
                       );
                       await payloadPrewarm;
@@ -1412,6 +1558,10 @@ export function workflowEntrypoint(
                       // result. The catch below lets PreconditionFailedError
                       // propagate to the queue for re-invocation.
                       try {
+                        // Turbo: a workflow that finishes with no steps reaches
+                        // here before the backgrounded run_started; order the
+                        // terminal write after it so the run exists.
+                        await awaitRunReady();
                         await world.events.create(
                           runId,
                           {
@@ -1521,6 +1671,7 @@ export function workflowEntrypoint(
                             span,
                             requestId,
                             eventLog: suspensionLog,
+                            runReadyBarrier,
                           });
                         } catch (suspensionError) {
                           // A suspension create whose stale (412) rejection
@@ -1560,6 +1711,9 @@ export function workflowEntrypoint(
                             }
                           );
                           try {
+                            // Turbo: order the terminal write after the
+                            // backgrounded run_started so the run exists.
+                            await awaitRunReady();
                             await world.events.create(
                               runId,
                               {
@@ -2100,13 +2254,16 @@ export function workflowEntrypoint(
                         // step qualifies for TTFS/STSO measurement. Only the
                         // batch's first step carries the tracking so a
                         // parallel batch emits one sample per scheduling gap,
-                        // not one per sibling.
+                        // not one per sibling. Turbo's synthesized run
+                        // snapshot has a local-clock createdAt, so under
+                        // turbo only the run-id ULID timestamp is trusted.
                         const latencyTracking = computeStepLatencyTracking({
                           events: cachedEvents ?? [],
                           invocationStartedClean:
                             invocationStartedClean === true,
                           runCreatedAtMs:
-                            runIdCreatedAt(runId) ?? +workflowRun.createdAt,
+                            runIdCreatedAt(runId) ??
+                            (turbo ? undefined : +workflowRun.createdAt),
                           runStartedReceivedAtMs,
                           replayMs: replayDurationMs,
                           preStepBlockingMs,
@@ -2199,14 +2356,18 @@ export function workflowEntrypoint(
                                 // as in flight here and suppress the
                                 // immediate requeue (workflow#2780).
                                 ownerMessageId: metadata.messageId,
-                                // Turbo forces optimistic start on its first
-                                // inline step.
+                                // Turbo: force optimistic start and hold the
+                                // lazy step_started until the backgrounded
+                                // run_started lands (the body still runs
+                                // immediately). Both are undefined/false
+                                // outside turbo.
                                 forceOptimisticStart,
                                 // Guard-enforced batches with an open hook
                                 // await the claim before running the body, so
                                 // a 412-fenced step never executes user code —
                                 // see suppressOptimisticStart above.
                                 suppressOptimisticStart,
+                                runReadyBarrier,
                                 stateUpdatedAt: inlineClaimStateUpdatedAt,
                                 ...(stepIndex === 0 &&
                                 s.lazyStepInput !== undefined &&
@@ -2605,6 +2766,9 @@ export function workflowEntrypoint(
                         // also need the loaded event log, which is scoped to the
                         // replay `try` above and not available in this catch.
                         try {
+                          // Turbo: order the terminal write after the
+                          // backgrounded run_started so the run exists.
+                          await awaitRunReady();
                           await world.events.create(
                             runId,
                             {

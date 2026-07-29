@@ -1046,7 +1046,16 @@ function recordStreamClose(
 }
 
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
-  constructor(runId: string, name: string) {
+  /**
+   * @param runReadyBarrier Turbo mode only: a promise that resolves once the
+   * backgrounded `run_started` has landed. When the step body runs
+   * optimistically (before `run_started` is durable), the first chunk write to
+   * a brand-new stream would otherwise reach the World before the run exists
+   * and be rejected as run-not-found. Awaiting this once before the first
+   * flush/close orders the write after the run's creation. `undefined` outside
+   * turbo and on the await path, where the run was already durable.
+   */
+  constructor(runId: string, name: string, runReadyBarrier?: Promise<unknown>) {
     if (typeof runId !== 'string') {
       throw new WorkflowRuntimeError(
         `"runId" must be a string, got "${typeof runId}"`
@@ -1056,6 +1065,22 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       throw new WorkflowRuntimeError(`"name" is required, got "${name}"`);
     }
     const worldPromise = getWorldLazy();
+
+    // Hold the first server write until the run exists (turbo optimistic
+    // start). Awaited once, then cleared so later flushes pay nothing. The
+    // rejection is swallowed for ordering only: if `run_started` truly failed
+    // the run does not exist, so the write below surfaces the real error.
+    let pendingRunReady: Promise<unknown> | undefined = runReadyBarrier;
+    const ensureRunReady = async (): Promise<void> => {
+      if (pendingRunReady) {
+        try {
+          await pendingRunReady;
+        } catch {
+          // intentional: ordering barrier only — see above.
+        }
+        pendingRunReady = undefined;
+      }
+    };
 
     // ------------------------------------------------------------------
     // Group-commit buffering.
@@ -1161,14 +1186,18 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
      * behavior, now independent of how the producer pipes.
      */
     /**
-     * Send one group to the server with one `writeMulti` call (or sequential
-     * `write`s when the world lacks it).
+     * Send one group to the server: gate on run readiness, then one
+     * `writeMulti` (or sequential `write`s when the world lacks it). Emits
+     * the write-flush span; dwell is measured up to just before the RPC so a
+     * turbo run-ready barrier wait counts as buffer dwell, matching the
+     * pre-group-commit telemetry.
      */
     const sendGroup = async (
       group: Uint8Array[],
       bytes: number,
       groupT0: number | undefined
     ): Promise<void> => {
+      await ensureRunReady();
       const world = await worldPromise;
       const dispatchAt = Date.now();
       if (typeof world.streams.writeMulti === 'function' && group.length > 1) {
@@ -1371,6 +1400,11 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // Everything accepted must be durable before the server stream is
         // closed — the server fences post-close writes.
         await drain();
+
+        // A close with an empty buffer skips the dispatch path (and its
+        // barrier), but can itself be the first write to a brand-new
+        // stream — gate it too.
+        await ensureRunReady();
 
         const world = await worldPromise;
         const closeStart = Date.now();
@@ -1676,7 +1710,13 @@ export function getExternalReducers(
   ops: Promise<void>[],
   runId: string,
   cryptoKey: EncryptionKeyParam,
-  framedByteStreams = false
+  framedByteStreams = false,
+  // Turbo optimistic start: a nested `ReadableStream` found while serializing
+  // is piped to its own server stream independently of the outer sink, so its
+  // first chunk can race `run_started`. Thread the run-ready barrier into that
+  // sink so the write orders after the run exists. Undefined outside turbo /
+  // on the await path.
+  runReadyBarrier?: Promise<unknown>
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -1698,7 +1738,11 @@ export function getExternalReducers(
       const name = `strm_${streamId}`;
       const type = getStreamType(value);
 
-      const writable = new WorkflowServerWritableStream(runId, name);
+      const writable = new WorkflowServerWritableStream(
+        runId,
+        name,
+        runReadyBarrier
+      );
       if (type === 'bytes') {
         if (framedByteStreams) {
           ops.push(value.pipeThrough(getByteFramingStream()).pipeTo(writable));
@@ -1715,7 +1759,8 @@ export function getExternalReducers(
                   ops,
                   runId,
                   cryptoKey,
-                  framedByteStreams
+                  framedByteStreams,
+                  runReadyBarrier
                 ),
                 cryptoKey
               )
@@ -1905,7 +1950,12 @@ function getStepReducers(
   ops: Promise<void>[],
   runId: string,
   cryptoKey: EncryptionKeyParam,
-  framedByteStreams = false
+  framedByteStreams = false,
+  // Turbo optimistic start: a returned `ReadableStream` is piped to the server
+  // after the body but within the same op flush, so its first chunk can race
+  // `run_started`. Thread the run-ready barrier into the sink so that write
+  // orders after the run exists. Undefined outside turbo / on the await path.
+  runReadyBarrier?: Promise<unknown>
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -1941,7 +1991,11 @@ function getStepReducers(
         type = getStreamType(value);
         framing = type === 'bytes' && framedByteStreams ? 'framed-v1' : framing;
 
-        const writable = new WorkflowServerWritableStream(runId, name);
+        const writable = new WorkflowServerWritableStream(
+          runId,
+          name,
+          runReadyBarrier
+        );
         if (type === 'bytes') {
           if (framing === 'framed-v1') {
             ops.push(
@@ -1960,7 +2014,8 @@ function getStepReducers(
                     ops,
                     runId,
                     cryptoKey,
-                    framedByteStreams
+                    framedByteStreams,
+                    runReadyBarrier
                   ),
                   cryptoKey
                 )
@@ -3328,12 +3383,23 @@ export async function dehydrateStepReturnValue(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false
+  compression = false,
+  // Turbo optimistic start: order the first chunk of a returned stream after
+  // the backgrounded `run_started`. Threaded into the step reducers' stream
+  // sink. Undefined outside turbo / on the await path.
+  runReadyBarrier?: Promise<unknown>
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
       value,
-      getStepReducers(global, ops, runId, key, framedByteStreams)
+      getStepReducers(
+        global,
+        ops,
+        runId,
+        key,
+        framedByteStreams,
+        runReadyBarrier
+      )
     );
     return revive(str);
   }
@@ -3342,7 +3408,14 @@ export async function dehydrateStepReturnValue(
     const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(
-        getStepReducers(global, ops, runId, key, framedByteStreams)
+        getStepReducers(
+          global,
+          ops,
+          runId,
+          key,
+          framedByteStreams,
+          runReadyBarrier
+        )
       ),
       compression,
       compressionStats,

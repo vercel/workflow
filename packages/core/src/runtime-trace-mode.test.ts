@@ -309,6 +309,9 @@ describe('workflowEntrypoint trace modes', () => {
       (e) => e.name === 'workflow.run_started.create.start'
     );
     expect(runStartedCreateEvent).toBeDefined();
+    expect(
+      runStartedCreateEvent?.attributes['workflow.run_started.skip_preload']
+    ).toBe(false);
 
     // Queue-delivered invocation spans use the CONSUMER kind, matching
     // queue-delivered step.execute spans.
