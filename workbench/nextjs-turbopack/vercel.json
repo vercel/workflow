@@ -1,7 +1,8 @@
 {
   "env": {
     "WORKFLOW_PUBLIC_MANIFEST": "1",
-    "WORKFLOW_CALLSITE_CORRELATION_IDS": "1"
+    "WORKFLOW_CALLSITE_CORRELATION_IDS": "1",
+    "WORKFLOW_PRECONDITION_GUARD": "0"
   },
   "regions": [
     "iad1",
