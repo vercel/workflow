@@ -8,12 +8,24 @@
     "build",
     "server.js",
     "server.d.ts",
+    "handler.js",
+    "handler.d.ts",
+    "registry.js",
+    "registry.d.ts",
     "package.json"
   ],
   "exports": {
     "./server": {
       "types": "./server.d.ts",
       "default": "./server.js"
+    },
+    "./handler": {
+      "types": "./handler.d.ts",
+      "default": "./handler.js"
+    },
+    "./registry": {
+      "types": "./registry.d.ts",
+      "default": "./registry.js"
     },
     "./package.json": "./package.json"
   },

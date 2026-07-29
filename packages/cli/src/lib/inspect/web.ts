@@ -10,6 +10,55 @@ export const getHostUrl = (webPort: number) => `http://localhost:${webPort}`;
 
 let httpServer: Server | null = null;
 
+interface DashboardRegistryEntry {
+  url: string;
+  basename: string;
+  world: string;
+  pid: number;
+  startedAt: string;
+}
+
+/**
+ * Find embedded dashboards (e.g. a framework integration serving `/_workflow`)
+ * that are currently live for this project. Reads the best-effort registry and
+ * health-checks each entry, since stale entries are expected (a SIGKILL'd dev
+ * server can't clean up). Returns [] on any error — coordination is optional.
+ */
+async function findLiveEmbeddedDashboards(): Promise<DashboardRegistryEntry[]> {
+  let entries: DashboardRegistryEntry[];
+  try {
+    const { readDashboardRegistry } = await import('@workflow/web/registry');
+    entries = readDashboardRegistry() as DashboardRegistryEntry[];
+  } catch {
+    return [];
+  }
+
+  const live: DashboardRegistryEntry[] = [];
+  for (const entry of entries) {
+    if (!entry?.url) continue;
+    // Best-effort PID liveness check (same-host dev servers).
+    if (typeof entry.pid === 'number') {
+      try {
+        process.kill(entry.pid, 0);
+      } catch {
+        continue; // process gone
+      }
+    }
+    try {
+      const res = await fetch(entry.url, {
+        method: 'HEAD',
+        redirect: 'manual',
+        signal: AbortSignal.timeout(1500),
+      });
+      // Any non-5xx response means something is serving that route.
+      if (res.status < 500) live.push(entry);
+    } catch {
+      // unreachable — treat as dead
+    }
+  }
+  return live;
+}
+
 /**
  * Check if a server is already listening on the given URL.
  */
@@ -138,6 +187,43 @@ export async function launchWebUI(
     } catch (error) {
       logger.error(`Failed to open browser: ${error}`);
       logger.info(`Please open the link manually.`);
+      return;
+    }
+  }
+
+  // Defer to an already-running embedded dashboard (e.g. a framework
+  // integration serving `/_workflow`) unless the user forces a standalone
+  // server. Avoids spinning up a redundant UI on :3456 when one is already up.
+  if (!flags.standalone) {
+    const live = await findLiveEmbeddedDashboards();
+    if (live.length === 1) {
+      const target = buildWebUIUrl(live[0].url, resource, id, flags);
+      logger.info(
+        chalk.green(
+          `An embedded workflow dashboard is already running at ${live[0].url}`
+        )
+      );
+      if (disableBrowserOpen) {
+        logger.info(chalk.cyan(`Open it at: ${target}`));
+        return;
+      }
+      logger.info(chalk.cyan(`Opening ${target}`));
+      try {
+        await open(target);
+      } catch (error) {
+        logger.error(`Failed to open browser: ${error}`);
+        logger.info(`Please open the link manually: ${target}`);
+      }
+      return;
+    }
+    if (live.length > 1) {
+      logger.info('Embedded workflow dashboards are already running at:');
+      for (const entry of live) {
+        logger.info(chalk.cyan(`  - ${entry.url}`));
+      }
+      logger.info(
+        'Open the one you want, or pass --standalone to start a separate web UI.'
+      );
       return;
     }
   }
