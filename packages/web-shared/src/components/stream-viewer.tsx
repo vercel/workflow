@@ -160,12 +160,6 @@ const ChunkRow = React.memo(function ChunkRow({
         isLast ? undefined : { borderBottom: '1px solid var(--ds-gray-200)' }
       }
     >
-      <span
-        className="w-9 flex-none select-none pt-0.5 text-right font-mono text-[11px] tabular-nums"
-        style={{ color: 'var(--ds-gray-600)' }}
-      >
-        {index}
-      </span>
       <div className="min-w-0 flex-1 text-xs leading-[1.55]">
         {typeof chunk.value === 'string' ? (
           <span
@@ -325,10 +319,10 @@ function TextView({ chunks }: { chunks: Chunk[] }) {
               >
                 <div className="mb-1 flex items-center justify-between gap-2">
                   <span
-                    className="font-mono text-[11px] tabular-nums"
+                    className="font-mono text-[11px]"
                     style={{ color: 'var(--ds-gray-600)' }}
                   >
-                    [{index}] non-text chunk
+                    Non-text chunk
                   </span>
                   <CopyButton
                     copyText={stringifyChunkValue(chunk.value)}
@@ -359,10 +353,10 @@ function StreamSkeleton() {
   return (
     <div className="flex flex-col gap-4 animate-in fade-in pt-2 pl-6 pr-2">
       {[1, 2, 3, 4].map((i) => (
-        <div key={i} className="flex items-start gap-3">
-          <Skeleton style={{ width: 36, height: 12, borderRadius: 4 }} />
-          <Skeleton style={{ flex: 1, height: 12, borderRadius: 4 }} />
-        </div>
+        <Skeleton
+          key={i}
+          style={{ height: 12, borderRadius: 4, width: `${85 - i * 10}%` }}
+        />
       ))}
     </div>
   );
