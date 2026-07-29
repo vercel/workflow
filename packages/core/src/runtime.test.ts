@@ -1485,14 +1485,15 @@ describe('workflowEntrypoint turbo mode', () => {
   /**
    * Drives the handler with a first-invocation message (runInput present) at the
    * given delivery `attempt`. `runStartedGate`, when provided, holds the
-   * `run_started` create until released — its resolution pushes
-   * 'run_started_resolved' so tests can assert the body ran before or after it.
+   * `run_started` create until released. `stepStartedGate` can separately hold
+   * the optimistic step claim.
    */
   async function driveTurbo(opts: {
     runId: string;
     attempt: number;
     source: string;
     runStartedGate?: Promise<void>;
+    stepStartedGate?: Promise<void>;
   }) {
     const { runId, attempt, source } = opts;
     const order = turboOrder;
@@ -1528,6 +1529,8 @@ describe('workflowEntrypoint turbo mode', () => {
       }
       if (data.eventType === 'step_started') {
         order.push('step_started_called');
+        if (opts.stepStartedGate) await opts.stepStartedGate;
+        order.push('step_started_resolved');
         const d = data.eventData as { stepName?: string; input?: unknown };
         if (d?.input !== undefined) {
           rec({
@@ -1597,40 +1600,41 @@ describe('workflowEntrypoint turbo mode', () => {
     return { handlerPromise, order, eventsCreate };
   }
 
-  it('backgrounds run_started and forces optimistic start on the first delivery', async () => {
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
+  it('awaits run_started before forcing optimistic start on the first delivery', async () => {
+    let releaseRunStarted!: () => void;
+    const runStartedGate = new Promise<void>((resolve) => {
+      releaseRunStarted = resolve;
+    });
+    let releaseStepStarted!: () => void;
+    const stepStartedGate = new Promise<void>((resolve) => {
+      releaseStepStarted = resolve;
     });
 
     const { handlerPromise, order, eventsCreate } = await driveTurbo({
       runId: 'wrun_turbo_first',
       attempt: 1,
       source: oneStepWorkflow,
-      runStartedGate: gate,
+      runStartedGate,
+      stepStartedGate,
     });
 
-    // The body runs while run_started is still in flight — proving run_started
-    // was backgrounded AND optimistic start was forced (the env flag is off).
-    // The full VM replay leading up to the body can exceed vi.waitFor's default
-    // 1s timeout on slow CI runners (notably Windows), so widen it.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(order).not.toContain('body');
+    expect(order).not.toContain('run_started_resolved');
+    expect(order).not.toContain('step_started_called');
+
+    releaseRunStarted();
     await vi.waitFor(() => expect(order).toContain('body'), {
       timeout: 15_000,
     });
-    expect(order).not.toContain('run_started_resolved');
-    // The lazy step_started is chained on the run-ready barrier, so it is not
-    // even issued until run_started lands.
-    expect(order).not.toContain('step_started_called');
-
-    release();
-    const res = await handlerPromise;
-    expect(res.status).toBe(204);
-    // After release: step_started fires, ordered strictly after run_started.
-    expect(order).toContain('step_started_called');
     expect(order.indexOf('run_started_resolved')).toBeLessThan(
       order.indexOf('step_started_called')
     );
-    // run_started was created exactly once (idempotent first write).
+    expect(order).not.toContain('step_started_resolved');
+
+    releaseStepStarted();
+    const res = await handlerPromise;
+    expect(res.status).toBe(204);
     const runStartedCreates = eventsCreate.mock.calls.filter(
       (c) => (c[1] as any).eventType === 'run_started'
     );
@@ -1665,37 +1669,6 @@ describe('workflowEntrypoint turbo mode', () => {
     expect(order.indexOf('run_started_resolved')).toBeLessThan(
       order.indexOf('body')
     );
-  });
-
-  it('asks the World to skip the run_started preload only under turbo', async () => {
-    // The backgrounded run_started is used purely as a write barrier and its
-    // preloaded events are never read (preloadedEvents is forced to []), so
-    // turbo passes skipPreload to drop the wasted server-side
-    // list+resolve that the chained first step_started waits behind.
-    const turbo = await driveTurbo({
-      runId: 'wrun_turbo_skip_preload',
-      attempt: 1,
-      source: oneStepWorkflow,
-    });
-    expect((await turbo.handlerPromise).status).toBe(204);
-    const turboRunStarted = turbo.eventsCreate.mock.calls.find(
-      (c) => (c[1] as any).eventType === 'run_started'
-    );
-    expect((turboRunStarted?.[2] as any)?.skipPreload).toBe(true);
-
-    // A redelivery (attempt > 1) is not turbo: it awaits run_started and
-    // consumes the preload to skip its initial events.list, so it must NOT ask
-    // the server to skip it.
-    const redeliver = await driveTurbo({
-      runId: 'wrun_turbo_skip_preload_redeliver',
-      attempt: 2,
-      source: oneStepWorkflow,
-    });
-    expect((await redeliver.handlerPromise).status).toBe(204);
-    const redeliverRunStarted = redeliver.eventsCreate.mock.calls.find(
-      (c) => (c[1] as any).eventType === 'run_started'
-    );
-    expect((redeliverRunStarted?.[2] as any)?.skipPreload).toBeUndefined();
   });
 
   it('exits turbo (no forced optimistic) when the suspension creates a wait', async () => {

@@ -214,11 +214,10 @@ export const StepStsoMs = SemanticConvention<number>('step.stso_ms');
 
 /**
  * Client-measured run_started-to-first-step latency in milliseconds: the
- * `run_started` response landing (or, under turbo, the local run synthesis
- * instant) → this step's start POST being issued. A sub-window of ttfs that
- * isolates replay overhead from the run-creation queue hop. Only present on
- * the run's first step execution when it qualified for measurement (see
- * runtime/step-latency.ts).
+ * `run_started` response landing → this step's start POST being issued. A
+ * sub-window of ttfs that isolates replay overhead from the run-creation queue
+ * hop. Only present on the run's first step execution when it qualified for
+ * measurement (see runtime/step-latency.ts).
  */
 export const StepRsfsMs = SemanticConvention<number>('step.rsfs_ms');
 

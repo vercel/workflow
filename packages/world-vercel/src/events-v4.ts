@@ -189,11 +189,6 @@ export interface CreateEventV4Input {
    *  other event types; older servers ignore it entirely (the runtime then
    *  falls back to events.list). */
   sinceCursor?: string;
-  /** Run-started preload opt-out. Turbo backgrounds run_started as a write
-   *  barrier only and never reads the preloaded log, so it asks the server to
-   *  skip the list+resolve. Acted on by the server only for run_started;
-   *  older servers ignore it and preload as before. */
-  skipPreload?: boolean;
   /**
    * Epoch ms (the ULID time of the latest event the runtime has loaded
    * during replay). Sent by replay-context creates so the backend can
@@ -204,16 +199,13 @@ export interface CreateEventV4Input {
   stateUpdatedAt?: number;
 }
 
-export interface CreateEventV4Result {
+interface CreateEventV4ResultBase {
   eventId: string;
   runId: string;
   createdAt: string;
   /**
-   * Materialized-entity bag — CBOR-decoded from the response body. The
-   * server hands back the same shape v2/v3 use for EventResult so the
-   * adapter layer can drop these fields into its return value unchanged.
-   * Keys are unset when the event type doesn't materialize that entity
-   * kind.
+   * Materialized-entity bag decoded from CBOR or the leading result frame.
+   * Keys are unset when the event type doesn't materialize that entity kind.
    */
   body: {
     event?: unknown;
@@ -237,6 +229,13 @@ export interface CreateEventV4Result {
     maxEvents?: number;
   };
 }
+
+export type CreateEventV4Result =
+  | (CreateEventV4ResultBase & { type: 'event' })
+  | (CreateEventV4ResultBase & {
+      type: 'event-page';
+      page: ListEventsV4Result;
+    });
 
 /** Build the CBOR meta map for a v4 POST frame. Drops undefined entries
  *  so the wire shape matches what the server expects to see. */
@@ -293,7 +292,6 @@ function buildPostFrameMeta(
     meta.optimizations = input.optimizations;
   }
   if (input.sinceCursor !== undefined) meta.sinceCursor = input.sinceCursor;
-  if (input.skipPreload !== undefined) meta.skipPreload = input.skipPreload;
   if (input.stateUpdatedAt !== undefined) {
     meta.stateUpdatedAt = input.stateUpdatedAt;
   }
@@ -363,9 +361,8 @@ export function throwForErrorResponse(
 /**
  * POST /api/v4/runs/:runId/events/:eventType
  *
- * Sends the full request as a single v4 frame and returns the event ids
- * + materialized-entity bag from the CBOR response body. Throws on
- * non-2xx.
+ * Sends the full request as a single v4 frame. A run_started response may
+ * include the first event page as frames; other responses use CBOR.
  *
  * The trailing `:eventType` path segment is an alias of the canonical
  * `/events` route: it exists purely so the event type is visible in
@@ -382,6 +379,9 @@ export async function createWorkflowRunEventV4(
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   headers.set('Content-Type', 'application/octet-stream');
+  if (input.eventType === 'run_started') {
+    headers.set('Accept', V4_FRAME_CONTENT_TYPE);
+  }
 
   const frame = encodeFrame(
     buildPostFrameMeta(input),
@@ -407,6 +407,32 @@ export async function createWorkflowRunEventV4(
     throw new Error('v4 createEvent: response missing required x-wf-* headers');
   }
 
+  const contentType = response.headers.get('content-type');
+  if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
+    if (input.eventType !== 'run_started') {
+      throw new Error(
+        'v4 createEvent: received an event page for a non-run_started event'
+      );
+    }
+    const { result, ...page } = await consumeEventFrameStream(
+      response,
+      'createEvent'
+    );
+    if (!result) {
+      throw new Error(
+        'v4 createEvent: frame stream ended without the result frame'
+      );
+    }
+    return {
+      type: 'event-page',
+      eventId,
+      runId,
+      createdAt,
+      body: result,
+      page,
+    };
+  }
+
   // Decode the materialized-entity bag from the CBOR response body.
   const bodyBytes = new Uint8Array(await response.arrayBuffer());
   const body =
@@ -414,7 +440,7 @@ export async function createWorkflowRunEventV4(
       ? (decode(bodyBytes) as CreateEventV4Result['body'])
       : {};
 
-  return { eventId, runId, createdAt, body };
+  return { type: 'event', eventId, runId, createdAt, body };
 }
 
 /**
@@ -537,6 +563,64 @@ export interface ListEventsV4Result {
   hasMore?: boolean;
 }
 
+interface EventFrameStreamResult extends ListEventsV4Result {
+  result?: CreateEventV4ResultBase['body'];
+}
+
+async function consumeEventFrameStream(
+  response: Response,
+  opName: string
+): Promise<EventFrameStreamResult> {
+  const contentType = response.headers.get('content-type');
+  if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
+    throw new Error(
+      `v4 ${opName}: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
+    );
+  }
+
+  const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
+  const events: ListedEventV4[] = [];
+  let result: CreateEventV4ResultBase['body'] | undefined;
+  let next: string | undefined;
+  let hasMore: boolean | undefined;
+  let sawEndSentinel = false;
+
+  for await (const frame of decodeFrames(chunks)) {
+    if (frame.meta._result === 1) {
+      if (result || events.length > 0 || frame.body.byteLength > 0) {
+        throw new Error(`v4 ${opName}: invalid result frame`);
+      }
+      const { _result, ...body } = frame.meta;
+      result = body;
+      continue;
+    }
+    if (frame.meta._end === 1) {
+      if (typeof frame.meta.next === 'string') next = frame.meta.next;
+      if (typeof frame.meta.hasMore === 'boolean') hasMore = frame.meta.hasMore;
+      sawEndSentinel = true;
+      break;
+    }
+    events.push({
+      event: frame.meta as unknown as DecodedV4Event,
+      body: frame.body,
+    });
+  }
+
+  if (!sawEndSentinel) {
+    throw new Error(
+      `v4 ${opName}: frame stream ended without the end-of-stream sentinel ` +
+        `(${events.length} events read) — truncated response?`
+    );
+  }
+
+  return {
+    events,
+    ...(result ? { result } : {}),
+    ...(next ? { next } : {}),
+    ...(hasMore !== undefined ? { hasMore } : {}),
+  };
+}
+
 /**
  * Drive a v4 frame-stream list response into an in-memory page. Used by
  * both the by-runId and by-correlationId list endpoints — the wire
@@ -558,52 +642,11 @@ async function consumeListFrameStream(
     config,
     opName
   );
-  const contentType = response.headers.get('content-type');
-  if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
-    throw new Error(
-      `v4 ${opName}: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
-    );
+  const { result, ...page } = await consumeEventFrameStream(response, opName);
+  if (result) {
+    throw new Error(`v4 ${opName}: unexpected result frame`);
   }
-
-  // See getEventV4: fetch's web ReadableStream is async-iterable on Node; the
-  // cast only works around TS's lib type omitting the async iterator.
-  const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
-
-  const events: ListedEventV4[] = [];
-  let next: string | undefined;
-  let hasMore: boolean | undefined;
-  let sawEndSentinel = false;
-  for await (const frame of decodeFrames(chunks)) {
-    if (frame.meta._end === 1) {
-      if (typeof frame.meta.next === 'string') next = frame.meta.next;
-      if (typeof frame.meta.hasMore === 'boolean') hasMore = frame.meta.hasMore;
-      sawEndSentinel = true;
-      break;
-    }
-    events.push({
-      event: frame.meta as unknown as DecodedV4Event,
-      body: frame.body,
-    });
-  }
-
-  // A LIST response always ends with the `{_end: 1}` sentinel frame. EOF
-  // without it means the response was truncated — and if the cut landed
-  // between two complete frames, decodeFrames alone can't tell. Returning
-  // the partial page here would surface as `hasMore: false` and silently
-  // drop events (replay correctness!), so fail loudly instead; the read
-  // is idempotent and safe for the caller to retry.
-  if (!sawEndSentinel) {
-    throw new Error(
-      `v4 ${opName}: frame stream ended without the end-of-stream sentinel ` +
-        `(${events.length} events read) — truncated response?`
-    );
-  }
-
-  return {
-    events,
-    ...(next ? { next } : {}),
-    ...(hasMore !== undefined ? { hasMore } : {}),
-  };
+  return page;
 }
 
 /**

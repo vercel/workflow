@@ -61,14 +61,7 @@ export interface StepLatencyTracking {
   /**
    * Epoch ms the `run_started` response was received/parsed by the SDK.
    * Present only when the step qualifies for RSFS — the same eligibility as
-   * TTFS (see {@link computeStepLatencyTracking}), plus a recoverable
-   * anchor. In turbo mode, `run_started` is backgrounded rather than
-   * awaited, so this is stamped at the point the runtime synthesizes the
-   * run locally and begins replay instead of at the real response; the
-   * first step's start POST is still chained on the real `run_started`
-   * promise (see step-executor.ts), so RSFS still ends up measuring the
-   * genuine run_started-to-first-step-POST stretch even though the two
-   * halves overlap under turbo.
+   * TTFS (see {@link computeStepLatencyTracking}), plus a recoverable anchor.
    */
   rsfsAnchorMs?: number;
   /**
@@ -174,11 +167,7 @@ export function computeStepLatencyTracking(params: {
   invocationStartedClean: boolean;
   /** Epoch ms of run creation, if recoverable. Absent disqualifies TTFS. */
   runCreatedAtMs: number | undefined;
-  /**
-   * Epoch ms the `run_started` response was received/parsed by the SDK (or,
-   * under turbo, the instant the run was synthesized locally — see
-   * {@link StepLatencyTracking.rsfsAnchorMs}). Absent disqualifies RSFS.
-   */
+  /** Epoch ms the `run_started` response was received/parsed by the SDK. */
   runStartedReceivedAtMs: number | undefined;
   /**
    * Wall-clock ms this suspension's `runWorkflow` call spent executing

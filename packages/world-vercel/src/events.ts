@@ -16,9 +16,8 @@
  *
  *   - POST request body is one v4 frame (meta + payload). The response
  *     surfaces eventId/runId/createdAt as `x-wf-*` headers and carries
- *     the materialized EventResult (event/run/step/hook/wait/events/
- *     cursor/hasMore) as a CBOR body — `remoteRefBehavior` in the frame
- *     meta still controls server-side ref resolution.
+ *     a materialized EventResult. `run_started` negotiates a frame stream
+ *     containing that result and the first event page; other events use CBOR.
  *   - GET single event returns one v4 frame: the event entity in the
  *     frame meta, the user payload bytes in the frame body.
  *   - LIST events returns a stream of v4 frames terminated by a sentinel
@@ -476,30 +475,44 @@ function decodeLegacyStructuredError(payload: Uint8Array): unknown {
  *
  * Both GET single-event and LIST use the same frame format: meta is the
  * full event entity with the payload field as a RefDescriptor, body is
- * the resolved payload bytes (possibly empty). This helper splices the
- * body bytes into `eventData[fieldName]`, normalizing any zstd wrapper
- * back to the raw devalue-with-format-prefix Uint8Array the runtime's
- * hydrate helpers (hydrateStepIO, hydrateRunError, …) consume. Stable-line
- * structured errors are the exception: the backend stored those as CBOR,
- * so they are decoded after checking that the payload is not a current
- * format-prefixed serialized value.
+ * the resolved payload bytes (possibly empty). Read mode normalizes
+ * compression wrappers for display. Replay mode preserves the serialized
+ * bytes so the runtime's hydrate helpers own decompression and telemetry.
+ * Stable-line structured errors are decoded after checking that the payload
+ * is not a current format-prefixed serialized value.
  */
 function buildEventFromV4(
   decoded: DecodedV4Event,
   payloadBody: Uint8Array,
-  resolveData: 'none' | 'all'
+  mode: 'none' | 'all' | 'replay'
 ): Event {
   const eventData = (decoded.eventData ?? {}) as Record<string, unknown>;
+  let normalizePayload: boolean;
+  switch (mode) {
+    case 'none':
+    case 'all':
+      normalizePayload = true;
+      break;
+    case 'replay':
+      normalizePayload = false;
+      break;
+    default: {
+      const exhaustive: never = mode;
+      throw new Error(`Unsupported v4 event mode: ${exhaustive}`);
+    }
+  }
 
   if (payloadBody.byteLength > 0) {
     const payloadField = getEventDataPayloadField(decoded.eventType);
-    const normalizedPayload = normalizeSerializedData(payloadBody);
-    if (payloadField && normalizedPayload instanceof Uint8Array) {
+    const payload = normalizePayload
+      ? normalizeSerializedData(payloadBody)
+      : payloadBody;
+    if (payloadField && payload instanceof Uint8Array) {
       eventData[payloadField] = legacyStructuredErrorEventTypes.has(
         decoded.eventType
       )
-        ? decodeLegacyStructuredError(normalizedPayload)
-        : normalizedPayload;
+        ? decodeLegacyStructuredError(payload)
+        : payload;
     }
   }
 
@@ -526,11 +539,13 @@ function buildEventFromV4(
       : {}),
   };
 
-  const event = coerceNormalizedEvent(raw);
+  const event = normalizePayload
+    ? coerceNormalizedEvent(raw)
+    : coerceEventDates(raw);
 
   // For resolveData='none', strip eventData entirely. Reuse the world-
   // side helper so behavior stays in sync with other backends.
-  return resolveData === 'none' ? stripEventDataRefs(event, 'none') : event;
+  return mode === 'none' ? stripEventDataRefs(event, 'none') : event;
 }
 
 // =============================================================================
@@ -706,11 +721,6 @@ async function createWorkflowRunEventInner(
       // step_completed/step_failed; older servers ignore it and the runtime
       // falls back to events.list.
       ...(params?.sinceCursor ? { sinceCursor: params.sinceCursor } : {}),
-      // Run-started preload opt-out: turbo backgrounds run_started as a write
-      // barrier only and never reads the preloaded log, so tell the server to
-      // skip the list+resolve. The server only acts on it for run_started;
-      // older servers ignore it and simply preload as before.
-      ...(params?.skipPreload ? { skipPreload: true } : {}),
       remoteRefBehavior,
       payload,
       ...meta,
@@ -738,6 +748,38 @@ async function createWorkflowRunEventInner(
   // matching the v3 path's stripEventAndLegacyRefs behavior.
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const body = result.body;
+  const streamedEvents =
+    result.type === 'event-page'
+      ? result.page.events.map(({ event, body }) =>
+          buildEventFromV4(event, body, 'replay')
+        )
+      : undefined;
+  const events = streamedEvents
+    ? streamedEvents.map((event) => stripEventDataRefs(event, resolveData))
+    : body.events
+      ? (body.events as Record<string, unknown>[]).map(coerceEventDates)
+      : undefined;
+  const cursor = result.type === 'event-page' ? result.page.next : body.cursor;
+  const hasMore =
+    result.type === 'event-page'
+      ? (result.page.hasMore ?? Boolean(result.page.next))
+      : body.hasMore;
+  let run = body.run
+    ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
+    : undefined;
+  if (run && streamedEvents) {
+    const runCreated = streamedEvents.find(
+      (event) => event.eventType === 'run_created'
+    );
+    if (!runCreated) {
+      throw new Error('v4 createEvent: run_started page missing run_created');
+    }
+    const input = (runCreated.eventData as Record<string, unknown>).input;
+    const { inputRef: _inputRef, ...runData } = run as WorkflowRun & {
+      inputRef?: unknown;
+    };
+    run = { ...runData, input } as WorkflowRun;
+  }
   return {
     event: body.event
       ? stripEventDataRefs(
@@ -745,19 +787,15 @@ async function createWorkflowRunEventInner(
           resolveData
         )
       : undefined,
-    run: body.run
-      ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
-      : undefined,
+    run,
     step: body.step
       ? deserializeStep(body.step as Parameters<typeof deserializeStep>[0])
       : undefined,
     hook: body.hook as EventResult['hook'],
     wait: body.wait as EventResult['wait'],
-    events: body.events
-      ? (body.events as Record<string, unknown>[]).map(coerceEventDates)
-      : undefined,
-    cursor: body.cursor ?? undefined,
-    hasMore: body.hasMore,
+    events,
+    cursor,
+    hasMore,
     // Lazy step start: thread the server's "I created the step on this call"
     // signal through so the owned-inline runtime path can gate body execution
     // on it. Absent from older servers → undefined → safe default.

@@ -147,34 +147,6 @@ describe('WorkflowServerWritableStream write-flush telemetry', () => {
     }
   });
 
-  it('counts the turbo run-ready barrier wait as buffer dwell', async () => {
-    let releaseBarrier!: () => void;
-    const runReadyBarrier = new Promise<void>((resolve) => {
-      releaseBarrier = resolve;
-    });
-
-    const stream = new WorkflowServerWritableStream(
-      'run-123',
-      'test-stream',
-      runReadyBarrier
-    );
-    const writer = stream.getWriter();
-
-    await writer.write(new Uint8Array([1, 2, 3]));
-    // Hold the first dispatch on the barrier long enough to dominate the
-    // dwell (write() itself acks on buffer entry and does not wait).
-    await new Promise((r) => setTimeout(r, 50));
-    releaseBarrier();
-    await writer.close();
-
-    const [span] = await waitForSpans('workflow.stream.flush', 1);
-    expect(span).toBeDefined();
-    const dwell = span.attributes[
-      'workflow.stream.flush.buffer_dwell_ms'
-    ] as number;
-    expect(dwell).toBeGreaterThanOrEqual(40);
-  });
-
   it('emits a workflow.stream.close span with the close RPC duration', async () => {
     const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
     const writer = stream.getWriter();

@@ -1,3 +1,4 @@
+import { gzipSync } from 'node:zlib';
 import type { AnyEventRequest } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
@@ -31,6 +32,18 @@ function decodePostedMeta(rawBody: unknown): Record<string, unknown> {
     bytes.byteLength
   ).getUint32(0, false);
   return decode(bytes.subarray(4, 4 + metaLen)) as Record<string, unknown>;
+}
+
+function joinFrames(...frames: Uint8Array[]): Uint8Array {
+  const joined = new Uint8Array(
+    frames.reduce((length, frame) => length + frame.byteLength, 0)
+  );
+  let offset = 0;
+  for (const frame of frames) {
+    joined.set(frame, offset);
+    offset += frame.byteLength;
+  }
+  return joined;
 }
 
 /**
@@ -626,6 +639,96 @@ describe('createWorkflowRunEvent response coercion', () => {
     expect(preloaded.eventData.resumeAt.getTime()).toBe(
       new Date('2026-06-10T01:00:00.000Z').getTime()
     );
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('hydrates a streamed run_started page in either structural event order', async () => {
+    const agent = mockAgent();
+    const serializedInput = new TextEncoder().encode('"workflow input"');
+    const compressedInput = gzipSync(serializedInput);
+    const input = new Uint8Array(4 + compressedInput.byteLength);
+    input.set(new TextEncoder().encode('gzip'));
+    input.set(compressedInput, 4);
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+        headers: { accept: V4_FRAME_CONTENT_TYPE },
+      })
+      .reply(
+        200,
+        joinFrames(
+          encodeFrame(
+            {
+              _result: 1,
+              run: {
+                runId: 'wrun_1',
+                status: 'running',
+                startedAt: new Date('2026-06-10T00:00:01.000Z'),
+              },
+              event: {
+                eventId: 'evnt_1',
+                runId: 'wrun_1',
+                eventType: 'run_started',
+                createdAt: new Date('2026-06-10T00:00:00.000Z'),
+              },
+            },
+            new Uint8Array()
+          ),
+          encodeFrame(
+            {
+              eventId: 'evnt_1',
+              runId: 'wrun_1',
+              eventType: 'run_started',
+              createdAt: new Date('2026-06-10T00:00:00.000Z'),
+              specVersion: 5,
+              eventData: {},
+            },
+            new Uint8Array()
+          ),
+          encodeFrame(
+            {
+              eventId: 'evnt_2',
+              runId: 'wrun_1',
+              eventType: 'run_created',
+              createdAt: new Date('2026-06-10T00:00:01.000Z'),
+              specVersion: 5,
+              eventData: {
+                deploymentId: 'dpl_1',
+                workflowName: 'wf',
+                input: { _type: 'RemoteRef', value: 'dbrf:unused' },
+              },
+            },
+            input
+          ),
+          encodeFrame({ _end: 1, next: 'eid:evnt_2' }, new Uint8Array())
+        ),
+        {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      { eventType: 'run_started', specVersion: 5 } as AnyEventRequest,
+      undefined,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.events?.map((event) => event.eventType)).toEqual([
+      'run_started',
+      'run_created',
+    ]);
+    expect(result.events?.[1].eventData?.input).toEqual(input);
+    expect(result.run?.input).toEqual(input);
+    expect(result.cursor).toBe('eid:evnt_2');
+    expect(result.hasMore).toBe(true);
     agent.assertNoPendingInterceptors();
   });
 

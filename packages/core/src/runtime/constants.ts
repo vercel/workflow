@@ -284,10 +284,8 @@ export function isOptimisticInlineStartExplicitlyDisabled(): boolean {
 /**
  * Whether "turbo mode" is enabled. Turbo mode fast-paths the *first delivery of
  * the first invocation* of a run (detected by the entrypoint via `runInput`
- * presence + `metadata.attempt === 1`): it backgrounds the `run_started` event
- * creation, skips the initial event-log load (nothing has been written yet),
- * and forces optimistic inline step start for that invocation — independent of
- * `WORKFLOW_OPTIMISTIC_INLINE_START`.
+ * presence + `metadata.attempt === 1`) and forces optimistic inline step start
+ * for that invocation, independent of `WORKFLOW_OPTIMISTIC_INLINE_START`.
  *
  * Forcing optimistic start is safe here because the first delivery has no
  * concurrent peer handler to race the step create-claim, so a step body runs

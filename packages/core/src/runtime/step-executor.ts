@@ -168,15 +168,6 @@ export interface StepExecutorParams {
    */
   forceOptimisticStart?: boolean;
   /**
-   * Turbo mode only: a promise that resolves once the backgrounded
-   * `run_started` has landed. When set, the lazy/optimistic `step_started` is
-   * chained on it so the step is never created before its run exists. The body
-   * still runs immediately against locally-synthesized state — only the network
-   * write waits — so the `run_started` round-trip overlaps the body. `undefined`
-   * outside turbo, where `run_started` was already awaited up front.
-   */
-  runReadyBarrier?: Promise<unknown>;
-  /**
    * Latency telemetry (TTFS / STSO): eligibility and anchor timestamps decided
    * by the orchestrator. When set, this executor computes the final values
    * against the wall clock taken immediately before user code runs and
@@ -297,13 +288,6 @@ export async function executeStep(
       // return `skipped` and never write the failure twice.
       if (params.lazyStepInput !== undefined) {
         try {
-          // Turbo: this lazy `step_started` must not precede the backgrounded
-          // `run_started`. Order it after the run-ready barrier (best-effort —
-          // a barrier rejection means the run doesn't exist, and the create
-          // below surfaces the real error). No-op outside turbo.
-          if (params.runReadyBarrier) {
-            await params.runReadyBarrier.catch(() => {});
-          }
           await world.events.create(workflowRunId, {
             eventType: 'step_started',
             specVersion: SPEC_VERSION_CURRENT,
@@ -533,42 +517,30 @@ export async function executeStep(
     };
 
     if (optimisticStart) {
-      // Chain the lazy `step_started` on the run-ready barrier (turbo mode):
-      // the step can't be created before its run exists, but the body below
-      // runs immediately against synthesized state, so the `run_started`
-      // round-trip overlaps the body rather than blocking it. Outside turbo the
-      // barrier is undefined and this is a plain create.
-      const startedPromise = (params.runReadyBarrier ?? Promise.resolve()).then(
-        () => {
-          // Taken right before the create fires, not before the barrier —
-          // RSFS measures the run_started-to-POST stretch, and the barrier
-          // wait IS part of that stretch under turbo.
-          stepStartPostSentAtMs = Date.now();
-          return world.events.create(
-            workflowRunId,
-            {
-              eventType: 'step_started',
-              specVersion: SPEC_VERSION_CURRENT,
-              correlationId: stepId,
-              eventData: {
-                stepName,
-                workflowName,
-                input: params.lazyStepInput,
-                // Inline-ownership stamp — see StepExecutorParams.ownerMessageId.
-                ...(params.ownerMessageId !== undefined
-                  ? { ownerMessageId: params.ownerMessageId }
-                  : {}),
-              },
-            },
-            // Guard the claim — see StepExecutorParams.stateUpdatedAt. A stale
-            // (412) rejection surfaces via reconcileOptimisticStart as a
-            // non-translatable error: the body result is discarded and the
-            // rejection propagates to the caller.
-            params.stateUpdatedAt !== undefined
-              ? { stateUpdatedAt: params.stateUpdatedAt }
-              : undefined
-          );
-        }
+      stepStartPostSentAtMs = Date.now();
+      const startedPromise = world.events.create(
+        workflowRunId,
+        {
+          eventType: 'step_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: stepId,
+          eventData: {
+            stepName,
+            workflowName,
+            input: params.lazyStepInput,
+            // Inline-ownership stamp — see StepExecutorParams.ownerMessageId.
+            ...(params.ownerMessageId !== undefined
+              ? { ownerMessageId: params.ownerMessageId }
+              : {}),
+          },
+        },
+        // Guard the claim — see StepExecutorParams.stateUpdatedAt. A stale
+        // (412) rejection surfaces via reconcileOptimisticStart as a
+        // non-translatable error: the body result is discarded and the
+        // rejection propagates to the caller.
+        params.stateUpdatedAt !== undefined
+          ? { stateUpdatedAt: params.stateUpdatedAt }
+          : undefined
       );
       optimisticStartSettled = startedPromise.then(
         () => ({ ok: true as const }),
@@ -861,13 +833,6 @@ export async function executeStep(
               preCompletionOps,
               closureVars: hydratedInput.closureVars,
               encryptionKey,
-              // Turbo optimistic start runs this body before `run_started` is
-              // durable. Expose the barrier so a direct step-body world write
-              // (e.g. `setAttributes`) can order itself after the
-              // run exists. Undefined on the await path (run already durable).
-              runReadyBarrier: optimisticStart
-                ? params.runReadyBarrier
-                : undefined,
             },
             () => stepFn.apply(thisVal, args)
           );
@@ -908,11 +873,7 @@ export async function executeStep(
           globalThis,
           false,
           false,
-          compression,
-          // Turbo optimistic start: a returned stream is piped to the server
-          // after the body but within this same op flush, so gate its first
-          // write on the run-ready barrier. Undefined on the await path.
-          optimisticStart ? params.runReadyBarrier : undefined
+          compression
         );
         const durationMs = Date.now() - startTime;
         dehydrateSpan?.setAttributes({
