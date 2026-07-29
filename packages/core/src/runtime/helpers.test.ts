@@ -665,8 +665,13 @@ describe('appendUniqueEvents', () => {
 });
 
 describe('preconditionEventDelta', () => {
+  // The run every `makeUlidEvent` belongs to.
+  const RUN_ID = 'wrun_mockidnumber0001';
   const delta = (details: unknown) =>
-    preconditionEventDelta(new PreconditionFailedError('stale', { details }));
+    preconditionEventDelta(
+      new PreconditionFailedError('stale', { details }),
+      RUN_ID
+    );
 
   it('returns the decoded events and cursor a World attached to the 412', () => {
     const event = makeUlidEvent(1_700_000_000_000);
@@ -687,13 +692,28 @@ describe('preconditionEventDelta', () => {
   });
 
   it('returns null when the World attached no details at all', () => {
-    expect(preconditionEventDelta(new PreconditionFailedError('stale'))).toBe(
-      null
-    );
+    expect(
+      preconditionEventDelta(new PreconditionFailedError('stale'), RUN_ID)
+    ).toBe(null);
   });
 
   it('returns null for a non-precondition error', () => {
-    expect(preconditionEventDelta(new Error('boom'))).toBe(null);
+    expect(preconditionEventDelta(new Error('boom'), RUN_ID)).toBe(null);
+  });
+
+  it('returns null when any event belongs to another run', () => {
+    // The delta is merged straight into the replay's log, so a foreign event
+    // there produces a corrupt log rather than a corrected one: the replay
+    // consumes a correlation id for an event this run does not have.
+    const mine = makeUlidEvent(1_700_000_000_000);
+    const theirs = {
+      ...makeUlidEvent(1_700_000_001_000),
+      runId: 'wrun_someotherrun001',
+    } as Event;
+
+    expect(delta({ events: [theirs] })).toBe(null);
+    expect(delta({ events: [mine, theirs] })).toBe(null);
+    expect(delta({ events: [mine] })).not.toBe(null);
   });
 
   it('returns null for an empty or malformed events payload', () => {

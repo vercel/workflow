@@ -771,9 +771,15 @@ export function preconditionSnapshotParams(
  * this, or a payload that does not narrow cleanly. Callers fall back to
  * reloading the event log, which is always correct; this is untrusted-shaped
  * data on a failure path, so nothing here is repaired.
+ *
+ * `runId` is the caller's run. Every event must belong to it: the delta is
+ * merged straight into the replay's log, and one foreign event there is a
+ * corrupt log rather than a corrected one — the replay would consume a
+ * correlation id for an event that does not exist on this run.
  */
 export function preconditionEventDelta(
-  error: unknown
+  error: unknown,
+  runId: string
 ): { events: Event[]; cursor: string | null } | null {
   if (!PreconditionFailedError.is(error)) {
     return null;
@@ -790,7 +796,8 @@ export function preconditionEventDelta(
     if (
       typeof event !== 'object' ||
       event === null ||
-      typeof (event as { eventId?: unknown }).eventId !== 'string'
+      typeof (event as { eventId?: unknown }).eventId !== 'string' ||
+      (event as { runId?: unknown }).runId !== runId
     ) {
       return null;
     }

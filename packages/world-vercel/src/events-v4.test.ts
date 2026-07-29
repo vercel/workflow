@@ -616,6 +616,132 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('drops a 412 delta whose event payload came back JSON-mangled', async () => {
+    // The 412 body is JSON, so a resolved payload field serializes to
+    // `{type:'Buffer',data:[…]}` rather than bytes. EventSchema accepts that
+    // shape, so it has to be rejected here or the runtime hydrates garbage
+    // from it. One unusable event disqualifies the whole delta, including the
+    // payload-less events beside it.
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        412,
+        JSON.stringify({
+          success: false,
+          code: 'precondition-failed',
+          message: 'Run state is stale',
+          cursor: 'eid:evnt_missing_2',
+          events: [
+            {
+              eventId: 'evnt_missing_1',
+              runId: 'wrun_1',
+              eventType: 'wait_completed',
+              specVersion: 5,
+              createdAt: '2026-06-10T00:00:00.000Z',
+              eventData: { resumeAt: '2026-06-10T00:00:05.000Z' },
+            },
+            {
+              eventId: 'evnt_missing_2',
+              runId: 'wrun_1',
+              eventType: 'step_completed',
+              correlationId: 'step_0',
+              specVersion: 5,
+              createdAt: '2026-06-10T00:00:01.000Z',
+              // What JSON.stringify does to the resolved result bytes.
+              eventData: {
+                result: { type: 'Buffer', data: [100, 101, 118, 108] },
+              },
+            },
+          ],
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      );
+
+    const error = await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: 5,
+        correlationId: 'wait_1',
+        stateUpdatedAt: 1747742400000,
+        stateEventCount: 3,
+        stateCursor: 'eid:evnt_3',
+      },
+      { token: 'test-token', dispatcher: agent }
+    ).catch((err: unknown) => err);
+
+    expect(PreconditionFailedError.is(error)).toBe(true);
+    expect((error as PreconditionFailedError).details).toBeUndefined();
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('keeps a 412 delta whose payload-bearing event has no payload', async () => {
+    // A void step result carries no bytes at all, so there is nothing to
+    // mangle and nothing to reject — the fast path must survive it.
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        412,
+        JSON.stringify({
+          success: false,
+          code: 'precondition-failed',
+          message: 'Run state is stale',
+          events: [
+            {
+              eventId: 'evnt_missing_1',
+              runId: 'wrun_1',
+              eventType: 'step_completed',
+              correlationId: 'step_0',
+              specVersion: 5,
+              createdAt: '2026-06-10T00:00:01.000Z',
+              eventData: { stepName: 'noop' },
+            },
+          ],
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      );
+
+    const error = await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: 5,
+        correlationId: 'wait_1',
+        stateUpdatedAt: 1747742400000,
+        stateEventCount: 3,
+        stateCursor: 'eid:evnt_3',
+      },
+      { token: 'test-token', dispatcher: agent }
+    ).catch((err: unknown) => err);
+
+    expect(PreconditionFailedError.is(error)).toBe(true);
+    const details = (error as PreconditionFailedError).details as {
+      events: Array<{ eventId: string }>;
+    };
+    expect(details.events.map((event) => event.eventId)).toEqual([
+      'evnt_missing_1',
+    ]);
+    agent.assertNoPendingInterceptors();
+  });
+
   it('forwards stateUpdatedAt in the frame meta (precondition guard)', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';

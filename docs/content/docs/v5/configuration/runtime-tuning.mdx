@@ -46,13 +46,27 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - When enabled — and the World declares that it enforces the guard (`capabilities.preconditionGuard`; the Vercel World does) — the runtime also keeps the per-step event-log delta optimization (consuming the delta returned by a step's terminal write instead of issuing an extra `events.list` per step) active while the run has an open hook. Without an enforced guard, an open hook disables it.
 - While a hook is open on a guard-enforcing deployment, inline steps take the await-then-run path even when optimistic inline start is enabled: the step's `step_started` claim carries the snapshot and is awaited before the body runs, so a claim the backend rejects as stale never executes user code.
 - Backends that do not support the guard ignore the snapshot; they must not declare the capability, so guard-dependent optimizations stay off against them even when the flag is set.
+- The guard only ever rejects on evidence, and it fails open in every other case: a backend that cannot decide — because its record of recent events is incomplete, has expired, or covers only part of the run's history — must accept the write. A rejection therefore always means the snapshot really was incomplete, but the absence of one does not prove it was complete. Busy runs (wide step fan-outs, high hook volume) are the most likely to skip the check.
+- As a result, 412 volume describes a workload rather than the health of a deployment, and a run that never sees one is not evidence the guard is inactive.
 - Set `0` to disable.
 
 ### `WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS`
 
 - Default: `3`
-- Replays a single invocation restarts in-process after a rejected event creation before it falls back to a re-invocation.
+- How many times a single invocation restarts its replay in-process after a rejected event creation before it falls back to a re-invocation.
 - A restart reloads the event log and rebuilds the workflow from scratch, so it costs a replay but no queue round trip. A World may attach the missing events to its rejection, in which case the first restart needs no event-log request at all.
+
+### `WORKFLOW_PRECONDITION_MAX_REINVOCATIONS`
+
+- Default: `5`
+- How many re-invocations one run may spend on rejected event creations before it is failed with `RUNTIME_ERROR`.
+- Counted on the run's queue messages rather than per invocation, because a re-invocation enqueues a fresh message and so restarts the ordinary delivery count. Without this budget a run whose event log keeps growing faster than it can be read would cycle indefinitely.
+
+### `WORKFLOW_PRECONDITION_REINVOKE_DELAY_SECONDS`
+
+- Default: `2`
+- Delay before a re-invocation caused by a rejected event creation.
+- Unlike an in-process restart, which re-reads immediately, a re-invocation only happens once the in-process budget failed to catch up — so the delay gives the other writers a moment to quiesce.
 
 ## Inline execution
 

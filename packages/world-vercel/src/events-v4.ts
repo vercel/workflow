@@ -21,7 +21,7 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
-import type { Event } from '@workflow/world';
+import { type Event, getEventDataPayloadField } from '@workflow/world';
 import { decode } from 'cbor-x';
 import { coerceEventDates } from './event-coerce.js';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
@@ -415,6 +415,7 @@ function decodePreconditionDetails(json: {
     if (typeof raw !== 'object' || raw === null) return undefined;
     const candidate = raw as Record<string, unknown>;
     if (typeof candidate.eventId !== 'string') return undefined;
+    if (hasUnusablePayload(candidate)) return undefined;
     // Same decoder the success-path delta uses: the JSON body carries nested
     // eventData dates as ISO strings and the runtime calls .getTime() on them.
     events.push(coerceEventDates(candidate));
@@ -423,6 +424,39 @@ function decodePreconditionDetails(json: {
     events,
     ...(typeof json.cursor === 'string' ? { cursor: json.cursor } : {}),
   };
+}
+
+/**
+ * True when an event carries a user payload that this JSON body cannot
+ * represent, which disqualifies the whole delta.
+ *
+ * Payload fields (input / output / result / error / payload / metadata) are
+ * `Uint8Array` everywhere else in this client — the runtime dehydrates before
+ * writing and rehydrates after reading, and the write path throws on anything
+ * else. A 412 body is JSON, though: the request carries no
+ * `Accept: application/cbor`, so resolved bytes serialize to
+ * `{"type":"Buffer","data":[…]}` or an index-keyed object depending on the
+ * backend's serializer. `EventSchema` accepts either — its payload fields are
+ * unions that bottom out in `z.any()` — so nothing downstream would flag the
+ * mangled value; the runtime would hydrate garbage from it instead.
+ *
+ * Refusing the delta is one-sided safe: the fallback full reload goes over a
+ * frame-encoded path that returns real bytes. Deltas made only of
+ * payload-less events (waits, hook disposal, attribute writes) keep the fast
+ * path.
+ */
+function hasUnusablePayload(candidate: Record<string, unknown>): boolean {
+  const eventType = candidate.eventType;
+  if (typeof eventType !== 'string') return false;
+  const payloadField = getEventDataPayloadField(eventType);
+  if (!payloadField) return false;
+  const eventData = candidate.eventData;
+  if (typeof eventData !== 'object' || eventData === null) return false;
+  const value = (eventData as Record<string, unknown>)[payloadField];
+  // An absent/undefined payload is legitimate (a void step result, a workflow
+  // returning nothing) and needs no bytes to be correct.
+  if (value === undefined) return false;
+  return !(value instanceof Uint8Array);
 }
 
 /**

@@ -1,3 +1,4 @@
+import { PreconditionFailedError } from '@workflow/errors';
 import type { WorkflowRun, World } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkflowSuspension } from '../global.js';
@@ -395,5 +396,79 @@ describe('handleSuspension', () => {
         ([, event]) => event.eventType === 'hook_disposed'
       )
     ).toBe(false);
+  });
+
+  // A stale-snapshot rejection sends the caller into a replay restart. Any
+  // sibling create still in flight at that moment would commit an event minted
+  // from the abandoned replay's correlation-id sequence, and would race the
+  // restart's reload of the log — so the phase has to settle first.
+  it('settles every write in a phase before a stale-snapshot rejection escapes', async () => {
+    let slowCreateSettled = false;
+    let rejectedAt: boolean | undefined;
+    const eventsCreate = vi.fn(async (_runId, event) => {
+      if (event.correlationId === 'wait_fenced') {
+        throw new PreconditionFailedError('Run state is stale');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      slowCreateSettled = true;
+      return { event };
+    });
+    const world = createWorld(eventsCreate);
+    const resumeAt = new Date(Date.now() + 60_000);
+    const pending = new Map([
+      [
+        'wait_fenced',
+        { type: 'wait' as const, correlationId: 'wait_fenced', resumeAt },
+      ],
+      [
+        'wait_slow',
+        { type: 'wait' as const, correlationId: 'wait_slow', resumeAt },
+      ],
+    ]);
+
+    await expect(
+      handleSuspension({
+        suspension: new WorkflowSuspension(pending, globalThis),
+        world,
+        run,
+      }).catch((err) => {
+        rejectedAt = slowCreateSettled;
+        throw err;
+      })
+    ).rejects.toBeInstanceOf(PreconditionFailedError);
+
+    expect(rejectedAt).toBe(true);
+  });
+
+  // The 412 wins over the sibling failure because it has a defined, cheap
+  // recovery (replay from a corrected log). A deterministic sibling failure
+  // recurs on the restart and fails the run then.
+  it('prefers the stale-snapshot rejection over a sibling failure in the same phase', async () => {
+    const eventsCreate = vi.fn(async (_runId, event) => {
+      if (event.correlationId === 'wait_broken') {
+        throw new Error('some other world failure');
+      }
+      throw new PreconditionFailedError('Run state is stale');
+    });
+    const world = createWorld(eventsCreate);
+    const resumeAt = new Date(Date.now() + 60_000);
+    const pending = new Map([
+      [
+        'wait_broken',
+        { type: 'wait' as const, correlationId: 'wait_broken', resumeAt },
+      ],
+      [
+        'wait_fenced',
+        { type: 'wait' as const, correlationId: 'wait_fenced', resumeAt },
+      ],
+    ]);
+
+    await expect(
+      handleSuspension({
+        suspension: new WorkflowSuspension(pending, globalThis),
+        world,
+        run,
+      })
+    ).rejects.toBeInstanceOf(PreconditionFailedError);
   });
 });
