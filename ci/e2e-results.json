@@ -1,15 +1,15 @@
 {
-  "lastUpdated": "2026-07-29T17:59:21.636Z",
-  "commit": "e8934ade9cba196616a34caf9e0fe4cdfe40868f",
+  "lastUpdated": "2026-07-29T21:19:15.480Z",
+  "commit": "25715d4521164836d7f2eb2493b73d13ec595b10",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
       "status": "partial",
-      "total": 4158,
-      "passed": 3618,
+      "total": 4466,
+      "passed": 3907,
       "failed": 1,
-      "skipped": 539,
+      "skipped": 558,
       "frameworks": {
         "astro": {
           "total": 308,
@@ -32,13 +32,13 @@
           "failed": 0
         },
         "nextjs-turbopack": {
-          "total": 616,
-          "passed": 597,
+          "total": 770,
+          "passed": 732,
           "failed": 0
         },
         "nextjs-webpack": {
-          "total": 462,
-          "passed": 423,
+          "total": 616,
+          "passed": 577,
           "failed": 1
         },
         "nitro": {
@@ -126,11 +126,16 @@
     },
     "vercel": {
       "status": "passing",
-      "total": 1540,
-      "passed": 1329,
+      "total": 2002,
+      "passed": 1707,
       "failed": 0,
-      "skipped": 211,
+      "skipped": 295,
       "frameworks": {
+        "astro": {
+          "total": 154,
+          "passed": 126,
+          "failed": 0
+        },
         "express": {
           "total": 154,
           "passed": 126,
@@ -170,9 +175,14 @@
           "total": 154,
           "passed": 145,
           "failed": 0
+        },
+        "vite": {
+          "total": 154,
+          "passed": 126,
+          "failed": 0
         }
       },
-      "progress": 86
+      "progress": 85
     }
   }
 }
