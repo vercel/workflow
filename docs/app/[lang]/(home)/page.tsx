@@ -54,8 +54,12 @@ const Home = () => (
         <FeatureGridExtended />
         <RunAnywhere />
         <VercelSection />
-        <UseCases />
-        <Templates />
+        <div className="mt-12 sm:mt-20">
+          <UseCases />
+        </div>
+        <div className="mt-12 sm:mt-20">
+          <Templates />
+        </div>
         <TweetWall />
         <CTA />
       </div>
