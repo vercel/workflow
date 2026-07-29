@@ -19,7 +19,6 @@ export {
   type WorkflowUrlRoute,
 } from './workflow-routes.js';
 export {
-  isVercelDeploymentEnv,
   isVercelWorldTarget,
   resolveWorkflowTargetWorld,
   usesVercelWorld,
