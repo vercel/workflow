@@ -469,12 +469,56 @@ export function registerDeliveryBarrier(
 }
 
 /**
+ * Whether any registered branch-deciding delivery is committed to reaching
+ * the workflow on its own (see {@link resolvesOnItsOwn}) but has not been
+ * delivered yet. `pendingDeliveries` alone cannot see these: a delivery
+ * releases that counter inside its serial queue slot, while its `resolve()`
+ * runs from a detached continuation behind `awaitEarlierDeliveries` — which
+ * ends with a macrotask yield whenever the delivery had to defer. For a
+ * parallel batch of N step results consumed in one drain window, N-1 of them
+ * are parked on that yield with `pendingDeliveries` already at 0, so an idle
+ * check racing them can observe "idle" and raise a suspension that predates
+ * the workflow's own continuation. The suspension then carries none of the
+ * follow-up work the batch was about to queue, the runtime schedules
+ * nothing, and the run goes dormant until an unrelated timer fires.
+ *
+ * Only deliveries that resolve on their own are counted: they always deliver
+ * from their own detached chains (never needing the idle safety net in
+ * {@link registerDeliveryBarrier}), so waiting for them cannot deadlock the
+ * idle check. A barrier that does NOT resolve on its own — an unclaimed
+ * buffered hook payload, or a delivery parked behind one — must not block
+ * idle, because idle is exactly what retires it.
+ */
+function hasUndeliveredCommittedDeliveries(
+  ctx: WorkflowOrchestratorContext
+): boolean {
+  const barriers = ctx.pendingDeliveryBarriers;
+  if (!barriers || barriers.size === 0) {
+    return false;
+  }
+  // Shared across this call only — see `resolvesOnItsOwn`.
+  const memo = new Map<number, boolean>();
+  for (const [index, entry] of barriers) {
+    if (resolvesOnItsOwn(barriers, index, entry, memo)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Schedule a callback to fire only after all pending data deliveries
  * (step results, hook payloads) and async deserialization have completed.
- * Uses a polling loop: setTimeout(0) → check pendingDeliveries →
- * if > 0, wait for promiseQueue → repeat. This handles the multi-round
- * delivery pattern where each hook payload delivery cycle appends new
- * async work to the promiseQueue.
+ * Uses a polling loop: setTimeout(0) → check pendingDeliveries and
+ * committed-but-undelivered barriers → if any, wait for promiseQueue →
+ * repeat. This handles the multi-round delivery pattern where each hook
+ * payload delivery cycle appends new async work to the promiseQueue.
+ *
+ * `pendingDeliveries` guards the hydration window inside the serial queue
+ * slots; {@link hasUndeliveredCommittedDeliveries} guards the detached
+ * deferral window between a slot completing and the delivery's `resolve()`
+ * actually running, which `pendingDeliveries` deliberately does not cover
+ * (see step.ts for why it is released inside the slot).
  *
  * The initial `setTimeout(0)` macrotask is load-bearing and must NOT be
  * downgraded to a microtask (`queueMicrotask`/`Promise.resolve().then`).
@@ -493,7 +537,7 @@ export function scheduleWhenIdle(
   fn: () => void
 ): void {
   const check = () => {
-    if (ctx.pendingDeliveries > 0) {
+    if (ctx.pendingDeliveries > 0 || hasUndeliveredCommittedDeliveries(ctx)) {
       // Still delivering data — wait for queue to drain, then re-check
       ctx.promiseQueue.then(() => {
         setTimeout(check, 0);
