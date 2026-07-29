@@ -27,7 +27,7 @@ export function VercelSection(): JSX.Element {
         </div>
       </div>
       {/* Desktop — dashboard offset to the right */}
-      <div className="hidden md:block absolute top-8 right-[-80px] w-[60%] [mask-image:linear-gradient(to_bottom,black_40%,transparent_90%),linear-gradient(to_left,transparent,black_10%)] [mask-composite:intersect]">
+      <div className="hidden md:block absolute top-8 right-[-80px] w-[60%] [mask-image:linear-gradient(to_bottom,black_40%,transparent_90%),linear-gradient(to_left,transparent,black_40%)] [mask-composite:intersect]">
         <O11yDashboard svgId="o11y-desktop" className="w-full h-auto" />
       </div>
       {/* Mobile — dashboard below text */}
