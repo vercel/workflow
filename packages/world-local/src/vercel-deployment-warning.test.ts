@@ -8,10 +8,10 @@ import {
 import { createWorld } from './index.js';
 
 /**
- * The target world is baked in at build time, so a build environment that does
- * not look like Vercel ships a deployment pinned to the local world. Creating
- * that world inside a deployment has to say so, because the filesystem writes
- * that follow fail without naming the world as the cause.
+ * A deployment whose environment pins WORKFLOW_TARGET_WORLD to the local world
+ * runs against a read-only filesystem. Creating that world inside a deployment
+ * has to say so, because the filesystem writes that follow fail without naming
+ * the world as the cause.
  */
 describe('local world inside a Vercel deployment', () => {
   let warn: ReturnType<typeof vi.spyOn>;
@@ -30,7 +30,7 @@ describe('local world inside a Vercel deployment', () => {
     resetVercelDeploymentWarning();
   });
 
-  it('warns and names the build-time fix', () => {
+  it('warns and names the environment fix', () => {
     warnIfRunningInVercelDeployment('.next/workflow-data');
 
     expect(warn).toHaveBeenCalledTimes(1);
@@ -61,6 +61,16 @@ describe('local world inside a Vercel deployment', () => {
 
   it('stays quiet outside a Vercel deployment', () => {
     vi.stubEnv('VERCEL', '');
+    vi.stubEnv('VERCEL_DEPLOYMENT_ID', '');
+
+    warnIfRunningInVercelDeployment('.workflow-data');
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet for a local process holding Vercel env from `vercel env pull`', () => {
+    // VERCEL=1 without a deployment ID is a writable filesystem, so the local
+    // world is the correct choice and there is nothing to warn about.
     vi.stubEnv('VERCEL_DEPLOYMENT_ID', '');
 
     warnIfRunningInVercelDeployment('.workflow-data');
