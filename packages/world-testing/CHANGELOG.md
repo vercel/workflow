@@ -1,5 +1,17 @@
 # @workflow/world-testing
 
+## 4.1.14
+
+### Patch Changes
+
+- [#3055](https://github.com/vercel/workflow/pull/3055) [`c77a82d`](https://github.com/vercel/workflow/commit/c77a82d70806a4949d2e94fa4fb9a62eb7be9aa1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix flaky Local World tests caused by concurrent test servers sharing one data directory and re-enqueuing each other's in-flight runs on startup
+
+- Updated dependencies [[`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7)]:
+  - workflow@4.7.0
+  - @workflow/core@4.7.0
+  - @workflow/world@4.3.0
+  - @workflow/cli@4.3.3
+
 ## 4.1.13
 
 ### Patch Changes

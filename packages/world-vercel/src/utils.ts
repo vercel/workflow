@@ -90,6 +90,13 @@ const WORKFLOW_SERVER_URL_OVERRIDE = '';
  * Without this, a hung workflow-server response would keep the caller
  * blocked until the platform's `maxDuration` SIGTERM — burning compute
  * and defeating upstream timeout handlers (e.g. the replay timeout).
+ *
+ * This is the outer backstop, not the first line of defense: the shared
+ * dispatcher's `headersTimeout`/`bodyTimeout` fire earlier (see http-client.ts)
+ * and produce a typed, retryable `UND_ERR_*_TIMEOUT` instead of the opaque
+ * abort this deadline raises. Keep it above those so the ordering holds — it
+ * still covers the whole request (including retries the dispatcher performs
+ * internally, and time spent outside undici's own timers).
  */
 const REQUEST_TIMEOUT_MS = 60_000;
 

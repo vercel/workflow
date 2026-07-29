@@ -1,5 +1,26 @@
 # workflow
 
+## 4.7.0
+
+### Minor Changes
+
+- [#3079](https://github.com/vercel/workflow/pull/3079) [`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optimistic-concurrency guard for event creation (on by default; opt out with `WORKFLOW_PRECONDITION_GUARD=0`): replay-context event creations send a `stateUpdatedAt` snapshot timestamp, and the runtime reloads the event log and retries (then falls back to a fresh re-invocation) when the backend reports a newer out-of-band event with a 412 `PreconditionFailedError`. Backends without guard support ignore the snapshot, so this is backward-compatible and fails open.
+
+### Patch Changes
+
+- Updated dependencies [[`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7), [`f2714c5`](https://github.com/vercel/workflow/commit/f2714c50bbb7d5c80bfa8924f663dd75cf933304)]:
+  - @workflow/core@4.7.0
+  - @workflow/errors@4.2.0
+  - @workflow/astro@4.0.14
+  - @workflow/sveltekit@4.0.14
+  - @workflow/cli@4.3.3
+  - @workflow/next@4.1.3
+  - @workflow/nitro@4.1.5
+  - @workflow/typescript-plugin@4.0.3
+  - @workflow/nest@4.0.15
+  - @workflow/rollup@4.0.14
+  - @workflow/nuxt@4.0.15
+
 ## 4.6.2
 
 ### Patch Changes
