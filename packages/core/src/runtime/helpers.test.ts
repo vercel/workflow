@@ -11,14 +11,15 @@ import {
   SerializationFormat,
 } from '../serialization.js';
 import {
+  appendUniqueEvents,
   getWorkflowQueueName,
   handleHealthCheckMessage,
   healthCheck,
   latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
-  type MutableEventLog,
-  withPreconditionRetry,
+  preconditionEventDelta,
+  preconditionSnapshotParams,
 } from './helpers.js';
 
 // Mock the logger to suppress output during tests
@@ -503,11 +504,10 @@ describe('latestEventStateUpdatedAt', () => {
   });
 });
 
-describe('withPreconditionRetry', () => {
+describe('preconditionSnapshotParams', () => {
   let originalGuard: string | undefined;
 
   beforeEach(() => {
-    eventsListMock.mockReset();
     originalGuard = process.env.WORKFLOW_PRECONDITION_GUARD;
     process.env.WORKFLOW_PRECONDITION_GUARD = '1';
   });
@@ -520,132 +520,180 @@ describe('withPreconditionRetry', () => {
     }
   });
 
-  it('passes no snapshot to op when the guard is explicitly disabled', async () => {
-    process.env.WORKFLOW_PRECONDITION_GUARD = '0';
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
-    const op = vi.fn(async (stateUpdatedAt?: number) => {
-      expect(stateUpdatedAt).toBeUndefined();
-      return 'ok';
-    });
+  it('sends the watermark, the count and the cursor together', () => {
+    const time = 1_700_000_000_000;
+    const events = [makeUlidEvent(time - 1000), makeUlidEvent(time)];
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
-      'ok'
-    );
-    expect(op).toHaveBeenCalledTimes(1);
-    expect(eventsListMock).not.toHaveBeenCalled();
+    expect(preconditionSnapshotParams(events, 'eid:abc')).toEqual({
+      stateUpdatedAt: time,
+      stateEventCount: events.length,
+      stateCursor: 'eid:abc',
+    });
   });
 
-  it('sends a snapshot by default when the guard variable is unset (on by default)', async () => {
+  it('sends the count without a cursor when the caller has none', () => {
+    const time = 1_700_000_000_000;
+
+    expect(preconditionSnapshotParams([makeUlidEvent(time)], null)).toEqual({
+      stateUpdatedAt: time,
+      stateEventCount: 1,
+    });
+  });
+
+  it('sends the snapshot by default (guard is on unless disabled)', () => {
     delete process.env.WORKFLOW_PRECONDITION_GUARD;
     const time = 1_700_000_000_000;
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(time)],
-      cursor: 'c0',
-    };
-    const op = vi.fn(async (stateUpdatedAt?: number) => {
-      expect(stateUpdatedAt).toBe(time);
-      return 'ok';
-    });
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
-      'ok'
-    );
-    expect(op).toHaveBeenCalledTimes(1);
+    expect(
+      preconditionSnapshotParams([makeUlidEvent(time)], 'eid:abc')
+    ).toEqual({
+      stateUpdatedAt: time,
+      stateEventCount: 1,
+      stateCursor: 'eid:abc',
+    });
   });
 
-  it('passes the latest snapshot time to op and returns its result without reloading', async () => {
+  it('omits every field when the guard is disabled', () => {
+    process.env.WORKFLOW_PRECONDITION_GUARD = '0';
+
+    expect(
+      preconditionSnapshotParams([makeUlidEvent(1_700_000_000_000)], 'eid:abc')
+    ).toEqual({});
+  });
+
+  it('omits every field on an empty log', () => {
+    expect(preconditionSnapshotParams([], 'eid:abc')).toEqual({});
+  });
+
+  it('omits every field when the latest event id is not a decodable ULID', () => {
+    // A count without a watermark would be meaningless to the backend, so the
+    // three fields have to fail open together.
+    expect(
+      preconditionSnapshotParams([makeEvent('evnt_not-a-ulid')], 'eid:abc')
+    ).toEqual({});
+  });
+});
+
+describe('appendUniqueEvents', () => {
+  it('appends in order without reordering and without warning', async () => {
+    const { runtimeLogger } = await import('../logger.js');
+    vi.mocked(runtimeLogger.warn).mockClear();
+    const first = makeUlidEvent(1_700_000_000_000);
+    const second = makeUlidEvent(1_700_000_001_000);
+    const third = makeUlidEvent(1_700_000_002_000);
+    const target = [first];
+
+    appendUniqueEvents(target, [second, third]);
+
+    expect(target.map((e) => e.eventId)).toEqual([
+      first.eventId,
+      second.eventId,
+      third.eventId,
+    ]);
+    expect(runtimeLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('re-sorts to canonical order and warns when an append lands out of order', async () => {
+    const { runtimeLogger } = await import('../logger.js');
+    vi.mocked(runtimeLogger.warn).mockClear();
+    const older = makeUlidEvent(1_700_000_000_000);
+    const newer = makeUlidEvent(1_700_000_002_000);
+    const middle = makeUlidEvent(1_700_000_001_000);
+    const target = [older, newer];
+
+    appendUniqueEvents(target, [middle]);
+
+    expect(target.map((e) => e.eventId)).toEqual([
+      older.eventId,
+      middle.eventId,
+      newer.eventId,
+    ]);
+    expect(runtimeLogger.warn).toHaveBeenCalledWith(
+      'Event log merged out of order; re-sorted by eventId',
+      expect.objectContaining({ eventCount: 3 })
+    );
+  });
+
+  it('deduplicates by event id', () => {
+    const first = makeUlidEvent(1_700_000_000_000);
+    const second = makeUlidEvent(1_700_000_001_000);
+    const target = [first];
+
+    appendUniqueEvents(target, [first, second, second]);
+
+    expect(target.map((e) => e.eventId)).toEqual([
+      first.eventId,
+      second.eventId,
+    ]);
+  });
+
+  it('orders a same-millisecond pair by its random component', () => {
+    // Event ids are unprefixed 26-char ULIDs, so lexicographic id order is
+    // canonical backend order even inside one millisecond — which is what
+    // makes re-sorting safe.
     const time = 1_700_000_000_000;
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(time)],
-      cursor: 'c0',
-    };
-    const op = vi.fn(async (stateUpdatedAt?: number) => {
-      expect(stateUpdatedAt).toBe(time);
-      return 'ok';
-    });
+    const a = makeEvent(`evnt_${ulid(time).slice(0, 10)}AAAAAAAAAAAAAAAA`);
+    const b = makeEvent(`evnt_${ulid(time).slice(0, 10)}ZZZZZZZZZZZZZZZZ`);
+    const target = [b];
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
-      'ok'
-    );
-    expect(op).toHaveBeenCalledTimes(1);
-    expect(eventsListMock).not.toHaveBeenCalled();
+    appendUniqueEvents(target, [a]);
+
+    expect(target.map((e) => e.eventId)).toEqual([a.eventId, b.eventId]);
   });
 
-  it('reloads the event log and retries on a stale (412) rejection, then succeeds', async () => {
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
-    // Each reload returns one newer event and advances the cursor.
-    eventsListMock.mockResolvedValueOnce({
-      data: [makeUlidEvent(1_700_000_001_000)],
-      cursor: 'c1',
-      hasMore: false,
-    });
-    eventsListMock.mockResolvedValueOnce({
-      data: [makeUlidEvent(1_700_000_002_000)],
-      cursor: 'c2',
-      hasMore: false,
-    });
+  it('reports the maximum ULID time as the watermark after an out-of-order merge', () => {
+    // The direct link between the sort and the snapshot's correctness: the
+    // watermark is read off the tail, so an unsorted tail would understate it
+    // while the count still covered every loaded event.
+    const time = 1_700_000_002_000;
+    const target = [makeUlidEvent(1_700_000_000_000), makeUlidEvent(time)];
 
-    let calls = 0;
-    const op = vi.fn(async () => {
-      calls++;
-      if (calls <= 2) {
-        throw new PreconditionFailedError('stale');
-      }
-      return 'done';
-    });
+    appendUniqueEvents(target, [makeUlidEvent(1_700_000_001_000)]);
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
-      'done'
-    );
-    expect(op).toHaveBeenCalledTimes(3);
-    // Two reloads merged their events into the shared log and advanced cursor.
-    expect(log.events).toHaveLength(3);
-    expect(log.cursor).toBe('c2');
+    expect(latestEventStateUpdatedAt(target)).toBe(time);
+  });
+});
+
+describe('preconditionEventDelta', () => {
+  const delta = (details: unknown) =>
+    preconditionEventDelta(new PreconditionFailedError('stale', { details }));
+
+  it('returns the decoded events and cursor a World attached to the 412', () => {
+    const event = makeUlidEvent(1_700_000_000_000);
+
+    expect(delta({ events: [event], cursor: 'eid:next' })).toEqual({
+      events: [event],
+      cursor: 'eid:next',
+    });
   });
 
-  it('rethrows the precondition error after exhausting reload retries', async () => {
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
-    eventsListMock.mockResolvedValue({
-      data: [],
-      cursor: 'c1',
-      hasMore: false,
-    });
+  it('returns a null cursor when the World sent events without one', () => {
+    const event = makeUlidEvent(1_700_000_000_000);
 
-    const op = vi.fn(async () => {
-      throw new PreconditionFailedError('always stale');
+    expect(delta({ events: [event] })).toEqual({
+      events: [event],
+      cursor: null,
     });
-
-    await expect(
-      withPreconditionRetry('wrun_test', log, op)
-    ).rejects.toBeInstanceOf(PreconditionFailedError);
-    // attempts 0,1,2 — two reloads between them, then rethrow on the third.
-    expect(op).toHaveBeenCalledTimes(3);
-    expect(eventsListMock).toHaveBeenCalledTimes(2);
   });
 
-  it('rethrows non-precondition errors immediately without reloading', async () => {
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
-    const op = vi.fn(async () => {
-      throw new Error('boom');
-    });
-
-    await expect(withPreconditionRetry('wrun_test', log, op)).rejects.toThrow(
-      'boom'
+  it('returns null when the World attached no details at all', () => {
+    expect(preconditionEventDelta(new PreconditionFailedError('stale'))).toBe(
+      null
     );
-    expect(op).toHaveBeenCalledTimes(1);
-    expect(eventsListMock).not.toHaveBeenCalled();
+  });
+
+  it('returns null for a non-precondition error', () => {
+    expect(preconditionEventDelta(new Error('boom'))).toBe(null);
+  });
+
+  it('returns null for an empty or malformed events payload', () => {
+    // Nothing here is repaired: a full reload is always correct, so anything
+    // that does not narrow cleanly falls back to it.
+    expect(delta({ events: [] })).toBe(null);
+    expect(delta({ events: 'not-an-array' })).toBe(null);
+    expect(delta({ events: [{ noEventId: true }] })).toBe(null);
+    expect(delta({ events: [null] })).toBe(null);
+    expect(delta('not-an-object')).toBe(null);
   });
 });
 

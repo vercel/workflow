@@ -47,6 +47,10 @@ export async function setAttributes(
   }
 
   const world = await getWorldLazy();
+  // Deliberately unguarded, unlike the attr_set a suspension writes: this call
+  // runs inside a step body, which holds no replay snapshot, so there is no
+  // event log to compare against and nothing a precondition could fence. It is
+  // a genuinely out-of-band write from the event log's point of view.
   await world.events.create(runId, {
     eventType: 'attr_set',
     specVersion: SPEC_VERSION_CURRENT,

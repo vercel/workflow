@@ -32,7 +32,11 @@ import { version } from './version.js';
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
-export const WORKFLOW_SERVER_URL_OVERRIDE = '';
+// TEMPORARY — do not merge. Points CI e2e at the backend branch that rejects a
+// guarded create unless the client snapshot is the tail of the event log, so
+// the append-tail fence is armed for these runs. Revert to '' before merge.
+export const WORKFLOW_SERVER_URL_OVERRIDE =
+  'https://workflow-server-git-peter-event-index-tail-fence.vercel.sh';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
