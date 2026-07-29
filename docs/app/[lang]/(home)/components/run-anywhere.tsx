@@ -141,7 +141,7 @@ export const RunAnywhere = () => (
       </div>
     </div>
     <div className="relative isolate">
-      <div className="absolute -left-32 top-1/2 -translate-y-1/2 hidden md:flex items-center gap-2">
+      <div className="absolute -left-32 top-1/2 -translate-y-1/2 hidden md:flex items-center gap-2 [mask-image:linear-gradient(to_right,transparent,black)]">
         {[DigitalOcean, AWS].map((Logo, index) => (
           <div
             className={cn(
@@ -166,7 +166,7 @@ export const RunAnywhere = () => (
           }}
         />
       </div>
-      <div className="absolute -right-32 top-1/2 -translate-y-1/2 hidden md:flex items-center gap-2">
+      <div className="absolute -right-32 top-1/2 -translate-y-1/2 hidden md:flex items-center gap-2 [mask-image:linear-gradient(to_left,transparent,black)]">
         {[Docker, Vercel].map((Logo, index) => (
           <div
             className={cn(
