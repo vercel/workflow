@@ -340,6 +340,13 @@ function openHookAndWaitState(events: Event[]): {
  * The open hook/wait scan is O(events), so it is taken through a lazy getter
  * and consulted last, after every cheap check has passed.
  *
+ * INVARIANT this predicate leans on: every suspension signaler that does NOT
+ * carry the step-consumer generation guard (sleep, hook, attribute — see
+ * `suspensionGeneration` in private.ts) must be unretainable here, either via
+ * a non-step queue item or the open hook/wait scan. A new signaler that
+ * satisfies neither would let a stale signal be accepted as a fresh
+ * suspension on a resumed session.
+ *
  * Quiescence assumes workflow code stays inside the sandbox's determinism
  * contract. Escaping to the host realm (e.g. recovering the host `Function`
  * constructor from an exposed host class to schedule real timers) makes a

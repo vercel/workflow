@@ -87,6 +87,18 @@ registerSerializationClass(
   RetainedSerializerValue
 );
 
+// A parallel all-primitive batch: both parked step consumers schedule their
+// own (identical) suspension signal for the same boundary — the first one is
+// the suspension, the sibling must be absorbed by the generation guard
+// without demoting the session.
+const parallelBatchWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
+  async function workflow() {
+    const [a, b] = await Promise.all([s1(1), s2(2)]);
+    return a + b;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
 // A parallel batch where one sibling's input is unsafe must serialize the
 // WHOLE batch through the ordinary VM path (all-or-nothing) and demote.
 const mixedBatchWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
@@ -261,6 +273,15 @@ describe('retained VM through the inline replay loop', () => {
     expect(on.vmBuilds).toBeGreaterThan(1);
     expect(off.result).toBe(0);
     expect(on.result).toBe(0);
+  });
+
+  it('retains one VM for a parallel batch (sibling suspension signals absorbed)', async () => {
+    const { vmBuilds, result } = await drive(
+      'wrun_retained_parallel_batch',
+      parallelBatchWorkflow
+    );
+    expect(result).toBe(30);
+    expect(vmBuilds).toBe(1);
   });
 
   it('demotes retention when any input in a parallel batch is unsafe', async () => {
