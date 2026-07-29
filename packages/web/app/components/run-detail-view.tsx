@@ -824,23 +824,23 @@ export function RunDetailView({
                 <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
                   <div className="h-full flex min-h-0">
                     {/* Stream list sidebar */}
-                    <div className="w-64 flex-shrink-0 flex flex-col min-h-0 border-r border-gray-alpha-400">
-                      <div className="flex h-10 min-h-10 flex-none items-center border-b border-gray-alpha-400 pl-4 pr-2">
+                    <div className="w-[340px] flex-shrink-0 flex flex-col min-h-0 border-r border-gray-alpha-400">
+                      <div className="flex h-10 min-h-10 flex-none items-center border-b border-gray-alpha-400 pl-6 pr-2">
                         <span className="text-label-14 text-gray-1000">
                           Streams
                         </span>
                       </div>
                       <div className="flex-1 min-h-0 overflow-auto">
                         {streamsLoading ? (
-                          <div className="p-4 flex items-center justify-center">
+                          <div className="px-6 py-3 flex items-center justify-center">
                             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                           </div>
                         ) : streamsError ? (
-                          <div className="p-4 text-xs text-destructive">
+                          <div className="px-6 py-3 text-xs text-destructive">
                             {streamsError.message}
                           </div>
                         ) : streams.length === 0 ? (
-                          <div className="p-4 text-label-13 text-gray-600">
+                          <div className="px-6 py-3 text-label-13 text-gray-600">
                             No streams found for this run
                           </div>
                         ) : (
@@ -865,7 +865,7 @@ export function RunDetailView({
                                       setSelectedStreamId(streamId);
                                     }
                                   }}
-                                  className="group cursor-pointer pl-4 pr-2 py-2 transition-colors hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--ds-focus-color)]"
+                                  className="group cursor-pointer pl-6 pr-2 py-2 transition-colors hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--ds-focus-color)]"
                                 >
                                   {description.label !== streamId ? (
                                     <>

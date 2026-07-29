@@ -155,7 +155,7 @@ const ChunkRow = React.memo(function ChunkRow({
 }) {
   return (
     <div
-      className="group flex items-start gap-3 pl-4 pr-2 py-2"
+      className="group flex items-start gap-3 pl-6 pr-2 py-2"
       style={
         isLast ? undefined : { borderBottom: '1px solid var(--ds-gray-200)' }
       }
@@ -312,7 +312,7 @@ function TextView({ chunks }: { chunks: Chunk[] }) {
         className="h-full overflow-auto"
       >
         <div
-          className="whitespace-pre-wrap break-words py-2 pl-4 pr-3 text-[13px] leading-[1.65]"
+          className="whitespace-pre-wrap break-words py-2 pl-6 pr-3 text-[13px] leading-[1.65]"
           style={{ color: 'var(--ds-gray-1000)' }}
         >
           {chunks.map((chunk, index) =>
@@ -357,7 +357,7 @@ function TextView({ chunks }: { chunks: Chunk[] }) {
 
 function StreamSkeleton() {
   return (
-    <div className="flex flex-col gap-4 animate-in fade-in pt-2 pl-4 pr-2">
+    <div className="flex flex-col gap-4 animate-in fade-in pt-2 pl-6 pr-2">
       {[1, 2, 3, 4].map((i) => (
         <div key={i} className="flex items-start gap-3">
           <Skeleton style={{ width: 36, height: 12, borderRadius: 4 }} />
@@ -398,7 +398,7 @@ function EmptyState({ isLive }: { isLive: boolean }) {
 function ErrorState({ error }: { error: string }) {
   return (
     <div
-      className="text-[11px] border p-3 mx-4 mt-2"
+      className="text-[11px] border p-3 mx-6 mt-2"
       style={{
         borderColor: 'var(--ds-red-300)',
         color: 'var(--ds-red-700)',
@@ -426,7 +426,7 @@ function StreamHeader({
   onViewChange: (view: ViewMode) => void;
 }) {
   return (
-    <div className="flex h-10 min-h-10 flex-none items-center justify-end gap-3 border-b border-gray-alpha-400 pl-4 pr-2">
+    <div className="flex h-10 min-h-10 flex-none items-center justify-end gap-3 border-b border-gray-alpha-400 px-6">
       {isLive && <LiveIndicator />}
       {showViewToggle && <ViewToggle view={view} onChange={onViewChange} />}
     </div>
