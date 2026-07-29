@@ -1,5 +1,6 @@
 import { FatalError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
+import { fingerprintValue } from './correlation-id.js';
 import { EventConsumerResult } from './events-consumer.js';
 import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { stepLogger } from './logger.js';
@@ -24,7 +25,13 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
     ): Promise<Result> {
       const { promise, resolve, reject } = withResolvers<Result>();
 
-      const correlationId = `step_${ctx.generateUlid()}`;
+      // The call-site scope includes the arguments because the divergence check
+      // below compares only `stepName`: two replays that disagree about how many
+      // times this step already ran must not mint the same id for calls that
+      // pass different arguments, or the mismatch would go undetected.
+      const correlationId = `step_${ctx.generateUlid(
+        `step ${stepName} ${fingerprintValue(args)}`
+      )}`;
 
       const queueItem: StepInvocationQueueItem = {
         type: 'step',

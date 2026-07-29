@@ -15,7 +15,7 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
     param: StringValue | Date | number
   ): Promise<void> {
     const { promise, resolve } = withResolvers<void>();
-    const correlationId = `wait_${ctx.generateUlid()}`;
+    const correlationId = `wait_${ctx.generateUlid('wait')}`;
 
     // Calculate the resume time
     const resumeAt = parseDurationToDate(param);
