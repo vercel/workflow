@@ -6,7 +6,6 @@ import {
 import { envNumber } from '@workflow/world';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
-import { bytesToBase64, decodeRunPublicKey } from './sealed-box.js';
 import { importKey } from './encryption.js';
 import {
   createFlushableState,
@@ -26,7 +25,12 @@ import { getStepFunction } from './private.js';
 // "Turbopack NFT Tracing Errors in V2 Combined Flow Route" section of
 // `docs/content/docs/changelog/eager-processing.mdx`.
 import { getWorldLazy } from './runtime/get-world-lazy.js';
-import { createOpenSession, createSealSession } from './sealed-box.js';
+import {
+  bytesToBase64,
+  createOpenSession,
+  createSealSession,
+  decodeRunPublicKey,
+} from './sealed-box.js';
 import * as clientModule from './serialization/client.js';
 import {
   type CompressionStats,
@@ -34,7 +38,6 @@ import {
   decompress,
 } from './serialization/compression.js';
 import {
-  aesKeyOf,
   decrypt,
   deriveRunPayloadKeys,
   type EncryptionKeyParam,
@@ -42,8 +45,8 @@ import {
   isRunPayloadKeys,
   isSealTarget,
   type PayloadKey,
-  resolveEncryptionKey,
   type RunPayloadKeys,
+  resolveEncryptionKey,
   runPayloadKeys,
   type SealTarget,
   sealTo,
@@ -124,7 +127,6 @@ export {
   deriveRunPayloadKeys,
   isSealTarget,
   isRunPayloadKeys,
-  aesKeyOf,
 };
 
 // Re-export the legacy SerializationFormatType for backwards compatibility.
@@ -382,7 +384,7 @@ export function getDeserializeStream(
         // wrong kind of key" have very different causes.
         const usable = sealed
           ? isRunPayloadKeys(keyState.key)
-          : aesKeyOf(keyState.key) !== undefined;
+          : keyState.key !== undefined && !isSealTarget(keyState.key);
         if (!usable) {
           controller.error(
             new RuntimeDecryptionError(
