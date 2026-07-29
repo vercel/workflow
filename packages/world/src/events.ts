@@ -644,6 +644,20 @@ export const EventSchema = AllEventsSchema.and(
     createdAt: z.coerce.date(),
     occurredAt: z.coerce.date().optional(),
     specVersion: z.number().optional(),
+    /**
+     * Dense per-run log position (1, 2, 3, …) assigned by the World at the
+     * event's commit point, under a per-run append serializer. A World that
+     * assigns it guarantees `seq` order == `eventId` order == commit order ==
+     * visibility order: no event can ever become visible below a position a
+     * reader has already observed, so cursor-based readers cannot skip
+     * late-committing events. Optional: events written by Worlds (or World
+     * versions) without commit-ordered appends don't carry it, and a run's
+     * log may have an unpositioned prefix from before the World gained
+     * support. Consumers may assert contiguity between adjacent seq-bearing
+     * events to turn a storage-ordering bug into a loud failure instead of a
+     * silent replay divergence.
+     */
+    seq: z.number().int().positive().optional(),
   })
 );
 

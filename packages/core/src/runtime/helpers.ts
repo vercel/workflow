@@ -525,6 +525,56 @@ function shouldRetryWithoutEventCursor(
 }
 
 /**
+ * Assert that the loaded window's commit-ordered positions are contiguous.
+ *
+ * Worlds with commit-ordered appends stamp each event with a dense per-run
+ * `seq` (see `EventSchema.seq`). Any contiguous slice of such a log must have
+ * strictly consecutive seqs — a gap means the World's storage contract is
+ * broken (an event was skipped by pagination or committed out of order), which
+ * previously surfaced only as a silent replay divergence hundreds of events
+ * later. Fail fast and loud instead, matching how Temporal's SDK treats a
+ * non-contiguous event id as fatal.
+ *
+ * Mixed logs are tolerated: events without a seq (written before the World
+ * gained support) reset the expectation, so only adjacent seq-bearing pairs
+ * are checked. On a cursor-less full load of a fully-positioned log, the
+ * first event must be seq 1 — a larger head means the first page silently
+ * dropped events.
+ */
+function assertEventSequenceContiguity(
+  runId: string,
+  events: readonly Event[],
+  isFullLoad: boolean
+): void {
+  let prev: number | undefined;
+  let allPositioned = events.length > 0;
+  for (const event of events) {
+    const seq = event.seq;
+    if (typeof seq !== 'number') {
+      allPositioned = false;
+      prev = undefined;
+      continue;
+    }
+    if (prev !== undefined && seq !== prev + 1) {
+      throw eventPaginationContractError(
+        runId,
+        `returned a non-contiguous event sequence (seq ${prev} followed by ${seq})`
+      );
+    }
+    prev = seq;
+  }
+  if (isFullLoad && allPositioned) {
+    const first = events[0].seq;
+    if (first !== undefined && first !== 1) {
+      throw eventPaginationContractError(
+        runId,
+        `is missing the head of the log (first event has seq ${first})`
+      );
+    }
+  }
+}
+
+/**
  * Loads workflow run events by iterating through all pages of paginated
  * results. Events are returned in chronological (ascending) order for
  * deterministic workflow replay.
@@ -625,6 +675,8 @@ export async function loadWorkflowRunEvents(
           pageMs: Date.now() - pageStart,
         });
       }
+
+      assertEventSequenceContiguity(runId, loadedEvents, !incremental);
 
       runtimeLogger.debug('Event load complete', {
         workflowRunId: runId,

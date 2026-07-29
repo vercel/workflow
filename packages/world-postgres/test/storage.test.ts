@@ -801,7 +801,12 @@ describe('Storage (Postgres integration)', () => {
         expect(updated.attempt).toBe(1); // Incremented by step_started
       });
 
-      it('allocates the step_started event id after the guarded step update', async () => {
+      it('orders a row-lock-delayed step_started after every earlier append', async () => {
+        // Supersedes the old "mint the ULID behind the step row lock"
+        // guarantee: positions are now allocated under the run append lock,
+        // which is held to commit, so a step_started that stalls on the step
+        // row lock still commits with an id (and seq) that sorts after every
+        // event already in the log — and every later append sorts after it.
         const stepId = 'step-start-lock';
         await createStep(events, testRunId, {
           stepId,
@@ -828,16 +833,33 @@ describe('Storage (Postgres integration)', () => {
           });
 
           await new Promise((resolve) => setTimeout(resolve, 50));
-          const releasedAt = Date.now();
           await client.query('COMMIT');
 
           const result = await started;
           if (!result.event) {
             throw new Error('Expected step_started event');
           }
-          expect(
-            decodeTime(result.event.eventId.slice('wevt_'.length))
-          ).toBeGreaterThanOrEqual(releasedAt);
+
+          // A subsequent append gets a strictly later position.
+          const after = await events.create(testRunId, {
+            eventType: 'step_completed',
+            correlationId: stepId,
+            eventData: { result: new Uint8Array([1]) },
+          });
+          if (!after.event) {
+            throw new Error('Expected step_completed event');
+          }
+          expect(after.event.eventId > result.event.eventId).toBe(true);
+          expect(after.event.seq).toBe((result.event.seq ?? 0) + 1);
+
+          // The listed log is in seq order and seq matches id order.
+          const log = await events.list({ runId: testRunId });
+          const seqs = log.data.map((e) => e.seq);
+          expect(seqs).toEqual(
+            Array.from({ length: log.data.length }, (_, i) => i + 1)
+          );
+          const ids = log.data.map((e) => e.eventId);
+          expect([...ids].sort()).toEqual(ids);
         } finally {
           client.release();
           await lockPool.end();
