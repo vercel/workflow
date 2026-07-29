@@ -2,8 +2,10 @@
 
 import React, { useEffect, useRef } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { CopyButton } from './new-trace-viewer/components/copy-button';
+import { serializeForClipboard } from './sidebar/copyable-data-block';
+import { StreamViewerSkeleton } from './stream-viewer-skeleton';
 import { DataInspector } from './ui/data-inspector';
-import { Skeleton } from './ui/skeleton';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Types
@@ -31,59 +33,26 @@ interface StreamViewerProps {
 // Chunk row — memoized to prevent remounts during polling
 // ──────────────────────────────────────────────────────────────────────────
 
-const ChunkRow = React.memo(function ChunkRow({
-  chunk,
-  index,
-}: {
-  chunk: Chunk;
-  index: number;
-}) {
+const ChunkRow = React.memo(function ChunkRow({ chunk }: { chunk: Chunk }) {
   return (
-    <div
-      className="text-[11px] rounded-md border p-3"
-      style={{
-        borderColor: 'var(--ds-gray-300)',
-        backgroundColor: 'var(--ds-gray-100)',
-      }}
-    >
-      <div className="flex items-start gap-2">
-        <span
-          className="select-none pt-px"
-          style={{ color: 'var(--ds-gray-500)' }}
-        >
-          [{index}]
-        </span>
-        <div className="min-w-0 flex-1">
-          {typeof chunk.value === 'string' ? (
-            <span
-              className="whitespace-pre-wrap break-words"
-              style={{ color: 'var(--ds-gray-1000)' }}
-            >
-              {chunk.value}
-            </span>
-          ) : (
-            <DataInspector data={chunk.value} expandLevel={1} />
-          )}
-        </div>
+    <div className="flex w-full items-start gap-1 border-b border-gray-alpha-400 px-3 py-2">
+      <div className="min-w-0 flex-1">
+        {typeof chunk.value === 'string' ? (
+          <span className="whitespace-pre-wrap break-words text-label-12 font-mono text-gray-1000">
+            {chunk.value}
+          </span>
+        ) : (
+          <DataInspector data={chunk.value} expandLevel={1} />
+        )}
       </div>
+      <CopyButton
+        copyText={serializeForClipboard(chunk.value)}
+        ariaLabel="Copy chunk"
+        className="shrink-0 -mr-1 [&>div]:h-4 [&>div]:w-4 [&_svg]:h-4 [&_svg]:w-4"
+      />
     </div>
   );
 });
-
-// ──────────────────────────────────────────────────────────────────────────
-// Skeleton loading
-// ──────────────────────────────────────────────────────────────────────────
-
-function StreamSkeleton() {
-  return (
-    <div className="flex flex-col gap-3 animate-in fade-in">
-      <Skeleton style={{ width: 120, height: 16, borderRadius: 4 }} />
-      {[1, 2, 3, 4].map((i) => (
-        <Skeleton key={i} style={{ height: 56, borderRadius: 6 }} />
-      ))}
-    </div>
-  );
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Main component
@@ -116,71 +85,31 @@ export function StreamViewer({
     prevChunkCountRef.current = chunks.length;
   }, [chunks.length]);
 
-  // Show skeleton when loading and no chunks have arrived yet
   if (isLoading && chunks.length === 0) {
-    return (
-      <div className="flex flex-col h-full">
-        <StreamSkeleton />
-      </div>
-    );
+    return <StreamViewerSkeleton />;
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Live indicator */}
-      {isLive && (
-        <div className="flex items-center gap-1.5 mb-2 px-1">
-          <span
-            className="inline-block w-2 h-2 rounded-full"
-            style={{ backgroundColor: 'var(--ds-green-600)' }}
-          />
-          <span className="text-xs" style={{ color: 'var(--ds-green-700)' }}>
-            Live
-          </span>
-        </div>
-      )}
-
-      {/* Header */}
-      {chunks.length > 0 && (
-        <div className="flex items-center gap-2 mb-2 px-1">
-          <span
-            className="text-[13px] font-medium"
-            style={{ color: 'var(--ds-gray-900)' }}
-          >
-            Stream Chunks
-          </span>
-          <span
-            className="text-xs tabular-nums"
-            style={{ color: 'var(--ds-gray-600)' }}
-          >
-            ({chunks.length})
-          </span>
-        </div>
-      )}
+    <div className="flex h-full w-full flex-col overflow-hidden bg-background-100">
+      {/* Status header */}
+      <div className="flex h-10 min-h-10 items-center gap-1.5 border-b border-gray-alpha-400 px-3">
+        {isLive && (
+          <>
+            <span className="inline-block h-2 w-2 rounded-full bg-green-600" />
+            <span className="text-label-12 text-green-700">Live</span>
+          </>
+        )}
+      </div>
 
       {/* Content */}
       <div className="flex-1 min-h-0">
         {error ? (
-          <div
-            className="text-[11px] rounded-md border p-3"
-            style={{
-              borderColor: 'var(--ds-red-300)',
-              backgroundColor: 'var(--ds-red-100)',
-              color: 'var(--ds-red-700)',
-            }}
-          >
+          <div className="border-b border-red-400 bg-red-100 px-3 py-2 text-label-12 text-red-900">
             <div>Error reading stream:</div>
             <div>{error}</div>
           </div>
         ) : chunks.length === 0 ? (
-          <div
-            className="text-[11px] rounded-md border p-3"
-            style={{
-              borderColor: 'var(--ds-gray-300)',
-              backgroundColor: 'var(--ds-gray-100)',
-              color: 'var(--ds-gray-600)',
-            }}
-          >
+          <div className="border-b border-gray-alpha-400 bg-background-200 px-3 py-2 text-label-12 text-gray-900">
             {isLive ? 'Waiting for stream data...' : 'Stream is empty'}
           </div>
         ) : (
@@ -190,8 +119,8 @@ export function StreamViewer({
             overscan={10}
             endReached={() => onScrollEnd?.()}
             itemContent={(index) => (
-              <div style={{ paddingBottom: 8 }}>
-                <ChunkRow chunk={chunks[index]} index={index} />
+              <div className="w-full">
+                <ChunkRow chunk={chunks[index]} />
               </div>
             )}
             style={{ flex: 1, minHeight: 0 }}
