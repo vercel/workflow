@@ -117,33 +117,7 @@ async function drainPendingQueueItems(
   }
 }
 
-interface WorkflowCompletion {
-  readonly output: unknown;
-  readonly resultType: string;
-}
-
-type WorkflowSessionState =
-  | {
-      readonly type: 'running';
-      readonly interruption: PromiseWithResolvers<never>;
-    }
-  | { readonly type: 'suspended'; readonly suspension: WorkflowSuspension }
-  | { readonly type: 'replay' }
-  | { readonly type: 'completed' };
-
-export interface WorkflowSession {
-  readonly workflowRun: WorkflowRun;
-  readonly argumentCount: number;
-  resume(events: Event[]): WorkflowSessionResumeResult;
-}
-
-type WorkflowSessionResumeResult =
-  | {
-      readonly type: 'resumed';
-      readonly execution: Promise<WorkflowCompletion>;
-    }
-  | { readonly type: 'replay' };
-
+/** Everything needed to cold-start a workflow VM over an event log. */
 interface WorkflowSessionOptions {
   readonly workflowCode: string;
   readonly workflowRun: WorkflowRun;
@@ -154,55 +128,79 @@ interface WorkflowSessionOptions {
   readonly worldCapabilities?: WorldCapabilities;
 }
 
+/**
+ * A live workflow VM, parked at a suspension boundary. `resume` advances it
+ * by appending events instead of replaying from scratch.
+ */
+export interface WorkflowSession {
+  readonly workflowRun: WorkflowRun;
+  readonly argumentCount: number;
+  resume(events: Event[]): Promise<WorkflowResumeResult>;
+}
+
 /** A finished execution attempt: the workflow's output or a live boundary. */
-type WorkflowOutcome =
-  | { readonly type: 'completed'; readonly output: unknown }
+export type WorkflowResult =
+  | {
+      readonly type: 'completed';
+      readonly output: unknown;
+      /** `typeof` the raw return value, for telemetry. */
+      readonly resultType: string;
+    }
   | {
       readonly type: 'suspended';
       readonly suspension: WorkflowSuspension;
       readonly session: WorkflowSession;
     };
 
-/** `resumeWorkflow`'s result: `replay` means "cold-replay me instead". */
-export type WorkflowExecutionResult =
-  | WorkflowOutcome
-  | { readonly type: 'replay' };
-
 /**
- * Cold-start: build a fresh VM session and replay it over `events`. A fresh
- * replay always completes or suspends.
+ * `resume` can additionally decline — `{ type: 'replay' }` means "this
+ * session is unusable, cold-replay instead". A fresh replay never declines.
  */
+export type WorkflowResumeResult = WorkflowResult | { readonly type: 'replay' };
+
+/** The session's private state machine. */
+type WorkflowSessionState =
+  | {
+      readonly type: 'running';
+      readonly interruption: PromiseWithResolvers<never>;
+    }
+  | { readonly type: 'suspended'; readonly suspension: WorkflowSuspension }
+  | { readonly type: 'replay' }
+  | { readonly type: 'completed' };
+
+/** Cold-start: build a fresh VM session and replay it over `events`. */
 export function replayWorkflow(
   options: WorkflowSessionOptions
-): Promise<WorkflowOutcome> {
+): Promise<WorkflowResult> {
   return traceExecution(
     'replay',
     options.workflowRun,
     options.events,
     async (span) => {
       const { session, execution } = await createWorkflowSession(options);
-      return awaitOutcome(session, execution, span);
+      span?.setAttributes({
+        ...Attribute.WorkflowArgumentsCount(session.argumentCount),
+      });
+      return recordResult(await execution, span);
     }
   );
 }
 
-/**
- * Warm-start: advance a retained session by appending events. Returns
- * `{ type: 'replay' }` when the session declines (demoted, or `events` is
- * not a strict extension of what it already consumed).
- */
+/** Warm-start: advance a retained session by appending events. */
 export function resumeWorkflow(
   session: WorkflowSession,
   events: Event[]
-): Promise<WorkflowExecutionResult> {
+): Promise<WorkflowResumeResult> {
   return traceExecution(
     'retained',
     session.workflowRun,
     events,
     async (span) => {
-      const resumed = session.resume(events);
-      if (resumed.type === 'replay') return resumed;
-      return awaitOutcome(session, resumed.execution, span);
+      span?.setAttributes({
+        ...Attribute.WorkflowArgumentsCount(session.argumentCount),
+      });
+      const result = await session.resume(events);
+      return result.type === 'replay' ? result : recordResult(result, span);
     }
   );
 }
@@ -225,28 +223,18 @@ function traceExecution<T>(
   });
 }
 
-/** Await the execution attempt, converting a suspension into an outcome. */
-async function awaitOutcome(
-  session: WorkflowSession,
-  execution: Promise<WorkflowCompletion>,
+function recordResult(
+  result: WorkflowResult,
   span: Span | undefined
-): Promise<WorkflowOutcome> {
-  span?.setAttributes({
-    ...Attribute.WorkflowArgumentsCount(session.argumentCount),
-  });
-  try {
-    const completed = await execution;
+): WorkflowResult {
+  if (result.type === 'completed') {
     span?.setAttributes({
-      ...Attribute.WorkflowResultType(completed.resultType),
+      ...Attribute.WorkflowResultType(result.resultType),
     });
-    return { type: 'completed', output: completed.output };
-  } catch (error) {
-    if (WorkflowSuspension.is(error)) {
-      if (span) applyWorkflowSuspensionToSpan(error, span);
-      return { type: 'suspended', suspension: error, session };
-    }
-    throw error;
+  } else if (span) {
+    applyWorkflowSuspensionToSpan(result.suspension, span);
   }
+  return result;
 }
 
 /**
@@ -302,7 +290,7 @@ async function createWorkflowSession({
   worldCapabilities,
 }: WorkflowSessionOptions): Promise<{
   session: WorkflowSession;
-  execution: Promise<WorkflowCompletion>;
+  execution: Promise<WorkflowResult>;
 }> {
   const startedAt = workflowRun.startedAt;
   if (!startedAt) {
@@ -1007,7 +995,10 @@ async function createWorkflowSession({
   });
   await workflowContext.promiseQueue;
 
-  const workflowExecution = (async (): Promise<unknown> => {
+  // The user function's promise. It may stay pending across many resumes
+  // (each parked step promise holds it up) and is raced against the current
+  // attempt's interruption in waitForExecution.
+  const workflowBody = (async (): Promise<unknown> => {
     return await workflowFn(...args);
   })();
 
@@ -1038,13 +1029,13 @@ async function createWorkflowSession({
 
   const waitForExecution = async (
     interruption: PromiseWithResolvers<never>
-  ): Promise<WorkflowCompletion> => {
+  ): Promise<WorkflowResult> => {
     let result: unknown;
     try {
-      result = await Promise.race([workflowExecution, interruption.promise]);
+      result = await Promise.race([workflowBody, interruption.promise]);
     } catch (error) {
       if (state.type === 'suspended' && error === state.suspension) {
-        throw error;
+        return { type: 'suspended', suspension: state.suspension, session };
       }
       return failWorkflow(error);
     }
@@ -1071,7 +1062,7 @@ async function createWorkflowSession({
         runReadyBarrier
       );
 
-      return { output, resultType: typeof result };
+      return { type: 'completed', output, resultType: typeof result };
     } catch (error) {
       return failWorkflow(error);
     }
@@ -1080,7 +1071,7 @@ async function createWorkflowSession({
   const session: WorkflowSession = {
     workflowRun,
     argumentCount: args.length,
-    resume(nextEvents) {
+    async resume(nextEvents) {
       switch (state.type) {
         case 'suspended': {
           // The full O(known events) prefix compare is required: the runtime
@@ -1102,10 +1093,7 @@ async function createWorkflowSession({
           state = { type: 'running', interruption };
           workflowContext.suspensionGeneration++;
           eventsConsumer.append(nextEvents.slice(knownEvents.length));
-          return {
-            type: 'resumed',
-            execution: waitForExecution(interruption),
-          };
+          return waitForExecution(interruption);
         }
         case 'replay':
           return { type: 'replay' };

@@ -103,7 +103,7 @@ import { buildWorkflowSuspensionMessage } from './util.js';
 import {
   replayWorkflow,
   resumeWorkflow,
-  type WorkflowExecutionResult,
+  type WorkflowResumeResult,
   type WorkflowSession,
 } from './workflow.js';
 
@@ -1235,12 +1235,10 @@ export function workflowEntrypoint(
                     encryptionKey
                   );
 
-                  let workflowExecution:
-                    | { readonly type: 'replay' }
-                    | {
-                        readonly type: 'retained';
-                        readonly session: WorkflowSession;
-                      } = { type: 'replay' };
+                  // The live VM parked at the previous boundary, when the
+                  // retention decision kept it. null → this iteration cold-
+                  // replays. Invocation-scoped: dies with this delivery.
+                  let retainedSession: WorkflowSession | null = null;
 
                   // Main replay loop
                   // biome-ignore lint/correctness/noConstantCondition: intentional loop
@@ -1574,7 +1572,7 @@ export function workflowEntrypoint(
                         workflowRunId: runId,
                         loopIteration,
                         eventCount: events.length,
-                        executionMode: workflowExecution.type,
+                        executionMode: retainedSession ? 'retained' : 'replay',
                       });
                       replayStart = Date.now();
                       // Start every missing decrypt/decompress operation up
@@ -1586,16 +1584,12 @@ export function workflowEntrypoint(
                         workflowRun,
                         events
                       );
-                      let workflowResult: WorkflowExecutionResult =
-                        workflowExecution.type === 'retained'
-                          ? await resumeWorkflow(
-                              workflowExecution.session,
-                              events
-                            )
-                          : { type: 'replay' };
+                      let workflowResult: WorkflowResumeResult = retainedSession
+                        ? await resumeWorkflow(retainedSession, events)
+                        : { type: 'replay' };
 
                       if (workflowResult.type === 'replay') {
-                        workflowExecution = { type: 'replay' };
+                        retainedSession = null;
                         workflowResult = await replayWorkflow({
                           workflowCode,
                           workflowRun,
@@ -1615,10 +1609,7 @@ export function workflowEntrypoint(
                         // Park the live session; the suspension catch below
                         // makes the one retention decision — keep it for the
                         // next iteration or discard it for a fresh replay.
-                        workflowExecution = {
-                          type: 'retained',
-                          session: workflowResult.session,
-                        };
+                        retainedSession = workflowResult.session;
                         throw workflowResult.suspension;
                       }
 
@@ -1627,7 +1618,7 @@ export function workflowEntrypoint(
                         workflowRunId: runId,
                         loopIteration,
                         replayMs: Date.now() - replayStart,
-                        executionMode: workflowExecution.type,
+                        executionMode: retainedSession ? 'retained' : 'replay',
                       });
 
                       // Workflow completed. Send the snapshot but do NOT
@@ -1870,14 +1861,14 @@ export function workflowEntrypoint(
                         // out-of-band continuation source and provably
                         // passive step inputs.
                         if (
-                          workflowExecution.type === 'retained' &&
+                          retainedSession &&
                           !canRetainWorkflowSession(
                             err,
                             suspensionResult.retainedStepInputsSafe,
                             getOpenHookWaitState
                           )
                         ) {
-                          workflowExecution = { type: 'replay' };
+                          retainedSession = null;
                         }
 
                         preStepBlockingMs += suspensionResult.hookCreationMs;
