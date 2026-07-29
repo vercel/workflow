@@ -42,6 +42,7 @@ import {
   isOptimisticInlineStartEnabled,
   isOptimisticInlineStartExplicitlyDisabled,
 } from './constants.js';
+import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
 import {
@@ -300,22 +301,26 @@ export async function executeStep(
           if (params.runReadyBarrier) {
             await params.runReadyBarrier.catch(() => {});
           }
-          await world.events.create(workflowRunId, {
-            eventType: 'step_started',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: stepId,
-            eventData: {
-              stepName,
-              workflowName,
-              input: params.lazyStepInput,
-              // Stamped for consistency even though this step terminal-fails
-              // immediately below — the log should never show an unowned
-              // lazy start.
-              ...(params.ownerMessageId !== undefined
-                ? { ownerMessageId: params.ownerMessageId }
-                : {}),
+          await world.events.create(
+            workflowRunId,
+            {
+              eventType: 'step_started',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: stepId,
+              eventData: {
+                stepName,
+                workflowName,
+                input: params.lazyStepInput,
+                // Stamped for consistency even though this step terminal-fails
+                // immediately below — the log should never show an unowned
+                // lazy start.
+                ...(params.ownerMessageId !== undefined
+                  ? { ownerMessageId: params.ownerMessageId }
+                  : {}),
+              },
             },
-          });
+            { computeInstanceId: COMPUTE_INSTANCE_ID }
+          );
         } catch (startErr) {
           if (EntityConflictError.is(startErr)) {
             return { type: 'skipped' };
@@ -560,9 +565,12 @@ export async function executeStep(
             // (412) rejection surfaces via reconcileOptimisticStart as a
             // non-translatable error: the body result is discarded and the
             // rejection propagates to the caller.
-            params.stateUpdatedAt !== undefined
-              ? { stateUpdatedAt: params.stateUpdatedAt }
-              : undefined
+            {
+              computeInstanceId: COMPUTE_INSTANCE_ID,
+              ...(params.stateUpdatedAt !== undefined
+                ? { stateUpdatedAt: params.stateUpdatedAt }
+                : {}),
+            }
           );
         }
       );
@@ -623,9 +631,12 @@ export async function executeStep(
           // (412) rejection is intentionally NOT translated by
           // startErrorToResult below, so it propagates to the caller for a
           // fresh replay.
-          params.stateUpdatedAt !== undefined
-            ? { stateUpdatedAt: params.stateUpdatedAt }
-            : undefined
+          {
+            computeInstanceId: COMPUTE_INSTANCE_ID,
+            ...(params.stateUpdatedAt !== undefined
+              ? { stateUpdatedAt: params.stateUpdatedAt }
+              : {}),
+          }
         );
 
         if (!startResult.step) {

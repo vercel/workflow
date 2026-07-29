@@ -109,6 +109,8 @@ export interface CreateEventV4Input {
   specVersion: number;
   correlationId?: string;
   vercelId?: string;
+  /** Compute instance that wrote this event; rides the frame meta by `vercelId`. */
+  computeInstanceId?: string;
   /** Client-side time at which the event occurred. */
   occurredAt?: Date;
   remoteRefBehavior?: 'resolve' | 'lazy';
@@ -255,6 +257,9 @@ function buildPostFrameMeta(
   if (input.correlationId !== undefined)
     meta.correlationId = input.correlationId;
   if (input.vercelId !== undefined) meta.vercelId = input.vercelId;
+  if (input.computeInstanceId !== undefined) {
+    meta.computeInstanceId = input.computeInstanceId;
+  }
   if (input.occurredAt !== undefined) meta.occurredAt = input.occurredAt;
   if (input.remoteRefBehavior !== undefined) {
     meta.remoteRefBehavior = input.remoteRefBehavior;
