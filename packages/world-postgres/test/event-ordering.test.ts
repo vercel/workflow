@@ -221,12 +221,17 @@ if (process.platform === 'win32') {
         const runId = await createRun();
         await events.create(runId, { eventType: 'run_started' });
 
-        // Advance the log past the snapshot the fenced create will claim.
-        await events.create(runId, {
-          eventType: 'hook_created',
-          correlationId: 'hook-f',
-          eventData: { token: `tok-${runId}` },
-        });
+        // A foreign DECISION (snapshot-carrying create) lands past the
+        // snapshot the fenced create will claim.
+        await events.create(
+          runId,
+          {
+            eventType: 'hook_created',
+            correlationId: 'hook-f',
+            eventData: { token: `tok-${runId}` },
+          },
+          { stateEventCount: 2, stateCursor: 'winning-cursor' }
+        );
 
         await expect(
           events.create(
@@ -249,7 +254,7 @@ if (process.platform === 'win32') {
         expectDenseLog(log.data, 3);
       });
 
-      it('fences a hook_received-interleaved decision without a credit', async () => {
+      it('does not fence a decision on interleaved facts (buffered events)', async () => {
         const runId = await createRun();
         await events.create(runId, { eventType: 'run_started' });
         await events.create(runId, {
@@ -259,23 +264,43 @@ if (process.platform === 'win32') {
         });
         const loaded = 3;
 
-        // An out-of-band fact lands after the writer loaded its snapshot...
-        await events.create(runId, {
-          eventType: 'hook_received',
-          correlationId: 'hook-i',
-          eventData: { payload: new Uint8Array([7]) },
-        });
+        // Out-of-band facts land after the writer loaded its snapshot. They
+        // carry no snapshot, so they are buffered events in Temporal's
+        // sense: they get a log position after the snapshot and are
+        // delivered there on replay, but they must not invalidate decisions
+        // derived before them — fencing on them would restart the replay of
+        // any run under steady inbound-hook load on every write.
+        for (let i = 0; i < 3; i++) {
+          await events.create(runId, {
+            eventType: 'hook_received',
+            correlationId: 'hook-i',
+            eventData: { payload: new Uint8Array([i]) },
+          });
+        }
 
-        // ...so the writer's first fenced create (no credit yet) is stale.
+        // The writer's decision still lands, positioned after the facts.
+        const result = await events.create(
+          runId,
+          {
+            eventType: 'step_created',
+            correlationId: 'post-hook-step',
+            eventData: { stepName: 'x', input: new Uint8Array([1]) },
+          },
+          { stateEventCount: loaded, stateCursor: 'cursor-Z' }
+        );
+        expect(result.event?.seq).toBe(7);
+
+        // But a foreign decision made from the same stale snapshot is
+        // fenced: the step_created above bumped the decision watermark.
         await expect(
           events.create(
             runId,
             {
               eventType: 'step_created',
-              correlationId: 'post-hook-step',
-              eventData: { stepName: 'x', input: new Uint8Array([1]) },
+              correlationId: 'foreign-step',
+              eventData: { stepName: 'y', input: new Uint8Array([2]) },
             },
-            { stateEventCount: loaded, stateCursor: 'cursor-Z' }
+            { stateEventCount: loaded, stateCursor: 'cursor-other' }
           )
         ).rejects.toSatisfy(PreconditionFailedError.is);
       });

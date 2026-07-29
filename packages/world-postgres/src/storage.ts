@@ -495,17 +495,31 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
    * never surface below a cursor a reader has already passed. If the
    * transaction rolls back, the counter update rolls back with it: no gaps.
    *
-   * Fence: when the create carries `stateEventCount`, the write is rejected
-   * with 412 (`PreconditionFailedError`) unless the snapshot is current
-   * (`tail === stateEventCount`) or it matches the credit left by a previous
-   * up-to-date append of the same snapshot (`writerSnapshot` /
-   * `writerBaseCount`) — the several creates one suspension flushes share a
-   * snapshot and must not fence each other, while a *different* writer's
-   * stale snapshot must be rejected so a replay derived from a superseded
-   * view can never commit a decision. The whole transaction rolls back on
-   * rejection, entity mutations included; the runtime responds by reloading
-   * and re-deriving (in-process replay restart), never by retrying the same
-   * decision.
+   * Fence: when the create carries `stateEventCount`, the write is a
+   * *decision* derived from the snapshot, and it is rejected with 412
+   * (`PreconditionFailedError`) iff a foreign decision landed past that
+   * snapshot — `lastFencedSeq > stateEventCount` without a matching sibling
+   * credit. Two deliberate properties, both borrowed from Temporal's
+   * buffered-events model:
+   *
+   * - **Facts never fence.** Out-of-band writes (`hook_received`,
+   *   `step_completed`, …) arrive without a snapshot and don't bump
+   *   `lastFencedSeq`. A decision made without seeing a fact stays valid —
+   *   the fact is delivered at its log position on replay. Fencing on the
+   *   raw tail instead livelocks any run under steady inbound load: every
+   *   fact between a replay's load and its next write forces a full replay
+   *   restart, and the facts keep coming (measured: ~41 restarts/run in the
+   *   step-storm repro, every attempt timing out as `stuck`).
+   * - **Foreign decisions always fence.** Two invocations replaying from
+   *   different prefixes derive different decisions; whichever commits
+   *   second would bake an ordering no replay can reproduce (positional
+   *   correlation ids make one skewed decision rename every later entity).
+   *   The loser 412s, the whole transaction — entity mutation included —
+   *   rolls back, and the runtime reloads and re-derives (in-process replay
+   *   restart), never retrying the stale decision. Siblings of one
+   *   suspension share a snapshot and pass through the credit
+   *   (`writerSnapshot`/`writerBaseCount`) instead of fencing on their own
+   *   batch.
    *
    * Runs created before the seq migration have events but zeroed counters;
    * the first append after the migration initializes the counters from the
@@ -523,6 +537,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       .select({
         nextEventSeq: runs.nextEventSeq,
         lastEventId: runs.lastEventId,
+        lastFencedSeq: runs.lastFencedSeq,
         writerSnapshot: runs.writerSnapshot,
         writerBaseCount: runs.writerBaseCount,
       })
@@ -551,9 +566,13 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     }
 
     const fenceCount = params?.stateEventCount;
+    const isFenced = fenceCount !== undefined;
     let establishCredit = false;
-    if (fenceCount !== undefined) {
-      if (tail === fenceCount) {
+    if (isFenced) {
+      const lastFenced = row.lastFencedSeq ?? 0;
+      if (lastFenced <= fenceCount) {
+        // Every decision in the log is inside the caller's snapshot; any
+        // newer events are facts, which don't invalidate it.
         establishCredit = true;
       } else if (
         params?.stateCursor !== undefined &&
@@ -564,8 +583,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         // already proven current when the first sibling appended.
       } else {
         throw new PreconditionFailedError(
-          `Event log for run "${runId}" advanced past the caller's snapshot: ` +
-            `${tail} events recorded, snapshot loaded ${fenceCount}`
+          `Event log for run "${runId}" has decisions past the caller's snapshot: ` +
+            `last decision at position ${lastFenced}, snapshot loaded ${fenceCount} events`
         );
       }
     }
@@ -584,6 +603,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       .set({
         nextEventSeq: tail + count,
         lastEventId: positions[positions.length - 1].eventId,
+        ...(isFenced
+          ? { lastFencedSeq: positions[positions.length - 1].seq }
+          : {}),
         ...(establishCredit
           ? {
               writerSnapshot: params?.stateCursor ?? null,

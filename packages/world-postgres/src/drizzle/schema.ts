@@ -128,13 +128,22 @@ export const runs = schema.table(
       .notNull(),
     lastEventId: varchar('last_event_id'),
     /**
-     * Currency-fence credit: the precondition snapshot (`stateCursor` +
-     * `stateEventCount`) of the last fenced writer that appended from an
-     * up-to-date view. A suspension flushes several creates that share one
-     * snapshot; the first establishes the credit and the rest match it, so
-     * siblings never fence each other while a *different* stale snapshot is
-     * still rejected with 412.
+     * Decision-fence state. `lastFencedSeq` is the position of the last
+     * *decision* event — a create that carried a precondition snapshot
+     * (replay-derived: step/hook/wait creations, terminal transitions).
+     * Facts (`hook_received`, `step_completed`, …) arrive without a snapshot
+     * and never bump it, mirroring Temporal's buffered events: a fact landing
+     * after a writer's snapshot must not invalidate its decisions, or a run
+     * under a steady inbound-hook load restarts its replay on every write
+     * and stops making progress. A fenced create is rejected iff a *foreign*
+     * decision landed past its snapshot.
+     *
+     * `writerSnapshot` / `writerBaseCount` are the sibling credit: the
+     * several creates one suspension flushes share one snapshot; the first
+     * establishes the credit and the rest match it instead of fencing on the
+     * decisions their own batch just appended.
      */
+    lastFencedSeq: bigint('last_fenced_seq', { mode: 'number' }),
     writerSnapshot: varchar('writer_snapshot'),
     writerBaseCount: bigint('writer_base_count', { mode: 'number' }),
     createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -152,6 +161,7 @@ export const runs = schema.table(
     > & {
       nextEventSeq: number;
       lastEventId?: string;
+      lastFencedSeq?: number;
       writerSnapshot?: string;
       writerBaseCount?: number;
     }
