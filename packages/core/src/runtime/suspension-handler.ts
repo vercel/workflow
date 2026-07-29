@@ -30,7 +30,7 @@ import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import { getMaxInlineSteps } from './constants.js';
-import { type MutableEventLog, withPreconditionRetry } from './helpers.js';
+import { type LoadedEventLog, preconditionSnapshotParams } from './helpers.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -39,13 +39,15 @@ export interface SuspensionHandlerParams {
   span?: Span;
   requestId?: string;
   /**
-   * The runtime's loaded event log. Each event creation is sent with this
-   * snapshot's `stateUpdatedAt` and, if the backend rejects it as stale (412),
-   * the log is reloaded in place and the create is retried — see
-   * `withPreconditionRetry`. Guarding per-create (rather than the whole
-   * suspension) ensures a retry never re-issues an already-created event.
+   * The runtime's loaded event log. Every event creation this suspension makes
+   * is sent with the precondition snapshot derived from it, so a backend that
+   * has recorded an event the replay did not see rejects the write with a 412
+   * instead of accepting a divergent event. The rejection is not retried here:
+   * the event's correlation id was minted by *this* replay's seeded sequence,
+   * so re-committing it against a corrected log would persist an event no
+   * correct replay produces. The caller restarts the replay instead.
    */
-  eventLog?: MutableEventLog;
+  eventLog?: LoadedEventLog;
   /**
    * Turbo mode only: a promise that resolves once the backgrounded
    * `run_started` has landed (the run exists). When present, every world write
@@ -228,9 +230,9 @@ export async function handleSuspension({
 
   // Create an event with the optimistic-concurrency guard when the caller
   // supplied a loaded event log; otherwise create it directly (callers without
-  // a replay snapshot, e.g. tests). The guard reloads + retries on a stale
-  // (412) rejection, keeping `eventLog` current in place. All suspension events
-  // are non-run_created events on this run's `runId`.
+  // a replay snapshot, e.g. tests). A stale (412) rejection propagates to the
+  // caller, which restarts the replay from a corrected log. All suspension
+  // events are non-run_created events on this run's `runId`.
   const createGuarded = (
     data: CreateEventRequest,
     params?: CreateEventParams
@@ -238,9 +240,10 @@ export async function handleSuspension({
     if (!eventLog) {
       return world.events.create(runId, data, params);
     }
-    return withPreconditionRetry(runId, eventLog, (stateUpdatedAt) =>
-      world.events.create(runId, data, { ...params, stateUpdatedAt })
-    );
+    return world.events.create(runId, data, {
+      ...params,
+      ...preconditionSnapshotParams(eventLog.events, eventLog.cursor),
+    });
   };
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
@@ -614,8 +617,13 @@ export async function handleSuspension({
       (async () => {
         try {
           await ensureRunReady();
-          await world.events.create(
-            runId,
+          // Guarded like every other suspension write: an attr_set is a
+          // replay-derived event with a correlation id from this replay's
+          // seeded sequence, so it must not land on a log the replay never
+          // saw. Rejecting it is cheap — a run with attribute events already
+          // forces an in-process replay, so the restart costs the replay it
+          // was going to do anyway.
+          await createGuarded(
             {
               eventType: 'attr_set',
               specVersion: SPEC_VERSION_CURRENT,
