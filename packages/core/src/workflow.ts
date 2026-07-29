@@ -10,7 +10,11 @@ import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
-import type { PayloadKey } from './serialization/encryption.js';
+import {
+  createCorrelationIdGenerator,
+  deriveHookToken,
+  isCallSiteCorrelationIdsEnabled,
+} from './correlation-id.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
@@ -21,6 +25,7 @@ import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
+import type { PayloadKey } from './serialization/encryption.js';
 import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
@@ -170,21 +175,34 @@ export async function runWorkflow(
         : `http://localhost:${(await getPortLazy()) ?? 3000}`
     );
 
+    const seed = `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`;
+
     const {
       context,
       globalThis: vmGlobalThis,
       updateTimestamp,
     } = createContext({
-      seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
+      seed,
       fixedTimestamp,
     });
 
     const workflowDiscontinuation = withResolvers<void>();
 
     const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
+    const callSiteScoped = isCallSiteCorrelationIdsEnabled();
+    const generateUlid = createCorrelationIdGenerator({
+      seed,
+      fixedTimestamp,
+      // Correlation IDs must be replay-stable. `startedAt` differs between a
+      // turbo delivery and a later server-backed replay, so use fixedTimestamp.
+      positional: () => ulid(fixedTimestamp),
+      callSiteScoped,
+    });
     const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
     );
+    const generateHookToken = (correlationId: string) =>
+      callSiteScoped ? deriveHookToken(seed, correlationId) : generateNanoid();
 
     // Create a mutable holder for the promise queue so the EventsConsumer
     // can access the current queue state via a getter. The queue is mutated
@@ -213,10 +231,9 @@ export async function runWorkflow(
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
       eventsConsumer,
-      // Correlation IDs must be replay-stable. `startedAt` differs between a
-      // turbo delivery and a later server-backed replay, so use fixedTimestamp.
-      generateUlid: () => ulid(fixedTimestamp),
+      generateUlid,
       generateNanoid,
+      generateHookToken,
       invocationsQueue: new Map(),
       // Use getter/setter so the EventsConsumer's getPromiseQueue() always
       // sees the latest queue state as it's mutated by step/hook/sleep callbacks.

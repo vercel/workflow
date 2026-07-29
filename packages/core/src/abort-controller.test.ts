@@ -43,6 +43,7 @@ function setupWorkflowContext(
     }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),
+    generateHookToken: (correlationId: string) => `token_${correlationId}`,
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
