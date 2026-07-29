@@ -158,8 +158,9 @@ export function parseRetryAfter(
  *
  *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
  *   - 410 → RunExpiredError (runtime exits without retrying)
- *   - 412 → PreconditionFailedError + retryAfter (stale `stateUpdatedAt`
- *     snapshot — the optimistic-concurrency guard on event creation)
+ *   - 412 → PreconditionFailedError + retryAfter + details (stale precondition
+ *     snapshot — the optimistic-concurrency guard on event creation; `details`
+ *     carries the events the backend returned inline, when it did)
  *   - 425 → TooEarlyError + retryAfter (step retry pacing — see #1806 for what
  *     happens when a 425 degrades into an untyped error)
  *   - 429 → ThrottleError + retryAfter, EXCEPT a firewall challenge (429 +
@@ -179,13 +180,17 @@ export function errorForResponse(
     code?: string;
     url?: string;
     mitigated?: string | null;
+    /** Rejection detail for a 412 — the events the backend says the client's
+     *  snapshot was missing, when it returned them inline. Ignored for every
+     *  other status. */
+    details?: unknown;
   } = {}
 ): Error {
-  const { retryAfter, code, url, mitigated } = opts;
+  const { retryAfter, code, url, mitigated, details } = opts;
   if (status === 409) return new EntityConflictError(message);
   if (status === 410) return new RunExpiredError(message);
   if (status === 412)
-    return new PreconditionFailedError(message, { retryAfter });
+    return new PreconditionFailedError(message, { retryAfter, details });
   if (status === 425) return new TooEarlyError(message, { retryAfter });
   if (status === 429) {
     // A firewall challenge can't be solved by a server-to-server client, so map
