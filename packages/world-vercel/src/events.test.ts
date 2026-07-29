@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { gzipSync } from 'node:zlib';
 import type { AnyEventRequest } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
@@ -32,18 +33,6 @@ function decodePostedMeta(rawBody: unknown): Record<string, unknown> {
     bytes.byteLength
   ).getUint32(0, false);
   return decode(bytes.subarray(4, 4 + metaLen)) as Record<string, unknown>;
-}
-
-function joinFrames(...frames: Uint8Array[]): Uint8Array {
-  const joined = new Uint8Array(
-    frames.reduce((length, frame) => length + frame.byteLength, 0)
-  );
-  let offset = 0;
-  for (const frame of frames) {
-    joined.set(frame, offset);
-    offset += frame.byteLength;
-  }
-  return joined;
 }
 
 /**
@@ -642,7 +631,7 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('hydrates a streamed run_started page in either structural event order', async () => {
+  it('hydrates streamed run input without decompressing replay events', async () => {
     const agent = mockAgent();
     const serializedInput = new TextEncoder().encode('"workflow input"');
     const compressedInput = gzipSync(serializedInput);
@@ -658,7 +647,7 @@ describe('createWorkflowRunEvent response coercion', () => {
       })
       .reply(
         200,
-        joinFrames(
+        Buffer.concat([
           encodeFrame(
             {
               _result: 1,
@@ -668,10 +657,10 @@ describe('createWorkflowRunEvent response coercion', () => {
                 startedAt: new Date('2026-06-10T00:00:01.000Z'),
               },
               event: {
-                eventId: 'evnt_1',
+                eventId: 'evnt_2',
                 runId: 'wrun_1',
                 eventType: 'run_started',
-                createdAt: new Date('2026-06-10T00:00:00.000Z'),
+                createdAt: new Date('2026-06-10T00:00:01.000Z'),
               },
             },
             new Uint8Array()
@@ -680,19 +669,8 @@ describe('createWorkflowRunEvent response coercion', () => {
             {
               eventId: 'evnt_1',
               runId: 'wrun_1',
-              eventType: 'run_started',
-              createdAt: new Date('2026-06-10T00:00:00.000Z'),
-              specVersion: 5,
-              eventData: {},
-            },
-            new Uint8Array()
-          ),
-          encodeFrame(
-            {
-              eventId: 'evnt_2',
-              runId: 'wrun_1',
               eventType: 'run_created',
-              createdAt: new Date('2026-06-10T00:00:01.000Z'),
+              createdAt: new Date('2026-06-10T00:00:00.000Z'),
               specVersion: 5,
               eventData: {
                 deploymentId: 'dpl_1',
@@ -702,33 +680,47 @@ describe('createWorkflowRunEvent response coercion', () => {
             },
             input
           ),
-          encodeFrame({ _end: 1, next: 'eid:evnt_2' }, new Uint8Array())
-        ),
+          encodeFrame(
+            {
+              eventId: 'evnt_2',
+              runId: 'wrun_1',
+              eventType: 'run_started',
+              createdAt: new Date('2026-06-10T00:00:01.000Z'),
+              specVersion: 5,
+              eventData: {},
+            },
+            new Uint8Array()
+          ),
+          encodeFrame(
+            { _end: 1, next: 'eid:evnt_2', hasMore: false },
+            new Uint8Array()
+          ),
+        ]),
         {
           headers: {
             'content-type': V4_FRAME_CONTENT_TYPE,
-            'x-wf-event-id': 'evnt_1',
+            'x-wf-event-id': 'evnt_2',
             'x-wf-run-id': 'wrun_1',
-            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+            'x-wf-created-at': '2026-06-10T00:00:01.000Z',
           },
         }
       );
 
     const result = await createWorkflowRunEvent(
       'wrun_1',
-      { eventType: 'run_started', specVersion: 5 } as AnyEventRequest,
+      { eventType: 'run_started', specVersion: 5 },
       undefined,
       { token: 'test-token', dispatcher: agent }
     );
 
     expect(result.events?.map((event) => event.eventType)).toEqual([
-      'run_started',
       'run_created',
+      'run_started',
     ]);
-    expect(result.events?.[1].eventData?.input).toEqual(input);
+    expect(result.events?.[0].eventData?.input).toEqual(input);
     expect(result.run?.input).toEqual(input);
     expect(result.cursor).toBe('eid:evnt_2');
-    expect(result.hasMore).toBe(true);
+    expect(result.hasMore).toBe(false);
     agent.assertNoPendingInterceptors();
   });
 

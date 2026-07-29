@@ -753,54 +753,18 @@ async function createWorkflowRunEventInner(
   // matching the v3 path's stripEventAndLegacyRefs behavior.
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const body = result.body;
-  const streamedEvents =
-    result.type === 'event-page'
-      ? result.page.events.map(({ event, body }) =>
-          buildEventFromV4(event, body, 'replay')
-        )
-      : undefined;
-  const events = streamedEvents
-    ? streamedEvents.map((event) => stripEventDataRefs(event, resolveData))
-    : body.events
-      ? (body.events as Record<string, unknown>[]).map(coerceEventDates)
-      : undefined;
-  const cursor = result.type === 'event-page' ? result.page.next : body.cursor;
-  const hasMore =
-    result.type === 'event-page'
-      ? (result.page.hasMore ?? Boolean(result.page.next))
-      : body.hasMore;
-  let run = body.run
-    ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
-    : undefined;
-  if (run && streamedEvents) {
-    const runCreated = streamedEvents.find(
-      (event) => event.eventType === 'run_created'
-    );
-    if (!runCreated) {
-      throw new Error('v4 createEvent: run_started page missing run_created');
-    }
-    const input = (runCreated.eventData as Record<string, unknown>).input;
-    const { inputRef: _inputRef, ...runData } = run as WorkflowRun & {
-      inputRef?: unknown;
-    };
-    run = { ...runData, input } as WorkflowRun;
-  }
-  return {
+  const baseResult = {
     event: body.event
       ? stripEventDataRefs(
           coerceEventDates(body.event as Record<string, unknown>),
           resolveData
         )
       : undefined,
-    run,
     step: body.step
       ? deserializeStep(body.step as Parameters<typeof deserializeStep>[0])
       : undefined,
     hook: body.hook as EventResult['hook'],
     wait: body.wait as EventResult['wait'],
-    events,
-    cursor,
-    hasMore,
     // Lazy step start: thread the server's "I created the step on this call"
     // signal through so the owned-inline runtime path can gate body execution
     // on it. Absent from older servers → undefined → safe default.
@@ -810,4 +774,49 @@ async function createWorkflowRunEventInner(
       ? { maxEvents: body.maxEvents }
       : {}),
   };
+
+  switch (result.type) {
+    case 'event':
+      return {
+        ...baseResult,
+        run: body.run
+          ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
+          : undefined,
+        events: body.events
+          ? (body.events as Record<string, unknown>[]).map(coerceEventDates)
+          : undefined,
+        cursor: body.cursor,
+        hasMore: body.hasMore,
+      };
+    case 'event-page': {
+      const replayEvents = result.page.events.map(({ event, body }) =>
+        buildEventFromV4(event, body, 'replay')
+      );
+      const runCreated = replayEvents[0];
+      if (runCreated?.eventType !== 'run_created') {
+        throw new Error(
+          'v4 createEvent: run_started page must begin with run_created'
+        );
+      }
+      if (!body.run) {
+        throw new Error('v4 createEvent: run_started result missing run');
+      }
+      const { inputRef: _inputRef, ...run } = deserializeError<
+        WorkflowRun & { inputRef?: unknown }
+      >(body.run as Record<string, unknown>);
+      return {
+        ...baseResult,
+        run: { ...run, input: runCreated.eventData.input },
+        events: replayEvents.map((event) =>
+          stripEventDataRefs(event, resolveData)
+        ),
+        cursor: result.page.next,
+        hasMore: result.page.hasMore,
+      };
+    }
+    default: {
+      const exhaustive: never = result;
+      throw new Error(`v4 createEvent: unknown result type ${exhaustive}`);
+    }
+  }
 }

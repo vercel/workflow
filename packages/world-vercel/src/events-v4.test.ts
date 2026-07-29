@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import {
   EntityConflictError,
   RunExpiredError,
@@ -16,18 +17,6 @@ import {
 } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
-
-function joinFrames(...frames: Uint8Array[]): Uint8Array {
-  const joined = new Uint8Array(
-    frames.reduce((length, frame) => length + frame.byteLength, 0)
-  );
-  let offset = 0;
-  for (const frame of frames) {
-    joined.set(frame, offset);
-    offset += frame.byteLength;
-  }
-  return joined;
-}
 
 /**
  * The v4 client must preserve the typed-error contract of the v3
@@ -426,7 +415,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
       })
       .reply(
         200,
-        joinFrames(
+        Buffer.concat([
           encodeFrame(
             {
               _result: 1,
@@ -458,8 +447,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
           encodeFrame(
             { _end: 1, next: 'eid:evnt_2', hasMore: false },
             new Uint8Array()
-          )
-        ),
+          ),
+        ]),
         {
           headers: {
             'content-type': V4_FRAME_CONTENT_TYPE,

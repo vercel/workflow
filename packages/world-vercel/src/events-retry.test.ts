@@ -38,6 +38,7 @@ const stepCompleted = () => ({
 });
 
 const v4Success = () => ({
+  type: 'event' as const,
   eventId: 'evnt_1',
   runId: RUN_ID,
   createdAt: '2020-01-01T00:00:00.000Z',
