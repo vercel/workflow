@@ -1,10 +1,7 @@
 import 'react-router';
 // The React Router server build (virtual module). Imported as a namespace so we
-// can both hand it to the Express handler (standalone server.js) and reprefix a
-// copy of it for the framework-agnostic embedded handler below.
+// can reprefix a copy of it for a mounted base path (see `reprefixBuild`).
 import * as serverBuild from 'virtual:react-router/server-build';
-import { createRequestHandler as createExpressRequestHandler } from '@react-router/express';
-import express from 'express';
 import {
   type AppLoadContext,
   createRequestHandler as createReactRouterRequestHandler,
@@ -19,42 +16,21 @@ declare module 'react-router' {
   }
 }
 
-export const app = express();
-
-// Handle all requests with React Router.
-// Static file serving is handled by:
-// - Vite's dev server in development
-// - server.js in production (before mounting this app)
-app.all(
-  '/{*splat}',
-  createExpressRequestHandler({
-    build: () => import('virtual:react-router/server-build'),
-  })
-);
-
-// Safety-net error handler — prevents unhandled errors from crashing the
-// server when the React Router error boundary cannot render (e.g. during SSR).
-app.use(
-  (
-    err: unknown,
-    _req: express.Request,
-    res: express.Response,
-    _next: express.NextFunction
-  ) => {
-    console.error('Unhandled request error:', err);
-    if (!res.headersSent) {
-      res.status(500).send('Internal Server Error');
-    }
-  }
-);
-
-// --- Framework-agnostic fetch handler (for embedding under a base path) -------
+// --- Framework-agnostic fetch handler ----------------------------------------
 //
-// `@workflow/web/handler` (a thin sibling file that ships as-is) imports this to
-// mount the dashboard in-process inside another server — e.g. `@workflow/nitro`
-// at `/_workflow` — without spawning a second HTTP server. React Router itself
-// is bundled into this build, so the `createRequestHandler` wiring must live
-// here rather than in the un-bundled `handler.js`.
+// This module is the SSR build's only entry point, and `createFetchHandler` its
+// only export. Both consumers go through it:
+//
+// - `server.js` — the standalone server, which mounts it at `/` behind srvx's
+//   static middleware.
+// - `@workflow/web/handler` — a thin sibling file that ships as-is, used to
+//   mount the dashboard in-process inside another server (e.g. `@workflow/nitro`
+//   at `/_workflow`) without spawning a second HTTP server.
+//
+// React Router itself is bundled into this build, so the `createRequestHandler`
+// wiring must live here rather than in the un-bundled `handler.js`. Static file
+// serving is *not* handled here — Vite's dev server covers it in development,
+// and each consumer layers its own in front for production.
 
 /** Normalize a mount path: `/` or empty -> "" (root); otherwise strip trailing slash. */
 function normalizeBasename(basename: string): string {

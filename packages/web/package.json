@@ -12,6 +12,7 @@
     "handler.d.ts",
     "registry.js",
     "registry.d.ts",
+    "static.js",
     "package.json"
   ],
   "exports": {
@@ -49,7 +50,7 @@
   },
   "dependencies": {
     "@workflow/world-local": "workspace:*",
-    "express": "^5.2.1",
+    "srvx": "^0.12.4",
     "swr": "^2.3.6"
   },
   "devDependencies": {
@@ -65,11 +66,9 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-tooltip": "1.2.8",
     "@react-router/dev": "7.13.1",
-    "@react-router/express": "7.13.1",
     "@react-router/node": "7.13.1",
     "@tailwindcss/vite": "4",
     "@testing-library/react": "^16.3.0",
-    "@types/express": "^5",
     "@types/node": "catalog:",
     "@types/react": "19",
     "@types/react-dom": "19",

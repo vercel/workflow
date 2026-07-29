@@ -1,4 +1,3 @@
-import type { Server } from 'node:http';
 import chalk from 'chalk';
 import open from 'open';
 import { logger } from '../config/log.js';
@@ -8,7 +7,16 @@ import { getVercelDashboardUrl } from './vercel-api.js';
 
 export const getHostUrl = (webPort: number) => `http://localhost:${webPort}`;
 
-let httpServer: Server | null = null;
+/**
+ * The standalone web UI server, as returned by `@workflow/web/server` (a srvx
+ * `Server`). Derived from the export rather than imported by name so the CLI
+ * doesn't need its own `srvx` dependency just to spell the type.
+ */
+type WebServer = Awaited<
+  ReturnType<typeof import('@workflow/web/server').startServer>
+>;
+
+let webServer: WebServer | null = null;
 
 interface DashboardRegistryEntry {
   url: string;
@@ -83,7 +91,7 @@ async function startWebServer(webPort: number): Promise<boolean> {
   try {
     logger.info('Starting web UI server...');
     const { startServer } = await import('@workflow/web/server');
-    httpServer = await startServer(webPort);
+    webServer = await startServer(webPort);
     logger.success(chalk.green(`Web UI server started on port ${webPort}`));
     return true;
   } catch (error) {
@@ -264,13 +272,16 @@ export async function launchWebUI(
   }
 
   // If we started the server, keep the process running
-  if (!alreadyRunning && httpServer) {
+  if (!alreadyRunning && webServer) {
     logger.info(chalk.cyan('Press Ctrl+C to stop the web UI server and exit'));
 
-    // Keep the CLI process alive while the server is running
+    // Keep the CLI process alive while the server is running. srvx has no
+    // close event of its own, so we listen on the underlying Node server —
+    // always present here, since the CLI only ever runs on Node.
+    const nodeServer = webServer.node?.server;
     await new Promise<void>((resolve) => {
-      if (httpServer) {
-        httpServer.on('close', () => resolve());
+      if (nodeServer) {
+        nodeServer.on('close', () => resolve());
       } else {
         resolve();
       }
