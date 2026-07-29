@@ -1,6 +1,6 @@
+import { Button } from '@vercel/geistdocs/components/button';
 import Image from 'next/image';
 import Link from 'next/link';
-import { Button } from '@vercel/geistdocs/components/button';
 import { examplesRepositoryUrl } from '@/geistdocs';
 import { cn } from '@/lib/utils';
 import Flight from './flight-v2.png';
@@ -38,9 +38,9 @@ const data = [
 ];
 
 export const Templates = () => (
-  <div className="grid md:grid-cols-[1fr_2fr]">
-    <div className="grid gap-4 content-start px-4 py-8 sm:py-12 sm:px-12">
-      <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
+  <div className="grid md:grid-cols-[1fr_1.5fr] gap-12 md:gap-8 px-4 py-8 sm:px-12 sm:py-12">
+    <div className="grid gap-4 content-start">
+      <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40 lg:text-heading-40">
         Get started
       </h2>
       <p className="text-lg text-muted-foreground">
@@ -50,7 +50,7 @@ export const Templates = () => (
         <Link href={examplesRepositoryUrl}>All examples</Link>
       </Button>
     </div>
-    <div className="grid sm:grid-cols-2 gap-8 px-4 py-8 sm:py-12 sm:px-12">
+    <div className="grid sm:grid-cols-2 gap-8">
       {data.map((item) => (
         <a
           key={item.title}
