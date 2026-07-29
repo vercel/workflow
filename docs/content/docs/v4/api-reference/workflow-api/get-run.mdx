@@ -5,11 +5,17 @@ type: reference
 summary: Use getRun to check a workflow run's status and metadata without blocking on completion.
 prerequisites:
   - /docs/foundations/starting-workflows
+related:
+  - /docs/foundations/idempotency
 ---
 
 Retrieves the workflow run metadata and status information for a given run ID. This function provides immediate access to workflow run details without waiting for completion, making it ideal for status checking and monitoring.
 
 Use this function when you need to check workflow status, get timing information, or access workflow metadata without blocking on workflow completion.
+
+<Callout type="info">
+`getRun()` retrieves a run when you already have its `runId`. It does not look up runs by a business key. For retried requests that should route to one active workflow, use a deterministic hook token and [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token). After a hook conflict, `HookConflictError.conflictingRunId` can be passed to `getRun()` to inspect, stream, or return the active owner. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+</Callout>
 
 ```typescript lineNumbers
 import { getRun } from "workflow/api";

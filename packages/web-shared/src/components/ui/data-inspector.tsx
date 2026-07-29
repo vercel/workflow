@@ -1,44 +1,38 @@
 'use client';
 
 /**
- * Reusable data inspector component built on react-inspector.
+ * Reusable data inspector for the o11y UI.
  *
- * All data rendering in the o11y UI should use this component to ensure
- * consistent theming, custom type handling (StreamRef, ClassInstanceRef),
- * and expand behavior.
+ * Renders JSON as a collapsible tree: bracket notation (`{ … }` / `[ … ]`),
+ * colored keys, typed value colors, `▸`/`▾` disclosure icons, and a `...`
+ * collapsed indicator.
+ *
+ * On top of plain JSON it handles the workflow-specific value types: StreamRef /
+ * RunRef badges, encrypted markers, decoded byte streams, Dates, and named
+ * class instances.
  */
 
 import { Lock } from 'lucide-react';
 import {
   createContext,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+  type RefObject,
   useContext,
-  useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
 } from 'react';
-import {
-  ObjectInspector,
-  ObjectLabel,
-  ObjectName,
-  ObjectRootLabel,
-  ObjectValue,
-} from 'react-inspector';
-import { useDarkMode } from '../../hooks/use-dark-mode';
 import { ENCRYPTED_DISPLAY_NAME } from '../../lib/hydration';
 import {
   type DecodedStreamChunkSource,
   type FormattedStreamChunkDisplay,
   formatArrayBufferViewForDisplay,
 } from '../../lib/stream-display';
-import {
-  type InspectorThemeExtended,
-  inspectorThemeDark,
-  inspectorThemeExtendedDark,
-  inspectorThemeExtendedLight,
-  inspectorThemeLight,
-} from './inspector-theme';
 import { Button } from './button';
+import { CLS, JSON_VIEW_STYLES } from './data-inspector.styles';
 import { Spinner } from './spinner';
 
 // ---------------------------------------------------------------------------
@@ -65,6 +59,13 @@ interface BytesDisplay {
   __type: typeof BYTES_DISPLAY_TYPE;
   text: string;
   decodedFrom?: DecodedStreamChunkSource;
+}
+
+interface ClassInstanceRef {
+  __type: typeof CLASS_INSTANCE_REF_TYPE;
+  className: string;
+  classId: string;
+  data: unknown;
 }
 
 function deserializeChunkText(text: string): string {
@@ -106,17 +107,21 @@ export function isBytesDisplay(value: unknown): value is BytesDisplay {
   return desc?.value === BYTES_DISPLAY_TYPE;
 }
 
-function isClassInstanceRef(value: unknown): value is {
-  __type: string;
-  className: string;
-  classId: string;
-  data: unknown;
-} {
+function isClassInstanceRef(value: unknown): value is ClassInstanceRef {
   return (
     value !== null &&
     typeof value === 'object' &&
     '__type' in value &&
     (value as Record<string, unknown>).__type === CLASS_INSTANCE_REF_TYPE
+  );
+}
+
+function isEncryptedMarker(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    (value as { constructor?: { name?: string } }).constructor?.name ===
+      ENCRYPTED_DISPLAY_NAME
   );
 }
 
@@ -149,6 +154,10 @@ export const DecryptClickContext = createContext<
 export const RunClickContext = createContext<
   ((runId: string) => void) | undefined
 >(undefined);
+
+// ---------------------------------------------------------------------------
+// Workflow-specific value renderers (badges, encrypted markers, byte streams)
+// ---------------------------------------------------------------------------
 
 function EncryptedInlineLabel() {
   const ctx = useContext(DecryptClickContext);
@@ -187,6 +196,7 @@ function EncryptedInlineLabel() {
     </span>
   );
 }
+
 function StreamRefInline({ streamRef }: { streamRef: StreamRef }) {
   const onStreamClick = useContext(StreamClickContext);
   const [hovered, setHovered] = useState(false);
@@ -239,14 +249,6 @@ function RunRefInline({ runRef }: { runRef: RunRef }) {
     </button>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Extended theme context (for colors react-inspector doesn't support natively)
-// ---------------------------------------------------------------------------
-
-const ExtendedThemeContext = createContext<InspectorThemeExtended>(
-  inspectorThemeExtendedLight
-);
 
 function DecodedBytesChunk({
   decodedText,
@@ -361,162 +363,474 @@ function DecodedBytesInspector({
   );
 }
 
-function BytesDisplayLabel({
-  name,
-  display,
+function BytesDisplayValue({ display }: { display: BytesDisplay }) {
+  if (display.decodedFrom) {
+    return (
+      <DecodedBytesChunk
+        decodedText={display.text}
+        source={display.decodedFrom}
+      />
+    );
+  }
+  return (
+    <span
+      className="whitespace-pre-wrap break-words"
+      style={{ color: 'var(--ds-gray-1000)' }}
+    >
+      {display.text}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tree renderer
+// ---------------------------------------------------------------------------
+
+type Entry = [field: string | undefined, value: unknown];
+
+interface NodeContext {
+  level: number;
+  shouldExpand: (level: number) => boolean;
+  outerRef: RefObject<HTMLDivElement | null>;
+}
+
+/** Field names are rendered unquoted (empty string shows as `""`). */
+function formatField(field: string): string {
+  return field === '' ? '""' : field;
+}
+
+/**
+ * Describe an object/array/map/set as an expandable container. Returns null for
+ * values that should render as a primitive. `prefix` carries a class name shown
+ * before the opening bracket (Map/Set and named class instances).
+ */
+function describeContainer(
+  value: unknown
+): { entries: Entry[]; open: string; close: string; prefix?: string } | null {
+  if (Array.isArray(value)) {
+    return {
+      entries: value.map((item) => [undefined, item] as Entry),
+      open: '[',
+      close: ']',
+    };
+  }
+  if (value instanceof Map) {
+    return {
+      entries: Array.from(value.entries(), ([key, val]) => [
+        String(key),
+        val,
+      ]) as Entry[],
+      open: '{',
+      close: '}',
+      prefix: 'Map',
+    };
+  }
+  if (value instanceof Set) {
+    return {
+      entries: Array.from(value.values(), (item) => [undefined, item] as Entry),
+      open: '[',
+      close: ']',
+      prefix: 'Set',
+    };
+  }
+  if (value !== null && typeof value === 'object') {
+    const name = (value as { constructor?: { name?: string } }).constructor
+      ?.name;
+    return {
+      entries: Object.entries(value) as Entry[],
+      open: '{',
+      close: '}',
+      prefix: name && name !== 'Object' ? name : undefined,
+    };
+  }
+  return null;
+}
+
+function describePrimitive(value: unknown): { text: string; cls: string } {
+  if (value === null) return { text: 'null', cls: CLS.null };
+  if (value === undefined) return { text: 'undefined', cls: CLS.undefined };
+  if (typeof value === 'string' || value instanceof String) {
+    return { text: `"${String(value)}"`, cls: CLS.string };
+  }
+  if (typeof value === 'boolean' || value instanceof Boolean) {
+    return { text: String(value), cls: CLS.boolean };
+  }
+  if (typeof value === 'number' || value instanceof Number) {
+    return { text: String(value), cls: CLS.number };
+  }
+  if (typeof value === 'bigint') {
+    return { text: `${value.toString()}n`, cls: CLS.number };
+  }
+  return { text: String(value), cls: CLS.punctuation };
+}
+
+function Label({ field, clickable }: { field?: string; clickable?: boolean }) {
+  if (field === undefined) return null;
+  return (
+    <span className={clickable ? CLS.clickableLabel : CLS.label}>
+      {`${formatField(field)}:`}
+    </span>
+  );
+}
+
+function Comma({ isLast }: { isLast: boolean }) {
+  if (isLast) return null;
+  return <span className={CLS.punctuation}>,</span>;
+}
+
+/** A non-expandable row: `field: <value>`. */
+function LeafRow({
+  field,
+  isLast,
+  children,
 }: {
-  name?: string;
-  display: BytesDisplay;
+  field?: string;
+  isLast: boolean;
+  children: ReactNode;
 }) {
   return (
-    <div className="inline-block min-w-0 align-top">
-      {name != null && <ObjectName name={name} />}
-      {name != null && <span>: </span>}
-      {display.decodedFrom ? (
-        <DecodedBytesChunk
-          decodedText={display.text}
-          source={display.decodedFrom}
-        />
-      ) : (
-        <span
-          className="whitespace-pre-wrap break-words"
-          style={{ color: 'var(--ds-gray-1000)' }}
-        >
-          {display.text}
-        </span>
+    <div className={CLS.child} role="treeitem" tabIndex={-1}>
+      <Label field={field} />
+      {children}
+      <Comma isLast={isLast} />
+    </div>
+  );
+}
+
+function PrimitiveValue({ field, value, isLast }: NodeProps) {
+  const { text, cls } = describePrimitive(value);
+  return (
+    <LeafRow field={field} isLast={isLast}>
+      <span className={cls}>{text}</span>
+    </LeafRow>
+  );
+}
+
+function EmptyContainer({
+  field,
+  prefix,
+  open,
+  close,
+  isLast,
+}: {
+  field?: string;
+  prefix?: string;
+  open: string;
+  close: string;
+  isLast: boolean;
+}) {
+  return (
+    <div className={CLS.child} role="treeitem" tabIndex={-1}>
+      <Label field={field} />
+      {prefix ? <span className={CLS.className}>{prefix}</span> : null}
+      <span className={CLS.punctuation}>{open}</span>
+      <span className={CLS.punctuation}>{close}</span>
+      <Comma isLast={isLast} />
+    </div>
+  );
+}
+
+function focusExpander(
+  button: HTMLElement,
+  outerRef: RefObject<HTMLDivElement | null>
+) {
+  const previous = outerRef.current?.querySelector<HTMLElement>(
+    '[data-json-expander][tabindex="0"]'
+  );
+  if (previous) previous.tabIndex = -1;
+  button.tabIndex = 0;
+  button.focus();
+}
+
+function moveExpanderFocus(
+  outerRef: RefObject<HTMLDivElement | null>,
+  direction: 1 | -1
+) {
+  const root = outerRef.current;
+  if (!root) return;
+  const buttons = root.querySelectorAll<HTMLElement>('[data-json-expander]');
+  let current = -1;
+  for (let i = 0; i < buttons.length; i += 1) {
+    if (buttons[i].tabIndex === 0) {
+      current = i;
+      break;
+    }
+  }
+  if (current < 0) return;
+  const next = (current + direction + buttons.length) % buttons.length;
+  buttons[current].tabIndex = -1;
+  buttons[next].tabIndex = 0;
+  buttons[next].focus();
+}
+
+function ExpandableContainer({
+  field,
+  entries,
+  open,
+  close,
+  prefix,
+  ctx,
+  isLast,
+}: {
+  field?: string;
+  entries: Entry[];
+  open: string;
+  close: string;
+  prefix?: string;
+  ctx: NodeContext;
+  isLast: boolean;
+}) {
+  const { level, shouldExpand, outerRef } = ctx;
+  const [expanded, setExpanded] = useState(() => shouldExpand(level));
+  const rowRef = useRef<HTMLDivElement>(null);
+  const contentsId = useId();
+
+  if (entries.length === 0) {
+    return (
+      <EmptyContainer
+        field={field}
+        prefix={prefix}
+        open={open}
+        close={close}
+        isLast={isLast}
+      />
+    );
+  }
+
+  const toggle = () => {
+    setExpanded((value) => !value);
+    if (rowRef.current) focusExpander(rowRef.current, outerRef);
+  };
+
+  // Toggle only for clicks that land on this row itself; clicks bubbling up out
+  // of a nested treeitem are handled by that descendant's own row.
+  const onClick = (event: ReactMouseEvent) => {
+    if (
+      (event.target as HTMLElement).closest('[role="treeitem"]') !==
+      event.currentTarget
+    ) {
+      return;
+    }
+    toggle();
+  };
+
+  const onKeyDown = (event: ReactKeyboardEvent) => {
+    if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setExpanded(true);
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setExpanded(false);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveExpanderFocus(outerRef, -1);
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      moveExpanderFocus(outerRef, 1);
+    }
+  };
+
+  const lastIndex = entries.length - 1;
+
+  return (
+    // The treeitem row is the focusable, keyboard-operable control (roving
+    // tabindex + arrow keys); the disclosure marker below is purely decorative.
+    <div
+      className={CLS.child}
+      role="treeitem"
+      aria-expanded={expanded}
+      aria-controls={expanded ? contentsId : undefined}
+      data-json-expander
+      ref={rowRef}
+      tabIndex={level === 0 ? 0 : -1}
+      onClick={onClick}
+      onKeyDown={onKeyDown}
+    >
+      <span
+        className={expanded ? CLS.collapseIcon : CLS.expandIcon}
+        aria-hidden="true"
+      />
+      {field !== undefined && (
+        <span className={CLS.clickableLabel}>{`${formatField(field)}:`}</span>
       )}
+      {prefix ? <span className={CLS.className}>{prefix}</span> : null}
+      <span className={CLS.punctuation}>{open}</span>
+      {expanded ? (
+        // biome-ignore lint/a11y/useSemanticElements: ARIA tree group is the correct role here
+        <ul id={contentsId} className={CLS.childFields} role="group">
+          {entries.map(([childField, childValue], index) => (
+            <DataRender
+              key={childField ?? index}
+              field={childField}
+              value={childValue}
+              isLast={index === lastIndex}
+              ctx={{ ...ctx, level: level + 1 }}
+            />
+          ))}
+        </ul>
+      ) : (
+        <span className={CLS.collapsedContent} aria-hidden="true" />
+      )}
+      <span className={CLS.punctuation}>{close}</span>
+      <Comma isLast={isLast} />
+    </div>
+  );
+}
+
+interface NodeProps {
+  field?: string;
+  value: unknown;
+  isLast: boolean;
+  ctx: NodeContext;
+}
+
+function DataRender({ field, value, isLast, ctx }: NodeProps) {
+  if (isBytesDisplay(value)) {
+    return (
+      <LeafRow field={field} isLast={isLast}>
+        <BytesDisplayValue display={value} />
+      </LeafRow>
+    );
+  }
+  if (isEncryptedMarker(value)) {
+    return (
+      <LeafRow field={field} isLast={isLast}>
+        <EncryptedInlineLabel />
+      </LeafRow>
+    );
+  }
+  if (isStreamRef(value)) {
+    return (
+      <LeafRow field={field} isLast={isLast}>
+        <StreamRefInline streamRef={value} />
+      </LeafRow>
+    );
+  }
+  if (isRunRef(value)) {
+    return (
+      <LeafRow field={field} isLast={isLast}>
+        <RunRefInline runRef={value} />
+      </LeafRow>
+    );
+  }
+  if (value instanceof Date) {
+    return (
+      <LeafRow field={field} isLast={isLast}>
+        <span className={CLS.date}>{value.toISOString()}</span>
+      </LeafRow>
+    );
+  }
+  if (value instanceof RegExp) {
+    return (
+      <LeafRow field={field} isLast={isLast}>
+        <span className={CLS.regexp}>{value.toString()}</span>
+      </LeafRow>
+    );
+  }
+  if (isClassInstanceRef(value)) {
+    return (
+      <ClassInstanceNode
+        field={field}
+        instance={value}
+        isLast={isLast}
+        ctx={ctx}
+      />
+    );
+  }
+
+  const container = describeContainer(value);
+  if (container) {
+    return (
+      <ExpandableContainer
+        field={field}
+        entries={container.entries}
+        open={container.open}
+        close={container.close}
+        prefix={container.prefix}
+        ctx={ctx}
+        isLast={isLast}
+      />
+    );
+  }
+
+  return (
+    <PrimitiveValue field={field} value={value} isLast={isLast} ctx={ctx} />
+  );
+}
+
+function ClassInstanceNode({
+  field,
+  instance,
+  isLast,
+  ctx,
+}: {
+  field?: string;
+  instance: ClassInstanceRef;
+  isLast: boolean;
+  ctx: NodeContext;
+}) {
+  const container = describeContainer(instance.data);
+  if (container) {
+    return (
+      <ExpandableContainer
+        field={field}
+        entries={container.entries}
+        open={container.open}
+        close={container.close}
+        prefix={instance.className}
+        ctx={ctx}
+        isLast={isLast}
+      />
+    );
+  }
+  const { text, cls } = describePrimitive(instance.data);
+  return (
+    <LeafRow field={field} isLast={isLast}>
+      <span className={CLS.className}>{instance.className}</span>
+      <span className={cls}>{text}</span>
+    </LeafRow>
+  );
+}
+
+function JsonTree({
+  data,
+  name,
+  expandLevel,
+}: {
+  data: unknown;
+  name?: string;
+  expandLevel: number;
+}) {
+  const outerRef = useRef<HTMLDivElement>(null);
+  const shouldExpand = useMemo(
+    () => (level: number) => level < expandLevel,
+    [expandLevel]
+  );
+  return (
+    <div
+      ref={outerRef}
+      className={CLS.container}
+      role="tree"
+      aria-label="JSON view"
+    >
+      <DataRender
+        field={name}
+        value={data}
+        isLast
+        ctx={{ level: 0, shouldExpand, outerRef }}
+      />
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Custom nodeRenderer
-// ---------------------------------------------------------------------------
-
-/**
- * Extends the default react-inspector nodeRenderer with special handling
- * for ClassInstanceRef, StreamRef, and Date types.
- *
- * react-inspector renders Date instances as unstyled plain text (no theme
- * key exists for them), so we intercept here and apply the magenta color
- * from our extended theme — matching Node.js util.inspect()'s date style.
- *
- * Default nodeRenderer reference:
- * https://github.com/storybookjs/react-inspector/blob/main/README.md#noderenderer
- */
-function NodeRenderer({
-  depth,
-  name,
-  data,
-  isNonenumerable,
-}: {
-  depth: number;
-  name?: string;
-  data: unknown;
-  isNonenumerable?: boolean;
-  expanded?: boolean;
-}) {
-  const extendedTheme = useContext(ExtendedThemeContext);
-
-  if (isBytesDisplay(data)) {
-    return <BytesDisplayLabel name={name} display={data} />;
-  }
-
-  // Encrypted marker → flat label with Lock icon, clickable when onDecrypt is available
-  if (
-    data !== null &&
-    typeof data === 'object' &&
-    data.constructor?.name === ENCRYPTED_DISPLAY_NAME
-  ) {
-    const label = <EncryptedInlineLabel />;
-    if (depth === 0) {
-      return label;
-    }
-    return (
-      <span>
-        {name != null && <ObjectName name={name} />}
-        {name != null && <span>: </span>}
-        {label}
-      </span>
-    );
-  }
-
-  // StreamRef → inline clickable badge
-  if (isStreamRef(data)) {
-    return (
-      <span>
-        {name != null && <ObjectName name={name} />}
-        {name != null && <span>: </span>}
-        <StreamRefInline streamRef={data} />
-      </span>
-    );
-  }
-
-  // RunRef → inline clickable badge linking to the target run
-  if (isRunRef(data)) {
-    return (
-      <span>
-        {name != null && <ObjectName name={name} />}
-        {name != null && <span>: </span>}
-        <RunRefInline runRef={data} />
-      </span>
-    );
-  }
-
-  // ClassInstanceRef → show className as type, data as the inspectable value
-  if (isClassInstanceRef(data)) {
-    if (depth === 0) {
-      return <ObjectRootLabel name={data.className} data={data.data} />;
-    }
-    return (
-      <span>
-        {name != null && <ObjectName name={name} />}
-        {name != null && <span>: </span>}
-        <span style={{ fontStyle: 'italic' }}>{data.className} </span>
-        <ObjectValue object={data.data} />
-      </span>
-    );
-  }
-
-  // Date → magenta color (Node.js: 'date' → 'magenta')
-  // react-inspector has no OBJECT_VALUE_DATE_COLOR theme key, so we handle it here.
-  if (data instanceof Date) {
-    const dateStr = data.toISOString();
-    if (depth === 0) {
-      return (
-        <span style={{ color: extendedTheme.OBJECT_VALUE_DATE_COLOR }}>
-          {dateStr}
-        </span>
-      );
-    }
-    return (
-      <span>
-        {name != null && <ObjectName name={name} />}
-        {name != null && <span>: </span>}
-        <span style={{ color: extendedTheme.OBJECT_VALUE_DATE_COLOR }}>
-          {dateStr}
-        </span>
-      </span>
-    );
-  }
-
-  // Default rendering (same as react-inspector's built-in)
-  if (depth === 0) {
-    return <ObjectRootLabel name={name} data={data} />;
-  }
-  return (
-    <ObjectLabel name={name} data={data} isNonenumerable={isNonenumerable} />
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Public component
+// Ref / typed-array collapsing (preprocessing before render)
 // ---------------------------------------------------------------------------
 
 /**
  * Create a non-expandable wrapper that carries ref data as non-enumerable
- * properties. ObjectInspector won't render children for objects with no
- * enumerable keys, but our NodeRenderer can still detect them.
+ * properties so the renderer can detect StreamRef/RunRef without exposing
+ * their internals as object fields.
  */
 function makeOpaqueRef(ref: Record<string, unknown>): unknown {
   const opaque = Object.create(null);
@@ -545,11 +859,11 @@ function makeBytesDisplay(display: FormattedStreamChunkDisplay): unknown {
 
 /**
  * Recursively walk data and replace RunRef/StreamRef/typed array objects with
- * non-expandable versions so ObjectInspector doesn't show their internals.
+ * non-expandable versions so the renderer doesn't show their internals.
  * Only recurses into plain objects and arrays to avoid stripping class
- * instances (Date, Error, URL, Headers, etc.) that have their own rendering in
- * NodeRenderer. Map and Set containers are preserved while their contents are
- * prepared for display.
+ * instances (Date, Error, URL, Headers, etc.) that have their own rendering.
+ * Map and Set containers are preserved while their contents are prepared for
+ * display.
  *
  * Exported for testing the typed-array detection path used by hydrated
  * AI agent stream chunks (e.g. `{ delta: new Uint8Array(...) }`).
@@ -583,10 +897,14 @@ export function collapseRefs(data: unknown): unknown {
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Public component
+// ---------------------------------------------------------------------------
+
 export interface DataInspectorProps {
   /** The data to inspect */
   data: unknown;
-  /** Initial expand depth (default: 2) */
+  /** Levels strictly below this number auto-expand (default: 2) */
   expandLevel?: number;
   /** Optional name for the root node */
   name?: string;
@@ -611,58 +929,46 @@ export function DataInspector({
 }: DataInspectorProps) {
   const collapsedData = useMemo(() => collapseRefs(data), [data]);
   const stableData = useStableInspectorData(collapsedData);
-  const [initialExpandLevel, setInitialExpandLevel] = useState(expandLevel);
-  const isDark = useDarkMode();
-  const extendedTheme = isDark
-    ? inspectorThemeExtendedDark
-    : inspectorThemeExtendedLight;
 
-  useEffect(() => {
-    // react-inspector reapplies expandLevel on every data change, which can
-    // reopen paths the user manually collapsed. Apply it only on mount.
-    setInitialExpandLevel(0);
-  }, []);
-
-  const content = (
-    <ExtendedThemeContext.Provider value={extendedTheme}>
-      <ObjectInspector
-        data={stableData}
-        name={name}
-        // @ts-expect-error react-inspector accepts theme objects at runtime despite
-        // types declaring string only — see https://github.com/storybookjs/react-inspector/blob/main/README.md#theme
-        theme={isDark ? inspectorThemeDark : inspectorThemeLight}
-        expandLevel={initialExpandLevel}
-        nodeRenderer={NodeRenderer}
-      />
-    </ExtendedThemeContext.Provider>
+  let content: ReactNode = (
+    <>
+      {/* React 19 hoists & dedupes this <style> by href, so it is emitted once
+          regardless of how many inspectors are mounted. */}
+      <style href="wf-json-view" precedence="default">
+        {JSON_VIEW_STYLES}
+      </style>
+      <JsonTree data={stableData} name={name} expandLevel={expandLevel} />
+    </>
   );
 
-  let wrapped = content;
-
   if (onStreamClick) {
-    wrapped = (
+    content = (
       <StreamClickContext.Provider value={onStreamClick}>
-        {wrapped}
+        {content}
       </StreamClickContext.Provider>
     );
   }
   if (onRunClick) {
-    wrapped = (
+    content = (
       <RunClickContext.Provider value={onRunClick}>
-        {wrapped}
+        {content}
       </RunClickContext.Provider>
     );
   }
   if (onDecrypt) {
-    wrapped = (
+    content = (
       <DecryptClickContext.Provider value={{ onDecrypt, isDecrypting }}>
-        {wrapped}
+        {content}
       </DecryptClickContext.Provider>
     );
   }
 
-  return wrapped;
+  return content;
 }
+
+// ---------------------------------------------------------------------------
+// Render stabilization (avoid re-renders when data is deeply equal)
+// ---------------------------------------------------------------------------
 
 function useStableInspectorData<T>(next: T): T {
   const previousRef = useRef<T>(next);

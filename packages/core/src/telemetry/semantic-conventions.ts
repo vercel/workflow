@@ -92,6 +92,14 @@ export const WorkflowTracePropagated = SemanticConvention<boolean>(
   'workflow.trace.propagated'
 );
 
+/** Active trace-correlation mode for this invocation (linked or continuous) */
+export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
+  'workflow.trace.mode'
+);
+
+/** Whether this workflow invocation is using the turbo first-delivery path */
+export const WorkflowTurbo = SemanticConvention<boolean>('workflow.turbo');
+
 /** Name of the error that caused workflow failure */
 export const WorkflowErrorName = SemanticConvention<string>(
   'workflow.error.name'
@@ -122,6 +130,51 @@ export const WorkflowWaitsCreated = SemanticConvention<number>(
   'workflow.waits.created'
 );
 
+/**
+ * Number of inline-owned steps this invocation re-executed because it is a
+ * redelivery of their owning queue message (crash recovery for inline
+ * steps — see the inline step ownership changelog, workflow#2780).
+ */
+export const WorkflowOwnedRecoverySteps = SemanticConvention<number>(
+  'workflow.inline_ownership.owned_recovery_steps'
+);
+
+/**
+ * Number of pending steps for which this replay suppressed the immediate
+ * requeue (another invocation inline-owns them under a live lease) and
+ * ensured a delayed backstop wake instead.
+ */
+export const WorkflowBackstopWakesArmed = SemanticConvention<number>(
+  'workflow.inline_ownership.backstop_wakes_armed'
+);
+
+// Route attributes
+
+/** The workflow runtime route being handled */
+export const WorkflowRouteType = SemanticConvention<'flow'>(
+  'workflow.route.type'
+);
+
+/** Whether this route invocation reused an already-created request handler */
+export const WorkflowRouteHandlerCached = SemanticConvention<boolean>(
+  'workflow.route.handler_cached'
+);
+
+/** Number of times this in-memory route handler has been invoked */
+export const WorkflowRouteInvocationCount = SemanticConvention<number>(
+  'workflow.route.invocation_count'
+);
+
+/** Time since this route entrypoint was constructed, in milliseconds */
+export const WorkflowRouteEntrypointAgeMs = SemanticConvention<number>(
+  'workflow.route.entrypoint_age_ms'
+);
+
+/** Time spent evaluating the generated route module body before creating the entrypoint */
+export const WorkflowRouteModuleBodyInitMs = SemanticConvention<number>(
+  'workflow.route.module_body_init_ms'
+);
+
 // Step attributes
 
 /** Name of the step function being executed */
@@ -142,6 +195,54 @@ export const StepMaxRetries = SemanticConvention<number>('step.max_retries');
 /** Whether trace context was propagated to this step execution */
 export const StepTracePropagated = SemanticConvention<boolean>(
   'step.trace.propagated'
+);
+
+/**
+ * Client-measured time-to-first-step latency in milliseconds: run creation →
+ * this step's body beginning to execute, minus pre-step hook-creation time.
+ * Only present on the run's first step execution when it qualified for
+ * measurement (see runtime/step-latency.ts).
+ */
+export const StepTtfsMs = SemanticConvention<number>('step.ttfs_ms');
+
+/**
+ * Client-measured step-to-step overhead in milliseconds: the previous step's
+ * terminal event → this step's body beginning to execute. Only present when
+ * the two steps ran back-to-back.
+ */
+export const StepStsoMs = SemanticConvention<number>('step.stso_ms');
+
+/**
+ * Client-measured run_started-to-first-step latency in milliseconds: the
+ * `run_started` response landing (or, under turbo, the local run synthesis
+ * instant) → this step's start POST being issued. A sub-window of ttfs that
+ * isolates replay overhead from the run-creation queue hop. Only present on
+ * the run's first step execution when it qualified for measurement (see
+ * runtime/step-latency.ts).
+ */
+export const StepRsfsMs = SemanticConvention<number>('step.rsfs_ms');
+
+/**
+ * Client-measured synchronous workflow-function replay duration in
+ * milliseconds, excluding awaited network I/O, of only the FINAL replay pass
+ * within the rsfs window — the pass that reached and scheduled the first
+ * step. Not accumulated across earlier pre-first-step passes (e.g. a
+ * workflow-body `setAttributes()` detour replays more than once, and a
+ * redelivery omits earlier invocations' work entirely), so this must not be
+ * read as "the replay portion of rsfs" — step.rsfs_ms covers the whole
+ * window. Only present alongside step.rsfs_ms and only for the run's first
+ * step (see runtime/step-latency.ts).
+ */
+export const StepFinalSchedulingReplayMs = SemanticConvention<number>(
+  'step.final_scheduling_replay_ms'
+);
+
+/**
+ * Runtime startup-latency optimizations active for the ttfs/stso measurement
+ * (e.g. 'turbo', 'lazyStepStart', 'optimisticStart').
+ */
+export const StepLatencyOptimizations = SemanticConvention<string[]>(
+  'step.latency_optimizations'
 );
 
 /** Whether the step was skipped during execution */
@@ -275,6 +376,9 @@ export const HttpRequestMethod = SemanticConvention<string>(
   'http.request.method'
 );
 
+/** Route pattern for the request (standard OTEL: http.route) */
+export const HttpRoute = SemanticConvention<string>('http.route');
+
 /** Full URL of the request (standard OTEL: url.full) */
 export const UrlFull = SemanticConvention<string>('url.full');
 
@@ -321,6 +425,43 @@ export const QueueExecutionTimeMs = SemanticConvention<number>(
 /** Time spent serializing the response in milliseconds */
 export const QueueSerializeTimeMs = SemanticConvention<number>(
   'workflow.queue.serialize_time_ms'
+);
+
+// Payload compression attributes (zstd preferred, gzip fallback; specVersion >= 5)
+//
+// Sizes are measured at the compression boundary: before encryption on the
+// write path and after decryption on the read path. They therefore reflect
+// compression's effect, not the at-rest size (which also includes the
+// ~28-byte `encr` envelope and, on some backends, base64 expansion).
+
+/** Whether this serialize/deserialize was a write or read. */
+export const SerializationOperation = SemanticConvention<
+  'serialize' | 'deserialize'
+>('workflow.serialization.operation');
+
+/** Whether a compression codec was applied (write) / present (read). */
+export const SerializationCompressed = SemanticConvention<boolean>(
+  'workflow.serialization.compressed'
+);
+
+/** Which compression codec applied / was present (`zstd`, `gzip`, or `none`). */
+export const SerializationCodec = SemanticConvention<'zstd' | 'gzip' | 'none'>(
+  'workflow.serialization.codec'
+);
+
+/** Logical (uncompressed, devalue-prefixed) payload size in bytes. */
+export const SerializationUncompressedBytes = SemanticConvention<number>(
+  'workflow.serialization.uncompressed_bytes'
+);
+
+/** Stored (post-compression, pre-encryption) payload size in bytes. */
+export const SerializationStoredBytes = SemanticConvention<number>(
+  'workflow.serialization.stored_bytes'
+);
+
+/** Fraction of bytes saved by compression (0..1); set only when compressed. */
+export const SerializationCompressionRatio = SemanticConvention<number>(
+  'workflow.serialization.compression_ratio'
 );
 
 // RPC/Peer Service attributes - For service maps and dependency tracking

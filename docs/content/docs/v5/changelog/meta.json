@@ -1,5 +1,13 @@
 {
   "title": "Changelog",
-  "pages": ["index", "eager-processing", "resilient-resume", "resilient-start"],
+  "pages": [
+    "index",
+    "eager-processing",
+    "resilient-resume",
+    "resilient-start",
+    "lazy-event-creation",
+    "turbo-mode",
+    "step-message-ownership"
+  ],
   "defaultOpen": false
 }

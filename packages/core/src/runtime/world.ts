@@ -5,8 +5,9 @@ import {
   resolveWorkflowTargetWorld,
 } from '@workflow/utils';
 import type { World } from '@workflow/world';
-import { createLocalWorld } from '@workflow/world-local';
-import { createVercelWorld } from '@workflow/world-vercel';
+import { createWorld as createLocalWorld } from '@workflow/world-local';
+import { createWorld as createVercelWorld } from '@workflow/world-vercel';
+import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
 
 function getRuntimeRequire() {
   // Resolve from the app root (process.cwd()) so custom world packages
@@ -14,9 +15,17 @@ function getRuntimeRequire() {
   // dependencies of @workflow/core. Using import.meta.url would resolve
   // from core's location, missing app-level packages.
   try {
-    return createRequire(pathToFileURL(process.cwd() + '/package.json').href);
+    return createRequire(
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      pathToFileURL(process.cwd() + '/package.json').href
+    );
   } catch {
-    return createRequire(import.meta.url);
+    return createRequire(
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      import.meta.url
+    );
   }
 }
 
@@ -34,6 +43,36 @@ const globalSymbols: typeof globalThis & {
   [StubbedWorldCachePromise]?: Promise<World>;
 } = globalThis;
 
+export type WorldFactoryModule = {
+  createWorld?: () => World | Promise<World>;
+  default?: (() => World | Promise<World>) | World;
+};
+
+/**
+ * Create a World instance from a world factory module. Shared by
+ * `createWorld()` (for the world package named by WORKFLOW_TARGET_WORLD) and
+ * tooling that loads a world module dynamically (e.g. the Nitro dev
+ * handler and `@workflow/world-testing`). World packages should export
+ * `createWorld()`.
+ */
+export function createWorldFromModule(
+  mod: WorldFactoryModule
+): World | Promise<World> {
+  if (typeof mod.createWorld === 'function') {
+    return mod.createWorld();
+  }
+  if (typeof mod.default === 'function') {
+    return mod.default();
+  }
+  if (mod.default && typeof mod.default === 'object') {
+    return mod.default as World;
+  }
+
+  throw new Error(
+    'Invalid target world module: must export createWorld(), a default factory, or a default World instance.'
+  );
+}
+
 // Dynamic import for custom world modules. Uses a standard import()
 // wrapped in a try/catch with require() fallback for CJS test runners.
 // Note: the previous `new Function('specifier', 'return import(specifier)')`
@@ -48,17 +87,31 @@ function resolveModulePath(specifier: string): string {
   }
   // Absolute path - convert to file:// URL
   if (specifier.startsWith('/')) {
-    return pathToFileURL(specifier).href;
+    return pathToFileURL(
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      specifier
+    ).href;
   }
   // Relative path - resolve relative to cwd and convert to file:// URL
   if (specifier.startsWith('./') || specifier.startsWith('../')) {
     return pathToFileURL(
-      /* turbopackIgnore: true */ process.cwd() + '/' + specifier
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      process.cwd() + '/' + specifier
     ).href;
   }
   // Package specifier - use require.resolve to find the package
   try {
-    return pathToFileURL(getRuntimeRequire().resolve(specifier)).href;
+    return pathToFileURL(
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      getRuntimeRequire().resolve(
+        /* webpackIgnore: true */
+        /* turbopackIgnore: true */
+        specifier
+      )
+    ).href;
   } catch {
     return specifier;
   }
@@ -73,8 +126,8 @@ function resolveModulePath(specifier: string): string {
  * and should not affect runtime behavior. The Vercel runtime provides
  * authentication via OIDC tokens and project context via system env vars
  * (VERCEL_DEPLOYMENT_ID, VERCEL_PROJECT_ID). Tooling that needs these env
- * vars should call createVercelWorld() directly with an explicit config and
- * use setWorld() to inject the instance.
+ * vars should call the Vercel world's createWorld() directly with an explicit
+ * config and use setWorld() to inject the instance.
  */
 export const createWorld = async (): Promise<World> => {
   const targetWorld = resolveWorkflowTargetWorld();
@@ -113,22 +166,30 @@ export const createWorld = async (): Promise<World> => {
   // dynamic import() for ESM-only packages.
   let mod: any;
   try {
-    mod = getRuntimeRequire()(targetWorld);
+    mod = getRuntimeRequire()(
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      targetWorld
+    );
   } catch {
     const resolvedPath = resolveModulePath(targetWorld);
-    mod = await import(/* webpackIgnore: true */ resolvedPath);
+    mod = await import(
+      /* webpackIgnore: true */
+      /* turbopackIgnore: true */
+      resolvedPath
+    );
   }
   if (typeof mod === 'function') {
     return mod() as World;
-  } else if (typeof mod.default === 'function') {
-    return mod.default() as World;
-  } else if (typeof mod.createWorld === 'function') {
-    return mod.createWorld() as World;
   }
 
-  throw new Error(
-    `Invalid target world module: ${targetWorld}, must export a default function or createWorld function that returns a World instance.`
-  );
+  try {
+    return await createWorldFromModule(mod as WorldFactoryModule);
+  } catch {
+    throw new Error(
+      `Invalid target world module: ${targetWorld}, must export a createWorld function or a default function that returns a World instance.`
+    );
+  }
 };
 
 export type WorldHandlers = Pick<World, 'createQueueHandler' | 'specVersion'>;
@@ -144,6 +205,7 @@ export type WorldHandlers = Pick<World, 'createQueueHandler' | 'specVersion'>;
  */
 export const getWorldHandlers = async (): Promise<WorldHandlers> => {
   if (globalSymbols[StubbedWorldCache]) {
+    assertWorldSupportsRuntimeProtocol(globalSymbols[StubbedWorldCache]);
     return globalSymbols[StubbedWorldCache];
   }
   // Store the promise immediately to prevent race conditions with concurrent calls.
@@ -155,6 +217,7 @@ export const getWorldHandlers = async (): Promise<WorldHandlers> => {
     });
   }
   const _world = await globalSymbols[StubbedWorldCachePromise];
+  assertWorldSupportsRuntimeProtocol(_world);
   globalSymbols[StubbedWorldCache] = _world;
   return {
     createQueueHandler: _world.createQueueHandler,
@@ -164,6 +227,7 @@ export const getWorldHandlers = async (): Promise<WorldHandlers> => {
 
 export const getWorld = async (): Promise<World> => {
   if (globalSymbols[WorldCache]) {
+    assertWorldSupportsRuntimeProtocol(globalSymbols[WorldCache]);
     return globalSymbols[WorldCache];
   }
   // Store the promise immediately to prevent race conditions with concurrent calls.
@@ -175,6 +239,7 @@ export const getWorld = async (): Promise<World> => {
     });
   }
   globalSymbols[WorldCache] = await globalSymbols[WorldCachePromise];
+  assertWorldSupportsRuntimeProtocol(globalSymbols[WorldCache]);
   return globalSymbols[WorldCache];
 };
 

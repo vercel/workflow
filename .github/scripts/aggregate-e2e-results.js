@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -54,6 +54,7 @@ function findResultFiles(dir) {
     'e2e-metadata-',
     'e2e-failures-',
     'e2e-diagnostics-',
+    'e2e-runtime-logs-',
   ]);
 }
 
@@ -146,6 +147,32 @@ function loadFailures(dir) {
   return failures;
 }
 
+// vitest's JSON reporter serializes only error stacks. For test timeouts the
+// stack is the task-collection stack ("Error: STACK_TRACE_ERROR ..."), which
+// carries no information about the failure. The github-reporter failures
+// sidecar carries the real error message (e.g. "Test timed out in 60000ms"),
+// so prefer it whenever the vitest message is useless.
+function enrichFailedTestMessages(failedTests, failures) {
+  for (const test of failedTests) {
+    const useless =
+      !test.message || test.message.startsWith('Error: STACK_TRACE_ERROR');
+    if (!useless) continue;
+
+    const sidecar =
+      failures.get(test.title) ||
+      failures.get(test.name) ||
+      failures.get((test.name || '').replace(/^e2e\s+/, ''));
+    if (sidecar?.errorMessage) {
+      test.message = sidecar.errorMessage.slice(0, 200);
+    } else if (!test.message) {
+      test.message = '(no error message serialized)';
+    } else {
+      test.message =
+        '(no error message serialized — likely a test timeout; see job log annotations)';
+    }
+  }
+}
+
 // Generate observability URL for a test
 function getObservabilityUrl(metadata, appName, testName) {
   const appMetadata = metadata.get(appName);
@@ -159,7 +186,7 @@ function getObservabilityUrl(metadata, appName, testName) {
   if (!runInfo) return null;
 
   const env = vercel.environment === 'production' ? 'production' : 'preview';
-  return `https://vercel.com/${vercel.teamSlug}/${vercel.projectSlug}/observability/workflows/runs/${runInfo.runId}?environment=${env}`;
+  return `https://vercel.com/${vercel.teamSlug}/${vercel.projectSlug}/workflows/runs/${runInfo.runId}?environment=${env}`;
 }
 
 // Parse vitest JSON output
@@ -186,6 +213,7 @@ function parseVitestResults(file) {
             results.failed++;
             results.failedTests.push({
               name: assertionResult.fullName || assertionResult.title,
+              title: assertionResult.title,
               file: testFile.name,
               message:
                 assertionResult.failureMessages?.join('\n').slice(0, 200) || '',
@@ -405,6 +433,11 @@ const categoryOrder = [
   'other',
 ];
 
+// In the "Failed E2E Tests" section, a category with fewer than this many
+// failed tests is listed inline under a heading; at or above it, the list is
+// tucked into a <details> to keep the top of the comment scannable.
+const FAILED_INLINE_THRESHOLD = 10;
+
 // Render aggregated PR comment summary
 function renderAggregatedSummary(
   categories,
@@ -425,37 +458,63 @@ function renderAggregatedSummary(
   console.log(`## 🧪 E2E Test Results\n`);
   console.log(`${statusEmoji} **${statusText}**\n`);
 
-  // Overall summary table
-  console.log('### Summary\n');
-  console.log('| | Passed | Failed | Skipped | Total |');
-  console.log('|:--|------:|-------:|--------:|------:|');
-
-  // Sort categories by defined order
+  // Sort categories by defined order (shared by every section below)
   const sortedCategories = Array.from(categories.entries()).sort(
     ([a], [b]) =>
       (categoryOrder.indexOf(a) === -1 ? 999 : categoryOrder.indexOf(a)) -
       (categoryOrder.indexOf(b) === -1 ? 999 : categoryOrder.indexOf(b))
   );
 
-  for (const [catName, cat] of sortedCategories) {
-    const catTotal = cat.passed + cat.failed + cat.skipped;
-    const catStatus = cat.failed > 0 ? '❌' : '✅';
-    const displayName = categoryNames[catName] || catName;
-    console.log(
-      `| ${catStatus} ${displayName} | ${cat.passed} | ${cat.failed} | ${cat.skipped} | ${catTotal} |`
-    );
-  }
+  // Renders the failed tests of one category, grouped by app. Callers wrap this
+  // in either a heading (few failures) or a <details> (many).
+  const renderFailedCategoryTests = (catName, appsMap) => {
+    for (const [appName, tests] of appsMap.entries()) {
+      console.log(`**${appName}** (${tests.length} failed):\n`);
+      for (const test of tests) {
+        // Extract just the test name without "e2e " prefix if present
+        const testName = test.name.replace(/^e2e\s+/, '');
 
-  console.log(
-    `| **Total** | **${overallSummary.totalPassed}** | **${overallSummary.totalFailed}** | **${overallSummary.totalSkipped}** | **${total}** |`
-  );
-  console.log('');
+        // Look up enriched diagnostics for this test.
+        // Only show observability links for vercel-prod tests — other
+        // categories (local, community) don't run on Vercel's world
+        // backend so there's no dashboard to link to.
+        const isVercelProd = catName === 'vercel-prod';
+        const diag = diagnostics.get(test.name) || diagnostics.get(testName);
+        const failureInfo = failures.get(testName) || failures.get(test.name);
+        const obsUrl = isVercelProd
+          ? getObservabilityUrl(metadata, appName, test.name)
+          : null;
+        const dashboardUrl = isVercelProd
+          ? diag?.dashboardUrl || failureInfo?.dashboardUrl || obsUrl
+          : null;
+        const runId = diag?.runId || failureInfo?.runId;
+        const runStatus = failureInfo?.status;
 
-  // Failed tests section - grouped by category and app
+        // Build the line with available info
+        const links = [];
+        if (dashboardUrl) links.push(`[🔍 observability](${dashboardUrl})`);
+
+        if (links.length > 0 || runId) {
+          const parts = [`\`${testName}\``];
+          if (runId) parts.push(`\`${runId}\``);
+          if (runStatus) parts.push(`status: \`${runStatus}\``);
+          if (links.length > 0) parts.push(links.join(' '));
+          console.log(`- ${parts.join(' | ')}`);
+        } else {
+          console.log(`- \`${testName}\``);
+        }
+      }
+      console.log('');
+    }
+  };
+
+  // Failed tests first (hidden entirely when everything passed), grouped by
+  // category and app. A category with fewer than FAILED_INLINE_THRESHOLD
+  // failures is listed inline under a heading; larger ones collapse into a
+  // <details> so the top of the comment stays scannable.
   if (overallSummary.allFailedTests.length > 0) {
-    console.log('### ❌ Failed Tests\n');
+    console.log('### ❌ Failed E2E Tests\n');
 
-    // Group failed tests by category, then by app
     const failedByCategory = new Map();
     for (const test of overallSummary.allFailedTests) {
       if (!failedByCategory.has(test.category)) {
@@ -468,7 +527,6 @@ function renderAggregatedSummary(
       catMap.get(test.app).push(test);
     }
 
-    // Sort categories by defined order
     const sortedFailedCategories = Array.from(failedByCategory.entries()).sort(
       ([a], [b]) =>
         (categoryOrder.indexOf(a) === -1 ? 999 : categoryOrder.indexOf(a)) -
@@ -482,63 +540,48 @@ function renderAggregatedSummary(
         0
       );
 
-      console.log(`<details>`);
-      console.log(
-        `<summary>${catDisplay} (${catFailedCount} failed)</summary>\n`
-      );
-
-      for (const [appName, tests] of appsMap.entries()) {
-        console.log(`**${appName}** (${tests.length} failed):\n`);
-        for (const test of tests) {
-          // Extract just the test name without "e2e " prefix if present
-          const testName = test.name.replace(/^e2e\s+/, '');
-
-          // Look up enriched diagnostics for this test.
-          // Only show observability links for vercel-prod tests — other
-          // categories (local, community) don't run on Vercel's world
-          // backend so there's no dashboard to link to.
-          const isVercelProd = catName === 'vercel-prod';
-          const diag = diagnostics.get(test.name) || diagnostics.get(testName);
-          const failureInfo = failures.get(testName) || failures.get(test.name);
-          const obsUrl = isVercelProd
-            ? getObservabilityUrl(metadata, appName, test.name)
-            : null;
-          const dashboardUrl = isVercelProd
-            ? diag?.dashboardUrl || failureInfo?.dashboardUrl || obsUrl
-            : null;
-          const runId = diag?.runId || failureInfo?.runId;
-          const runStatus = failureInfo?.status;
-
-          // Build the line with available info
-          const links = [];
-          if (dashboardUrl) links.push(`[🔍 observability](${dashboardUrl})`);
-
-          if (links.length > 0 || runId) {
-            const parts = [`\`${testName}\``];
-            if (runId) parts.push(`\`${runId}\``);
-            if (runStatus) parts.push(`status: \`${runStatus}\``);
-            if (links.length > 0) parts.push(links.join(' '));
-            console.log(`- ${parts.join(' | ')}`);
-          } else {
-            console.log(`- \`${testName}\``);
-          }
-        }
-        console.log('');
+      if (catFailedCount >= FAILED_INLINE_THRESHOLD) {
+        console.log('<details>');
+        console.log(
+          `<summary>${catDisplay} (${catFailedCount} failed)</summary>\n`
+        );
+        renderFailedCategoryTests(catName, appsMap);
+        console.log('</details>\n');
+      } else {
+        console.log(`#### ${catDisplay} (${catFailedCount} failed)\n`);
+        renderFailedCategoryTests(catName, appsMap);
       }
-
-      console.log('</details>\n');
     }
   }
 
-  // Detailed breakdown by category
-  console.log('### Details by Category\n');
+  // Everything else lives under one collapsible summary section.
+  console.log('### E2E Test Summary\n');
 
+  // Overall summary table (expandable)
+  console.log('<details>');
+  console.log('<summary>Summary</summary>\n');
+  console.log('| | Passed | Failed | Skipped | Total |');
+  console.log('|:--|------:|-------:|--------:|------:|');
+  for (const [catName, cat] of sortedCategories) {
+    const catTotal = cat.passed + cat.failed + cat.skipped;
+    const catStatus = cat.failed > 0 ? '❌' : '✅';
+    const displayName = categoryNames[catName] || catName;
+    console.log(
+      `| ${catStatus} ${displayName} | ${cat.passed} | ${cat.failed} | ${cat.skipped} | ${catTotal} |`
+    );
+  }
+  console.log(
+    `| **Total** | **${overallSummary.totalPassed}** | **${overallSummary.totalFailed}** | **${overallSummary.totalSkipped}** | **${total}** |`
+  );
+  console.log('</details>\n');
+
+  // Per-app breakdown (expandable) — one flat list, no nested collapsibles.
+  console.log('<details>');
+  console.log('<summary>Details by Category</summary>\n');
   for (const [catName, cat] of sortedCategories) {
     const catStatus = cat.failed > 0 ? '❌' : '✅';
     const displayName = categoryNames[catName] || catName;
-
-    console.log(`<details>`);
-    console.log(`<summary>${catStatus} ${displayName}</summary>\n`);
+    console.log(`**${catStatus} ${displayName}**\n`);
     console.log('| App | Passed | Failed | Skipped |');
     console.log('|:----|-------:|-------:|--------:|');
     for (const app of cat.apps) {
@@ -547,8 +590,9 @@ function renderAggregatedSummary(
         `| ${appStatus} ${app.name} | ${app.passed} | ${app.failed} | ${app.skipped} |`
       );
     }
-    console.log('</details>\n');
+    console.log('');
   }
+  console.log('</details>\n');
 
   // Add link to workflow run
   if (runUrl) {
@@ -578,6 +622,7 @@ if (mode === 'aggregate') {
   const metadata = loadMetadata(resultsDir);
   const diagnostics = loadDiagnostics(resultsDir);
   const failures = loadFailures(resultsDir);
+  enrichFailedTestMessages(overallSummary.allFailedTests, failures);
   renderAggregatedSummary(
     categories,
     overallSummary,
@@ -592,6 +637,7 @@ if (mode === 'aggregate') {
   }
 } else {
   const summary = aggregateResults(resultFiles);
+  enrichFailedTestMessages(summary.allFailedTests, loadFailures(resultsDir));
   renderSingleJobSummary(summary);
 
   // Exit with non-zero if any tests failed

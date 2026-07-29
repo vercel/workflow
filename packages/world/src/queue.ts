@@ -1,13 +1,83 @@
 import { z } from 'zod/v4';
 
-export const QueuePrefix = z.union([
-  z.literal('__wkf_step_'),
-  z.literal('__wkf_workflow_'),
-]);
+export type QueueKind = 'workflow';
+
+/**
+ * Pattern matching valid queue prefixes:
+ * - `__wkf_workflow_` (default, no namespace)
+ * - `__{namespace}_wkf_workflow_` (namespaced)
+ *
+ * Namespace must be lowercase alphanumeric starting with a letter.
+ */
+export const QueuePrefix = z
+  .string()
+  .regex(
+    /^__(?:[a-z][a-z0-9]*_)?wkf_workflow_$/,
+    'Must match __wkf_workflow_ or __{namespace}_wkf_workflow_'
+  );
 export type QueuePrefix = z.infer<typeof QueuePrefix>;
 
-export const ValidQueueName = z.templateLiteral([QueuePrefix, z.string()]);
+export const ValidQueueName = z
+  .string()
+  .regex(
+    /^__(?:[a-z][a-z0-9]*_)?wkf_workflow_.+$/,
+    'Must be a valid queue name with a recognized prefix'
+  );
 export type ValidQueueName = z.infer<typeof ValidQueueName>;
+
+const QueueNamespace = z
+  .string()
+  .regex(
+    /^[a-z][a-z0-9]*$/,
+    'Must be lowercase alphanumeric, starting with a letter'
+  );
+
+/**
+ * Resolves the active queue namespace from an explicit argument or the
+ * `WORKFLOW_QUEUE_NAMESPACE` env var.
+ */
+export function resolveQueueNamespace(namespace?: string): string | undefined {
+  return namespace ?? process.env.WORKFLOW_QUEUE_NAMESPACE ?? undefined;
+}
+
+/**
+ * Builds the workflow queue topic prefix for an optional namespace.
+ *
+ * The literal kind argument is retained so existing workflow-only callers keep
+ * their meaning after removal of the former `'step'` variant.
+ *
+ * - `getQueueTopicPrefix('workflow')` → `'__wkf_workflow_'`
+ * - `getQueueTopicPrefix('workflow', 'custom')` → `'__custom_wkf_workflow_'`
+ */
+export function getQueueTopicPrefix(
+  kind: QueueKind,
+  namespace?: string
+): QueuePrefix {
+  if (kind !== 'workflow') {
+    throw new Error(`Unsupported queue kind: ${kind}`);
+  }
+  if (namespace !== undefined) {
+    QueueNamespace.parse(namespace);
+    return `__${namespace}_wkf_workflow_` as QueuePrefix;
+  }
+  return '__wkf_workflow_' as QueuePrefix;
+}
+
+export function parseQueueName(name: ValidQueueName): {
+  prefix: QueuePrefix;
+  id: string;
+} {
+  const match = name.match(/^(__(?:[a-z][a-z0-9]*_)?wkf_workflow_)(.+)$/);
+
+  if (!match) {
+    throw new Error(`Invalid queue name: ${name}`);
+  }
+
+  return {
+    prefix: QueuePrefix.parse(match[1]),
+    id: match[2],
+  };
+}
 
 export const MessageId = z
   .string()
@@ -33,6 +103,14 @@ export const RunInputSchema = z.object({
   workflowName: z.string(),
   specVersion: z.number(),
   executionContext: z.record(z.string(), z.any()).optional(),
+  /** Initial plaintext run attributes, for resilient run creation. */
+  attributes: z.record(z.string(), z.string()).optional(),
+  /**
+   * Permits reserved `$`-prefixed keys in `attributes`, mirrored from the
+   * `start()` option so resilient run creation validates the same way as
+   * the original `run_created` attempt.
+   */
+  allowReservedAttributes: z.literal(true).optional(),
 });
 export type RunInput = z.infer<typeof RunInputSchema>;
 
@@ -89,32 +167,49 @@ export const WorkflowInvokePayloadSchema = z.object({
   hookInput: HookInputSchema.optional(),
 });
 
-export const StepInvokePayloadSchema = z.object({
-  workflowName: z.string(),
-  workflowRunId: z.string(),
-  workflowStartedAt: z.number(),
-  stepId: z.string(),
-  traceCarrier: TraceCarrierSchema.optional(),
-  requestedAt: z.coerce.date().optional(),
-});
-
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;
-export type StepInvokePayload = z.infer<typeof StepInvokePayloadSchema>;
 export type HealthCheckPayload = z.infer<typeof HealthCheckPayloadSchema>;
 
 /**
  * Health check payload - used to verify that the queue pipeline
- * can deliver messages to workflow/step endpoints.
+ * can deliver messages to the combined workflow endpoint.
  */
 export const HealthCheckPayloadSchema = z.object({
   __healthCheck: z.literal(true),
   correlationId: z.string(),
+  /**
+   * The run id the caller is about to create, when the probe is being used to
+   * prepare a cross-deployment `start()`.
+   *
+   * The responder runs inside the target deployment, so it can derive that
+   * run's public key locally from its own key material and return it in the
+   * probe response. That lets the caller seal the workflow arguments without
+   * a separate key lookup. Absent for probes issued for other reasons (CLI
+   * health command, dashboard), in which case no key is returned.
+   */
+  runId: z.string().optional(),
 });
 
+/**
+ * Health check MUST come first.
+ *
+ * Zod unions return the first matching member's output, and `z.object` strips
+ * keys the matching member doesn't declare. `HealthCheckPayloadSchema` carries
+ * an optional `runId`, so a probe payload also satisfies
+ * `WorkflowInvokePayloadSchema` (whose only required field is `runId`). With
+ * the invoke member first, parsing a runId-bearing probe silently dropped
+ * `__healthCheck` and `correlationId`, and the runtime — which dispatches on
+ * `__healthCheck` before falling through to the invoke schema — reinterpreted
+ * the probe as "replay this run". That made the queue handler POST
+ * `run_started` for a run that doesn't exist yet (404), fail, and retry
+ * forever, so the probe never answered and `start()` timed out.
+ *
+ * Ordering health check first is safe in the other direction: it requires
+ * `__healthCheck: true`, which an invoke payload never carries.
+ */
 export const QueuePayloadSchema = z.union([
-  WorkflowInvokePayloadSchema,
-  StepInvokePayloadSchema,
   HealthCheckPayloadSchema,
+  WorkflowInvokePayloadSchema,
 ]);
 export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
 
@@ -126,6 +221,18 @@ export interface QueueOptions {
   delaySeconds?: number;
   /** Spec version of the target run. Used to select the queue transport format. */
   specVersion?: number;
+  /**
+   * World-specific routing hint identifying the region the message should
+   * be sent to (e.g. a Vercel compute region code such as `'iad1'`).
+   *
+   * Worlds that don't have a regional dimension ignore this field. For
+   * `@workflow/world-vercel`, this overrides the region the underlying
+   * `@vercel/queue` client uses to route the message; when omitted, the
+   * region is resolved from the payload's tagged run ID, then from the
+   * `VERCEL_REGION` environment variable, and finally defaults to `'iad1'`
+   * (the pre-regional-routing behaviour).
+   */
+  region?: string;
 }
 
 export interface Queue {
@@ -146,6 +253,16 @@ export interface Queue {
 
   /**
    * Creates an HTTP queue handler for processing messages from a specific queue.
+   *
+   * `meta.messageId` SHOULD be stable across redeliveries of the same message
+   * (one ID per enqueued message, reused on every delivery attempt). The
+   * runtime's inline step ownership uses it as a liveness lease: the lazy
+   * `step_started` records the handling invocation's messageId, and only a
+   * delivery of that same message may re-execute the step before the
+   * ownership lease expires (crash recovery via queue redelivery). A World
+   * whose queue mints a fresh ID per delivery degrades gracefully — owner
+   * redeliveries fall back to the delayed-backstop path instead of executing
+   * immediately, adding recovery latency but never wedging or duplicating.
    */
   createQueueHandler(
     queueNamePrefix: QueuePrefix,

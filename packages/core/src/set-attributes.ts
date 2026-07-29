@@ -1,33 +1,30 @@
 import { FatalError } from '@workflow/errors';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { normalizeAttributeChanges } from './attribute-changes.js';
 import { getWorldLazy } from './runtime/get-world-lazy.js';
 import { contextStorage } from './step/context-storage.js';
-import type { ExperimentalSetAttributesOptions } from './workflow/set-attributes.js';
+import type { SetAttributesOptions } from './workflow/set-attributes.js';
 
-export type { ExperimentalSetAttributesOptions };
-
-const UNSUPPORTED_WORLD_WARNED = Symbol.for(
-  '@workflow/setAttributes//unsupportedWorldWarned'
-);
+export type { SetAttributesOptions };
 
 /**
- * Host-side implementation for `experimental_setAttributes`. Workflow
- * bodies resolve to `./workflow/set-attributes.ts` via the `workflow`
- * package-exports condition; step bodies resolve here and can perform
- * the world write directly because they already run in host context.
+ * Host-side implementation for `setAttributes`. Workflow bodies resolve
+ * to `./workflow/set-attributes.ts` via the `workflow` package-exports
+ * condition; step bodies resolve here and can perform the world write
+ * directly because they already run in host context.
  *
  * Plain application code still has no active workflow run, so it throws
  * a clear `FatalError`.
  */
-export async function experimental_setAttributes(
+export async function setAttributes(
   attrs: Record<string, string | undefined>,
-  options: ExperimentalSetAttributesOptions = {}
+  options: SetAttributesOptions = {}
 ): Promise<void> {
   const store = contextStorage.getStore();
   const runId = store?.workflowMetadata?.workflowRunId;
   if (!runId) {
     throw new FatalError(
-      "experimental_setAttributes() must be called from a 'use workflow' or 'use step' function. " +
+      "setAttributes() must be called from a 'use workflow' or 'use step' function. " +
         'Calling it from plain host code is not supported.'
     );
   }
@@ -35,26 +32,34 @@ export async function experimental_setAttributes(
   const changes = normalizeAttributeChanges(attrs, options);
   if (changes.length === 0) return;
 
-  const world = await getWorldLazy();
-  if (typeof world.runs.experimentalSetAttributes !== 'function') {
-    const g = globalThis as Record<symbol, unknown>;
-    if (!g[UNSUPPORTED_WORLD_WARNED]) {
-      g[UNSUPPORTED_WORLD_WARNED] = true;
-      const name =
-        'name' in world && typeof world.name === 'string' ? world.name : '';
-      const worldName = name ? ` (${name})` : '';
-      console.warn(
-        `[workflow] setAttributes: the current world implementation${worldName} does not implement experimentalSetAttributes; this call (and any subsequent setAttributes calls in this process) is a no-op. Attributes will become available once the world adapter adds support.`
-      );
+  // Turbo optimistic start runs the step body before the backgrounded
+  // `run_started` is durable. Order this `attr_set` after the run exists so it
+  // never reaches the World before the run does (which would be rejected as
+  // run-not-found). A no-op outside turbo (barrier undefined) and on the await
+  // path. The rejection is swallowed for ordering only: if `run_started` truly
+  // failed the run does not exist, so the create below surfaces the real error.
+  if (store.runReadyBarrier) {
+    try {
+      await store.runReadyBarrier;
+    } catch {
+      // intentional: ordering barrier only — see above.
     }
-    return;
   }
 
-  await world.runs.experimentalSetAttributes(
-    runId,
-    changes,
-    options.allowReservedAttributes === true
-      ? { allowReservedAttributes: true }
-      : {}
-  );
+  const world = await getWorldLazy();
+  await world.events.create(runId, {
+    eventType: 'attr_set',
+    specVersion: SPEC_VERSION_CURRENT,
+    eventData: {
+      changes,
+      writer: {
+        type: 'step',
+        stepId: store.stepMetadata.stepId,
+        attempt: store.stepMetadata.attempt,
+      },
+      ...(options.allowReservedAttributes === true
+        ? { allowReservedAttributes: true }
+        : {}),
+    },
+  });
 }

@@ -32,9 +32,35 @@ export const SerializationFormat = {
   DEVALUE_V1: 'devl' as FormatPrefix,
   /** Encrypted payload (inner payload has its own format prefix) */
   ENCRYPTED: 'encr' as FormatPrefix,
+  /**
+   * Sealed payload — asymmetrically encrypted to a run's X25519 public key
+   * (inner payload has its own format prefix).
+   *
+   * Used for *cross-run* writes (hook payloads, forwarded stream frames),
+   * where the writer holds only the recipient run's public key and therefore
+   * cannot decrypt. A run's own payloads continue to use {@link ENCRYPTED}.
+   * See `sealed-box.ts` for the construction.
+   */
+  SEALED: 'encp' as FormatPrefix,
+  /** Gzip-compressed payload (inner payload has its own format prefix) */
+  GZIP: 'gzip' as FormatPrefix,
+  /** Zstandard-compressed payload (inner payload has its own format prefix) */
+  ZSTD: 'zstd' as FormatPrefix,
 } as const;
 
 // ---- Serializable Types ----
+
+/**
+ * Wire-framing format identifier carried in the serialized
+ * `ReadableStream` ref's `framing` field.
+ *
+ * - absent / `'raw'`: chunks are written to the transport verbatim
+ *   (legacy format — no auto-reconnect support).
+ * - `'framed-v1'`: each chunk is wrapped in a 4-byte big-endian length
+ *   prefix, allowing the reader to identify chunk boundaries and
+ *   transparently reconnect on transient stream errors.
+ */
+export type ByteStreamFraming = 'raw' | 'framed-v1';
 
 /**
  * Types that need specialized handling when serialized/deserialized.
@@ -73,7 +99,21 @@ export interface SerializableSpecial {
   Map: [any, any][];
   RangeError: { message: string; stack?: string; cause?: unknown };
   ReadableStream:
-    | { name: string; type?: 'bytes'; startIndex?: number }
+    | {
+        name: string;
+        type?: 'bytes';
+        startIndex?: number;
+        /**
+         * Wire-framing format for byte streams. See {@link ByteStreamFraming}
+         * and `getByteFramingStream` / `getByteUnframingStream`.
+         *
+         * Only meaningful when `type === 'bytes'`. Absent on object streams
+         * (which always use length-prefixed devalue framing) and on legacy
+         * byte streams written by SDKs that predate framing support — those
+         * are interpreted as `'raw'` by the consumer.
+         */
+        framing?: ByteStreamFraming;
+      }
     | { bodyInit: any };
   ReferenceError: { message: string; stack?: string; cause?: unknown };
   RegExp: { source: string; flags: string };
@@ -175,6 +215,16 @@ export interface SerializableSpecial {
      * the parent's key without fetching the parent run first.
      */
     deploymentId?: string;
+    /**
+     * The owning run's X25519 public key (base64), when it has one.
+     *
+     * Lets the receiving run seal frames to the stream's owner with no
+     * lookup at all — neither a run fetch nor a key-API round trip. The
+     * owner derives this locally when it creates the stream, so including
+     * it here is free. Absent for runs created by older SDKs, in which
+     * case the receiver falls back to resolving the owner's symmetric key.
+     */
+    encryptionPublicKey?: string;
   };
   AbortController: {
     streamName: string;

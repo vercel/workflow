@@ -1,33 +1,33 @@
 // Framework-specific dev test configurations
 const DEV_TEST_CONFIGS = {
   'nextjs-turbopack': {
-    generatedStepPath:
+    generatedStepRegistrationPath:
       'app/.well-known/workflow/v1/flow/__step_registrations.js',
     generatedWorkflowPath: 'app/.well-known/workflow/v1/flow/route.js',
     apiFilePath: 'app/api/chat/route.ts',
     apiFileImportPath: '../../..',
   },
   'nextjs-webpack': {
-    generatedStepPath:
+    generatedStepRegistrationPath:
       'app/.well-known/workflow/v1/flow/__step_registrations.js',
     generatedWorkflowPath: 'app/.well-known/workflow/v1/flow/route.js',
     apiFilePath: 'app/api/chat/route.ts',
     apiFileImportPath: '../../..',
   },
   nitro: {
-    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedStepRegistrationPath: 'node_modules/.nitro/workflow/steps.mjs',
     generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
     apiFilePath: 'routes/api/chat.post.ts',
     apiFileImportPath: '../..',
   },
   nuxt: {
-    generatedStepPath: '.nuxt/workflow/steps.mjs',
+    generatedStepRegistrationPath: '.nuxt/workflow/steps.mjs',
     generatedWorkflowPath: '.nuxt/workflow/workflows.mjs',
     apiFilePath: 'server/api/chat.post.ts',
     apiFileImportPath: '../..',
   },
   sveltekit: {
-    generatedStepPath:
+    generatedStepRegistrationPath:
       'src/routes/.well-known/workflow/v1/flow/__step_registrations.js',
     generatedWorkflowPath: 'src/routes/.well-known/workflow/v1/flow/+server.js',
     apiFilePath: 'src/routes/api/chat/+server.ts',
@@ -35,38 +35,38 @@ const DEV_TEST_CONFIGS = {
     workflowsDir: 'src/workflows',
   },
   vite: {
-    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedStepRegistrationPath: 'node_modules/.nitro/workflow/steps.mjs',
     generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
     apiFilePath: 'routes/api/chat.post.ts',
     apiFileImportPath: '../..',
   },
   hono: {
-    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedStepRegistrationPath: 'node_modules/.nitro/workflow/steps.mjs',
     generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
     apiFilePath: './src/index.ts',
     apiFileImportPath: '..',
   },
   express: {
-    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedStepRegistrationPath: 'node_modules/.nitro/workflow/steps.mjs',
     generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
     apiFilePath: './src/index.ts',
     apiFileImportPath: '..',
   },
   fastify: {
-    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedStepRegistrationPath: 'node_modules/.nitro/workflow/steps.mjs',
     generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
     apiFilePath: './src/index.ts',
     apiFileImportPath: '..',
   },
   nest: {
-    generatedStepPath: '.nestjs/workflow/steps.mjs',
+    generatedStepRegistrationPath: '.nestjs/workflow/steps.mjs',
     generatedWorkflowPath: '.nestjs/workflow/workflows.mjs',
     apiFilePath: './src/app.controller.ts',
     apiFileImportPath: '..',
     workflowsDir: 'src/workflows',
   },
   astro: {
-    generatedStepPath:
+    generatedStepRegistrationPath:
       'src/pages/.well-known/workflow/v1/__step_registrations.js',
     generatedWorkflowPath: 'src/pages/.well-known/workflow/v1/flow.js',
     apiFilePath: 'src/pages/api/chat.ts',
@@ -74,7 +74,7 @@ const DEV_TEST_CONFIGS = {
     workflowsDir: 'src/workflows',
   },
   'tanstack-start': {
-    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedStepRegistrationPath: 'node_modules/.nitro/workflow/steps.mjs',
     generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
     apiFilePath: 'src/routes/api/chat.ts',
     apiFileImportPath: '../../..',
@@ -109,23 +109,11 @@ for (const app of [
   },
 ]) {
   matrix.app.push(
-    createMatrixEntry(app.name, app.project, DEV_TEST_CONFIGS[app.name], {
-      lazyDiscovery: true,
-      runLabel: 'stable lazyDiscovery enabled',
-      artifactSuffix: 'stable-lazy-discovery-enabled',
-    })
-  );
-  matrix.app.push(
-    createMatrixEntry(app.name, app.project, DEV_TEST_CONFIGS[app.name], {
-      lazyDiscovery: false,
-      runLabel: 'stable lazyDiscovery disabled',
-      artifactSuffix: 'stable-lazy-discovery-disabled',
-    })
+    createMatrixEntry(app.name, app.project, DEV_TEST_CONFIGS[app.name])
   );
   matrix.app.push(
     createMatrixEntry(app.name, app.project, DEV_TEST_CONFIGS[app.name], {
       canary: true,
-      lazyDiscovery: true,
     })
   );
 }

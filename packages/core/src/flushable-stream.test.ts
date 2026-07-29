@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   createFlushableState,
   flushablePipe,
@@ -6,6 +6,44 @@ import {
   pollReadableLock,
   pollWritableLock,
 } from './flushable-stream.js';
+import { STREAM_DRAIN_SYMBOL } from './symbols.js';
+
+const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * A group-commit-style mock sink: acks `write()` on buffer entry and exposes
+ * a durability barrier under `STREAM_DRAIN_SYMBOL`, mirroring
+ * `WorkflowServerWritableStream`'s early-ack contract.
+ */
+function makeDrainSink(drain: () => Promise<void>) {
+  const written: Uint8Array[] = [];
+  let closed = false;
+  const sink = new WritableStream<Uint8Array>({
+    write(chunk) {
+      written.push(chunk);
+      // ack on buffer entry — durability is the barrier's job
+    },
+    close() {
+      closed = true;
+    },
+  });
+  Object.defineProperty(sink, STREAM_DRAIN_SYMBOL, {
+    value: drain,
+    enumerable: false,
+    writable: false,
+  });
+  return { sink, written, isClosed: () => closed };
+}
+
+function makeControlledSource() {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const source = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+    },
+  });
+  return { source, controller: () => controller };
+}
 
 describe('flushable stream behavior', () => {
   it('does not emit an unhandled rejection before the runtime awaits a failed operation', async () => {
@@ -398,5 +436,145 @@ describe('flushable stream behavior', () => {
     expect(chunks).toContain('valid chunk');
     // Ensure the stream ended
     expect(state.streamEnded).toBe(true);
+  });
+});
+
+describe('flushablePipe drain barrier (group-commit sinks)', () => {
+  afterEach(() => {
+    delete process.env.WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS;
+    delete process.env.WORKFLOW_STREAM_MAX_CHUNKS_PER_BATCH;
+    delete process.env.WORKFLOW_STREAM_MAX_BYTES_PER_BATCH;
+  });
+
+  it('adopts the sink drain barrier onto the flushable state', async () => {
+    const { sink } = makeDrainSink(async () => {});
+    const { source, controller } = makeControlledSource();
+    const state = createFlushableState();
+
+    const pipe = flushablePipe(source, sink, state).catch(() => {});
+    expect(typeof state.drainBarrier).toBe('function');
+
+    controller().close();
+    await pipe;
+    await expect(state.promise).resolves.toBeUndefined();
+  });
+
+  it('lock-release completion waits for the drain barrier (early-ack durability)', async () => {
+    // In production the poll watches the USER-side writable (the serialize
+    // transform's writable) while the pipe drives the server sink. Model
+    // that: an unlocked user writable, pendingOps at 0 (the sink early-acks),
+    // and a drain barrier that is still pending — completion must wait.
+    let releaseDrain!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseDrain = r;
+    });
+    const state = createFlushableState();
+    state.drainBarrier = () => gate;
+    const userWritable = new WritableStream<Uint8Array>();
+
+    pollWritableLock(userWritable, state);
+    await tick(LOCK_POLL_INTERVAL_MS + 20);
+
+    // The poll claimed completion (stopped polling) but the promise must
+    // still be pending — data is client-buffered until the barrier resolves.
+    expect(state.doneResolved).toBe(true);
+    let settled = false;
+    void state.promise.then(() => {
+      settled = true;
+    });
+    await tick();
+    expect(settled).toBe(false);
+
+    releaseDrain();
+    await expect(state.promise).resolves.toBeUndefined();
+  });
+
+  it('rejects the completion when the drain barrier reports a failed flush', async () => {
+    const state = createFlushableState();
+    state.drainBarrier = async () => {
+      throw new Error('group flush failed');
+    };
+    const userWritable = new WritableStream<Uint8Array>();
+
+    pollWritableLock(userWritable, state);
+    await tick(LOCK_POLL_INTERVAL_MS + 20);
+
+    await expect(state.promise).rejects.toThrow('group flush failed');
+  });
+
+  it('drains the accepted prefix before settling a failed pipe', async () => {
+    // Source fails while accepted chunks are still behind the sink's
+    // barrier: the failure must not settle (letting the step persist it and
+    // the invocation finish) until the prefix is durable.
+    let releaseDrain!: () => void;
+    let drained = false;
+    const gate = new Promise<void>((r) => {
+      releaseDrain = () => {
+        drained = true;
+        r();
+      };
+    });
+    const { sink, written } = makeDrainSink(() => gate);
+    const { source, controller } = makeControlledSource();
+    const state = createFlushableState();
+
+    const pipe = flushablePipe(source, sink, state).catch(() => {});
+    controller().enqueue(new Uint8Array([1]));
+    await tick();
+    expect(written).toHaveLength(1); // acked into the sink
+
+    controller().error(new Error('producer failed'));
+    await tick();
+
+    // The failure is known but must not settle while the barrier is held.
+    let settled = false;
+    void state.promise.catch(() => {
+      settled = true;
+    });
+    await tick(5);
+    expect(settled).toBe(false);
+
+    releaseDrain();
+    await pipe;
+    expect(drained).toBe(true);
+    await expect(state.promise).rejects.toThrow('producer failed');
+  });
+
+  it('does not attach a barrier for plain sinks (per-write durability)', async () => {
+    const written: Uint8Array[] = [];
+    const sink = new WritableStream<Uint8Array>({
+      write(chunk) {
+        written.push(chunk);
+      },
+    });
+    const { source, controller } = makeControlledSource();
+    const state = createFlushableState();
+
+    const pipe = flushablePipe(source, sink, state).catch(() => {});
+    expect(state.drainBarrier).toBeUndefined();
+
+    controller().enqueue(new Uint8Array([1]));
+    controller().close();
+    await pipe;
+    expect(written).toHaveLength(1);
+    await expect(state.promise).resolves.toBeUndefined();
+  });
+
+  it('delivers every chunk in order and closes the sink on completion', async () => {
+    const { sink, written, isClosed } = makeDrainSink(async () => {});
+    const { source, controller } = makeControlledSource();
+    const state = createFlushableState();
+
+    const pipe = flushablePipe(source, sink, state).catch(() => {});
+    for (let i = 0; i < 25; i++) controller().enqueue(new Uint8Array([i]));
+    controller().close();
+    await pipe;
+
+    expect(written.map((c) => c[0])).toEqual(
+      Array.from({ length: 25 }, (_, i) => i)
+    );
+    expect(isClosed()).toBe(true);
+    await expect(state.promise).resolves.toBeUndefined();
+    expect(state.pendingOps).toBe(0);
   });
 });

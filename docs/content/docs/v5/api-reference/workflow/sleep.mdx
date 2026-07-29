@@ -14,7 +14,7 @@ Suspends a workflow for a specified duration or until an end date without consum
 This is useful when you want to resume a workflow after some duration or date.
 
 <Callout>
-`sleep` is a *special* type of step function and should be called directly inside workflow functions.
+`sleep` is a built-in workflow runtime function (backed by a timer event in the event log, not a step) and should be called directly inside workflow functions.
 </Callout>
 
 ```typescript lineNumbers

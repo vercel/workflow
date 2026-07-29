@@ -4,7 +4,6 @@ import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
   createWebhook,
-  experimental_setAttributes,
   FatalError,
   fetch,
   getStepMetadata,
@@ -12,6 +11,7 @@ import {
   getWritable,
   type RequestWithResponse,
   RetryableError,
+  setAttributes,
   sleep,
 } from 'workflow';
 import { getHookByToken, getRun, Run, resumeHook, start } from 'workflow/api';
@@ -607,6 +607,267 @@ export async function hookCleanupTestWorkflow(
 
 //////////////////////////////////////////////////////////
 
+export async function hookGetConflictWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  // Awaiting `getConflict()` suspends the workflow to commit the hook
+  // registration without waiting for payload data. It resolves with the
+  // conflicting `Run` when another active hook owns the token, or `null`
+  // once this hook is registered.
+  const conflict = await hook.getConflict();
+
+  if (conflict) {
+    // The conflicting Run's methods are durable step proxies, so the
+    // duplicate run can inspect the active owner before deciding.
+    const conflictStatus = await conflict.status;
+    return {
+      token,
+      customData,
+      conflictRunId: conflict.runId,
+      conflictStatus,
+      hookGetConflictTestData: 'hook_token_conflict_detected',
+    };
+  }
+
+  return {
+    token,
+    customData,
+    conflictRunId: null,
+    hookGetConflictTestData: 'hook_registered_without_payload',
+  };
+}
+
+async function hookGetConflictStep(customData: string) {
+  'use step';
+  return {
+    customData,
+    hookGetConflictStepData: 'step_completed',
+  };
+}
+
+async function hookGetConflictTimedStep(label: 'A' | 'B', delayMs: number) {
+  'use step';
+  const { stepStartedAt } = getStepMetadata();
+  const startedAt = stepStartedAt.getTime();
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+  return {
+    label,
+    startedAt,
+    endedAt: Date.now(),
+  };
+}
+
+export async function hookGetConflictWithPriorStepWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  const stepPromise = hookGetConflictStep(customData);
+
+  const conflict = await hook.getConflict();
+
+  return {
+    token,
+    customData,
+    conflictRunId: conflict ? conflict.runId : null,
+    stepResult: await stepPromise,
+    hookGetConflictTestData: 'prior_step_completed_after_registration',
+  };
+}
+
+export async function hookGetConflictWithParallelStepWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  const [stepResult, conflict] = await Promise.all([
+    hookGetConflictStep(customData),
+    hook.getConflict(),
+  ]);
+
+  return {
+    token,
+    customData,
+    conflictRunId: conflict ? conflict.runId : null,
+    stepResult,
+    hookGetConflictTestData: 'parallel_step_completed_with_registration',
+  };
+}
+
+export async function hookGetConflictThenStepParallelWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  using hook = createHook({
+    token,
+    metadata: { customData },
+  });
+
+  const stepBPromise = hook
+    .getConflict()
+    .then(async () => await hookGetConflictTimedStep('B', 100));
+  const stepAResult = await hookGetConflictTimedStep('A', 10_000);
+  const stepBResult = await stepBPromise;
+
+  return {
+    token,
+    customData,
+    stepAResult,
+    stepBResult,
+    hookGetConflictTestData: 'registration_then_step_runs_in_parallel',
+  };
+}
+
+//////////////////////////////////////////////////////////
+// Run idempotency / conflict-handling strategy workflows.
+// These mirror the patterns documented in
+// docs/content/docs/*/foundations/idempotency.mdx.
+//////////////////////////////////////////////////////////
+
+/**
+ * Claim-only run mutex: the hook is used purely for run idempotency —
+ * the workflow claims the token, holds it while doing unrelated work,
+ * and never awaits hook payload data. Duplicates started while the
+ * owner holds the token observe the conflict and return early.
+ */
+export async function hookClaimOnlyMutexWorkflow(
+  token: string,
+  holdMs: number
+) {
+  'use workflow';
+
+  using hook = createHook({ token });
+
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    return {
+      role: 'duplicate' as const,
+      conflictRunId: conflict.runId,
+    };
+  }
+
+  // Hold the token for the duration of the work without ever awaiting
+  // hook payload data.
+  const work = await hookGetConflictTimedStep('A', holdMs);
+
+  return {
+    role: 'owner' as const,
+    workEndedAt: work.endedAt,
+  };
+}
+
+/**
+ * "Adopt the owner's result" strategy: the duplicate run waits for the
+ * active owner to finish and returns the owner's result, so callers
+ * cannot tell which run did the work.
+ */
+export async function hookAdoptOwnerResultWorkflow(
+  token: string,
+  marker: string
+) {
+  'use workflow';
+
+  using hook = createHook<{ value: string }>({ token });
+
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    const adopted = await conflict.returnValue;
+    return {
+      role: 'duplicate' as const,
+      conflictRunId: conflict.runId,
+      adopted,
+    };
+  }
+
+  const payload = await hook;
+  return {
+    role: 'owner' as const,
+    marker,
+    value: payload.value,
+  };
+}
+
+async function forwardPayloadToOwner(token: string, message: string) {
+  'use step';
+  await resumeHook(token, { message });
+}
+
+/**
+ * "Signal the owner" strategy: the duplicate run forwards its input to
+ * the active owner's hook from a step instead of doing the work itself.
+ */
+export async function hookSignalOwnerWorkflow(token: string, message: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({ token });
+
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    await forwardPayloadToOwner(token, message);
+    return {
+      role: 'duplicate' as const,
+      forwardedTo: conflict.runId,
+    };
+  }
+
+  const payload = await hook;
+  return {
+    role: 'owner' as const,
+    received: payload.message,
+  };
+}
+
+/**
+ * "Supersede the owner" strategy (newest-wins): cancel the active owner
+ * and claim the released token. Cancellation disposes the owner's hooks;
+ * the retry loop covers the window where disposal has not propagated.
+ */
+export async function hookSupersedeOwnerWorkflow(token: string) {
+  'use workflow';
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    using hook = createHook<{ message: string }>({ token });
+
+    const conflict = await hook.getConflict();
+    if (!conflict) {
+      const payload = await hook;
+      return {
+        role: 'owner' as const,
+        attempt,
+        received: payload.message,
+      };
+    }
+
+    await conflict.cancel();
+  }
+
+  throw new Error(`Could not claim ${token} after cancelling the owner`);
+}
+
+//////////////////////////////////////////////////////////
+
 /**
  * Workflow for testing early hook disposal - allows another workflow to reuse
  * the token while this workflow is still running.
@@ -646,6 +907,39 @@ export async function hookDisposeTestWorkflow(
     disposed: true,
     hookDisposeTestData: 'workflow_completed',
   };
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * Workflow for testing same-run hook token recreation: each iteration
+ * recreates a hook with the same token after disposing the previous one.
+ *
+ * Regression workflow for issue #2777 — the disposal must be flushed
+ * before the next hook's creation is validated, otherwise the second
+ * round records a spurious conflict against the run's own disposed hook.
+ */
+export async function hookTokenReuseLoopWorkflow(
+  token: string,
+  rounds: number
+) {
+  'use workflow';
+
+  const received: string[] = [];
+  for (let round = 0; round < rounds; round++) {
+    const hook = createHook<{ message: string }>({ token });
+
+    const conflict = await hook.getConflict();
+    if (conflict) {
+      return { received, conflictRound: round };
+    }
+
+    const payload = await hook;
+    received.push(payload.message);
+    hook.dispose();
+  }
+
+  return { received, conflictRound: null };
 }
 
 //////////////////////////////////////////////////////////
@@ -1088,7 +1382,7 @@ export async function errorStepThrowNonErrorValue() {
     await throwNonErrorFromStep();
     return { caught: false } as any;
   } catch (err: any) {
-    // After max retries the step handler wraps the underlying thrown value
+    // After max retries the step executor wraps the underlying thrown value
     // as `cause` on a FatalError. The wrapping FatalError is what reaches
     // the workflow's catch; the original non-Error object is on `err.cause`.
     return {
@@ -1254,7 +1548,7 @@ export class ChainableService {
     'use workflow';
     // When calling static methods via ClassName.method(), `this` inside the step
     // will be the class constructor (ChainableService). The class constructor
-    // is serialized with its classId and passed to the step handler.
+    // is serialized with its classId and passed to the step executor.
     //
     // NOTE: We use `ChainableService.method()` here instead of `this.method()` because
     // the `this` argument is not currently passed through when invoking a workflow via
@@ -1517,7 +1811,7 @@ export class Counter {
   /**
    * Instance method step: returns the sum of the counter's value and the given amount.
    * The `this` context (the Counter instance) is serialized and passed
-   * to the step handler, then deserialized before the method is called.
+   * to the step executor, then deserialized before the method is called.
    */
   async add(amount: number): Promise<number> {
     'use step';
@@ -1829,19 +2123,24 @@ export async function abortParallelWorkflow() {
   'use workflow';
 
   const controller = new AbortController();
+  const parallelSteps = Promise.all([
+    longStep(controller.signal),
+    longStep(controller.signal),
+    longStep(controller.signal),
+  ]);
 
   const result = await Promise.race([
-    Promise.all([
-      longStep(controller.signal),
-      longStep(controller.signal),
-      longStep(controller.signal),
-    ]),
+    parallelSteps,
     sleep('3s').then(() => 'timeout' as const),
   ]);
 
   if (result === 'timeout') {
     controller.abort();
-    return { status: 'timed out' };
+    // Wait for the in-flight steps to observe the abort before completing the
+    // workflow. Returning immediately leaves the parallel branch dangling and
+    // can keep the run open until the steps hit their natural 30s completion.
+    const results = await parallelSteps;
+    return { status: 'timed out', results };
   }
 
   return { status: 'completed', results: result };
@@ -2337,7 +2636,7 @@ async function stepThatFetchesWithSignal(signal: AbortSignal) {
   'use step';
   // This will throw AbortError because the signal is already aborted.
   // The error should NOT be caught here — it propagates to the workflow
-  // as a FatalError (wrapped by the step handler).
+  // as a FatalError (wrapped by the step executor).
   const response = await globalThis.fetch('https://example.com', { signal });
   return response.status;
 }
@@ -3177,96 +3476,261 @@ export async function writableForwardedFromStepWorkflow(payload: string) {
 }
 
 //////////////////////////////////////////////////////////
-// Workflow Attributes MVP — workflow and step API.
+// Workflow Attributes - native workflow and step events.
 
 /**
- * Calls `experimental_setAttributes` directly from the workflow body.
- * The call is dispatched through the `__builtin_set_attributes` step
- * bridge, so the mutation gets a `step_created`/`step_completed` event
- * pair. The third call sets a key to `undefined` and the test verifies
+ * Calls `setAttributes` directly from the workflow body.
+ * Each call appends a native `attr_set` event. The third call sets a key
+ * to `undefined` and the test verifies
  * the key is absent from the final attribute map.
  */
-export async function experimentalSetAttributesWorkflow(input: number) {
+export async function setAttributesWorkflow(input: number) {
   'use workflow';
-  await experimental_setAttributes({ phase: 'init', source: 'workflow-body' });
+  await setAttributes({ phase: 'init', source: 'workflow-body' });
   const tripled = input * 3;
-  await experimental_setAttributes({ phase: 'done' });
-  await experimental_setAttributes({ source: undefined });
+  await setAttributes({ phase: 'done' });
+  await setAttributes({ source: undefined });
   return tripled;
 }
 
 async function setAttributesFromStep(input: number) {
   'use step';
-  await experimental_setAttributes({
+  await setAttributes({
     phase: 'step-started',
     source: 'step-body',
     input: String(input),
   });
-  await experimental_setAttributes({ phase: 'step-done' });
+  await setAttributes({ phase: 'step-done' });
   return input * 4;
 }
 
 /**
- * Calls `experimental_setAttributes` from inside a normal user step. Step
- * bodies already run in host context, so the helper posts directly to the
- * world instead of creating a nested `__builtin_set_attributes` step.
+ * Calls `setAttributes` from inside a normal user step. Step
+ * bodies already run in host context, so the helper appends an attributed
+ * `attr_set` event without creating a nested internal step.
  */
-export async function experimentalSetAttributesInsideStepWorkflow(
-  input: number
-) {
+export async function setAttributesInsideStepWorkflow(input: number) {
   'use workflow';
   return setAttributesFromStep(input);
 }
 
 /**
- * Fire-and-forget pattern: `void experimental_setAttributes(...)` lets
+ * Fire-and-forget pattern: `void setAttributes(...)` lets
  * the workflow body proceed without blocking on the attribute write.
- * Each `void` call queues a step on the workflow's next suspension —
- * any later `await` on a runtime primitive (a step, a sleep, a hook).
- * This is the canonical pattern for observability / tracking metadata
- * where the workflow doesn't depend on the write.
- *
- * Note: a `void` call placed *immediately before* `return` (with no
- * later `await`) is currently unreliable — the step is committed but
- * the queue worker skips it once `run_completed` lands. See the
- * `test.todo(...)` for `fire-and-forget` in `packages/core/e2e/e2e.test.ts`.
+ * Each `void` call commits a native event on suspension or final drain,
+ * including the final write immediately before return.
  */
-export async function experimentalSetAttributesFireAndForgetWorkflow() {
+export async function setAttributesFireAndForgetWorkflow() {
   'use workflow';
-  void experimental_setAttributes({ phase: 'init', mode: 'fire-and-forget' });
+  void setAttributes({ phase: 'init', mode: 'fire-and-forget' });
   await sleep('100ms');
-  void experimental_setAttributes({ phase: 'mid' });
+  void setAttributes({ phase: 'mid' });
   await sleep('100ms');
-  void experimental_setAttributes({ phase: 'done' });
+  void setAttributes({ phase: 'done' });
   return 'completed';
 }
 
 /**
- * `Promise.all` of multiple `experimental_setAttributes` calls writing
+ * `Promise.all` of multiple `setAttributes` calls writing
  * disjoint keys: every key must land. The world-side per-run mutex (or
  * per-row atomic SQL update) serializes the writes; LWW-by-arrival only
  * matters when two calls touch the same key.
  */
-export async function experimentalSetAttributesParallelWorkflow() {
+export async function setAttributesParallelWorkflow() {
   'use workflow';
   await Promise.all([
-    experimental_setAttributes({ a: '1' }),
-    experimental_setAttributes({ b: '2' }),
-    experimental_setAttributes({ c: '3' }),
+    setAttributes({ a: '1' }),
+    setAttributes({ b: '2' }),
+    setAttributes({ c: '3' }),
   ]);
   return 'done';
 }
 
 /**
- * Workflow throws after awaiting `experimental_setAttributes`. The
+ * Workflow throws after awaiting `setAttributes`. The
  * attribute write completes before the throw, so the persisted run row
  * should carry the attribute even though the run ends up `failed`.
  */
-export async function experimentalSetAttributesThrowsAfterWorkflow() {
+export async function setAttributesThrowsAfterWorkflow() {
   'use workflow';
-  await experimental_setAttributes({
+  await setAttributes({
     phase: 'about-to-fail',
     reason: 'intentional',
   });
   throw new FatalError('intentional failure to test attribute persistence');
+}
+
+/**
+ * Validation DX: every invalid `setAttributes` call must
+ * throw a catchable `FatalError` in the workflow body — before any event
+ * is written — with a message that names the violated rule and the limit.
+ * The workflow records each error's name and message, then writes one
+ * valid attribute and completes, so the e2e test can assert on error
+ * quality without wedging the run.
+ */
+export async function setAttributesValidationWorkflow() {
+  'use workflow';
+  const outcomes: Record<string, string> = {};
+
+  const attempt = async (
+    label: string,
+    attrs: Record<string, string | undefined>
+  ) => {
+    try {
+      await setAttributes(attrs);
+      outcomes[label] = 'no-error';
+    } catch (err) {
+      const e = err as Error;
+      outcomes[label] = `${e.name}: ${e.message}`;
+    }
+  };
+
+  await attempt('reserved', { $system: 'nope' });
+  await attempt('emptyKey', { '': 'v' });
+  await attempt('keyTooLong', { ['k'.repeat(257)]: 'v' });
+  await attempt('valueTooLong', { note: 'v'.repeat(257) });
+  // Multibyte values: the cap is bytes, not characters.
+  await attempt('valueTooManyBytes', { note: 'é'.repeat(200) });
+  const overCap: Record<string, string> = {};
+  for (let i = 0; i <= 64; i++) overCap[`k${i}`] = 'v';
+  await attempt('overCap', overCap);
+  await attempt('nonObject', 'phase=init' as any);
+
+  // The run must remain healthy after every rejected call.
+  await setAttributes({ phase: 'validated' });
+  return outcomes;
+}
+
+//////////////////////////////////////////////////////////
+
+async function parallelHookRaceStep(label: string) {
+  'use step';
+  // A small matching delay makes both step_completed events more likely
+  // to land within the same suspension-flush tick, which is what
+  // triggers the same-body re-walk race.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  return label;
+}
+
+/**
+ * Regression test for https://github.com/vercel/workflow/issues/1665
+ * and https://github.com/vercel/workflow/issues/2283. This matches
+ * Paolo's exact minimal repro on #1665:
+ *
+ * ```ts
+ * await Promise.all([get_data(), get_settings()]);
+ * using webhook = createWebhook();
+ * await webhook;
+ * ```
+ *
+ * Two parallel steps complete close enough in time that both
+ * `step_completed` events trigger replay-and-suspend before either
+ * pass's `hook_created` has been observed by the events consumer
+ * (`hasCreatedEvent: false`). Both passes then call
+ * `world.events.create(runId, hook_created)` with the same
+ * deterministic `(correlationId, token)`.
+ *
+ * Before the world-side idempotency fix, the world accepted the first
+ * `hook_created` and wrote a `hook_conflict` event for the second —
+ * even though both events carried the same `(runId, hookId, token)`.
+ * On replay, the hook's awaitable saw the `hook_conflict` and
+ * rejected with `HookConflictError`, even though no other run
+ * actually owned the token.
+ *
+ * With the fix, the world rejects the duplicate with
+ * `EntityConflictError` (which the suspension handler already
+ * swallows at `suspension-handler.ts:142`), no `hook_conflict` event
+ * is written, and the webhook resolves normally.
+ *
+ * The race is timing-sensitive — a single
+ * "parallel-steps-then-webhook" sequence may not always reproduce it
+ * on faster runtimes. The workflow runs the sequence in a loop
+ * (`iterations` independent attempts in series, each with its own
+ * webhook). On the pre-fix code any single iteration that hits the
+ * race surfaces a `hook_conflict` event in the log (and on subsequent
+ * replay throws `HookConflictError`), so a large enough iteration
+ * count gives the race many independent opportunities to fire.
+ */
+export async function parallelStepsThenWebhookWorkflow(iterations: number) {
+  'use workflow';
+
+  const tokens: string[] = [];
+  for (let i = 0; i < iterations; i++) {
+    await Promise.all([
+      parallelHookRaceStep(`${i}-a`),
+      parallelHookRaceStep(`${i}-b`),
+    ]);
+
+    using webhook = createWebhook();
+    const token = webhook.token;
+    tokens.push(token);
+
+    const req = await webhook;
+    const body = await req.text();
+    if (body !== `body-${token}`) {
+      throw new FatalError(
+        `iteration ${i}: expected body-${token}, got ${body}`
+      );
+    }
+  }
+  return tokens;
+}
+
+/**
+ * Multi-region e2e probe (see packages/core/e2e/e2e-region.test.ts).
+ *
+ * Returns the `VERCEL_REGION` observed by both the workflow (flow route)
+ * and a step invocation, so the suite can assert that a run started with
+ * `start(..., { region })` was actually EXECUTED in the intended region —
+ * not just tagged with it. Regional execution requires the workbench app
+ * to be deployed to the target regions (workbench/nextjs-turbopack
+ * vercel.json pins iad1+sfo1+fra1) and the world's queue to route the
+ * flow message by the run ID's region tag (@workflow/world-vercel).
+ */
+export async function regionProbeWorkflow(label: string) {
+  'use workflow';
+  const workflowRegion = process.env.VERCEL_REGION ?? null;
+  const stepRegion = await regionProbeStep();
+  return { label, workflowRegion, stepRegion };
+}
+
+async function regionProbeStep(): Promise<string | null> {
+  'use step';
+  return process.env.VERCEL_REGION ?? null;
+}
+
+async function writeCrossRegionStreamChunks(
+  writable: WritableStream,
+  chunkCount: number
+) {
+  'use step';
+  const writer = writable.getWriter();
+  for (let i = 0; i < chunkCount; i++) {
+    await writer.write(new TextEncoder().encode(`chunk-${i}`));
+  }
+  writer.releaseLock();
+}
+
+async function closeCrossRegionStream(writable: WritableStream) {
+  'use step';
+  await writable.close();
+}
+
+/**
+ * Cross-region stream visibility probe (see
+ * packages/core/e2e/e2e-region.test.ts).
+ *
+ * Writes `chunkCount` chunks to the default output stream, then holds the
+ * stream OPEN for 45 seconds before closing. The hold-open window is the
+ * point: completed streams are the easy case, so a cross-region reader
+ * must observe the chunks while the stream is still IN PROGRESS to
+ * actually exercise cross-region visibility.
+ */
+export async function crossRegionStreamWorkflow(chunkCount: number) {
+  'use workflow';
+  const writable = getWritable();
+  await writeCrossRegionStreamChunks(writable, chunkCount);
+  await sleep('45s');
+  await closeCrossRegionStream(writable);
+  return 'done';
 }

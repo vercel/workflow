@@ -12,9 +12,21 @@ HTTP requests (including the queue) default to a shared undici `RetryAgent` that
 
 ```ts
 import { Agent } from 'undici';
-import { createVercelWorld } from '@workflow/world-vercel';
+import { createWorld } from '@workflow/world-vercel';
 import { setWorld } from '@workflow/core/runtime';
 
-setWorld(createVercelWorld({ dispatcher: new Agent({ connections: 16 }) }));
+setWorld(createWorld({ dispatcher: new Agent({ connections: 16 }) }));
 ```
 
+## Caller user agent
+
+Pass a `User-Agent` header to append a caller-specific product token while
+preserving the world-vercel token:
+
+```ts
+import { createWorld } from '@workflow/world-vercel';
+
+const world = createWorld({
+  headers: { 'User-Agent': 'my-framework/1.2.3' },
+});
+```

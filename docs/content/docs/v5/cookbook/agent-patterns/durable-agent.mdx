@@ -5,14 +5,18 @@ type: guide
 summary: Build durable, resumable AI agents with AI SDK v7's WorkflowAgent.
 ---
 
+<CopyPrompt
+  text="Convert this stateless AI SDK agent to a durable agent with AI SDK v7's `WorkflowAgent`. Install/use `@ai-sdk/workflow` and `workflow`. Replace the manual `streamText` loop with `new WorkflowAgent(...)` from `@ai-sdk/workflow`, run inside an exported function with `&quot;use workflow&quot;`. Mark side-effectful tool `execute` functions with `&quot;use step&quot;` so they run as durable workflow steps with retries and observability. Stream `ModelCallStreamPart` chunks with `getWritable()` from `workflow`, convert the run stream to UI message chunks with `createModelCallToUIChunkTransform()` in the API route, and expose a route that starts or reconnects to the run. If migrating from the deprecated `DurableAgent`, follow the migration guide at https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent. Verify tool retries, stream output, and resume/reconnect behavior."
+/>
+
 ## WorkflowAgent from AI SDK v7
 
-Use AI SDK v7's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) for new durable agent work. It replaces `DurableAgent` in v5 and keeps the current agent pattern in the AI SDK package.
+Use AI SDK v7's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) for new durable agent work. It replaces `DurableAgent` and keeps the current agent pattern in the AI SDK package.
 
 - Import `WorkflowAgent` from `@ai-sdk/workflow` and run it inside a `"use workflow"` function.
 - Stream `ModelCallStreamPart` chunks with `getWritable()`, then convert the run stream to UI message chunks with `createModelCallToUIChunkTransform()` in your route.
 - Mark tool `execute` functions with `"use step"` when they should run as durable workflow steps with retry and observability behavior.
 
 <Callout type="warn">
-`DurableAgent` is deprecated in v5 and remains documented for existing code only. Existing `DurableAgent` users can refer to the [`DurableAgent` API reference](/docs/api-reference/workflow-ai/durable-agent) while migrating.
+`DurableAgent` is deprecated and remains documented for existing code only. See the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent), or the [`DurableAgent` API reference](/docs/api-reference/workflow-ai/durable-agent) while migrating.
 </Callout>

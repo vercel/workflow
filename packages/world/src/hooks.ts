@@ -1,7 +1,35 @@
 import { z } from 'zod';
+import { TraceCarrierSchema } from './queue.js';
 import type { SerializedData } from './serialization.js';
 import { SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
+
+/**
+ * Minimal, immutable slice of a hook's owning run needed to resume it —
+ * enough for encryption-key resolution, serialization/compression capability
+ * selection, queue routing, and trace linking, without fetching the full run.
+ *
+ * Persisted on new hook records (workflow-server) and also returned inline by
+ * `getByToken`, so a resume can skip the separate `runs.get`. Deliberately
+ * excludes the run's mutable state (e.g. status), inputs/outputs, attributes,
+ * and any secret — only fields that are fixed at hook-creation time.
+ */
+export const HookResumeContextSchema = z.object({
+  deploymentId: z.string(),
+  workflowName: z.string(),
+  // Named `runSpecVersion` to distinguish it from the hook's own `specVersion`.
+  runSpecVersion: z.number().optional(),
+  workflowCoreVersion: z.string().optional(),
+  traceCarrier: TraceCarrierSchema.optional(),
+  // The run's published X25519 public key (base64), mirrored from the run
+  // entity. Lets a resume seal (`encp`) its payload to the run without reading
+  // the run or fetching its symmetric key. Absent on runs created before
+  // sealed envelopes and on projects with encryption disabled, where the
+  // resume falls back to the symmetric per-run key.
+  encryptionPublicKey: z.string().optional(),
+});
+
+export type HookResumeContext = z.infer<typeof HookResumeContextSchema>;
 
 /**
  * Schema for workflow hooks.
@@ -24,39 +52,21 @@ export const HookSchema = z.object({
   specVersion: z.number().optional(),
   isWebhook: z.boolean().optional(),
   isSystem: z.boolean().optional(),
+  // Present when the server stored it (new hooks) or synthesized it from the
+  // run (old hooks). Absent only against an old server, where the resume path
+  // falls back to `runs.get`.
+  resumeContext: HookResumeContextSchema.optional(),
 });
 
 /**
- * Represents a hook that can be used to resume a paused workflow run.
+ * Represents a Hook. Hooks kept by minimum retention remain readable after
+ * their workflow runs end, but cannot be resumed.
  *
  * Note: metadata type is SerializedData to support both:
  * - specVersion >= 2: Uint8Array (binary devalue format)
  * - specVersion 1: unknown (legacy JSON format)
  */
-export type Hook = z.infer<typeof HookSchema> & {
-  /** The unique identifier of the workflow run this hook belongs to. */
-  runId: string;
-  /** The unique identifier of this hook within the workflow run. */
-  hookId: string;
-  /** The secret token used to reference this hook. */
-  token: string;
-  /** The owner ID (team or user) that owns this hook. */
-  ownerId: string;
-  /** The project ID this hook belongs to. */
-  projectId: string;
-  /** The environment (e.g., "production", "preview", "development") where this hook was created. */
-  environment: string;
-  /** Optional metadata associated with the hook, set when the hook was created. */
-  metadata?: SerializedData;
-  /** The timestamp when this hook was created. */
-  createdAt: Date;
-  /** The spec version when this hook was created. */
-  specVersion?: number;
-  /** Whether this hook is resumable via the public webhook endpoint. undefined = legacy (treated as true for backwards compat). */
-  isWebhook?: boolean;
-  /** Whether this hook is a system-managed hook (e.g., for abort signals). */
-  isSystem?: boolean;
-};
+export type Hook = z.infer<typeof HookSchema>;
 
 // Request types
 export interface CreateHookRequest {

@@ -281,7 +281,30 @@ describe('getImportPath', () => {
     });
   });
 
-  it('uses the consuming app root to resolve workspace package workflow ids', () => {
+  it('uses package specifiers for workspace package root entrypoint ids', () => {
+    const projectRoot = join(testRoot, 'apps/chat');
+    const packageDir = join(testRoot, 'packages/vade');
+    const filePath = join(packageDir, 'src/index.ts');
+
+    writeJson(join(projectRoot, 'package.json'), {
+      name: 'chat',
+      dependencies: { vade: 'workspace:*' },
+    });
+
+    writeJson(join(packageDir, 'package.json'), {
+      name: 'vade',
+      version: '0.0.0',
+      main: './src/index.ts',
+    });
+
+    writeFile(filePath, `'use workflow';\n`);
+
+    expect(resolveModuleSpecifier(filePath, projectRoot)).toEqual({
+      moduleSpecifier: 'vade@0.0.0',
+    });
+  });
+
+  it('returns undefined for non-exported workspace package files', () => {
     const projectRoot = join(testRoot, 'apps/chat');
     const packageDir = join(testRoot, 'packages/vade');
     const filePath = join(
@@ -301,8 +324,12 @@ describe('getImportPath', () => {
 
     writeFile(filePath, `'use workflow';\n`);
 
+    // Non-exported package files fall back to the relative-file-path ID
+    // (the SWC plugin uses "./{file}" when moduleSpecifier is undefined).
+    // This keeps IDs unique per file across the build instead of collapsing
+    // every non-exported file in `vade` to the same "vade@0.0.0" specifier.
     expect(resolveModuleSpecifier(filePath, projectRoot)).toEqual({
-      moduleSpecifier: 'vade@0.0.0',
+      moduleSpecifier: undefined,
     });
   });
 

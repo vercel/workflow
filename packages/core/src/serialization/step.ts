@@ -1,17 +1,18 @@
 /**
  * Step mode serialization.
  *
- * Used by the step handler for serializing step return values and
+ * Used by the step executor for serializing step return values and
  * deserializing step arguments. Supports encryption as a composable layer.
  */
 
 import { SerializationError } from '@workflow/errors';
 import type { CodecOptions } from './codec.js';
 import { devalueCodec } from './codec-devalue.js';
+import { compress, decompress } from './compression.js';
 import {
-  type CryptoKey,
   decrypt as decryptData,
   encrypt as encryptData,
+  type PayloadKey,
 } from './encryption.js';
 import { formatSerializationError, rethrowIfRuntimeError } from './errors.js';
 import { decodeFormatPrefix, encodeWithFormatPrefix } from './format.js';
@@ -22,7 +23,7 @@ import { SerializationFormat } from './types.js';
  */
 export async function serialize(
   value: unknown,
-  encryptionKey?: CryptoKey,
+  encryptionKey?: PayloadKey,
   options?: CodecOptions
 ): Promise<Uint8Array | unknown> {
   try {
@@ -31,7 +32,13 @@ export async function serialize(
       SerializationFormat.DEVALUE_V1,
       payload
     ) as Uint8Array;
-    return encryptData(prefixed, encryptionKey);
+    // Compress before encrypting — encrypted bytes don't compress.
+    const compressed = await compress(
+      prefixed,
+      options?.compression === true,
+      options?.compressionStats
+    );
+    return encryptData(compressed, encryptionKey);
   } catch (error) {
     rethrowIfRuntimeError(error);
     const { message, hint } = formatSerializationError('step value', error);
@@ -44,10 +51,13 @@ export async function serialize(
  */
 export async function deserialize(
   data: Uint8Array | unknown,
-  encryptionKey?: CryptoKey,
+  encryptionKey?: PayloadKey,
   options?: CodecOptions
 ): Promise<unknown> {
-  const decrypted = await decryptData(data, encryptionKey);
+  const decrypted = await decompress(
+    await decryptData(data, encryptionKey),
+    options?.compressionStats
+  );
 
   if (!(decrypted instanceof Uint8Array)) {
     if (devalueCodec.deserializeLegacy) {

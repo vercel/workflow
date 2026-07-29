@@ -2,8 +2,12 @@
 title: Publishing Libraries
 description: Structure and publish npm packages that export workflow functions for consumers to use with Workflow SDK.
 type: guide
-summary: Learn how to build, export, and test npm packages that ship workflow and step functions — including package.json exports, re-exporting for stable workflow IDs, keeping step I/O clean, and integration testing.
+summary: Learn how to build, export, and test npm packages that ship workflow and step functions — including package.json exports, re-exporting so the consumer's compiler discovers your workflows, keeping step I/O clean, and integration testing.
 ---
+
+<CopyPrompt
+  text="Package these workflow functions as a publishable npm library. Give the package a dedicated workflows entry point (for example `exports[&quot;./workflows&quot;]`) that ships the workflow and step source for the consumer's compiler to process. Keep every workflow and step input and output serializable, and read credentials from environment variables inside steps instead of accepting client instances. Document the consumer re-export requirement: consumers create a file in their `workflows/` directory containing `export * from &quot;<pkg>/workflows&quot;` so their build discovers and compiles the library's workflow and step files and replay can resolve them after cold starts. Add an integration test that runs a library workflow end to end from a consumer-style setup. Verify the build, that the library's workflows and steps show up as compiled entries, and replay safety."
+/>
 
 import { File, Folder, Files } from "fumadocs-ui/components/files";
 
@@ -110,31 +114,35 @@ export default defineConfig({
 });
 ```
 
-## Re-Exporting for Workflow ID Stability
+## Re-Exporting for Compiler Discovery
 
-Workflow SDK's compiler assigns each workflow function a stable ID based on its position in the source file that the build system processes. When a consumer imports a pre-built workflow from an npm package, the compiler never sees the original source — it only sees the compiled output. This means workflow IDs won't match between the library's development environment and the consumer's app.
+The workflow compiler only transforms files it discovers, and discovery starts from the consumer's `workflows/` directory and follows imports out from there. A library's workflow functions are not on that graph by default, so nothing compiles them and the runtime has no definition to run.
 
-The fix is a **re-export file**. The consumer creates a file in their `workflows/` directory that re-exports the library's workflows. The build system then processes this file and assigns stable IDs.
+The fix is a **re-export file**. The consumer creates a file in their `workflows/` directory that re-exports the library's workflows, which pulls the library's source onto the discovery graph and gives its entry point an address the runtime can resolve.
 
 ### Consumer Setup
 
 ```typescript lineNumbers
 // workflows/media.ts (in the consumer's project)
-// Re-export library workflows so the build system assigns stable IDs
+// Re-export library workflows so the compiler discovers and transforms them
 export * from "@acme/media/workflows"; // [!code highlight]
 ```
 
-This one-line file is all that's needed. The workflow compiler transforms this file, discovers the workflow and step functions from the library, and assigns IDs that are stable across deployments.
+This one-line file is all that's needed. The compiler follows the re-export into the package, transforms the workflow and step functions it finds, and registers them under IDs the runtime can resolve.
 
 ### Why This Is Necessary
 
-Without re-exporting, the workflow runtime cannot match a running workflow to its function definition. When a workflow run is replayed after a cold start, the runtime looks up functions by their compiler-assigned IDs. If the IDs don't exist (because the compiler never processed the library's source), replay fails.
+Without re-exporting, the workflow runtime cannot match a running workflow to its function definition. When a run is replayed after a cold start, the runtime looks up functions by their compiler-assigned IDs. If those functions were never compiled, the IDs don't exist and replay fails.
 
-The re-export pattern ensures:
+Point the re-export at the package's dedicated workflows entry point rather than a deep path into `dist/`. Files reachable through the package's `exports` map get an ID of the form `name/subpath@version`; a deep, non-exported file falls back to a path-based ID instead.
 
-1. **Stable IDs** — the compiler assigns IDs based on the consumer's source tree
-2. **Replay safety** — IDs persist across deployments and cold starts
-3. **Version upgrades** — re-exported IDs remain stable as long as the consumer's file doesn't change
+<Callout type="info">
+**IDs for code you ship embed your package version.** A step in `@acme/media` version `1.4.0` gets the ID `step//@acme/media/workflows@1.4.0//transcode`, so publishing `1.5.0` renames every workflow and step the package ships.
+
+That is safe on worlds with deployment pinning, such as Vercel, because runs are pinned to the deployment that started them. A run records its deployment ID and every resume targets that same deployment, so after a consumer upgrades, new runs execute the new version while runs already in flight keep replaying against the old one. Consumers do not need to drain anything before upgrading.
+
+The re-export file does not change any of this. An ID is derived from where the file lives, not from how it was imported, so a package file keeps its `name@version` ID whether or not a consumer re-exports it.
+</Callout>
 
 ## Keeping Step I/O Clean
 
@@ -248,7 +256,7 @@ Some libraries want to be useful to consumers who *aren't* using Workflow SDK at
 Two rules for isomorphic packages:
 
 1. **Any runtime reference to the `workflow` package must be loaded via dynamic `import("workflow")` inside a try/catch.** A static top-level import makes the module fail to load for consumers who haven't installed workflow.
-2. **The `"use workflow"` and `"use step"` directives are safe to keep in your library source.** When a consumer compiles your code with the Workflow SDK toolchain (via the [re-export pattern](#re-exporting-for-workflow-id-stability) above), the SWC plugin transforms them into durable-execution glue. When they're not compiled — plain Node, plain tests, a consumer without the runtime — they are just string expression statements and run as no-ops.
+2. **The `"use workflow"` and `"use step"` directives are safe to keep in your library source.** When a consumer compiles your code with the Workflow SDK toolchain (via the [re-export pattern](#re-exporting-for-compiler-discovery) above), the SWC plugin transforms them into durable-execution glue. When they're not compiled — plain Node, plain tests, a consumer without the runtime — they are just string expression statements and run as no-ops.
 </Callout>
 
 ### Optional peer dependency
@@ -270,14 +278,14 @@ Declare `workflow` as an **optional** peer so consumers without the runtime aren
 
 ### Runtime detection
 
-Wrap a dynamic `import("workflow")` in try/catch. If either the module isn't installed *or* `getWorkflowMetadata()` throws (call site isn't inside a workflow run), fall through to the standalone path.
+Wrap a dynamic `import("workflow")` in try/catch. If either the module isn't installed *or* `getStepMetadata()` throws (call site isn't inside a workflow step), fall through to the standalone path.
 
 ```typescript lineNumbers
-async function getWorkflowRunId(): Promise<string | null> { // [!code highlight]
+async function getWorkflowStepId(): Promise<string | null> { // [!code highlight]
   try {
     const wf = await import("workflow");
-    const { workflowRunId } = wf.getWorkflowMetadata();
-    return workflowRunId;
+    const { stepId } = wf.getStepMetadata();
+    return stepId;
   } catch {
     return null;
   }
@@ -286,13 +294,14 @@ async function getWorkflowRunId(): Promise<string | null> { // [!code highlight]
 
 ### A concrete use case: replay-safe idempotency keys
 
-A payments utility that uses the workflow run ID as a Stripe idempotency key when available, and a fresh UUID otherwise:
+A payments utility that uses the current workflow step ID as a Stripe idempotency key when available, and a fresh UUID otherwise:
 
-{/* @skip-typecheck - depends on getWorkflowRunId defined in the previous block */}
 ```typescript lineNumbers
+declare function getWorkflowStepId(): Promise<string | null>; // @setup (defined in the previous block)
+
 export async function processPayment(amount: number, currency: string) {
-  const runId = await getWorkflowRunId();
-  const idempotencyKey = runId ?? crypto.randomUUID(); // [!code highlight]
+  const stepId = await getWorkflowStepId();
+  const idempotencyKey = stepId ? `payment:${stepId}` : crypto.randomUUID(); // [!code highlight]
 
   const res = await fetch("https://api.stripe.com/v1/charges", {
     method: "POST",
@@ -306,7 +315,7 @@ export async function processPayment(amount: number, currency: string) {
 }
 ```
 
-When called from inside a workflow run, the step wrapping this utility gets a stable idempotency key across replays — Stripe dedupes retries for free. When called from a plain Node.js process, it behaves like any other function and a fresh UUID is generated.
+When called from inside a workflow step, the utility gets a stable idempotency key for that step across retries — Stripe dedupes retries for free. When called from a plain Node.js process, it behaves like any other function and a fresh UUID is generated. For more patterns, see [Idempotency](/docs/foundations/idempotency).
 
 ### In production
 
@@ -330,7 +339,7 @@ Before publishing a workflow library:
 
 ## Key APIs
 
-- [`"use workflow"`](/docs/api-reference/workflow/use-workflow) — declares the orchestrator function
-- [`"use step"`](/docs/api-reference/workflow/use-step) — marks functions for durable execution
-- [`start`](/docs/api-reference/workflow/start) — starts a workflow run
+- [`"use workflow"`](/docs/foundations/workflows-and-steps#workflow-functions) — declares the orchestrator function
+- [`"use step"`](/docs/foundations/workflows-and-steps#step-functions) — marks functions for durable execution
+- [`start`](/docs/api-reference/workflow-api/start) — starts a workflow run
 - [`getWorkflowMetadata`](/docs/api-reference/workflow/get-workflow-metadata) — runtime detection and run ID access

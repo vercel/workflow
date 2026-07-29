@@ -13,7 +13,7 @@ related:
 
 When using [multi-turn workflows](/docs/ai/chat-session-modeling#multi-turn-workflows), messages typically arrive between agent turns. The workflow waits at a hook, receives a message, then starts a new turn. But sometimes you need to inject messages *during* an agent's turn, before tool calls complete or while the model is reasoning.
 
-`DurableAgent`'s `prepareStep` callback enables this by running before each step in the agent loop, giving you a chance to inject queued messages into the conversation. `prepareStep` also allows you to modify the model choice and existing messages mid-turn, see AI SDK's [prepareStep callback](https://ai-sdk.dev/docs/agents/loop-control#prepare-step) for more details.
+`WorkflowAgent`'s `prepareStep` callback enables this by running before each step in the agent loop, giving you a chance to inject queued messages into the conversation. `prepareStep` also allows you to modify the model choice and existing messages mid-turn, see AI SDK's [prepareStep callback](https://ai-sdk.dev/docs/agents/loop-control#prepare-step) for more details.
 
 ## When to Use This
 
@@ -52,20 +52,20 @@ interface PrepareStepResult {
 Once you have a [multi-turn workflow](/docs/ai/chat-session-modeling#multi-turn-workflows), you can combine a message queue with `prepareStep` to inject messages that arrive during processing:
 
 ```typescript title="workflows/chat/index.ts" lineNumbers
-import { DurableAgent } from "@workflow/ai/agent";
+import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
 import { getWritable, getWorkflowMetadata } from "workflow";
 import { chatMessageHook } from "./hooks/chat-message";
 import { flightBookingTools, FLIGHT_ASSISTANT_PROMPT } from "./steps/tools";
-import type { UIMessageChunk, ModelMessage } from "ai";
+import type { ModelMessage } from "ai";
 
 export async function chat(initialMessages: ModelMessage[]) {
   "use workflow";
 
   const { workflowRunId: runId } = getWorkflowMetadata();
-  const writable = getWritable<UIMessageChunk>();
+  const writable = getWritable<ModelCallStreamPart>();
   const messageQueue: Array<{ role: "user"; content: string }> = []; // [!code highlight]
 
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: "bedrock/claude-haiku-4-5-20251001-v1",
     instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
@@ -111,20 +111,20 @@ The `prepareStep` callback receives messages in `ModelMessage[]` format (with co
 You can also combine message queueing with the standard multi-turn pattern:
 
 ```typescript title="workflows/chat/index.ts" lineNumbers
-import { DurableAgent } from "@workflow/ai/agent";
+import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
 import { getWritable, getWorkflowMetadata } from "workflow";
 import { chatMessageHook } from "./hooks/chat-message";
-import type { UIMessageChunk, ModelMessage } from "ai";
+import type { ModelMessage } from "ai";
 
 export async function chat(initialMessages: ModelMessage[]) {
   "use workflow";
 
   const { workflowRunId: runId } = getWorkflowMetadata();
-  const writable = getWritable<UIMessageChunk>();
+  const writable = getWritable<ModelCallStreamPart>();
   const messages: ModelMessage[] = [...initialMessages];
   const messageQueue: Array<{ role: "user"; content: string }> = [];
 
-  const agent = new DurableAgent({ /* ... */ });
+  const agent = new WorkflowAgent({ /* ... */ });
   const hook = chatMessageHook.create({ token: runId });
 
   while (true) {
@@ -173,5 +173,5 @@ export async function chat(initialMessages: ModelMessage[]) {
 
 - [Chat Session Modeling](/docs/ai/chat-session-modeling) - Single-turn vs multi-turn patterns
 - [Building Durable AI Agents](/docs/ai) - Complete guide to creating durable agents
-- [`DurableAgent` API Reference](/docs/api-reference/workflow-ai/durable-agent) - Full API documentation
+- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) - AI SDK API for durable, resumable agents
 - [`defineHook()` API Reference](/docs/api-reference/workflow/define-hook) - Hook configuration options

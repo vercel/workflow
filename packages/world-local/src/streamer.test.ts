@@ -85,7 +85,11 @@ describe('streamer', () => {
   });
 
   describe('createStreamer', () => {
-    async function setupStreamer() {
+    async function setupStreamer({
+      cleanupTimeout,
+    }: {
+      cleanupTimeout?: number;
+    } = {}) {
       const testDir = await fs.mkdtemp(
         path.join(os.tmpdir(), 'streamer-test-')
       );
@@ -96,9 +100,20 @@ describe('streamer', () => {
           await fs.rm(testDir, { recursive: true, force: true });
         } else {
           const chunksPath = `${testDir}/streams/chunks`;
+          // Chunks are sharded one directory per stream:
+          // streams/chunks/<streamName>/<chunkId><tagSuffix>.bin
           let files: string[];
           try {
-            files = await fs.readdir(chunksPath);
+            const streamDirs = await fs.readdir(chunksPath);
+            files = (
+              await Promise.all(
+                streamDirs.map(async (streamDir) =>
+                  (
+                    await fs.readdir(`${chunksPath}/${streamDir}`)
+                  ).map((f) => `${streamDir}/${f}`)
+                )
+              )
+            ).flat();
           } catch {
             // chunks directory may not exist if the test failed before any writes
             files = [];
@@ -109,9 +124,10 @@ describe('streamer', () => {
             const chunk = deserializeChunk(
               await fs.readFile(`${chunksPath}/${file}`)
             );
-            // Extract ULID from filename: "streamName-chnk_ULID.bin"
-            const chunkIdPart = String(file.split('-').at(-1)).split('.')[0]; // "chnk_ULID"
-            const ulid = chunkIdPart.replace('chnk_', ''); // Just the ULID
+            // Filename is "<chunkId><tagSuffix>.bin"; chunkId is "chnk_ULID".
+            const ulid = String(file.split('/').at(-1))
+              .split('.')[0]
+              .replace('chnk_', '');
             const time = decodeTime(ulid);
             const timeDiff = time - lastTime;
             lastTime = time;
@@ -128,7 +144,7 @@ describe('streamer', () => {
             chunks
           );
         }
-      });
+      }, cleanupTimeout);
 
       return {
         testDir,
@@ -144,12 +160,12 @@ describe('streamer', () => {
         await streamer.streams.write(TEST_RUN_ID, streamName, 'hello');
         await streamer.streams.write(TEST_RUN_ID, streamName, ' world');
 
-        // Verify chunks directory was created
-        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        // Verify the per-stream chunk directory was created
+        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
         const files = await fs.readdir(chunksDir);
 
         expect(files).toHaveLength(2);
-        expect(files.every((f) => f.startsWith(`${streamName}-`))).toBe(true);
+        expect(files.every((f) => f.startsWith('chnk_'))).toBe(true);
         expect(files.every((f) => f.endsWith('.bin'))).toBe(true);
       });
 
@@ -162,11 +178,11 @@ describe('streamer', () => {
         await streamer.streams.write(TEST_RUN_ID, streamName, buffer1);
         await streamer.streams.write(TEST_RUN_ID, streamName, buffer2);
 
-        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
         const files = await fs.readdir(chunksDir);
 
         expect(files).toHaveLength(2);
-        expect(files.every((f) => f.startsWith(`${streamName}-`))).toBe(true);
+        expect(files.every((f) => f.startsWith('chnk_'))).toBe(true);
       });
 
       it('should write Uint8Array chunks to a stream', async () => {
@@ -176,11 +192,11 @@ describe('streamer', () => {
 
         await streamer.streams.write(TEST_RUN_ID, streamName, uint8Array);
 
-        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
         const files = await fs.readdir(chunksDir);
 
         expect(files).toHaveLength(1);
-        expect(files[0]).toMatch(`${streamName}-`);
+        expect(files[0]).toMatch('chnk_');
       });
 
       it('should handle multiple streams independently', async () => {
@@ -190,11 +206,10 @@ describe('streamer', () => {
         await streamer.streams.write(TEST_RUN_ID, 'stream2', 'data2');
         await streamer.streams.write(TEST_RUN_ID, 'stream1', 'data3');
 
+        // Each stream gets its own sharded directory.
         const chunksDir = path.join(testDir, 'streams', 'chunks');
-        const files = await fs.readdir(chunksDir);
-
-        const stream1Files = files.filter((f) => f.startsWith('stream1-'));
-        const stream2Files = files.filter((f) => f.startsWith('stream2-'));
+        const stream1Files = await fs.readdir(path.join(chunksDir, 'stream1'));
+        const stream2Files = await fs.readdir(path.join(chunksDir, 'stream2'));
 
         expect(stream1Files).toHaveLength(2);
         expect(stream2Files).toHaveLength(1);
@@ -212,11 +227,11 @@ describe('streamer', () => {
           'chunk3',
         ]);
 
-        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
         const files = await fs.readdir(chunksDir);
 
         expect(files).toHaveLength(3);
-        expect(files.every((f) => f.startsWith(`${streamName}-`))).toBe(true);
+        expect(files.every((f) => f.startsWith('chnk_'))).toBe(true);
       });
 
       it('should preserve chunk ordering', async () => {
@@ -250,7 +265,7 @@ describe('streamer', () => {
 
         await streamer.streams.writeMulti!(TEST_RUN_ID, streamName, []);
 
-        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
         const dirExists = await fs
           .access(chunksDir)
           .then(() => true)
@@ -259,10 +274,7 @@ describe('streamer', () => {
         // Directory might not exist if no chunks were written
         if (dirExists) {
           const files = await fs.readdir(chunksDir);
-          const streamFiles = files.filter((f) =>
-            f.startsWith(`${streamName}-`)
-          );
-          expect(streamFiles).toHaveLength(0);
+          expect(files).toHaveLength(0);
         }
       });
 
@@ -301,11 +313,11 @@ describe('streamer', () => {
 
         await streamer.streams.close(TEST_RUN_ID, streamName);
 
-        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
         const files = await fs.readdir(chunksDir);
 
         expect(files).toHaveLength(1);
-        expect(files[0]).toMatch(`${streamName}-`);
+        expect(files[0]).toMatch('chnk_');
       });
 
       it('should close a stream with existing chunks', async () => {
@@ -316,7 +328,7 @@ describe('streamer', () => {
         await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk2');
         await streamer.streams.close(TEST_RUN_ID, streamName);
 
-        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
         const files = await fs.readdir(chunksDir);
 
         expect(files).toHaveLength(3); // 2 data chunks + 1 EOF chunk
@@ -550,7 +562,9 @@ describe('streamer', () => {
 
         const streamer = createStreamer(testDir);
         const streamName = 'poll-test';
-        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        // Simulate a cross-process writer landing chunks straight on disk in
+        // the stream's sharded directory.
+        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
         await fs.mkdir(chunksDir, { recursive: true });
 
         // Start reading — sets up EventEmitter listeners + polling interval
@@ -578,10 +592,7 @@ describe('streamer', () => {
           chunk: Buffer.from('hello'),
         });
         await fs.writeFile(
-          path.join(
-            chunksDir,
-            `${streamName}-chnk_01ARZ3NDEKTSV4RRFFQ69G5FAV.bin`
-          ),
+          path.join(chunksDir, `chnk_01ARZ3NDEKTSV4RRFFQ69G5FAV.bin`),
           chunk1
         );
 
@@ -592,10 +603,7 @@ describe('streamer', () => {
           chunk: Buffer.from(' world'),
         });
         await fs.writeFile(
-          path.join(
-            chunksDir,
-            `${streamName}-chnk_01ARZ3NDEKTSV4RRFFQ69G5FAW.bin`
-          ),
+          path.join(chunksDir, `chnk_01ARZ3NDEKTSV4RRFFQ69G5FAW.bin`),
           chunk2
         );
 
@@ -607,10 +615,7 @@ describe('streamer', () => {
           chunk: Buffer.from([]),
         });
         await fs.writeFile(
-          path.join(
-            chunksDir,
-            `${streamName}-chnk_01ARZ3NDEKTSV4RRFFQ69G5FAX.bin`
-          ),
+          path.join(chunksDir, `chnk_01ARZ3NDEKTSV4RRFFQ69G5FAX.bin`),
           eofChunk
         );
 
@@ -618,6 +623,79 @@ describe('streamer', () => {
 
         expect(chunks.join('')).toBe('hello world');
       }, 10000);
+    });
+
+    describe('reader lifecycle (vercel/workflow#2795, #2797)', () => {
+      it('tears down emitter listeners and the poll interval on cancel', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'teardown-stream';
+
+        // Open a reader on a stream with no chunks (the abort-stream shape):
+        // start() reads an empty directory, then arms the 100ms poll and
+        // registers chunk/close emitter listeners.
+        const before = process
+          .getActiveResourcesInfo()
+          .filter((r) => r === 'Timeout').length;
+
+        const readable = await streamer.streams.get(TEST_RUN_ID, streamName);
+        const reader = readable.getReader();
+        // Kick off a read so start() runs to completion (arms the poll).
+        const pending = reader.read();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        // Cancelling must release everything the reader holds open.
+        await reader.cancel();
+        await pending.catch(() => {});
+
+        const after = process
+          .getActiveResourcesInfo()
+          .filter((r) => r === 'Timeout').length;
+        expect(after).toBeLessThanOrEqual(before);
+
+        // A subsequent write must not reach the cancelled reader's listeners
+        // (a leaked listener would still try to enqueue on a closed stream).
+        await expect(
+          streamer.streams.write(TEST_RUN_ID, streamName, 'after-cancel')
+        ).resolves.toBeUndefined();
+      });
+
+      it('scopes chunk listing to the stream, not the whole world', async () => {
+        const { testDir, streamer } = await setupStreamer({
+          // Removing the 2,000-file fixture can exceed Vitest's default hook
+          // timeout on Windows runners.
+          cleanupTimeout: 30_000,
+        });
+
+        // One real chunk on the stream under test.
+        await streamer.streams.write(TEST_RUN_ID, 'target', 'hi');
+
+        // Thousands of unrelated chunks in *other* streams. Under the old flat
+        // layout these all lived in one directory and every tail-reader poll
+        // re-listed them (O(world chunks)); now each stream is sharded so the
+        // target's listing is unaffected.
+        const chunksBase = path.join(testDir, 'streams', 'chunks');
+        const otherDir = path.join(chunksBase, 'noise');
+        await fs.mkdir(otherDir, { recursive: true });
+        await Promise.all(
+          Array.from({ length: 2000 }, (_, i) =>
+            fs.writeFile(path.join(otherDir, `chnk_seed${i}.bin`), '')
+          )
+        );
+
+        // The target stream's own directory holds exactly its one chunk.
+        const targetEntries = await fs.readdir(path.join(chunksBase, 'target'));
+        expect(targetEntries).toHaveLength(1);
+
+        // And reads return only the target's data, never the noise.
+        const info = await streamer.streams.getInfo(TEST_RUN_ID, 'target');
+        expect(info.tailIndex).toBe(0);
+        const { data } = await streamer.streams.getChunks(
+          TEST_RUN_ID,
+          'target'
+        );
+        expect(data).toHaveLength(1);
+        expect(Buffer.from(data[0].data).toString()).toBe('hi');
+      });
     });
 
     describe('integration scenarios', () => {
@@ -913,7 +991,9 @@ describe('streamer', () => {
         const { testDir } = await setupStreamer();
         const streamName = 'mixed-format-stream';
         const taggedStreamer = createStreamer(testDir, 'vitest-0');
-        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        // Chunks live in the stream's sharded directory; the filename is just
+        // the chunk id plus its format/tag suffix (no stream-name prefix).
+        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
         await fs.mkdir(chunksDir, { recursive: true });
 
         const writeChunk = (fileName: string, text: string, eof = false) =>
@@ -923,13 +1003,13 @@ describe('streamer', () => {
           );
 
         await Promise.all([
-          writeChunk(`${streamName}-chnk_01.json`, 'legacy-shadowed'),
-          writeChunk(`${streamName}-chnk_01.bin`, 'untagged-shadowed'),
-          writeChunk(`${streamName}-chnk_01.vitest-0.bin`, 'tagged'),
-          writeChunk(`${streamName}-chnk_02.json`, 'legacy-shadowed'),
-          writeChunk(`${streamName}-chnk_02.bin`, 'untagged'),
-          writeChunk(`${streamName}-chnk_03.json`, 'legacy'),
-          writeChunk(`${streamName}-chnk_04.vitest-0.bin`, '', true),
+          writeChunk(`chnk_01.json`, 'legacy-shadowed'),
+          writeChunk(`chnk_01.bin`, 'untagged-shadowed'),
+          writeChunk(`chnk_01.vitest-0.bin`, 'tagged'),
+          writeChunk(`chnk_02.json`, 'legacy-shadowed'),
+          writeChunk(`chnk_02.bin`, 'untagged'),
+          writeChunk(`chnk_03.json`, 'legacy'),
+          writeChunk(`chnk_04.vitest-0.bin`, '', true),
         ]);
 
         const result = await taggedStreamer.streams.getChunks(

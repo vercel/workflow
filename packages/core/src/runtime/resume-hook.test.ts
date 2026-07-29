@@ -1,299 +1,338 @@
-import { ThrottleError, WorkflowWorldError } from '@workflow/errors';
+import { HookNotFoundError } from '@workflow/errors';
 import {
-  SPEC_VERSION_LEGACY,
-  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  type Hook,
+  SPEC_VERSION_CURRENT,
+  type WorkflowRun,
+  type World,
 } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { version as ownWorkflowCoreVersion } from '../version.js';
-import { getWorldLazy } from './get-world-lazy.js';
-import { resumeHook } from './resume-hook.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { importKey } from '../encryption.js';
+import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
+import {
+  hydrateStepReturnValue,
+  peekFormatPrefix,
+  runPayloadKeys,
+  SerializationFormat,
+} from '../serialization.js';
+import { resumeHook, resumeWebhook } from './resume-hook.js';
+import { setWorld } from './world.js';
 
-// Mock @vercel/functions
-vi.mock('@vercel/functions', () => ({
-  waitUntil: vi.fn(),
-}));
-
-// Mock the world module — resume-hook.ts uses getWorldLazy under the hood.
-vi.mock('./get-world-lazy.js', () => ({
-  getWorldLazy: vi.fn(),
-}));
-vi.mock('./world.js', () => ({
-  getWorld: vi.fn(),
-  getWorldHandlers: vi.fn(() => ({
-    createQueueHandler: vi.fn(() => vi.fn()),
-  })),
-}));
-
-// Mock telemetry
+vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 vi.mock('../telemetry.js', () => ({
-  serializeTraceCarrier: vi.fn().mockResolvedValue({}),
-  getSpanContextForTraceCarrier: vi.fn().mockResolvedValue(undefined),
+  linkToTraceCarrier: vi.fn(),
   trace: vi.fn((_name, fn) => fn(undefined)),
 }));
 
-// Mock serialization
-vi.mock('../serialization.js', async () => {
-  const actual = await vi.importActual<typeof import('../serialization.js')>(
-    '../serialization.js'
-  );
-  return {
-    ...actual,
-    dehydrateStepReturnValue: vi
-      .fn()
-      .mockImplementation(async () => new Uint8Array([1, 2, 3])),
-    hydrateStepArguments: vi.fn(async (v: unknown) => v),
-  };
-});
-
-interface MockWorldOptions {
-  runSpecVersion?: number;
-  /**
-   * `@workflow/core` version recorded on the mock run's executionContext.
-   * Defaults to this build's own version, which the real getRunCapabilities
-   * treats as supporting queue hookInput (same-build-line rule).
-   */
-  workflowCoreVersion?: string;
-  eventsCreate?: ReturnType<typeof vi.fn>;
-  queue?: ReturnType<typeof vi.fn>;
-}
-
-function makeMockWorld(opts: MockWorldOptions = {}) {
-  const {
-    runSpecVersion = SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
-    workflowCoreVersion = ownWorkflowCoreVersion,
-    eventsCreate = vi.fn().mockResolvedValue({}),
-    queue = vi.fn().mockResolvedValue({ messageId: null }),
-  } = opts;
-
-  const hook = {
-    runId: 'wrun_test',
-    hookId: 'hook_test',
-    token: 'tok_test',
-    ownerId: 'owner_test',
-    projectId: 'proj_test',
-    environment: 'production',
-    createdAt: new Date(),
-    specVersion: runSpecVersion,
-  };
-
-  const workflowRun = {
-    runId: 'wrun_test',
-    workflowName: 'test-workflow',
-    deploymentId: 'deploy_123',
-    status: 'running',
-    specVersion: runSpecVersion,
-    executionContext: { workflowCoreVersion },
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  };
-
-  const world = {
-    specVersion: runSpecVersion,
-    events: { create: eventsCreate },
-    queue,
-    hooks: {
-      getByToken: vi.fn().mockResolvedValue(hook),
-    },
-    runs: {
-      get: vi.fn().mockResolvedValue(workflowRun),
-    },
-    getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
-  };
-
-  return { world, hook, workflowRun, eventsCreate, queue };
-}
-
 describe('resumeHook', () => {
-  afterEach(() => {
-    vi.clearAllMocks();
+  afterEach(() => setWorld(undefined));
+
+  it('rejects a retained Hook after its run ends', async () => {
+    const hook = {
+      runId: 'wrun_1',
+      hookId: 'hook_1',
+      token: 'order:1',
+      ownerId: 'owner_1',
+      projectId: 'project_1',
+      environment: 'production',
+      createdAt: new Date(),
+    } satisfies Hook;
+    const run = {
+      runId: hook.runId,
+      status: 'completed',
+      deploymentId: 'deployment_1',
+      workflowName: 'processOrder',
+      output: undefined,
+      completedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      attributes: {},
+    } satisfies WorkflowRun;
+    const createEvent = vi.fn();
+    const getEncryptionKeyForRun = vi.fn();
+    const queue = vi.fn();
+
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: { getByToken: vi.fn().mockResolvedValue(hook) },
+      runs: { get: vi.fn().mockResolvedValue(run) },
+      events: { create: createEvent },
+      getEncryptionKeyForRun,
+      queue,
+    } as unknown as World);
+
+    await expect(resumeHook(hook.token, {})).rejects.toSatisfy(
+      HookNotFoundError.is
+    );
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
   });
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+  describe('payload encryption', () => {
+    const RUN_KEY_MATERIAL = new Uint8Array(32).fill(0x4d);
 
-  describe('happy path', () => {
-    it('writes hook_received with resumeId; queue payload has NO hookInput (event write succeeded)', async () => {
-      const { world, queue, eventsCreate } = makeMockWorld();
-      vi.mocked(getWorldLazy).mockResolvedValue(world as any);
+    function makeHook(): Hook {
+      return {
+        runId: 'wrun_1',
+        hookId: 'hook_1',
+        token: 'order:1',
+        ownerId: 'owner_1',
+        projectId: 'project_1',
+        environment: 'production',
+        createdAt: new Date(),
+        specVersion: SPEC_VERSION_CURRENT,
+      } as Hook;
+    }
 
-      const result = await resumeHook('tok_test', { hello: 'world' });
+    function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
+      return {
+        runId: 'wrun_1',
+        status: 'running',
+        deploymentId: 'deployment_1',
+        workflowName: 'processOrder',
+        specVersion: SPEC_VERSION_CURRENT,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        attributes: {},
+        executionContext: { workflowCoreVersion: '5.0.0-beta.40' },
+        ...overrides,
+      } as WorkflowRun;
+    }
 
-      expect(result.resilientResume).toBeFalsy();
-      expect(eventsCreate).toHaveBeenCalledTimes(1);
-      expect(queue).toHaveBeenCalledTimes(1);
-
-      const [, eventReq] = eventsCreate.mock.calls[0];
-      expect(eventReq.eventType).toBe('hook_received');
-      expect(eventReq.correlationId).toBe('hook_test');
-      // resumeId is always attached to the direct write on CBOR-capable
-      // deployments, so the runtime can dedup if it ever sees a matching
-      // hookInput via a retried queue message. In the happy path the queue
-      // does NOT carry hookInput, so dedup shouldn't be needed — but the
-      // id is cheap and future-proof.
-      expect(eventReq.eventData.resumeId).toMatch(/^[0-9A-HJKMNP-TV-Z]+$/);
-      expect(eventReq.eventData.payload).toBeInstanceOf(Uint8Array);
-
-      // Happy path: event write succeeded, so no hookInput on queue payload.
-      // This avoids a race where the queue handler could materialize a
-      // duplicate hook_received before the direct write commits.
-      const [, queuePayload] = queue.mock.calls[0];
-      expect(queuePayload.hookInput).toBeUndefined();
-    });
-  });
-
-  describe('resilient resume (events.create failure)', () => {
-    it('sets resilientResume=true when events.create throws ThrottleError (429) and queue succeeds', async () => {
-      const eventsCreate = vi
+    /** Wire up a world and return the spies plus the captured event. */
+    function setupWorld(run: WorkflowRun) {
+      const createEvent = vi.fn().mockResolvedValue(undefined);
+      const getEncryptionKeyForRun = vi
         .fn()
-        .mockRejectedValue(new ThrottleError('rate limited'));
-      const { world } = makeMockWorld({ eventsCreate });
-      vi.mocked(getWorldLazy).mockResolvedValue(world as any);
+        .mockResolvedValue(RUN_KEY_MATERIAL);
+      const queue = vi.fn().mockResolvedValue(undefined);
 
-      const result = await resumeHook('tok_test', { data: 1 });
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken: vi.fn().mockResolvedValue(makeHook()) },
+        runs: { get: vi.fn().mockResolvedValue(run) },
+        events: { create: createEvent },
+        getEncryptionKeyForRun,
+        queue,
+        getDeploymentId: vi.fn().mockResolvedValue('deployment_2'),
+      } as unknown as World);
 
-      expect(result.resilientResume).toBe(true);
-      expect(result.runId).toBe('wrun_test');
+      return { createEvent, getEncryptionKeyForRun, queue };
+    }
+
+    function capturedPayload(
+      createEvent: ReturnType<typeof vi.fn>
+    ): Uint8Array {
+      return createEvent.mock.calls[0][1].eventData.payload as Uint8Array;
+    }
+
+    it('seals the payload to the run public key without fetching a key', async () => {
+      // This is the whole point of the change: a cross-deployment resume
+      // should not need `getEncryptionKeyForRun` at all, because that is the
+      // ~350ms `run-key` API round trip.
+      const { publicKey } = await deriveRunKeyPair(RUN_KEY_MATERIAL);
+      const run = makeRun({ encryptionPublicKey: bytesToBase64(publicKey) });
+      const { createEvent, getEncryptionKeyForRun } = setupWorld(run);
+
+      await resumeHook('order:1', { approved: true });
+
+      expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+      expect(peekFormatPrefix(capturedPayload(createEvent))).toBe(
+        SerializationFormat.SEALED
+      );
     });
 
-    it('sets resilientResume=true when events.create throws 500 and queue succeeds', async () => {
-      const eventsCreate = vi.fn().mockRejectedValue(
-        new WorkflowWorldError('Internal Server Error', {
-          status: 500,
-        })
+    it('seals via the stored resume context without reading the run or a key', async () => {
+      // Option 1 fast path: when the hook carries a resumeContext with the
+      // run's public key inline, a resume needs neither `runs.get` NOR
+      // `getEncryptionKeyForRun` — a single `hooks.getByToken`, then seal. This
+      // is what folds the public-key hop into the same read that already
+      // skips the run fetch.
+      const { publicKey } = await deriveRunKeyPair(RUN_KEY_MATERIAL);
+      const hook = {
+        ...makeHook(),
+        resumeContext: {
+          deploymentId: 'deployment_1',
+          workflowName: 'processOrder',
+          runSpecVersion: SPEC_VERSION_CURRENT,
+          workflowCoreVersion: '5.0.0-beta.40',
+          encryptionPublicKey: bytesToBase64(publicKey),
+        },
+      } as Hook;
+      const runsGet = vi.fn();
+      const createEvent = vi.fn().mockResolvedValue(undefined);
+      const getEncryptionKeyForRun = vi.fn();
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken: vi.fn().mockResolvedValue(hook) },
+        runs: { get: runsGet },
+        events: { create: createEvent },
+        getEncryptionKeyForRun,
+        queue: vi.fn().mockResolvedValue(undefined),
+        getDeploymentId: vi.fn().mockResolvedValue('deployment_2'),
+      } as unknown as World);
+
+      await resumeHook('order:1', { approved: true });
+
+      // Single read: no run fetch and no run-key API round trip.
+      expect(runsGet).not.toHaveBeenCalled();
+      expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+      expect(peekFormatPrefix(capturedPayload(createEvent))).toBe(
+        SerializationFormat.SEALED
       );
-      const { world, queue } = makeMockWorld({ eventsCreate });
-      vi.mocked(getWorldLazy).mockResolvedValue(world as any);
-
-      const result = await resumeHook('tok_test', { data: 1 });
-
-      expect(result.resilientResume).toBe(true);
-      // Queue must have been called with hookInput so the runtime can
-      // materialize hook_received on the other side. The hook token rides
-      // along so the materialized event gets the same replay-divergence
-      // guard as a directly written hook_received.
-      const [, queuePayload] = queue.mock.calls[0];
-      expect(queuePayload.hookInput).toBeDefined();
-      expect(queuePayload.hookInput.hookId).toBe('hook_test');
-      expect(queuePayload.hookInput.token).toBe('tok_test');
     });
 
-    it('fails fast (no resilient path) when the run was created by an SDK that predates queue hookInput', async () => {
-      // Skew protection keeps runs on the deployment they were created on.
-      // A run recorded by an older @workflow/core parses queue messages
-      // with a schema that silently strips `hookInput` — taking the
-      // resilient path would silently lose the payload while reporting
-      // success. The original event-write error must propagate instead so
-      // the caller can retry.
-      const eventsCreate = vi.fn().mockRejectedValue(
-        new WorkflowWorldError('Internal Server Error', {
-          status: 500,
-        })
+    it('resumeWebhook default seals the payload with no key lookup', async () => {
+      // End-to-end through the webhook entrypoint: a default webhook (no
+      // metadata) must resolve no key and still emit a sealed (`encp`) payload,
+      // keyed off the run's public key in the resume context. This is the P1
+      // fix observed at the byte level.
+      const { publicKey } = await deriveRunKeyPair(RUN_KEY_MATERIAL);
+      const hook = {
+        ...makeHook(),
+        isWebhook: true,
+        resumeContext: {
+          deploymentId: 'deployment_1',
+          workflowName: 'processOrder',
+          runSpecVersion: SPEC_VERSION_CURRENT,
+          workflowCoreVersion: '5.0.0-beta.40',
+          encryptionPublicKey: bytesToBase64(publicKey),
+        },
+      } as Hook;
+      const runsGet = vi.fn();
+      const createEvent = vi.fn().mockResolvedValue(undefined);
+      const getEncryptionKeyForRun = vi.fn();
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken: vi.fn().mockResolvedValue(hook) },
+        runs: { get: runsGet },
+        events: { create: createEvent },
+        getEncryptionKeyForRun,
+        queue: vi.fn().mockResolvedValue(undefined),
+        getDeploymentId: vi.fn().mockResolvedValue('deployment_2'),
+      } as unknown as World);
+
+      const response = await resumeWebhook('order:1', new Request('http://x'));
+
+      expect(response.status).toBe(202);
+      expect(runsGet).not.toHaveBeenCalled();
+      expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+      expect(peekFormatPrefix(capturedPayload(createEvent))).toBe(
+        SerializationFormat.SEALED
       );
-      const { world, queue } = makeMockWorld({
-        eventsCreate,
-        workflowCoreVersion: '5.0.0-beta.7',
+    });
+
+    it('produces a payload the owning run can actually open', async () => {
+      // End-to-end: seal as the resumer, then hydrate exactly as the owning
+      // deployment would after re-deriving its own key material.
+      const keyPair = await deriveRunKeyPair(RUN_KEY_MATERIAL);
+      const run = makeRun({
+        encryptionPublicKey: bytesToBase64(keyPair.publicKey),
       });
-      vi.mocked(getWorldLazy).mockResolvedValue(world as any);
+      const { createEvent } = setupWorld(run);
 
-      await expect(resumeHook('tok_test', { data: 1 })).rejects.toThrow(
-        'Internal Server Error'
+      await resumeHook('order:1', { approved: true, count: 7 });
+
+      const keys = runPayloadKeys(await importKey(RUN_KEY_MATERIAL), keyPair);
+      const hydrated = await hydrateStepReturnValue(
+        capturedPayload(createEvent),
+        'wrun_1',
+        keys
       );
-      expect(queue).not.toHaveBeenCalled();
+      expect(hydrated).toEqual({ approved: true, count: 7 });
     });
 
-    it('throws when events.create throws a non-retryable error (e.g. 400)', async () => {
-      const eventsCreate = vi.fn().mockRejectedValue(
-        new WorkflowWorldError('Bad Request', {
-          status: 400,
-        })
-      );
-      const { world } = makeMockWorld({ eventsCreate });
-      vi.mocked(getWorldLazy).mockResolvedValue(world as any);
+    it('falls back to the symmetric path when the run has no public key', async () => {
+      // Runs created by older SDKs carry no public key; those must keep
+      // working exactly as before.
+      const run = makeRun();
+      const { createEvent, getEncryptionKeyForRun } = setupWorld(run);
 
-      await expect(resumeHook('tok_test', { data: 1 })).rejects.toThrow(
-        'Bad Request'
-      );
-    });
+      await resumeHook('order:1', { approved: true });
 
-    it('throws when queue fails even if events.create succeeds', async () => {
-      const queue = vi.fn().mockRejectedValue(new Error('Queue unavailable'));
-      const { world } = makeMockWorld({ queue });
-      vi.mocked(getWorldLazy).mockResolvedValue(world as any);
-
-      await expect(resumeHook('tok_test', { data: 1 })).rejects.toThrow(
-        'Queue unavailable'
+      expect(getEncryptionKeyForRun).toHaveBeenCalledWith(run);
+      expect(peekFormatPrefix(capturedPayload(createEvent))).toBe(
+        SerializationFormat.ENCRYPTED
       );
     });
 
-    it('throws queue error when both events.create and queue fail', async () => {
-      const eventsCreate = vi
-        .fn()
-        .mockRejectedValue(new ThrottleError('rate limited'));
-      const queue = vi.fn().mockRejectedValue(new Error('Queue unavailable'));
-      const { world } = makeMockWorld({ eventsCreate, queue });
-      vi.mocked(getWorldLazy).mockResolvedValue(world as any);
+    it('falls back to the symmetric path when the public key is malformed', async () => {
+      // A corrupt stored value must degrade to the previous behavior rather
+      // than fail the resumption.
+      for (const bad of ['not-base64!!', bytesToBase64(new Uint8Array(31))]) {
+        const run = makeRun({ encryptionPublicKey: bad });
+        const { createEvent, getEncryptionKeyForRun } = setupWorld(run);
 
-      await expect(resumeHook('tok_test', { data: 1 })).rejects.toThrow(
-        'Queue unavailable'
-      );
-    });
+        await resumeHook('order:1', { approved: true });
 
-    it('does not take resilient path on legacy spec versions (no CBOR queue transport)', async () => {
-      const eventsCreate = vi
-        .fn()
-        .mockRejectedValue(new ThrottleError('rate limited'));
-      const { world, queue } = makeMockWorld({
-        eventsCreate,
-        runSpecVersion: SPEC_VERSION_LEGACY,
-      });
-      vi.mocked(getWorldLazy).mockResolvedValue(world as any);
-
-      // On legacy spec versions the runtime cannot materialize hook_received
-      // from queue payload, so we must fail-fast instead of pretending
-      // resilient delivery will work.
-      await expect(resumeHook('tok_test', { data: 1 })).rejects.toThrow(
-        'rate limited'
-      );
-
-      // hookInput should NOT be attached to the queue payload on legacy
-      if (queue.mock.calls.length > 0) {
-        const [, queuePayload] = queue.mock.calls[0];
-        expect(queuePayload.hookInput).toBeUndefined();
+        expect(getEncryptionKeyForRun).toHaveBeenCalled();
+        expect(peekFormatPrefix(capturedPayload(createEvent))).toBe(
+          SerializationFormat.ENCRYPTED
+        );
+        setWorld(undefined);
       }
     });
-  });
 
-  describe('sequential dispatch (events.create first, then queue)', () => {
-    it('awaits events.create before dispatching to queue (happy path)', async () => {
-      // This ordering is important: it avoids a race where the queue handler
-      // processes the message and materializes a duplicate hook_received
-      // before the direct write commits.
-      let eventsCreateResolve: (v: unknown) => void = () => {};
-      const eventsCreatePromise = new Promise((resolve) => {
-        eventsCreateResolve = resolve;
+    it('seals even when the target reports a core version predating encp', async () => {
+      // Presence of the public key is the gate, deliberately not the version
+      // table: a run only has a key if the runtime that created it could open
+      // one, which is a stronger attestation than a version compare and stays
+      // correct when package versions drift.
+      const { publicKey } = await deriveRunKeyPair(RUN_KEY_MATERIAL);
+      const run = makeRun({
+        encryptionPublicKey: bytesToBase64(publicKey),
+        executionContext: { workflowCoreVersion: '4.2.0-beta.64' },
       });
-      const eventsCreate = vi
-        .fn()
-        .mockImplementation(() => eventsCreatePromise);
-      const queue = vi.fn().mockResolvedValue({ messageId: null });
+      const { createEvent, getEncryptionKeyForRun } = setupWorld(run);
 
-      const { world } = makeMockWorld({ eventsCreate, queue });
-      vi.mocked(getWorldLazy).mockResolvedValue(world as any);
+      await resumeHook('order:1', { approved: true });
 
-      const resumePromise = resumeHook('tok_test', { data: 1 });
+      expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+      expect(peekFormatPrefix(capturedPayload(createEvent))).toBe(
+        SerializationFormat.SEALED
+      );
+    });
 
-      // Give microtasks a chance to run. events.create should have been
-      // called, but queue should NOT have been — we're waiting for the
-      // event write to commit before dispatching.
-      await new Promise((r) => setTimeout(r, 10));
-      expect(eventsCreate).toHaveBeenCalledTimes(1);
-      expect(queue).not.toHaveBeenCalled();
+    it('reuses a caller-supplied symmetric key instead of sealing', async () => {
+      // resumeWebhook already had to fetch the symmetric key to hydrate hook
+      // metadata, so sealing would add an ECDH without saving a round trip.
+      const keyPair = await deriveRunKeyPair(RUN_KEY_MATERIAL);
+      const run = makeRun({
+        encryptionPublicKey: bytesToBase64(keyPair.publicKey),
+      });
+      const { createEvent, getEncryptionKeyForRun } = setupWorld(run);
 
-      // Now resolve events.create and verify queue is dispatched.
-      eventsCreateResolve({});
-      await resumePromise;
-      expect(queue).toHaveBeenCalledTimes(1);
+      await resumeHook(
+        makeHook(),
+        { approved: true },
+        await importKey(RUN_KEY_MATERIAL)
+      );
+
+      expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+      expect(peekFormatPrefix(capturedPayload(createEvent))).toBe(
+        SerializationFormat.ENCRYPTED
+      );
+    });
+
+    it('writes plaintext when encryption is disabled entirely', async () => {
+      const run = makeRun();
+      const createEvent = vi.fn().mockResolvedValue(undefined);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken: vi.fn().mockResolvedValue(makeHook()) },
+        runs: { get: vi.fn().mockResolvedValue(run) },
+        events: { create: createEvent },
+        // No getEncryptionKeyForRun at all — encryption not configured.
+        queue: vi.fn().mockResolvedValue(undefined),
+        getDeploymentId: vi.fn().mockResolvedValue('deployment_2'),
+      } as unknown as World);
+
+      await resumeHook('order:1', { approved: true });
+
+      expect(peekFormatPrefix(capturedPayload(createEvent))).toBe(
+        SerializationFormat.DEVALUE_V1
+      );
     });
   });
 });

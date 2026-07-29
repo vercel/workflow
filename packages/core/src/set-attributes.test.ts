@@ -1,12 +1,10 @@
 import { FatalError } from '@workflow/errors';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { experimental_setAttributes } from './set-attributes.js';
+import { setAttributes } from './set-attributes.js';
 import { contextStorage, type StepContext } from './step/context-storage.js';
 
 const WORLD_CACHE = Symbol.for('@workflow/world//cache');
-const UNSUPPORTED_WORLD_WARNED = Symbol.for(
-  '@workflow/setAttributes//unsupportedWorldWarned'
-);
 const globals = globalThis as Record<symbol, unknown>;
 
 function stepContext(runId = 'run_123'): StepContext {
@@ -35,13 +33,11 @@ async function runInStepContext<T>(
   return contextStorage.run(stepContext(runId), callback);
 }
 
-describe('experimental_setAttributes (host-side)', () => {
+describe('setAttributes (host-side)', () => {
   let originalWorld: unknown;
-  let originalUnsupportedWorldWarned: unknown;
 
   beforeEach(() => {
     originalWorld = globals[WORLD_CACHE];
-    originalUnsupportedWorldWarned = globals[UNSUPPORTED_WORLD_WARNED];
   });
 
   afterEach(() => {
@@ -52,95 +48,135 @@ describe('experimental_setAttributes (host-side)', () => {
     } else {
       globals[WORLD_CACHE] = originalWorld;
     }
-
-    if (originalUnsupportedWorldWarned === undefined) {
-      delete globals[UNSUPPORTED_WORLD_WARNED];
-    } else {
-      globals[UNSUPPORTED_WORLD_WARNED] = originalUnsupportedWorldWarned;
-    }
   });
 
   it('throws FatalError when called from plain host code', async () => {
-    await expect(
-      experimental_setAttributes({ phase: 'init' })
-    ).rejects.toBeInstanceOf(FatalError);
-    await expect(experimental_setAttributes({ phase: 'init' })).rejects.toThrow(
+    await expect(setAttributes({ phase: 'init' })).rejects.toBeInstanceOf(
+      FatalError
+    );
+    await expect(setAttributes({ phase: 'init' })).rejects.toThrow(
       /workflow.*step.*function/i
     );
   });
 
-  it('posts normalized changes directly to the world when called from a step', async () => {
-    const experimentalSetAttributes = vi.fn().mockResolvedValue({
-      attributes: { phase: 'ready' },
-    });
+  it('posts normalized changes as a native event when called from a step', async () => {
+    const create = vi.fn().mockResolvedValue({});
     globals[WORLD_CACHE] = {
+      specVersion: SPEC_VERSION_CURRENT,
       name: 'test-world',
-      runs: { experimentalSetAttributes },
+      events: { create },
     };
 
     await runInStepContext(() =>
-      experimental_setAttributes({ phase: 'ready', stale: undefined })
+      setAttributes({ phase: 'ready', stale: undefined })
     );
 
-    expect(experimentalSetAttributes).toHaveBeenCalledWith(
+    expect(create).toHaveBeenCalledWith(
       'run_123',
-      [
-        { key: 'phase', value: 'ready' },
-        { key: 'stale', value: null },
-      ],
-      {}
+      expect.objectContaining({
+        eventType: 'attr_set',
+        eventData: {
+          changes: [
+            { key: 'phase', value: 'ready' },
+            { key: 'stale', value: null },
+          ],
+          writer: { type: 'step', stepId: 'step', attempt: 1 },
+        },
+      })
     );
   });
 
   it('forwards allowReservedAttributes for step-side reserved namespace writes', async () => {
-    const experimentalSetAttributes = vi.fn().mockResolvedValue({
-      attributes: { '$agent.kind': 'durable-agent' },
-    });
+    const create = vi.fn().mockResolvedValue({});
     globals[WORLD_CACHE] = {
-      runs: { experimentalSetAttributes },
+      specVersion: SPEC_VERSION_CURRENT,
+      events: { create },
     };
 
     await runInStepContext(() =>
-      experimental_setAttributes(
+      setAttributes(
         { '$agent.kind': 'durable-agent' },
         { allowReservedAttributes: true }
       )
     );
 
-    expect(experimentalSetAttributes).toHaveBeenCalledWith(
+    expect(create).toHaveBeenCalledWith(
       'run_123',
-      [{ key: '$agent.kind', value: 'durable-agent' }],
-      { allowReservedAttributes: true }
+      expect.objectContaining({
+        eventType: 'attr_set',
+        eventData: {
+          changes: [{ key: '$agent.kind', value: 'durable-agent' }],
+          writer: { type: 'step', stepId: 'step', attempt: 1 },
+          allowReservedAttributes: true,
+        },
+      })
     );
+  });
+
+  it('waits for runReadyBarrier before posting the event (turbo optimistic start)', async () => {
+    const order: string[] = [];
+    const create = vi.fn().mockImplementation(async () => {
+      order.push('create');
+      return {};
+    });
+    globals[WORLD_CACHE] = {
+      specVersion: SPEC_VERSION_CURRENT,
+      events: { create },
+    };
+
+    let releaseBarrier!: () => void;
+    const runReadyBarrier = new Promise<void>((resolve) => {
+      releaseBarrier = () => {
+        order.push('barrier');
+        resolve();
+      };
+    });
+
+    const call = contextStorage.run({ ...stepContext(), runReadyBarrier }, () =>
+      setAttributes({ phase: 'ready' })
+    );
+
+    // The body ran before run_started is durable: the write must not fire yet.
+    await Promise.resolve();
+    expect(create).not.toHaveBeenCalled();
+
+    releaseBarrier();
+    await call;
+
+    // The attr_set create lands strictly after the run-ready barrier resolves.
+    expect(order).toEqual(['barrier', 'create']);
+  });
+
+  it('still posts when the runReadyBarrier rejects (write surfaces the real error)', async () => {
+    const create = vi.fn().mockResolvedValue({});
+    globals[WORLD_CACHE] = {
+      specVersion: SPEC_VERSION_CURRENT,
+      events: { create },
+    };
+
+    const runReadyBarrier = Promise.reject(new Error('run_started failed'));
+    // Pre-attach a catch so the rejection never surfaces as unhandled.
+    runReadyBarrier.catch(() => {});
+
+    await contextStorage.run({ ...stepContext(), runReadyBarrier }, () =>
+      setAttributes({ phase: 'ready' })
+    );
+
+    // Barrier rejection is swallowed for ordering only — the write still fires
+    // and would surface a genuine run-not-found error from the World itself.
+    expect(create).toHaveBeenCalledTimes(1);
   });
 
   it('rejects validation errors before posting from a step', async () => {
-    const experimentalSetAttributes = vi.fn();
+    const create = vi.fn();
     globals[WORLD_CACHE] = {
-      runs: { experimentalSetAttributes },
+      specVersion: SPEC_VERSION_CURRENT,
+      events: { create },
     };
 
     await expect(
-      runInStepContext(() => experimental_setAttributes({ $sys: 'x' }))
+      runInStepContext(() => setAttributes({ $sys: 'x' }))
     ).rejects.toBeInstanceOf(FatalError);
-    expect(experimentalSetAttributes).not.toHaveBeenCalled();
-  });
-
-  it('warns once and no-ops in a step when the world does not support attributes', async () => {
-    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    globals[WORLD_CACHE] = {
-      name: 'legacy-world',
-      runs: {},
-    };
-
-    await runInStepContext(() =>
-      experimental_setAttributes({ phase: 'ignored' })
-    );
-    await runInStepContext(() =>
-      experimental_setAttributes({ phase: 'ignored-again' })
-    );
-
-    expect(consoleWarn).toHaveBeenCalledTimes(1);
-    expect(consoleWarn.mock.calls[0]?.[0]).toContain('legacy-world');
+    expect(create).not.toHaveBeenCalled();
   });
 });

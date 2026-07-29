@@ -3,7 +3,13 @@ title: Child Workflows
 description: Spawn child workflows from a parent and wait for completion via hook resume.
 type: guide
 summary: Orchestrate independent child workflows from a parent using start(), defineHook(), and startAndWait() — the child resumes the parent's hook when done instead of polling getRun().status.
+related:
+  - /docs/api-reference/workflow-api/start
 ---
+
+<CopyPrompt
+  text="Refactor this workflow to use child workflows. Keep the parent as an exported `&quot;use workflow&quot;` function. Move independent units of durable work into separate exported child workflow functions. From the parent, call `start(childWorkflow, [args])` from `workflow/api` or the documented `startAndWait`/hook pattern where completion must resume the parent. Pass only serializable state to children. For fan-out, start children in parallel with `Promise.all` or bounded batches, collect run IDs, handle partial failures with `Promise.allSettled`, and use `getRun(runId)` when status, cancellation, streams, or return values are needed. Verify child start, completion, failure, and parent resume behavior."
+/>
 
 Use child workflows when a single workflow needs to orchestrate many independent units of work. Each child runs as its own workflow with a separate event log, retry boundary, and failure scope -- if one child fails, it doesn't take down the parent or siblings.
 
@@ -111,10 +117,10 @@ async function spawnProcessDocument(
 ): Promise<string> {
   "use step"; // [!code highlight]
 
-  const run = await start(processDocumentWithCompletion, [
+  const run = await start(processDocumentWithCompletion, [ // [!code highlight]
     documentId,
     completionTokenArg,
-  ]); // [!code highlight]
+  ]);
   return run.runId;
 }
 
@@ -158,7 +164,7 @@ Polling with `getRun().status` in a `sleep()` loop works, but hook resume is pre
 - **Zero compute while waiting** — the parent suspends on the hook instead of waking every poll interval
 - **Immediate wake-up** — the parent resumes as soon as the child finishes, not on the next poll tick
 - **Typed payloads** — the child sends `{ status, value | error }` directly; no separate `returnValue` fetch step
-- **No worker-pool pressure** — `Run#returnValue` polling inside steps can hold worker slots while waiting for children (see [Eager Processing](/changelog/eager-processing))
+- **No worker-pool pressure** — `Run#returnValue` polling inside steps can hold worker slots while waiting for children (see [Eager Processing](/v5/docs/changelog/eager-processing))
 
 When a parent calls a child workflow inline with `await` (flattened into the same run), the same wrapper and hook handshake still works — pass the token and `await processDocumentWithCompletion(...)` inside `startAndWait()` instead of calling `start()`.
 

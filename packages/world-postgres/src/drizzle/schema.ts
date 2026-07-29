@@ -17,7 +17,6 @@ import {
   integer,
   /** @deprecated: use Cbor instead */
   jsonb,
-  pgEnum,
   pgSchema,
   primaryKey,
   text,
@@ -27,21 +26,23 @@ import {
 } from 'drizzle-orm/pg-core';
 import { Cbor, type Cborized } from './cbor.js';
 
+export const schema = pgSchema('workflow');
+
 function mustBeMoreThanOne<T>(t: T[]) {
   return t as [T, ...T[]];
 }
 
-export const workflowRunStatus = pgEnum(
+export const workflowRunStatus = schema.enum(
   'status',
   mustBeMoreThanOne(WorkflowRunStatusSchema.options)
 );
 
-export const stepStatus = pgEnum(
+export const stepStatus = schema.enum(
   'step_status',
   mustBeMoreThanOne(StepStatusSchema.options)
 );
 
-export const waitStatus = pgEnum(
+export const waitStatus = schema.enum(
   'wait_status',
   mustBeMoreThanOne(WaitStatusSchema.options)
 );
@@ -60,8 +61,6 @@ type DrizzlishOfType<T extends object> = {
  * Sadly we do `any[]` right now
  */
 export type SerializedContent = any[];
-
-export const schema = pgSchema('workflow');
 
 export const runs = schema.table(
   'workflow_runs',
@@ -106,6 +105,14 @@ export const runs = schema.table(
       .$type<Record<string, string>>()
       .default({})
       .notNull(),
+    /**
+     * The run's X25519 public key (base64), stamped at creation by SDKs that
+     * support sealed (`encp`) envelopes. Lets cross-run writers seal payloads
+     * to this run without holding its symmetric key. Not secret — the private
+     * scalar is re-derived on demand and never stored. Null on runs created by
+     * older SDKs, which fall back to the symmetric path.
+     */
+    encryptionPublicKey: varchar('encryption_public_key'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at')
       .defaultNow()
@@ -136,21 +143,22 @@ export const events = schema.table(
     eventData: Cbor<unknown>()('payload_cbor'),
     specVersion: integer('spec_version'),
   } satisfies DrizzlishOfType<
-    Cborized<Event & { eventData?: undefined }, 'eventData'>
+    Cborized<Omit<Event, 'occurredAt'> & { eventData?: undefined }, 'eventData'>
   >,
   (tb) => [
     index().on(tb.runId),
     index().on(tb.correlationId),
-    // Entity-creating events must be unique per (run, correlation) — without
+    // Runtime-correlated one-shot events must be unique per (run, correlation)
+    // — without
     // this, two concurrent invocations producing identical correlationIds
     // (e.g. the snapshot runtime's deterministic ULIDs across replays) can
-    // both insert events, causing duplicate steps/hooks/waits in the log.
+    // both insert events, causing duplicate operations in the log.
     // The unique violation is caught in events.create and translated to
     // EntityConflictError, matching the runtime's expected dedup contract.
     uniqueIndex('workflow_events_entity_creation_unique')
       .on(tb.runId, tb.correlationId, tb.eventType)
       .where(
-        sql`${tb.eventType} IN ('step_created', 'hook_created', 'wait_created')`
+        sql`${tb.eventType} IN ('step_created', 'hook_created', 'wait_created', 'attr_set')`
       ),
   ]
 );
@@ -214,6 +222,9 @@ export const hooks = schema.table(
     specVersion: integer('spec_version'),
     isWebhook: boolean('is_webhook').default(true),
     isSystem: boolean('is_system').default(false),
+    // Server-synthesized resume slice. Not carried by the hook_created event,
+    // so this backend leaves it null; reads fall back to runs.get.
+    resumeContext: Cbor<NonNullable<Hook['resumeContext']>>()('resume_context'),
   } satisfies DrizzlishOfType<Cborized<Hook, 'metadata'>>,
   (tb) => [index().on(tb.runId), index().on(tb.token)]
 );

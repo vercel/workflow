@@ -38,6 +38,9 @@ export WORKFLOW_POSTGRES_WORKER_CONCURRENCY="10"
 
 # Optional: Internal pg.Pool max size (default: 10)
 export WORKFLOW_POSTGRES_MAX_POOL_SIZE="10"
+
+# Optional: Let the application coordinate shutdown (default: false)
+export WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN="1"
 ```
 
 ### Programmatic Usage
@@ -61,25 +64,48 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const worldFromPool = createWorld({ pool });
 ```
 
+### Application-managed Shutdown
+
+By default, Graphile Worker responds automatically when the application is asked to shut down. If your application already coordinates shutdown, set `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` when selecting the package with `WORKFLOW_TARGET_WORLD`, or set `applicationManagedShutdown: true` when calling `createWorld()` directly. Await `world.close()` from your shutdown path so Graphile Worker cannot terminate the process as soon as its queue stops, before your application finishes closing dependent resources:
+
+```typescript
+import { createWorld } from '@workflow/world-postgres';
+
+const world = createWorld({
+  connectionString: process.env.DATABASE_URL!,
+  applicationManagedShutdown: true,
+});
+
+await world.start();
+```
+
+Use this option only when your application or framework has its own shutdown hook. Handle cleanup errors there and await `world.close()` first, then close the workflow HTTP server and any caller-owned `pg.Pool`.
+
+Closing the world stops the queue from accepting new jobs and waits for active jobs. After Graphile Worker's graceful-shutdown timeout (5 seconds by default), it aborts any workflow HTTP request that is still pending. Graphile Worker then unlocks the same row through its normal failure handling. Graphile counts a delivery attempt when it claims the row, so the aborted delivery consumes that attempt and is retried only if its Graphile attempt budget remains. A one-attempt or final-attempt job is unlocked but not retried. The shutdown handler does not create a replacement row.
+
+An aborted HTTP request does not guarantee that its server-side handler stopped, so workflow and step handlers must continue to tolerate at-least-once execution. Keep the workflow HTTP routes and any caller-owned pool available until `world.close()` resolves.
+
 ## Configuration Options
 
 | Option             | Type      | Default                                                                                | Description                                                                                          |
 | ------------------ | --------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `connectionString` | `string`  | `process.env.WORKFLOW_POSTGRES_URL` or `'postgres://world:world@localhost:5432/world'` | Used only when `pool` is omitted, to construct an internal pool                                      |
+| `connectionString` | `string`  | `process.env.WORKFLOW_POSTGRES_URL`, `process.env.DATABASE_URL`, or `'postgres://world:world@localhost:5432/world'` | Used only when `pool` is omitted, to construct an internal pool                                      |
 | `maxPoolSize`      | `number`  | `process.env.WORKFLOW_POSTGRES_MAX_POOL_SIZE` or `pg.Pool` default (`10`)              | Optional. Sets the internal `pg.Pool` max size when `createWorld()` creates the pool                |
 | `pool`             | `pg.Pool` | —                                                                                      | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
 | `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
 | `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. Must be high enough to cover any parent→child workflow polling in flight — each `Run#returnValue` await holds a worker slot until the child run terminates. |
+| `applicationManagedShutdown` | `boolean` | `false`; `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` enables it for the default package configuration | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
 
 ## Environment Variables
 
 | Variable                               | Description                                                  | Default                                         |
 | -------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------- |
 | `WORKFLOW_TARGET_WORLD`                | Set to `"@workflow/world-postgres"` to use this world | -                                               |
-| `WORKFLOW_POSTGRES_URL`                | PostgreSQL connection string                                 | `'postgres://world:world@localhost:5432/world'` |
+| `WORKFLOW_POSTGRES_URL`                | PostgreSQL connection string                                 | `DATABASE_URL` or `'postgres://world:world@localhost:5432/world'` |
 | `WORKFLOW_POSTGRES_JOB_PREFIX`         | Prefix for queue job names                                   | -                                               |
 | `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers                                 | `50`                                            |
 | `WORKFLOW_POSTGRES_MAX_POOL_SIZE`      | Internal `pg.Pool` max size                                  | `10`                                            |
+| `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` | Set to `1` when the application coordinates shutdown and awaits `world.close()` | unset (`false`) |
 
 When `pool` is omitted, `maxPoolSize` precedence is: `createWorld({ maxPoolSize })`, then `WORKFLOW_POSTGRES_MAX_POOL_SIZE`, then the `pg.Pool` default.
 
@@ -98,12 +124,20 @@ This package uses PostgreSQL with the following components:
 The easiest way to set up your database is using the included CLI tool:
 
 ```bash
-pnpm exec workflow-postgres-setup
-# or
-npm exec workflow-postgres-setup
+# npm
+npx --package=@workflow/world-postgres bootstrap
+
+# pnpm
+pnpm dlx --package @workflow/world-postgres bootstrap
+
+# Yarn
+yarn dlx --package @workflow/world-postgres bootstrap
+
+# Bun
+bunx --package @workflow/world-postgres bootstrap
 ```
 
-The CLI automatically loads `.env` files and will use the connection string from:
+The CLI and runtime World automatically load the connection string from:
 1. `WORKFLOW_POSTGRES_URL` environment variable
 2. `DATABASE_URL` environment variable
 3. Default: `postgres://world:world@localhost:5432/world`
@@ -139,11 +173,10 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 
 ## Queue Behavior
 
-
-- Graphile jobs are acknowledged only after the workflow or step execution finishes, or after the worker durably schedules a delayed follow-up job
+- Graphile jobs are acknowledged only after execution finishes, or after the worker durably schedules a delayed follow-up job
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
-- Workflow and step execution is sent through `/.well-known/workflow/v1/flow` and `/.well-known/workflow/v1/step`
+- Workflow orchestration and queued step execution are both sent through `/.well-known/workflow/v1/flow`
 
 ## Development
 

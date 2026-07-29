@@ -1,4 +1,5 @@
 export const WORKFLOW_USE_STEP = Symbol.for('WORKFLOW_USE_STEP');
+export const WORKFLOW_SET_ATTRIBUTES = Symbol.for('WORKFLOW_SET_ATTRIBUTES');
 export const WORKFLOW_CREATE_HOOK = Symbol.for('WORKFLOW_CREATE_HOOK');
 export const WORKFLOW_SLEEP = Symbol.for('WORKFLOW_SLEEP');
 export const WORKFLOW_CONTEXT = Symbol.for('WORKFLOW_CONTEXT');
@@ -6,6 +7,7 @@ export const WORKFLOW_GET_STREAM_ID = Symbol.for('WORKFLOW_GET_STREAM_ID');
 export const STABLE_ULID = Symbol.for('WORKFLOW_STABLE_ULID');
 export const STREAM_NAME_SYMBOL = Symbol.for('WORKFLOW_STREAM_NAME');
 export const STREAM_TYPE_SYMBOL = Symbol.for('WORKFLOW_STREAM_TYPE');
+export const STREAM_FRAMING_SYMBOL = Symbol.for('WORKFLOW_STREAM_FRAMING');
 /**
  * Stamped on a real `WritableStream` (the user-visible `serialize.writable`
  * returned from a step-side reviver or step-context `getWritable()`) to
@@ -32,6 +34,35 @@ export const STREAM_SERVER_RUN_ID_SYMBOL = Symbol.for(
 export const STREAM_SERVER_DEPLOYMENT_ID_SYMBOL = Symbol.for(
   'WORKFLOW_STREAM_SERVER_DEPLOYMENT_ID'
 );
+/**
+ * Stamped alongside `STREAM_SERVER_RUN_ID_SYMBOL` with the owning run's
+ * X25519 public key (base64), when the run has one.
+ *
+ * This is what lets a forwarded writable be written to across a deployment
+ * boundary at zero cost. The owning run derives its own public key locally
+ * when it creates the stream, so the key travels inside the serialized
+ * descriptor; a child on another deployment can then seal frames immediately.
+ * Without it the child would have to either fetch the owning run or fetch its
+ * symmetric key from the API — the round trip this whole mechanism exists to
+ * avoid.
+ */
+export const STREAM_SERVER_PUBLIC_KEY_SYMBOL = Symbol.for(
+  'WORKFLOW_STREAM_SERVER_PUBLIC_KEY'
+);
+/**
+ * Stamped on a `WorkflowServerWritableStream` instance to expose its
+ * durability barrier: `() => Promise<void>` that resolves once every accepted
+ * chunk has durably reached the server (nothing buffered, nothing in flight)
+ * and rejects if any dispatch failed.
+ *
+ * The sink acks `write()` on buffer entry (group-commit batching), so
+ * durability tracking lives here instead: `flushablePipe` feature-detects
+ * this and awaits it before resolving its lock-release completion, keeping
+ * the invariant that a step cannot complete while stream data is still
+ * client-side. Sinks without it are fully durable per `write()` already.
+ */
+export const STREAM_DRAIN_SYMBOL = Symbol.for('WORKFLOW_STREAM_DRAIN');
+
 export const BODY_INIT_SYMBOL = Symbol.for('BODY_INIT');
 export const WEBHOOK_RESPONSE_WRITABLE = Symbol.for(
   'WEBHOOK_RESPONSE_WRITABLE'

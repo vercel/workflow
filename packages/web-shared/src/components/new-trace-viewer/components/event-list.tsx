@@ -1,8 +1,8 @@
 import { Circle } from 'lucide-react';
 import { useRef } from 'react';
-import { cn } from '../../../lib/utils';
-import type { Span } from '../types';
-import { formatDuration } from '../../trace-viewer/util/timing';
+import { cn } from '../../../lib/cn';
+import { formatDurationPrecise } from '../../trace-viewer/util/timing';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
 import {
   SleepIcon,
   StepForwardIcon,
@@ -10,25 +10,28 @@ import {
   WorkflowIcon,
 } from '../icons';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
-import { getSpanDurationMs } from '../utils';
+import type { Span } from '../types';
+import { getSpanDurationMs, isSpanErrored } from '../utils';
 import { MiddleTruncate } from './middle-truncate/middle-truncate';
 import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
 
 interface EventStyle {
   icon: React.ComponentType<{ className?: string }>;
   className: string;
+  label: string;
 }
 
 const eventStyles: Record<string, EventStyle> = {
-  run: { icon: WorkflowIcon, className: 'text-blue-900' },
-  step: { icon: StepForwardIcon, className: 'text-green-900' },
-  hook: { icon: WebhookIcon, className: 'text-gray-900' },
-  sleep: { icon: SleepIcon, className: 'text-gray-900' },
+  run: { icon: WorkflowIcon, className: 'text-blue-900', label: 'Workflow' },
+  step: { icon: StepForwardIcon, className: 'text-green-900', label: 'Step' },
+  hook: { icon: WebhookIcon, className: 'text-gray-900', label: 'Hook' },
+  sleep: { icon: SleepIcon, className: 'text-gray-900', label: 'Sleep' },
 };
 
 const defaultStyle: EventStyle = {
   icon: Circle,
   className: 'text-gray-900',
+  label: 'Event',
 };
 
 const ROW_HEIGHT_CLASS = 'h-10';
@@ -38,6 +41,7 @@ function getEventStyle(resource: string, isErrored: boolean): EventStyle {
   return {
     icon: style.icon,
     className: cn(isErrored ? 'text-red-900' : style.className),
+    label: style.label,
   };
 }
 
@@ -53,13 +57,12 @@ const EventRow = ({
   onSelectSpan: (spanId: string) => void;
 }) => {
   const durationMs = getSpanDurationMs(span);
-  const workflowStatus = (span.attributes.data as Record<string, unknown>)
-    ?.status as string | undefined;
-  const isErrored = span.status.code === 2 || workflowStatus === 'failed';
-  const { icon: Icon, className: tagClassName } = getEventStyle(
-    span.resource,
-    isErrored
-  );
+  const isErrored = isSpanErrored(span);
+  const {
+    icon: Icon,
+    className: tagClassName,
+    label: iconLabel,
+  } = getEventStyle(span.resource, isErrored);
 
   return (
     <li
@@ -77,16 +80,21 @@ const EventRow = ({
       <div className="h-full hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200">
         <div className="flex h-full min-w-0 items-center pl-4 pr-2">
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            <span className={cn('shrink-0', tagClassName)}>
-              <Icon className="w-4 h-4" />
-            </span>
+            <Tooltip delayDuration={500}>
+              <TooltipTrigger asChild>
+                <span className={cn('shrink-0', tagClassName)}>
+                  <Icon className="w-4 h-4" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top">{iconLabel}</TooltipContent>
+            </Tooltip>
             <span className="min-w-0 text-label-14">
               <MiddleTruncate value={span.name} />
             </span>
           </div>
           <div className="ml-2 shrink-0">
             <span className="text-label-14 text-gray-900 tabular-nums">
-              {formatDuration(durationMs)}
+              {formatDurationPrecise(durationMs)}
             </span>
           </div>
         </div>
@@ -114,7 +122,7 @@ const EventList = ({
       ref={listRef}
       id="event-list"
       role="tree"
-      className="block min-h-0 overflow-visible divide-y divide-gray-alpha-400 border-b border-gray-alpha-400"
+      className="block min-h-0 overflow-visible divide-y divide-gray-400 border-b border-gray-400"
       style={{
         paddingTop: start * ROW_HEIGHT_PX,
         paddingBottom: (spans.length - end) * ROW_HEIGHT_PX,

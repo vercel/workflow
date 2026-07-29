@@ -10,6 +10,10 @@ related:
   - /docs/cookbook/agent-patterns/durable-agent
 ---
 
+<CopyPrompt
+  text="Implement a durable Vercel Sandbox-backed coding-agent workflow. Install the Sandbox package used by this project and `workflow`. Create an exported workflow function with &quot;use workflow&quot; that owns the agent session. Put sandbox creation, command execution, snapshot, refresh, and cleanup into helper functions with &quot;use step&quot;. Persist the sandbox ID, snapshot ID, and workflow run ID in the project data store so clients can reconnect. Use `getWritable()` from `workflow` to stream agent progress and command output. Use `sleep()` to hibernate, refresh, or enforce idle timeouts. Add API routes to start a session, reconnect by run ID, and stop/cleanup. Verify first run, reconnect after reload, snapshot restore, timeout, and cleanup behavior."
+/>
+
 [Vercel Sandbox](https://vercel.com/docs/sandbox) provides isolated code execution environments. The `@vercel/sandbox` package has first-class support for the Workflow SDK — the `Sandbox` class is serializable, and its methods (`create`, `runCommand`, `stop`, `snapshot`) implicitly run as steps. You can use `Sandbox` directly inside a workflow function without wrapping each call in a separate `"use step"` function.
 
 ## Why Workflow + Sandbox
@@ -300,6 +304,10 @@ export async function sandboxSessionWorkflow() {
 
 Two endpoints. `/start` accepts an optional `{ runId }` — if the run still exists, it replays the event log from index 0 so a returning client fully rehydrates. `/command` resumes the hook and returns immediately; command output lands on the `/start` stream.
 
+<Callout type="info">
+This example starts a fresh sandbox session when no `runId` is provided. If your product needs one sandbox session per user, project, or task, use a deterministic hook token derived from that session key and route retries through the active hook. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+</Callout>
+
 ```typescript title="app/api/sandbox/start/route.ts" lineNumbers
 import { start, getRun } from "workflow/api";
 import { sandboxSessionWorkflow } from "@/workflows/sandbox-session";
@@ -505,6 +513,10 @@ Stream closure must happen inside a `"use step"` function. Calling `writable.clo
 
 Clients can hold `runId`s from long-gone workflow runs (localStorage, back button, server restart). Gate the reconnect path on `run.exists` and fall through to starting fresh. On `hook.resume`, catch `not found` / `expired` and return 410 so the client clears its state.
 
+### Decide whether `/start` should be idempotent
+
+The sample treats a missing or stale `runId` as a request for a new session. For one-session-per-resource behavior, use a durable resource key, such as `projectId` or `taskId`, to claim or retrieve the run before starting a new one.
+
 ### Keep the hook outside the loop
 
 Each iteration's `hook.then(...)` attaches a listener to the same hook instance. Creating a new hook per iteration with the same token throws `HookConflictError`. One hook, one token (`workflowRunId`), reused every iteration.
@@ -518,3 +530,4 @@ Each iteration's `hook.then(...)` attaches a listener to the same hook instance.
 - [`sleep()`](/docs/api-reference/workflow/sleep) — durable timer that powers both idle hibernation and proactive refresh
 - [`getRun()`](/docs/api-reference/workflow-api/get-run) — look up a run and replay its event log for reconnection
 - [`getWritable()`](/docs/api-reference/workflow/get-writable) — resumable NDJSON event stream
+- [Idempotency](/docs/foundations/idempotency) — choose when `/start` should reuse an existing run

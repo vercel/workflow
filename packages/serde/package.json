@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "@workflow/tsconfig": "workspace:*"
+    "@workflow/tsconfig": "workspace:*",
+    "typescript": "catalog:"
   }
 }

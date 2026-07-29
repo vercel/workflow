@@ -10,6 +10,25 @@ export const WorkflowRunStatusSchema = z.enum([
   'failed',
   'cancelled',
 ]);
+export type WorkflowRunStatus = z.infer<typeof WorkflowRunStatusSchema>;
+export const TerminalWorkflowRunStatusSchema = WorkflowRunStatusSchema.extract([
+  'completed',
+  'failed',
+  'cancelled',
+] as const);
+export type TerminalWorkflowRunStatus = z.infer<
+  typeof TerminalWorkflowRunStatusSchema
+>;
+export const TERMINAL_WORKFLOW_RUN_STATUSES =
+  TerminalWorkflowRunStatusSchema.options;
+
+export function isTerminalWorkflowRunStatus(
+  status: string
+): status is TerminalWorkflowRunStatus {
+  return TERMINAL_WORKFLOW_RUN_STATUSES.includes(
+    status as TerminalWorkflowRunStatus
+  );
+}
 
 /**
  * Base schema for the Workflow runs. Prefer using WorkflowRunSchema
@@ -65,7 +84,7 @@ export const WorkflowRunBaseSchema = z.object({
   errorCode: z.string().optional(),
   /**
    * Plaintext string-string metadata attached to the run via
-   * `experimental_setAttributes()` (or, in the future, materialized
+   * `setAttributes()` (or, in the future, materialized
    * from `attr_set` events). Stored unencrypted alongside other
    * plaintext fields so observability surfaces can read it without
    * going through the decryption pipeline.
@@ -81,6 +100,26 @@ export const WorkflowRunBaseSchema = z.object({
    * the attributes-mvp changelog entry.
    */
   attributes: z.record(z.string(), z.string()).default({}),
+  /**
+   * The run's X25519 public key, base64-encoded (~44 chars).
+   *
+   * Lets any party that can read this run seal a payload *to* it without
+   * being able to read the run's data — used for cross-run writes such as a
+   * hook resumption from another deployment, or a child workflow writing into
+   * a forwarded stream. The matching private scalar is never stored: it is
+   * re-derived on demand from the deployment's own key material, so this
+   * field is not secret and its presence does not weaken the run's
+   * confidentiality.
+   *
+   * Stamped at run creation by SDKs that support sealed (`encp`) envelopes.
+   * **Presence is the writer-side gate**: a run only carries a public key if
+   * the runtime that created it could also open sealed payloads, and runs are
+   * pinned to their creating deployment. Writers therefore seal iff this
+   * field is set, and otherwise fall back to fetching the symmetric per-run
+   * key. Absent on runs created by older SDKs, and on worlds that do not
+   * implement `getEncryptionKeyForRun` (encryption disabled).
+   */
+  encryptionPublicKey: z.string().optional(),
   expiredAt: z.coerce.date().optional(),
   startedAt: z.coerce.date().optional(),
   completedAt: z.coerce.date().optional(),
@@ -121,7 +160,6 @@ export const WorkflowRunSchema = z.discriminatedUnion('status', [
 ]);
 
 // Inferred types
-export type WorkflowRunStatus = z.infer<typeof WorkflowRunStatusSchema>;
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
 
 /**
@@ -140,6 +178,8 @@ export interface CreateWorkflowRunRequest {
   input: SerializedData;
   executionContext?: SerializedData;
   specVersion?: number;
+  /** Plaintext attributes to seed when the run is created. */
+  attributes?: Record<string, string>;
 }
 
 export interface GetWorkflowRunParams {

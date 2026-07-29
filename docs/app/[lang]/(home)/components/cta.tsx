@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Button } from '@/components/ui/button';
+import { Button } from '@vercel/geistdocs/components/button';
 
 export const CTA = () => (
   <section className="px-8 sm:px-12 py-10 flex flex-col md:flex-row md:items-center md:justify-between gap-4">

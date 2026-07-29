@@ -1,7 +1,7 @@
 'use client';
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
+import type { Event, Hook, WorkflowRun } from '@workflow/world';
 import {
   ChevronDown,
   ChevronUp,
@@ -17,7 +17,11 @@ import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useToast } from '../lib/toast';
-import { buildTrace, type TraceWithMeta } from '../lib/trace-builder';
+import {
+  buildTrace,
+  filterSpanRawEvents,
+  type TraceWithMeta,
+} from '../lib/trace-builder';
 import { ErrorBoundary } from './error-boundary';
 import {
   EntityDetailPanel,
@@ -25,6 +29,7 @@ import {
   type SpanSelectionInfo,
 } from './sidebar/entity-detail-panel';
 import { ResolveHookModal } from './sidebar/resolve-hook-modal';
+import type { FetchSpanDetail } from './sidebar/use-selected-span-detail';
 import {
   TraceViewerContextProvider,
   TraceViewerTimeline,
@@ -760,15 +765,12 @@ export const WorkflowTraceViewer = ({
   events,
   isLoading,
   error,
-  spanDetailData,
-  spanDetailLoading,
-  spanDetailError,
+  fetchSpanDetail,
   onWakeUpSleep,
   onResolveHook,
   onCancelRun,
   onStreamClick,
   onRunClick,
-  onSpanSelect,
   onLoadEventData,
   onLoadMoreSpans,
   hasMoreSpans = false,
@@ -776,14 +778,13 @@ export const WorkflowTraceViewer = ({
   encryptionKey,
   onDecrypt,
   isDecrypting = false,
+  showSeparateEventOccurrenceTimestamps = false,
 }: {
   run: WorkflowRun;
   events: Event[];
   isLoading?: boolean;
   error?: Error | null;
-  spanDetailData?: WorkflowRun | Step | Hook | Event | null;
-  spanDetailLoading?: boolean;
-  spanDetailError?: Error | null;
+  fetchSpanDetail: FetchSpanDetail;
   onWakeUpSleep?: (
     runId: string,
     correlationId: string
@@ -799,13 +800,8 @@ export const WorkflowTraceViewer = ({
   onStreamClick?: (streamId: string) => void;
   /** Callback when a run reference is clicked in the detail panel */
   onRunClick?: (runId: string) => void;
-  /** Callback when a span is selected. */
-  onSpanSelect?: (info: SpanSelectionInfo) => void;
   /** Callback to load event data for a specific event (lazy loading in sidebar) */
-  onLoadEventData?: (
-    correlationId: string,
-    eventId: string
-  ) => Promise<unknown | null>;
+  onLoadEventData?: (event: Event) => Promise<unknown | null>;
   /** Load next trace page when vertical scroll reaches bottom. */
   onLoadMoreSpans?: () => void | Promise<void>;
   /** Whether trace pagination has more data to load. */
@@ -818,6 +814,8 @@ export const WorkflowTraceViewer = ({
   onDecrypt?: () => void;
   /** Whether the encryption key is currently being fetched */
   isDecrypting?: boolean;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }) => {
   const toast = useToast();
   const [selectedSpan, setSelectedSpan] = useState<SelectedSpanInfo | null>(
@@ -852,22 +850,17 @@ export const WorkflowTraceViewer = ({
     }
   }, [error, isLoading]);
 
-  const handleSpanSelect = useCallback(
-    (info: SpanSelectionInfo) => {
-      onSpanSelect?.(info);
-    },
-    [onSpanSelect]
-  );
-
   const handleSelectionChange = useCallback(
     (info: SelectedSpanInfo | null) => {
       if (info) {
-        // Filter raw events by the selected span's correlationId (stepId/hookId)
-        // This bypasses the trace worker pipeline entirely.
-        const correlationId = info.spanId;
-        const rawEvents = correlationId
-          ? events.filter((e) => e.correlationId === correlationId)
-          : [];
+        // Filter raw events for the selected span: child spans match on
+        // correlationId (stepId/hookId), the run root span gets run-level
+        // events. This bypasses the trace worker pipeline entirely.
+        const rawEvents = filterSpanRawEvents(
+          events,
+          info.resource,
+          info.spanId
+        );
         setSelectedSpan({ ...info, rawEvents });
       } else {
         setSelectedSpan(null);
@@ -881,8 +874,10 @@ export const WorkflowTraceViewer = ({
     const correlationId = selectedSpan?.spanId;
     if (!correlationId) return;
 
-    const nextRawEvents = events.filter(
-      (e) => e.correlationId === correlationId
+    const nextRawEvents = filterSpanRawEvents(
+      events,
+      selectedSpan?.resource,
+      correlationId
     );
     setSelectedSpan((prev) => {
       if (!prev || prev.spanId !== correlationId) {
@@ -904,7 +899,7 @@ export const WorkflowTraceViewer = ({
         rawEvents: nextRawEvents,
       };
     });
-  }, [events, selectedSpan?.spanId]);
+  }, [events, selectedSpan?.spanId, selectedSpan?.resource]);
 
   // Reset selected span when navigating to a different run
   useEffect(() => {
@@ -1150,10 +1145,7 @@ export const WorkflowTraceViewer = ({
                 run={run}
                 onStreamClick={onStreamClick}
                 onRunClick={onRunClick}
-                spanDetailData={spanDetailData ?? null}
-                spanDetailError={spanDetailError}
-                spanDetailLoading={spanDetailLoading}
-                onSpanSelect={handleSpanSelect}
+                fetchSpanDetail={fetchSpanDetail}
                 onWakeUpSleep={onWakeUpSleep}
                 onLoadEventData={onLoadEventData}
                 onResolveHook={onResolveHook}
@@ -1161,6 +1153,9 @@ export const WorkflowTraceViewer = ({
                 onDecrypt={onDecrypt}
                 isDecrypting={isDecrypting}
                 selectedSpan={selectedSpan}
+                showSeparateEventOccurrenceTimestamps={
+                  showSeparateEventOccurrenceTimestamps
+                }
               />
             </ErrorBoundary>
           </div>

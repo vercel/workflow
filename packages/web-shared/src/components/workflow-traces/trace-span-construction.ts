@@ -3,7 +3,11 @@
  */
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, WorkflowRun } from '@workflow/world';
+import {
+  type Event,
+  isTerminalStepEventType,
+  type WorkflowRun,
+} from '@workflow/world';
 import type { Span, SpanEvent } from '../trace-viewer/types';
 import { shouldShowVerticalLine } from './event-colors';
 import { calculateDuration, dateToOtelTime } from './trace-time-utils';
@@ -26,7 +30,18 @@ const MARKER_EVENT_TYPES: Set<Event['eventType']> = new Set([
   'run_failed',
   'wait_created',
   'wait_completed',
+  'attr_set',
 ]);
+
+export const getEventTimestamp = (
+  event: Event | undefined
+): Date | undefined => {
+  const value = event?.occurredAt ?? event?.createdAt;
+  if (!value) return undefined;
+
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+};
 
 /**
  * Convert workflow events to span events
@@ -34,7 +49,8 @@ const MARKER_EVENT_TYPES: Set<Event['eventType']> = new Set([
  */
 export function convertEventsToSpanEvents(
   events: Event[],
-  filterTypes = true
+  filterTypes = true,
+  options: { preferOccurredAt?: boolean } = {}
 ): SpanEvent[] {
   return events
     .filter((event) =>
@@ -42,7 +58,11 @@ export function convertEventsToSpanEvents(
     )
     .map((event) => ({
       name: event.eventType,
-      timestamp: dateToOtelTime(event.createdAt),
+      timestamp: dateToOtelTime(
+        options.preferOccurredAt
+          ? (getEventTimestamp(event) ?? event.createdAt)
+          : event.createdAt
+      ),
       attributes: {
         eventId: event.eventId,
         correlationId: event.correlationId,
@@ -72,11 +92,11 @@ export const waitEventsToWaitEntity = (
   return {
     waitId: startEvent.correlationId,
     runId: startEvent.runId,
-    createdAt: startEvent.createdAt,
+    createdAt: getEventTimestamp(startEvent) ?? startEvent.createdAt,
     resumeAt: startEvent.eventData?.resumeAt
       ? new Date(startEvent.eventData.resumeAt)
       : undefined,
-    completedAt: completedEvent?.createdAt,
+    completedAt: getEventTimestamp(completedEvent),
   };
 };
 
@@ -168,16 +188,16 @@ export const stepEventsToStepEntity = (
       case 'step_started':
         status = 'running';
         attempt += 1;
-        if (!startedAt) startedAt = e.createdAt;
+        if (!startedAt) startedAt = getEventTimestamp(e) ?? e.createdAt;
         completedAt = undefined;
         break;
       case 'step_completed':
         status = 'completed';
-        completedAt = e.createdAt;
+        completedAt = getEventTimestamp(e) ?? e.createdAt;
         break;
       case 'step_failed':
         status = 'failed';
-        completedAt = e.createdAt;
+        completedAt = getEventTimestamp(e) ?? e.createdAt;
         break;
       case 'step_retrying':
         status = 'pending';
@@ -190,14 +210,18 @@ export const stepEventsToStepEntity = (
   if (attempt === 0) attempt = 1;
 
   const lastEvent = events[events.length - 1];
+
   return {
     stepId: anchorEvent.correlationId ?? '',
     runId: anchorEvent.runId,
     stepName: createdEvent?.eventData?.stepName ?? '',
     status,
     attempt,
-    createdAt: anchorEvent.createdAt,
-    updatedAt: lastEvent?.createdAt ?? anchorEvent.createdAt,
+    createdAt: getEventTimestamp(anchorEvent) ?? anchorEvent.createdAt,
+    updatedAt:
+      getEventTimestamp(lastEvent) ??
+      lastEvent?.createdAt ??
+      anchorEvent.createdAt,
     startedAt,
     completedAt,
     specVersion: anchorEvent.specVersion,
@@ -220,25 +244,37 @@ export function stepToSpan(stepEvents: Event[], maxEndTime: Date): Span | null {
   };
 
   const resource = 'step';
-  const endTime = new Date(step.completedAt ?? maxEndTime);
 
   // Include ALL correlated events on the span so the sidebar detail view
   // can display them. The timeline uses the `showVerticalLine` flag to
   // determine which events appear as markers.
-  const events = convertEventsToSpanEvents(stepEvents, false);
+  const events = convertEventsToSpanEvents(stepEvents, false, {
+    preferOccurredAt: true,
+  });
 
-  // Use createdAt as span start time, with activeStartTime for when execution began
-  // This allows visualization of the "queued" period before execution
-  const spanStartTime = new Date(step.createdAt);
+  // Use the event occurrence timestamp for step spans when it is available,
+  // falling back to the ingest timestamp used by older event streams.
+  const spanStartEvent =
+    stepEvents.find((event) => event.eventType === 'step_created') ??
+    stepEvents[0];
+  const spanStartTime =
+    getEventTimestamp(spanStartEvent) ?? new Date(step.createdAt);
   let activeStartTime = step.startedAt ? new Date(step.startedAt) : undefined;
   const firstStartEvent = stepEvents.find(
     (event) => event.eventType === 'step_started'
   );
   if (firstStartEvent) {
-    // `step.startedAt` is the server-side creation timestamp, and `event.createdAt` is
-    // the client-side creation timestamp. For now, to align the event marker with the
-    // line we show for step.startedAt, we overwrite here to always use client-side time.
-    activeStartTime = new Date(firstStartEvent.createdAt);
+    activeStartTime =
+      getEventTimestamp(firstStartEvent) ?? new Date(firstStartEvent.createdAt);
+  }
+
+  let endTime = new Date(maxEndTime);
+  if (step.completedAt) {
+    const completedEvent = stepEvents
+      .slice()
+      .reverse()
+      .find((event) => isTerminalStepEventType(event.eventType));
+    endTime = getEventTimestamp(completedEvent) ?? new Date(step.completedAt);
   }
 
   return {
@@ -291,10 +327,10 @@ export const hookEventsToHookEntity = (
     hookId: createdEvent.correlationId,
     runId: createdEvent.runId,
     token: createdEvent.eventData?.token,
-    createdAt: createdEvent.createdAt,
+    createdAt: getEventTimestamp(createdEvent) ?? createdEvent.createdAt,
     receivedCount: receivedEvents.length,
-    lastReceivedAt: lastReceivedEvent?.createdAt || undefined,
-    disposedAt: disposedEvents.at(-1)?.createdAt || undefined,
+    lastReceivedAt: getEventTimestamp(lastReceivedEvent),
+    disposedAt: getEventTimestamp(disposedEvents.at(-1)),
   };
 };
 
@@ -342,21 +378,50 @@ export function runToSpan(
 ): Span {
   const now = nowTime ?? new Date();
 
+  // Prefer the event occurrence timestamp when available so the root span
+  // lines up with child spans that already use event occurrence time.
+  const runCreatedEvent = runEvents.find(
+    (event) => event.eventType === 'run_created'
+  );
+  const runStartedEvent = runEvents.find(
+    (event) => event.eventType === 'run_started'
+  );
+  const terminalEvent = runEvents
+    .slice()
+    .reverse()
+    .find(
+      (event) =>
+        event.eventType === 'run_completed' ||
+        event.eventType === 'run_failed' ||
+        event.eventType === 'run_cancelled'
+    );
+  const spanStartTime =
+    getEventTimestamp(runCreatedEvent) ?? new Date(run.createdAt);
+  const activeStartTime =
+    getEventTimestamp(runStartedEvent) ??
+    (run.startedAt ? new Date(run.startedAt) : undefined);
+  const completedAt =
+    getEventTimestamp(terminalEvent) ?? run.completedAt ?? undefined;
+  const endTime = completedAt ?? now;
+
   // Only embed identification fields — not the full object with
-  // input/output/error which may contain non-cloneable types.
+  // input/output/error which may contain non-cloneable types. Lifecycle
+  // timestamps are event-derived so detail rows align with the span timeline.
   const { input: _i, output: _o, error: _e, ...runIdentity } = run;
   const attributes = {
     resource: 'run' as const,
-    data: runIdentity,
+    data: {
+      ...runIdentity,
+      createdAt: spanStartTime,
+      startedAt: activeStartTime,
+      completedAt,
+    },
   };
 
-  // Use createdAt as span start time, with activeStartTime for when execution began
-  const spanStartTime = new Date(run.createdAt);
-  const activeStartTime = run.startedAt ? new Date(run.startedAt) : undefined;
-  const endTime = run.completedAt ?? now;
-
   // Convert run-level events to span events
-  const events = convertEventsToSpanEvents(runEvents, false);
+  const events = convertEventsToSpanEvents(runEvents, false, {
+    preferOccurredAt: true,
+  });
 
   return {
     spanId: String(run.runId),

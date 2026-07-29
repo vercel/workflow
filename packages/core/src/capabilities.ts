@@ -15,11 +15,30 @@
  *    `@workflow/core` version that supports it
  * 3. The `getRunCapabilities()` function will automatically include it
  *
+ * ## Adding a new non-format capability
+ *
+ * Some capabilities aren't serialization format prefixes — e.g.
+ * byte-stream wire framing is an envelope around chunks rather than
+ * a content format. For those, add a boolean field to `RunCapabilities`
+ * and an entry in `CAPABILITY_VERSION_TABLE` below.
+ *
  * ## History
  *
  * - `encr` (AES-256-GCM encryption): added in `4.2.0-beta.64`
  *   Commit: 7618ac36 "Wire AES-GCM encryption into serialization layer (#1251)"
  *   https://github.com/vercel/workflow/commit/7618ac36
+ * - `framedByteStreams` (wire-level chunk framing for byte streams): added in `5.0.0-beta.15`
+ * - `gzip` (gzip payload compression): added in `5.0.0-beta.18`
+ * - `zstd` (zstd payload compression, preferred codec): added in `5.0.0-beta.18`
+ *   alongside gzip — they co-ship, so any run that can read one can read both.
+ * - `encp` (X25519 sealed-box encryption for cross-run writes): added in
+ *   `5.0.0-beta.37`. Note that producers do **not** gate `encp` on this table:
+ *   they gate on the presence of `encryptionPublicKey` on the target run,
+ *   which a run only carries if the deployment that created it could also
+ *   open `encp`. The entry exists so the capability set stays a complete,
+ *   auditable description of a run's decoding ability.
+ * - `supportsQueueHookInput` (`hookInput` on the workflow queue payload for
+ *   resilient `resumeHook()`): added in `5.0.0-beta.38`.
  */
 
 import semver from 'semver';
@@ -39,6 +58,17 @@ export interface RunCapabilities {
    * if encryption is supported, etc.
    */
   supportedFormats: ReadonlySet<SerializationFormatType>;
+
+  /**
+   * Whether the target run can decode wire-framed byte streams. When true,
+   * byte streams (`type: 'bytes'` ReadableStreams passed across boundaries)
+   * are wrapped in a length-prefixed frame envelope on the wire so the
+   * reader can identify chunk boundaries — which enables auto-reconnect
+   * on transient stream errors. When false, byte streams are written as
+   * raw bytes (the legacy format) for compatibility with older runs.
+   */
+  framedByteStreams: boolean;
+
   /**
    * Whether the target run's deployment understands `hookInput` on the
    * workflow queue payload (resilient `resumeHook()`). Older runtimes parse
@@ -60,9 +90,51 @@ const FORMAT_VERSION_TABLE: ReadonlyArray<{
   minVersion: string;
 }> = [
   { format: SerializationFormat.ENCRYPTED, minVersion: '4.2.0-beta.64' },
+  // TODO(release): verify this matches the actual version that ships payload
+  // compression. If a "Version Packages (beta)" PR merges before this change,
+  // bump to the next beta. A too-low cutoff makes new producers write
+  // compressed payloads to consumers that cannot decompress them; too-high
+  // merely delays the optimization (safe). gzip and zstd ship together, so
+  // they share a min version — a run that can read one can read both.
+  { format: SerializationFormat.GZIP, minVersion: '5.0.0-beta.18' },
+  { format: SerializationFormat.ZSTD, minVersion: '5.0.0-beta.18' },
+  // TODO(release): verify this matches the actual version that ships sealed-box
+  // encryption. If a "Version Packages (beta)" PR merges before this change,
+  // bump to the next beta. Unlike the entries above, a wrong cutoff here is
+  // not a correctness hazard: producers gate `encp` on the target run carrying
+  // an `encryptionPublicKey`, not on this table (see History above).
+  { format: SerializationFormat.SEALED, minVersion: '5.0.0-beta.37' },
   // Future entries:
   // { format: SerializationFormat.CBOR, minVersion: '5.x.y' },
   // { format: SerializationFormat.ENCRYPTED_V2, minVersion: '5.x.y' },
+];
+
+/**
+ * Maps non-format capability flags (booleans on `RunCapabilities`) to the
+ * minimum `@workflow/core` version that introduced support for them.
+ */
+const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
+  capability: keyof Omit<RunCapabilities, 'supportedFormats'>;
+  minVersion: string;
+}> = [
+  // TODO(release): verify this matches the actual version that ships byte-stream
+  // framing. If a "Version Packages (beta)" PR merges before this change, bump
+  // to the next beta. A too-low cutoff makes new producers write framed bytes to
+  // consumers that cannot unframe them (silent corruption); too-high merely
+  // delays the optimization (safe).
+  { capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' },
+  // TODO(release): verify this matches the actual first published version that
+  // ships resilient `resumeHook()` (`hookInput` on the queue payload). If a
+  // "Version Packages (beta)" PR merges before this change, bump to the next
+  // beta. A too-low cutoff silently loses resume payloads on older deployments
+  // (their queue-payload schema strips `hookInput`); too-high only disables
+  // the resilient path (fail-fast, today's behavior), which is safe.
+  //
+  // An exact match with our own `@workflow/core` version is also accepted in
+  // `getRunCapabilities` — pre-release builds (CI tarballs, local dev) report
+  // the not-yet-bumped version, and a run whose recorded version equals ours
+  // was created by the same build line that is doing the resume.
+  { capability: 'supportsQueueHookInput', minVersion: '5.0.0-beta.38' },
 ];
 
 /**
@@ -75,30 +147,13 @@ const BASELINE_FORMATS: ReadonlySet<SerializationFormatType> = new Set([
 ]);
 
 /**
- * Minimum `@workflow/core` version whose runtime materializes `hookInput`
- * from the workflow queue payload (resilient `resumeHook()`).
- *
- * IMPORTANT: this must be the first *published* version that ships the
- * feature. If the release that includes it ends up with a different version
- * number, update this constant in the same release. Setting it too low
- * silently loses resume payloads on older deployments (their queue-payload
- * schema strips `hookInput`); setting it too high only disables the
- * resilient path (fail-fast, today's behavior), which is the safe direction.
- *
- * An exact match with our own `@workflow/core` version is also accepted in
- * `getRunCapabilities` — pre-release builds (CI tarballs, local dev) report
- * the not-yet-bumped version, and a run whose recorded version equals ours
- * was created by the same build line that is doing the resume.
- */
-const QUEUE_HOOK_INPUT_MIN_VERSION = '5.0.0-beta.14';
-
-/**
  * Look up what serialization capabilities a workflow run supports based on
  * its `@workflow/core` version string (from `executionContext.workflowCoreVersion`).
  *
  * When the version is `undefined`, not a string, or not a valid semver string
  * (e.g. very old runs that predate the field, or corrupted metadata),
- * we assume the most conservative capabilities (baseline formats only).
+ * we assume the most conservative capabilities (baseline formats only,
+ * non-format capabilities all `false`).
  */
 export function getRunCapabilities(
   workflowCoreVersion: string | undefined
@@ -106,6 +161,7 @@ export function getRunCapabilities(
   if (!workflowCoreVersion || !semver.valid(workflowCoreVersion)) {
     return {
       supportedFormats: BASELINE_FORMATS,
+      framedByteStreams: false,
       supportsQueueHookInput: false,
     };
   }
@@ -118,11 +174,25 @@ export function getRunCapabilities(
     }
   }
 
-  // See QUEUE_HOOK_INPUT_MIN_VERSION for why an exact own-version match
-  // counts as supported.
-  const supportsQueueHookInput =
-    semver.gte(workflowCoreVersion, QUEUE_HOOK_INPUT_MIN_VERSION) ||
-    workflowCoreVersion === ownWorkflowCoreVersion;
+  const result: RunCapabilities = {
+    supportedFormats: formats,
+    framedByteStreams: false,
+    supportsQueueHookInput: false,
+  };
 
-  return { supportedFormats: formats, supportsQueueHookInput };
+  for (const { capability, minVersion } of CAPABILITY_VERSION_TABLE) {
+    if (semver.gte(workflowCoreVersion, minVersion)) {
+      result[capability] = true;
+    }
+  }
+
+  // A run whose recorded version exactly matches our own build was created by
+  // the same build line that is doing the resume, so it necessarily
+  // understands `hookInput` even when the version string predates the
+  // published cutoff (see CAPABILITY_VERSION_TABLE).
+  if (workflowCoreVersion === ownWorkflowCoreVersion) {
+    result.supportsQueueHookInput = true;
+  }
+
+  return result;
 }

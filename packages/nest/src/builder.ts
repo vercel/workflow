@@ -1,4 +1,4 @@
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { BaseBuilder, createBaseBuilderConfig } from '@workflow/builders';
 import { join } from 'pathe';
 import { rewriteTsImportsInContent } from './cjs-rewrite.js';

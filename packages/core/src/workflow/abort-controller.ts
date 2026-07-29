@@ -1,6 +1,10 @@
 import { ReplayDivergenceError } from '@workflow/errors';
 import { EventConsumerResult } from '../events-consumer.js';
-import type { WorkflowOrchestratorContext } from '../private.js';
+import {
+  awaitEarlierDeliveries,
+  registerDeliveryBarrier,
+  type WorkflowOrchestratorContext,
+} from '../private.js';
 import { hydrateStepReturnValue } from '../serialization.js';
 import { ABORT_HOOK_TOKEN, ABORT_STREAM_NAME } from '../symbols.js';
 import { getAbortStreamId } from '../util.js';
@@ -178,31 +182,92 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           // dehydration, so `'reason' in payload` is false and reason
           // ends up undefined on replay.
           const rawPayload = event.eventData?.payload;
+          // An abort is a branch-deciding delivery: `_setAborted` fires the
+          // signal's listeners, and a listener is free to invoke a step and
+          // draw a ULID. So it registers in the delivery-barrier registry as a
+          // 'hook' — which is exactly what the event is — so that wait, hook
+          // and step deliveries order against it by event-log position rather
+          // than by whose hydration finished first. It is always ARMED: unlike
+          // a buffered user hook payload, nothing about its delivery waits on
+          // workflow code asking for it.
+          //
+          // Resolving straight off the queue slot was sufficient only while
+          // every other delivery also resolved from its slot. Step results no
+          // longer do (see step.ts), so an abort whose slot ran while a
+          // log-earlier step sat behind a barrier would overtake it — see
+          // `delivery-barrier-coverage.test.ts`.
+          //
+          // The deferral is captured HERE, at event-consumption time, for the
+          // same two reasons spelled out in step.ts: the set of earlier
+          // deliveries stays a function of log position alone, and barriers
+          // that retire before this slot runs are still seen.
+          const eventIndex = ctx.eventsConsumer.eventIndex;
+          const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook');
+          const earlierDelivered = awaitEarlierDeliveries(
+            ctx,
+            eventIndex,
+            'hook'
+          );
+          // Account this abort as a pending delivery, exactly like step
+          // results (step.ts) and hook payloads (workflow/hook.ts) do. The
+          // suspension handler dehydrates queued step arguments only once
+          // `scheduleWhenIdle` observes `pendingDeliveries === 0`. Without
+          // this counter, a step dispatched right after the abort — e.g. one
+          // that receives `controller.signal` — can have its arguments
+          // serialized while the abort is still in flight behind
+          // `await hydrateStepReturnValue`, capturing `signal.aborted === false`
+          // (and a missing reason). Bumping the counter holds the suspension
+          // until `_setAborted` has landed, so downstream serialization is
+          // deterministic regardless of reason-hydration (decryption) latency.
+          //
+          // It is released inside the slot, before the detached deferral, so
+          // `scheduleWhenIdle` can still reach idle and retire the barriers
+          // that deferral may be waiting on — the same shape as the hook and
+          // step paths.
+          ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             let reason: unknown;
-            if (rawPayload !== undefined) {
-              try {
-                const hydrated = (await hydrateStepReturnValue(
-                  rawPayload,
-                  ctx.runId,
-                  ctx.encryptionKey,
-                  ctx.globalThis
-                )) as { reason?: unknown } | undefined;
-                if (
-                  hydrated &&
-                  typeof hydrated === 'object' &&
-                  'reason' in hydrated
-                ) {
-                  reason = hydrated.reason;
+            try {
+              if (rawPayload !== undefined) {
+                try {
+                  const prepared =
+                    await ctx.replayPayloadCache.prepareEventPayload(
+                      event.eventId,
+                      'payload',
+                      rawPayload
+                    );
+                  const hydrated = (await hydrateStepReturnValue(
+                    rawPayload,
+                    ctx.runId,
+                    ctx.encryptionKey,
+                    ctx.globalThis,
+                    {},
+                    prepared
+                  )) as { reason?: unknown } | undefined;
+                  if (
+                    hydrated &&
+                    typeof hydrated === 'object' &&
+                    'reason' in hydrated
+                  ) {
+                    reason = hydrated.reason;
+                  }
+                } catch {
+                  // Best-effort: if hydration fails, fall back to undefined
+                  // reason. The signal still aborts; the user just won't see
+                  // the original reason. Matches WorkflowAbortSignal's spec
+                  // fallback (DOMException AbortError).
                 }
-              } catch {
-                // Best-effort: if hydration fails, fall back to undefined
-                // reason. The signal still aborts; the user just won't see
-                // the original reason. Matches WorkflowAbortSignal's spec
-                // fallback (DOMException AbortError).
               }
+            } finally {
+              ctx.pendingDeliveries--;
             }
-            this.signal._setAborted(reason);
+            // Detached, like the other deliveries: `awaitEarlierDeliveries`
+            // may be waiting on a delivery this very queue drives, and
+            // blocking a slot on that would deadlock the queue.
+            void earlierDelivered.then(() => {
+              barrier.markDelivered();
+              this.signal._setAborted(reason);
+            });
           });
 
           ctx.invocationsQueue.delete(correlationId);

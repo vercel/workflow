@@ -1,4 +1,6 @@
+import type { StringValue } from 'ms';
 import { throwNotInWorkflowContext } from './context-errors.js';
+import type { Run } from './runtime/run.js';
 import type { Serializable } from './schemas.js';
 
 /**
@@ -28,6 +30,31 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
    * The token used to identify this hook.
    */
   token: string;
+
+  /**
+   * Returns the {@link Run} already using this token, or `null` when this Hook
+   * registers successfully.
+   *
+   * Calling `createHook()` alone does not register the hook — registration
+   * only happens when the workflow suspends. Awaiting `getConflict()`
+   * suspends the workflow to commit the hook registration without waiting for
+   * payload data.
+   *
+   * If it returns a run, this Hook was not created. Awaiting the Hook instead
+   * rejects with `HookConflictError`.
+   *
+   * @example
+   * ```ts
+   * using hook = createHook({ token: `order:${orderId}` });
+   * const conflict = await hook.getConflict();
+   * if (conflict) {
+   *   // another run already owns this token
+   *   return { status: 'duplicate', runId: conflict.runId };
+   * }
+   * // this Hook registered without waiting for payload data
+   * ```
+   */
+  getConflict(): Promise<Run<unknown> | null>;
 
   /**
    * Disposes the hook, releasing its token for reuse by other workflows.
@@ -94,7 +121,9 @@ export interface HookOptions {
    * tokens are always randomly generated to prevent unauthorized access
    * to the public webhook endpoint.
    *
-   * If not provided, a randomly generated token will be assigned.
+   * If provided, the token must be a non-empty string; passing an empty
+   * string throws. If not provided (or `undefined`), a randomly generated
+   * token will be assigned.
    *
    * @example
    *
@@ -106,6 +135,37 @@ export interface HookOptions {
    * ```
    */
   token?: string;
+
+  /**
+   * **Experimental.** Keeps this Hook's token unavailable for at least the
+   * configured time after `createHook()` runs.
+   *
+   * Accepts the same values as `sleep()`: a duration string, a number of
+   * milliseconds, or an absolute `Date`. Relative durations start when
+   * `createHook()` runs, not when the workflow ends.
+   *
+   * The Hook remains active until the workflow ends, even if the configured
+   * time passes first. Another Hook can use the token only after both the run
+   * has ended and the configured time has passed.
+   * After the run ends, the Hook can still be found with `getHookByToken()`
+   * until retention ends, but it cannot be resumed.
+   *
+   * Calling `dispose()` (including through `using`) releases the token
+   * immediately.
+   *
+   * `createHook()` throws if the configured World does not support this
+   * experimental option.
+   *
+   * @example
+   *
+   * ```ts
+   * const hook = createHook({
+   *   token: `order:${orderId}`,
+   *   experimental_minRetention: '30d',
+   * });
+   * ```
+   */
+  experimental_minRetention?: StringValue | Date | number;
 
   /**
    * Additional user-defined data to include with the hook payload.
@@ -127,8 +187,8 @@ export interface HookOptions {
    * Whether this hook can be resumed via the public webhook endpoint.
    *
    * When `true`, the hook can be triggered by sending an HTTP request to the
-   * public `/.well-known/workflow/v1/webhook/{token}` URL. This is automatically
-   * set when using `createWebhook()`.
+   * public workflow webhook URL. This is automatically set when using
+   * `createWebhook()`.
    *
    * When `false` (the default), the hook can only be resumed server-side
    * via `resumeHook()`.
@@ -139,7 +199,10 @@ export interface HookOptions {
 }
 
 export interface WebhookOptions
-  extends Omit<HookOptions, 'token' | 'isWebhook'> {
+  extends Omit<
+    HookOptions,
+    'token' | 'isWebhook' | 'experimental_minRetention'
+  > {
   /**
    * If set to a `Response` object, the webhook will automatically
    * respond with the specified response.

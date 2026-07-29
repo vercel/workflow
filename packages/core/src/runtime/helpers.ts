@@ -1,6 +1,6 @@
 import {
+  PreconditionFailedError,
   RUN_ERROR_CODES,
-  ThrottleError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
@@ -11,34 +11,24 @@ import type {
   World,
 } from '@workflow/world';
 import {
+  getQueueTopicPrefix,
   HealthCheckPayloadSchema,
+  resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  ulidToDate,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-
-import { type CryptoKey, importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
+import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
+import {
+  deriveRunPayloadKeys,
+  type PayloadKey,
+} from '../serialization/encryption.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
 import { getWorldLazy } from './get-world-lazy.js';
-
-/**
- * Checks if an error from events.create() is retryable via the queue-payload
- * fallback path. Used by `start()` (resilient start — run_created → run_started
- * fallback) and `resumeHook()` (resilient resume — hook_received fallback
- * materialized by the workflow runtime from `hookInput` on the queue message).
- *
- * - ThrottleError (429): rate limited, will likely succeed later
- * - WorkflowWorldError with status >= 500: transient server error
- */
-export function isRetryableEventError(err: unknown): boolean {
-  if (ThrottleError.is(err)) return true;
-  if (WorkflowWorldError.is(err) && err.status && err.status >= 500)
-    return true;
-  return false;
-}
 
 /** Default timeout for health checks in milliseconds */
 const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
@@ -55,13 +45,20 @@ const SAFE_WORKFLOW_NAME_PATTERN = /^[a-zA-Z0-9_\-./@]+$/;
  * Ensures the workflow name only contains safe characters before
  * interpolating it into the queue name string.
  */
-export function getWorkflowQueueName(workflowName: string): ValidQueueName {
+export function getWorkflowQueueName(
+  workflowName: string,
+  namespace?: string
+): ValidQueueName {
   if (!SAFE_WORKFLOW_NAME_PATTERN.test(workflowName)) {
     throw new Error(
       `Invalid workflow name "${workflowName}": must only contain alphanumeric characters, underscores, hyphens, dots, forward slashes, or at signs`
     );
   }
-  return `__wkf_workflow_${workflowName}` as ValidQueueName;
+  const prefix = getQueueTopicPrefix(
+    'workflow',
+    resolveQueueNamespace(namespace)
+  );
+  return `${prefix}${workflowName}` as ValidQueueName;
 }
 
 const generateId = monotonicFactory();
@@ -92,6 +89,15 @@ export interface HealthCheckResult {
    * or a non-JSON plain-text health response.
    */
   workflowCoreVersion?: string;
+  /**
+   * The target run's X25519 public key (base64), returned only when the probe
+   * carried a `runId` and the responding deployment has encryption enabled.
+   *
+   * Lets a cross-deployment `start()` seal the workflow arguments using a
+   * response it was already waiting on, instead of making a separate
+   * key-lookup request.
+   */
+  encryptionPublicKey?: string;
 }
 
 /**
@@ -123,21 +129,50 @@ function generateHealthCheckRunId(correlationId: string): string {
  * The caller can listen to this stream to get the health check response.
  *
  * @param healthCheck - The parsed health check payload
- * @param endpoint - Which endpoint is responding ('workflow' or 'step')
  */
 export async function handleHealthCheckMessage(
   healthCheck: HealthCheckPayload,
-  endpoint: 'workflow' | 'step',
   worldSpecVersion?: number
 ): Promise<void> {
   const world = await getWorldLazy();
   const streamName = getHealthCheckStreamName(healthCheck.correlationId);
+
+  // When the probe names a run the caller is about to create, publish that
+  // run's public key. We are executing inside the target deployment, so its
+  // key material is available locally (no API call), and the caller can then
+  // seal the workflow arguments straight from this response rather than
+  // making a separate key-lookup request.
+  //
+  // Only a *public* key may travel this way: the probe response stream is
+  // deliberately unauthenticated, so anything secret would be exposed.
+  // Best-effort — a failure here must not fail the health check itself, which
+  // callers also rely on for plain capability detection.
+  let encryptionPublicKey: string | undefined;
+  if (healthCheck.runId) {
+    try {
+      const rawKey = await world.getEncryptionKeyForRun?.(healthCheck.runId);
+      if (rawKey) {
+        encryptionPublicKey = bytesToBase64(
+          (await deriveRunKeyPair(rawKey)).publicKey
+        );
+      }
+    } catch (err) {
+      runtimeLogger.warn(
+        'Health check could not derive a run public key; the caller will fall back to a key lookup',
+        {
+          correlationId: healthCheck.correlationId,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      );
+    }
+  }
+
   const response = JSON.stringify({
     healthy: true,
-    endpoint,
     correlationId: healthCheck.correlationId,
     specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
     workflowCoreVersion,
+    ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
     timestamp: Date.now(),
   });
   // Use a deterministic fake runId derived from the correlationId so that
@@ -147,24 +182,38 @@ export async function handleHealthCheckMessage(
   await world.streams.close(fakeRunId, streamName);
 }
 
-export type HealthCheckEndpoint = 'workflow' | 'step';
-
 export interface HealthCheckOptions {
   /** Timeout in milliseconds to wait for health check response. Default: 30000 (30s) */
   timeout?: number;
   /** Deployment ID to send the health check to. Falls back to process.env.VERCEL_DEPLOYMENT_ID. */
   deploymentId?: string;
+  /**
+   * The run id the caller is about to create. When set, the responding
+   * deployment derives that run's public key locally and returns it as
+   * `encryptionPublicKey`, letting a cross-deployment `start()` seal the
+   * workflow arguments without a separate key lookup.
+   */
+  runId?: string;
+  /**
+   * Queue namespace of the target deployment (e.g. `'eve'` for topics like
+   * `__eve_wkf_workflow_*`). Falls back to `WORKFLOW_QUEUE_NAMESPACE` in the
+   * calling process. Cross-context callers (e.g. the observability
+   * dashboard) must pass the target deployment's namespace explicitly —
+   * the env fallback resolves in the caller's process, and a message
+   * published to a mismatched topic has no consumer, so the check would
+   * always time out.
+   */
+  namespace?: string;
 }
 
 /**
  * Performs a health check by sending a message through the queue pipeline
- * and verifying it is processed by the specified endpoint.
+ * and verifying it is processed by the combined workflow endpoint.
  *
  * This function bypasses Deployment Protection on Vercel because it goes
  * through the queue infrastructure rather than direct HTTP.
  *
  * @param world - The World instance to use for the health check
- * @param endpoint - Which endpoint to health check: 'workflow' or 'step'
  * @param options - Optional configuration for the health check
  * @returns Promise resolving to health check result
  */
@@ -178,6 +227,28 @@ const HEALTH_CHECK_READ_TIMEOUT = 500;
  * Read chunks from a stream with a timeout per read operation.
  * Returns { chunks, timedOut } where timedOut indicates if a read timed out.
  */
+/**
+ * Race a promise against a deadline. Rejects with a timeout error when the
+ * deadline elapses first. Used to bound `world.streams.get()` inside the
+ * health-check poll loop: some worlds hold that request open until the
+ * stream has data (e.g. workflow-server holds unwritten streams open for
+ * ~2 minutes), which would otherwise blow through the configured health
+ * check timeout — the `while` condition is only re-checked between
+ * iterations.
+ */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`Operation timed out after ${ms}ms`)),
+        ms
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 async function readStreamWithTimeout(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   readTimeout: number
@@ -212,6 +283,7 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
   healthy: boolean;
   specVersion?: number;
   workflowCoreVersion?: string;
+  encryptionPublicKey?: string;
 } | null {
   if (chunks.length === 0) return null;
 
@@ -251,6 +323,7 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
     healthy: boolean;
     specVersion?: number;
     workflowCoreVersion?: string;
+    encryptionPublicKey?: string;
   } = {
     healthy: r.healthy as boolean,
   };
@@ -260,29 +333,41 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
   if (typeof r.workflowCoreVersion === 'string') {
     parsed.workflowCoreVersion = r.workflowCoreVersion;
   }
+  if (typeof r.encryptionPublicKey === 'string') {
+    parsed.encryptionPublicKey = r.encryptionPublicKey;
+  }
   return parsed;
 }
 
 export async function healthCheck(
   world: World,
-  endpoint: HealthCheckEndpoint,
   options?: HealthCheckOptions
 ): Promise<HealthCheckResult> {
   const timeout = options?.timeout ?? DEFAULT_HEALTH_CHECK_TIMEOUT;
-  const correlationId = generateId();
+  // Use the world's ID generator when available so the correlationId is a
+  // region-tagged ULID. The health-check response is delivered over a stream
+  // whose name embeds this correlationId; under platform-directed routing the
+  // reader and the responding endpoint can be served from different physical
+  // regions, so the region must be encoded in the ID itself for both sides to
+  // resolve the same (region-pinned) backend. Falls back to a plain ULID for
+  // worlds that don't tag IDs (e.g. local), which resolve to the default
+  // region on both sides.
+  const correlationId = world.createRunId?.() ?? generateId();
   const streamName = getHealthCheckStreamName(correlationId);
 
-  const queueName: ValidQueueName =
-    endpoint === 'workflow'
-      ? '__wkf_workflow_health_check'
-      : '__wkf_step_health_check';
+  const queueName =
+    `${getQueueTopicPrefix('workflow', resolveQueueNamespace(options?.namespace))}health_check` as ValidQueueName;
 
   const startTime = Date.now();
 
   try {
     await world.queue(
       queueName,
-      { __healthCheck: true, correlationId },
+      {
+        __healthCheck: true,
+        correlationId,
+        ...(options?.runId ? { runId: options.runId } : {}),
+      },
       {
         // Use JSON transport so the health check works against both
         // old (JSON-only) and new (dual) deployments.
@@ -293,9 +378,13 @@ export async function healthCheck(
 
     while (Date.now() - startTime < timeout) {
       try {
-        const stream = await world.streams.get(
-          generateHealthCheckRunId(correlationId),
-          streamName
+        const remainingMs = timeout - (Date.now() - startTime);
+        const stream = await withDeadline(
+          world.streams.get(
+            generateHealthCheckRunId(correlationId),
+            streamName
+          ),
+          remainingMs
         );
         const reader = stream.getReader();
         const { chunks, timedOut } = await readStreamWithTimeout(
@@ -368,14 +457,25 @@ function recordRequestedEventCursor(
   requestedCursors.add(cursor);
 }
 
-function appendUniqueEvents(
+/**
+ * Appends events whose IDs are not already present in `target`.
+ *
+ * Pass the IDs currently present in `target` when appending repeatedly to the
+ * same array. The set is updated alongside `target`.
+ */
+export function appendUniqueEvents(
   target: Event[],
-  targetIds: Set<string>,
-  events: Event[]
+  events: readonly Event[],
+  targetIds?: Set<string>
 ): void {
+  if (events.length === 0) {
+    return;
+  }
+
+  const ids = targetIds ?? new Set(target.map((event) => event.eventId));
   for (const event of events) {
-    if (!targetIds.has(event.eventId)) {
-      targetIds.add(event.eventId);
+    if (!ids.has(event.eventId)) {
+      ids.add(event.eventId);
       target.push(event);
     }
   }
@@ -486,7 +586,7 @@ export async function loadWorkflowRunEvents(
           throw error;
         }
 
-        appendUniqueEvents(loadedEvents, loadedEventIds, response.data);
+        appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
         hasMore = response.hasMore;
         assertEventPaginationProgress(
           runId,
@@ -532,6 +632,134 @@ export async function loadWorkflowRunEvents(
       return { events: loadedEvents, cursor };
     }
   );
+}
+
+/**
+ * Maximum number of times a replay-context event creation will reload the
+ * event log and retry after the backend rejects it as stale (412). After this
+ * many failed reloads the precondition error propagates so the run is
+ * re-invoked from the queue with a fresh replay.
+ */
+export const PRECONDITION_MAX_RELOAD_RETRIES = 2;
+
+/**
+ * A mutable view of the runtime's in-memory event log. `withPreconditionRetry`
+ * appends freshly-loaded events to `events` (in place) and advances `cursor`
+ * when it reloads, so the caller's loaded snapshot stays current.
+ */
+export interface MutableEventLog {
+  events: Event[];
+  cursor: string | null;
+}
+
+/**
+ * Whether the optimistic-concurrency guard for event creation is enabled.
+ * **On by default** where the runtime executes: replay-context creates send a
+ * `stateUpdatedAt` snapshot (and can be rejected with 412 by a supporting
+ * backend) unless `WORKFLOW_PRECONDITION_GUARD` is set to `0`. Backends without
+ * guard support ignore the snapshot, so enabling by default is
+ * backward-compatible.
+ */
+export function isPreconditionGuardEnabled(): boolean {
+  return process.env.WORKFLOW_PRECONDITION_GUARD !== '0';
+}
+
+/**
+ * The `stateUpdatedAt` value to send with a replay-context event creation: the
+ * ULID time (epoch ms) of the latest event the runtime has loaded. Events are
+ * stored in ascending order, so the last one is the newest. Returns `undefined`
+ * when there are no events or the latest id is not a decodable ULID.
+ *
+ * Granularity: snapshots are epoch-milliseconds, and the backend allows an
+ * equal-timestamp snapshot (an up-to-date client must not be rejected). Two
+ * out-of-band events landing in the same millisecond where only the first was
+ * loaded therefore pass the guard undetected — the guard is best-effort by
+ * design, and fails open rather than livelocking.
+ */
+export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
+  const last = events[events.length - 1];
+  if (!last) {
+    return undefined;
+  }
+  // Event IDs are prefixed ULIDs (e.g. `evnt_01ARYZ...`); ulidToDate only
+  // decodes the bare 26-char ULID, so strip the prefix first.
+  const eventId = last.eventId;
+  const underscore = eventId.lastIndexOf('_');
+  const rawUlid = underscore === -1 ? eventId : eventId.slice(underscore + 1);
+  const time = ulidToDate(rawUlid)?.getTime();
+  if (time === undefined) {
+    // Fail open: a non-decodable id disarms the guard for this create (no
+    // snapshot sent). Log so a fleet-wide silent disarm is diagnosable.
+    runtimeLogger.debug(
+      'Precondition guard: latest event id is not a decodable ULID; sending no snapshot',
+      { eventId }
+    );
+    return undefined;
+  }
+  return time;
+}
+
+/**
+ * The `stateUpdatedAt` to attach to a replay-context event creation:
+ * the loaded snapshot's ULID time when the precondition guard is enabled,
+ * `undefined` (no guard, backend behaves as before) otherwise.
+ */
+export function stateUpdatedAtForCreate(events: Event[]): number | undefined {
+  return isPreconditionGuardEnabled()
+    ? latestEventStateUpdatedAt(events)
+    : undefined;
+}
+
+/**
+ * Runs a replay-context event creation with the optimistic-concurrency guard.
+ *
+ * `op` receives the current `stateUpdatedAt` (the ULID time of the latest
+ * loaded event) to pass to `world.events.create`. If the backend rejects the
+ * creation as stale (`PreconditionFailedError` / 412), the event log is
+ * reloaded to completion from the last cursor, merged into `log` in place, and
+ * `op` is retried with the now-newer snapshot — up to
+ * `PRECONDITION_MAX_RELOAD_RETRIES` times. If it still fails, the error is
+ * rethrown so the run falls back to a queue re-invocation. Non-precondition
+ * errors are rethrown immediately.
+ */
+export async function withPreconditionRetry<T>(
+  runId: string,
+  log: MutableEventLog,
+  op: (stateUpdatedAt: number | undefined) => Promise<T>
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await op(stateUpdatedAtForCreate(log.events));
+    } catch (error) {
+      if (
+        !PreconditionFailedError.is(error) ||
+        attempt >= PRECONDITION_MAX_RELOAD_RETRIES
+      ) {
+        throw error;
+      }
+      runtimeLogger.info(
+        'Event creation rejected as stale; reloading event log and retrying',
+        {
+          workflowRunId: runId,
+          attempt: attempt + 1,
+          maxRetries: PRECONDITION_MAX_RELOAD_RETRIES,
+        }
+      );
+      const loaded = await loadWorkflowRunEvents(
+        runId,
+        log.cursor ?? undefined
+      );
+      appendUniqueEvents(log.events, loaded.events);
+      // When several creates share one `log` (e.g. hook creations under
+      // `Promise.all` in `handleSuspension`), concurrent 412s can reload
+      // concurrently. The event merge above is safe — `appendUniqueEvents`
+      // builds its dedup set synchronously right before appending — but this
+      // cursor write is last-write-wins, so an interleaved older reload can
+      // briefly regress the cursor. The only consequence is refetching a few
+      // already-deduped events on a later load; correctness is unaffected.
+      log.cursor = loaded.cursor ?? log.cursor;
+    }
+  }
 }
 
 /**
@@ -631,13 +859,21 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
 }
 
 /**
- * Returns a memoized accessor for the per-run AES-256 encryption key.
+ * Returns a memoized accessor for a run's full encryption capability.
  *
- * The first call resolves the key via `world.getEncryptionKeyForRun` (which
- * may do HKDF derivation locally on Vercel, or a network fetch from
- * external contexts) and imports it as a `CryptoKey`; subsequent calls
- * await the same cached promise. If the world doesn't support encryption
- * or the run has no key configured, the cached value is `undefined`.
+ * The first call resolves the run's key material via
+ * `world.getEncryptionKeyForRun` (which may do HKDF derivation locally on
+ * Vercel, or a network fetch from external contexts) and derives a
+ * {@link PayloadKey} from it; subsequent calls await the same cached promise.
+ * If the world doesn't support encryption or the run has no key configured,
+ * the cached value is `undefined`.
+ *
+ * The resolved value is deliberately the *full* capability — the symmetric AES
+ * key plus the run's X25519 keypair — not just a `CryptoKey`. A run reading
+ * its own event log can encounter sealed (`encp`) payloads that another run
+ * wrote to it (a cross-deployment hook resumption, say), and opening those
+ * needs the keypair. Resolving only the symmetric key would leave those
+ * payloads unopenable and wedge the run.
  *
  * Used by step / workflow handlers to defer the (potentially expensive)
  * key fetch until the first code path that actually needs it — typically
@@ -655,8 +891,8 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
 export function memoizeEncryptionKey(
   world: World,
   runOrId: WorkflowRun | string
-): () => Promise<CryptoKey | undefined> {
-  let cached: Promise<CryptoKey | undefined> | undefined;
+): () => Promise<PayloadKey | undefined> {
+  let cached: Promise<PayloadKey | undefined> | undefined;
   return () => {
     if (!cached) {
       cached = (async () => {
@@ -667,7 +903,11 @@ export function memoizeEncryptionKey(
           typeof runOrId === 'string'
             ? await world.getEncryptionKeyForRun?.(runOrId)
             : await world.getEncryptionKeyForRun?.(runOrId);
-        return rawKey ? await importKey(rawKey) : undefined;
+        // Resolve the *full* capability, not just the symmetric key: a run
+        // reading its own event log may encounter sealed (`encp`) payloads
+        // that another run wrote to it, and opening those needs the run's
+        // X25519 scalar as well.
+        return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
       })();
     }
     return cached;

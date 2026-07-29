@@ -1,6 +1,16 @@
-import { HookConflictError, ReplayDivergenceError } from '@workflow/errors';
-import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
+import {
+  FatalError,
+  HookConflictError,
+  ReplayDivergenceError,
+} from '@workflow/errors';
+import { WORKFLOW_DESERIALIZE } from '@workflow/serde';
+import {
+  type PromiseWithResolvers,
+  parseDurationToDate,
+  withResolvers,
+} from '@workflow/utils';
 import type { HookConflictEvent } from '@workflow/world';
+import { getSerializationClass, RUN_CLASS_ID } from '../class-serialization.js';
 import type { Hook, HookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
@@ -11,13 +21,87 @@ import {
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from '../private.js';
+import type { Run } from '../runtime/run.js';
 import { hydrateStepReturnValue } from '../serialization.js';
+
+/**
+ * Constructs a `Run` handle for the run that owns a conflicting hook
+ * token, for resolution through `hook.getConflict()`.
+ *
+ * The instance is created through the serialization class registry on
+ * the VM's globalThis — the same channel that revives serialized `Run`
+ * instances (e.g. `start()` return values crossing from a step into the
+ * workflow). The registered class is the VM bundle's plugin-compiled
+ * `Run`, whose methods are durable step proxies — safe to call from
+ * workflow code — and construction goes through its
+ * `WORKFLOW_DESERIALIZE` hook, exactly as the `Instance` reviver would.
+ *
+ * Returns `null` when a real `Run` cannot be constructed: the conflict
+ * event lacks `conflictingRunId` (written by an old world), or the VM's
+ * registry has no `Run` (a context that never evaluated the
+ * workflow-mode `create-hook` module, which aliases it under
+ * `RUN_CLASS_ID`). `getConflict` awaiters then reject with
+ * `HookConflictError` instead of resolving with a value that doesn't
+ * honor the `Run` contract.
+ */
+function createConflictingRun(
+  ctx: WorkflowOrchestratorContext,
+  conflictingRunId: string | undefined
+): Run<unknown> | null {
+  if (typeof conflictingRunId !== 'string') {
+    return null;
+  }
+  const RunClass = getSerializationClass(RUN_CLASS_ID, ctx.globalThis) as
+    | (abstract new (
+        ...args: never
+      ) => Run<unknown>)
+    | undefined;
+  const deserialize = (RunClass as any)?.[WORKFLOW_DESERIALIZE];
+  if (typeof deserialize !== 'function') {
+    return null;
+  }
+  return deserialize.call(RunClass, { runId: conflictingRunId });
+}
 
 export function createCreateHook(ctx: WorkflowOrchestratorContext) {
   return function createHookImpl<T = any>(options: HookOptions = {}): Hook<T> {
+    // Reject an explicit empty-string token. A token must either be omitted
+    // (or `undefined`/`null`) to get a randomly generated one, or be an
+    // explicit non-empty string. An empty string is almost always an
+    // accidental value (e.g. an unset variable) and would otherwise slip
+    // through the `??` below — which only falls back for nullish values — and
+    // be used as a meaningless, non-deterministic token.
+    if (options.token === '') {
+      throw new Error(
+        '`createHook()` was called with an empty string token. Pass a non-empty token, or omit the `token` option to use a randomly generated one.'
+      );
+    }
+
+    if (
+      options.isWebhook === true &&
+      options.experimental_minRetention !== undefined
+    ) {
+      throw new Error(
+        'Webhook hooks do not support `experimental_minRetention`. Use a non-webhook `createHook()` with `resumeHook()`.'
+      );
+    }
+
+    if (
+      options.experimental_minRetention !== undefined &&
+      ctx.worldCapabilities?.hookRetention?.active !== true
+    ) {
+      throw new FatalError(
+        'The configured World does not support `experimental_minRetention` for Hooks.'
+      );
+    }
+
     // Generate hook ID and token
     const correlationId = `hook_${ctx.generateUlid()}`;
     const token = options.token ?? ctx.generateNanoid();
+    const tokenRetentionUntil =
+      options.experimental_minRetention === undefined
+        ? undefined
+        : parseDurationToDate(options.experimental_minRetention);
 
     // Add hook creation to invocations queue (using Map for O(1) operations)
     const isWebhook = options.isWebhook ?? false;
@@ -26,6 +110,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       type: 'hook',
       correlationId,
       token,
+      tokenRetentionUntil,
       metadata: options.metadata,
       isWebhook,
     });
@@ -40,7 +125,15 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // Queue of promises that resolve to the next hook payload
     const promises: PromiseWithResolvers<T>[] = [];
 
+    // Queue of promises that resolve once hook registration is confirmed
+    // (with `null`) or a token conflict is detected (with the conflicting
+    // `Run`). These back the `hook.getConflict()` getter.
+    const getConflictPromises: PromiseWithResolvers<Run<unknown> | null>[] = [];
+
     let eventLogEmpty = false;
+
+    // Track if the event log confirms hook creation happened
+    let hasCreated = false;
 
     // Track if the event log confirms disposal happened (replay no-op)
     let hasDisposedEvent = false;
@@ -48,6 +141,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // Track if we have a conflict so we can reject future awaits
     let hasConflict = false;
     let conflictErrorRef: HookConflictError | null = null;
+    // The conflicting run handle, shared by every `getConflict` await so
+    // repeated awaits observe the same instance deterministically.
+    let conflictRunRef: Run<unknown> | null = null;
 
     webhookLogger.debug('Hook consumer setup', { correlationId, token });
     ctx.eventsConsumer.subscribe((event) => {
@@ -57,7 +153,10 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (!event) {
         eventLogEmpty = true;
 
-        if (promises.length > 0 && payloadsQueue.length === 0) {
+        if (
+          (promises.length > 0 && payloadsQueue.length === 0) ||
+          (getConflictPromises.length > 0 && !hasCreated && !hasConflict)
+        ) {
           scheduleWhenIdle(ctx, () => {
             ctx.onWorkflowError(
               new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
@@ -94,7 +193,18 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         const queueItem = ctx.invocationsQueue.get(correlationId);
         if (queueItem && queueItem.type === 'hook') {
           queueItem.hasCreatedEvent = true;
+          queueItem.tokenRetentionUntil = event.eventData.tokenRetentionUntil;
         }
+        hasCreated = true;
+
+        const pendingGetConflictPromises = getConflictPromises.slice();
+        getConflictPromises.length = 0;
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          for (const resolver of pendingGetConflictPromises) {
+            resolver.resolve(null);
+          }
+        });
+
         return EventConsumerResult.Consumed;
       }
 
@@ -114,16 +224,35 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // Mark that we have a conflict so future awaits also reject
         hasConflict = true;
         conflictErrorRef = conflictError;
+        conflictRunRef = createConflictingRun(
+          ctx,
+          conflictEvent.eventData.conflictingRunId
+        );
 
         // Capture and drain pending promises synchronously so the null event
         // handler won't see them and trigger a spurious WorkflowSuspension.
-        // The actual rejections are deferred through promiseQueue for ordering.
+        // The actual settlements are deferred through promiseQueue for
+        // ordering. Payload awaiters reject with HookConflictError, while
+        // `getConflict` awaiters resolve with the conflicting run so the
+        // workflow can branch on the conflict without throwing. When no
+        // real `Run` can be constructed (see `createConflictingRun`),
+        // `getConflict` awaiters reject with the HookConflictError instead
+        // of resolving with a value that doesn't honor the `Run` contract.
         const pendingPromises = promises.slice();
         promises.length = 0;
+        const pendingGetConflictPromises = getConflictPromises.slice();
+        getConflictPromises.length = 0;
 
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
           for (const resolver of pendingPromises) {
             resolver.reject(conflictError);
+          }
+          for (const resolver of pendingGetConflictPromises) {
+            if (conflictRunRef) {
+              resolver.resolve(conflictRunRef);
+            } else {
+              resolver.reject(conflictError);
+            }
           }
         });
 
@@ -132,34 +261,71 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
       if (event.eventType === 'hook_received') {
         // Register a 'hook' delivery barrier at this event's log index so a
-        // later-in-log `wait_completed` is delivered only after this hook,
-        // and so this hook is delivered only after every earlier-in-log
-        // `wait_completed` — keeping any `Promise.race` against a wait
-        // deterministic and aligned with the committed event log, regardless
-        // of microtask-hop count, hydration time, or race-argument order.
+        // later-in-log `wait_completed` or step result is delivered only after
+        // this hook, and so this hook is delivered only after every
+        // earlier-in-log `wait_completed` and step result — keeping any
+        // `Promise.race` (or concurrent-branch ULID allocation) deterministic
+        // and aligned with the committed event log, regardless of
+        // microtask-hop count, hydration time, or race-argument order.
         // See `ctx.pendingDeliveryBarriers`.
+        //
+        // The barrier is registered ARMED only when a consumer is already
+        // awaiting, so this payload is committed to reaching the workflow. A
+        // buffered payload is registered unarmed and armed by `claim()`: until
+        // a consumer takes it, a later step result must not be ordered behind
+        // it (see `awaitEarlierDeliveries`).
         const eventIndex = ctx.eventsConsumer.eventIndex;
-        const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook');
+        const hasWaitingConsumer = promises.length > 0;
+        const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook', {
+          armed: hasWaitingConsumer,
+        });
 
-        if (promises.length > 0) {
+        if (hasWaitingConsumer) {
+          // A consumer is already awaiting, so this payload's delivery is
+          // pinned to this log position: capture the deferral HERE, while
+          // consuming the event, not at the end of the hydration slot below —
+          // same reasoning as step.ts. An earlier step or hook whose slot runs
+          // first on this serial queue has usually delivered, and so
+          // deregistered its barrier, before this slot ends. Read then, it
+          // would be invisible and this payload would skip both the gate AND
+          // `awaitEarlierDeliveries`' macrotask yield, letting it overtake the
+          // branch that earlier delivery just woke. Every event in one drain
+          // window is consumed before any slot runs, so capturing at
+          // consumption time sees all of them.
+          //
+          // The BUFFERED branch below deliberately does NOT do this — see the
+          // comment on `claim()`.
+          const earlierDelivered = awaitEarlierDeliveries(
+            ctx,
+            eventIndex,
+            'hook'
+          );
           const next = promises.shift();
           if (next) {
-            // A consumer is already awaiting. Hydrate through a promiseQueue
-            // slot (so async deserialization stays in event-log order), then
-            // defer behind earlier waits before resolving. The deferral runs
-            // OFF the serial queue (it may wait on an earlier wait delivery
-            // and blocking a queue slot on that would deadlock the queue).
+            // Hydrate through a promiseQueue slot (so async deserialization
+            // stays in event-log order), then defer behind earlier waits and
+            // steps before resolving. The deferral runs OFF the serial queue
+            // (it may wait on an earlier wait or step delivery and blocking a
+            // queue slot on that would deadlock the queue).
             ctx.pendingDeliveries++;
             let hydrateOutcome:
               | { ok: true; value: T }
               | { ok: false; error: unknown };
             ctx.promiseQueue = ctx.promiseQueue.then(async () => {
               try {
+                const prepared =
+                  await ctx.replayPayloadCache.prepareEventPayload(
+                    event.eventId,
+                    'payload',
+                    event.eventData.payload
+                  );
                 const payload = await hydrateStepReturnValue(
                   event.eventData.payload,
                   ctx.runId,
                   ctx.encryptionKey,
-                  ctx.globalThis
+                  ctx.globalThis,
+                  {},
+                  prepared
                 );
                 hydrateOutcome = { ok: true, value: payload as T };
               } catch (error) {
@@ -167,16 +333,14 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
               } finally {
                 ctx.pendingDeliveries--;
               }
-              void awaitEarlierDeliveries(ctx, eventIndex, ['wait']).then(
-                () => {
-                  barrier.markDelivered();
-                  if (hydrateOutcome.ok) {
-                    next.resolve(hydrateOutcome.value);
-                  } else {
-                    next.reject(hydrateOutcome.error);
-                  }
+              void earlierDelivered.then(() => {
+                barrier.markDelivered();
+                if (hydrateOutcome.ok) {
+                  next.resolve(hydrateOutcome.value);
+                } else {
+                  next.reject(hydrateOutcome.error);
                 }
-              );
+              });
             });
           }
         } else {
@@ -194,9 +358,22 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             | undefined;
           const hydrated = withResolvers<void>();
 
-          const claim = (): Promise<T> =>
-            hydrated.promise
-              .then(() => awaitEarlierDeliveries(ctx, eventIndex, ['wait']))
+          const claim = (): Promise<T> => {
+            // A consumer has taken this payload, so its delivery no longer
+            // waits on workflow code: later step results may now be ordered
+            // behind it.
+            barrier.arm();
+            // Unlike every other delivery, the deferral is evaluated HERE, at
+            // claim time, rather than when the event was consumed. A buffered
+            // payload's delivery genuinely happens when the workflow reads the
+            // hook, which may be many deliveries later; a consumption-time
+            // snapshot would make the claim wait on — and pay the macrotask
+            // yield for — barriers that were relevant to a moment this payload
+            // never participated in. That is not theoretical: it stalls the
+            // second payload in the e2e `hookWithSleepWorkflow` long enough
+            // for the run to suspend before delivering it.
+            return hydrated.promise
+              .then(() => awaitEarlierDeliveries(ctx, eventIndex, 'hook'))
               .then(() => {
                 barrier.markDelivered();
                 if (outcome && !outcome.ok) {
@@ -204,15 +381,23 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
                 }
                 return (outcome as { ok: true; value: T }).value;
               });
+          };
 
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
+              const prepared = await ctx.replayPayloadCache.prepareEventPayload(
+                event.eventId,
+                'payload',
+                event.eventData.payload
+              );
               const payload = await hydrateStepReturnValue(
                 event.eventData.payload,
                 ctx.runId,
                 ctx.encryptionKey,
-                ctx.globalThis
+                ctx.globalThis,
+                {},
+                prepared
               );
               outcome = { ok: true, value: payload as T };
             } catch (error) {
@@ -271,7 +456,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           // The payload was hydrated through a promiseQueue slot at its log
           // position (buffering branch above). `claim()` builds the
           // consumer-facing promise from that outcome, deferring behind any
-          // earlier-in-log wait and marking this hook delivered — so
+          // earlier-in-log wait or step and marking this hook delivered — so
           // resolution order stays anchored to the event log, not this later
           // claim site.
           return nextDelivery.claim();
@@ -288,6 +473,49 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
       promises.push(resolvers);
 
+      return resolvers.promise;
+    }
+
+    // Helper function to create a promise that resolves with the hook's
+    // registration outcome: the conflicting `Run` when the token is owned
+    // by another active hook, `null` once this hook's registration is
+    // committed. Both fast-paths settle through `ctx.promiseQueue` so
+    // resolution order always matches event-log order.
+    function createGetConflictPromise(): Promise<Run<unknown> | null> {
+      const resolvers = withResolvers<Run<unknown> | null>();
+
+      if (hasCreated) {
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          resolvers.resolve(null);
+        });
+        return resolvers.promise;
+      }
+
+      if (hasConflict) {
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          if (conflictRunRef) {
+            resolvers.resolve(conflictRunRef);
+          } else {
+            resolvers.reject(conflictErrorRef);
+          }
+        });
+        return resolvers.promise;
+      }
+
+      const queueItem = ctx.invocationsQueue.get(correlationId);
+      if (queueItem && queueItem.type === 'hook') {
+        queueItem.hasConflictAwaiter = true;
+      }
+
+      if (eventLogEmpty) {
+        scheduleWhenIdle(ctx, () => {
+          ctx.onWorkflowError(
+            new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
+          );
+        });
+      }
+
+      getConflictPromises.push(resolvers);
       return resolvers.promise;
     }
 
@@ -327,6 +555,10 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     const hook: Hook<T> = {
       token,
+
+      getConflict(): Promise<Run<unknown> | null> {
+        return createGetConflictPromise();
+      },
 
       // biome-ignore lint/suspicious/noThenProperty: Intentionally thenable
       then<TResult1 = T, TResult2 = never>(

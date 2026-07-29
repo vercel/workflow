@@ -3,17 +3,18 @@ import {
   SerializationError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import { envNumber } from '@workflow/world';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
-import {
-  decrypt as aesGcmDecrypt,
-  encrypt as aesGcmEncrypt,
-  type CryptoKey,
-  importKey,
-} from './encryption.js';
+import { bytesToBase64, decodeRunPublicKey } from './sealed-box.js';
+import { importKey } from './encryption.js';
 import {
   createFlushableState,
   flushablePipe,
+  getMaxBufferedBytes,
+  getMaxBytesPerBatch,
+  getMaxChunksPerBatch,
+  getMaxInflightChunks,
   pollReadableLock,
   pollWritableLock,
 } from './flushable-stream.js';
@@ -25,12 +26,27 @@ import { getStepFunction } from './private.js';
 // "Turbopack NFT Tracing Errors in V2 Combined Flow Route" section of
 // `docs/content/docs/changelog/eager-processing.mdx`.
 import { getWorldLazy } from './runtime/get-world-lazy.js';
+import { createOpenSession, createSealSession } from './sealed-box.js';
 import * as clientModule from './serialization/client.js';
 import {
+  type CompressionStats,
+  compress,
+  decompress,
+} from './serialization/compression.js';
+import {
+  aesKeyOf,
   decrypt,
+  deriveRunPayloadKeys,
   type EncryptionKeyParam,
   encrypt,
+  isRunPayloadKeys,
+  isSealTarget,
+  type PayloadKey,
   resolveEncryptionKey,
+  type RunPayloadKeys,
+  runPayloadKeys,
+  type SealTarget,
+  sealTo,
 } from './serialization/encryption.js';
 import {
   formatSerializationError,
@@ -70,12 +86,17 @@ import {
   ABORT_STREAM_NAME,
   BODY_INIT_SYMBOL,
   STABLE_ULID,
+  STREAM_DRAIN_SYMBOL,
+  STREAM_FRAMING_SYMBOL,
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+  STREAM_SERVER_PUBLIC_KEY_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
+import * as Attr from './telemetry/semantic-conventions.js';
+import { getActiveSpan, getSpanKind, recordElapsedSpan } from './telemetry.js';
 import { getAbortStreamId } from './util.js';
 import { WorkflowAbortSignal } from './workflow/abort-controller.js';
 
@@ -91,7 +112,19 @@ export {
   isEncrypted,
   encrypt,
   decrypt,
+  compress,
+  decompress,
   type EncryptionKeyParam,
+  // Sealed-box ('encp') key variants — see serialization/encryption.ts.
+  type PayloadKey,
+  type RunPayloadKeys,
+  type SealTarget,
+  sealTo,
+  runPayloadKeys,
+  deriveRunPayloadKeys,
+  isSealTarget,
+  isRunPayloadKeys,
+  aesKeyOf,
 };
 
 // Re-export the legacy SerializationFormatType for backwards compatibility.
@@ -158,6 +191,44 @@ function unwrapSerializationCause(error: unknown): unknown {
   return error;
 }
 
+/**
+ * Emit compression telemetry onto the active span after a (de)serialize.
+ *
+ * The compression layer populates `stats` only when it actually ran (binary
+ * data on a spec >= 5 path); legacy / v1Compat paths leave it unrecorded, so
+ * this no-ops for them and avoids the `getActiveSpan` lookup. Attributes land
+ * on whatever span is active — typically the dedicated `step.dehydrate` /
+ * `step.hydrate` span, otherwise the enclosing run/start span.
+ */
+async function recordCompression(
+  stats: CompressionStats,
+  operation: 'serialize' | 'deserialize'
+): Promise<void> {
+  if (!stats.recorded) return;
+  // Telemetry must never break the serialize/deserialize data path — a
+  // missing/failing tracer is purely an observability loss.
+  try {
+    const span = await getActiveSpan();
+    if (!span) return;
+    const uncompressedBytes = stats.uncompressedBytes ?? 0;
+    const storedBytes = stats.storedBytes ?? 0;
+    span.setAttributes({
+      ...Attr.SerializationOperation(operation),
+      ...Attr.SerializationCompressed(stats.compressed ?? false),
+      ...Attr.SerializationCodec(stats.codec ?? 'none'),
+      ...Attr.SerializationUncompressedBytes(uncompressedBytes),
+      ...Attr.SerializationStoredBytes(storedBytes),
+      ...(stats.compressed && uncompressedBytes > 0
+        ? Attr.SerializationCompressionRatio(
+            1 - storedBytes / uncompressedBytes
+          )
+        : {}),
+    });
+  } catch {
+    // ignore telemetry failures
+  }
+}
+
 export function getSerializeStream(
   reducers: Partial<Reducers>,
   cryptoKey: EncryptionKeyParam
@@ -167,13 +238,25 @@ export function getSerializeStream(
   // Note: if resolving cryptoKey rejects (e.g., network error fetching
   // the derived key), the rejection won't surface until the first chunk
   // is processed — not at stream construction time.
-  const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
+  const keyState = {
+    resolved: false,
+    key: undefined as PayloadKey | undefined,
+  };
+  // Set when the resolved key is a seal target; amortizes the KEM across all
+  // frames this stream instance writes.
+  let sealSession: ReturnType<typeof createSealSession> | undefined;
   const stream = new TransformStream<any, Uint8Array>({
     async transform(chunk, controller) {
       try {
         if (!keyState.resolved) {
           keyState.key = await resolveEncryptionKey(cryptoKey);
           keyState.resolved = true;
+          if (isSealTarget(keyState.key)) {
+            sealSession = createSealSession(
+              keyState.key.recipientPublicKey,
+              keyState.key.aad
+            );
+          }
         }
         const serialized = stringify(chunk, reducers);
         const payload = encoder.encode(serialized);
@@ -185,12 +268,24 @@ export function getSerializeStream(
         // Encrypt the frame payload if a key is provided.
         // The length header remains in the clear so the deserializer can
         // find frame boundaries regardless of transport chunking.
-        if (keyState.key) {
-          const encrypted = await aesGcmEncrypt(keyState.key, prefixed);
+        //
+        // Every frame gets a fresh random nonce. Never switch this to a
+        // counter: a stream reconnect or a durable replay restarts the writer,
+        // which would repeat `(key, nonce)` and catastrophically break
+        // AES-GCM.
+        //
+        // On the sealed path the KEM is amortized across the stream via a
+        // session (one ECDH per writer instead of one per frame). That is safe
+        // precisely because the nonces stay random, and because the session is
+        // scoped to this stream instance — a replayed or reconnected writer
+        // builds a new one and never inherits a previous content key.
+        if (sealSession) {
           prefixed = encodeWithFormatPrefix(
-            SerializationFormat.ENCRYPTED,
-            encrypted
+            SerializationFormat.SEALED,
+            await sealSession.seal(prefixed)
           ) as Uint8Array;
+        } else if (keyState.key) {
+          prefixed = (await encrypt(prefixed, keyState.key)) as Uint8Array;
         }
 
         // Write length-prefixed frame: [4-byte length][prefixed data]
@@ -226,7 +321,14 @@ export function getDeserializeStream(
   const decoder = new TextDecoder();
   let buffer = new Uint8Array(0);
   // Resolve the key input once on first use and cache the result.
-  const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
+  const keyState = {
+    resolved: false,
+    key: undefined as PayloadKey | undefined,
+  };
+  // Mirror of the writer's seal session: every frame from one writer carries
+  // the same ephemeral public key, so this turns an ECDH per frame into an
+  // ECDH per writer.
+  let openSession: ReturnType<typeof createOpenSession> | undefined;
 
   function appendToBuffer(data: Uint8Array) {
     const newBuffer = new Uint8Array(buffer.length + data.length);
@@ -242,6 +344,9 @@ export function getDeserializeStream(
     if (!keyState.resolved) {
       keyState.key = await resolveEncryptionKey(cryptoKey);
       keyState.resolved = true;
+      if (isRunPayloadKeys(keyState.key)) {
+        openSession = createOpenSession(keyState.key.keyPair, keyState.key.aad);
+      }
     }
 
     // Try to extract complete length-prefixed frames
@@ -264,20 +369,33 @@ export function getDeserializeStream(
 
       let { format, payload } = decodeFormatPrefix(frameData);
 
-      // If the frame payload is encrypted, decrypt it first to reveal
-      // the inner format-prefixed data (e.g., 'devl' + serialized text),
-      // then fall through to the normal deserialization path.
-      if (format === SerializationFormat.ENCRYPTED) {
-        if (!keyState.key) {
+      // If the frame payload is encrypted or sealed, recover it first to
+      // reveal the inner format-prefixed data (e.g., 'devl' + serialized
+      // text), then fall through to the normal deserialization path.
+      if (
+        format === SerializationFormat.ENCRYPTED ||
+        format === SerializationFormat.SEALED
+      ) {
+        const sealed = format === SerializationFormat.SEALED;
+        // A sealed frame needs the run's keypair; a symmetric frame needs an
+        // AES key. Report the shortfall precisely — "no key at all" and "the
+        // wrong kind of key" have very different causes.
+        const usable = sealed
+          ? isRunPayloadKeys(keyState.key)
+          : aesKeyOf(keyState.key) !== undefined;
+        if (!usable) {
           controller.error(
             new RuntimeDecryptionError(
-              'Encrypted stream data encountered but no encryption key is available. ' +
-                'Encryption is not configured or no key was provided for this run.',
+              sealed
+                ? 'Sealed stream data encountered but no run keypair is available. ' +
+                    "Opening a sealed frame requires the run's own encryption key material."
+                : 'Encrypted stream data encountered but no encryption key is available. ' +
+                    'Encryption is not configured or no key was provided for this run.',
               {
                 context: {
                   operation: 'decrypt',
                   byteLength: payload.byteLength,
-                  formatPrefix: 'encr',
+                  formatPrefix: sealed ? 'encp' : 'encr',
                 },
               }
             )
@@ -286,12 +404,18 @@ export function getDeserializeStream(
         }
         let decrypted: Uint8Array;
         try {
-          decrypted = await aesGcmDecrypt(keyState.key, payload);
+          // Sealed frames go through the session so repeated frames from one
+          // writer reuse a single decapsulation. Everything else delegates to
+          // the shared envelope layer, keeping the two schemes in lockstep
+          // with the one-shot path.
+          decrypted = sealed
+            ? await openSession!.open(decodeFormatPrefix(frameData).payload)
+            : ((await decrypt(frameData, keyState.key)) as Uint8Array);
         } catch (error) {
-          // The low-level AES layer only sees the stripped payload, so it
-          // cannot record the outer envelope prefix. We peeked it here
-          // (`encr`), so enrich the diagnostic context with the real format
-          // prefix before propagating — mirroring serialization/encryption.ts.
+          // The low-level crypto layer only sees the stripped payload, so it
+          // cannot record the outer envelope prefix. We peeked it here, so
+          // enrich the diagnostic context with the real format prefix before
+          // propagating — mirroring serialization/encryption.ts.
           if (RuntimeDecryptionError.is(error) && error.context) {
             error.context.formatPrefix = format;
           }
@@ -352,6 +476,220 @@ export function getDeserializeStream(
   return stream;
 }
 
+// ============================================================================
+// Byte-stream wire framing
+// ============================================================================
+//
+// Byte streams (`type: 'bytes'` ReadableStreams passed across boundaries)
+// are written to the underlying world's stream transport one user chunk at
+// a time. Without an in-band envelope, the reader sees a flat stream of
+// bytes — there is no way to tell where one user chunk ends and the next
+// begins, which makes mid-stream reconnect impossible (we don't know how
+// many server-side chunks have been consumed).
+//
+// To enable transparent reconnect, this PR introduces an opt-in wire
+// envelope that wraps each user chunk in a length-prefix:
+//
+//   [4-byte big-endian length][user payload bytes]
+//
+// The envelope is identical in shape to `getSerializeStream`'s framing,
+// but the payload here is *raw user bytes* — there is no inner
+// format-prefix, no devalue, no encryption. A framed byte stream stays
+// semantically a byte stream end-to-end; the framing is purely transport.
+//
+// The decision to use framing for a given stream is recorded in the
+// serialized stream ref (`framing: 'framed-v1'`), so both sides agree on
+// the wire format without runtime negotiation. Producers that target a
+// run whose deployment doesn't support framing (see `getRunCapabilities`
+// in capabilities.ts) emit raw bytes and a ref without the field — which
+// the reader treats as legacy raw bytes for backwards compatibility.
+
+/**
+ * Maximum allowed byte-stream frame payload size (100MB). Shared by the
+ * framer (rejects oversized user chunks at write time, where the error is
+ * actionable) and the unframer (rejects oversized length headers at read
+ * time, which usually indicate a non-framed wire being read as framed).
+ * Keeping both sides on one constant guarantees any chunk the framer
+ * accepts can always be decoded by the unframer.
+ */
+const MAX_FRAME_SIZE = 100_000_000;
+
+/**
+ * Wraps each chunk of a byte stream in a 4-byte big-endian length
+ * prefix. Used by the producer side of a framed byte-stream pipe.
+ *
+ * Empty chunks (length 0) are dropped — the resulting `[0x00 0x00 0x00 0x00]`
+ * frame would be ambiguous with the legacy "looks framed" detection in
+ * `getDeserializeStream`, and it carries no information.
+ *
+ * Load-bearing invariant: each user chunk becomes exactly one frame, and
+ * each frame is enqueued as exactly one transport chunk (the downstream
+ * writable performs one wire write per chunk, preserving boundaries). The
+ * server therefore stores one frame per chunk index, which is what allows
+ * a future reconnecting reader to resume a framed byte stream at
+ * `startIndex + consumedFrames` — the same arithmetic
+ * `createReconnectingFramedStream` relies on for object streams. Do not
+ * coalesce or split frames here without revisiting that resume logic.
+ */
+export function getByteFramingStream(): TransformStream<
+  Uint8Array,
+  Uint8Array
+> {
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      if (chunk.length === 0) return;
+      if (chunk.length > MAX_FRAME_SIZE) {
+        controller.error(
+          new WorkflowRuntimeError(
+            `Byte-stream chunk of ${chunk.length} bytes exceeds the maximum ` +
+              `framed chunk size (${MAX_FRAME_SIZE}). Split the data into ` +
+              `smaller chunks before writing.`,
+            { slug: 'serialization-failed' }
+          )
+        );
+        return;
+      }
+      const frame = new Uint8Array(FRAME_HEADER_SIZE + chunk.length);
+      new DataView(frame.buffer).setUint32(0, chunk.length, false);
+      frame.set(chunk, FRAME_HEADER_SIZE);
+      controller.enqueue(frame);
+    },
+  });
+}
+
+/**
+ * Unwraps length-prefixed byte-stream frames back into the original user
+ * chunks. Used by the consumer side of a framed byte-stream pipe.
+ *
+ * Buffers across read boundaries — the transport may split a single
+ * frame across multiple reads (header in one chunk, payload in another)
+ * or coalesce multiple frames into a single read. The transform emits
+ * whole user chunks regardless of transport chunking.
+ *
+ * Errors the stream if the length header advertises a frame larger than
+ * `MAX_FRAME_SIZE` bytes, since that almost certainly indicates a
+ * misframed wire (e.g. a raw byte stream being fed through this transform
+ * by mistake) and we don't want to allocate an enormous buffer.
+ */
+export function getByteUnframingStream(): TransformStream<
+  Uint8Array,
+  Uint8Array
+> {
+  let buffer = new Uint8Array(0);
+
+  function appendToBuffer(data: Uint8Array) {
+    const next = new Uint8Array(buffer.length + data.length);
+    next.set(buffer, 0);
+    next.set(data, buffer.length);
+    buffer = next;
+  }
+
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      if (chunk.length > 0) appendToBuffer(chunk);
+
+      while (buffer.length >= FRAME_HEADER_SIZE) {
+        const frameLength = new DataView(
+          buffer.buffer,
+          buffer.byteOffset,
+          buffer.byteLength
+        ).getUint32(0, false);
+
+        if (frameLength > MAX_FRAME_SIZE) {
+          controller.error(
+            new WorkflowRuntimeError(
+              `Byte-stream frame length ${frameLength} exceeds maximum (${MAX_FRAME_SIZE}). ` +
+                `This usually means a non-framed byte stream is being read as framed.`,
+              { slug: 'serialization-failed' }
+            )
+          );
+          return;
+        }
+
+        const total = FRAME_HEADER_SIZE + frameLength;
+        if (buffer.length < total) break;
+
+        controller.enqueue(buffer.slice(FRAME_HEADER_SIZE, total));
+        buffer = buffer.slice(total);
+      }
+    },
+    flush(controller) {
+      if (buffer.length > 0) {
+        controller.error(
+          new WorkflowRuntimeError(
+            `Byte-stream ended with ${buffer.length} bytes of incomplete frame data. ` +
+              `The stream was truncated mid-frame.`,
+            { slug: 'serialization-failed' }
+          )
+        );
+      }
+    },
+  });
+}
+
+/**
+ * Emit the client-observed end-to-end time-to-first-chunk span for a live read:
+ * read dispatch (`startEpochMs`) → the first non-empty chunk reaching the
+ * reader, including the network hop. Fire-and-forget; no-op without OTEL.
+ */
+function recordReadTimeToFirstChunk(
+  startEpochMs: number,
+  runId: string,
+  name: string,
+  startIndex?: number,
+  connectMs?: number
+): void {
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.read', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.operation': 'read',
+        'workflow.stream.read.ttfc_ms': Date.now() - startEpochMs,
+        ...(typeof connectMs === 'number'
+          ? { 'workflow.stream.read.connect_ms': connectMs }
+          : {}),
+        ...(typeof startIndex === 'number'
+          ? { 'workflow.stream.start_index': startIndex }
+          : {}),
+      },
+    });
+  })();
+}
+
+/**
+ * Emit the client-observed read-completion span when a stream read drains:
+ * back-dated to the read dispatch, so its duration is the total read, with
+ * chunk/byte counts for throughput. Cancelled reads emit nothing. Fire-and-
+ * forget; no-op without OTEL.
+ */
+function recordStreamReadComplete(
+  startEpochMs: number,
+  runId: string,
+  name: string,
+  chunkCount: number,
+  byteCount: number,
+  reconnects?: number
+): void {
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.read.complete', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.operation': 'read_complete',
+        'workflow.stream.read.total_ms': Date.now() - startEpochMs,
+        'workflow.stream.read.chunks': chunkCount,
+        'workflow.stream.read.bytes': byteCount,
+        ...(typeof reconnects === 'number'
+          ? { 'workflow.stream.read.reconnects': reconnects }
+          : {}),
+      },
+    });
+  })();
+}
+
 export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
   #reader?: ReadableStreamDefaultReader<Uint8Array>;
 
@@ -359,6 +697,21 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
     if (typeof name !== 'string' || name.length === 0) {
       throw new WorkflowRuntimeError(`"name" is required, got "${name}"`);
     }
+    // Client-observed time-to-first-chunk state. `readStart` is stamped when the
+    // reader starts consuming (first pull → the read dispatch); the span is
+    // emitted once, when the first non-empty chunk reaches the reader. So its
+    // duration is the end-to-end TTFC including the network hop. No-op without
+    // an OpenTelemetry SDK registered.
+    let readStart: number | undefined;
+    let firstChunkReported = false;
+    // Client-observed connect duration: the world.streams.get await (read
+    // dispatch -> stream handle / response headers). Stamped on the
+    // workflow.stream.read span once the first chunk arrives.
+    let connectMs: number | undefined;
+    // Read-completion counters for the workflow.stream.read.complete span
+    // emitted when the stream drains.
+    let chunksDelivered = 0;
+    let bytesDelivered = 0;
     super({
       // @ts-expect-error Not sure why TypeScript is complaining about this
       type: 'bytes',
@@ -366,8 +719,11 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
       pull: async (controller) => {
         let reader = this.#reader;
         if (!reader) {
+          if (readStart === undefined) readStart = Date.now();
           const world = await getWorldLazy();
+          const connectStart = Date.now();
           const stream = await world.streams.get(runId, name, startIndex);
+          connectMs = Date.now() - connectStart;
           reader = this.#reader = stream.getReader();
         }
         if (!reader) {
@@ -378,8 +734,36 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         const result = await reader.read();
         if (result.done) {
           this.#reader = undefined;
+          if (readStart !== undefined) {
+            recordStreamReadComplete(
+              readStart,
+              runId,
+              name,
+              chunksDelivered,
+              bytesDelivered
+            );
+          }
           controller.close();
         } else {
+          // The server flushes a leading zero-length chunk (v3+) to commit
+          // response headers before any data; skip empties so TTFC measures to
+          // the first real chunk.
+          if (
+            !firstChunkReported &&
+            result.value.byteLength > 0 &&
+            readStart !== undefined
+          ) {
+            firstChunkReported = true;
+            recordReadTimeToFirstChunk(
+              readStart,
+              runId,
+              name,
+              startIndex,
+              connectMs
+            );
+          }
+          chunksDelivered += 1;
+          bytesDelivered += result.value.byteLength;
           // Forward raw bytes; encryption/decryption is handled at the
           // framing level by getSerializeStream/getDeserializeStream.
           controller.enqueue(result.value);
@@ -396,13 +780,352 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
 }
 
 /**
- * Default flush interval in milliseconds for buffered stream writes.
- * Chunks are accumulated and flushed together to reduce network overhead.
+ * Maximum consecutive reconnect attempts for a single framed stream session.
+ * The counter resets to zero whenever a reconnect makes forward progress (a
+ * frame is delivered), so this bounds *consecutive* failures, not the lifetime
+ * total — a long-lived serverless stream may legitimately reconnect far more
+ * than this many times as long as each reconnect keeps delivering data. We only
+ * give up after this many reconnects in a row produce nothing.
  */
-const STREAM_FLUSH_INTERVAL_MS = 10;
+export const FRAMED_STREAM_MAX_RECONNECTS = 50;
+
+/** Effective consecutive-reconnect cap. Override: `WORKFLOW_FRAMED_STREAM_MAX_RECONNECTS`. */
+const getFramedStreamMaxReconnects = (): number =>
+  envNumber(
+    'WORKFLOW_FRAMED_STREAM_MAX_RECONNECTS',
+    FRAMED_STREAM_MAX_RECONNECTS,
+    {
+      integer: true,
+      min: 1,
+    }
+  );
+
+/**
+ * Absolute backstop on total reconnects for a single session, independent of
+ * progress. The consecutive cap above resets on forward progress, which is
+ * correct for a well-behaved backend that honors `startIndex`. But if a World's
+ * `streams.get` ever ignored `startIndex` and re-delivered earlier chunks,
+ * "progress" would be reported every reconnect and the consecutive cap would
+ * never trip — turning a bounded failure into an unbounded reconnect loop. This
+ * hard ceiling guarantees the loop always terminates. It is set high enough
+ * (hours of streaming at realistic per-session timeouts) to never interfere
+ * with legitimate long-lived streams.
+ */
+export const FRAMED_STREAM_MAX_TOTAL_RECONNECTS = 1000;
+
+/** Effective total-reconnect backstop. Override: `WORKFLOW_FRAMED_STREAM_MAX_TOTAL_RECONNECTS`. */
+const getFramedStreamMaxTotalReconnects = (): number =>
+  envNumber(
+    'WORKFLOW_FRAMED_STREAM_MAX_TOTAL_RECONNECTS',
+    FRAMED_STREAM_MAX_TOTAL_RECONNECTS,
+    { integer: true, min: 1 }
+  );
+
+/**
+ * Wraps the length-prefix-framed byte stream from `world.streams.get` with
+ * transparent auto-reconnect.
+ *
+ * Every fully-decoded outer frame corresponds to exactly one server-side
+ * chunk (the serialize transform enqueues one frame per workflow write, and
+ * the writable buffers one frame per chunk when multi-writing). The wrapper
+ * counts completed frames and, on upstream error, reopens the connection
+ * with `startIndex = resolvedStartIndex + consumedFrames`. Partial-frame
+ * bytes buffered before the cut are discarded — the server will resend the
+ * in-flight chunk in full from the new startIndex.
+ *
+ * A clean upstream close (EOF with no error) signals the stream is truly
+ * done; we close the wrapper and do not reconnect.
+ *
+ * Negative `startIndex` values (last-N semantics) skip the reconnect
+ * machinery because we cannot compute an absolute resume position without
+ * a tail-index lookup — the returned stream behaves as a single-shot read.
+ */
+export function createReconnectingFramedStream(
+  runId: string,
+  name: string,
+  startIndex?: number
+): ReadableStream<Uint8Array> {
+  const reconnectSupported = startIndex === undefined || startIndex >= 0;
+  let currentStartIndex = startIndex ?? 0;
+  let consumedFrames = 0;
+  let reconnectCount = 0;
+  let totalReconnectCount = 0;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let buffer = new Uint8Array(0);
+  // Read telemetry (same semantics as WorkflowServerReadableStream):
+  // dispatch time, first-connect duration, first-frame latch, and totals.
+  let readStart: number | undefined;
+  let connectMs: number | undefined;
+  let firstChunkReported = false;
+  let chunksDelivered = 0;
+  let bytesDelivered = 0;
+
+  async function connect(): Promise<void> {
+    const world = await getWorldLazy();
+    const effectiveStartIndex = reconnectSupported
+      ? currentStartIndex + consumedFrames
+      : startIndex;
+    const connectStart = Date.now();
+    const stream = await world.streams.get(runId, name, effectiveStartIndex);
+    if (connectMs === undefined) connectMs = Date.now() - connectStart;
+    reader = stream.getReader();
+  }
+
+  async function reconnect(): Promise<void> {
+    if (reader) {
+      await reader.cancel().catch(() => {});
+      reader = undefined;
+    }
+    // Advance the resume position past the frames already delivered, then
+    // drop any partial-frame bytes — the reopened connection re-sends from a
+    // frame boundary at the new index.
+    currentStartIndex += consumedFrames;
+    consumedFrames = 0;
+    buffer = new Uint8Array(0);
+
+    // Retry the reopen itself against the reconnect budget. A transient
+    // failure of connect() — the server briefly unavailable during the
+    // reconnect window — is the exact blip this wrapper exists to survive, so
+    // count it against the budget and try again rather than treating it as
+    // fatal. Only budget exhaustion (a server that stays down) terminates the
+    // stream.
+    const maxReconnects = getFramedStreamMaxReconnects();
+    const maxTotalReconnects = getFramedStreamMaxTotalReconnects();
+    for (;;) {
+      reconnectCount++;
+      totalReconnectCount++;
+      if (reconnectCount > maxReconnects) {
+        throw new Error(
+          `Stream "${name}" exceeded maximum reconnection attempts (${maxReconnects})`
+        );
+      }
+      if (totalReconnectCount > maxTotalReconnects) {
+        throw new Error(
+          `Stream "${name}" exceeded maximum total reconnection attempts (${maxTotalReconnects})`
+        );
+      }
+      try {
+        await connect();
+        return;
+      } catch {
+        // Reopen failed transiently; loop to retry, counting against the
+        // budget so a server that never recovers still terminates the stream.
+      }
+    }
+  }
+
+  return new ReadableStream<Uint8Array>({
+    pull: async (controller) => {
+      if (readStart === undefined) readStart = Date.now();
+      // Loop until we emit something, hit EOF, or fatally error. Reads that
+      // only extend the in-flight-frame buffer don't enqueue anything — we
+      // keep reading rather than returning empty-handed.
+      for (;;) {
+        if (!reader) {
+          try {
+            await connect();
+          } catch (err) {
+            controller.error(err);
+            return;
+          }
+        }
+
+        let result: { done: boolean; value?: Uint8Array };
+        try {
+          // biome-ignore lint/style/noNonNullAssertion: connect() guarantees reader
+          result = await reader!.read();
+        } catch (err) {
+          if (!reconnectSupported) {
+            controller.error(err);
+            return;
+          }
+          try {
+            await reconnect();
+          } catch (reconnectErr) {
+            controller.error(reconnectErr);
+            return;
+          }
+          continue;
+        }
+
+        if (result.done || !result.value) {
+          // Clean EOF — stream is truly complete. Drop any partial-frame
+          // bytes (there shouldn't be any; a well-formed stream ends on a
+          // frame boundary).
+          reader = undefined;
+          if (readStart !== undefined) {
+            recordStreamReadComplete(
+              readStart,
+              runId,
+              name,
+              chunksDelivered,
+              bytesDelivered,
+              totalReconnectCount
+            );
+          }
+          controller.close();
+          return;
+        }
+
+        // Append to buffer and emit all complete frames.
+        const incoming = result.value;
+        if (incoming.length > 0) {
+          const combined = new Uint8Array(buffer.length + incoming.length);
+          combined.set(buffer, 0);
+          combined.set(incoming, buffer.length);
+          buffer = combined;
+        }
+
+        let emitted = false;
+        while (buffer.length >= FRAME_HEADER_SIZE) {
+          const frameLength = new DataView(
+            buffer.buffer,
+            buffer.byteOffset,
+            buffer.byteLength
+          ).getUint32(0, false);
+          const total = FRAME_HEADER_SIZE + frameLength;
+          if (buffer.length < total) break;
+          // Forward the entire framed chunk (header + payload) to the
+          // downstream deserializer, which already expects this layout.
+          controller.enqueue(buffer.slice(0, total));
+          buffer = buffer.slice(total);
+          consumedFrames++;
+          chunksDelivered++;
+          bytesDelivered += total;
+          if (!firstChunkReported && readStart !== undefined) {
+            firstChunkReported = true;
+            recordReadTimeToFirstChunk(
+              readStart,
+              runId,
+              name,
+              startIndex,
+              connectMs
+            );
+          }
+          emitted = true;
+        }
+
+        if (emitted) {
+          // Forward progress on the current connection — clear the
+          // consecutive-failure budget so a long stream that reconnects
+          // many times (but keeps delivering) is never falsely capped.
+          reconnectCount = 0;
+          return;
+        }
+        // Only partial bytes — read more.
+      }
+    },
+    cancel: async () => {
+      if (reader) {
+        await reader.cancel().catch((err) => {
+          console.warn('Error closing ReadableStream reader:', err);
+        });
+        reader = undefined;
+      }
+    },
+  });
+}
+
+/**
+ * Default group-commit window for the LEADING chunk of an idle stream.
+ *
+ * 0 = dispatch the first chunk immediately. Measured production producer
+ * rates (most agents: ~1.2 chunks per flush, >70% of chunks arriving more
+ * than 10ms after the previous request already finished) show a fixed
+ * leading-edge window taxes isolated-chunk delivery (~+20% on a ~50ms RTT)
+ * while batching almost nothing for slow producers — fast producers get
+ * their batching from in-flight accumulation regardless. Setting a positive
+ * interval (env or `world.streamFlushIntervalMs`) opts a deployment into
+ * windowed leading-edge batching, trading first-chunk latency for larger
+ * groups.
+ */
+const STREAM_FLUSH_INTERVAL_MS = 0;
+
+/**
+ * `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`, when set, overrides
+ * `world.streamFlushIntervalMs`; when unset the World option (or the
+ * default) governs. Returns `undefined` for unset/invalid values so the
+ * caller can fall through to the World option.
+ */
+const getEnvStreamFlushIntervalMs = (): number | undefined => {
+  const value = envNumber('WORKFLOW_STREAM_FLUSH_INTERVAL_MS', Number.NaN, {
+    integer: true,
+  });
+  return Number.isNaN(value) ? undefined : value;
+};
+
+/**
+ * Emit the client-observed span for one flushed batch of stream writes: first
+ * `write()` of the batch (`startEpochMs`) → the server write settling. The
+ * span's duration is therefore the app-perceived latency of the batch
+ * (buffer dwell + backpressure + RPC); `buffer_dwell_ms` isolates the
+ * pre-dispatch share so client-side batching cost can be told apart from
+ * network/server time. Named `workflow.stream.flush` — the per-request RPC
+ * beneath it is world-vercel's `workflow.stream.write` span (chunk_rtt), and
+ * the two must stay distinguishable. Fire-and-forget; no-op without OTEL.
+ */
+function recordStreamWriteFlush(
+  startEpochMs: number,
+  dispatchEpochMs: number,
+  runId: string,
+  name: string,
+  chunkCount: number,
+  byteCount: number,
+  rpcMs: number
+): void {
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.flush', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.operation': 'flush',
+        'workflow.stream.flush.buffer_dwell_ms': dispatchEpochMs - startEpochMs,
+        'workflow.stream.flush.chunks': chunkCount,
+        'workflow.stream.flush.bytes': byteCount,
+        // Client-observed World write RPC duration (network hop included).
+        // Same key as world-vercel's per-request span attribute so queries
+        // work regardless of which layer emitted it.
+        'workflow.stream.write.chunk_rtt': rpcMs,
+      },
+    });
+  })();
+}
+
+/**
+ * Emit the client-observed span for the stream-close RPC: its duration is the
+ * `world.streams.close` round trip (network hop included). Fire-and-forget;
+ * no-op without OTEL.
+ */
+function recordStreamClose(
+  startEpochMs: number,
+  runId: string,
+  name: string
+): void {
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.close', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.operation': 'close',
+        'workflow.stream.close.rpc_ms': Date.now() - startEpochMs,
+      },
+    });
+  })();
+}
 
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
-  constructor(runId: string, name: string) {
+  /**
+   * @param runReadyBarrier Turbo mode only: a promise that resolves once the
+   * backgrounded `run_started` has landed. When the step body runs
+   * optimistically (before `run_started` is durable), the first chunk write to
+   * a brand-new stream would otherwise reach the World before the run exists
+   * and be rejected as run-not-found. Awaiting this once before the first
+   * flush/close orders the write after the run's creation. `undefined` outside
+   * turbo and on the await path, where the run was already durable.
+   */
+  constructor(runId: string, name: string, runReadyBarrier?: Promise<unknown>) {
     if (typeof runId !== 'string') {
       throw new WorkflowRuntimeError(
         `"runId" must be a string, got "${typeof runId}"`
@@ -413,128 +1136,401 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     }
     const worldPromise = getWorldLazy();
 
-    // Buffering state for batched writes
+    // Hold the first server write until the run exists (turbo optimistic
+    // start). Awaited once, then cleared so later flushes pay nothing. The
+    // rejection is swallowed for ordering only: if `run_started` truly failed
+    // the run does not exist, so the write below surfaces the real error.
+    let pendingRunReady: Promise<unknown> | undefined = runReadyBarrier;
+    const ensureRunReady = async (): Promise<void> => {
+      if (pendingRunReady) {
+        try {
+          await pendingRunReady;
+        } catch {
+          // intentional: ordering barrier only — see above.
+        }
+        pendingRunReady = undefined;
+      }
+    };
+
+    // ------------------------------------------------------------------
+    // Group-commit buffering.
+    //
+    // `write()` resolves as soon as the chunk enters this bounded buffer —
+    // NOT when it is durable. That is the property that makes batching
+    // path-independent: a native `readable.pipeTo(serverWritable)` pulls the
+    // next chunk the moment `write()` resolves, so chunks accumulate here
+    // during the flush-timer window and while a server request is in
+    // flight, and each accumulated group goes out as one `writeMulti`.
+    // (Previously `write()` resolved only after the timer AND the server
+    // round trip, so native piping serialized to one request per chunk and
+    // batching only worked through `flushablePipe`'s bespoke coalescing.)
+    //
+    // Durability has a dedicated barrier instead: `drain()` (exposed via
+    // {@link STREAM_DRAIN_SYMBOL}) resolves only when the buffer is empty
+    // and no request is in flight. `close()` awaits it before closing the
+    // server stream, and the flushable-stream lock-release completion
+    // awaits it before letting a step finish — so "step completed" still
+    // implies "stream data durable", exactly as before.
+    //
     // Encryption/decryption is handled at the framing level by
     // getSerializeStream/getDeserializeStream, not here.
+    // ------------------------------------------------------------------
     let buffer: Uint8Array[] = [];
+    let bufferBytes = 0;
+    // The group currently inside a server request. Counted against the
+    // buffer bound so `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS` keeps its
+    // documented meaning — an upper bound across ALL read-but-not-durable
+    // chunks — not just the queued follow-up group.
+    let inFlightChunks = 0;
+    let inFlightBytes = 0;
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    let flushPromise: Promise<void> | null = null;
-    let resolvedFlushIntervalMs: number | undefined;
+    /** The in-flight dispatch chain. At most one, preserving chunk order. */
+    let inFlight: Promise<void> | null = null;
+    /**
+     * Sticky failure: once a dispatch fails, the failed group is re-queued
+     * (retained, exactly as the previous implementation retained its buffer)
+     * and every subsequent `write()`, `close()` and `drain()` rejects with
+     * the original error. Chunks whose `write()` already resolved surface
+     * their failure at the durability barrier — that is the contract of an
+     * early-ack sink.
+     */
+    let sinkError: unknown;
+    // Group-commit window. The env var, when set, overrides the World
+    // option; otherwise `world.streamFlushIntervalMs` governs (default 0) —
+    // including the very first chunk. When it must come from the world,
+    // `scheduleGroupCommit` waits for `worldPromise` before deciding, which
+    // costs nothing: no request can leave before `sendGroup`'s own world
+    // await either.
+    let resolvedFlushIntervalMs = getEnvStreamFlushIntervalMs();
+    let flushIntervalResolution: Promise<void> | null = null;
+    // Per-request wire limits (server caps) and the buffer bound. The bound
+    // uses the same knobs the coalescing pipe used, so producer backpressure
+    // behavior is unchanged: once a request-worth of chunks (or the byte
+    // bound) is buffered, `write()` blocks until a group lands durably.
+    const maxChunksPerRequest = getMaxChunksPerBatch();
+    const maxBytesPerRequest = getMaxBytesPerBatch();
+    const maxBufferedChunks = getMaxInflightChunks();
+    const maxBufferedBytes = getMaxBufferedBytes();
+    // Client-observed write-batch timing: stamped when the buffer goes
+    // empty→non-empty, consumed by the group that carries that chunk out.
+    let bufferT0: number | undefined;
 
-    const flush = async (): Promise<void> => {
-      if (flushTimer) {
-        clearTimeout(flushTimer);
-        flushTimer = null;
+    type Waiter = { resolve: () => void; reject: (err: unknown) => void };
+    /** write() calls blocked on the buffer bound. */
+    let capacityWaiters: Waiter[] = [];
+    /** drain() calls waiting for full durability. */
+    let drainWaiters: Waiter[] = [];
+
+    const rejectWaiters = (err: unknown): void => {
+      const all = [...capacityWaiters, ...drainWaiters];
+      capacityWaiters = [];
+      drainWaiters = [];
+      for (const w of all) w.reject(err);
+    };
+
+    /**
+     * Take the largest leading group that fits one request: at most
+     * `maxChunksPerRequest` chunks and `maxBytesPerRequest` cumulative bytes
+     * (a single oversized chunk still goes out alone).
+     */
+    const takeGroup = (): { group: Uint8Array[]; bytes: number } => {
+      let count = 0;
+      let bytes = 0;
+      for (const chunk of buffer) {
+        if (count >= maxChunksPerRequest) break;
+        if (count > 0 && bytes + chunk.byteLength > maxBytesPerRequest) break;
+        count++;
+        bytes += chunk.byteLength;
       }
+      const group = buffer.slice(0, count);
+      buffer = buffer.slice(count);
+      bufferBytes -= bytes;
+      return { group, bytes };
+    };
 
-      if (buffer.length === 0) return;
-
-      // Copy chunks to flush, but don't clear buffer until write succeeds
-      // This prevents data loss if the write operation fails
-      const chunksToFlush = buffer.slice();
-
+    /**
+     * Dispatch loop: while chunks are buffered, send them group by group.
+     * Exactly one loop runs at a time (`inFlight`), so groups reach the
+     * server in write order. Chunks that arrive while a group's request is
+     * in flight accumulate and form the next group — the group-commit
+     * behavior, now independent of how the producer pipes.
+     */
+    /**
+     * Send one group to the server: gate on run readiness, then one
+     * `writeMulti` (or sequential `write`s when the world lacks it). Emits
+     * the write-flush span; dwell is measured up to just before the RPC so a
+     * turbo run-ready barrier wait counts as buffer dwell, matching the
+     * pre-group-commit telemetry.
+     */
+    const sendGroup = async (
+      group: Uint8Array[],
+      bytes: number,
+      groupT0: number | undefined
+    ): Promise<void> => {
+      await ensureRunReady();
       const world = await worldPromise;
-      // Cache the flush interval from the world on first use
-      if (resolvedFlushIntervalMs === undefined) {
-        resolvedFlushIntervalMs =
-          world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS;
-      }
-      // Use writeMulti if available for batch writes
-      if (
-        typeof world.streams.writeMulti === 'function' &&
-        chunksToFlush.length > 1
-      ) {
-        await world.streams.writeMulti(runId, name, chunksToFlush);
+      const dispatchAt = Date.now();
+      if (typeof world.streams.writeMulti === 'function' && group.length > 1) {
+        await world.streams.writeMulti(runId, name, group);
       } else {
         // Fall back to sequential writes
-        for (const chunk of chunksToFlush) {
+        for (const chunk of group) {
           await world.streams.write(runId, name, chunk);
         }
       }
-
-      // Only clear buffer after successful write to prevent data loss
-      buffer = [];
-    };
-
-    /** Resolvers/rejectors waiting for the current scheduled flush */
-    let flushWaiters: Array<{
-      resolve: () => void;
-      reject: (err: unknown) => void;
-    }> = [];
-
-    const scheduleFlush = (): void => {
-      if (flushTimer) return; // Already scheduled
-
-      flushTimer = setTimeout(() => {
-        flushTimer = null;
-        const currentWaiters = flushWaiters;
-        flushWaiters = [];
-        flushPromise = flush().then(
-          () => {
-            for (const w of currentWaiters) w.resolve();
-          },
-          (err) => {
-            for (const w of currentWaiters) w.reject(err);
-          }
+      if (groupT0 !== undefined) {
+        recordStreamWriteFlush(
+          groupT0,
+          dispatchAt,
+          runId,
+          name,
+          group.length,
+          bytes,
+          Date.now() - dispatchAt
         );
-      }, resolvedFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS);
+      }
     };
 
-    super({
-      async write(chunk) {
-        // Wait for any in-progress flush to complete before adding to buffer
-        if (flushPromise) {
-          await flushPromise;
-          flushPromise = null;
-        }
-
-        buffer.push(chunk);
-        scheduleFlush();
-
-        // Wait for the scheduled flush to complete so that callers
-        // (like flushablePipe) know data has reached the server
-        // before decrementing pendingOps. Without this, pendingOps
-        // reaches 0 when the buffered write returns (instant), but
-        // the 10ms flush timer hasn't fired yet.
-        await new Promise<void>((resolve, reject) => {
-          flushWaiters.push({ resolve, reject });
-        });
-      },
-      async close() {
-        // Wait for any in-progress flush to complete
-        if (flushPromise) {
-          await flushPromise;
-          flushPromise = null;
-        }
-
-        // Flush any remaining buffered chunks
-        await flush();
-
-        const world = await worldPromise;
-        await world.streams.close(runId, name);
-      },
-      abort(reason) {
-        // Clean up timer to prevent leaks
+    const dispatchLoop = async (): Promise<void> => {
+      while (buffer.length > 0) {
         if (flushTimer) {
           clearTimeout(flushTimer);
           flushTimer = null;
         }
-        // Discard buffered chunks - they won't be written
-        buffer = [];
-        // Reject any pending flushWaiters so the write() promises settle
-        // and don't leak. Without this, write() hangs forever on an
-        // unsettled promise because the cleared timer will never fire.
-        const waiters = flushWaiters;
-        flushWaiters = [];
-        const abortError = reason ?? new Error('Stream aborted');
-        for (const w of waiters) w.reject(abortError);
+        const groupT0 = bufferT0;
+        const groupTakenAt = Date.now();
+        const { group, bytes } = takeGroup();
+        inFlightChunks = group.length;
+        inFlightBytes = bytes;
+        bufferT0 = buffer.length > 0 ? groupTakenAt : undefined;
+
+        try {
+          await sendGroup(group, bytes, groupT0);
+          inFlightChunks = 0;
+          inFlightBytes = 0;
+        } catch (error) {
+          // Retain the failed group (and its original t0) at the front of
+          // the buffer, poison the sink, and surface the failure to every
+          // blocked writer and drain waiter.
+          buffer = group.concat(buffer);
+          bufferBytes += bytes;
+          inFlightChunks = 0;
+          inFlightBytes = 0;
+          bufferT0 =
+            groupT0 !== undefined && bufferT0 !== undefined
+              ? Math.min(groupT0, bufferT0)
+              : (groupT0 ?? bufferT0);
+          throw error;
+        }
+
+        // This group is durable: relieve writers blocked on the bound (they
+        // re-check it and may block again).
+        const relieved = capacityWaiters;
+        capacityWaiters = [];
+        for (const w of relieved) w.resolve();
+      }
+    };
+
+    /** Start (or join) the dispatch chain. Never leaves an unhandled rejection. */
+    const startDispatch = (): void => {
+      if (inFlight || sinkError !== undefined || buffer.length === 0) return;
+      inFlight = dispatchLoop().then(
+        () => {
+          inFlight = null;
+          // A write can land in the microtask gap between the loop's
+          // empty-buffer exit and this reaction. scheduleGroupCommit saw
+          // inFlight still set and armed no timer, so without this check
+          // the chunk would sit stranded until a later write/close/drain.
+          // Treat it like an in-request arrival: dispatch immediately (the
+          // new chain settles the drain waiters when it finishes).
+          if (buffer.length > 0) {
+            startDispatch();
+            return;
+          }
+          // Fully idle (the loop only exits with an empty buffer): settle
+          // the durability barrier.
+          const settled = drainWaiters;
+          drainWaiters = [];
+          for (const w of settled) w.resolve();
+        },
+        (error) => {
+          inFlight = null;
+          sinkError ??= error;
+          rejectWaiters(sinkError);
+        }
+      );
+    };
+
+    /**
+     * Leading-edge dispatch policy for an idle sink:
+     * - window <= 0 (the default): dispatch the leading chunk immediately.
+     *   Fast producers still batch via in-flight accumulation — chunks
+     *   arriving during the request form the next group. The trade for an
+     *   idle burst is one extra request (a 30-chunk burst ships as 1 + 29
+     *   instead of one 30-chunk group under a positive window) in exchange
+     *   for zero fixed first-chunk delay — which matches measured producer
+     *   behavior, where isolated chunks dominate.
+     * - window > 0 (explicitly configured): arm the group-commit timer so
+     *   the leading chunk waits up to the window collecting a group —
+     *   the opt-in trade for slow-but-steady producers.
+     * Window resolution: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`, when set,
+     * overrides `world.streamFlushIntervalMs`; otherwise the World option
+     * (default 0) governs — including the very first chunk. Deciding may
+     * have to wait for the world to resolve; that adds no latency because
+     * `sendGroup` awaits the same promise before any request leaves.
+     */
+    const scheduleGroupCommit = (): void => {
+      if (flushTimer || inFlight) return;
+      if (resolvedFlushIntervalMs === undefined) {
+        // Promise.resolve: everywhere else the world is only ever awaited,
+        // which tolerates a synchronous value (tests stub getWorldLazy that
+        // way); .then() must be given a real promise.
+        flushIntervalResolution ??= Promise.resolve(worldPromise)
+          .then(
+            (world) => {
+              resolvedFlushIntervalMs =
+                world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS;
+            },
+            () => {
+              // World resolution failure surfaces on dispatch; fall back to
+              // the default so buffered chunks still reach the dispatch path
+              // (where the error poisons the sink).
+              resolvedFlushIntervalMs = STREAM_FLUSH_INTERVAL_MS;
+            }
+          )
+          .then(() => {
+            // Re-evaluate: the buffer may have been dispatched by drain()
+            // or a full-request fast path while the world resolved.
+            if (buffer.length > 0) scheduleGroupCommit();
+          });
+        return;
+      }
+      if (resolvedFlushIntervalMs <= 0) {
+        startDispatch();
+        return;
+      }
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        startDispatch();
+      }, resolvedFlushIntervalMs);
+    };
+
+    /**
+     * Durability barrier: resolves when every accepted chunk has reached the
+     * server and nothing is buffered or in flight; rejects with the sink's
+     * sticky error if any dispatch failed. Flushes a pending group-commit
+     * window immediately rather than waiting out the timer.
+     */
+    const drain = async (): Promise<void> => {
+      while (true) {
+        if (sinkError !== undefined) throw sinkError;
+        if (buffer.length === 0 && !inFlight) return;
+        startDispatch();
+        await new Promise<void>((resolve, reject) => {
+          drainWaiters.push({ resolve, reject });
+        });
+      }
+    };
+
+    super({
+      async write(chunk) {
+        if (sinkError !== undefined) throw sinkError;
+        if (bufferT0 === undefined) bufferT0 = Date.now();
+        buffer.push(chunk);
+        bufferBytes += chunk.byteLength;
+
+        if (
+          buffer.length >= maxChunksPerRequest ||
+          bufferBytes >= maxBytesPerRequest
+        ) {
+          // The buffered group already fills a request: no point dwelling in
+          // the commit window.
+          startDispatch();
+        } else {
+          scheduleGroupCommit();
+        }
+
+        // Bounded buffer: accept the chunk (never drop), then block until
+        // the read-but-not-durable population — buffered AND in the active
+        // request — is back under the bound. Each durably-sent group
+        // relieves this.
+        while (
+          sinkError === undefined &&
+          (buffer.length + inFlightChunks >= maxBufferedChunks ||
+            bufferBytes + inFlightBytes >= maxBufferedBytes)
+        ) {
+          startDispatch();
+          await new Promise<void>((resolve, reject) => {
+            capacityWaiters.push({ resolve, reject });
+          });
+        }
+        if (sinkError !== undefined) throw sinkError;
       },
+      async close() {
+        // Everything accepted must be durable before the server stream is
+        // closed — the server fences post-close writes.
+        await drain();
+
+        // A close with an empty buffer skips the dispatch path (and its
+        // barrier), but can itself be the first write to a brand-new
+        // stream — gate it too.
+        await ensureRunReady();
+
+        const world = await worldPromise;
+        const closeStart = Date.now();
+        await world.streams.close(runId, name);
+        recordStreamClose(closeStart, runId, name);
+      },
+      async abort(reason) {
+        // Buffered chunks were already ACKED to their writers (early-ack
+        // contract), and native pipeTo aborts this sink whenever its SOURCE
+        // errors — e.g. an AI stream that emits ten deltas and then throws.
+        // Discarding here would silently lose the accepted tail of the
+        // prefix, so deliver it first; only the server stream close is
+        // skipped. A dispatch failure during this drain is already sticky
+        // and surfaces through the sink's error paths.
+        //
+        // Deliberately un-timeboxed (unlike the step-executor's 500ms
+        // inline flush): giving up early would drop acked chunks — the
+        // exact loss this path exists to prevent. It is still bounded in
+        // practice by the World transport's own timeout/retry budget: a
+        // stalled write ends in a terminal rejection after finite retries,
+        // which rejects the dispatch and lands in the catch below. The
+        // same catch absorbs the expected conflict when a teardown-driven
+        // abort drains into an already-terminal run.
+        try {
+          await drain();
+        } catch {
+          // sinkError is set; accepted-but-undeliverable chunks surface it.
+        }
+        if (flushTimer) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+        buffer = [];
+        bufferBytes = 0;
+        sinkError ??= reason ?? new Error('Stream aborted');
+        // Reject blocked writers and drain waiters so nothing leaks or
+        // hangs on a promise whose timer was just cleared.
+        rejectWaiters(sinkError);
+      },
+    });
+
+    // Durability barrier for owners that complete without closing the
+    // stream: `flushablePipe`'s lock-release completion awaits this so a
+    // step cannot finish (and the function suspend) while accepted chunks
+    // are still client-buffered or in flight.
+    Object.defineProperty(this, STREAM_DRAIN_SYMBOL, {
+      value: drain,
+      enumerable: false,
+      writable: false,
     });
   }
 }
 
 // Re-export types from the modular serialization modules.
 export type {
+  ByteStreamFraming,
   Reducers,
   Revivers,
   SerializableSpecial,
@@ -542,6 +1538,7 @@ export type {
 
 // Import types locally for use within this file.
 import type {
+  ByteStreamFraming,
   Reducers,
   Revivers,
   SerializableSpecial,
@@ -769,13 +1766,27 @@ function attachAbortListenerOnce(
  *
  * @param global
  * @param ops
+ * @param runId
+ * @param cryptoKey
+ * @param framedByteStreams - When `true`, byte streams (`type: 'bytes'`)
+ *   are wrapped in length-prefixed frames on the wire so the consumer
+ *   can reconnect on transient errors. Should match the target run's
+ *   capability — see `getRunCapabilities` in `capabilities.ts`. Defaults
+ *   to `false` for backwards compatibility with older runs.
  * @returns
  */
 export function getExternalReducers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  framedByteStreams = false,
+  // Turbo optimistic start: a nested `ReadableStream` found while serializing
+  // is piped to its own server stream independently of the outer sink, so its
+  // first chunk can race `run_started`. Thread the run-ready barrier into that
+  // sink so the write orders after the run exists. Undefined outside turbo /
+  // on the await path.
+  runReadyBarrier?: Promise<unknown>
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -797,15 +1808,30 @@ export function getExternalReducers(
       const name = `strm_${streamId}`;
       const type = getStreamType(value);
 
-      const writable = new WorkflowServerWritableStream(runId, name);
+      const writable = new WorkflowServerWritableStream(
+        runId,
+        name,
+        runReadyBarrier
+      );
       if (type === 'bytes') {
-        ops.push(value.pipeTo(writable));
+        if (framedByteStreams) {
+          ops.push(value.pipeThrough(getByteFramingStream()).pipeTo(writable));
+        } else {
+          ops.push(value.pipeTo(writable));
+        }
       } else {
         ops.push(
           value
             .pipeThrough(
               getSerializeStream(
-                getExternalReducers(global, ops, runId, cryptoKey),
+                getExternalReducers(
+                  global,
+                  ops,
+                  runId,
+                  cryptoKey,
+                  framedByteStreams,
+                  runReadyBarrier
+                ),
                 cryptoKey
               )
             )
@@ -815,6 +1841,7 @@ export function getExternalReducers(
 
       const s: SerializableSpecial['ReadableStream'] = { name };
       if (type) s.type = type;
+      if (type === 'bytes' && framedByteStreams) s.framing = 'framed-v1';
       return s;
     },
 
@@ -840,6 +1867,12 @@ export function getExternalReducers(
           name: existingName,
           runId: existingRunId,
         };
+        const existingPublicKey = (value as any)[
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL
+        ];
+        if (typeof existingPublicKey === 'string') {
+          descriptor.encryptionPublicKey = existingPublicKey;
+        }
         const existingDeploymentId = (value as any)[
           STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
         ];
@@ -926,6 +1959,9 @@ export function getWorkflowReducers(
       const s: SerializableSpecial['ReadableStream'] = { name };
       const type = value[STREAM_TYPE_SYMBOL];
       if (type) s.type = type;
+      const framing: ByteStreamFraming | undefined =
+        value[STREAM_FRAMING_SYMBOL];
+      if (framing) s.framing = framing;
       return s;
     },
     WritableStream: (value) => {
@@ -943,6 +1979,10 @@ export function getWorkflowReducers(
       const foreignDeploymentId = value[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL];
       if (typeof foreignDeploymentId === 'string') {
         s.deploymentId = foreignDeploymentId;
+      }
+      const foreignPublicKey = value[STREAM_SERVER_PUBLIC_KEY_SYMBOL];
+      if (typeof foreignPublicKey === 'string') {
+        s.encryptionPublicKey = foreignPublicKey;
       }
       return s;
     },
@@ -989,7 +2029,13 @@ function getStepReducers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  framedByteStreams = false,
+  // Turbo optimistic start: a returned `ReadableStream` is piped to the server
+  // after the body but within the same op flush, so its first chunk can race
+  // `run_started`. Thread the run-ready barrier into the sink so that write
+  // orders after the run exists. Undefined outside turbo / on the await path.
+  runReadyBarrier?: Promise<unknown>
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -1012,21 +2058,45 @@ function getStepReducers(
       // name and type.
       let name = value[STREAM_NAME_SYMBOL];
       let type = value[STREAM_TYPE_SYMBOL];
+      // The framing symbol is set when a workflow VM revives a stream
+      // handle from a previous step (see `getWorkflowRevivers`). When
+      // present we must propagate the same framing choice on the way
+      // back out, since the bytes already on the server's stream are in
+      // that format — switching format mid-stream would corrupt them.
+      let framing: ByteStreamFraming | undefined = value[STREAM_FRAMING_SYMBOL];
 
       if (!name) {
         const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
         type = getStreamType(value);
+        framing = type === 'bytes' && framedByteStreams ? 'framed-v1' : framing;
 
-        const writable = new WorkflowServerWritableStream(runId, name);
+        const writable = new WorkflowServerWritableStream(
+          runId,
+          name,
+          runReadyBarrier
+        );
         if (type === 'bytes') {
-          ops.push(value.pipeTo(writable));
+          if (framing === 'framed-v1') {
+            ops.push(
+              value.pipeThrough(getByteFramingStream()).pipeTo(writable)
+            );
+          } else {
+            ops.push(value.pipeTo(writable));
+          }
         } else {
           ops.push(
             value
               .pipeThrough(
                 getSerializeStream(
-                  getStepReducers(global, ops, runId, cryptoKey),
+                  getStepReducers(
+                    global,
+                    ops,
+                    runId,
+                    cryptoKey,
+                    framedByteStreams,
+                    runReadyBarrier
+                  ),
                   cryptoKey
                 )
               )
@@ -1037,6 +2107,7 @@ function getStepReducers(
 
       const s: SerializableSpecial['ReadableStream'] = { name };
       if (type) s.type = type;
+      if (framing) s.framing = framing;
       return s;
     },
 
@@ -1062,6 +2133,10 @@ function getStepReducers(
 
       const s: SerializableSpecial['WritableStream'] = { name };
       if (typeof foreignRunId === 'string') s.runId = foreignRunId;
+      const foreignPublicKey = (value as any)[STREAM_SERVER_PUBLIC_KEY_SYMBOL];
+      if (typeof foreignPublicKey === 'string') {
+        s.encryptionPublicKey = foreignPublicKey;
+      }
       const foreignDeploymentId = (value as any)[
         STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
       ];
@@ -1189,12 +2264,21 @@ function setupAbortStreamReader(
             );
           }),
         ]);
-        reader.releaseLock();
         if (result.value && !result.done) {
+          // An abort packet arrived: propagate it as fast as possible. Release
+          // the lock (synchronous) rather than cancelling here — on a
+          // service-backed World `reader.cancel()` can do a network round-trip,
+          // and awaiting it before `controller.abort()` would delay (or, if it
+          // hangs, drop) real-time abort delivery to the in-flight step.
+          try {
+            reader.releaseLock();
+          } catch {
+            // Reader may already be released; ignore.
+          }
           try {
             // Hydrate via the same machinery the writer used so the reason
             // round-trips with full type fidelity. Encryption key (if any)
-            // comes from the step context — set up by the step handler before
+            // comes from the step context — set up by the step executor before
             // this reader runs. Fallback to undefined for external-context
             // revives (the hydrate path is encryption-key-tolerant).
             const ctxForKey = contextStorage.getStore();
@@ -1207,6 +2291,16 @@ function setupAbortStreamReader(
           } catch {
             controller.abort();
           }
+        } else {
+          // The step finished (or the reader was cancelled) without an abort.
+          // Cancel — not just release — so the underlying World stream is torn
+          // down: a polling World (e.g. world-local) otherwise leaks a tail
+          // reader (a 100ms filesystem poll plus emitter listeners) per step
+          // invocation for the life of the process, since a signal-bearing step
+          // opens one of these on every revival and usually never aborts. Fire
+          // and forget: a service-backed World's cancel may hit the network,
+          // and this path must not block the step's ops-settle window.
+          void reader.cancel().catch(() => {});
         }
       } catch {
         // Stream read failed — signal won't propagate in real-time,
@@ -1325,21 +2419,32 @@ function reviveAbortController(
       );
 
       if (value.hookToken) {
-        ctx.ops.push(
-          (async () => {
-            try {
-              const { resumeHook: resumeHookFn } = await import(
-                './runtime/resume-hook.js'
-              );
-              await resumeHookFn(value.hookToken, {
-                aborted: true,
-                reason,
-              });
-            } catch {
-              // Best-effort hook resume — retry on next replay
-            }
-          })()
-        );
+        // The durable hook resume (which writes the `hook_received` event that
+        // records this abort in the workflow's event log) must be committed
+        // before the step completes. Otherwise the workflow continuation
+        // enqueued by `step_completed` can advance past the abort — dispatching
+        // a later step with a stale, non-aborted `signal` — before the event
+        // exists. Route it to `preCompletionOps` (awaited inline before
+        // completion) rather than `ops` (best-effort, background). The stream
+        // write above stays in `ops`: it must fire ASAP to reach an in-flight
+        // sibling step and is not the durable record.
+        // Swallow errors here so the promise can only ever enforce ordering
+        // when awaited (see the no-reject contract on
+        // StepContext.preCompletionOps); a failed resume retries on next replay.
+        const hookResume = (async () => {
+          try {
+            const { resumeHook: resumeHookFn } = await import(
+              './runtime/resume-hook.js'
+            );
+            await resumeHookFn(value.hookToken, {
+              aborted: true,
+              reason,
+            });
+          } catch {
+            // Best-effort hook resume — retry on next replay
+          }
+        })();
+        ctx.preCompletionOps.push(hookResume);
       }
     }
   };
@@ -1390,14 +2495,31 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 }
 
 /**
- * Resolve the encrypt-only key needed when a child writes into another run's
- * stream. New descriptors include the owner's deployment ID; descriptors
- * created by older SDK versions fall back to loading the owning run.
+ * Resolve the write-only key a run needs when writing into another run's
+ * forwarded stream.
+ *
+ * Three tiers, cheapest first:
+ *
+ * 1. The descriptor carries the owner's X25519 public key — seal to it with
+ *    no I/O whatsoever. The owner published the key when it created the
+ *    stream, so this is the zero-round-trip path.
+ * 2. The descriptor carries the owner's deployment ID — resolve the owner's
+ *    symmetric key, which cross-deployment means a key-API round trip.
+ * 3. Neither (descriptors written by older SDKs) — load the owning run first,
+ *    then resolve its symmetric key.
+ *
+ * Tiers 2 and 3 import the key encrypt-only, which is an honor-system
+ * restriction: the same bytes could decrypt. Tier 1 makes it a cryptographic
+ * guarantee — a public key cannot read anything.
  */
 async function getForwardedWritableEncryptionKey(
   runId: string,
-  deploymentId: string | undefined
-): Promise<CryptoKey | undefined> {
+  deploymentId: string | undefined,
+  encryptionPublicKey: string | undefined
+): Promise<PayloadKey | undefined> {
+  const ownerPublicKey = decodeRunPublicKey(encryptionPublicKey);
+  if (ownerPublicKey) return sealTo(ownerPublicKey);
+
   const world = await getWorldLazy();
   if (!world.getEncryptionKeyForRun) return undefined;
 
@@ -1481,19 +2603,30 @@ export function getExternalRevivers(
         return response.body;
       }
 
-      const readable = new WorkflowServerReadableStream(
-        runId,
-        value.name,
-        value.startIndex
-      );
       if (value.type === 'bytes') {
-        // For byte streams, use flushable pipe with lock polling
+        // For byte streams, use flushable pipe with lock polling.
+        // If the producer wrote framed bytes (framing === 'framed-v1'),
+        // unwrap the length-prefix envelope before handing chunks to
+        // the user. Absent / 'raw' framing means legacy raw bytes —
+        // pipe through unchanged for backwards compatibility.
+        //
+        // No auto-reconnect here yet: raw byte streams have no wire
+        // framing to count consumed chunks with. Framed-v1 byte streams
+        // make frame counting possible, so extending the reconnecting
+        // reader to them is a separate follow-up.
+        const readable = new WorkflowServerReadableStream(
+          runId,
+          value.name,
+          value.startIndex
+        );
         const state = createFlushableState();
         ops.push(state.promise);
 
-        // Create an identity transform to give the user a readable
+        // Create an identity (or unframing) transform to give the user a readable
         const { readable: userReadable, writable } =
-          new global.TransformStream();
+          value.framing === 'framed-v1'
+            ? getByteUnframingStream()
+            : new global.TransformStream();
 
         // Start the flushable pipe in the background
         flushablePipe(readable, writable, state).catch(() => {
@@ -1505,6 +2638,14 @@ export function getExternalRevivers(
 
         return userReadable;
       } else {
+        // Non-byte streams carry length-prefixed frames, so we can count
+        // completed frames and transparently reconnect when the server
+        // stream connection times out mid-run.
+        const readable = createReconnectingFramedStream(
+          runId,
+          value.name,
+          value.startIndex
+        );
         const transform = getDeserializeStream(
           getExternalRevivers(global, ops, runId, cryptoKey),
           cryptoKey
@@ -1531,7 +2672,11 @@ export function getExternalRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(targetRunId, value.deploymentId);
+          : getForwardedWritableEncryptionKey(
+              targetRunId,
+              value.deploymentId,
+              value.encryptionPublicKey
+            );
 
       const serialize = getSerializeStream(
         getExternalReducers(global, ops, targetRunId, targetKey),
@@ -1568,6 +2713,18 @@ export function getExternalRevivers(
           STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
           {
             value: value.deploymentId,
+            writable: false,
+          }
+        );
+      }
+      // Keep the owner's public key on the handle so a further forward stays on
+      // the zero-lookup sealed path.
+      if (typeof value.encryptionPublicKey === 'string') {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
+          {
+            value: value.encryptionPublicKey,
             writable: false,
           }
         );
@@ -1654,6 +2811,15 @@ export function getWorkflowRevivers(
           value: value.type,
           writable: false,
         },
+        // Carry the wire-framing decision through the workflow VM so
+        // that when the handle is later passed to a step (which reads
+        // the actual bytes from the server) we know whether to unframe.
+        // Defaults to undefined for streams whose serialized ref didn't
+        // carry the field — those are treated as legacy raw bytes.
+        [STREAM_FRAMING_SYMBOL]: {
+          value: value.framing,
+          writable: false,
+        },
       });
     },
     WritableStream: (value) => {
@@ -1675,6 +2841,16 @@ export function getWorkflowRevivers(
       if (typeof value.deploymentId === 'string') {
         descriptor[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL] = {
           value: value.deploymentId,
+          writable: false,
+        };
+      }
+      // Preserve the owner's public key for the same reason as the runId
+      // above. Without it, forwarding a writable through a workflow to a step
+      // silently drops the key, and the step falls back to fetching the
+      // owner's symmetric key — the round trip sealing exists to remove.
+      if (typeof value.encryptionPublicKey === 'string') {
+        descriptor[STREAM_SERVER_PUBLIC_KEY_SYMBOL] = {
+          value: value.encryptionPublicKey,
           writable: false,
         };
       }
@@ -1860,13 +3036,19 @@ function getStepRevivers(
 
       const readable = new WorkflowServerReadableStream(runId, value.name);
       if (value.type === 'bytes') {
-        // For byte streams, use flushable pipe with lock polling
+        // For byte streams, use flushable pipe with lock polling.
+        // If the producer wrote framed bytes (framing === 'framed-v1'),
+        // unwrap the length-prefix envelope before handing chunks to
+        // the user step. Absent / 'raw' framing means legacy raw bytes —
+        // pipe through unchanged for backwards compatibility.
         const state = createFlushableState();
         ops.push(state.promise);
 
-        // Create an identity transform to give the user a readable
+        // Create an identity (or unframing) transform to give the user a readable
         const { readable: userReadable, writable } =
-          new global.TransformStream();
+          value.framing === 'framed-v1'
+            ? getByteUnframingStream()
+            : new global.TransformStream();
 
         // Start the flushable pipe in the background
         flushablePipe(readable, writable, state).catch(() => {
@@ -1919,7 +3101,11 @@ function getStepRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(targetRunId, targetDeploymentId);
+          : getForwardedWritableEncryptionKey(
+              targetRunId,
+              targetDeploymentId,
+              value.encryptionPublicKey
+            );
 
       const serialize = getSerializeStream(
         getStepReducers(global, ops, targetRunId, targetKey),
@@ -1966,6 +3152,47 @@ function getStepRevivers(
           }
         );
       }
+      // Keep the owner's public key on the handle so a further forward stays on
+      // the zero-lookup sealed path.
+      //
+      // When the descriptor carries no key and the stream belongs to THIS run,
+      // derive it. A writable taken with `getWritable()` in a workflow body has
+      // only a name on it — the workflow VM holds no key material by design —
+      // so nothing could publish the key when the handle was created. Reviving
+      // happens in a step, which does hold this run's key, and any later
+      // forward then just copies the symbol.
+      //
+      // It has to happen here rather than at serialization time: `start()`
+      // dehydrates its arguments with the CHILD's runId and the CHILD's key, so
+      // the owning run's key is no longer in scope by then.
+      //
+      // `targetRunId === runId` is the guard that matters. For a stream another
+      // run owns we must not advertise our key — the receiver would seal to us
+      // and the real owner could never open what it wrote.
+      if (
+        typeof value.encryptionPublicKey !== 'string' &&
+        targetRunId === runId &&
+        isRunPayloadKeys(cryptoKey)
+      ) {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
+          {
+            value: bytesToBase64(cryptoKey.keyPair.publicKey),
+            writable: false,
+          }
+        );
+      }
+      if (typeof value.encryptionPublicKey === 'string') {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
+          {
+            value: value.encryptionPublicKey,
+            writable: false,
+          }
+        );
+      }
 
       return serialize.writable;
     },
@@ -1989,7 +3216,7 @@ function getStepRevivers(
  */
 export async function maybeEncrypt(
   data: Uint8Array,
-  key: CryptoKey | undefined
+  key: PayloadKey | undefined
 ): Promise<Uint8Array> {
   return (await encrypt(data, key)) as Uint8Array;
 }
@@ -2001,9 +3228,100 @@ export async function maybeEncrypt(
  */
 export async function maybeDecrypt(
   data: Uint8Array | unknown,
-  key: CryptoKey | undefined
+  key: PayloadKey | undefined
 ): Promise<Uint8Array | unknown> {
   return decrypt(data, key);
+}
+
+/**
+ * Replay hydration has two stages:
+ *
+ * 1. Host-side preparation decrypts and decompresses persisted data. That work
+ *    is independent of a workflow VM and can be cached across replay VMs.
+ * 2. Deserialization revives the prepared representation against the current
+ *    VM's globals. It must run again for every VM to produce fresh object graphs
+ *    and correctly scoped Workflow objects.
+ *
+ * `data` is the boundary between those stages. For current-format payloads it
+ * is still format-prefixed serialized bytes, not a live JavaScript value.
+ */
+export interface PreparedReplayPayload {
+  readonly data: unknown;
+}
+
+/**
+ * Swappable implementation of the host-side preparation stage. Supporting
+ * both direct and promised results lets a future synchronous Node decryptor use
+ * the same cache contract as today's asynchronous Web Crypto implementation.
+ */
+export type ReplayPayloadPreparer = (
+  value: unknown,
+  key: PayloadKey | undefined
+) => PreparedReplayPayload | Promise<PreparedReplayPayload>;
+
+/**
+ * Decrypt and decompress persisted data without parsing it into JavaScript.
+ * Legacy non-binary values pass through unchanged for their consumer to revive.
+ */
+export const prepareReplayPayload: ReplayPayloadPreparer = async (
+  value,
+  key
+) => {
+  const compressionStats: CompressionStats = {};
+  const prepared = await decompress(
+    await decrypt(value, key),
+    compressionStats
+  );
+  await recordCompression(compressionStats, 'deserialize');
+  return { data: prepared };
+};
+
+/**
+ * Parse a prepared workflow argument or successful step/hook payload using the
+ * current workflow VM's globals and revivers. Each call intentionally creates
+ * a fresh object graph so mutations cannot leak across replay iterations.
+ */
+export function deserializePreparedReplayPayload(
+  prepared: PreparedReplayPayload,
+  global: Record<string, any> = globalThis,
+  extraRevivers: Record<string, (value: any) => any> = {}
+): any {
+  return workflowModule.deserialize(prepared.data, {
+    global,
+    extraRevivers: {
+      ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
+      ...extraRevivers,
+    },
+  });
+}
+
+/**
+ * Parse a prepared step error using the current workflow VM's class revivers.
+ * This preserves thrown-value identity without sharing objects between VMs.
+ */
+export function deserializePreparedStepError(
+  prepared: PreparedReplayPayload,
+  global: Record<string, any> = globalThis,
+  extraRevivers: Record<string, (value: any) => any> = {}
+): unknown {
+  const { data } = prepared;
+  if (!(data instanceof Uint8Array)) {
+    return unflatten(data as any[], {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
+  }
+
+  const { format, payload } = decodeFormatPrefix(data);
+  if (format === SerializationFormat.DEVALUE_V1) {
+    const str = new TextDecoder().decode(payload);
+    return parse(str, {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
+  }
+
+  throw new Error(`Unsupported serialization format: ${format}`);
 }
 
 // ============================================================================
@@ -2017,26 +3335,48 @@ export async function maybeDecrypt(
  * Called from the `start()` function to serialize the workflow arguments
  * into a format that can be saved to the database and then hydrated from
  * within the workflow execution environment.
+ *
+ * @param value - The value to serialize
+ * @param runId - The workflow run ID (required for encryption context)
+ * @param key - Encryption key (undefined to skip encryption)
+ * @param ops - Promise array for stream operations
+ * @param global - Global object for serialization context
+ * @param v1Compat - Enable legacy v1 compatibility mode
+ * @param framedByteStreams - Whether the target run can decode wire-framed
+ *   byte streams. Should match the target deployment's capability — see
+ *   `getRunCapabilities` in `capabilities.ts`. Defaults to `false` for
+ *   backwards compatibility with older runs.
+ * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
 export async function dehydrateWorkflowArguments(
   value: unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
-  v1Compat = false
+  v1Compat = false,
+  framedByteStreams = false,
+  compression = false
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
-    const str = stringify(value, getExternalReducers(global, ops, runId, key));
+    const str = stringify(
+      value,
+      getExternalReducers(global, ops, runId, key, framedByteStreams)
+    );
     return revive(str);
   }
   try {
-    return await clientModule.serialize(value, key, {
+    const compressionStats: CompressionStats = {};
+    const result = await clientModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(
-        getExternalReducers(global, ops, runId, key)
+        getExternalReducers(global, ops, runId, key, framedByteStreams)
       ),
+      compression,
+      compressionStats,
     });
+    await recordCompression(compressionStats, 'serialize');
+    return result;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
     const { message, hint } = formatSerializationError(
@@ -2049,22 +3389,22 @@ export async function dehydrateWorkflowArguments(
 
 /**
  * Called from workflow execution environment to hydrate the workflow
- * arguments from the database at the start of workflow execution.
+ * arguments from the database at the start of workflow execution. A prepared
+ * payload skips host-side decrypt/decompress but always performs VM revival.
  */
 export async function hydrateWorkflowArguments(
   value: Uint8Array | unknown,
   _runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  prepared?: PreparedReplayPayload
 ): Promise<any> {
-  return workflowModule.deserialize(await maybeDecrypt(value, key), {
+  return deserializePreparedReplayPayload(
+    prepared ?? (await prepareReplayPayload(value, key)),
     global,
-    extraRevivers: {
-      ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
-      ...extraRevivers,
-    },
-  });
+    extraRevivers
+  );
 }
 
 /**
@@ -2073,19 +3413,25 @@ export async function hydrateWorkflowArguments(
 export async function dehydrateWorkflowReturnValue(
   value: unknown,
   _runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
-  v1Compat = false
+  v1Compat = false,
+  compression = false
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(value, getWorkflowReducers(global));
     return revive(str);
   }
   try {
-    return await stepModule.serialize(value, key, {
+    const compressionStats: CompressionStats = {};
+    const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
+      compression,
+      compressionStats,
     });
+    await recordCompression(compressionStats, 'serialize');
+    return result;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
     const { message, hint } = formatSerializationError(
@@ -2103,12 +3449,13 @@ export async function dehydrateWorkflowReturnValue(
 export async function hydrateWorkflowReturnValue(
   value: Uint8Array | unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ): Promise<any> {
-  return clientModule.deserialize(value, key, {
+  const compressionStats: CompressionStats = {};
+  const result = await clientModule.deserialize(value, key, {
     global,
     extraRevivers: {
       ...getStreamAndRequestRevivers(
@@ -2116,7 +3463,10 @@ export async function hydrateWorkflowReturnValue(
       ),
       ...extraRevivers,
     },
+    compressionStats,
   });
+  await recordCompression(compressionStats, 'deserialize');
+  return result;
 }
 
 /**
@@ -2126,19 +3476,25 @@ export async function hydrateWorkflowReturnValue(
 export async function dehydrateStepArguments(
   value: unknown,
   _runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
-  v1Compat = false
+  v1Compat = false,
+  compression = false
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(value, getWorkflowReducers(global));
     return revive(str);
   }
   try {
-    return await stepModule.serialize(value, key, {
+    const compressionStats: CompressionStats = {};
+    const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
+      compression,
+      compressionStats,
     });
+    await recordCompression(compressionStats, 'serialize');
+    return result;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
     const { message, hint } = formatSerializationError('step arguments', cause);
@@ -2147,19 +3503,20 @@ export async function dehydrateStepArguments(
 }
 
 /**
- * Called from the step handler to hydrate the arguments of a step
+ * Called from the step executor to hydrate the arguments of a step
  * from the database at the start of the step execution.
  */
 export async function hydrateStepArguments(
   value: Uint8Array | unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   deploymentId?: string
 ): Promise<any> {
-  return stepModule.deserialize(value, key, {
+  const compressionStats: CompressionStats = {};
+  const result = await stepModule.deserialize(value, key, {
     global,
     extraRevivers: {
       ...getStreamAndRequestRevivers(
@@ -2167,32 +3524,76 @@ export async function hydrateStepArguments(
       ),
       ...extraRevivers,
     },
+    compressionStats,
   });
+  await recordCompression(compressionStats, 'deserialize');
+  return result;
 }
 
 /**
- * Called from the step handler when a step has completed.
- * Dehydrates values from within the step execution environment.
+ * Called from the step executor when a step has completed.
+ * Dehydrates values from within the step execution environment
+ * into a format that can be saved to the database.
+ *
+ * @param value - The value to serialize
+ * @param runId - Run ID for encryption context
+ * @param key - Encryption key (undefined to skip encryption)
+ * @param ops - Promise array for stream operations
+ * @param global - Global object for serialization context
+ * @param v1Compat - Enable legacy v1 compatibility mode
+ * @param framedByteStreams - Whether the target run can decode wire-framed
+ *   byte streams. Should match the target deployment's capability — see
+ *   `getRunCapabilities` in `capabilities.ts`. Defaults to `false` for
+ *   backwards compatibility with older runs.
+ * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
 export async function dehydrateStepReturnValue(
   value: unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
-  v1Compat = false
+  v1Compat = false,
+  framedByteStreams = false,
+  compression = false,
+  // Turbo optimistic start: order the first chunk of a returned stream after
+  // the backgrounded `run_started`. Threaded into the step reducers' stream
+  // sink. Undefined outside turbo / on the await path.
+  runReadyBarrier?: Promise<unknown>
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
-    const str = stringify(value, getStepReducers(global, ops, runId, key));
+    const str = stringify(
+      value,
+      getStepReducers(
+        global,
+        ops,
+        runId,
+        key,
+        framedByteStreams,
+        runReadyBarrier
+      )
+    );
     return revive(str);
   }
   try {
-    return await stepModule.serialize(value, key, {
+    const compressionStats: CompressionStats = {};
+    const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(
-        getStepReducers(global, ops, runId, key)
+        getStepReducers(
+          global,
+          ops,
+          runId,
+          key,
+          framedByteStreams,
+          runReadyBarrier
+        )
       ),
+      compression,
+      compressionStats,
     });
+    await recordCompression(compressionStats, 'serialize');
+    return result;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
     const { message, hint } = formatSerializationError(
@@ -2204,7 +3605,7 @@ export async function dehydrateStepReturnValue(
 }
 
 /**
- * Called from the step handler when a step throws. Dehydrates the thrown
+ * Called from the step executor when a step throws. Dehydrates the thrown
  * value from within the step execution environment into a format that can
  * be saved to the database in a `step_failed` or `step_retrying` event.
  *
@@ -2222,9 +3623,10 @@ export async function dehydrateStepReturnValue(
 export async function dehydrateStepError(
   value: unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   ops: Promise<any>[] = [],
-  global: Record<string, any> = globalThis
+  global: Record<string, any> = globalThis,
+  compression = false
 ): Promise<Uint8Array> {
   try {
     const str = stringify(value, getStepReducers(global, ops, runId, key));
@@ -2233,7 +3635,19 @@ export async function dehydrateStepError(
       SerializationFormat.DEVALUE_V1,
       payload
     ) as Uint8Array;
-    return (await maybeEncrypt(serialized, key)) as Uint8Array;
+    // Compress before encrypting — encrypted bytes don't compress.
+    const compressionStats: CompressionStats = {};
+    const compressed = await compress(
+      serialized,
+      compression,
+      compressionStats
+    );
+    const encrypted = (await maybeEncrypt(
+      compressed as Uint8Array,
+      key
+    )) as Uint8Array;
+    await recordCompression(compressionStats, 'serialize');
+    return encrypted;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
     const { message, hint } = formatSerializationError('step error', cause);
@@ -2251,44 +3665,22 @@ export async function dehydrateStepError(
  * @param key - Encryption key (undefined to skip decryption)
  * @param global - Global object for deserialization context
  * @param extraRevivers - Additional revivers for custom types
+ * @param prepared - Optional cached decrypt/decompress result
  * @returns The hydrated thrown value, ready to reject the step promise
  */
 export async function hydrateStepError(
   value: Uint8Array | unknown,
   _runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  prepared?: PreparedReplayPayload
 ): Promise<unknown> {
-  const decrypted = await maybeDecrypt(value, key);
-
-  if (!(decrypted instanceof Uint8Array)) {
-    // Treated as a devalue "flattened" array. In production this branch is
-    // exercised by legacy code paths that bypassed `dehydrateStepError`; the
-    // SDK version is pinned per workflow run via skew protection, so a
-    // current-version producer always emits a Uint8Array here. If a
-    // misshapen value reaches us, `unflatten` throws — that's intentional:
-    // the higher-level hydration helpers (`hydrateStepIO`,
-    // `hydrateResourceIO`) already wrap us in a try/catch that leaves the
-    // field un-hydrated for o11y display, and surfacing the throw to logs
-    // is more debuggable than silently masking the unsupported shape.
-    return unflatten(decrypted as any[], {
-      ...getWorkflowRevivers(global),
-      ...extraRevivers,
-    });
-  }
-
-  const { format, payload } = decodeFormatPrefix(decrypted);
-
-  if (format === SerializationFormat.DEVALUE_V1) {
-    const str = new TextDecoder().decode(payload);
-    return parse(str, {
-      ...getWorkflowRevivers(global),
-      ...extraRevivers,
-    });
-  }
-
-  throw new Error(`Unsupported serialization format: ${format}`);
+  return deserializePreparedStepError(
+    prepared ?? (await prepareReplayPayload(value, key)),
+    global,
+    extraRevivers
+  );
 }
 
 /**
@@ -2305,8 +3697,9 @@ export async function hydrateStepError(
 export async function dehydrateRunError(
   value: unknown,
   _runId: string,
-  key: CryptoKey | undefined,
-  global: Record<string, any> = globalThis
+  key: PayloadKey | undefined,
+  global: Record<string, any> = globalThis,
+  compression = false
 ): Promise<Uint8Array> {
   try {
     const str = stringify(value, getWorkflowReducers(global));
@@ -2315,7 +3708,19 @@ export async function dehydrateRunError(
       SerializationFormat.DEVALUE_V1,
       payload
     ) as Uint8Array;
-    return (await maybeEncrypt(serialized, key)) as Uint8Array;
+    // Compress before encrypting — encrypted bytes don't compress.
+    const compressionStats: CompressionStats = {};
+    const compressed = await compress(
+      serialized,
+      compression,
+      compressionStats
+    );
+    const encrypted = (await maybeEncrypt(
+      compressed as Uint8Array,
+      key
+    )) as Uint8Array;
+    await recordCompression(compressionStats, 'serialize');
+    return encrypted;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
     const { message, hint } = formatSerializationError('run error', cause);
@@ -2338,12 +3743,17 @@ export async function dehydrateRunError(
 export async function hydrateRunError(
   value: Uint8Array | unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ): Promise<unknown> {
-  const decrypted = await maybeDecrypt(value, key);
+  const compressionStats: CompressionStats = {};
+  const decrypted = await decompress(
+    await decrypt(value, key),
+    compressionStats
+  );
+  await recordCompression(compressionStats, 'deserialize');
 
   if (!(decrypted instanceof Uint8Array)) {
     // See the matching note in `hydrateStepError`: this branch is for
@@ -2379,23 +3789,23 @@ export async function hydrateRunError(
  * @param key - Encryption key (undefined to skip decryption)
  * @param global - Global object for deserialization context
  * @param extraRevivers - Additional revivers for custom types
+ * @param prepared - Optional cached decrypt/decompress result
  * Called from the workflow handler when replaying the event log
  * of a `step_completed` event.
  */
 export async function hydrateStepReturnValue(
   value: Uint8Array | unknown,
   _runId: string,
-  key: CryptoKey | undefined,
+  key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  prepared?: PreparedReplayPayload
 ): Promise<any> {
-  return workflowModule.deserialize(await maybeDecrypt(value, key), {
+  return deserializePreparedReplayPayload(
+    prepared ?? (await prepareReplayPayload(value, key)),
     global,
-    extraRevivers: {
-      ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
-      ...extraRevivers,
-    },
-  });
+    extraRevivers
+  );
 }
 
 // ---- Helpers to extract stream/Request/Response reducers and revivers ----

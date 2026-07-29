@@ -5,7 +5,7 @@ import {
   SPEC_VERSION_LEGACY,
   type World,
 } from '@workflow/world';
-import { importKey } from '../encryption.js';
+import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import { hydrateWorkflowArguments } from '../serialization.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { start } from './start.js';
@@ -13,6 +13,15 @@ import { start } from './start.js';
 export interface RecreateRunOptions {
   deploymentId?: string;
   specVersion?: number;
+  /**
+   * Queue namespace of the target deployment (e.g. `'eve'` for topics like
+   * `__eve_wkf_workflow_*`). Falls back to `WORKFLOW_QUEUE_NAMESPACE` in
+   * the calling process. Cross-context callers (e.g. the observability
+   * dashboard) must pass the target deployment's namespace explicitly —
+   * a run enqueued to a topic the target deployment has no consumer for
+   * is never picked up.
+   */
+  namespace?: string;
 }
 
 export interface StopSleepResult {
@@ -35,6 +44,30 @@ export interface StopSleepOptions {
    * If not provided, all pending sleep calls will be interrupted.
    */
   correlationIds?: string[];
+  /**
+   * Queue namespace of the run's deployment (e.g. `'eve'`), used when
+   * re-enqueueing the run after completing its waits. Falls back to
+   * `WORKFLOW_QUEUE_NAMESPACE` in the calling process. Cross-context
+   * callers (e.g. the observability dashboard) must pass it explicitly.
+   */
+  namespace?: string;
+}
+
+export interface ReenqueueRunOptions {
+  /**
+   * Queue namespace of the run's deployment (e.g. `'eve'`). Falls back to
+   * `WORKFLOW_QUEUE_NAMESPACE` in the calling process. Cross-context
+   * callers (e.g. the observability dashboard) must pass it explicitly.
+   */
+  namespace?: string;
+}
+
+export interface CancelRunOptions {
+  /**
+   * Optional free-text reason for the cancellation (max 512 chars), recorded
+   * on the run_cancelled event and surfaced in the run detail view.
+   */
+  cancelReason?: string;
 }
 
 const normalizeWorkflowArgs = (args: unknown): unknown[] => {
@@ -52,7 +85,9 @@ export async function recreateRunFromExisting(
   try {
     const run = await world.runs.get(runId, { resolveData: 'all' });
     const rawKey = await world.getEncryptionKeyForRun?.(run);
-    const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+    const encryptionKey = rawKey
+      ? await deriveRunPayloadKeys(rawKey)
+      : undefined;
     const workflowArgs = normalizeWorkflowArgs(
       await hydrateWorkflowArguments(
         run.input,
@@ -72,6 +107,8 @@ export async function recreateRunFromExisting(
         deploymentId,
         world,
         specVersion,
+        replayedFromRunId: runId,
+        namespace: options.namespace,
       }
     );
     return newRun.runId;
@@ -85,17 +122,27 @@ export async function recreateRunFromExisting(
 
 /**
  * Cancel a workflow run.
+ *
+ * @param options - Optional cancellation settings. `cancelReason` records a
+ *   free-text reason (max 512 chars) on the run_cancelled event.
  */
-export async function cancelRun(world: World, runId: string): Promise<void> {
+export async function cancelRun(
+  world: World,
+  runId: string,
+  options?: CancelRunOptions
+): Promise<void> {
   try {
     const run = await world.runs.get(runId, { resolveData: 'none' });
     const specVersion = run.specVersion ?? SPEC_VERSION_LEGACY;
     const compatMode = isLegacySpecVersion(specVersion);
-    const eventData = {
+    const eventRequest = {
       eventType: 'run_cancelled' as const,
       specVersion,
+      ...(options?.cancelReason !== undefined
+        ? { eventData: { cancelReason: options.cancelReason } }
+        : {}),
     };
-    await world.events.create(runId, eventData, { v1Compat: compatMode });
+    await world.events.create(runId, eventRequest, { v1Compat: compatMode });
   } catch (err) {
     throw new Error(
       `Failed to cancel run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -107,11 +154,15 @@ export async function cancelRun(world: World, runId: string): Promise<void> {
 /**
  * Re-enqueue a workflow run.
  */
-export async function reenqueueRun(world: World, runId: string): Promise<void> {
+export async function reenqueueRun(
+  world: World,
+  runId: string,
+  options?: ReenqueueRunOptions
+): Promise<void> {
   try {
     const run = await world.runs.get(runId, { resolveData: 'none' });
     await world.queue(
-      getWorkflowQueueName(run.workflowName),
+      getWorkflowQueueName(run.workflowName, options?.namespace),
       {
         runId,
       },
@@ -207,7 +258,7 @@ export async function wakeUpRun(
 
     if (stoppedCount > 0) {
       await world.queue(
-        getWorkflowQueueName(run.workflowName),
+        getWorkflowQueueName(run.workflowName, options?.namespace),
         {
           runId,
         },

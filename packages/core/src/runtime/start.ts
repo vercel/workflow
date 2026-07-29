@@ -1,26 +1,94 @@
-import { waitUntil } from '@vercel/functions';
 import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
+import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
   isLegacySpecVersion,
+  PARENT_RUN_ID_ATTRIBUTE,
+  ROOT_RUN_ID_ATTRIBUTE,
+  SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
-  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
+  workflowRunIdSchema,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
+import { normalizeAttributeChanges } from '../attribute-changes.js';
+import { getRunCapabilities } from '../capabilities.js';
+import { isRetryableWorldError } from '../classify-error.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import type { Serializable } from '../schemas.js';
-import { dehydrateWorkflowArguments } from '../serialization.js';
+import {
+  bytesToBase64,
+  decodeRunPublicKey,
+  deriveRunKeyPair,
+} from '../sealed-box.js';
+import {
+  dehydrateWorkflowArguments,
+  type PayloadKey,
+  SerializationFormat,
+  sealTo,
+} from '../serialization.js';
+import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
-import { waitedUntil } from '../util.js';
 import { version as workflowCoreVersion } from '../version.js';
-import { getWorkflowQueueName, isRetryableEventError } from './helpers.js';
-import { Run } from './run.js';
 import { getWorldLazy } from './get-world-lazy.js';
+import { getWorkflowQueueName, healthCheck } from './helpers.js';
+import { Run } from './run.js';
+import { safeWaitUntil, waitedUntil } from './wait-until.js';
+import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
+
+/**
+ * Timeout for the cross-deployment capability probe done before
+ * dehydrating workflow arguments. Kept tight on purpose: the probe is
+ * an optimization (it lets the caller emit the framed byte-stream wire
+ * format when the target supports it), and the fallback on timeout is
+ * the legacy raw format which always works. Long delays here would just
+ * make `start({ deploymentId: ... })` slower for users whose target
+ * deployments don't recognize the health check at all.
+ */
+const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
 
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
+
+/**
+ * Cross-run lineage for a run being started from inside another run.
+ *
+ * The ambient step context carries the parent run id and the root of its
+ * lineage; the runtime fills both from the run it already has loaded, so this
+ * is a pure context read with no I/O. The new run records `$parentRunId` (the
+ * edge) and inherits the parent's `$rootRunId` (the parent itself when it is a
+ * root), so a daisy chain or fan-out of any depth groups under one root id.
+ * Returns `undefined` for a top-level `start()`, which has no context, so
+ * standalone runs carry no lineage.
+ */
+function resolveLineageAttributes(): Record<string, string> | undefined {
+  const store = contextStorage.getStore();
+  const parentRunId = store?.workflowMetadata?.workflowRunId;
+  if (!parentRunId) return undefined;
+
+  return {
+    [ROOT_RUN_ID_ATTRIBUTE]: store.rootRunId ?? parentRunId,
+    [PARENT_RUN_ID_ATTRIBUTE]: parentRunId,
+  };
+}
+
+// `deploymentId: 'latest'` is a no-op in Worlds without atomic deployments.
+// The warning that explains this only needs to fire once per process: a
+// workflow that hardcodes 'latest' for its Vercel deployment would otherwise
+// log it on every local/Postgres run, flooding tight dev loops.
+let hasWarnedLatestNoOp = false;
+
+/**
+ * Reset the `deploymentId: 'latest'` no-op warn-once guard. Test-only —
+ * exported so unit tests can exercise the warn path across `start()` calls.
+ *
+ * @internal
+ */
+export function _resetLatestNoOpWarnForTests(): void {
+  hasWarnedLatestNoOp = false;
+}
 
 export interface StartOptionsBase {
   /**
@@ -33,6 +101,69 @@ export interface StartOptionsBase {
    * The spec version to use for the workflow run. Defaults to the latest version.
    */
   specVersion?: number;
+
+  /**
+   * Optional region identifier for the new run. Currently consumed only
+   * by `@workflow/world-vercel`, which embeds the region into the tagged
+   * run ID and routes the initial workflow message to the matching
+   * regional queue. When omitted, the world falls back to its own
+   * default (for `world-vercel`: the `VERCEL_REGION` environment
+   * variable, then the server-side default region `iad1` — a concrete,
+   * routable region is always chosen).
+   *
+   * Worlds without a regional dimension ignore this field.
+   */
+  region?: string;
+
+  /**
+   * Plaintext attributes to seed on the run as it is created.
+   *
+   * Available for native-attributes runs (spec version 4 and later).
+   */
+  attributes?: Record<string, string>;
+
+  /**
+   * Permit reserved `$`-prefixed keys in `attributes`. The `$` namespace
+   * is reserved for framework/library code built on top of the workflow
+   * SDK (telemetry, agent metadata, platform-emitted tags, etc.); user
+   * code MUST NOT write keys in it, and validation rejects them so
+   * accidental collisions with tooling-owned keys can't slip through.
+   *
+   * Only flip this to `true` if your caller is itself a framework or
+   * library that owns a `$`-prefixed sub-namespace and knows the
+   * conventions of any other tools writing into it. Same semantics as
+   * the `setAttributes` option of the same name.
+   */
+  allowReservedAttributes?: boolean;
+
+  /**
+   * The ID of an existing run this run is being replayed from, if any.
+   *
+   * Recorded on the new run's `executionContext` as `replayedFromRunId` so
+   * tooling (e.g. the dashboard runs list) can show that a run originated as
+   * a replay and link back to its source. Set automatically by
+   * {@link recreateRunFromExisting}; there's usually no reason to pass it
+   * directly.
+   *
+   * Must be a run ID: `wrun_` followed by a 26-char ULID. It's a foreign key
+   * to the source run, so `start()` validates the exact shape and rejects
+   * anything else rather than persist a lineage link that points at garbage.
+   */
+  replayedFromRunId?: string;
+  /**
+   * Queue namespace of the target deployment. Scopes the workflow queue
+   * topic to `__{namespace}_wkf_workflow_*` (e.g. `'eve'`) instead of the
+   * default `__wkf_workflow_*`, and is also used for the cross-deployment
+   * capability probe. Falls back to `WORKFLOW_QUEUE_NAMESPACE` in the
+   * calling process.
+   *
+   * Within a deployment the env fallback is correct. Cross-context callers
+   * (e.g. the observability dashboard replaying a run) must pass the
+   * TARGET deployment's namespace explicitly: the env fallback resolves in
+   * the caller's process, and a run enqueued to a topic the target has no
+   * consumer for is never picked up.
+   */
+  namespace?: string;
 }
 
 export interface StartOptionsWithDeploymentId extends StartOptionsBase {
@@ -44,7 +175,10 @@ export interface StartOptionsWithDeploymentId extends StartOptionsBase {
    *
    * Set to `'latest'` to automatically resolve the most recent deployment
    * for the current environment (same production target or git branch).
-   * This is currently a Vercel-specific feature.
+   * This is only meaningful in worlds with atomic, immutable deployments
+   * (currently Vercel). In other worlds (local dev, Postgres) there is no
+   * notion of multiple deployments to resolve between, so `'latest'` has no
+   * effect — a warning is logged and the run targets the current deployment.
    *
    * **Note:** When `deploymentId` is provided, the argument and return types become `unknown`
    * since there is no guarantee the types will be consistent across deployments.
@@ -126,7 +260,8 @@ export async function start<TArgs extends unknown[], TResult>(
       );
     }
 
-    return trace(`workflow.start ${workflowName}`, async (span) => {
+    const spanName = `workflow.start ${workflowDisplayName(workflowName)}`;
+    return trace(spanName, async (span) => {
       span?.setAttributes({
         ...Attribute.WorkflowName(workflowName),
         ...Attribute.WorkflowOperation('start'),
@@ -144,39 +279,166 @@ export async function start<TArgs extends unknown[], TResult>(
         ...Attribute.WorkflowArgumentsCount(args.length),
       });
 
-      const world = opts?.world ?? (await getWorldLazy());
-      let deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
+      const world = opts.world ?? (await getWorldLazy());
+      assertWorldSupportsRuntimeProtocol(world);
+      const currentDeploymentId = await world.getDeploymentId();
+      let deploymentId = opts.deploymentId ?? currentDeploymentId;
 
       // When 'latest' is requested, resolve the actual latest deployment ID
       // for the current deployment's environment (same production target or
       // same git branch for preview deployments).
+      //
+      // Resolving 'latest' only means something in worlds with atomic,
+      // immutable deployments (e.g. Vercel), which implement
+      // resolveLatestDeploymentId(). Worlds without that concept (local dev,
+      // self-hosted Postgres) have nothing to resolve between, so rather than
+      // fail a run that works fine on Vercel, we warn and fall back to the
+      // current deployment — making 'latest' an effective no-op there.
       if (deploymentId === 'latest') {
-        if (!world.resolveLatestDeploymentId) {
-          throw new WorkflowRuntimeError(
-            "deploymentId 'latest' requires a World that implements resolveLatestDeploymentId()"
-          );
+        if (world.resolveLatestDeploymentId) {
+          deploymentId = await world.resolveLatestDeploymentId();
+        } else {
+          // Warn once per process — see hasWarnedLatestNoOp above.
+          if (!hasWarnedLatestNoOp) {
+            hasWarnedLatestNoOp = true;
+            runtimeLogger.warn(
+              "deploymentId: 'latest' has no effect in this world and was ignored. " +
+                'It is only supported by worlds with atomic deployments, such as Vercel. ' +
+                'The run will target the current deployment.',
+              { currentDeploymentId }
+            );
+          }
+          deploymentId = currentDeploymentId;
         }
-        deploymentId = await world.resolveLatestDeploymentId();
+      }
+
+      // Decide whether to write byte streams in the framed wire format.
+      // For same-deployment starts (the common case) we know the target is
+      // running this same SDK version, so framing is safe. For cross-
+      // deployment starts (explicit deploymentId or 'latest' that resolves
+      // to a different deployment) we probe the target via healthCheck to
+      // learn its workflow-core version, then derive the capability. The
+      // probe has a tight timeout — on miss/failure we fall back to the
+      // legacy raw byte format, which is universally readable.
+      //
+      // Worlds that don't expose the `streams` API (e.g. minimal test
+      // mocks) can't service health checks, so we skip the probe for them.
+      // Generate runId client-side so we have it before serialization
+      // (required for future E2E encryption where runId is part of the
+      // encryption context). When the World provides a `createRunId()`
+      // implementation, use it so worlds can embed implementation-specific
+      // metadata (e.g., region) into the ID, forwarding the full options
+      // bag so worlds can read whichever fields they recognise; otherwise
+      // fall back to a standard monotonic ULID.
+      const runId = `wrun_${
+        world.createRunId
+          ? world.createRunId(opts as Readonly<Record<string, unknown>>)
+          : ulid()
+      }`;
+
+      let framedByteStreams: boolean;
+      let targetSupportsCompression: boolean;
+      // Public key of the target run, when the capability probe was able to
+      // supply one (cross-deployment only).
+      let probedRunPublicKey: string | undefined;
+      if (deploymentId === currentDeploymentId) {
+        framedByteStreams = true;
+        targetSupportsCompression = true;
+      } else if (typeof world.streams?.get !== 'function') {
+        framedByteStreams = false;
+        targetSupportsCompression = false;
+      } else {
+        // Ask for this run's public key while we're here. The probe already
+        // blocks `start()` on every cross-deployment call, and the responder
+        // executes inside the target deployment where the key material is
+        // local — so the key comes back for free on a response we are
+        // already awaiting, and we can skip the key-lookup API request
+        // entirely. Best-effort: on timeout or an older target, no key comes
+        // back and we fall through to the regular lookup below.
+        const probe = await healthCheck(world, {
+          deploymentId,
+          runId,
+          timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
+          namespace: opts.namespace,
+        }).catch(() => undefined);
+        probedRunPublicKey = probe?.encryptionPublicKey;
+        const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
+        framedByteStreams = capabilities.framedByteStreams;
+        targetSupportsCompression = capabilities.supportedFormats.has(
+          SerializationFormat.GZIP
+        );
       }
 
       const ops: Promise<void>[] = [];
 
-      // Generate runId client-side so we have it before serialization
-      // (required for future E2E encryption where runId is part of the encryption context)
-      const runId = `wrun_${ulid()}`;
-
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
 
-      // Use world-declared specVersion when available (our worlds set this),
-      // otherwise fall back to the safe baseline that community worlds handle.
-      // Community worlds built against older @workflow/world reject runs with
-      // specVersion > their SPEC_VERSION_CURRENT via requiresNewerWorld().
-      const specVersion =
-        opts.specVersion ??
-        world.specVersion ??
-        SPEC_VERSION_SUPPORTS_EVENT_SOURCING;
+      // Default new runs to the configured world's spec version. The world
+      // itself has already been checked against this runtime's spec version.
+      const specVersion = opts.specVersion ?? world.specVersion;
       const v1Compat = isLegacySpecVersion(specVersion);
+      const allowReservedAttributes = opts.allowReservedAttributes === true;
+      let attributes: Record<string, string> | undefined;
+      if (opts.attributes && Object.keys(opts.attributes).length > 0) {
+        if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
+          throw new WorkflowRuntimeError(
+            'Initial workflow attributes require a World that supports spec version 4 or later.'
+          );
+        }
+        // `normalizeAttributeChanges` treats `undefined` as "remove this
+        // key", which is meaningless at creation time — reject it up front
+        // so JS callers get a clear error instead of a downstream schema
+        // failure (the types already forbid non-string values).
+        for (const [key, value] of Object.entries(opts.attributes)) {
+          if (typeof value !== 'string') {
+            throw new WorkflowRuntimeError(
+              `Initial workflow attribute ${JSON.stringify(key)} must be a string value.`
+            );
+          }
+        }
+        const changes = normalizeAttributeChanges(opts.attributes, {
+          allowReservedAttributes,
+        });
+        attributes = Object.fromEntries(
+          changes.map(({ key, value }) => [key, value as string])
+        );
+      }
+
+      // Cross-run lineage: the reserved keys ride on the run's existing
+      // attributes, so they add no extra write. Caller attributes are spread
+      // last, so a caller with allowReservedAttributes can deliberately
+      // re-parent.
+      const lineage =
+        specVersion >= SPEC_VERSION_SUPPORTS_ATTRIBUTES
+          ? resolveLineageAttributes()
+          : undefined;
+      const runAttributes = lineage
+        ? { ...lineage, ...attributes }
+        : attributes;
+
+      // Shared by the run_created event and the resilient-start queue input.
+      const attributeSeed = runAttributes
+        ? {
+            attributes: runAttributes,
+            ...(allowReservedAttributes || lineage != null
+              ? { allowReservedAttributes: true as const }
+              : {}),
+          }
+        : {};
+
+      // `replayedFromRunId` is a foreign key to the source run; reject anything
+      // that isn't a real run ID so the lineage link can't point at garbage.
+      if (
+        opts.replayedFromRunId !== undefined &&
+        !workflowRunIdSchema.safeParse(opts.replayedFromRunId).success
+      ) {
+        throw new WorkflowRuntimeError(
+          `replayedFromRunId must be a run ID (wrun_<ulid>); received ${JSON.stringify(
+            String(opts.replayedFromRunId).slice(0, 64)
+          )}.`
+        );
+      }
 
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both
@@ -185,27 +447,73 @@ export async function start<TArgs extends unknown[], TResult>(
       // deploymentId (not just the raw opts) so the World can use it for
       // key resolution even when deploymentId was inferred from the environment
       // rather than explicitly provided in opts (e.g., in e2e test runners).
-      const rawKey = await world.getEncryptionKeyForRun?.(runId, {
-        ...opts,
-        deploymentId,
-      });
-      const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+      // Resolve how to encrypt the workflow arguments.
+      //
+      // Preferred: the capability probe already told us this run's public
+      // key, so seal to it. That skips `getEncryptionKeyForRun`, which for a
+      // cross-deployment start is a `run-key` API request — the last one left
+      // on this path. It is also a privilege reduction: the caller ends up
+      // able to write the arguments but not read them back, whereas fetching
+      // the symmetric key grants full read access to a run it merely
+      // launched.
+      const probedPublicKey = decodeRunPublicKey(probedRunPublicKey);
+
+      let encryptionKey: PayloadKey | undefined;
+      let encryptionPublicKey: string | undefined;
+
+      if (probedPublicKey) {
+        encryptionKey = sealTo(probedPublicKey);
+        encryptionPublicKey = probedRunPublicKey;
+      } else {
+        const rawKey = await world.getEncryptionKeyForRun?.(runId, {
+          ...opts,
+          deploymentId,
+        });
+        encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+
+        // Publish the run's X25519 public key so that cross-run writers (a
+        // hook resumption from another deployment, a sibling writing into a
+        // forwarded stream) can seal payloads *to* this run without holding
+        // its symmetric key.
+        //
+        // Presence of this field is the writer-side gate for sealed
+        // envelopes, so it must only be stamped when this runtime could
+        // itself open one. That holds by construction here: derivation and
+        // `encp` dispatch live in the same package, so any core that can
+        // stamp can also open. Runs are pinned to their creating deployment,
+        // so the capability this attests to is still accurate at resume time.
+        encryptionPublicKey = rawKey
+          ? bytesToBase64((await deriveRunKeyPair(rawKey)).publicKey)
+          : undefined;
+      }
 
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it
+      // Compress workflow arguments only when the run itself is marked as
+      // possibly containing compressed payloads (specVersion >= 5) AND the
+      // target deployment can decode them (same-deployment, or probed
+      // capability for cross-deployment starts).
+      const compression =
+        targetSupportsCompression &&
+        specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION;
       const workflowArguments = await dehydrateWorkflowArguments(
         args,
         runId,
         encryptionKey,
         ops,
         globalThis,
-        v1Compat
+        v1Compat,
+        framedByteStreams,
+        compression
       );
 
       const executionContext = {
         traceCarrier,
         workflowCoreVersion,
         features: { encryption: !!encryptionKey },
+        ...(opts.replayedFromRunId
+          ? { replayedFromRunId: opts.replayedFromRunId }
+          : {}),
       };
 
       // Call events.create (run_created) and queue in parallel.
@@ -222,12 +530,14 @@ export async function start<TArgs extends unknown[], TResult>(
               workflowName: workflowName,
               input: workflowArguments,
               executionContext,
+              ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+              ...attributeSeed,
             },
           },
           { v1Compat }
         ),
         world.queue(
-          getWorkflowQueueName(workflowName),
+          getWorkflowQueueName(workflowName, opts.namespace),
           {
             runId,
             traceCarrier,
@@ -239,6 +549,8 @@ export async function start<TArgs extends unknown[], TResult>(
                     workflowName,
                     specVersion,
                     executionContext,
+                    ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+                    ...attributeSeed,
                   },
                 }
               : {}),
@@ -246,6 +558,11 @@ export async function start<TArgs extends unknown[], TResult>(
           {
             deploymentId,
             specVersion,
+            // Forward any caller-supplied region hint so worlds with
+            // per-region queue routing (e.g. world-vercel) can target the
+            // matching queue. Worlds without a regional dimension ignore
+            // this field.
+            ...(opts.region !== undefined ? { region: opts.region } : {}),
           }
         ),
       ]);
@@ -264,10 +581,11 @@ export async function start<TArgs extends unknown[], TResult>(
           // the run creation call gets a cold start or other slowdown, and the queue
           // + run_started call completes faster. We expect this to be <=1% of cases.
           // In this case, we can safely return.
-        } else if (isRetryableEventError(err)) {
-          // 429 (ThrottleError) and 5xx (WorkflowWorldError with status >= 500)
-          // are retryable — the run was accepted via the queue and creation
-          // will be re-tried by the runtime when it calls run_started.
+        } else if (isRetryableWorldError(err)) {
+          // 429 (ThrottleError), 5xx, and transient transport failures
+          // (TRANSPORT/TIMEOUT) are retryable — the run was accepted via the
+          // queue and creation will be re-tried by the runtime when it calls
+          // run_started.
           resilientStart = true;
           runtimeLogger.warn(
             'Run creation event failed, but the run was accepted via the queue. ' +
@@ -294,14 +612,19 @@ export async function start<TArgs extends unknown[], TResult>(
         }
       }
 
-      waitUntil(
-        Promise.all(ops).catch((err) => {
-          // Ignore expected client disconnect errors (e.g., browser refresh during streaming)
-          const isAbortError =
-            err?.name === 'AbortError' || err?.name === 'ResponseAborted';
-          if (!isAbortError) throw err;
-        })
-      );
+      // These argument-stream ops are flushed in the background; the promise
+      // handed to waitUntil must never reject (an unconsumed waitUntil
+      // rejection crashes the process as unhandledRejection), so unexpected
+      // failures are logged instead.
+      safeWaitUntil(Promise.all(ops), (err) => {
+        runtimeLogger.warn(
+          'Background flush of workflow argument streams failed',
+          {
+            workflowRunId: runId,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        );
+      });
 
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),

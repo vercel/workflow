@@ -3,28 +3,36 @@ import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Nitro } from 'nitro/types';
 import type {} from 'nitro/vite';
-import { join } from 'pathe';
-import type { Plugin } from 'vite';
+import type { Plugin, TransformResult } from 'vite';
 import { LocalBuilder } from './builders.js';
 import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
 
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder;
-  let workflowBuildDir: string;
+  let devNitro: Nitro | undefined;
+  let nitroBuildDir: string;
   const enqueue = createBuildQueue();
 
-  // Create a lazy transform plugin that excludes the workflow build directory
+  // Create a lazy transform plugin that excludes Nitro build artifacts.
   // The exclusion path is set during nitro setup, so we need to defer plugin creation
   const lazyTransformPlugin: Plugin = {
     name: 'workflow:transform',
-    transform(code, id) {
+    transform(code, id, options) {
       // Delegate to the actual transform plugin with exclusion
-      // workflowBuildDir is set during nitro setup before transforms run
+      // nitroBuildDir is set during nitro setup before transforms run
       const plugin = workflowTransformPlugin({
-        exclude: workflowBuildDir ? [workflowBuildDir] : [],
+        exclude: nitroBuildDir ? [nitroBuildDir] : [],
       });
-      return (plugin.transform as Function)?.call(this, code, id);
+      const transform = plugin.transform as
+        | ((
+            this: unknown,
+            code: string,
+            id: string,
+            options?: { ssr?: boolean }
+          ) => TransformResult | Promise<TransformResult>)
+        | undefined;
+      return transform?.call(this, code, id, options);
     },
   };
 
@@ -34,18 +42,24 @@ export function workflow(options?: ModuleOptions): Plugin[] {
       name: 'workflow:nitro',
       nitro: {
         setup: (nitro: Nitro) => {
-          // Capture the workflow build directory for exclusion
-          workflowBuildDir = join(nitro.options.buildDir, 'workflow');
+          // Capture the Nitro build directory for exclusion
+          nitroBuildDir = `${nitro.options.buildDir.replace(/[\\/]+$/, '')}/`;
           nitro.options.workflow = {
             ...nitro.options.workflow,
             ...options,
             _vite: true,
           };
           if (nitro.options.dev) {
+            devNitro = nitro;
             builder = new LocalBuilder(nitro);
           }
           return nitroModule.setup(nitro);
         },
+      },
+      async buildEnd() {
+        const nitro = devNitro;
+        devNitro = undefined;
+        await nitro?.close();
       },
       // NOTE: This is a workaround because Nitro passes the 404 requests to the dev server to handle.
       // For workflow routes, we override to send an empty body to prevent Hono/Vite's SPA fallback.

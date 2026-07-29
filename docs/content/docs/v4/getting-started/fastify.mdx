@@ -9,6 +9,10 @@ related:
   - /docs/foundations/workflows-and-steps
 ---
 
+<CopyPrompt
+  text="In this Fastify app, run `npm i workflow fastify nitro rollup` and, if using TypeScript, `npm i -D @types/node typescript`. Create `nitro.config.ts` with `modules: [&quot;workflow/nitro&quot;]`, `vercel: { entryFormat: &quot;node&quot; }`, and `routes: { &quot;/**&quot;: { handler: &quot;./src/index.ts&quot;, format: &quot;node&quot; } }`. Add package scripts `dev: &quot;nitro dev&quot;` and `build: &quot;nitro build&quot;`. Create `workflows/user-signup.ts` with `&quot;use workflow&quot;`, `sleep`, and `&quot;use step&quot;` helpers. Add `src/index.ts` with a Fastify app, POST `/api/signup`, `start(handleUserSignup, [email])`, `await app.ready()`, and an exported request handler. Run `npm run dev`, call `curl -X POST --json '{&quot;email&quot;:&quot;hello@example.com&quot;}' http://localhost:3000/api/signup`, and inspect with `npx workflow inspect runs --web`."
+/>
+
 This guide will walk through setting up your first workflow in a Fastify app. Along the way, you'll learn more about the concepts that are fundamental to using the Workflow SDK in your own projects.
 
 ---

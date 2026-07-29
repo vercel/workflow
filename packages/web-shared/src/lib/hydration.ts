@@ -16,7 +16,7 @@ import {
   type Revivers,
   serializedInstanceToRef,
 } from '@workflow/core/serialization-format';
-import { EVENT_DATA_REF_FIELDS } from '@workflow/world';
+import { getEventDataRefFields } from '@workflow/world';
 
 // Re-export types and utilities that consumers need
 export {
@@ -298,7 +298,7 @@ export function getWebRevivers(): Revivers {
 
     // Web-specific overrides for class instances.
     // Create objects with a dynamically-named constructor so that
-    // react-inspector shows the class name (it reads constructor.name).
+    // the data inspector shows the class name (it reads constructor.name).
     Class: (value) => `<class:${extractClassName(value.classId)}>`,
     Instance: (value) => {
       // Run instances are rendered as clickable RunRef badges
@@ -311,7 +311,7 @@ export function getWebRevivers(): Revivers {
       const props =
         data && typeof data === 'object' ? { ...data } : { value: data };
       // Create a constructor with the right name using computed property
-      // so react-inspector's `object.constructor.name` shows the class name.
+      // so the data inspector's `object.constructor.name` shows the class name.
       // Must use `function` (not arrow) because arrow functions have no .prototype.
       // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
       const ctor = { [className]: function () {} }[className]!;
@@ -446,7 +446,7 @@ function replaceEncryptedAndExpiredWithMarkers<T>(resource: T): T {
   if (result.eventData && typeof result.eventData === 'object') {
     const eventType =
       typeof result.eventType === 'string' ? result.eventType : '';
-    const refKeys = EVENT_DATA_REF_FIELDS[eventType] ?? [];
+    const refKeys = getEventDataRefFields(eventType);
     const ed = { ...(result.eventData as Record<string, unknown>) };
     for (const key of refKeys) {
       if (key in ed) {
@@ -465,36 +465,62 @@ function replaceEncryptedAndExpiredWithMarkers<T>(resource: T): T {
  * When a key is provided, encrypted fields are decrypted before hydration.
  * This is the async version used when the user clicks "Decrypt" in the web UI.
  *
- * Handles both top-level fields (input, output, metadata) and nested
- * eventData subfields per `EVENT_DATA_REF_FIELDS` from `@workflow/world` for that event type.
+ * Handles both top-level fields (input, output, metadata) and nested eventData
+ * payload fields for that event type.
  */
 export async function hydrateResourceIOWithKey<T>(
   resource: T,
   key: Uint8Array
 ): Promise<T> {
-  const { hydrateDataWithKey } = await import(
+  return hydrateResourceIOAsync(resource, key);
+}
+
+/**
+ * Async hydration for web display.
+ *
+ * This follows the same resource-field mapping as {@link hydrateResourceIO},
+ * but can also inflate compressed browser payloads through the registered
+ * zstd WASM decoder. When a key is provided, encrypted fields are decrypted
+ * first and then inflated/hydrated.
+ */
+export async function hydrateResourceIOAsync<T>(
+  resource: T,
+  key?: Uint8Array
+): Promise<T> {
+  const { hydrateDataWithKey, deriveRunPayloadKeys } = await import(
     '@workflow/core/serialization-format'
   );
-  const { importKey } = await import('@workflow/core/encryption');
-  const cryptoKey = await importKey(key);
+  // Payloads may be zstd-compressed (the Web DecompressionStream has no zstd);
+  // register the WASM-backed browser decoder before hydrating. Idempotent and
+  // lazy — the WASM is only compiled when a zstd payload is actually decoded.
+  const { ensureZstdDecoderRegistered } = await import(
+    './zstd-browser-decoder.js'
+  );
+  ensureZstdDecoderRegistered();
+  // Resolve the *full* key capability, not just the symmetric key: a run's
+  // event log can contain sealed ('encp') payloads that another run wrote to
+  // it (a cross-deployment hook resumption, say), and opening those needs the
+  // run's X25519 scalar in addition to its AES key. Both are derived from the
+  // same 32 bytes the key-retrieval endpoint returns.
+  // Resolve the *full* key capability, not just the symmetric key: a run's
+  // event log can contain sealed ('encp') payloads that another run wrote to
+  // it (a cross-deployment hook resumption, say), and opening those needs the
+  // run's X25519 scalar in addition to its AES key. Both derive from the same
+  // 32 bytes the key-retrieval endpoint returns.
+  const cryptoKey = key ? await deriveRunPayloadKeys(key) : undefined;
   const revivers = getRevivers();
 
-  /** Extract original encrypted bytes from a marker or raw Uint8Array, then decrypt + hydrate */
-  async function decryptField(
-    value: unknown,
-    rev: Revivers,
-    k: Awaited<ReturnType<typeof importKey>>
-  ): Promise<unknown> {
+  async function hydrateField(value: unknown): Promise<unknown> {
     // Already-hydrated: encrypted marker with stored bytes
     if (isEncryptedMarker(value)) {
       const raw = (value as any).__encryptedData as Uint8Array;
-      return hydrateDataWithKey(raw, rev, k);
+      return cryptoKey ? hydrateDataWithKey(raw, revivers, cryptoKey) : value;
     }
-    // Raw encrypted Uint8Array (not yet hydrated)
+    // Raw Uint8Array: may be encrypted, compressed, or plain devalue.
     if (value instanceof Uint8Array) {
-      return hydrateDataWithKey(value, rev, k);
+      return hydrateDataWithKey(value, revivers, cryptoKey);
     }
-    // Not encrypted — return as-is
+    // Not serialized — return as-is.
     return value;
   }
 
@@ -504,29 +530,25 @@ export async function hydrateResourceIOWithKey<T>(
   // Decrypt + hydrate top-level serialized fields (runs, steps, hooks)
   for (const field of ['input', 'output', 'metadata', 'error']) {
     if (field in result) {
-      result[field] = await decryptField(result[field], revivers, cryptoKey);
+      result[field] = await hydrateField(result[field]);
     }
   }
 
-  // Decrypt + hydrate eventData subfields (events)
+  // Hydrate eventData subfields (events)
   if (result.eventData && typeof result.eventData === 'object') {
     const eventType =
       typeof result.eventType === 'string' ? result.eventType : '';
-    const refKeys = EVENT_DATA_REF_FIELDS[eventType] ?? [];
+    const refKeys = getEventDataRefFields(eventType);
     const eventData = { ...(result.eventData as Record<string, unknown>) };
     for (const field of refKeys) {
       if (field in eventData) {
-        eventData[field] = await decryptField(
-          eventData[field],
-          revivers,
-          cryptoKey
-        );
+        eventData[field] = await hydrateField(eventData[field]);
       }
     }
     result.eventData = eventData;
   }
 
-  return result as T;
+  return replaceEncryptedAndExpiredWithMarkers(result as T);
 }
 
 /**
@@ -545,7 +567,7 @@ export function hasEncryptedFields(resource: unknown): boolean {
 
   if (r.eventData && typeof r.eventData === 'object') {
     const eventType = typeof r.eventType === 'string' ? r.eventType : '';
-    const refKeys = EVENT_DATA_REF_FIELDS[eventType] ?? [];
+    const refKeys = getEventDataRefFields(eventType);
     const ed = r.eventData as Record<string, unknown>;
     for (const key of refKeys) {
       if (key in ed && isEncryptedMarker(ed[key])) return true;

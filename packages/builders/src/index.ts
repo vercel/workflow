@@ -8,9 +8,20 @@ export {
   type DecoratorOptionsWithConfigPath,
   getDecoratorOptionsForDirectory,
   getDecoratorOptionsForDirectoryWithConfigPath,
+  resolveConfiguredProjectRoot,
+  resolveProjectRoot,
 } from './config-helpers.js';
-export { WORKFLOW_QUEUE_TRIGGER } from './constants.js';
-export { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
+export {
+  createWorkflowEntrypointOptionsCode,
+  createWorkflowQueueTrigger,
+  getWorkflowQueueTrigger,
+  isSequentialReplaysEnabled,
+  WORKFLOW_QUEUE_TRIGGER,
+} from './constants.js';
+export {
+  createDiscoverEntriesPlugin,
+  parentHasChild,
+} from './discover-entries-esbuild-plugin.js';
 export {
   clearModuleSpecifierCache,
   getImportPath,
@@ -19,6 +30,8 @@ export {
   resolveModuleSpecifier,
 } from './module-specifier.js';
 export { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
+export { WORKFLOW_OPTIONAL_OTEL_API_MODULE } from './optional-otel-api.js';
+export { WORKFLOW_OPTIONAL_TYPESCRIPT_ALIAS } from './optional-typescript-alias.js';
 export {
   createPseudoPackagePlugin,
   PSEUDO_PACKAGES,

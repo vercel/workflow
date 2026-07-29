@@ -1,5 +1,232 @@
 # @workflow/world-local
 
+## 5.0.0-beta.31
+
+### Major Changes
+
+- [#3112](https://github.com/vercel/workflow/pull/3112) [`4ada27d`](https://github.com/vercel/workflow/commit/4ada27d35af197d66196288919581d839f87c9a3) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Remove deprecated world-specific factory aliases in favor of `createWorld`.
+
+- [#3061](https://github.com/vercel/workflow/pull/3061) [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Remove legacy step queue topics and payloads now that queued steps use the workflow topic and combined flow handler.
+
+### Minor Changes
+
+- [#3095](https://github.com/vercel/workflow/pull/3095) [`b4ba79e`](https://github.com/vercel/workflow/commit/b4ba79ebc501248408474efdd6e353f1753d83e3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Persist and transport the new optional `encryptionPublicKey` field on workflow runs, carried on `run_created` (and `run_started` for resilient start).
+
+### Patch Changes
+
+- [#3144](https://github.com/vercel/workflow/pull/3144) [`49276f2`](https://github.com/vercel/workflow/commit/49276f2d0b11d7552ac4504936cbca51df4ce98d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Warn when the Local World starts inside a Vercel deployment, and fail with an actionable error instead of a confusing `ENOENT` when its data directory cannot be created on a read-only filesystem.
+
+- Updated dependencies [[`8c12358`](https://github.com/vercel/workflow/commit/8c12358075897ef1fdcc4ce3847579df63c8ca7a), [`b4ba79e`](https://github.com/vercel/workflow/commit/b4ba79ebc501248408474efdd6e353f1753d83e3), [`a86035f`](https://github.com/vercel/workflow/commit/a86035f71f60e22170cae231cc6fb07e39928cc6), [`d24c91c`](https://github.com/vercel/workflow/commit/d24c91cfde678e9a4935ee94b9597b5696d6792b), [`fc81f45`](https://github.com/vercel/workflow/commit/fc81f4502fa6d8d9a7a5c48b44394dc39c141a86), [`49276f2`](https://github.com/vercel/workflow/commit/49276f2d0b11d7552ac4504936cbca51df4ce98d), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91)]:
+  - @workflow/world@5.0.0-beta.23
+  - @workflow/utils@5.0.0-beta.7
+  - @workflow/errors@5.0.0-beta.13
+
+## 5.0.0-beta.30
+
+### Minor Changes
+
+- [#2915](https://github.com/vercel/workflow/pull/2915) [`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3) Thanks [@joeyhotz](https://github.com/joeyhotz)! - Add `runs.getMany()` for retrieving ordered workflow run snapshots in one storage operation.
+
+### Patch Changes
+
+- [#2987](https://github.com/vercel/workflow/pull/2987) [`850777a`](https://github.com/vercel/workflow/commit/850777a03bc1ad85fa7333d5e15a55a353ed6d23) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Reject `hook_received` on terminal runs, including when the termination commits concurrently (cross-process) and for legacy (pre-event-sourcing) runs.
+
+- Updated dependencies [[`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3), [`fe12b84`](https://github.com/vercel/workflow/commit/fe12b847291912cf9e47143ee10c73828dbdf1a1), [`a5e6f11`](https://github.com/vercel/workflow/commit/a5e6f1167aa07f36b49777d3c020282d11a0abf2), [`eb8fdb9`](https://github.com/vercel/workflow/commit/eb8fdb979748f54a94289530ee7ac155feddddcc), [`bb773e9`](https://github.com/vercel/workflow/commit/bb773e950786b15100a8058407cbfcba23a44ebc)]:
+  - @workflow/world@5.0.0-beta.22
+  - @workflow/errors@5.0.0-beta.12
+
+## 5.0.0-beta.29
+
+### Minor Changes
+
+- [#2914](https://github.com/vercel/workflow/pull/2914) [`f72184d`](https://github.com/vercel/workflow/commit/f72184dc836cb5e04ae689e99802f6fa869f487a) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var as a fallback for the `recoverActiveRuns` option, so re-enqueueing of pending/running runs on startup can be disabled without a custom world module.
+
+### Patch Changes
+
+- Updated dependencies [[`a00d169`](https://github.com/vercel/workflow/commit/a00d16947085f8e94cf191c4d8850121cf201a94), [`1933e29`](https://github.com/vercel/workflow/commit/1933e294cf938fb2314f45047033f8720ccf442b), [`6b8efd5`](https://github.com/vercel/workflow/commit/6b8efd58ce4829648f410e483bf42935dc5dcd1e)]:
+  - @workflow/world@5.0.0-beta.21
+  - @workflow/errors@5.0.0-beta.11
+
+## 5.0.0-beta.28
+
+### Patch Changes
+
+- Updated dependencies [[`f2be954`](https://github.com/vercel/workflow/commit/f2be954bb7fee078bc4b78118edaa157130fa362), [`ac41e7d`](https://github.com/vercel/workflow/commit/ac41e7d1d77d48d783ca49d01394dc325afd7ea2), [`c31e30c`](https://github.com/vercel/workflow/commit/c31e30caacab20c0d9c0df38349929ae1e0aebdf), [`9da2d76`](https://github.com/vercel/workflow/commit/9da2d762604c2b73eb39f07fc0b069aea643e18d)]:
+  - @workflow/world@5.0.0-beta.20
+  - @workflow/errors@5.0.0-beta.10
+
+## 5.0.0-beta.27
+
+### Patch Changes
+
+- [#2888](https://github.com/vercel/workflow/pull/2888) [`7a1ea5a`](https://github.com/vercel/workflow/commit/7a1ea5a45afd07601934a2f3ff1d1044f3bd9db8) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Use the active queue namespace when re-enqueuing workflow runs during world startup recovery.
+
+- Updated dependencies [[`7a1ea5a`](https://github.com/vercel/workflow/commit/7a1ea5a45afd07601934a2f3ff1d1044f3bd9db8), [`0b956f6`](https://github.com/vercel/workflow/commit/0b956f65cb0ab30501c72e934fc8d4352c4c3ea2)]:
+  - @workflow/world@5.0.0-beta.19
+  - @workflow/errors@5.0.0-beta.10
+
+## 5.0.0-beta.26
+
+### Patch Changes
+
+- [#2876](https://github.com/vercel/workflow/pull/2876) [`84df8f3`](https://github.com/vercel/workflow/commit/84df8f3a05bb52ae4a8c45c9238b91e6958f300b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Update `@vercel/queue` from 0.3.1 to 0.4.0
+
+- [#2790](https://github.com/vercel/workflow/pull/2790) [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Centralize workflow event type classifiers and event-data payload field helpers.
+
+- Updated dependencies [[`f28150c`](https://github.com/vercel/workflow/commit/f28150c62667f069dbe3c47e83102fef499ab92b), [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9), [`6603628`](https://github.com/vercel/workflow/commit/66036282b5d18c9bef4dea4275782bc977842606)]:
+  - @workflow/world@5.0.0-beta.18
+  - @workflow/errors@5.0.0-beta.10
+
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- [#2830](https://github.com/vercel/workflow/pull/2830) [`79a9813`](https://github.com/vercel/workflow/commit/79a9813f25eb907809fcd329accb76ac4d274480) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Fix hook operations scaling with total event history: hook creation, hook cache rebuilds, and token lookups now use durable per-token/per-hookId indexes instead of scanning the entire global event log, and run-termination hook cleanup uses per-run markers instead of reading every live hook. Directory listings read files concurrently, `runs.list` defaults to a page size of 200, and compiled filename regexes are reused.
+
+- Updated dependencies [[`3f69666`](https://github.com/vercel/workflow/commit/3f696668bcc436cd4b3e29213ee1d9d12e2e5b01), [`712ed61`](https://github.com/vercel/workflow/commit/712ed61f0a37937c3990429508c582f3edbd4576)]:
+  - @workflow/world@5.0.0-beta.17
+  - @workflow/errors@5.0.0-beta.10
+
+## 5.0.0-beta.24
+
+### Patch Changes
+
+- [#2808](https://github.com/vercel/workflow/pull/2808) [`c1d29f1`](https://github.com/vercel/workflow/commit/c1d29f14ca01e2219c5ccbaa4e9f62f9349dd75e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a stalled hook token claim release deleting the next claimant's live claim
+
+- [#2808](https://github.com/vercel/workflow/pull/2808) [`c1d29f1`](https://github.com/vercel/workflow/commit/c1d29f14ca01e2219c5ccbaa4e9f62f9349dd75e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a `resumeHook` racing `hook.dispose()` being recorded after the disposal, which corrupted the receiving run's replay
+
+- [#2779](https://github.com/vercel/workflow/pull/2779) [`7637196`](https://github.com/vercel/workflow/commit/7637196cf0f605ce62243bf8c7762a26153dcd36) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix hook token claims of disposed hooks and finished runs not being released to the next claimant
+
+- [#2807](https://github.com/vercel/workflow/pull/2807) [`e7e5a0e`](https://github.com/vercel/workflow/commit/e7e5a0e56d10778554b0ea23d0d66ff9feb66bd9) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Shard stream chunks into a directory per stream so a tail reader's poll no longer lists every chunk in the world on each tick, and reliably release its emitter listeners and poll timer when the reader is cancelled. Note: stream chunks are now stored at `streams/chunks/<streamName>/`; chunk files written to the old flat layout by an earlier version are not read back (an acceptable tradeoff for local dev data, and stale flat files are left in place rather than cleaned up).
+
+- [#2732](https://github.com/vercel/workflow/pull/2732) [`239031a`](https://github.com/vercel/workflow/commit/239031ad9e1d27942f8e30a59fd6fef254544fff) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Respect framework base paths when routing workflow traffic and expose health checks on generated Next.js workflow routes.
+
+- [#2752](https://github.com/vercel/workflow/pull/2752) [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d) Thanks [@ijjk](https://github.com/ijjk)! - Statically inject the configured world package into host bundles instead of selecting worlds dynamically at runtime.
+
+- [#2468](https://github.com/vercel/workflow/pull/2468) [`49a50e8`](https://github.com/vercel/workflow/commit/49a50e83d94656e1df123df1f27258fa7f1d3216) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Standardize first-party World packages on `createWorld()`, support relative target World modules consistently, and align the Postgres World `DATABASE_URL` fallback with bootstrap.
+
+- Updated dependencies [[`239031a`](https://github.com/vercel/workflow/commit/239031ad9e1d27942f8e30a59fd6fef254544fff), [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d), [`fe327e6`](https://github.com/vercel/workflow/commit/fe327e69e205417f864fc4109f6e8b79e92e141a)]:
+  - @workflow/utils@5.0.0-beta.6
+  - @workflow/world@5.0.0-beta.16
+  - @workflow/errors@5.0.0-beta.10
+
+## 5.0.0-beta.23
+
+### Patch Changes
+
+- [#2152](https://github.com/vercel/workflow/pull/2152) [`fc5bdcb`](https://github.com/vercel/workflow/commit/fc5bdcb003051815e84f60ee00f5d8d6cc11c663) Thanks [@pranaygp](https://github.com/pranaygp)! - Reduce local sequential-step replay I/O with bounded recent-event and storage-directory caches.
+
+- [#2747](https://github.com/vercel/workflow/pull/2747) [`2ab7057`](https://github.com/vercel/workflow/commit/2ab70579542a359db818d771ece5a19cd8fdd399) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Keep local hooks reachable after a crash or restart by rebuilding lost hook cache files from committed hook creation events, preventing active hook tokens from being reused.
+
+- Updated dependencies [[`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`f76377b`](https://github.com/vercel/workflow/commit/f76377bf04239eccd8c85a6db19d0465e7bdb2ee), [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8), [`2ab7057`](https://github.com/vercel/workflow/commit/2ab70579542a359db818d771ece5a19cd8fdd399)]:
+  - @workflow/utils@5.0.0-beta.5
+  - @workflow/world@5.0.0-beta.15
+  - @workflow/errors@5.0.0-beta.9
+
+## 5.0.0-beta.22
+
+### Patch Changes
+
+- [#2679](https://github.com/vercel/workflow/pull/2679) [`5977694`](https://github.com/vercel/workflow/commit/59776946a095c56c68254dcb0761d5dec48ccdf6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Retry local queue deliveries that fail at the transport (e.g. `fetch failed` / `ETIMEDOUT` when the dev server is saturated by many parallel steps) instead of dropping the message, so steps no longer get stuck never-started under high local concurrency.
+
+- [#2667](https://github.com/vercel/workflow/pull/2667) [`d4e6c5b`](https://github.com/vercel/workflow/commit/d4e6c5ba34a1a3df0e07cc1891837e1435a697a8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Scope untagged startup recovery to untagged runs so a dev server no longer re-enqueues tagged runs (e.g. left behind by the vitest harness in a shared data directory), which previously failed `run_started` with "did not return the run entity".
+
+- Updated dependencies [[`48e6bbf`](https://github.com/vercel/workflow/commit/48e6bbfcc37b7997c33eb1ea3c662d553bfc5d07)]:
+  - @workflow/world@5.0.0-beta.14
+  - @workflow/errors@5.0.0-beta.8
+
+## 5.0.0-beta.21
+
+### Patch Changes
+
+- Updated dependencies [[`25c3df7`](https://github.com/vercel/workflow/commit/25c3df74f88726f9336ca20e6c48fd3366c40749), [`d108ba3`](https://github.com/vercel/workflow/commit/d108ba32a76d516deadaa7264aec79412d862626)]:
+  - @workflow/world@5.0.0-beta.13
+  - @workflow/errors@5.0.0-beta.8
+
+## 5.0.0-beta.20
+
+### Patch Changes
+
+- [#2534](https://github.com/vercel/workflow/pull/2534) [`b563126`](https://github.com/vercel/workflow/commit/b563126aa1b7e4ea0a7119e78e39b98a8efee95f) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Update `undici` to 7.28.0.
+
+- [#2475](https://github.com/vercel/workflow/pull/2475) [`2074f91`](https://github.com/vercel/workflow/commit/2074f91b86c43267549625fd89f597c7bedf44ca) Thanks [@pranaygp](https://github.com/pranaygp)! - Skip the per-step incremental `events.list` round-trip in the inline sequential loop by consuming an event-log delta returned from the step's terminal write (gated to the single-step case with no open hooks or waits).
+
+  Add the opt-in `CreateEventParams.sinceCursor` contract so a step-terminal `events.create` can return the event-log delta since that cursor (via `EventResult.events`/`cursor`/`hasMore`).
+
+  Return the inline delta from a step-terminal write when `sinceCursor` is supplied, computed identically to `events.list` so the consumed prefix cannot skew from the server log.
+
+  Forward `sinceCursor` over the v4 wire in `@workflow/world-vercel` so the server can return the delta on a step-terminal response; older servers ignore it and the runtime falls back to `events.list`.
+
+- [#2478](https://github.com/vercel/workflow/pull/2478) [`e7ef9d8`](https://github.com/vercel/workflow/commit/e7ef9d823bd6c962d9c0c62e50e4883848c270f9) Thanks [@pranaygp](https://github.com/pranaygp)! - Lazy inline step start: the owned-inline runtime path now sends a single `step_started` carrying the step input, letting the world create the step on the fly and saving one round-trip per inline step.
+
+  `@workflow/world`: `step_started` event data accepts an optional `input`, and `EventResult` gains a `stepCreated` ownership signal.
+
+  `@workflow/world-local`: `step_started` with input atomically creates the step plus a synthetic `step_created` event; a lazy `step_started` for an already-existing step throws `EntityConflictError` so concurrent losers skip (exactly-once).
+
+  `@workflow/world-postgres`: same lazy-create + exactly-once create-claim for the Postgres backend.
+
+  `@workflow/world-vercel`: sends the step input on `step_started` over the v4 wire and threads the server's `stepCreated` signal into `EventResult`.
+
+- [#2508](https://github.com/vercel/workflow/pull/2508) [`1332da3`](https://github.com/vercel/workflow/commit/1332da3df901b133aebb4c16e661984e147ca72f) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add run IDs on world storage telemetry spans.
+
+- Updated dependencies [[`2074f91`](https://github.com/vercel/workflow/commit/2074f91b86c43267549625fd89f597c7bedf44ca), [`e7ef9d8`](https://github.com/vercel/workflow/commit/e7ef9d823bd6c962d9c0c62e50e4883848c270f9), [`ab2e9b8`](https://github.com/vercel/workflow/commit/ab2e9b8d0740c457f80e05f05c1fd907bcf4f027)]:
+  - @workflow/world@5.0.0-beta.12
+  - @workflow/errors@5.0.0-beta.8
+
+## 5.0.0-beta.19
+
+### Patch Changes
+
+- Updated dependencies [[`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97)]:
+  - @workflow/world@5.0.0-beta.11
+  - @workflow/errors@5.0.0-beta.8
+
+## 5.0.0-beta.18
+
+### Patch Changes
+
+- Updated dependencies [[`926a5e7`](https://github.com/vercel/workflow/commit/926a5e7c6a50c1e74f2e2cc37324caa0f6442d85)]:
+  - @workflow/utils@5.0.0-beta.4
+  - @workflow/errors@5.0.0-beta.8
+
+## 5.0.0-beta.17
+
+### Patch Changes
+
+- [#2399](https://github.com/vercel/workflow/pull/2399) [`af859c3`](https://github.com/vercel/workflow/commit/af859c3a6db812daf6c640ff3d99488cddca8bd0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Update @vercel/queues from 0.3.0 to 0.3.1, which adds native retries for 429s and ECONNRESET
+
+- Updated dependencies [[`628795a`](https://github.com/vercel/workflow/commit/628795aa8729bef442c7a1583cf2f3d986e9e4fc)]:
+  - @workflow/world@5.0.0-beta.10
+  - @workflow/errors@5.0.0-beta.7
+
+## 5.0.0-beta.16
+
+### Minor Changes
+
+- [#2226](https://github.com/vercel/workflow/pull/2226) [`ae8d6fe`](https://github.com/vercel/workflow/commit/ae8d6feeda0d1d31da8da70156d6e04ebb0487d0) Thanks [@pranaygp](https://github.com/pranaygp)! - Allow passing initial run attributes through `start()`, and speed up workflow-level `setAttribute` calls by using native events for recording attributes.
+
+### Patch Changes
+
+- [#1925](https://github.com/vercel/workflow/pull/1925) [`b3279f8`](https://github.com/vercel/workflow/commit/b3279f8b17ca5a57a364d12b5e9394f7d27fe3b2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - V2 suspension processing: unify wait + step queue dispatch into a single parallel batch. The runtime now queues every pending operation (non-inline steps + wait timer) in one `Promise.all` and then inline-executes one owned step (if any). The asymmetric `{ timeoutSeconds }` return contract for waits is dropped from suspension processing; waits become normal queue continuations with `delaySeconds`, deduplicated per wait so repeated suspension passes don't accumulate delayed messages. Continuation delays are clamped to 23h (VQS's message-retention bound) with longer waits chained across hop-keyed messages, so multi-day `sleep()`s work on every world. This restores inline step execution for `Promise.race(step, sleep)` workflows without any of the carve-outs the prior fix needed: even when the inline step blocks the handler, the wait continuation fires in parallel and drives the next replay. As part of the same change, `world-local`'s queue now honors `delaySeconds` (matches `world-vercel` / `world-postgres`), and its `close()` aborts pending delayed deliveries and retry sleeps so dev-server/test shutdown isn't held open by wait timers.
+
+- [#2295](https://github.com/vercel/workflow/pull/2295) [`f2a7bde`](https://github.com/vercel/workflow/commit/f2a7bdeb0abcf8a5d48c33a35b4b15aeca78cddf) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `world-local` and `world-postgres` turning duplicate processing of the same `hook_created` (same `runId`, `hookId`, and token) into a self-conflict; both worlds now treat same-entity duplicates as idempotent (matching `step_created`), and recover crash-orphaned token claims (`world-local`) and hook rows (`world-postgres`) by completing the partial write instead of incorrectly suppressing it.
+
+- Updated dependencies [[`ae8d6fe`](https://github.com/vercel/workflow/commit/ae8d6feeda0d1d31da8da70156d6e04ebb0487d0)]:
+  - @workflow/world@5.0.0-beta.9
+  - @workflow/errors@5.0.0-beta.7
+
+## 5.0.0-beta.15
+
+### Minor Changes
+
+- [#2305](https://github.com/vercel/workflow/pull/2305) [`4670c4b`](https://github.com/vercel/workflow/commit/4670c4b92d7386dfd74728538c7e24fe8c07b0af) Thanks [@willsather](https://github.com/willsather)! - Add an optional `namespace` parameter that scopes queue topic prefixes to `__{namespace}_wkf_workflow_*`. This allows configuring multiple frameworks in the same deployment without queue topic collision.
+
+### Patch Changes
+
+- Updated dependencies [[`4670c4b`](https://github.com/vercel/workflow/commit/4670c4b92d7386dfd74728538c7e24fe8c07b0af)]:
+  - @workflow/world@5.0.0-beta.8
+  - @workflow/errors@5.0.0-beta.7
+
 ## 5.0.0-beta.14
 
 ### Patch Changes

@@ -6,30 +6,54 @@
  * a fully-formed Trace ready for the trace viewer.
  */
 
-import type { Event, WorkflowRun } from '@workflow/world';
+import {
+  type Event,
+  isHookLifecycleEventType,
+  isStepEventType,
+  isWaitEventType,
+  type WorkflowRun,
+} from '@workflow/world';
 import type { Span } from '../components/trace-viewer/types';
 import {
+  getEventTimestamp,
   hookToSpan,
   runToSpan,
   stepToSpan,
-  waitToSpan,
   WORKFLOW_LIBRARY,
+  waitToSpan,
 } from '../components/workflow-traces/trace-span-construction';
 import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
 
-// ---------------------------------------------------------------------------
-// Event type classifiers
-// ---------------------------------------------------------------------------
+/**
+ * Events that belong to the run root span rather than a child entity span.
+ * Mirrors the fallthrough logic in {@link groupEventsByCorrelation}: events
+ * without a correlationId (run lifecycle) plus correlated events that aren't
+ * step/timer/hook events (e.g. `attr_set`, whose correlationId is a dedup
+ * token rather than a child entity ID).
+ */
+export const isRunLevelEvent = (event: Event): boolean =>
+  !event.correlationId ||
+  (!isWaitEventType(event.eventType) &&
+    !isHookLifecycleEventType(event.eventType) &&
+    !isStepEventType(event.eventType));
 
-export const isStepEvent = (eventType: string) => eventType.startsWith('step_');
-
-export const isTimerEvent = (eventType: string) =>
-  eventType === 'wait_created' || eventType === 'wait_completed';
-
-export const isHookLifecycleEvent = (eventType: string) =>
-  eventType === 'hook_received' ||
-  eventType === 'hook_created' ||
-  eventType === 'hook_disposed';
+/**
+ * Filter the raw event list down to the events for a selected span.
+ * For the run root span this returns run-level events (see
+ * {@link isRunLevelEvent}); for child spans it returns the events
+ * correlated to that span's ID.
+ */
+export function filterSpanRawEvents(
+  events: Event[],
+  resource: string | undefined,
+  spanId: string | undefined
+): Event[] {
+  if (resource === 'run') {
+    return events.filter(isRunLevelEvent);
+  }
+  if (!spanId) return [];
+  return events.filter((e) => e.correlationId === spanId);
+}
 
 // ---------------------------------------------------------------------------
 // Event grouping
@@ -68,17 +92,17 @@ export function groupEventsByCorrelation(events: Event[]): GroupedEvents {
       continue;
     }
 
-    if (isTimerEvent(event.eventType)) {
+    if (isWaitEventType(event.eventType)) {
       pushEvent(timerEvents, correlationId, event);
       continue;
     }
 
-    if (isHookLifecycleEvent(event.eventType)) {
+    if (isHookLifecycleEventType(event.eventType)) {
       pushEvent(hookEvents, correlationId, event);
       continue;
     }
 
-    if (isStepEvent(event.eventType)) {
+    if (isStepEventType(event.eventType)) {
       pushEvent(eventsByStepId, correlationId, event);
       continue;
     }
@@ -101,7 +125,7 @@ export function groupEventsByCorrelation(events: Event[]): GroupedEvents {
 function computeLatestKnownTime(events: Event[], run: WorkflowRun): Date {
   let latest = new Date(run.createdAt).getTime();
   for (const event of events) {
-    const t = new Date(event.createdAt).getTime();
+    const t = (getEventTimestamp(event) ?? new Date(event.createdAt)).getTime();
     if (t > latest) latest = t;
   }
   return new Date(latest);

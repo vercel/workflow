@@ -1,7 +1,4 @@
-export type {
-  HealthCheckEndpoint,
-  HealthCheckResult,
-} from '@workflow/core/runtime';
+export type { HealthCheckResult } from '@workflow/core/runtime';
 export {
   parseStepName,
   parseWorkflowName,
@@ -14,13 +11,6 @@ export {
   waitEventsToWaitEntity,
 } from './components/workflow-traces/trace-span-construction';
 export type { EventAnalysis } from './lib/event-analysis';
-export {
-  parseExactWorkflowSearchId,
-  looksLikeWorkflowIdSearchInput,
-  type ExactWorkflowSearchId,
-  type ExactWorkflowSearchIdKind,
-  type ExactIdSearchResult,
-} from './lib/exact-event-search-id';
 export {
   analyzeEvents,
   hasPendingHooksFromEvents,
@@ -40,6 +30,13 @@ export {
   materializeSteps,
   materializeWaits,
 } from './lib/event-materialization';
+export {
+  type ExactIdSearchResult,
+  type ExactWorkflowSearchId,
+  type ExactWorkflowSearchIdKind,
+  looksLikeWorkflowIdSearchInput,
+  parseExactWorkflowSearchId,
+} from './lib/exact-event-search-id';
 export type { Revivers, StreamRef } from './lib/hydration';
 export {
   CLASS_INSTANCE_REF_TYPE,
@@ -49,6 +46,7 @@ export {
   getWebRevivers,
   hasEncryptedFields,
   hydrateResourceIO,
+  hydrateResourceIOAsync,
   hydrateResourceIOWithKey,
   isClassInstanceRef,
   isEncryptedMarker,
@@ -64,6 +62,7 @@ export type { StreamStep } from './lib/utils';
 export {
   extractConversation,
   formatDuration,
+  formatDurationPrecise,
   identifyStreamSteps,
   isDoStreamStep,
 } from './lib/utils';

@@ -5,6 +5,7 @@ import {
   isGeneratedWorkflowFile,
   resolveModuleSpecifier,
   shouldTransformFile,
+  WORKFLOW_OPTIONAL_OTEL_API_MODULE,
 } from '@workflow/builders';
 import { resolveModulePath } from 'exsolve';
 import type { Plugin } from 'rollup';
@@ -24,6 +25,33 @@ export function workflowTransformPlugin(
 
   return {
     name: 'workflow:transform',
+    resolveId: {
+      order: 'pre',
+      async handler(source, importer, options) {
+        // `@opentelemetry/api` is an optional peer the SDK imports lazily.
+        // Externalize it ONLY when it isn't installed: otherwise Rollup/Vite
+        // fails the build with "failed to resolve import '@opentelemetry/api'"
+        // when the peer is absent (observed in SvelteKit's pipeline). When the
+        // peer IS installed we must let it resolve and bundle normally — a
+        // self-contained output (Nitro's `.output/server`, esbuild) ships no
+        // node_modules, so forcing it external there strands the runtime
+        // `import('@opentelemetry/api')` and crashes the server with
+        // ERR_MODULE_NOT_FOUND. Externalize (not a stub alias) so tracing still
+        // loads the real API at runtime when present.
+        if (
+          source === WORKFLOW_OPTIONAL_OTEL_API_MODULE ||
+          source.startsWith(`${WORKFLOW_OPTIONAL_OTEL_API_MODULE}/`)
+        ) {
+          const resolved = await this.resolve(source, importer, {
+            ...options,
+            skipSelf: true,
+          });
+          return resolved ?? { id: source, external: true };
+        }
+
+        return null;
+      },
+    },
     // This transform applies the "use workflow"/"use step"
     // step transformation
     async transform(code: string, id: string) {

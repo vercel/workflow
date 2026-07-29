@@ -15,8 +15,11 @@ import {
   vi,
 } from 'vitest';
 import { z } from 'zod';
+import { UnwritableDataDirError } from './build-target-mismatch.js';
 import {
   assertSafeEntityId,
+  clearCreatedFilesCache,
+  ensureDir,
   paginatedFileSystemQuery,
   readFirstByte,
   readJSONWithFallback,
@@ -112,6 +115,74 @@ describe('fs utilities', () => {
       expect(await readFirstByte(dataPath)).toBe(1);
       expect(await readFirstByte(nonEofPath)).toBe(0);
       expect(await readFirstByte(emptyPath)).toBeUndefined();
+    });
+  });
+
+  describe('ensureDir', () => {
+    it('does not repeat mkdir for a directory created by this process', async () => {
+      clearCreatedFilesCache();
+      const nestedDir = path.join(testDir, 'events');
+      const mkdirSpy = vi.spyOn(fs, 'mkdir');
+
+      await ensureDir(nestedDir);
+      await ensureDir(nestedDir);
+
+      expect(
+        mkdirSpy.mock.calls.filter(([dirPath]) => dirPath === nestedDir)
+      ).toHaveLength(1);
+    });
+
+    it('recreates a cached directory removed before an atomic write', async () => {
+      clearCreatedFilesCache();
+      const eventsDir = path.join(testDir, 'events');
+      const firstPath = path.join(eventsDir, 'first.json');
+      const secondPath = path.join(eventsDir, 'second.json');
+
+      await writeJSON(firstPath, { value: 'first' });
+      await fs.rm(eventsDir, { recursive: true, force: true });
+      await writeJSON(secondPath, { value: 'second' });
+
+      expect(JSON.parse(await fs.readFile(secondPath, 'utf8'))).toEqual({
+        value: 'second',
+      });
+    });
+
+    it('recreates a cached directory removed before an exclusive write', async () => {
+      clearCreatedFilesCache();
+      const locksDir = path.join(testDir, '.locks');
+
+      expect(await writeExclusive(path.join(locksDir, 'first'), '')).toBe(true);
+      await fs.rm(locksDir, { recursive: true, force: true });
+      expect(await writeExclusive(path.join(locksDir, 'second'), '')).toBe(
+        true
+      );
+    });
+
+    it('names the unwritable directory instead of letting the write fail as ENOENT', async () => {
+      clearCreatedFilesCache();
+      const readOnlyDir = path.join(testDir, 'read-only', 'runs');
+      const rofs: NodeJS.ErrnoException = new Error('read-only file system');
+      rofs.code = 'EROFS';
+      vi.spyOn(fs, 'mkdir').mockRejectedValue(rofs);
+
+      const error = await ensureDir(readOnlyDir).catch((e) => e);
+
+      assert(UnwritableDataDirError.is(error));
+      expect(error.dataDir).toBe(readOnlyDir);
+      // The message has to name the build-time cause, since a Vercel deployment
+      // running the local world is the likeliest way to reach a read-only path.
+      expect(error.message).toContain('WORKFLOW_TARGET_WORLD=vercel');
+    });
+
+    it('still tolerates a permission error on a directory that already exists', async () => {
+      clearCreatedFilesCache();
+      const eacces: NodeJS.ErrnoException = new Error('permission denied');
+      eacces.code = 'EACCES';
+      vi.spyOn(fs, 'mkdir').mockRejectedValue(eacces);
+
+      // `testDir` exists, so the failure was incidental — a racing writer, or an
+      // unsearchable parent that `stat` can still resolve.
+      await expect(ensureDir(testDir)).resolves.toBeUndefined();
     });
   });
 
