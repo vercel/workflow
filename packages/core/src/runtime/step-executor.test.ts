@@ -164,3 +164,53 @@ describe('executeStep — retry ceiling (authoritativeAttempt)', () => {
     expect(ceilingFailures).toHaveLength(0);
   });
 });
+
+describe('executeStep — compute instance stamping', () => {
+  afterEach(() => {
+    counter += 1;
+  });
+
+  it('stamps computeInstanceId on step_started without displacing the stateUpdatedAt guard', async () => {
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+    });
+
+    // computeInstanceId rides in CreateEventParams, which world-local does not
+    // persist — so observe the call itself rather than the stored event.
+    const creates: Array<{
+      eventType: string;
+      params?: { computeInstanceId?: string; stateUpdatedAt?: number };
+    }> = [];
+    const realCreate = world.events.create.bind(world.events);
+    world.events.create = ((
+      rid: Parameters<typeof realCreate>[0],
+      data: Parameters<typeof realCreate>[1],
+      params: Parameters<typeof realCreate>[2]
+    ) => {
+      creates.push({ eventType: data.eventType, params });
+      return realCreate(rid, data, params);
+    }) as typeof world.events.create;
+
+    await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      stateUpdatedAt: 1_700_000_000_000,
+    });
+
+    const started = creates.filter((c) => c.eventType === 'step_started');
+    expect(started).toHaveLength(1);
+    expect(started[0]?.params?.computeInstanceId).toMatch(
+      /^cinst_[0-9A-HJKMNP-TV-Z]{26}$/
+    );
+    // Both ride the same params object — neither may clobber the other.
+    expect(started[0]?.params?.stateUpdatedAt).toBe(1_700_000_000_000);
+  });
+});

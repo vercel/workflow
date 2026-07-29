@@ -195,6 +195,138 @@ describe('createWorkflowRunEvent stateUpdatedAt wire field', () => {
   });
 });
 
+describe('createWorkflowRunEvent computeInstanceId wire field', () => {
+  it('includes computeInstanceId in the v4 frame meta when provided', async () => {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/step_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return encode({ step: { stepId: 'step_1', status: 'running' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEvent(
+      'wrun_1',
+      {
+        eventType: 'step_started',
+        specVersion: 2,
+        correlationId: 'step_1',
+      } as AnyEventRequest,
+      { computeInstanceId: 'cinst_01JZZZTESTINSTANCE00000001' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.computeInstanceId).toBe(
+      'cinst_01JZZZTESTINSTANCE00000001'
+    );
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('rides alongside requestId/vercelId rather than replacing it', async () => {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/step_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return encode({ step: { stepId: 'step_1', status: 'running' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEvent(
+      'wrun_1',
+      {
+        eventType: 'step_started',
+        specVersion: 2,
+        correlationId: 'step_1',
+      } as AnyEventRequest,
+      {
+        requestId: 'iad1::abc-123-def',
+        computeInstanceId: 'cinst_01JZZZTESTINSTANCE00000001',
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    // Instance identity and request identity are independent dimensions: the
+    // pair is what distinguishes same-instance from same-invocation execution.
+    expect(capturedMeta?.vercelId).toBe('iad1::abc-123-def');
+    expect(capturedMeta?.computeInstanceId).toBe(
+      'cinst_01JZZZTESTINSTANCE00000001'
+    );
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('omits computeInstanceId from the v4 frame meta when not provided', async () => {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/step_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return encode({ step: { stepId: 'step_1', status: 'running' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEvent(
+      'wrun_1',
+      {
+        eventType: 'step_started',
+        specVersion: 2,
+        correlationId: 'step_1',
+      } as AnyEventRequest,
+      undefined,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect('computeInstanceId' in (capturedMeta ?? {})).toBe(false);
+    agent.assertNoPendingInterceptors();
+  });
+});
+
 /**
  * The split's meta allowlist IS the eventData wire contract on v4. The
  * type-level `assertEventDataWireContractExhaustive` guard in events.ts
