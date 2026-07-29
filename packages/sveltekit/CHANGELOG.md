@@ -1,5 +1,16 @@
 # @workflow/sveltekit
 
+## 4.0.14
+
+### Patch Changes
+
+- [#3166](https://github.com/vercel/workflow/pull/3166) [`f2714c5`](https://github.com/vercel/workflow/commit/f2714c50bbb7d5c80bfa8924f663dd75cf933304) Thanks [@TooTallNate](https://github.com/TooTallNate)! - The generated webhook route now passes the incoming request directly to its handler instead of copying it into a new `Request`, so the request body is no longer read before the handler runs.
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.4
+  - @workflow/rollup@4.0.14
+  - @workflow/vite@4.0.14
+
 ## 4.0.13
 
 ### Patch Changes
