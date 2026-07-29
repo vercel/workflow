@@ -47,6 +47,7 @@ import {
 } from './runtime/constants.js';
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
+  appendUniqueEvents,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -1262,17 +1263,7 @@ export function workflowEntrypoint(
                         // skew the prefix from the server's log.
                         const delta = pendingInlineDelta;
                         pendingInlineDelta = null;
-                        if (delta.events.length > 0) {
-                          const existingIds = new Set(
-                            cachedEvents.map((e) => e.eventId)
-                          );
-                          for (const e of delta.events) {
-                            if (!existingIds.has(e.eventId)) {
-                              existingIds.add(e.eventId);
-                              cachedEvents.push(e);
-                            }
-                          }
-                        }
+                        appendUniqueEvents(cachedEvents, delta.events);
                         eventsCursor = delta.cursor ?? eventsCursor;
                         events = cachedEvents;
                       } else if (cachedEvents === null) {
@@ -1297,17 +1288,7 @@ export function workflowEntrypoint(
                         // the next loop observes the advanced cursor, so an
                         // incremental fetch can return events we already have
                         // locally.
-                        if (loaded.events.length > 0) {
-                          const existingIds = new Set(
-                            cachedEvents.map((e) => e.eventId)
-                          );
-                          for (const e of loaded.events) {
-                            if (!existingIds.has(e.eventId)) {
-                              existingIds.add(e.eventId);
-                              cachedEvents.push(e);
-                            }
-                          }
-                        }
+                        appendUniqueEvents(cachedEvents, loaded.events);
                         eventsCursor = loaded.cursor ?? eventsCursor;
                         events = cachedEvents;
                       } else if (preloadedEvents) {
@@ -1441,15 +1422,7 @@ export function workflowEntrypoint(
                           );
 
                           if (sawAllWaitCompletions) {
-                            const existingIds = new Set(
-                              events.map((e) => e.eventId)
-                            );
-                            for (const event of loaded.events) {
-                              if (!existingIds.has(event.eventId)) {
-                                existingIds.add(event.eventId);
-                                events.push(event);
-                              }
-                            }
+                            appendUniqueEvents(events, loaded.events);
                             eventsCursor = loaded.cursor ?? eventsCursor;
                           } else {
                             const loaded = await loadWorkflowRunEvents(runId);

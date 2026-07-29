@@ -457,14 +457,25 @@ function recordRequestedEventCursor(
   requestedCursors.add(cursor);
 }
 
-function appendUniqueEvents(
+/**
+ * Appends events whose IDs are not already present in `target`.
+ *
+ * Pass the IDs currently present in `target` when appending repeatedly to the
+ * same array. The set is updated alongside `target`.
+ */
+export function appendUniqueEvents(
   target: Event[],
-  targetIds: Set<string>,
-  events: Event[]
+  events: readonly Event[],
+  targetIds?: Set<string>
 ): void {
+  if (events.length === 0) {
+    return;
+  }
+
+  const ids = targetIds ?? new Set(target.map((event) => event.eventId));
   for (const event of events) {
-    if (!targetIds.has(event.eventId)) {
-      targetIds.add(event.eventId);
+    if (!ids.has(event.eventId)) {
+      ids.add(event.eventId);
       target.push(event);
     }
   }
@@ -575,7 +586,7 @@ export async function loadWorkflowRunEvents(
           throw error;
         }
 
-        appendUniqueEvents(loadedEvents, loadedEventIds, response.data);
+        appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
         hasMore = response.hasMore;
         assertEventPaginationProgress(
           runId,
@@ -738,11 +749,7 @@ export async function withPreconditionRetry<T>(
         runId,
         log.cursor ?? undefined
       );
-      appendUniqueEvents(
-        log.events,
-        new Set(log.events.map((e) => e.eventId)),
-        loaded.events
-      );
+      appendUniqueEvents(log.events, loaded.events);
       // When several creates share one `log` (e.g. hook creations under
       // `Promise.all` in `handleSuspension`), concurrent 412s can reload
       // concurrently. The event merge above is safe — `appendUniqueEvents`

@@ -1,13 +1,6 @@
 import { Command } from '@oclif/core';
 import { getWorld } from '@workflow/core/runtime';
 
-function isMissingStaticWorldInjectionError(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    err.message.includes('Workflow target world was not statically injected')
-  );
-}
-
 async function flushStream(stream: NodeJS.WriteStream): Promise<void> {
   if (
     !stream.writable ||
@@ -47,11 +40,9 @@ export abstract class BaseCommand extends Command {
       const world = await getWorld();
       await world.close?.();
     } catch (closeErr) {
-      if (!isMissingStaticWorldInjectionError(closeErr)) {
-        this.warn(
-          `Failed to close world: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`
-        );
-      }
+      this.warn(
+        `Failed to close world: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`
+      );
     }
     await super.finally(err);
     // Force exit. World.close() cleaned up database connections and HTTP
