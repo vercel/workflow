@@ -1,7 +1,4 @@
-import Link from 'next/link';
 import type { JSX, ReactNode } from 'react';
-
-import { Button } from '@vercel/geistdocs/components/button';
 import { AgentsVisual } from './agents-visual';
 import { AiSdkVisual } from './ai-sdk-visual';
 import { O11yVisual } from './o11y-visual';
@@ -37,7 +34,7 @@ function FeatureCard({ title, description, visual }: Feature): JSX.Element {
   return (
     <div className="flex flex-col items-stretch justify-between gap-6 md:gap-10 px-4 py-8 sm:py-12 sm:px-12">
       <p className="text-heading-20 lg:text-heading-24 text-gray-900">
-        <strong className="text-gray-1000!">{title}</strong> {description}
+        <span className="text-gray-1000">{title}</span> {description}
       </p>
       <div className="@container flex items-center justify-center overflow-hidden">
         {visual}
@@ -64,7 +61,7 @@ function FeatureCardWide({ title, description, visual }: Feature): JSX.Element {
 
 export function FeatureGrid(): JSX.Element {
   return (
-    <div className="grid lg:grid-cols-2 divide-y lg:divide-y-0">
+    <div className="grid lg:grid-cols-2">
       {features.slice(0, 2).map((feature) => (
         <FeatureCard key={feature.title} {...feature} />
       ))}
@@ -76,7 +73,7 @@ export function FeatureGridExtended(): JSX.Element {
   return (
     <>
       {/* AI SDK + Agents — 2 col */}
-      <div className="grid lg:grid-cols-2 divide-y lg:divide-y-0">
+      <div className="grid lg:grid-cols-2">
         {features.slice(0, 2).map((feature) => (
           <FeatureCard key={feature.title} {...feature} />
         ))}
