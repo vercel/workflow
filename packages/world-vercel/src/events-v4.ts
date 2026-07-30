@@ -21,6 +21,7 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
+import { SlotConflictError } from '@workflow/errors';
 import { decode } from 'cbor-x';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getEventsDispatcher } from './http-client.js';
@@ -72,11 +73,31 @@ async function fetchV4(
       errorFromV4Response(
         response.status,
         headersToRecord(response.headers),
-        await response.text(),
+        await readErrorBody(response),
         opName,
         url
       ),
   });
+}
+
+/**
+ * The error body as bytes when it is CBOR, as text otherwise.
+ *
+ * Most v4 error responses are JSON, because the client sends no `Accept` header
+ * and the backend's error encoder defaults to it. A slot conflict is the
+ * exception: its body carries the event-log delta the client needs, whose
+ * payloads are byte strings that JSON cannot represent, so the backend encodes
+ * that one as CBOR regardless of the `Accept` header.
+ */
+async function readErrorBody(response: Response): Promise<string | Uint8Array> {
+  if (isCborContentType(response.headers.get('content-type'))) {
+    return new Uint8Array(await response.arrayBuffer());
+  }
+  return await response.text();
+}
+
+function isCborContentType(contentType: string | null | undefined): boolean {
+  return contentType?.toLowerCase().includes('application/cbor') ?? false;
 }
 
 /** Flatten a fetch `Headers` into the record shape throwForErrorResponse
@@ -207,6 +228,22 @@ export interface CreateEventV4Input {
    * without a loaded event log; older servers ignore it entirely.
    */
   stateUpdatedAt?: number;
+  /**
+   * The event's id, claimed by the client instead of minted by the server.
+   * Sent only for a run that numbers its events by slot, where the id encodes
+   * the event's position in the log. The server inserts it conditionally and
+   * answers 409 `slot-conflict` when the slot is already taken; a run on the
+   * older numbering that sends one is rejected with 400. Older servers ignore
+   * the field and mint an id as before — which is why only runs stamped with
+   * slot identity ever send it.
+   */
+  eventId?: string;
+  /**
+   * The highest slot the client has seen in the run's event log (0 when it has
+   * seen none). Observability only: slots are dense, so a persisted slot more
+   * than one past this is a permanent hole in the log. Ignored by older servers.
+   */
+  maxSlot?: number;
 }
 
 export interface CreateEventV4Result {
@@ -305,7 +342,76 @@ function buildPostFrameMeta(
   if (input.stateUpdatedAt !== undefined) {
     meta.stateUpdatedAt = input.stateUpdatedAt;
   }
+  if (input.eventId !== undefined) meta.eventId = input.eventId;
+  if (input.maxSlot !== undefined) meta.maxSlot = input.maxSlot;
   return meta;
+}
+
+/**
+ * The backend's machine-readable code for a lost event slot. Paired with 409
+ * rather than 412 so a slot conflict stays distinguishable from the
+ * `stateUpdatedAt` watermark's staleness rejection while both are live.
+ */
+const V4_SLOT_CONFLICT_CODE = 'slot-conflict';
+
+/** The fields a v4 error body may carry, whatever encoding it arrived in. */
+interface V4ErrorBody {
+  message?: unknown;
+  /** Machine-readable code. The backend names this field `error`. */
+  error?: unknown;
+  code?: unknown;
+  events?: unknown;
+  cursor?: unknown;
+  hasMore?: unknown;
+  details?: unknown;
+}
+
+/** Decode an error body as CBOR or JSON, or `undefined` if it is neither. */
+function decodeErrorBody(
+  errorBody: string | Uint8Array
+): V4ErrorBody | undefined {
+  try {
+    const value =
+      typeof errorBody === 'string'
+        ? (JSON.parse(errorBody) as unknown)
+        : (decode(errorBody) as unknown);
+    return value && typeof value === 'object'
+      ? (value as V4ErrorBody)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Build the `SlotConflictError` for a 409 whose body names a taken slot.
+ *
+ * The conflicting event id comes from the response header rather than the body
+ * so the error is still actionable when the body failed to decode; the delta is
+ * best-effort in the other direction — an absent or malformed `events` leaves
+ * the runtime to reload the log itself, which is always correct.
+ */
+function slotConflictFromBody(
+  message: string,
+  responseHeaders: Record<string, string | string[] | undefined>,
+  body: V4ErrorBody | undefined
+): SlotConflictError {
+  const details = body?.details;
+  const detailEventId =
+    details && typeof details === 'object' && 'eventId' in details
+      ? (details as { eventId?: unknown }).eventId
+      : undefined;
+  const headerEventId = readHeader(
+    responseHeaders,
+    V4_RESPONSE_HEADERS.eventId
+  );
+  return new SlotConflictError(message, {
+    eventId:
+      headerEventId ?? (typeof detailEventId === 'string' ? detailEventId : ''),
+    events: Array.isArray(body?.events) ? body.events : [],
+    cursor: typeof body?.cursor === 'string' ? body.cursor : null,
+    hasMore: body?.hasMore === true,
+  });
 }
 
 /**
@@ -320,19 +426,27 @@ function buildPostFrameMeta(
 function errorFromV4Response(
   statusCode: number,
   responseHeaders: Record<string, string | string[] | undefined>,
-  errorBody: string,
+  errorBody: string | Uint8Array,
   opName: string,
   url: string
 ): Error {
   let message = `v4 ${opName} failed: HTTP ${statusCode}`;
   let code: string | undefined;
-  try {
-    const json = JSON.parse(errorBody) as { message?: string; code?: string };
-    if (typeof json.message === 'string') message = json.message;
-    if (typeof json.code === 'string') code = json.code;
-  } catch {
-    // body wasn't JSON — keep the default message, append raw text below
-    if (errorBody) message += ` ${errorBody}`;
+  const decoded = decodeErrorBody(errorBody);
+  if (decoded) {
+    if (typeof decoded.message === 'string') message = decoded.message;
+    if (typeof decoded.code === 'string') code = decoded.code;
+  } else if (typeof errorBody === 'string' && errorBody) {
+    // Body was neither JSON nor CBOR — keep the default message and append the
+    // raw text so the response is still diagnosable.
+    message += ` ${errorBody}`;
+  }
+
+  // A lost event slot is the one 409 that is not an entity conflict. The
+  // backend names its machine-readable code `error`; that field is read only
+  // here, so every other error keeps the status → type mapping below unchanged.
+  if (statusCode === 409 && decoded?.error === V4_SLOT_CONFLICT_CODE) {
+    return slotConflictFromBody(message, responseHeaders, decoded);
   }
 
   const retryAfter = parseRetryAfter(
@@ -355,7 +469,7 @@ function errorFromV4Response(
 export function throwForErrorResponse(
   statusCode: number,
   responseHeaders: Record<string, string | string[] | undefined>,
-  errorBody: string,
+  errorBody: string | Uint8Array,
   opName: string,
   url: string
 ): never {

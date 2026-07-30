@@ -40,6 +40,7 @@
 import {
   EntityConflictError,
   RunExpiredError,
+  SlotConflictError,
   ThrottleError,
   TooEarlyError,
   WorkflowWorldError,
@@ -203,9 +204,13 @@ function collectErrorMarkers(err: unknown, depth = 0): string[] {
 export function isRetryableEventPostError(err: unknown): boolean {
   // Definitive, server-considered outcomes — never retried in-process.
   // (425/429 are intentionally left to the runtime's retry-after handling.)
+  // A slot conflict is doubly definitive: the write lost a race for its event
+  // id, so re-issuing it unchanged is guaranteed to lose again. Only a merge and
+  // a replay can produce a write that can land.
   if (
     EntityConflictError.is(err) ||
     RunExpiredError.is(err) ||
+    SlotConflictError.is(err) ||
     TooEarlyError.is(err) ||
     ThrottleError.is(err)
   ) {

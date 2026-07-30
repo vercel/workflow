@@ -773,6 +773,37 @@ export interface CreateEventParams {
    * across the SDK and the backend.
    */
   skipPreload?: boolean;
+  /**
+   * The event's id, chosen by the client rather than the World.
+   *
+   * Only sent for a run whose spec version numbers events by slot
+   * (`SPEC_VERSION_SLOT_IDENTITY`), where the id encodes the event's position in
+   * the log and is therefore the client's claim on that position.
+   *
+   * Backend contract (for World implementers who want to support slot
+   * identity): treat the id as a claim to be won, not a hint. Insert it under a
+   * uniqueness constraint on `(runId, eventId)` and, when the id is already
+   * taken, reject the write with `SlotConflictError` (HTTP 409) instead of
+   * minting a different id — a lost slot means the client replayed against an
+   * event log missing at least one event, so its whole proposed event, not just
+   * its id, is suspect. Reject a mismatch in either direction with a 400: an id
+   * of this shape on a run that does not use slot identity, or an absent or
+   * ULID-shaped id on a run that does, would leave the log unable to prove its
+   * own completeness.
+   *
+   * A World that ignores this field keeps minting ids itself, which is correct
+   * only for runs that were never stamped with slot identity in the first
+   * place.
+   */
+  eventId?: string;
+  /**
+   * The highest slot the client has observed in the run's event log, or 0 for a
+   * log with no slot-numbered events. Sent alongside {@link eventId} purely as
+   * an observability signal: because slots are dense, a persisted slot more
+   * than one past this is a hole, which is unrecoverable and worth alerting on.
+   * Worlds MAY ignore it.
+   */
+  maxSlot?: number;
 }
 
 /**

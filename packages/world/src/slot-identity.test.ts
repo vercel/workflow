@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   FIRST_SLOT,
   isSlotId,
+  maxSlotOf,
   SLOT_ID_WIDTH,
+  slotEventId,
   slotFromId,
   slotIdBody,
 } from './slot-identity.js';
@@ -57,3 +59,30 @@ describe('slotFromId', () => {
     expect(slotFromId(`evnt_${'1'.repeat(SLOT_ID_WIDTH + 1)}`)).toBeUndefined();
   });
 });
+
+describe('maxSlotOf', () => {
+  it('finds the highest slot regardless of position', () => {
+    // A log is merged from several loads and is not sorted, so the last element
+    // is not necessarily the highest slot.
+    expect(
+      maxSlotOf([slotEventId(3), slotEventId(7), slotEventId(1)].map(toEvent))
+    ).toBe(7);
+  });
+
+  it('reports 0 for an empty or ULID-numbered log', () => {
+    expect(maxSlotOf([])).toBe(0);
+    expect(maxSlotOf([toEvent(`evnt_${ulid()}`)])).toBe(0);
+  });
+
+  it('ignores ULID ids mixed in with slots', () => {
+    // A mixed log violates slot identity's purity invariant, but the scan must
+    // still report the highest slot rather than throwing or returning 0.
+    expect(
+      maxSlotOf([toEvent(`evnt_${ulid()}`), toEvent(slotEventId(2))])
+    ).toBe(2);
+  });
+});
+
+function toEvent(eventId: string): { eventId: string } {
+  return { eventId };
+}

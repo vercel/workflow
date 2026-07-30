@@ -18,9 +18,9 @@ import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
-import type { PayloadKey } from '../serialization/encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
+import type { PayloadKey } from '../serialization/encryption.js';
 import {
   cancelAbortReaders,
   dehydrateStepError,
@@ -43,7 +43,7 @@ import {
   isOptimisticInlineStartExplicitlyDisabled,
 } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
-import { memoizeEncryptionKey } from './helpers.js';
+import { type EventCreateFence, memoizeEncryptionKey } from './helpers.js';
 import {
   computeStepLatencyEventData,
   type StepLatencyEventData,
@@ -129,20 +129,23 @@ export interface StepExecutorParams {
    */
   inlineDeltaSinceCursor?: string;
   /**
-   * Precondition-guard snapshot (epoch ms of the latest event the caller's
-   * replay loaded) to attach to this step's `step_started` claim. On the lazy
-   * inline path the claim is the step's FIRST durable write (its
-   * `step_created` is deferred), so without this the claim would bypass the
-   * optimistic-concurrency guard entirely: a replay working from a stale view
-   * could claim — and then commit — a step scheduled without observing an
-   * out-of-band event. A guard-enforcing World rejects a stale claim with
-   * `PreconditionFailedError` (412); executeStep does NOT translate that
-   * rejection (re-claiming in place would still commit the stale schedule),
-   * so it propagates for the caller to abandon the batch and force a fresh
-   * replay. Undefined when the guard is disabled or the caller has no
-   * snapshot; Worlds that don't enforce the guard ignore it.
+   * Concurrency fence to attach to this step's `step_started` claim: the event
+   * slot the claim occupies, or the caller's replay snapshot (`stateUpdatedAt`,
+   * epoch ms of the latest event it loaded) for a run on the older numbering.
+   *
+   * On the lazy inline path the claim is the step's FIRST durable write (its
+   * `step_created` is deferred), so without a fence it would be unguarded
+   * entirely: a replay working from a stale view could claim — and then commit —
+   * a step scheduled without observing an out-of-band event. A fencing World
+   * rejects such a claim with `SlotConflictError` (409) or
+   * `PreconditionFailedError` (412); executeStep does NOT translate either
+   * rejection (re-claiming in place would still commit the stale schedule), so
+   * it propagates for the caller to abandon the batch and force a fresh replay.
+   *
+   * Undefined when the caller has no snapshot, or when the watermark guard is
+   * disabled on a run that uses it; Worlds that fence neither way ignore it.
    */
-  stateUpdatedAt?: number;
+  eventCreateFence?: EventCreateFence;
   /**
    * Suppress optimistic inline start for this step regardless of
    * `WORKFLOW_OPTIMISTIC_INLINE_START` / `forceOptimisticStart`: take the
@@ -556,13 +559,11 @@ export async function executeStep(
                   : {}),
               },
             },
-            // Guard the claim — see StepExecutorParams.stateUpdatedAt. A stale
-            // (412) rejection surfaces via reconcileOptimisticStart as a
+            // Fence the claim — see StepExecutorParams.eventCreateFence. A 409/412
+            // rejection surfaces via reconcileOptimisticStart as a
             // non-translatable error: the body result is discarded and the
             // rejection propagates to the caller.
-            params.stateUpdatedAt !== undefined
-              ? { stateUpdatedAt: params.stateUpdatedAt }
-              : undefined
+            params.eventCreateFence
           );
         }
       );
@@ -619,13 +620,10 @@ export async function executeStep(
                   }
                 : { stepName, ...ownershipStamp },
           },
-          // Guard the claim — see StepExecutorParams.stateUpdatedAt. A stale
-          // (412) rejection is intentionally NOT translated by
-          // startErrorToResult below, so it propagates to the caller for a
-          // fresh replay.
-          params.stateUpdatedAt !== undefined
-            ? { stateUpdatedAt: params.stateUpdatedAt }
-            : undefined
+          // Fence the claim — see StepExecutorParams.eventCreateFence. A 409/412
+          // rejection is intentionally NOT translated by startErrorToResult
+          // below, so it propagates to the caller for a fresh replay.
+          params.eventCreateFence
         );
 
         if (!startResult.step) {

@@ -104,7 +104,9 @@ export {
 export {
   FIRST_SLOT,
   isSlotId,
+  maxSlotOf,
   SLOT_ID_WIDTH,
+  slotEventId,
   slotFromId,
   slotIdBody,
 } from './slot-identity.js';

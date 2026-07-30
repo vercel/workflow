@@ -15,6 +15,7 @@
     "throttle-error",
     "entity-conflict-error",
     "precondition-failed-error",
+    "slot-conflict-error",
     "run-expired-error",
     "run-not-supported-error",
     "too-early-error"

@@ -30,7 +30,7 @@ import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import { getMaxInlineSteps } from './constants.js';
-import { type MutableEventLog, withPreconditionRetry } from './helpers.js';
+import { type MutableEventLog, withEventCreateFence } from './helpers.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -39,10 +39,11 @@ export interface SuspensionHandlerParams {
   span?: Span;
   requestId?: string;
   /**
-   * The runtime's loaded event log. Each event creation is sent with this
-   * snapshot's `stateUpdatedAt` and, if the backend rejects it as stale (412),
-   * the log is reloaded in place and the create is retried — see
-   * `withPreconditionRetry`. Guarding per-create (rather than the whole
+   * The runtime's loaded event log. Each event creation carries a fence derived
+   * from this snapshot — its own event slot, or the snapshot's `stateUpdatedAt`
+   * for a run on the older numbering — and if the backend rejects the write, the
+   * log is reloaded in place and the create is retried; see
+   * `withEventCreateFence`. Fencing per-create (rather than the whole
    * suspension) ensures a retry never re-issues an already-created event.
    */
   eventLog?: MutableEventLog;
@@ -226,11 +227,12 @@ export async function handleSuspension({
     }
   };
 
-  // Create an event with the optimistic-concurrency guard when the caller
-  // supplied a loaded event log; otherwise create it directly (callers without
-  // a replay snapshot, e.g. tests). The guard reloads + retries on a stale
-  // (412) rejection, keeping `eventLog` current in place. All suspension events
-  // are non-run_created events on this run's `runId`.
+  // Create an event under the run's concurrency fence when the caller supplied
+  // a loaded event log; otherwise create it directly (callers without a replay
+  // snapshot, e.g. tests). The fence reloads + retries on a rejection, keeping
+  // `eventLog` current in place. Fencing per-create rather than per-suspension
+  // is what makes a retry safe: it never re-issues an already-created event.
+  // All suspension events are non-run_created events on this run's `runId`.
   const createGuarded = (
     data: CreateEventRequest,
     params?: CreateEventParams
@@ -238,8 +240,8 @@ export async function handleSuspension({
     if (!eventLog) {
       return world.events.create(runId, data, params);
     }
-    return withPreconditionRetry(runId, eventLog, (stateUpdatedAt) =>
-      world.events.create(runId, data, { ...params, stateUpdatedAt })
+    return withEventCreateFence(runId, eventLog, run.specVersion, (fence) =>
+      world.events.create(runId, data, { ...params, ...fence })
     );
   };
   // Separate queue items by type

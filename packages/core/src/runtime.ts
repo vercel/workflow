@@ -48,18 +48,18 @@ import {
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
   appendUniqueEvents,
+  eventCreateFenceFor,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
   isPreconditionGuardEnabled,
   loadWorkflowRunEvents,
-  type MutableEventLog,
   memoizeEncryptionKey,
   parseHealthCheckPayload,
   queueMessage,
-  stateUpdatedAtForCreate,
+  toMutableEventLog,
+  withEventCreateFence,
   withHealthCheck,
-  withPreconditionRetry,
 } from './runtime/helpers.js';
 import { runScopedKey } from './runtime/idempotency-key.js';
 import {
@@ -1363,19 +1363,21 @@ export function workflowEntrypoint(
                           },
                         }));
 
+                      // One log for the whole loop: `events` is appended to in
+                      // place by the guard's reloads, so a per-iteration
+                      // rescan for the slot high-water mark would be wasted
+                      // work on an array that never changes identity here.
+                      const waitLog = toMutableEventLog(events, eventsCursor);
                       for (const waitEvent of waitsToComplete) {
-                        const waitLog: MutableEventLog = {
-                          events,
-                          cursor: eventsCursor,
-                        };
                         try {
-                          await withPreconditionRetry(
+                          await withEventCreateFence(
                             runId,
                             waitLog,
-                            (stateUpdatedAt) =>
+                            workflowRun.specVersion,
+                            (fence) =>
                               world.events.create(runId, waitEvent, {
                                 requestId,
-                                stateUpdatedAt,
+                                ...fence,
                               })
                           );
                         } catch (err) {
@@ -1544,7 +1546,10 @@ export function workflowEntrypoint(
                           },
                           {
                             requestId,
-                            stateUpdatedAt: stateUpdatedAtForCreate(events),
+                            ...eventCreateFenceFor(
+                              toMutableEventLog(events, eventsCursor),
+                              workflowRun.specVersion
+                            ),
                           }
                         );
                       } catch (err) {
@@ -1612,10 +1617,11 @@ export function workflowEntrypoint(
                         }
 
                         // V2: handle suspension without queuing steps.
-                        // Each event creation inside handleSuspension carries the
-                        // loaded snapshot's stateUpdatedAt and self-reloads on a
-                        // stale (412) rejection via the shared event log. We
-                        // guard per-create (rather than wrapping the whole call)
+                        // Each event creation inside handleSuspension carries
+                        // the run's concurrency fence — its own event slot, or
+                        // the loaded snapshot's watermark — and self-reloads on
+                        // a rejection (409/412) via the shared event log. We
+                        // fence per-create (rather than wrapping the whole call)
                         // so a retry never re-issues an already-created event.
                         const suspensionStart = Date.now();
                         // The snapshot refresh above always sets cachedEvents
@@ -1629,10 +1635,10 @@ export function workflowEntrypoint(
                             'Invariant violation: workflow suspended before its event log was loaded'
                           );
                         }
-                        const suspensionLog: MutableEventLog = {
-                          events: cachedEvents,
-                          cursor: eventsCursor,
-                        };
+                        const suspensionLog = toMutableEventLog(
+                          cachedEvents,
+                          eventsCursor
+                        );
                         let suspensionResult: Awaited<
                           ReturnType<typeof handleSuspension>
                         >;
@@ -2114,9 +2120,9 @@ export function workflowEntrypoint(
                         //    rejected with 412 — its guarded suspension creates
                         //    (retried over the reloaded log, or exhausted into
                         //    a queue re-invocation), AND the lazy step_started
-                        //    claim of its next inline step, which carries the
-                        //    snapshot too (threaded below via
-                        //    `stateUpdatedAt`; on rejection the batch is
+                        //    claim of its next inline step, which is fenced too
+                        //    (threaded below via
+                        //    `eventCreateFence`; on rejection the batch is
                         //    abandoned and re-invoked for a fresh replay, so a
                         //    stale view can never commit a step). Hooks created
                         //    by THIS suspension are inside the delta (their
@@ -2258,18 +2264,19 @@ export function workflowEntrypoint(
                           turbo,
                         });
 
-                        // Precondition-guard snapshot for the inline
-                        // step_started claims: the lazy claim is the first
-                        // durable write of a hot-path step (its step_created
-                        // is deferred), so without a snapshot it would bypass
-                        // the guard entirely and a stale replay could claim —
-                        // and commit — a step scheduled off a view that misses
-                        // an out-of-band event. `stateUpdatedAtForCreate`
-                        // returns undefined when the guard env flag is off, so
-                        // this is a no-op outside guarded deployments; Worlds
-                        // that don't enforce the guard ignore it.
-                        const inlineClaimStateUpdatedAt =
-                          stateUpdatedAtForCreate(cachedEvents ?? []);
+                        // Concurrency fence for the inline step_started claims:
+                        // the lazy claim is the first durable write of a
+                        // hot-path step (its step_created is deferred), so
+                        // without one it would be unguarded and a stale replay
+                        // could claim — and commit — a step scheduled off a view
+                        // that misses an out-of-band event. One log for the
+                        // whole batch so each claim draws its own event slot;
+                        // `eventCreateFenceFor` yields undefined for a run
+                        // fenced neither way, leaving those claims as they were.
+                        const inlineClaimLog = toMutableEventLog(
+                          cachedEvents ?? [],
+                          eventsCursor
+                        );
 
                         replayBudget.pause();
                         let stepResults: Awaited<
@@ -2277,6 +2284,15 @@ export function workflowEntrypoint(
                         >[];
                         const stepExecutionPromises = inlineExecutions.map(
                           (s, stepIndex) => {
+                            // Drawn here — synchronously, in replay order —
+                            // rather than inside `run`: a slot claim is
+                            // positional, so it has to be assigned before these
+                            // executions start racing each other, and the order
+                            // it is assigned in has to be replay-stable.
+                            const eventCreateFence = eventCreateFenceFor(
+                              inlineClaimLog,
+                              workflowRun.specVersion
+                            );
                             const run = () =>
                               executeStep({
                                 world,
@@ -2348,7 +2364,7 @@ export function workflowEntrypoint(
                                 // see suppressOptimisticStart above.
                                 suppressOptimisticStart,
                                 runReadyBarrier,
-                                stateUpdatedAt: inlineClaimStateUpdatedAt,
+                                eventCreateFence,
                                 ...(stepIndex === 0 &&
                                 s.lazyStepInput !== undefined &&
                                 latencyTracking
@@ -2738,10 +2754,10 @@ export function workflowEntrypoint(
                         // type identity and custom properties round-trip
                         // through the event log.
                         //
-                        // Precondition-guard asymmetry: unlike `run_completed`,
-                        // this terminal `run_failed` sends no `stateUpdatedAt`
-                        // snapshot, so it is never 412-rejected even if a hook
-                        // landed mid-replay and could have changed the path that
+                        // Fencing asymmetry: unlike `run_completed`, this
+                        // terminal `run_failed` carries no concurrency fence, so
+                        // it is never rejected even if a hook landed mid-replay
+                        // and could have changed the path that
                         // threw. This is intentional and fail-open: a spurious
                         // failure is recoverable (the run can be re-run from the
                         // dashboard), whereas a spurious *completion* commits a

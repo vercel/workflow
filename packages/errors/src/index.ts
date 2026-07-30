@@ -810,6 +810,59 @@ export class PreconditionFailedError extends WorkflowWorldError {
 }
 
 /**
+ * Thrown when the backend rejects an event creation because the event slot the
+ * client named was already taken by another writer (HTTP 409).
+ *
+ * On a run that numbers its events by slot, whoever writes a slot first owns
+ * it, and the loser has by definition been replaying against an event log
+ * missing at least one event. Retrying the same write can therefore never
+ * succeed: the client has to merge the events it was missing, replay, and
+ * propose whatever slot that replay lands on. The rejection carries those
+ * events inline so the common case costs no extra round-trip.
+ *
+ * Distinct from `PreconditionFailedError` (412), which is the equivalent
+ * rejection for a run guarded by the `stateUpdatedAt` watermark instead. Both
+ * mechanisms are live at once while runs on the older numbering drain.
+ *
+ * The workflow runtime handles this automatically. Users interacting with world
+ * storage backends directly may encounter it.
+ *
+ * @property eventId - The slot-numbered event id that was already taken.
+ * @property events - The events recorded after the client's snapshot, in
+ *   ascending slot order. Empty when the backend could not read them, in which
+ *   case the client reloads the log itself.
+ * @property cursor - Cursor to continue the delta from, or `null`.
+ * @property hasMore - Whether events beyond `events` remain to be fetched.
+ */
+export class SlotConflictError extends WorkflowWorldError {
+  readonly eventId: string;
+  readonly events: unknown[];
+  readonly cursor: string | null;
+  readonly hasMore: boolean;
+
+  constructor(
+    message: string,
+    options: {
+      eventId: string;
+      events?: unknown[];
+      cursor?: string | null;
+      hasMore?: boolean;
+    }
+  ) {
+    super(message, { status: 409 });
+    this.name = 'SlotConflictError';
+    this.eventId = options.eventId;
+    this.events = options.events ?? [];
+    this.cursor = options.cursor ?? null;
+    this.hasMore = options.hasMore ?? false;
+  }
+
+  static is(value: unknown): value is SlotConflictError {
+    return isError(value) && value.name === 'SlotConflictError';
+  }
+}
+
+/**
  * Thrown when awaiting `run.returnValue` on a workflow run that was cancelled.
  *
  * This error indicates that the workflow was explicitly cancelled (via

@@ -1,6 +1,7 @@
 import {
   PreconditionFailedError,
   RUN_ERROR_CODES,
+  SlotConflictError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
@@ -13,10 +14,13 @@ import type {
 import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
+  maxSlotOf,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  slotEventId,
   ulidToDate,
+  usesSlotIdentity,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
@@ -650,6 +654,55 @@ export const PRECONDITION_MAX_RELOAD_RETRIES = 2;
 export interface MutableEventLog {
   events: Event[];
   cursor: string | null;
+  /**
+   * Highest slot present in `events`, or 0 for a log that is empty or
+   * ULID-numbered. Maintained by `mergeLoadedEvents` from the events merged in,
+   * never from the array's last element: events are appended without sorting,
+   * so after a merge the last element need not be the newest.
+   */
+  maxSlot: number;
+  /**
+   * Slots handed out by `reserveSlot` past `maxSlot` whose events have not been
+   * merged back yet. Reset whenever the log is merged into, because the merged
+   * events are the authority on which slots are taken.
+   */
+  reserved: number;
+}
+
+/** A `MutableEventLog` over a freshly loaded snapshot. */
+export function toMutableEventLog(
+  events: Event[],
+  cursor: string | null
+): MutableEventLog {
+  return { events, cursor, maxSlot: maxSlotOf(events), reserved: 0 };
+}
+
+/**
+ * Merges loaded events into `log` in place, keeping `maxSlot` current and
+ * dropping outstanding reservations (the merged events supersede them).
+ */
+export function mergeLoadedEvents(
+  log: MutableEventLog,
+  events: readonly Event[]
+): void {
+  appendUniqueEvents(log.events, events);
+  log.maxSlot = Math.max(log.maxSlot, maxSlotOf(events));
+  log.reserved = 0;
+}
+
+/**
+ * Claims the next free slot in `log`, synchronously at the moment an event is
+ * issued.
+ *
+ * Reservations are contiguous rather than all-`maxSlot + 1` because a
+ * suspension flushes its operations concurrently: without them every operation
+ * in the flush would propose the same slot and all but one would conflict, on
+ * every single flush. Operations are built in deterministic replay order, so
+ * the slot each one draws is replay-stable too.
+ */
+export function reserveSlot(log: MutableEventLog): number {
+  log.reserved += 1;
+  return log.maxSlot + log.reserved;
 }
 
 /**
@@ -703,8 +756,23 @@ export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
  * The `stateUpdatedAt` to attach to a replay-context event creation:
  * the loaded snapshot's ULID time when the precondition guard is enabled,
  * `undefined` (no guard, backend behaves as before) otherwise.
+ *
+ * Always `undefined` for a run that numbers its events by slot, where the event
+ * id is itself the concurrency fence and the watermark is dead weight. The mode
+ * is passed in explicitly rather than inferred from the event ids, because
+ * inference would silently produce a *wrong* value instead of none: a padded
+ * slot body is valid Crockford base32, so `latestEventStateUpdatedAt` decodes it
+ * to epoch 0 rather than failing its fail-open check, and the client would send
+ * `stateUpdatedAt: 0` — which a backend still running the watermark guard reads
+ * as a snapshot older than every event.
  */
-export function stateUpdatedAtForCreate(events: Event[]): number | undefined {
+export function stateUpdatedAtForCreate(
+  events: Event[],
+  specVersion?: number
+): number | undefined {
+  if (usesSlotIdentity(specVersion)) {
+    return undefined;
+  }
   return isPreconditionGuardEnabled()
     ? latestEventStateUpdatedAt(events)
     : undefined;
@@ -749,7 +817,7 @@ export async function withPreconditionRetry<T>(
         runId,
         log.cursor ?? undefined
       );
-      appendUniqueEvents(log.events, loaded.events);
+      mergeLoadedEvents(log, loaded.events);
       // When several creates share one `log` (e.g. hook creations under
       // `Promise.all` in `handleSuspension`), concurrent 412s can reload
       // concurrently. The event merge above is safe — `appendUniqueEvents`
@@ -760,6 +828,138 @@ export async function withPreconditionRetry<T>(
       log.cursor = loaded.cursor ?? log.cursor;
     }
   }
+}
+
+/**
+ * The concurrency fence a replay-context event creation carries. Exactly one of
+ * the two schemes is ever populated: `stateUpdatedAt` for a run guarded by the
+ * event-log watermark, `eventId`/`maxSlot` for a run that numbers its events by
+ * slot.
+ */
+export interface EventCreateFence {
+  stateUpdatedAt?: number;
+  eventId?: string;
+  maxSlot?: number;
+}
+
+/**
+ * The fence for a create that is deliberately **not** retried in place, because
+ * a rejection means the committed decision itself is stale and only a fresh
+ * replay can revise it (`run_completed`, an inline `step_started` claim).
+ *
+ * Claims a slot off `log` for a slot-numbered run — which counts as a
+ * reservation, so a caller that fences several creates from one log gets a
+ * distinct slot per create. `undefined` when the run is fenced neither way,
+ * leaving the create exactly as unfenced as it was before either mechanism
+ * existed.
+ */
+export function eventCreateFenceFor(
+  log: MutableEventLog,
+  specVersion: number | undefined
+): EventCreateFence | undefined {
+  if (usesSlotIdentity(specVersion)) {
+    return { eventId: slotEventId(reserveSlot(log)), maxSlot: log.maxSlot };
+  }
+  const stateUpdatedAt = stateUpdatedAtForCreate(log.events, specVersion);
+  return stateUpdatedAt !== undefined ? { stateUpdatedAt } : undefined;
+}
+
+/**
+ * Runs a replay-context event creation that claims its own event slot.
+ *
+ * The claim is the fence: the backend inserts the proposed `eventId`
+ * conditionally, so a `SlotConflictError` (409) proves another writer got there
+ * first and that this replay therefore ran against an event log missing at least
+ * one event. Re-sending the same write is pointless — it would lose the same
+ * slot again — so each attempt merges the events it was missing (inline off the
+ * rejection, topped up from the backend when the delta was truncated) and claims
+ * a fresh slot past them.
+ *
+ * Bounded by `PRECONDITION_MAX_RELOAD_RETRIES`, after which the error
+ * propagates and the run is re-invoked from the queue for a fresh replay. That
+ * fallback is not merely a giving-up path: merged events can change what the
+ * workflow body decides, and only a replay from the top can act on them.
+ */
+export async function withSlotRetry<T>(
+  runId: string,
+  log: MutableEventLog,
+  op: (fence: EventCreateFence) => Promise<T>
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    // Claimed per attempt, not once up front: a merged delta moves the log's
+    // high-water mark, so the previous claim is stale by definition.
+    const maxSlot = log.maxSlot;
+    const eventId = slotEventId(reserveSlot(log));
+    try {
+      return await op({ eventId, maxSlot });
+    } catch (error) {
+      if (
+        !SlotConflictError.is(error) ||
+        attempt >= PRECONDITION_MAX_RELOAD_RETRIES
+      ) {
+        throw error;
+      }
+      runtimeLogger.info(
+        'Event creation lost its slot; merging missed events and reclaiming',
+        {
+          workflowRunId: runId,
+          eventId,
+          attempt: attempt + 1,
+          maxRetries: PRECONDITION_MAX_RELOAD_RETRIES,
+        }
+      );
+      await mergeSlotConflictDelta(runId, log, error);
+    }
+  }
+}
+
+/**
+ * Merges the event-log delta a slot conflict carries into `log`.
+ *
+ * The inline delta is an optimization, not a contract: a backend that could not
+ * read it sends none, and one that paginated it sets `hasMore`. Either way the
+ * fallback is the same full incremental load the runtime would otherwise have
+ * done, so the merged log is authoritative in every case.
+ */
+async function mergeSlotConflictDelta(
+  runId: string,
+  log: MutableEventLog,
+  conflict: SlotConflictError
+): Promise<void> {
+  const inline = conflict.events as Event[];
+  if (inline.length > 0) {
+    mergeLoadedEvents(log, inline);
+    log.cursor = conflict.cursor ?? log.cursor;
+  }
+  if (inline.length === 0 || conflict.hasMore) {
+    const loaded = await loadWorkflowRunEvents(runId, log.cursor ?? undefined);
+    mergeLoadedEvents(log, loaded.events);
+    log.cursor = loaded.cursor ?? log.cursor;
+  }
+}
+
+/**
+ * Runs a replay-context event creation under whichever concurrency fence the
+ * run uses: its event slot when it numbers events by slot, the event-log
+ * watermark otherwise.
+ *
+ * The two retry loops stay separate rather than being folded together. They
+ * differ in what a rejection proves and in what the client does about it, and
+ * both are live at once while runs on the older numbering drain — keeping them
+ * apart is what makes a rollout's 409s and 412s separately countable.
+ */
+export function withEventCreateFence<T>(
+  runId: string,
+  log: MutableEventLog,
+  specVersion: number | undefined,
+  op: (fence: EventCreateFence) => Promise<T>
+): Promise<T> {
+  if (usesSlotIdentity(specVersion)) {
+    return withSlotRetry(runId, log, op);
+  }
+  return withPreconditionRetry(runId, log, (stateUpdatedAt) =>
+    op({ stateUpdatedAt })
+  );
 }
 
 /**

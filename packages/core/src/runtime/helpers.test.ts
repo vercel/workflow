@@ -1,5 +1,14 @@
-import { PreconditionFailedError, WorkflowWorldError } from '@workflow/errors';
-import type { Event, World } from '@workflow/world';
+import {
+  PreconditionFailedError,
+  SlotConflictError,
+  WorkflowWorldError,
+} from '@workflow/errors';
+import {
+  type Event,
+  SPEC_VERSION_SLOT_IDENTITY,
+  slotEventId,
+  type World,
+} from '@workflow/world';
 import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bytesToBase64, deriveRunKeyPair, seal } from '../sealed-box.js';
@@ -11,14 +20,21 @@ import {
   SerializationFormat,
 } from '../serialization.js';
 import {
+  eventCreateFenceFor,
   getWorkflowQueueName,
   handleHealthCheckMessage,
   healthCheck,
   latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
-  type MutableEventLog,
+  mergeLoadedEvents,
+  PRECONDITION_MAX_RELOAD_RETRIES,
+  reserveSlot,
+  stateUpdatedAtForCreate,
+  toMutableEventLog,
+  withEventCreateFence,
   withPreconditionRetry,
+  withSlotRetry,
 } from './helpers.js';
 
 // Mock the logger to suppress output during tests
@@ -503,6 +519,297 @@ describe('latestEventStateUpdatedAt', () => {
   });
 });
 
+describe('slot bookkeeping', () => {
+  const slotEvent = (slot: number) => makeEvent(slotEventId(slot));
+
+  it('reads maxSlot from the highest slot present, not the last element', () => {
+    // `appendUniqueEvents` appends without sorting, so a merged log's last
+    // element is not necessarily its newest event.
+    const log = toMutableEventLog([slotEvent(3), slotEvent(1)], 'c0');
+    expect(log.maxSlot).toBe(3);
+    expect(log.reserved).toBe(0);
+  });
+
+  it('reports maxSlot 0 for an empty or ULID-numbered log', () => {
+    expect(toMutableEventLog([], null).maxSlot).toBe(0);
+    expect(
+      toMutableEventLog([makeUlidEvent(1_700_000_000_000)], null).maxSlot
+    ).toBe(0);
+  });
+
+  it('never lowers maxSlot when an older delta is merged in', () => {
+    const log = toMutableEventLog([slotEvent(1), slotEvent(3)], 'c0');
+    mergeLoadedEvents(log, [slotEvent(2)]);
+    expect(log.maxSlot).toBe(3);
+    expect(log.events).toHaveLength(3);
+  });
+
+  it('raises maxSlot and drops reservations when a newer delta is merged in', () => {
+    const log = toMutableEventLog([slotEvent(1)], 'c0');
+    reserveSlot(log);
+    reserveSlot(log);
+    expect(log.reserved).toBe(2);
+
+    mergeLoadedEvents(log, [slotEvent(2), slotEvent(5)]);
+
+    expect(log.maxSlot).toBe(5);
+    // The merged events are the authority on which slots are taken, so the
+    // outstanding reservations (slots 2 and 3) are void.
+    expect(log.reserved).toBe(0);
+    expect(reserveSlot(log)).toBe(6);
+  });
+
+  it('deduplicates merged events by id', () => {
+    const log = toMutableEventLog([slotEvent(1)], 'c0');
+    mergeLoadedEvents(log, [slotEvent(1), slotEvent(2)]);
+    expect(log.events.map((e) => e.eventId)).toEqual([
+      slotEventId(1),
+      slotEventId(2),
+    ]);
+  });
+
+  it('hands out contiguous distinct slots for a synchronous burst', () => {
+    // The suspension flush issues every operation synchronously and awaits
+    // them together; without contiguous reservation they would all propose the
+    // same slot and all but one would conflict.
+    const log = toMutableEventLog([slotEvent(4)], 'c0');
+    const burst = Array.from({ length: 20 }, () => reserveSlot(log));
+    expect(burst).toEqual(Array.from({ length: 20 }, (_, i) => 5 + i));
+    expect(new Set(burst).size).toBe(burst.length);
+    // Reservations sit past maxSlot rather than moving it: only merged events
+    // prove a slot is taken.
+    expect(log.maxSlot).toBe(4);
+  });
+
+  it('proposes a padded event id only for a slot-identity run', () => {
+    const log = toMutableEventLog([], null);
+    expect(eventCreateFenceFor(log, SPEC_VERSION_SLOT_IDENTITY)).toEqual({
+      eventId: slotEventId(1),
+      maxSlot: 0,
+    });
+    expect(eventCreateFenceFor(log, SPEC_VERSION_SLOT_IDENTITY)).toEqual({
+      eventId: slotEventId(2),
+      maxSlot: 0,
+    });
+  });
+
+  it('proposes no event id for a ULID-numbered run', () => {
+    // A run whose ids the backend mints must not burn slots either.
+    const log = toMutableEventLog([], null);
+    const fence = eventCreateFenceFor(log, SPEC_VERSION_SLOT_IDENTITY - 1);
+    expect(fence?.eventId).toBeUndefined();
+    expect(log.reserved).toBe(0);
+  });
+});
+
+describe('stateUpdatedAtForCreate', () => {
+  it('sends no watermark for a slot-numbered run even with the guard on', () => {
+    // The event id is the fence for these runs. Inference would be worse than
+    // useless here: a padded slot body is valid Crockford base32, so decoding
+    // it yields epoch 0 rather than failing, and the client would claim a
+    // snapshot older than every event in the log.
+    const events = [makeEvent(slotEventId(1))];
+    expect(
+      stateUpdatedAtForCreate(events, SPEC_VERSION_SLOT_IDENTITY)
+    ).toBeUndefined();
+  });
+
+  it('sends the snapshot watermark for a ULID-numbered run', () => {
+    const time = 1_700_000_000_000;
+    expect(
+      stateUpdatedAtForCreate(
+        [makeUlidEvent(time)],
+        SPEC_VERSION_SLOT_IDENTITY - 1
+      )
+    ).toBe(time);
+  });
+});
+
+describe('withSlotRetry', () => {
+  const slotEvent = (slot: number) => makeEvent(slotEventId(slot));
+
+  beforeEach(() => {
+    eventsListMock.mockReset();
+  });
+
+  it('claims the next free slot and passes the observed maxSlot alongside it', async () => {
+    const log = toMutableEventLog([slotEvent(1), slotEvent(2)], 'c0');
+    const op = vi.fn(async () => 'ok');
+
+    await expect(withSlotRetry('wrun_test', log, op)).resolves.toBe('ok');
+    expect(op).toHaveBeenCalledWith({ eventId: slotEventId(3), maxSlot: 2 });
+    expect(eventsListMock).not.toHaveBeenCalled();
+  });
+
+  it('merges the conflict delta and reclaims past it, without reloading', async () => {
+    // The inline delta is the whole point of the 409 body: the client learns
+    // which events it was missing without a follow-up round-trip.
+    const log = toMutableEventLog([slotEvent(1)], 'c0');
+    const claimed: string[] = [];
+    const op = vi.fn(async ({ eventId }: { eventId?: string }) => {
+      claimed.push(eventId as string);
+      if (claimed.length === 1) {
+        throw new SlotConflictError('taken', {
+          eventId: eventId as string,
+          events: [slotEvent(2), slotEvent(3)],
+          cursor: 'c1',
+        });
+      }
+      return 'done';
+    });
+
+    await expect(withSlotRetry('wrun_test', log, op)).resolves.toBe('done');
+    expect(claimed).toEqual([slotEventId(2), slotEventId(4)]);
+    expect(log.events).toHaveLength(3);
+    expect(log.cursor).toBe('c1');
+    expect(eventsListMock).not.toHaveBeenCalled();
+  });
+
+  it('tops the delta up from the backend when it was truncated', async () => {
+    const log = toMutableEventLog([slotEvent(1)], 'c0');
+    eventsListMock.mockResolvedValueOnce({
+      data: [slotEvent(3)],
+      cursor: 'c2',
+      hasMore: false,
+    });
+    let attempts = 0;
+    const op = vi.fn(async () => {
+      attempts++;
+      if (attempts === 1) {
+        throw new SlotConflictError('taken', {
+          eventId: slotEventId(2),
+          events: [slotEvent(2)],
+          cursor: 'c1',
+          hasMore: true,
+        });
+      }
+      return 'done';
+    });
+
+    await expect(withSlotRetry('wrun_test', log, op)).resolves.toBe('done');
+    expect(eventsListMock).toHaveBeenCalledTimes(1);
+    expect(log.maxSlot).toBe(3);
+    expect(op).toHaveBeenLastCalledWith({
+      eventId: slotEventId(4),
+      maxSlot: 3,
+    });
+  });
+
+  it('falls back to a full incremental load when the rejection carried no delta', async () => {
+    const log = toMutableEventLog([slotEvent(1)], 'c0');
+    eventsListMock.mockResolvedValueOnce({
+      data: [slotEvent(2)],
+      cursor: 'c1',
+      hasMore: false,
+    });
+    let attempts = 0;
+    const op = vi.fn(async () => {
+      attempts++;
+      if (attempts === 1) {
+        throw new SlotConflictError('taken', { eventId: slotEventId(2) });
+      }
+      return 'done';
+    });
+
+    await expect(withSlotRetry('wrun_test', log, op)).resolves.toBe('done');
+    expect(eventsListMock).toHaveBeenCalledTimes(1);
+    expect(op).toHaveBeenLastCalledWith({
+      eventId: slotEventId(3),
+      maxSlot: 2,
+    });
+  });
+
+  it('rethrows the conflict once the reclaim budget is spent', async () => {
+    // Escaping to a fresh replay is the correct fallback, not a failure mode:
+    // the merged events can change what the workflow body decides, and only a
+    // replay from the top can act on that.
+    const log = toMutableEventLog([slotEvent(1)], 'c0');
+    eventsListMock.mockResolvedValue({
+      data: [],
+      cursor: 'c1',
+      hasMore: false,
+    });
+    const op = vi.fn(async ({ eventId }: { eventId?: string }) => {
+      throw new SlotConflictError('taken', { eventId: eventId as string });
+    });
+
+    await expect(withSlotRetry('wrun_test', log, op)).rejects.toBeInstanceOf(
+      SlotConflictError
+    );
+    expect(op).toHaveBeenCalledTimes(PRECONDITION_MAX_RELOAD_RETRIES + 1);
+    expect(eventsListMock).toHaveBeenCalledTimes(
+      PRECONDITION_MAX_RELOAD_RETRIES
+    );
+  });
+
+  it('rethrows a non-conflict error immediately, without merging', async () => {
+    const log = toMutableEventLog([slotEvent(1)], 'c0');
+    const op = vi.fn(async () => {
+      throw new PreconditionFailedError('stale');
+    });
+
+    await expect(withSlotRetry('wrun_test', log, op)).rejects.toBeInstanceOf(
+      PreconditionFailedError
+    );
+    expect(op).toHaveBeenCalledTimes(1);
+    expect(eventsListMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('withEventCreateFence', () => {
+  beforeEach(() => {
+    eventsListMock.mockReset();
+  });
+
+  it('fences a slot-numbered run by event id and retries its 409s', async () => {
+    const log = toMutableEventLog([makeEvent(slotEventId(1))], 'c0');
+    let attempts = 0;
+    const op = vi.fn(async ({ eventId }: { eventId?: string }) => {
+      attempts++;
+      if (attempts === 1) {
+        throw new SlotConflictError('taken', {
+          eventId: eventId as string,
+          events: [makeEvent(slotEventId(2))],
+          cursor: 'c1',
+        });
+      }
+      return 'done';
+    });
+
+    await expect(
+      withEventCreateFence('wrun_test', log, SPEC_VERSION_SLOT_IDENTITY, op)
+    ).resolves.toBe('done');
+    expect(op).toHaveBeenLastCalledWith({
+      eventId: slotEventId(3),
+      maxSlot: 2,
+    });
+  });
+
+  it('fences a ULID-numbered run by watermark and retries its 412s', async () => {
+    const time = 1_700_000_000_000;
+    const log = toMutableEventLog([makeUlidEvent(time)], 'c0');
+    eventsListMock.mockResolvedValueOnce({
+      data: [makeUlidEvent(time + 1000)],
+      cursor: 'c1',
+      hasMore: false,
+    });
+    let attempts = 0;
+    const op = vi.fn(async () => {
+      attempts++;
+      if (attempts === 1) {
+        throw new PreconditionFailedError('stale');
+      }
+      return 'done';
+    });
+
+    await expect(
+      withEventCreateFence('wrun_test', log, SPEC_VERSION_SLOT_IDENTITY - 1, op)
+    ).resolves.toBe('done');
+    expect(op).toHaveBeenLastCalledWith({ stateUpdatedAt: time + 1000 });
+    expect(eventsListMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('withPreconditionRetry', () => {
   let originalGuard: string | undefined;
 
@@ -522,10 +829,7 @@ describe('withPreconditionRetry', () => {
 
   it('passes no snapshot to op when the guard is explicitly disabled', async () => {
     process.env.WORKFLOW_PRECONDITION_GUARD = '0';
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
+    const log = toMutableEventLog([makeUlidEvent(1_700_000_000_000)], 'c0');
     const op = vi.fn(async (stateUpdatedAt?: number) => {
       expect(stateUpdatedAt).toBeUndefined();
       return 'ok';
@@ -541,10 +845,7 @@ describe('withPreconditionRetry', () => {
   it('sends a snapshot by default when the guard variable is unset (on by default)', async () => {
     delete process.env.WORKFLOW_PRECONDITION_GUARD;
     const time = 1_700_000_000_000;
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(time)],
-      cursor: 'c0',
-    };
+    const log = toMutableEventLog([makeUlidEvent(time)], 'c0');
     const op = vi.fn(async (stateUpdatedAt?: number) => {
       expect(stateUpdatedAt).toBe(time);
       return 'ok';
@@ -558,10 +859,7 @@ describe('withPreconditionRetry', () => {
 
   it('passes the latest snapshot time to op and returns its result without reloading', async () => {
     const time = 1_700_000_000_000;
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(time)],
-      cursor: 'c0',
-    };
+    const log = toMutableEventLog([makeUlidEvent(time)], 'c0');
     const op = vi.fn(async (stateUpdatedAt?: number) => {
       expect(stateUpdatedAt).toBe(time);
       return 'ok';
@@ -575,10 +873,7 @@ describe('withPreconditionRetry', () => {
   });
 
   it('reloads the event log and retries on a stale (412) rejection, then succeeds', async () => {
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
+    const log = toMutableEventLog([makeUlidEvent(1_700_000_000_000)], 'c0');
     // Each reload returns one newer event and advances the cursor.
     eventsListMock.mockResolvedValueOnce({
       data: [makeUlidEvent(1_700_000_001_000)],
@@ -610,10 +905,7 @@ describe('withPreconditionRetry', () => {
   });
 
   it('rethrows the precondition error after exhausting reload retries', async () => {
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
+    const log = toMutableEventLog([makeUlidEvent(1_700_000_000_000)], 'c0');
     eventsListMock.mockResolvedValue({
       data: [],
       cursor: 'c1',
@@ -633,10 +925,7 @@ describe('withPreconditionRetry', () => {
   });
 
   it('rethrows non-precondition errors immediately without reloading', async () => {
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
+    const log = toMutableEventLog([makeUlidEvent(1_700_000_000_000)], 'c0');
     const op = vi.fn(async () => {
       throw new Error('boom');
     });

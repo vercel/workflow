@@ -61,3 +61,26 @@ export function slotFromId(id: string): number | undefined {
 export function isSlotId(id: string): boolean {
   return slotFromId(id) !== undefined;
 }
+
+/** The event id occupying `slot`. */
+export function slotEventId(slot: number): string {
+  return `evnt_${slotIdBody(slot)}`;
+}
+
+/**
+ * The highest slot named by any of `events`, or 0 when none is slot-numbered.
+ *
+ * Scans rather than reading the last element: a log is merged from several
+ * loads and is not necessarily sorted, and callers use this value to pick the
+ * next free slot.
+ */
+export function maxSlotOf(events: readonly { eventId: string }[]): number {
+  let max = 0;
+  for (const event of events) {
+    const slot = slotFromId(event.eventId);
+    if (slot !== undefined && slot > max) {
+      max = slot;
+    }
+  }
+  return max;
+}

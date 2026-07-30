@@ -32,7 +32,11 @@
  * the v3 path.
  */
 
-import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
+import {
+  HookNotFoundError,
+  SlotConflictError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   type AnyEventRequest,
   type CreateEventParams,
@@ -465,6 +469,35 @@ function coerceNormalizedEvent(raw: Record<string, unknown>): Event {
   return coerceEventDates(normalizeEventData(raw));
 }
 
+/**
+ * Runs an event create, normalizing the event-log delta a slot conflict carries
+ * into the same `Event` shape every other read path produces.
+ *
+ * The delta arrives as raw CBOR off the error response, so its nested dates are
+ * still ISO strings; the runtime merges these events into its loaded log and
+ * calls `.getTime()` on them, exactly as it does for the inline delta on the
+ * success path. Doing the coercion here rather than in the runtime keeps the
+ * wire's shape a concern of this adapter, and keeps `SlotConflictError.events`
+ * meaning the same thing for every World that raises it.
+ */
+async function withCoercedSlotConflictDelta<T>(
+  op: () => Promise<T>
+): Promise<T> {
+  try {
+    return await op();
+  } catch (error) {
+    if (!SlotConflictError.is(error) || error.events.length === 0) {
+      throw error;
+    }
+    throw new SlotConflictError(error.message, {
+      eventId: error.eventId,
+      events: (error.events as Record<string, unknown>[]).map(coerceEventDates),
+      cursor: error.cursor,
+      hasMore: error.hasMore,
+    });
+  }
+}
+
 function decodeLegacyStructuredError(payload: Uint8Array): unknown {
   if (hasSerializedDataFormatPrefix(payload)) {
     return payload;
@@ -618,9 +651,11 @@ export async function createWorkflowRunEvent(
     // the next queue delivery. Non-retryable
     // types (step_started, step_retrying, hook_received) run once. See
     // ./event-retry for the validated per-event classification.
-    return await withEventPostRetry(
-      () => createWorkflowRunEventInner(id, data, params, config),
-      data.eventType
+    return await withCoercedSlotConflictDelta(() =>
+      withEventPostRetry(
+        () => createWorkflowRunEventInner(id, data, params, config),
+        data.eventType
+      )
     );
   } catch (err) {
     // 404 on hook_disposed / hook_received → already-disposed hook.
@@ -721,6 +756,13 @@ async function createWorkflowRunEventInner(
       // skip the list+resolve. The server only acts on it for run_started;
       // older servers ignore it and simply preload as before.
       ...(params?.skipPreload ? { skipPreload: true } : {}),
+      // Slot identity: the runtime names the event's own id, claiming that
+      // position in the run's event log. The server inserts it conditionally
+      // and answers 409 slot-conflict when another writer got there first.
+      // `maxSlot` rides along so the server can spot a gap, which slots being
+      // dense makes an unrecoverable corruption.
+      ...(params?.eventId ? { eventId: params.eventId } : {}),
+      ...(params?.maxSlot !== undefined ? { maxSlot: params.maxSlot } : {}),
       remoteRefBehavior,
       payload,
       ...meta,
