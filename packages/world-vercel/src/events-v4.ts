@@ -552,6 +552,11 @@ export interface ListEventsV4Params {
   remoteRefBehavior?: 'resolve' | 'lazy';
 }
 
+export interface ListWorkflowRunEventsV4Params extends ListEventsV4Params {
+  /** Drain server-side storage pages into one framed HTTP response. */
+  streamAll?: true;
+}
+
 /**
  * A single event extracted from a v4 LIST frame. Mirrors `DecodedV4Event`
  * but also carries the raw payload bytes — for payload-bearing events the
@@ -714,9 +719,10 @@ function appendListParams(sp: URLSearchParams, params: ListEventsV4Params) {
   }
 }
 
-function paginationToQuery(params: ListEventsV4Params): string {
+function paginationToQuery(params: ListWorkflowRunEventsV4Params): string {
   const sp = new URLSearchParams();
   appendListParams(sp, params);
+  if (params.streamAll) sp.set('streamAll', 'true');
   const qs = sp.toString();
   return qs ? `?${qs}` : '';
 }
@@ -737,7 +743,7 @@ function paginationToQuery(params: ListEventsV4Params): string {
  */
 export async function getWorkflowRunEventsV4(
   runId: string,
-  params: ListEventsV4Params = {},
+  params: ListWorkflowRunEventsV4Params = {},
   config?: APIConfig
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);

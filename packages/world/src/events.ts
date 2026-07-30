@@ -826,6 +826,12 @@ export interface ListEventsParams {
   runId: string;
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
+  /**
+   * Ask the World to return every remaining event in one response while
+   * retaining the final cursor for later incremental loads. Advisory: Worlds
+   * that ignore this remain correct because the runtime follows `hasMore`.
+   */
+  streamAll?: true;
 }
 
 export interface ListEventsByCorrelationIdParams {

@@ -588,7 +588,11 @@ export async function getWorkflowRunEvents(
 
   const result = await ('correlationId' in params
     ? getEventsByCorrelationIdV4(params.correlationId, wirePagination, config)
-    : getWorkflowRunEventsV4(params.runId, wirePagination, config));
+    : getWorkflowRunEventsV4(
+        params.runId,
+        { ...wirePagination, streamAll: params.streamAll },
+        config
+      ));
 
   const events = result.events.map((listed) =>
     buildEventFromV4(listed.event, listed.body, resolveData)

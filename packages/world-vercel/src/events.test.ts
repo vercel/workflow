@@ -913,6 +913,27 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     expect(eventData?.input).toEqual(body);
     agent.assertNoPendingInterceptors();
   });
+
+  it('requests one server-paginated stream for runtime replay', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: { remoteRefBehavior: 'resolve', streamAll: 'true' },
+      })
+      .reply(200, listResponse(new Uint8Array()), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    await getWorkflowRunEvents(
+      { runId: 'wrun_1', streamAll: true },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    agent.assertNoPendingInterceptors();
+  });
 });
 
 describe('getWorkflowRunEvents legacy structured-error compatibility', () => {
