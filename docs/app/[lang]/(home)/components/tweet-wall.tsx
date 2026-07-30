@@ -213,7 +213,7 @@ function TweetCard({ url, name, username, image, tweet }: Tweet) {
       href={url}
       target="_blank"
       rel="noopener noreferrer"
-      className="flex flex-col gap-3 rounded-lg border p-4 md:p-5 hover:border-foreground/20 transition-colors"
+      className="flex flex-col gap-3 rounded-lg border bg-background-100 p-4 md:p-5 hover:border-foreground/20 transition-colors"
     >
       <div className="flex items-center gap-2.5">
         <Avatar className="size-9">
