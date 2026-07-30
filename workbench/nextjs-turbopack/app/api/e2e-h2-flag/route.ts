@@ -14,5 +14,8 @@ export function GET() {
     WORKFLOW_H2_MULTIPLEX: process.env.WORKFLOW_H2_MULTIPLEX ?? null,
     // Mirrors `h2MultiplexEnabled()` in world-vercel's http-client.
     multiplexEnabled: process.env.WORKFLOW_H2_MULTIPLEX !== '0',
+    // 'vercel.json' if the deployment supplied it, 'instrumentation' if the
+    // fallback in instrumentation.ts had to.
+    source: process.env.WORKFLOW_H2_MULTIPLEX_SOURCE ?? null,
   });
 }
