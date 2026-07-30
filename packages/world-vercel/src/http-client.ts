@@ -21,9 +21,59 @@ const BASE_AGENT_OPTIONS = {
  * In-flight H2 streams allowed per connection. Matches undici's
  * `maxConcurrentStreams` default (100), which is the real ceiling once the
  * server's SETTINGS_MAX_CONCURRENT_STREAMS is known — so this only has to be
- * large enough not to be the binding constraint.
+ * large enough not to be the binding constraint. The Vercel edge advertises
+ * SETTINGS_MAX_CONCURRENT_STREAMS 160, so it isn't.
+ *
+ * Note that undici's `maxConcurrentStreams` *option* is not this gate: it only
+ * seeds `peerMaxConcurrentStreams` at connect time and is then overwritten by
+ * the server's SETTINGS. Raising it is inert — measured at ±1.6% (inside a 6.1%
+ * noise floor) across every workload shape. `pipelining` is the only knob that
+ * actually gates in-flight streams; see EVENTS_AGENT_OPTIONS.
  */
 const H2_MAX_IN_FLIGHT_STREAMS = 100;
+
+/**
+ * H2 *receive* flow-control windows for the events agent, in bytes.
+ *
+ * undici defaults to a 256 KiB stream window and a 512 KiB connection window.
+ * Both are far below the bandwidth-delay product of this path: a Vercel Function
+ * sees roughly 9 ms RTT to the edge (measured from iad1 against
+ * edge-terminated routes), so once a response exceeds the window the origin has
+ * to stop and wait for a WINDOW_UPDATE, costing a round trip per window's worth
+ * of body. Event-log reads on replay are exactly that shape.
+ *
+ * The two windows have to be raised together, because whichever is left small
+ * becomes the binding constraint on its own:
+ *  - a single read (one in-flight stream) is capped by the *stream* window;
+ *    raising only the connection window changes nothing.
+ *  - concurrent reads share the *connection* window; raising only the stream
+ *    window just relocates the stall to the connection level, and measured
+ *    slightly *worse* than leaving both alone.
+ * Measured against a loopback H2 origin mirroring the edge's SETTINGS at 10 ms
+ * RTT, these cut read wall time by 76–86% versus undici's defaults across 1, 4
+ * and 32 concurrent reads, against noise floors of 0.3–3.9%.
+ *
+ * Sizing: the stream window is what binds a single read, and 4 MiB captures that
+ * win in full (a 4 MiB page goes from 216 ms to 17 ms; 2 MiB only reaches 29 ms).
+ * That single-read shape is the one replay actually produces, since event-log
+ * pages are read sequentially and page size is server-driven with no byte cap, so
+ * a page carrying large step payloads can be multiple MiB. The connection window
+ * has to be several times the stream window or concurrent reads stall on it
+ * instead — at 32 concurrent reads 8 MiB is no better than 1 MiB/8 MiB while
+ * 16 MiB is 25% faster, and 32 MiB adds nothing further.
+ *
+ * Cost: a receive window is a ceiling on how many unacked bytes the origin may
+ * have in flight toward this process, so 8 connections x 16 MiB bounds the
+ * transport's worst-case buffering. Under an adversarial slow consumer (8
+ * concurrent 8 MiB bodies read one chunk per ms) peak RSS measured ~60–100 MiB
+ * above the smaller settings. It is a ceiling rather than an allocation, and only
+ * fills when the origin outruns the consumer; the events readers decode a whole
+ * response body anyway, so those bytes reach app memory either way. The write
+ * path is unaffected — receive windows don't govern uploads, and with four
+ * interleaved controls every setting lands within a 1.3% noise floor.
+ */
+const H2_STREAM_WINDOW_BYTES = 4 * 1024 * 1024;
+const H2_CONNECTION_WINDOW_BYTES = 16 * 1024 * 1024;
 
 /**
  * Options for the default undici Agent — the queue client (webhook
@@ -64,11 +114,22 @@ export const DEFAULT_AGENT_OPTIONS = {
  * in-flight stream per connection. Before this was set, the H2 agent behaved
  * byte-for-byte like the H1 agent: 16 concurrent requests produced 8 in-flight
  * requests over 8 TCP connections. See nodejs/undici#4143.
+ *
+ * Multiplexing interacts with flow control, which is why the receive windows are
+ * raised here too. Concentrating N streams onto one connection makes them share
+ * that connection's single receive window, so the download side gets *worse* as
+ * multiplexing improves unless the window grows with it: at 32 concurrent reads,
+ * `pipelining: 1` measured 70% faster than `pipelining: 100` on downloads purely
+ * because spreading streams over 8 connections gave them 8 separate windows.
+ * Raising the windows removes that trade-off — the multiplexed agent then beats
+ * both.
  */
 export const EVENTS_AGENT_OPTIONS = {
   ...BASE_AGENT_OPTIONS,
   allowH2: true,
   pipelining: H2_MAX_IN_FLIGHT_STREAMS,
+  initialWindowSize: H2_STREAM_WINDOW_BYTES,
+  connectionWindowSize: H2_CONNECTION_WINDOW_BYTES,
 } as const;
 
 /**
