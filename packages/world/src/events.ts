@@ -813,9 +813,9 @@ export type EventResultFor<T extends AnyEventRequest> =
   T extends EventRequestOfType<'run_created'>
     ? EventResult & { run: import('./runs.js').WorkflowRun }
     : T extends EventRequestOfType<'run_started'>
-      ? EventResult & { run: import('./runs.js').WorkflowRun }
+      ? EventResult & { run: import('./runs.js').StartedWorkflowRun }
       : T extends EventRequestOfType<'step_started'>
-        ? EventResult & { step: import('./steps.js').Step }
+        ? EventResult & { step: import('./steps.js').StartedStep }
         : EventResult;
 
 export interface GetEventParams {

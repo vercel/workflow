@@ -24,6 +24,7 @@ import {
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  type StartedWorkflowRun,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
   type World,
@@ -1068,7 +1069,7 @@ export function workflowEntrypoint(
                         ...Attribute.WorkflowStartedAt(workflowStartedAt),
                       });
                     } else {
-                      let startedRun: WorkflowRun;
+                      let startedRun: StartedWorkflowRun;
                       try {
                         recordRunStartedCreateStart(false);
                         const result = await world.events.create(
@@ -1138,11 +1139,6 @@ export function workflowEntrypoint(
                           });
                           return;
                         }
-                      }
-                      if (!startedRun.startedAt) {
-                        throw new WorkflowRuntimeError(
-                          `Workflow run "${runId}" has no "startedAt" timestamp`
-                        );
                       }
                       workflowStartedAt = +startedRun.startedAt;
 

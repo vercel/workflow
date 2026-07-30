@@ -39,7 +39,6 @@ import {
   type Event,
   type EventDataPayloadField,
   type EventResult,
-  type EventResultFor,
   EventSchema,
   EventTypeSchema,
   type GetEventParams,
@@ -593,12 +592,12 @@ export async function getWorkflowRunEvents(
   } as PaginatedResponse<Event>;
 }
 
-export async function createWorkflowRunEvent<T extends AnyEventRequest>(
+export async function createWorkflowRunEvent(
   id: string | null,
-  data: T,
+  data: AnyEventRequest,
   params?: CreateEventParams,
   config?: APIConfig
-): Promise<EventResultFor<T>> {
+): Promise<EventResult> {
   try {
     // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
     // socket/headers timeouts, transient 5xx) in-process for event types that
@@ -627,7 +626,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
         { code: 'SCHEMA_VALIDATION' }
       );
     }
-    return result as EventResultFor<T>;
+    return result;
   } catch (err) {
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (

@@ -14,7 +14,6 @@ import type {
   CreateEventParams,
   Event,
   EventResult,
-  EventResultFor,
   Hook,
   SerializedData,
   Step,
@@ -628,11 +627,11 @@ export function createEventsStorage(
 
   return {
     clearCache,
-    async create<T extends AnyEventRequest>(
+    async create(
       runId: string | null,
-      data: T,
+      data: AnyEventRequest,
       params?: CreateEventParams
-    ): Promise<EventResultFor<T>> {
+    ): Promise<EventResult> {
       // Validate request-supplied IDs before they're concatenated into
       // filesystem paths. This is the primary defense against path traversal
       // attacks where a client supplies runId / correlationId values like
@@ -660,11 +659,7 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.${tag}`
           : `${runId}-${data.correlationId}`;
-        return (await withInProcessLock(
-          stepLocks,
-          lockKey,
-          createImpl
-        )) as EventResultFor<T>;
+        return withInProcessLock(stepLocks, lockKey, createImpl);
       }
       // `hook_created` is serialized per-(runId, hookId) so the
       // "claim token, write hook entity, write event" sequence runs to
@@ -693,13 +688,9 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.hook.${tag}`
           : `${runId}-${data.correlationId}.hook`;
-        return (await withInProcessLock(
-          hookLocks,
-          lockKey,
-          createImpl
-        )) as EventResultFor<T>;
+        return withInProcessLock(hookLocks, lockKey, createImpl);
       }
-      return (await createImpl()) as EventResultFor<T>;
+      return createImpl();
 
       async function createImpl(): Promise<EventResult> {
         // Most paths use the freshly-generated candidate eventId. The
