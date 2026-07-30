@@ -1,6 +1,6 @@
 ---
 "@workflow/errors": patch
-"@workflow/core": patch
+"@workflow/core": minor
 "@workflow/world": patch
 "@workflow/world-vercel": patch
 ---
