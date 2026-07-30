@@ -1,4 +1,4 @@
-import type { AnyEventRequest } from '@workflow/world';
+import type { AnyEventRequest, CreateEventParams } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
 import { MockAgent } from 'undici';
@@ -238,6 +238,74 @@ describe('createWorkflowRunEvent result contract', () => {
       code: 'SCHEMA_VALIDATION',
     });
     agent.assertNoPendingInterceptors();
+  });
+});
+
+/** POSTs a v4 step_started with `params` and returns the decoded frame meta. */
+async function postStepStartedMeta(
+  params: CreateEventParams | undefined
+): Promise<Record<string, unknown>> {
+  const agent = mockAgent();
+  let capturedMeta: Record<string, unknown> | undefined;
+
+  agent
+    .get(ORIGIN)
+    .intercept({
+      path: '/api/v4/runs/wrun_1/events/step_started',
+      method: 'POST',
+    })
+    .reply(
+      200,
+      (opts: { body?: unknown }) => {
+        capturedMeta = decodePostedMeta(opts.body);
+        return encode({ step: { stepId: 'step_1', status: 'running' } });
+      },
+      {
+        headers: {
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+        },
+      }
+    );
+
+  await createWorkflowRunEvent(
+    'wrun_1',
+    {
+      eventType: 'step_started',
+      specVersion: 2,
+      correlationId: 'step_1',
+    } as AnyEventRequest,
+    params,
+    { token: 'test-token', dispatcher: agent }
+  );
+
+  agent.assertNoPendingInterceptors();
+  return capturedMeta ?? {};
+}
+
+describe('createWorkflowRunEvent computeInstanceId wire field', () => {
+  const INSTANCE = 'cinst_01JZZZTESTINSTANCE00000001';
+
+  it('includes computeInstanceId in the v4 frame meta when provided', async () => {
+    const meta = await postStepStartedMeta({ computeInstanceId: INSTANCE });
+    expect(meta.computeInstanceId).toBe(INSTANCE);
+  });
+
+  it('rides alongside requestId/vercelId rather than replacing it', async () => {
+    // Independent dimensions: the pair is what distinguishes same-instance
+    // from same-invocation execution.
+    const meta = await postStepStartedMeta({
+      requestId: 'iad1::abc-123-def',
+      computeInstanceId: INSTANCE,
+    });
+    expect(meta.vercelId).toBe('iad1::abc-123-def');
+    expect(meta.computeInstanceId).toBe(INSTANCE);
+  });
+
+  it('omits computeInstanceId from the v4 frame meta when not provided', async () => {
+    const meta = await postStepStartedMeta(undefined);
+    expect('computeInstanceId' in meta).toBe(false);
   });
 });
 
