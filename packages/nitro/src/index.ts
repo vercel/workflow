@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import { getWorkflowQueueTrigger } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
@@ -319,7 +319,11 @@ export default {
           maxDuration: 'max',
           // A single workflow trigger handles orchestration and queued step
           // execution; step messages include stepId on `__wkf_workflow_*`.
-          experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
+          // `getWorkflowQueueTrigger()` (not the plain constant) so the
+          // trigger carries `maxConcurrency: 1` when sequential replays are
+          // enabled — world-vercel routes each run's replays to a per-run
+          // topic regardless, and without this the topics are not serialized.
+          experimentalTriggers: [getWorkflowQueueTrigger()],
         };
 
         if (runtime) {

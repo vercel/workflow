@@ -21,11 +21,13 @@ describe('getWorkflowQueueTrigger', () => {
     }
   });
 
-  it('omits maxConcurrency by default', () => {
+  it('sets maxConcurrency: 1 by default', () => {
     delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
     const trigger = getWorkflowQueueTrigger();
-    expect(trigger.topic).toBe('__wkf_workflow_*');
-    expect('maxConcurrency' in trigger).toBe(false);
+    expect(trigger).toMatchObject({
+      topic: '__wkf_workflow_*',
+      maxConcurrency: 1,
+    });
   });
 
   it('sets maxConcurrency: 1 when WORKFLOW_SEQUENTIAL_REPLAYS=1', () => {
@@ -37,9 +39,14 @@ describe('getWorkflowQueueTrigger', () => {
     });
   });
 
-  it('does not set maxConcurrency for non-"1" values', () => {
-    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = 'true';
+  it.each([
+    '0',
+    'false',
+    'FALSE',
+  ])('omits maxConcurrency when explicitly disabled with %s', (value) => {
+    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = value;
     const trigger = getWorkflowQueueTrigger();
+    expect(trigger.topic).toBe('__wkf_workflow_*');
     expect('maxConcurrency' in trigger).toBe(false);
   });
 

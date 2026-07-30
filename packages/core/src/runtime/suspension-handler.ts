@@ -56,6 +56,19 @@ export interface SuspensionHandlerParams {
    * where `run_started` was already awaited up front.
    */
   runReadyBarrier?: Promise<unknown>;
+  /**
+   * Whether the caller is able to run steps inline in this invocation. When
+   * `false`, no `step_created` write is deferred: every pending step is
+   * created eagerly and `lazyInlineSteps` comes back empty, so the caller
+   * queues the whole batch and returns instead of blocking on a step body.
+   *
+   * The caller sets this to `false` when blocking would stall the run — under
+   * a World that serializes a run's continuations onto one
+   * `maxConcurrency: 1` topic (`capabilities.serializedRunContinuations`), an
+   * inline body holds that slot, so a wait continuation or hook resume for the
+   * same run cannot be delivered until the body finishes. Defaults to `true`.
+   */
+  allowInlineSteps?: boolean;
 }
 
 /**
@@ -80,8 +93,9 @@ export interface SuspensionHandlerResult {
    * the step on the fly), saving one world round-trip per inline step. Up to
    * `getMaxInlineSteps()` steps are deferred; the caller runs them inline in
    * parallel and queues the rest. Empty when no step was deferred (nothing
-   * pending, or a `hook.getConflict()` awaiter is present so nothing is
-   * executed inline). The caller passes each `dehydratedInput` straight to
+   * pending, a `hook.getConflict()` awaiter is present so nothing is
+   * executed inline, or the caller passed `allowInlineSteps: false`). The
+   * caller passes each `dehydratedInput` straight to
    * `executeStep`, which sends it as the `step_started` payload. The atomic
    * create-claim inside each `step_started` is the exactly-one-owner gate that
    * the standalone `step_created` provided before: the loser of the race gets
@@ -121,6 +135,47 @@ export interface SuspensionHandlerResult {
    * durably creating the user's hooks doesn't count as runtime overhead.
    */
   hookCreationMs: number;
+}
+
+/**
+ * Whether running a step body inline in the current invocation would stall the
+ * run's own wake-ups, so the caller must pass `allowInlineSteps: false`.
+ *
+ * Inline execution awaits the step body before responding, and the response is
+ * the queue ack — the invocation holds its message for the whole step duration.
+ * That is fine when a wake-up for the run can be delivered to a parallel
+ * invocation, which is what makes `Promise.race(step, sleep)` work. It is not
+ * fine when the World serializes a run's continuations onto one
+ * `maxConcurrency: 1` topic (`capabilities.serializedRunContinuations`): the
+ * held message occupies the run's only slot, so the wait continuation, a hook
+ * resume, or `wakeUpRun` cannot be dispatched until the body finishes, and a
+ * timer can never preempt a step.
+ *
+ * Only runs with an out-of-band wake source give up the inline fast path — a
+ * wait or hook armed by this suspension, or one still open in the event log. A
+ * pure step chain (including turbo's hot path) is unaffected. Cancellation is
+ * deliberately not counted: it is only observable at the next replay anyway.
+ * Deliveries that arrived on a per-step topic (`incomingStepId` set) never hold
+ * the run's continuation slot, so they may keep executing inline.
+ */
+export function inlineStepsWouldStallWakeups({
+  incomingStepId,
+  serializedRunContinuations,
+  waitCount,
+  hookCount,
+  openWait,
+  openHook,
+}: {
+  incomingStepId: string | undefined;
+  serializedRunContinuations: boolean | undefined;
+  waitCount: number;
+  hookCount: number;
+  openWait: boolean;
+  openHook: boolean;
+}): boolean {
+  if (incomingStepId) return false;
+  if (serializedRunContinuations !== true) return false;
+  return waitCount > 0 || hookCount > 0 || openWait || openHook;
 }
 
 async function createHookEvent({
@@ -205,6 +260,7 @@ export async function handleSuspension({
   requestId,
   eventLog,
   runReadyBarrier,
+  allowInlineSteps = true,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -494,11 +550,15 @@ export async function handleSuspension({
   // (saving a round-trip per step). We never defer when a `hook.getConflict()`
   // awaiter is present, because in that case the caller executes nothing inline
   // (it re-invokes immediately to resolve the awaiter), so deferring would
-  // leave the steps uncreated and unqueued. We pick the first N uncreated steps
-  // — matching the caller's inline-candidate selection — and dehydrate their
-  // input here so executeStep can ship it as the step_started payload.
+  // leave the steps uncreated and unqueued. The same applies when the caller
+  // says it cannot run steps inline at all (`allowInlineSteps: false`, e.g.
+  // because an inline body would hold the run's serialized queue slot and
+  // stall its wake-ups) — every step is created eagerly and queued. We pick
+  // the first N uncreated steps — matching the caller's inline-candidate
+  // selection — and dehydrate their input here so executeStep can ship it as
+  // the step_started payload.
   const lazyInlineCorrelationIds = new Set<string>(
-    hasAwaitedHookCreation === false
+    hasAwaitedHookCreation === false && allowInlineSteps
       ? stepItems
           .filter((item) => stepsNeedingCreation.has(item.correlationId))
           .slice(0, getMaxInlineSteps())

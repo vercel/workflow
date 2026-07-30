@@ -95,20 +95,35 @@ export const OPTIONS = POST;`;
 
 /**
  * Default queue trigger (no namespace). Backward compatible.
+ *
+ * Prefer `getWorkflowQueueTrigger()` for flow routes: this constant never
+ * carries `maxConcurrency: 1`, so a deployment using it gets the runtime half
+ * of sequential replays (per-run topics) without the serialization those
+ * topics exist for.
  */
 export const WORKFLOW_QUEUE_TRIGGER = createWorkflowQueueTrigger();
+
+/**
+ * Whether sequential replays are enabled. On unless
+ * `WORKFLOW_SEQUENTIAL_REPLAYS` is explicitly `0`/`false`. Read at call time.
+ */
+export function isSequentialReplaysEnabled(): boolean {
+  return !['false', '0'].includes(
+    (process.env.WORKFLOW_SEQUENTIAL_REPLAYS || '').toLowerCase()
+  );
+}
 
 /**
  * Returns the queue trigger configuration for workflow (flow) routes.
  *
  * Builds on `createWorkflowQueueTrigger()` — the namespace comes from
  * `options` or `WORKFLOW_QUEUE_NAMESPACE`, resolved at call time. When
- * `WORKFLOW_SEQUENTIAL_REPLAYS` is enabled, sets `maxConcurrency: 1` so the
- * queue processes at most one flow invocation per concrete topic at a time.
- * Paired with the per-run physical topic naming in `@workflow/world-vercel`
- * (which appends the run id to the flow topic), this enforces at most one
- * orchestrator invocation per run. Queued step invocations share this flow
- * trigger rather than using a separate route.
+ * sequential replays are enabled (the default), sets `maxConcurrency: 1` so
+ * the queue processes at most one flow invocation per concrete topic at a
+ * time. Paired with the per-run physical topic naming in
+ * `@workflow/world-vercel` (which appends the run id to the flow topic), this
+ * enforces at most one orchestrator invocation per run. Queued step
+ * invocations share this flow trigger rather than using a separate route.
  *
  * Integrations that write their own flow trigger config instead of calling
  * this must mirror the conditional `maxConcurrency: 1` themselves — the
@@ -118,16 +133,6 @@ export const WORKFLOW_QUEUE_TRIGGER = createWorkflowQueueTrigger();
  * Must be read at build time, where the env var gates what is written into
  * the route's `experimentalTriggers` config.
  */
-/**
- * Whether sequential replays are enabled (`WORKFLOW_SEQUENTIAL_REPLAYS=1`). Read
- * at call time.
- */
-export function isSequentialReplaysEnabled(): boolean {
-  return !['false', '0'].includes(
-    (process.env.WORKFLOW_SEQUENTIAL_REPLAYS || '').toLowerCase()
-  );
-}
-
 export function getWorkflowQueueTrigger(options?: { namespace?: string }) {
   return {
     ...createWorkflowQueueTrigger(options),

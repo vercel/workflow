@@ -212,8 +212,9 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 
 ### `WORKFLOW_SEQUENTIAL_REPLAYS`
 
-- Default: disabled
-- Set `1` to serialize orchestrator (flow) invocations per run: each run's replays get their own queue topic and the flow trigger is generated with `maxConcurrency: 1`. Inline step executions get per-step topics and keep full parallelism.
+- Default: enabled
+- Orchestrator (flow) invocations are serialized per run: each run's replays get their own queue topic and the flow trigger is generated with `maxConcurrency: 1`. Inline step executions get per-step topics and keep full parallelism. Set `0` to disable.
+- A run with an armed `sleep()` or an open hook dispatches its steps to their own topics instead of running them inside the orchestrator invocation, so the run's wake-up is not stuck behind a step body.
 - Read at **both build time and runtime** — set it as a project-level environment variable so the generated trigger and the runtime queue routing agree.
 - Routing each run through a dedicated `maxConcurrency: 1` topic might lead to higher queue performance overhead. See [Vercel World](/worlds/vercel#workflow_sequential_replays) for details.
 
