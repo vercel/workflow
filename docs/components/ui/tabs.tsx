@@ -1,8 +1,8 @@
 'use client';
 
 import { Tabs as TabsPrimitive } from 'radix-ui';
-import { createContext, use } from 'react';
 import type * as React from 'react';
+import { createContext, use } from 'react';
 
 import { cn } from '@/lib/utils';
 
