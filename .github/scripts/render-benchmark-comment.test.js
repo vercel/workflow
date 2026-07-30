@@ -532,7 +532,7 @@ test('renders inline and queue-hop STSO histogram diffs against main', async () 
   assert.match(body, /█+┃/);
   assert.match(
     body,
-    /<sub>The \*\*STSO distribution\*\* section buckets every/
+    /<sub>The collapsed \*\*STSO distribution\*\* section above buckets every/
   );
 });
 
