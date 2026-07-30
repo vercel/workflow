@@ -30,6 +30,25 @@ interface StatusBadgeProps {
   durationMs?: number;
 }
 
+function getStatusLabel(status: StatusBadgeProps['status']): string {
+  switch (status) {
+    case 'running':
+      return 'Active';
+    case 'completed':
+      return 'Completed';
+    case 'failed':
+      return 'Errored';
+    case 'cancelled':
+      return 'Canceled';
+    case 'pending':
+      return 'Pending';
+    default: {
+      const exhaustiveStatus: never = status;
+      return exhaustiveStatus;
+    }
+  }
+}
+
 export function StatusBadge({
   status,
   context,
@@ -39,17 +58,19 @@ export function StatusBadge({
   const getCircleColor = () => {
     switch (status) {
       case 'running':
-        return 'bg-blue-500';
+        return 'bg-amber-500';
       case 'completed':
         return 'bg-emerald-500';
       case 'failed':
         return 'bg-red-500';
       case 'cancelled':
-        return 'bg-yellow-500';
+        return 'bg-gray-400';
       case 'pending':
         return 'bg-gray-400';
-      default:
-        return 'bg-gray-400';
+      default: {
+        const exhaustiveStatus: never = status;
+        return exhaustiveStatus;
+      }
     }
   };
 
@@ -59,8 +80,8 @@ export function StatusBadge({
         <span
           className={cn('size-2 rounded-full shrink-0', getCircleColor())}
         />
-        <span className="text-muted-foreground text-xs font-medium capitalize">
-          {status}
+        <span className="text-muted-foreground text-xs font-medium">
+          {getStatusLabel(status)}
         </span>
       </span>
       {durationMs !== undefined && (

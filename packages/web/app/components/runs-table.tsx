@@ -4,6 +4,8 @@ import {
   AlertCircle,
   ArrowDown,
   ArrowUp,
+  CirclePause,
+  CirclePlay,
   Loader2,
   MoreHorizontal,
   RefreshCw,
@@ -49,7 +51,7 @@ import {
 import { useTableSelection } from '~/lib/hooks/use-table-selection';
 import { fetchEvents, fetchRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
-import { formatDuration } from '~/lib/utils';
+import { formatDuration, LIVE_UPDATE_INTERVAL_MS } from '~/lib/utils';
 import {
   cancelRun,
   getErrorMessage,
@@ -166,10 +168,10 @@ interface RunsTableProps {
 
 const statusMap: Record<WorkflowRunStatus, { label: string; color: string }> = {
   pending: { label: 'Pending', color: 'bg-neutral-600 dark:bg-neutral-400' },
-  running: { label: 'Running', color: 'bg-blue-600 dark:bg-blue-400' },
+  running: { label: 'Active', color: 'bg-amber-500' },
   completed: { label: 'Completed', color: 'bg-green-600 dark:bg-green-400' },
-  failed: { label: 'Failed', color: 'bg-red-600 dark:bg-red-400' },
-  cancelled: { label: 'Cancelled', color: 'bg-gray-600 dark:bg-gray-400' },
+  failed: { label: 'Errored', color: 'bg-red-600 dark:bg-red-400' },
+  cancelled: { label: 'Canceled', color: 'bg-gray-600 dark:bg-gray-400' },
 };
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -310,8 +312,8 @@ interface FilterControlsProps {
   workflowNameFilter: string | 'all';
   status: WorkflowRunStatus | 'all' | undefined;
   seenWorkflowNames: Set<string>;
-  sortOrder: 'asc' | 'desc';
   loading: boolean;
+  liveUpdates: boolean;
   period: PeriodId;
   /** Whether the backend supports listing windows (analytics read path). */
   showPeriodPicker: boolean;
@@ -321,7 +323,7 @@ interface FilterControlsProps {
   onWorkflowChange: (value: string) => void;
   onStatusChange: (value: string) => void;
   onPeriodChange: (value: string) => void;
-  onSortToggle: () => void;
+  onLiveUpdatesChange: (enabled: boolean) => void;
   onRefresh: () => void;
   onClearFilters: () => void;
   hasActiveFilters: boolean;
@@ -332,8 +334,8 @@ function FilterControls({
   workflowNameFilter,
   status,
   seenWorkflowNames,
-  sortOrder,
   loading,
+  liveUpdates,
   period,
   showPeriodPicker,
   planWindowMs,
@@ -341,7 +343,7 @@ function FilterControls({
   onWorkflowChange,
   onStatusChange,
   onPeriodChange,
-  onSortToggle,
+  onLiveUpdatesChange,
   onRefresh,
   onClearFilters,
   hasActiveFilters,
@@ -468,21 +470,27 @@ function FilterControls({
             <Button
               variant="outline"
               size="sm"
-              onClick={onSortToggle}
-              disabled={loading}
+              aria-pressed={liveUpdates}
+              aria-label={
+                liveUpdates ? 'Pause live updates' : 'Resume live updates'
+              }
+              className={
+                liveUpdates
+                  ? 'border-blue-500 text-blue-700 dark:text-blue-400'
+                  : undefined
+              }
+              onClick={() => onLiveUpdatesChange(!liveUpdates)}
             >
-              {sortOrder === 'desc' ? (
-                <ArrowDown className="h-4 w-4" />
+              {liveUpdates ? (
+                <CirclePause className="h-4 w-4" />
               ) : (
-                <ArrowUp className="h-4 w-4" />
+                <CirclePlay className="h-4 w-4" />
               )}
-              {sortOrder === 'desc' ? 'Newest first' : 'Oldest first'}
+              {liveUpdates ? 'Live' : 'Paused'}
             </Button>
           </TooltipTrigger>
           <TooltipContent>
-            {sortOrder === 'desc'
-              ? 'Showing newest first'
-              : 'Showing oldest first'}
+            {liveUpdates ? 'Pause live updates' : 'Resume live updates'}
           </TooltipContent>
         </Tooltip>
         {hasActiveFilters && (
@@ -544,6 +552,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
     PERIOD_PRESETS.find((preset) => preset.id === period) ?? PERIOD_PRESETS[2];
   const handlePeriodFilter = usePeriodFilter();
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [liveUpdates, setLiveUpdates] = useState(true);
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
   );
@@ -776,18 +785,25 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
     setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
   };
 
-  // Only for local env and while we don't already have data,
-  // we periodically refresh the data to check for new runs.
-  // This is both to improve UX slightly, while also ensuring that
-  // we react to a workflow data directory being created after the first run.
+  // Match the hosted Workflows view's live mode while avoiding refreshes in
+  // background tabs or while another page request is in flight.
   useEffect(() => {
-    if (isLocalAndHasMissingData) {
-      const interval = setInterval(() => {
-        onRefresh();
-      }, 5000);
-      return () => clearInterval(interval);
+    if (!liveUpdates) {
+      return;
     }
-  }, [isLocalAndHasMissingData, onRefresh]);
+
+    const interval = setInterval(() => {
+      if (
+        document.visibilityState === 'visible' &&
+        !loading &&
+        !isLoadingMore
+      ) {
+        onRefresh();
+      }
+    }, LIVE_UPDATE_INTERVAL_MS);
+
+    return () => clearInterval(interval);
+  }, [isLoadingMore, liveUpdates, loading, onRefresh]);
 
   // Refresh when tab regains focus after a delay, to prevent stale UI.
   // TODO: We should generally move to using SWR or similar for _all_ API calls here.
@@ -819,8 +835,8 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
         workflowNameFilter={workflowNameFilter}
         status={status}
         seenWorkflowNames={seenWorkflowNames}
-        sortOrder={sortOrder}
         loading={loading}
+        liveUpdates={liveUpdates}
         period={period}
         showPeriodPicker={isVercelBackend}
         planWindowMs={planWindowMs}
@@ -828,7 +844,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
         onWorkflowChange={handleWorkflowFilter}
         onStatusChange={handleStatusFilter}
         onPeriodChange={handlePeriodFilter}
-        onSortToggle={toggleSortOrder}
+        onLiveUpdatesChange={setLiveUpdates}
         onRefresh={onReload}
         onClearFilters={handleClearFilters}
         hasActiveFilters={hasActiveFilters}
@@ -838,11 +854,11 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
       <Card className="overflow-hidden bg-background shadow-none">
         <CardContent
           ref={setScrollRoot}
-          className="min-h-80 max-h-[calc(100vh-340px)] overflow-auto p-0"
+          className="min-h-80 max-h-[calc(100vh-280px)] overflow-auto p-0"
         >
-          <Table className="min-w-[920px]">
+          <Table className="min-w-[860px]">
             <TableCaption className="sr-only">
-              Workflow runs, ordered{' '}
+              Workflow runs, ordered by creation time{' '}
               {sortOrder === 'desc' ? 'newest first' : 'oldest first'}
             </TableCaption>
             <TableHeader>
@@ -856,20 +872,39 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                     disabled={!runs.length}
                   />
                 </TableHead>
-                <TableHead className="sticky top-0 z-10 h-10 w-[42%] border-b bg-muted/60 text-xs">
-                  Run
+                <TableHead className="sticky top-0 z-10 h-10 w-[34%] border-b bg-muted/60 text-xs">
+                  ID
                 </TableHead>
-                <TableHead className="sticky top-0 z-10 h-10 w-[16%] border-b bg-muted/60 text-xs">
+                <TableHead className="sticky top-0 z-10 h-10 w-[24%] border-b bg-muted/60 text-xs">
+                  Workflow
+                </TableHead>
+                <TableHead className="sticky top-0 z-10 h-10 w-[14%] border-b bg-muted/60 text-xs">
                   Status
                 </TableHead>
-                <TableHead className="sticky top-0 z-10 h-10 w-[14%] border-b bg-muted/60 text-xs">
-                  Started
-                </TableHead>
-                <TableHead className="sticky top-0 z-10 h-10 w-[14%] border-b bg-muted/60 text-xs">
-                  Completed
-                </TableHead>
-                <TableHead className="sticky top-0 z-10 h-10 w-24 border-b bg-muted/60 text-right text-xs">
+                <TableHead className="sticky top-0 z-10 h-10 w-[12%] border-b bg-muted/60 text-right text-xs">
                   Duration
+                </TableHead>
+                <TableHead
+                  className="sticky top-0 z-10 h-10 w-[16%] border-b bg-muted/60 text-right text-xs"
+                  aria-sort={sortOrder === 'desc' ? 'descending' : 'ascending'}
+                >
+                  <button
+                    type="button"
+                    className="ml-auto flex items-center gap-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={toggleSortOrder}
+                    aria-label={
+                      sortOrder === 'desc'
+                        ? 'Sort by oldest created first'
+                        : 'Sort by newest created first'
+                    }
+                  >
+                    Created
+                    {sortOrder === 'desc' ? (
+                      <ArrowDown className="h-3 w-3" />
+                    ) : (
+                      <ArrowUp className="h-3 w-3" />
+                    )}
+                  </button>
                 </TableHead>
                 <TableHead className="sticky top-0 z-10 h-10 w-12 border-b bg-muted/60">
                   <span className="sr-only">Actions</span>
@@ -956,6 +991,15 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                         aria-label={`Select run ${run.runId}`}
                       />
                     </TableCell>
+                    <TableCell className="min-w-0 py-3 font-mono text-xs">
+                      <CopyableText
+                        text={run.runId}
+                        overlay
+                        className="block max-w-full pr-6 text-foreground"
+                      >
+                        <span className="block truncate">{run.runId}</span>
+                      </CopyableText>
+                    </TableCell>
                     <TableCell className="min-w-0 py-3">
                       <CopyableText
                         text={run.workflowName}
@@ -966,49 +1010,21 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                             '?'}
                         </span>
                       </CopyableText>
-                      <CopyableText
-                        text={run.runId}
-                        overlay
-                        className="mt-1 block max-w-full pr-6 font-mono text-xs text-muted-foreground"
-                      >
-                        <span className="block truncate">{run.runId}</span>
-                      </CopyableText>
                     </TableCell>
                     <TableCell className="py-3">
                       <StatusBadge status={run.status} context={run} />
-                    </TableCell>
-                    <TableCell className="py-3 text-xs text-muted-foreground">
-                      {run.startedAt ? (
-                        <RelativeTime
-                          date={run.startedAt}
-                          type="distance"
-                          className="whitespace-nowrap"
-                        />
-                      ) : (
-                        <span>
-                          <span aria-hidden="true">—</span>
-                          <span className="sr-only">Not started</span>
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell className="py-3 text-xs text-muted-foreground">
-                      {run.completedAt ? (
-                        <RelativeTime
-                          date={run.completedAt}
-                          type="distance"
-                          className="whitespace-nowrap"
-                        />
-                      ) : (
-                        <span>
-                          <span aria-hidden="true">—</span>
-                          <span className="sr-only">Not completed</span>
-                        </span>
-                      )}
                     </TableCell>
                     <TableCell className="py-3 text-right font-mono text-xs tabular-nums text-muted-foreground">
                       <RunDuration
                         startedAt={run.startedAt}
                         completedAt={run.completedAt}
+                      />
+                    </TableCell>
+                    <TableCell className="py-3 text-right text-xs text-muted-foreground">
+                      <RelativeTime
+                        date={run.createdAt}
+                        type="distance"
+                        className="whitespace-nowrap"
                       />
                     </TableCell>
                     <TableCell className="py-3 text-right">
