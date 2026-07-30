@@ -744,6 +744,12 @@ export interface PreconditionSnapshotParams {
  * `stateEventCount` is `events.length` because the watermark is the log's
  * *maximum* ULID time, so every loaded event is at or below it regardless of the
  * order the World returned them in.
+ *
+ * Both fields are therefore invariant under permutation of the log: a maximum is
+ * order-independent, and the length is set cardinality once `appendUniqueEvents`
+ * has deduped by event id. Two replays that consume the same events in different
+ * orders send an identical snapshot, so this guard detects that a log is missing
+ * an event and can never detect that a replay consumed one in a different order.
  */
 export function preconditionSnapshotParams(
   events: Event[],
