@@ -48,6 +48,7 @@ import {
 } from './runtime/constants.js';
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
+  appendUniqueEvents,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -342,12 +343,7 @@ function nextEventLogLoad(log: MutableEventLog): ReplayEventLog {
 }
 
 function appendEventLog(log: MutableEventLog, appended: MutableEventLog): void {
-  const eventIds = new Set(log.events.map((event) => event.eventId));
-  for (const event of appended.events) {
-    if (!eventIds.has(event.eventId)) {
-      log.events.push(event);
-    }
-  }
+  appendUniqueEvents(log.events, appended.events);
   log.cursor = appended.cursor ?? log.cursor;
 }
 

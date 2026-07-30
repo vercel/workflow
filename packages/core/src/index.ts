@@ -26,7 +26,6 @@ export {
 } from './create-hook.js';
 export { defineHook, type TypedHook } from './define-hook.js';
 export {
-  experimental_setAttributes,
   type SetAttributesOptions,
   setAttributes,
 } from './set-attributes.js';

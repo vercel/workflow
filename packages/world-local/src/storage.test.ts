@@ -270,6 +270,65 @@ describe('Storage', () => {
       });
     });
 
+    describe('encryptionPublicKey', () => {
+      const PUBLIC_KEY = `${'A'.repeat(43)}=`;
+
+      it('persists the public key from run_created', async () => {
+        const result = await storage.events.create(null, {
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            deploymentId: 'deployment-123',
+            workflowName: 'test-workflow',
+            input: new Uint8Array(),
+            encryptionPublicKey: PUBLIC_KEY,
+          },
+        } as never);
+        expect(result.run?.encryptionPublicKey).toBe(PUBLIC_KEY);
+
+        const reread = await storage.runs.get(result.run!.runId);
+        expect(reread.encryptionPublicKey).toBe(PUBLIC_KEY);
+      });
+
+      it('carries the public key through resilient-start run creation', async () => {
+        // run_started for a run that was never created rebuilds it from the
+        // queued message. This is the one path where losing the key is
+        // permanent — the run would silently stop accepting sealed cross-run
+        // writes for the rest of its life, with no error anywhere.
+        const runId = `wrun_${monotonicFactory()()}`;
+        const result = await storage.events.create(runId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            deploymentId: 'deployment-123',
+            workflowName: 'resilient-test',
+            input: new Uint8Array(),
+            encryptionPublicKey: PUBLIC_KEY,
+          },
+        } as never);
+
+        expect(result.run?.encryptionPublicKey).toBe(PUBLIC_KEY);
+
+        // The synthesized run_created event must carry it too, so a replay
+        // rebuilding state from the log sees the same key.
+        const events = await storage.events.list({ runId });
+        const created = events.data.find((e) => e.eventType === 'run_created');
+        expect(
+          (created?.eventData as { encryptionPublicKey?: string })
+            ?.encryptionPublicKey
+        ).toBe(PUBLIC_KEY);
+      });
+
+      it('leaves the field unset when the SDK does not supply it', async () => {
+        const created = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        });
+        expect(created.encryptionPublicKey).toBeUndefined();
+      });
+    });
+
     describe('update via events', () => {
       it('should update run status to running via run_started event', async () => {
         const created = await createRun(storage, {

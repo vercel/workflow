@@ -154,38 +154,50 @@ function renderResult(entry) {
   }
   const infra = entry.infraCount ?? infraCount(entry.distribution ?? {});
   const infraSuffix = infra > 0 ? ` (+${infra} infra)` : '';
+  // A partial run's rates are still meaningful but its totals are not
+  // comparable to a full run's, so the row says so rather than letting a
+  // short run read as a clean one.
+  const partialSuffix = entry.partial
+    ? ` — partial${entry.plannedAttempts ? ` (${entry.total} of ${entry.plannedAttempts} planned)` : ''}`
+    : '';
   return entry.failedCount === 0
-    ? `no regressions${infraSuffix}`
-    : `${entry.failedCount}/${entry.total} regressions${infraSuffix}`;
+    ? `no regressions${infraSuffix}${partialSuffix}`
+    : `${entry.failedCount}/${entry.total} regressions${infraSuffix}${partialSuffix}`;
 }
 
 function renderConfig(entry) {
   const config = entry.config ?? {};
   const attempts = config.attempts ? `${config.attempts} runs` : '';
   const scenarios = [
-    config.hookSleepAttempts ? `hook ${config.hookSleepAttempts}` : '',
+    config.stepStormAttempts ? `step-storm ${config.stepStormAttempts}` : '',
+    config.hookStormAttempts ? `hook-storm ${config.hookStormAttempts}` : '',
+    config.hookSleepAttempts ? `hook-sleep ${config.hookSleepAttempts}` : '',
+    // Historical entries from the pre-storm harness, kept so an old sticky
+    // comment still renders its own configuration rather than a blank cell.
     config.stepFanoutAttempts ? `fanout ${config.stepFanoutAttempts}` : '',
     config.stepSleepRaceAttempts ? `race ${config.stepSleepRaceAttempts}` : '',
   ]
     .filter(Boolean)
     .join(', ');
   const concurrency = config.concurrency ? `c${config.concurrency}` : '';
-  const stepConcurrency = config.stepConcurrency
-    ? `step c${config.stepConcurrency}`
-    : '';
-  const iterations = config.iterations ? `${config.iterations} iters` : '';
-  return [attempts, scenarios, concurrency, stepConcurrency, iterations]
-    .filter(Boolean)
-    .join(' / ');
+  const shape =
+    config.rounds && config.width
+      ? `${config.rounds}x${config.width}`
+      : config.stepFanoutRounds && config.stepFanoutWidth
+        ? `${config.stepFanoutRounds}x${config.stepFanoutWidth}`
+        : '';
+  return [attempts, scenarios, concurrency, shape].filter(Boolean).join(' / ');
 }
 
 function renderTiming(entry) {
   const config = entry.config ?? {};
   return [
-    config.sleepMs ? `sleep ${config.sleepMs}ms` : '',
-    config.resumeDelayMs || config.resumeJitterMs
-      ? `resume ${config.resumeDelayMs ?? 0}+${config.resumeJitterMs ?? 0}ms`
+    config.watchdogMs ? `watchdog ${config.watchdogMs}ms` : '',
+    config.stepDelayMs
+      ? `step ${config.stepDelayMs}±${config.stepDelayJitterMs ?? 0}ms`
       : '',
+    config.hookResumeStaggerMs ? `stagger ${config.hookResumeStaggerMs}ms` : '',
+    config.pokeIntervalMs ? `poke ${config.pokeIntervalMs}ms` : '',
     config.runTimeoutMs ? `timeout ${config.runTimeoutMs}ms` : '',
   ]
     .filter(Boolean)
@@ -195,19 +207,26 @@ function renderTiming(entry) {
 function compactConfig(config = {}) {
   return {
     attempts: config.attempts,
+    stepStormAttempts: config.stepStormAttempts,
+    hookStormAttempts: config.hookStormAttempts,
     hookSleepAttempts: config.hookSleepAttempts,
+    concurrency: config.concurrency,
+    rounds: config.rounds,
+    width: config.width,
+    watchdogMs: config.watchdogMs,
+    stepDelayMs: config.stepDelayMs,
+    stepDelayJitterMs: config.stepDelayJitterMs,
+    reconcileBase: config.reconcileBase,
+    attrWrites: config.attrWrites,
+    pokeIntervalMs: config.pokeIntervalMs,
+    hookResumeStaggerMs: config.hookResumeStaggerMs,
+    runTimeoutMs: config.runTimeoutMs,
+    // Pre-storm harness keys, retained so history rows recorded by an older
+    // revision of this script keep rendering their own configuration.
     stepFanoutAttempts: config.stepFanoutAttempts,
     stepSleepRaceAttempts: config.stepSleepRaceAttempts,
-    concurrency: config.concurrency,
-    stepConcurrency: config.stepConcurrency,
-    iterations: config.iterations,
-    sleepMs: config.sleepMs,
-    resumeDelayMs: config.resumeDelayMs,
-    resumeJitterMs: config.resumeJitterMs,
-    runTimeoutMs: config.runTimeoutMs,
     stepFanoutRounds: config.stepFanoutRounds,
     stepFanoutWidth: config.stepFanoutWidth,
-    stepRaceRounds: config.stepRaceRounds,
   };
 }
 
@@ -218,6 +237,9 @@ function compactHistoryEntry(entry, keepFailures = false) {
     runUrl: entry.runUrl,
     deploymentUrl: entry.deploymentUrl,
     missingResults: entry.missingResults,
+    partial: entry.partial ?? false,
+    budgetExhausted: entry.budgetExhausted ?? false,
+    plannedAttempts: entry.plannedAttempts ?? 0,
     distribution: entry.distribution ?? emptyDistribution(),
     scenarioDistribution: entry.scenarioDistribution ?? {},
     failedCount: entry.failedCount ?? 0,
@@ -239,6 +261,9 @@ function buildEntry(resultsFile) {
       runUrl,
       deploymentUrl: '',
       missingResults: true,
+      partial: false,
+      budgetExhausted: false,
+      plannedAttempts: 0,
       distribution: emptyDistribution(),
       failedCount: 1,
       total: 0,
@@ -281,6 +306,12 @@ function buildEntry(resultsFile) {
     runUrl,
     deploymentUrl: resultsFile.deploymentUrl,
     missingResults: false,
+    // The harness checkpoints the file as it goes and only stamps
+    // `partial: false` on its final write, so a job killed by cancellation or
+    // its own `timeout-minutes` still reports whatever landed.
+    partial: resultsFile.partial ?? false,
+    budgetExhausted: resultsFile.budgetExhausted ?? false,
+    plannedAttempts: resultsFile.plannedAttempts ?? 0,
     distribution,
     scenarioDistribution,
     failedCount,
@@ -395,14 +426,20 @@ function render(resultsFile, previousComment) {
         'these are reported but do not fail the job.'
       : '';
 
+  const partialNote = latest.partial
+    ? ` Results are **partial**: ${latest.total} of ${latest.plannedAttempts || 'the'} planned runs completed` +
+      `${latest.budgetExhausted ? ', because the launch budget was spent' : ', because the job ended before the harness finished'}` +
+      '. Rates are still comparable; totals are not.'
+    : '';
+
   console.log('<!-- event-log-race-repro-results -->');
   console.log('## Event Log Race Repro\n');
   console.log(
     latest.missingResults
       ? 'No result file was produced by the latest repro job.'
       : latest.failedCount === 0
-        ? `No event-log regressions in the latest repro job.${infraNote}`
-        : `${latest.failedCount} of ${latest.total} latest repro runs hit event-log regressions.${infraNote}`
+        ? `No event-log regressions in the latest repro job.${partialNote}${infraNote}`
+        : `${latest.failedCount} of ${latest.total} latest repro runs hit event-log regressions.${partialNote}${infraNote}`
   );
   console.log('');
   console.log(historyMarkerStart);

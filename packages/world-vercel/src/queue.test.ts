@@ -47,6 +47,7 @@ vi.mock('./utils.js', () => ({
   getHeaders: vi.fn().mockReturnValue(new Map()),
 }));
 
+import { missingDeploymentIdMessage } from './deployment-id.js';
 import { createQueue } from './queue.js';
 import { getHttpUrl } from './utils.js';
 
@@ -160,7 +161,22 @@ describe('createQueue', () => {
         await expect(
           queue.queue('__wkf_workflow_test', { runId: 'run-123' })
         ).rejects.toThrow(
-          'No deploymentId provided and VERCEL_DEPLOYMENT_ID environment variable is not set'
+          missingDeploymentIdMessage('Enqueuing a workflow message')
+        );
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        }
+      }
+    });
+
+    it('should throw an actionable error from getDeploymentId, which start() calls before writing any state', async () => {
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      delete process.env.VERCEL_DEPLOYMENT_ID;
+
+      try {
+        await expect(createQueue().getDeploymentId()).rejects.toThrow(
+          missingDeploymentIdMessage('Starting a workflow run')
         );
       } finally {
         if (originalEnv !== undefined) {
@@ -521,6 +537,32 @@ describe('createQueue', () => {
       expect(mockSend.mock.calls[0][1].queueName).toBe(
         '__wkf_workflow_health_check'
       );
+    });
+
+    it('keeps a per-probe topic for a health check that carries a runId', async () => {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+
+      const queue = createQueue();
+      // A probe issued to prepare a cross-deployment `start()` carries the run
+      // id it is about to create. It must still get its per-probe topic rather
+      // than being routed to that run's serialized replay topic, which would
+      // queue the probe behind the run it is trying to prepare.
+      await queue.queue('__wkf_workflow_health_check', {
+        __healthCheck: true as const,
+        correlationId: 'corr_123',
+        runId: 'wrun_abc',
+      });
+
+      expect(mockSend.mock.calls[0][0]).toBe(
+        '__wkf_workflow_health_check_corr_123'
+      );
+      // The payload must survive intact so the handler dispatches it as a
+      // health check rather than as a workflow invoke.
+      expect(mockSend.mock.calls[0][1].payload).toEqual({
+        __healthCheck: true,
+        correlationId: 'corr_123',
+        runId: 'wrun_abc',
+      });
     });
 
     it('does not rewrite health check topics when the flag is unset', async () => {

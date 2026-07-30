@@ -29,6 +29,7 @@ export type {
   FetchSpanDetail,
 } from './sidebar/use-selected-span-detail';
 export { type StreamChunk, StreamViewer } from './stream-viewer';
+export { StreamViewerSkeleton } from './stream-viewer-skeleton';
 export type { Span, SpanEvent } from './trace-viewer/types';
 export { NewTraceViewer } from './trace-viewer-new';
 export {
