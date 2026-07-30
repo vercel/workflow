@@ -506,7 +506,11 @@ test('renders inline and queue-hop STSO histogram diffs against main', async () 
     commit: 'abcdef1234567890',
   });
 
-  assert.match(body, /\*\*STSO distribution vs `main`\*\*/);
+  // Collapsed by default — a drill-down, not the headline.
+  assert.match(
+    body,
+    /<details>\n<summary>📈 STSO distribution vs main \(inline \/ queue-hop histograms\)<\/summary>/
+  );
   assert.match(body, /_1020 steps \(inline\)_/);
   assert.match(body, /_1020 steps \(queue-hop\)_/);
   // Cumulative time diff: inline 1440ms → 1070ms.
@@ -547,8 +551,12 @@ test('shows the STSO distribution alone when main has no raw samples', async () 
     commit: 'abcdef1234567890',
   });
 
-  assert.match(body, /\*\*STSO distribution\*\*/);
-  assert.doesNotMatch(body, /STSO distribution vs `main`/);
+  // Summary drops the "vs main" qualifier when there is nothing to diff.
+  assert.match(
+    body,
+    /<summary>📈 STSO distribution \(inline \/ queue-hop histograms\)<\/summary>/
+  );
+  assert.doesNotMatch(body, /STSO distribution vs main/);
   assert.match(body, /No `main` baseline with raw samples yet/);
   assert.match(body, /Cumulative STSO time: 520ms over 2 samples/);
   // Single-series rendering: one count per bucket, no main/this or delta.
@@ -569,7 +577,7 @@ test('strips raw samples from the embedded history data block', async () => {
   });
 
   // The histogram renders for the current run...
-  assert.match(body, /\*\*STSO distribution vs `main`\*\*/);
+  assert.match(body, /<summary>📈 STSO distribution vs main/);
   // ...but the ~1000 samples behind it never reach the embedded data block,
   // which would otherwise blow past GitHub's comment size limit as history
   // accumulates.

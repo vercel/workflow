@@ -458,6 +458,10 @@ function renderStsoRowDiff(row) {
  * queue-hop steps. This is a complement to the Best/P75/P90/P99 table:
  * percentiles hide *how many* samples moved and by how much in aggregate,
  * which is exactly where this benchmark's run-to-run variance shows up.
+ *
+ * Collapsed by default, like the methodology footer — it is a drill-down for
+ * when the table shows something worth explaining, not the headline. The
+ * blank line after <summary> lets GitHub render the markdown inside.
  */
 function renderStsoDiffSection(result) {
   const rows = (result.metrics ?? []).filter(
@@ -467,8 +471,12 @@ function renderStsoDiffSection(result) {
   const anyBaseline = rows.some((row) => Array.isArray(row.baselineRaw));
   return [
     '',
-    anyBaseline ? '**STSO distribution vs `main`**' : '**STSO distribution**',
+    '<details>',
+    `<summary>📈 STSO distribution${anyBaseline ? ' vs main' : ''} (inline / queue-hop histograms)</summary>`,
+    '',
     ...rows.map(renderStsoRowDiff),
+    '',
+    '</details>',
   ].join('\n');
 }
 
@@ -628,7 +636,7 @@ function renderFooter(entries) {
   const smallprint = [
     ...(hasStsoDistribution
       ? [
-          '<sub>The **STSO distribution** section buckets every step gap of the sequential-steps run (not a sampled window), split by whether the step ending the gap ran **inline** — in the same warm process as the step before it, so the gap is pure framework overhead — or after a **queue-hop** — the first step of a fresh process, which pays queue dispatch, client reinit and event-log replay. Bars overlay the two runs: `█` is `main`, `┃` marks where this run lands, `░` bridges the gap when this run has more samples in a bucket.</sub>',
+          '<sub>The collapsed **STSO distribution** section above buckets every step gap of the sequential-steps run (not a sampled window), split by whether the step ending the gap ran **inline** — in the same warm process as the step before it, so the gap is pure framework overhead — or after a **queue-hop** — the first step of a fresh process, which pays queue dispatch, client reinit and event-log replay. Bars overlay the two runs: `█` is `main`, `┃` marks where this run lands, `░` bridges the gap when this run has more samples in a bucket.</sub>',
           '',
         ]
       : []),
