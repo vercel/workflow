@@ -8,9 +8,7 @@ import {
 } from '@workflow/errors';
 import {
   AttributeValidationError,
-  type CreateEventParams,
   type CreateEventRequest,
-  type EventResult,
   type SerializedData,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -30,7 +28,12 @@ import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import { getMaxInlineSteps } from './constants.js';
-import { type MutableEventLog, withPreconditionRetry } from './helpers.js';
+import {
+  type EventCreator,
+  type MutableEventLog,
+  withPreconditionRetry,
+} from './helpers.js';
+import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -56,6 +59,8 @@ export interface SuspensionHandlerParams {
    * where `run_started` was already awaited up front.
    */
   runReadyBarrier?: Promise<unknown>;
+  /** One-shot telemetry reporter, activated only after replay has recovered. */
+  replayRecoveryReporter?: ReplayRecoveryReporter;
 }
 
 /**
@@ -134,10 +139,7 @@ async function createHookEvent({
   hookEvent: CreateEventRequest;
   queueItem: HookInvocationQueueItem;
   requestId?: string;
-  createEvent: (
-    data: CreateEventRequest,
-    params?: CreateEventParams
-  ) => Promise<EventResult>;
+  createEvent: EventCreator;
 }): Promise<{
   hasHookConflict: boolean;
   hasAwaitedHookCreation: boolean;
@@ -205,6 +207,7 @@ export async function handleSuspension({
   requestId,
   eventLog,
   runReadyBarrier,
+  replayRecoveryReporter,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -226,22 +229,26 @@ export async function handleSuspension({
     }
   };
 
-  // Create an event with the optimistic-concurrency guard when the caller
-  // supplied a loaded event log; otherwise create it directly (callers without
-  // a replay snapshot, e.g. tests). The guard reloads + retries on a stale
-  // (412) rejection, keeping `eventLog` current in place. All suspension events
-  // are non-run_created events on this run's `runId`.
-  const createGuarded = (
-    data: CreateEventRequest,
-    params?: CreateEventParams
-  ): Promise<EventResult> => {
-    if (!eventLog) {
-      return world.events.create(runId, data, params);
-    }
-    return withPreconditionRetry(runId, eventLog, (stateUpdatedAt) =>
-      world.events.create(runId, data, { ...params, stateUpdatedAt })
+  // Every suspension write carries replay-recovery telemetry on the first one
+  // that commits after replay recovered. All suspension events are
+  // non-run_created events on this run's `runId`.
+  const reporter = replayRecoveryReporter ?? ReplayRecoveryReporter.inert();
+  const createEvent: EventCreator = (data, params) =>
+    reporter.withEventCreate(params, (p) =>
+      world.events.create(runId, data, p)
     );
-  };
+  // Adds the optimistic-concurrency guard when the caller supplied a loaded
+  // event log; without one it creates directly (callers with no replay
+  // snapshot, e.g. tests). The guard reloads + retries on a stale (412)
+  // rejection, keeping `eventLog` current in place. It wraps `createEvent`
+  // rather than the reverse so a retried attempt re-takes the telemetry claim,
+  // matching how the wait-completion writes in `runtime.ts` compose the two.
+  const createGuarded: EventCreator = (data, params) =>
+    eventLog
+      ? withPreconditionRetry(runId, eventLog, (stateUpdatedAt) =>
+          createEvent(data, { ...params, stateUpdatedAt })
+        )
+      : createEvent(data, params);
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
@@ -614,8 +621,7 @@ export async function handleSuspension({
       (async () => {
         try {
           await ensureRunReady();
-          await world.events.create(
-            runId,
+          await createEvent(
             {
               eventType: 'attr_set',
               specVersion: SPEC_VERSION_CURRENT,
