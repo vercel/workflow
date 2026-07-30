@@ -230,6 +230,7 @@ export async function runWorkflow(
       pendingDeliveryBarriers: new Map(),
       recentlyDeliveredBarriers: new Map(),
       pendingOrderedDeliveries: 0,
+      deliveryProgress: 0,
       replayPayloadCache,
     };
 

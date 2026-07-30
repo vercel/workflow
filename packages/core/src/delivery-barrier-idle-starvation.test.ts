@@ -135,6 +135,32 @@ function startPokeStorm(ctx: WorkflowOrchestratorContext): PokeStorm {
   };
 }
 
+/**
+ * A committed step-result delivery, shaped like `step.ts`: barrier and
+ * deferral captured while consuming the event, hydration in a serial
+ * `promiseQueue` slot, hand-over deferred off the queue behind everything
+ * earlier in the log.
+ */
+function deliverStepResult(
+  ctx: WorkflowOrchestratorContext,
+  eventIndex: number,
+  onDelivered: () => void
+): { delivered: Promise<void> } {
+  const barrier = registerDeliveryBarrier(ctx, eventIndex, 'step');
+  const earlierDelivered = awaitEarlierDeliveries(ctx, eventIndex, 'step');
+  const done = withResolvers<void>();
+  ctx.pendingDeliveries++;
+  ctx.promiseQueue = ctx.promiseQueue.then(() => {
+    ctx.pendingDeliveries--;
+    void earlierDelivered.then(() => {
+      barrier.markDelivered();
+      onDelivered();
+      done.resolve();
+    });
+  });
+  return { delivered: done.promise };
+}
+
 /** A buffered hook payload nobody has claimed: the abandonable delivery. */
 function registerUnclaimedPayload(
   ctx: WorkflowOrchestratorContext,
@@ -225,6 +251,52 @@ describe('delivery-barrier safety net vs. unrelated delivery traffic', () => {
     } finally {
       storm.stop();
     }
+  });
+
+  it('does not fire into the middle of an in-order delivery batch', async () => {
+    // The other side of the deadline. It has to bound STARVATION — rounds in
+    // which nothing is progressing — and not progress itself.
+    //
+    // Delivering a drain window in log order costs one macrotask per
+    // deferring delivery, so a window of K events takes K rounds to clear.
+    // A budget counted in rounds regardless of progress is therefore a cap on
+    // BATCH WIDTH: past it the callback fires while deliveries are still
+    // landing, and for a hook consumer that callback raises a
+    // `WorkflowSuspension` (see the `!event` branch of `workflow/hook.ts`), so
+    // the run suspends carrying none of the work the remaining deliveries
+    // were about to create.
+    //
+    // Unlike the other cases in this file, this one passes on `main` — `main`
+    // has no deadline to overrun. It guards a regression this PR introduced
+    // and then fixed, and it is why the hook scenario of the storm went from
+    // 115/600 corrupted to 591/600 on the first two commits of this branch.
+    const ctx = makeCtx();
+    const delivered: number[] = [];
+    let firedAfter: number | null = null;
+
+    // Comfortably wider than the round budget, and narrower than the bursts
+    // the hook-storm scenario produces.
+    const batch = 40;
+    const all = Array.from({ length: batch }, (_, index) =>
+      deliverStepResult(ctx, index, () => {
+        delivered.push(index);
+      })
+    );
+
+    // A pending `sleep()` arms one of these on every replay.
+    scheduleWhenIdle(ctx, () => {
+      firedAfter = delivered.length;
+    });
+
+    await Promise.all(all.map((d) => d.delivered));
+    // Once the batch is done nothing is in flight, so the poll reaches idle on
+    // its next round rather than waiting the budget out; the margin here is
+    // for a loaded CI host, not for the deadline.
+    await macrotasks(8);
+
+    expect(delivered.length).toBe(batch);
+    // The suspension may fire once the batch is done. It may not fire during.
+    expect(firedAfter).toBe(batch);
   });
 
   it('drains a fan-out of unclaimed payloads gating a later delivery', async () => {
