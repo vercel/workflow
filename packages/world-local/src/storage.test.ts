@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -1275,6 +1276,47 @@ describe('Storage', () => {
           .catch(() => false);
         expect(fileExists).toBe(true);
       });
+
+      it('returns a resumable partial preload when run_started is retried', async () => {
+        await storage.events.create(testRunId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+
+        for (let index = 0; index < 999; index++) {
+          await storage.events.create(testRunId, {
+            eventType: 'attr_set',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: {
+              changes: [{ key: 'index', value: String(index) }],
+              writer: { type: 'workflow' },
+            },
+          });
+        }
+
+        const preloaded = await storage.events.create(testRunId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+        assert(preloaded.events);
+        assert(preloaded.cursor);
+        expect(preloaded.events).toHaveLength(1000);
+        expect(preloaded.hasMore).toBe(true);
+
+        const suffix = await storage.events.list({
+          runId: testRunId,
+          pagination: {
+            sortOrder: 'asc',
+            cursor: preloaded.cursor,
+          },
+        });
+        const all = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', limit: 2000 },
+        });
+
+        expect([...preloaded.events, ...suffix.data]).toEqual(all.data);
+      }, 30_000);
 
       it('should handle run completed events', async () => {
         const eventData = {
