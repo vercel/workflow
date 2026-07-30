@@ -45,16 +45,16 @@ function FeatureCard({ title, description, visual }: Feature): JSX.Element {
 
 function FeatureCardWide({ title, description, visual }: Feature): JSX.Element {
   return (
-    <div className="flex flex-col items-center gap-8 md:gap-12">
-      <div className="flex flex-col items-center max-w-[800px] text-left sm:text-center mx-auto">
+    <div className="flex flex-col items-start sm:items-center gap-8 md:gap-12">
+      <div className="flex flex-col items-start sm:items-center max-w-[800px] text-left sm:text-center sm:mx-auto">
         <h3 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
           {title}
         </h3>
-        <p className="text-balance text-lg text-muted-foreground mt-4">
+        <p className="text-lg text-muted-foreground mt-4 sm:text-balance">
           {description}
         </p>
       </div>
-      <div className="@container w-full overflow-hidden">{visual}</div>
+      <div className="@container w-full max-w-[1200px]">{visual}</div>
     </div>
   );
 }

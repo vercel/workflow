@@ -43,7 +43,7 @@ export const Templates = () => (
       <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40 lg:text-heading-40">
         Get started
       </h2>
-      <p className="text-lg text-muted-foreground">
+      <p className="text-lg text-muted-foreground text-balance sm:max-w-md">
         See Workflow SDK in action with one of the example templates.
       </p>
       <Button asChild size="lg" className="rounded-full h-10 px-6 w-fit mt-2">

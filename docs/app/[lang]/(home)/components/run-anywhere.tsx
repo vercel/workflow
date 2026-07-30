@@ -118,7 +118,7 @@ const code = `export async function welcome(userId: string) {
 export const RunAnywhere = () => (
   <div className="py-8 sm:py-12 grid gap-10 items-center overflow-hidden">
     <div className="space-y-4">
-      <div className="grid gap-4 max-w-lg text-center mx-auto">
+      <div className="grid gap-4 max-w-lg text-left sm:text-center sm:mx-auto">
         <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
           Run anywhere, no lock‑in
         </h2>
@@ -127,7 +127,7 @@ export const RunAnywhere = () => (
           fully portable. For zero-config, secure, and scalable workflows,
           deploy on Vercel.
         </p>
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mt-2">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center sm:justify-center gap-3 mt-2">
           <Button asChild className="rounded-full h-10">
             <Link href="https://vercel.com/workflows" target="_blank">
               Workflows on Vercel
@@ -140,7 +140,7 @@ export const RunAnywhere = () => (
         </div>
       </div>
     </div>
-    <div className="relative isolate">
+    <div className="relative isolate mx-auto w-full max-w-lg">
       <div className="absolute -left-32 top-1/2 -translate-y-1/2 hidden md:flex items-center gap-2 [mask-image:linear-gradient(to_right,transparent,black)]">
         {[DigitalOcean, AWS].map((Logo, index) => (
           <div

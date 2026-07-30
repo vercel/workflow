@@ -237,10 +237,10 @@ function TweetCard({ url, name, username, image, tweet }: Tweet) {
 
 export const TweetWall = () => (
   <div className="py-8 sm:py-12 grid gap-8">
-    <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40 text-center text-balance">
+    <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40 sm:text-center sm:text-balance">
       What builders say about Workflow SDK
     </h2>
-    <div className="columns-1 gap-4 space-y-4 md:columns-2 lg:columns-3">
+    <div className="columns-1 gap-4 space-y-4 md:columns-2 lg:columns-3 mt-6">
       {TWEETS.map((tweet) => (
         <div key={tweet.username} className="break-inside-avoid">
           <TweetCard {...tweet} />
