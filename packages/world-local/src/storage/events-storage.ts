@@ -60,6 +60,19 @@ import {
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 
+/**
+ * Per-run event ceiling the Local World reports on run responses (mirrors the
+ * Vercel World). Overridable via `WORKFLOW_MAX_EVENTS`; defaults to 25,000.
+ */
+const DEFAULT_MAX_EVENTS_PER_RUN = 25_000;
+function getMaxEventsPerRun(): number {
+  const raw = process.env.WORKFLOW_MAX_EVENTS;
+  const parsed = raw !== undefined ? Number(raw) : Number.NaN;
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_MAX_EVENTS_PER_RUN;
+}
+
 const HookTokenClaimSchema = z.object({
   // The token-claim writer below has always persisted `hookId`, but
   // this read schema previously omitted it, which is the bug fixed
@@ -584,6 +597,7 @@ export function createEventsStorage(
             return {
               event: stripEventDataRefs(event, resolveData),
               run: currentRun,
+              ...(currentRun ? { maxEvents: getMaxEventsPerRun() } : {}),
             };
           }
 
@@ -758,7 +772,7 @@ export function createEventsStorage(
             // because this is a rare race-condition path — the runtime
             // falls back to loading events separately.
             if (currentRun.status === 'running') {
-              return { run: currentRun };
+              return { run: currentRun, maxEvents: getMaxEventsPerRun() };
             }
 
             run = {
@@ -1579,6 +1593,8 @@ export function createEventsStorage(
           events,
           cursor,
           hasMore,
+          // Per-run event ceiling (mirrors the Vercel World).
+          ...(run ? { maxEvents: getMaxEventsPerRun() } : {}),
         };
       } // end createImpl
     },

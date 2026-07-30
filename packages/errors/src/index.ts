@@ -243,6 +243,30 @@ export class CorruptedEventLogError extends WorkflowRuntimeError {
 }
 
 /**
+ * Thrown when a run's event log reaches the server-supplied per-run event
+ * ceiling. Classified as `MAX_EVENTS_EXCEEDED` (see `classifyRunError`).
+ */
+export class MaxEventsExceededError extends WorkflowError {
+  readonly eventCount: number;
+  readonly limit: number;
+
+  constructor(
+    eventCount: number,
+    limit: number,
+    options?: WorkflowErrorOptions
+  ) {
+    super(`Workflow exceeded the maximum of ${limit} events per run`, options);
+    this.name = 'MaxEventsExceededError';
+    this.eventCount = eventCount;
+    this.limit = limit;
+  }
+
+  static is(value: unknown): value is MaxEventsExceededError {
+    return isError(value) && value.name === 'MaxEventsExceededError';
+  }
+}
+
+/**
  * Optional structured context attached to a {@link RuntimeDecryptionError},
  * carried over from the underlying decrypt call site to help diagnose the
  * failure without poking through stacks.

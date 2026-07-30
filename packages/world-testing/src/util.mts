@@ -25,7 +25,10 @@ type Control = z.infer<typeof Control>;
 type Files = keyof typeof manifest.workflows;
 type Workflows<F extends Files> = keyof (typeof manifest.workflows)[F];
 
-export async function startServer(opts: { world: string }) {
+export async function startServer(opts: {
+  world: string;
+  env?: Record<string, string | undefined>;
+}) {
   let serverPath = new URL('./server.mts', import.meta.url);
 
   if (!existsSync(serverPath)) {
@@ -50,6 +53,7 @@ export async function startServer(opts: { world: string }) {
       WORKFLOW_TARGET_WORLD: opts.world,
       CONTROL_FD: '3',
       WORKFLOW_LOCAL_DATA_DIR: dataDir,
+      ...(opts.env ?? {}),
     },
   });
   onTestFinished(async () => {
