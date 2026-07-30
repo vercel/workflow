@@ -1,6 +1,7 @@
 import type { Event } from '@workflow/world';
 import type { StepInvocationQueueItem } from '../global.js';
 import { getInlineOwnershipLeaseSeconds } from './constants.js';
+import { runScopedKey } from './idempotency-key.js';
 
 /**
  * Inline step ownership helpers for the pending-step dispatch decision table
@@ -73,12 +74,23 @@ export function stepLeaseRemainingSeconds(
  * lease has time remaining, which requires `lastStartedAt` to be set.
  *
  * The key must also never be the step message's own `idempotencyKey`
- * (the bare correlation ID): the owner's retry handoff enqueues the step
- * under that key with a short backoff, and a pending backstop sharing it
- * would absorb the retry — turning a 1s backoff into a full-lease stall.
+ * (the run-scoped correlation ID): the owner's retry handoff enqueues the
+ * step under that key with a short backoff, and a pending backstop sharing
+ * it would absorb the retry — turning a 1s backoff into a full-lease stall.
+ *
+ * Scoped to the run because correlation IDs are only unique within one (see
+ * `idempotency-key.ts`).
  */
-export function backstopIdempotencyKey(step: StepInvocationQueueItem): string {
-  return `${step.correlationId}:backstop:${step.lastStartedAt}`;
+export function backstopIdempotencyKey(
+  runId: string,
+  step: StepInvocationQueueItem
+): string {
+  return runScopedKey(
+    runId,
+    step.correlationId,
+    'backstop',
+    String(step.lastStartedAt)
+  );
 }
 
 /**

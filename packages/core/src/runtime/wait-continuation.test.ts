@@ -5,39 +5,57 @@ import {
   WAIT_CONTINUATION_MAX_DELAY_SECONDS,
 } from './wait-continuation.js';
 
+const RUN_ID = 'wrun_01ABC';
 const CORR_ID = 'wait_01ABC';
+/** The run-scoped key a mid-range wait dedupes on. */
+const KEY = `${RUN_ID}:${CORR_ID}`;
 const NOW = new Date('2026-05-19T12:00:20.500Z').getTime();
 
 describe('getWaitContinuationDispatch', () => {
-  describe('mid-range waits (bare correlationId key)', () => {
-    it('uses the bare correlationId so re-observations dedupe', () => {
-      expect(getWaitContinuationDispatch(60, CORR_ID, NOW)).toEqual({
+  describe('mid-range waits (unsuffixed key)', () => {
+    it('uses the run-scoped correlationId so re-observations dedupe', () => {
+      expect(getWaitContinuationDispatch(RUN_ID, 60, CORR_ID, NOW)).toEqual({
         delaySeconds: 60,
-        idempotencyKey: CORR_ID,
+        idempotencyKey: KEY,
       });
     });
 
+    it('is isolated per run', () => {
+      // Slot-numbered correlation IDs repeat across runs of a workflow, and a
+      // queue's dedupe scope is the workflow, not the run — so two runs
+      // sleeping at the same point must not share a continuation key.
+      const other = getWaitContinuationDispatch('wrun_other', 60, CORR_ID, NOW);
+      expect(other.idempotencyKey).not.toBe(KEY);
+    });
+
     it('is stable across suspension passes targeting the same deadline', () => {
-      const pass1 = getWaitContinuationDispatch(60, CORR_ID, NOW);
-      const pass2 = getWaitContinuationDispatch(45, CORR_ID, NOW + 15_000);
+      const pass1 = getWaitContinuationDispatch(RUN_ID, 60, CORR_ID, NOW);
+      const pass2 = getWaitContinuationDispatch(
+        RUN_ID,
+        45,
+        CORR_ID,
+        NOW + 15_000
+      );
       expect(pass2.idempotencyKey).toBe(pass1.idempotencyKey);
     });
 
     it('covers the full band up to the max delay', () => {
       const low = getWaitContinuationDispatch(
+        RUN_ID,
         NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS + 1,
         CORR_ID,
         NOW
       );
       const high = getWaitContinuationDispatch(
+        RUN_ID,
         WAIT_CONTINUATION_MAX_DELAY_SECONDS,
         CORR_ID,
         NOW
       );
-      expect(low.idempotencyKey).toBe(CORR_ID);
+      expect(low.idempotencyKey).toBe(KEY);
       expect(high).toEqual({
         delaySeconds: WAIT_CONTINUATION_MAX_DELAY_SECONDS,
-        idempotencyKey: CORR_ID,
+        idempotencyKey: KEY,
       });
     });
   });
@@ -46,22 +64,28 @@ describe('getWaitContinuationDispatch', () => {
     it('suffixes the key with the current epoch second', () => {
       expect(
         getWaitContinuationDispatch(
+          RUN_ID,
           NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS,
           CORR_ID,
           NOW
         )
       ).toEqual({
         delaySeconds: NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS,
-        idempotencyKey: `${CORR_ID}:${Math.floor(NOW / 1000)}`,
+        idempotencyKey: `${KEY}:${Math.floor(NOW / 1000)}`,
       });
     });
 
     it('collapses same-second duplicates but frees the key for a later retry', () => {
-      const first = getWaitContinuationDispatch(1, CORR_ID, NOW);
-      const sameSecond = getWaitContinuationDispatch(1, CORR_ID, NOW + 400);
+      const first = getWaitContinuationDispatch(RUN_ID, 1, CORR_ID, NOW);
+      const sameSecond = getWaitContinuationDispatch(
+        RUN_ID,
+        1,
+        CORR_ID,
+        NOW + 400
+      );
       // A retry can only be enqueued after the >= 1s delay of the first
       // message, which guarantees a later epoch-second bucket.
-      const retry = getWaitContinuationDispatch(1, CORR_ID, NOW + 1000);
+      const retry = getWaitContinuationDispatch(RUN_ID, 1, CORR_ID, NOW + 1000);
       expect(sameSecond.idempotencyKey).toBe(first.idempotencyKey);
       expect(retry.idempotencyKey).not.toBe(first.idempotencyKey);
     });
@@ -71,15 +95,23 @@ describe('getWaitContinuationDispatch', () => {
     const SEVEN_DAYS = 7 * 24 * 3600; // 604800s > 7 * MAX_DELAY (579600s)
 
     it('clamps the delay to the max and suffixes the key with the hop index', () => {
-      expect(getWaitContinuationDispatch(SEVEN_DAYS, CORR_ID, NOW)).toEqual({
+      expect(
+        getWaitContinuationDispatch(RUN_ID, SEVEN_DAYS, CORR_ID, NOW)
+      ).toEqual({
         delaySeconds: WAIT_CONTINUATION_MAX_DELAY_SECONDS,
-        idempotencyKey: `${CORR_ID}:hop-8`,
+        idempotencyKey: `${KEY}:hop-8`,
       });
     });
 
     it('keeps the key stable for re-observations within the same hop window', () => {
-      const pass1 = getWaitContinuationDispatch(SEVEN_DAYS, CORR_ID, NOW);
+      const pass1 = getWaitContinuationDispatch(
+        RUN_ID,
+        SEVEN_DAYS,
+        CORR_ID,
+        NOW
+      );
       const pass2 = getWaitContinuationDispatch(
+        RUN_ID,
         SEVEN_DAYS - 3600,
         CORR_ID,
         NOW + 3600_000
@@ -92,6 +124,7 @@ describe('getWaitContinuationDispatch', () => {
       const keys: string[] = [];
       while (remaining > NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS) {
         const { delaySeconds, idempotencyKey } = getWaitContinuationDispatch(
+          RUN_ID,
           remaining,
           CORR_ID,
           NOW + (SEVEN_DAYS - remaining) * 1000
@@ -107,18 +140,19 @@ describe('getWaitContinuationDispatch', () => {
       expect(new Set(keys).size).toBe(keys.length);
       // 604800s chains as 7 max-delay hops + 1 remainder hop.
       expect(keys).toHaveLength(8);
-      expect(keys[keys.length - 1]).toBe(CORR_ID);
+      expect(keys[keys.length - 1]).toBe(KEY);
     });
 
     it('uses a fresh key when the final partial hop lands in the near-elapsed band', () => {
       // Remaining drops below the near-elapsed threshold only at the very
       // end; the second-bucketed key never collides with hop keys.
       const nearEnd = getWaitContinuationDispatch(
+        RUN_ID,
         NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS,
         CORR_ID,
         NOW + SEVEN_DAYS * 1000
       );
-      expect(nearEnd.idempotencyKey).toMatch(new RegExp(`^${CORR_ID}:\\d+$`));
+      expect(nearEnd.idempotencyKey).toMatch(new RegExp(`^${KEY}:\\d+$`));
     });
   });
 
@@ -142,6 +176,7 @@ describe('getWaitContinuationDispatch', () => {
       // A wait exactly at the default near-elapsed threshold would previously
       // return its full (> max) remaining time as the delay.
       const { delaySeconds } = getWaitContinuationDispatch(
+        RUN_ID,
         NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS,
         CORR_ID,
         NOW

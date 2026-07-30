@@ -24,7 +24,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
     ): Promise<Result> {
       const { promise, resolve, reject } = withResolvers<Result>();
 
-      const correlationId = `step_${ctx.generateUlid()}`;
+      const correlationId = ctx.nextCorrelationId('step');
 
       const queueItem: StepInvocationQueueItem = {
         type: 'step',

@@ -4,6 +4,7 @@
 
 import { withResolvers } from '@workflow/utils';
 import type { WorldCapabilities } from '@workflow/world';
+import type { CorrelationIdFactory } from './correlation-ids.js';
 import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import type { ReplayPayloadCache } from './replay-payload-cache.js';
@@ -142,6 +143,13 @@ export interface WorkflowOrchestratorContext {
    */
   invocationsQueue: Map<string, QueueItem>;
   onWorkflowError: (error: Error) => void;
+  /**
+   * Allocates the correlation id for a step or wait the workflow body just
+   * issued. Replay-stable, and the only place those ids are minted — see
+   * `correlation-ids.ts` for why the two kinds count separately and why
+   * nothing seeds them from the loaded log.
+   */
+  nextCorrelationId: CorrelationIdFactory;
   generateUlid: () => string;
   generateNanoid: () => string;
   /**

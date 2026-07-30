@@ -32,6 +32,24 @@ export const SPEC_VERSION_SUPPORTS_ATTRIBUTES = 4 as SpecVersion;
 export const SPEC_VERSION_SUPPORTS_COMPRESSION = 5 as SpecVersion;
 
 /**
+ * Runs at this spec version or later number their events, and their step and
+ * wait correlation ids, by dense per-run slots (`evnt_…001`, `step_…001`)
+ * instead of ULIDs. Ids are minted by the client, and a write that proposes an
+ * event id already taken is rejected rather than renumbered — which is what
+ * lets a client prove its loaded log is complete.
+ *
+ * A run is in exactly one mode for life: the mode is read from the run's
+ * persisted `specVersion`, never from the build. A run started under ULID
+ * correlation ids and replayed by a slot-capable build would otherwise propose
+ * `step_…001` where its log holds `step_01K…`, matching no existing entity.
+ *
+ * Deliberately not `SPEC_VERSION_CURRENT` yet: `requiresNewerWorld()` is what
+ * makes a world reject runs it cannot read, so bumping current before the
+ * worlds can allocate slots would have them reject their own new runs.
+ */
+export const SPEC_VERSION_SLOT_IDENTITY = 6 as SpecVersion;
+
+/**
  * Current spec version (event-sourced architecture with native attributes
  * and compressed payloads).
  */
@@ -64,4 +82,16 @@ export function isLegacySpecVersion(v: number | undefined | null): boolean {
 export function requiresNewerWorld(v: number | undefined | null): boolean {
   if (v === undefined || v === null) return false;
   return v > SPEC_VERSION_CURRENT;
+}
+
+/**
+ * Whether a run numbers its events and correlation ids by slot. Always pass the
+ * run's persisted `specVersion`; see `SPEC_VERSION_SLOT_IDENTITY`.
+ *
+ * @param v - The spec version number, or undefined/null for legacy runs
+ * @returns true if the run uses slot identity
+ */
+export function usesSlotIdentity(v: number | undefined | null): boolean {
+  if (v === undefined || v === null) return false;
+  return v >= SPEC_VERSION_SLOT_IDENTITY;
 }

@@ -20,6 +20,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
+    "test": "vitest run src",
     "clean": "tsc --build --clean && rm -rf dist"
   },
   "dependencies": {

@@ -45,6 +45,7 @@ import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
+import { createCorrelationIdFactory } from './correlation-ids.js';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import {
@@ -86,6 +87,10 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),
+    nextCorrelationId: createCorrelationIdFactory({
+      specVersion: undefined,
+      generateUlid: () => ulid(workflowStartedAt),
+    }),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),

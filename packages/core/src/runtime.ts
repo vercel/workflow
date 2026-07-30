@@ -61,6 +61,7 @@ import {
   withHealthCheck,
   withPreconditionRetry,
 } from './runtime/helpers.js';
+import { runScopedKey } from './runtime/idempotency-key.js';
 import {
   handleReplayBudgetExhausted,
   ReplayBudget,
@@ -1934,7 +1935,10 @@ export function workflowEntrypoint(
                                 },
                                 {
                                   delaySeconds: backstopDelaySeconds,
-                                  idempotencyKey: backstopIdempotencyKey(step),
+                                  idempotencyKey: backstopIdempotencyKey(
+                                    runId,
+                                    step
+                                  ),
                                 }
                               )
                             );
@@ -1952,7 +1956,10 @@ export function workflowEntrypoint(
                                 requestedAt: new Date(),
                               },
                               {
-                                idempotencyKey: step.correlationId,
+                                idempotencyKey: runScopedKey(
+                                  runId,
+                                  step.correlationId
+                                ),
                               }
                             )
                           );
@@ -1968,6 +1975,7 @@ export function workflowEntrypoint(
                                 requestedAt: new Date(),
                               },
                               getWaitContinuationDispatch(
+                                runId,
                                 suspensionResult.waitTimeout.seconds,
                                 suspensionResult.waitTimeout.correlationId
                               )
@@ -2508,7 +2516,7 @@ export function workflowEntrypoint(
                                   // correlationId so it dedupes against the
                                   // keyed re-dispatch the suspension handler
                                   // performs on replay (it also uses
-                                  // `idempotencyKey: step.correlationId`).
+                                  // the same run-scoped correlationId key).
                                   //
                                   // Without this, a mixed batch where one step
                                   // `completed` with unflushed background ops
@@ -2527,7 +2535,10 @@ export function workflowEntrypoint(
                                   // retry body could run early/concurrently.
                                   // Sharing the key lets the earlier delayed
                                   // message win, honoring the backoff.
-                                  idempotencyKey: step.correlationId,
+                                  idempotencyKey: runScopedKey(
+                                    runId,
+                                    step.correlationId
+                                  ),
                                 }
                               )
                             )

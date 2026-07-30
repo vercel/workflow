@@ -1,6 +1,7 @@
 import type { Event } from '@workflow/world';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { StepInvocationQueueItem } from '../global.js';
+import { runScopedKey } from './idempotency-key.js';
 import {
   backstopIdempotencyKey,
   hasPendingStepOwnedByMessage,
@@ -9,6 +10,7 @@ import {
 } from './step-ownership.js';
 
 const LEASE_ENV = 'WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS';
+const RUN_ID = 'wrun_01ABC';
 
 function makeStep(
   overrides: Partial<StepInvocationQueueItem> = {}
@@ -86,34 +88,47 @@ describe('stepLeaseRemainingSeconds', () => {
 });
 
 describe('backstopIdempotencyKey', () => {
-  it('never collides with the step message dedupe key (bare correlationId)', () => {
-    // The owner's retry handoff enqueues the step keyed by correlationId
-    // with a ~1s backoff; a backstop occupying that key would absorb the
-    // retry and stall the run for the full lease.
+  it('never collides with the step message dedupe key', () => {
+    // The owner's retry handoff enqueues the step keyed by its run-scoped
+    // correlationId with a ~1s backoff; a backstop occupying that key would
+    // absorb the retry and stall the run for the full lease.
     const step = makeStep();
-    expect(backstopIdempotencyKey(step)).not.toBe(step.correlationId);
+    expect(backstopIdempotencyKey(RUN_ID, step)).not.toBe(
+      runScopedKey(RUN_ID, step.correlationId)
+    );
+  });
+
+  it('is isolated per run', () => {
+    // Slot-numbered correlation IDs repeat across runs of a workflow, and
+    // queues dedupe per queue — which is per workflow, not per run.
+    const step = makeStep();
+    expect(backstopIdempotencyKey('wrun_other', step)).not.toBe(
+      backstopIdempotencyKey(RUN_ID, step)
+    );
   });
 
   it('is stable across wake replays within one ownership epoch', () => {
     // Every wake that observes the same latest step_started derives the
     // same key, capping fan-out at one pending backstop per epoch.
-    expect(backstopIdempotencyKey(makeStep())).toBe(
-      backstopIdempotencyKey(makeStep())
+    expect(backstopIdempotencyKey(RUN_ID, makeStep())).toBe(
+      backstopIdempotencyKey(RUN_ID, makeStep())
     );
   });
 
   it('changes when owner recovery re-stamps the step', () => {
     const initial = makeStep({ lastStartedAt: 1_000_000 });
     const reStamped = makeStep({ lastStartedAt: 1_030_000 });
-    expect(backstopIdempotencyKey(reStamped)).not.toBe(
-      backstopIdempotencyKey(initial)
+    expect(backstopIdempotencyKey(RUN_ID, reStamped)).not.toBe(
+      backstopIdempotencyKey(RUN_ID, initial)
     );
   });
 
   it('is isolated per correlation ID', () => {
     expect(
-      backstopIdempotencyKey(makeStep({ correlationId: 'step_A' }))
-    ).not.toBe(backstopIdempotencyKey(makeStep({ correlationId: 'step_B' })));
+      backstopIdempotencyKey(RUN_ID, makeStep({ correlationId: 'step_A' }))
+    ).not.toBe(
+      backstopIdempotencyKey(RUN_ID, makeStep({ correlationId: 'step_B' }))
+    );
   });
 
   it('re-arms through a full owner-recovery cycle despite in-flight key retention', () => {
@@ -142,9 +157,9 @@ describe('backstopIdempotencyKey', () => {
 
     // Epoch 1: owner stamps at T0; a wake replay arms the backstop.
     const epoch1 = makeStep({ lastStartedAt: 1_000_000 });
-    expect(enqueue(backstopIdempotencyKey(epoch1))).toBe('accepted');
+    expect(enqueue(backstopIdempotencyKey(RUN_ID, epoch1))).toBe('accepted');
     // A second wake in the same epoch is deduped (fan-out stays capped).
-    expect(enqueue(backstopIdempotencyKey(epoch1))).toBe('deduped');
+    expect(enqueue(backstopIdempotencyKey(RUN_ID, epoch1))).toBe('deduped');
 
     // Owner crashes; queue redelivery re-stamps step_started at T1
     // (owner recovery) → new ownership epoch, lease refreshed.
@@ -153,7 +168,7 @@ describe('backstopIdempotencyKey', () => {
     // The epoch-1 backstop fires during the refreshed lease. Its handler
     // replays, sees ownership active with time remaining, and re-arms —
     // while its own message is still in flight (key not yet released).
-    const rearm = enqueue(backstopIdempotencyKey(epoch2));
+    const rearm = enqueue(backstopIdempotencyKey(RUN_ID, epoch2));
     expect(rearm).toBe('accepted');
 
     // Owner dies for good: the epoch-2 backstop is the recovery path, and

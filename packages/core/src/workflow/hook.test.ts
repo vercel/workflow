@@ -12,6 +12,7 @@ import {
   aliasSerializationClass,
   RUN_CLASS_ID,
 } from '../class-serialization.js';
+import { createCorrelationIdFactory } from '../correlation-ids.js';
 import { EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
@@ -47,6 +48,10 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),
+    nextCorrelationId: createCorrelationIdFactory({
+      specVersion: undefined,
+      generateUlid: () => ulid(workflowStartedAt),
+    }),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),

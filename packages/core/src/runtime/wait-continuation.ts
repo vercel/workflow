@@ -7,6 +7,9 @@
  * elapsed waits" pass). This module decides the message's `delaySeconds`
  * and `idempotencyKey`.
  *
+ * Every key is scoped to the run (see `idempotency-key.ts`); the variations
+ * below are suffixes on top of that.
+ *
  * The continuation is keyed on the wait's correlationId: while a wait is
  * pending, every replay pass over the run re-observes it (e.g., once per
  * step completion in `Promise.all([steps..., sleep()])`), and without
@@ -58,6 +61,7 @@
  */
 
 import { envNumber } from '@workflow/world';
+import { runScopedKey } from './idempotency-key.js';
 
 /**
  * Maximum `delaySeconds` for a single wait-continuation message. Waits
@@ -99,9 +103,11 @@ export interface WaitContinuationDispatch {
  * Computes the queue delay and idempotency key for a wait-continuation
  * message. `timeoutSeconds` is the time until the wait's `resumeAt`
  * (floored at 1s by the suspension handler); `waitCorrelationId`
- * identifies the wait so repeated suspension passes dedupe.
+ * identifies the wait so repeated suspension passes dedupe, and `runId`
+ * keeps it from deduping against another run of the same workflow.
  */
 export function getWaitContinuationDispatch(
+  runId: string,
   timeoutSeconds: number,
   waitCorrelationId: string,
   now: number = Date.now()
@@ -120,14 +126,20 @@ export function getWaitContinuationDispatch(
   if (timeoutSeconds <= nearElapsedThreshold) {
     return {
       delaySeconds: timeoutSeconds,
-      idempotencyKey: `${waitCorrelationId}:${Math.floor(now / 1000)}`,
+      idempotencyKey: runScopedKey(
+        runId,
+        waitCorrelationId,
+        String(Math.floor(now / 1000))
+      ),
     };
   }
 
   const hop = Math.ceil(timeoutSeconds / maxDelaySeconds);
+  // First hop carries no suffix, so a single-hop wait keeps exactly one key for
+  // its lifetime.
+  const hopSuffix = hop === 1 ? [] : [`hop-${hop}`];
   return {
     delaySeconds: Math.min(timeoutSeconds, maxDelaySeconds),
-    idempotencyKey:
-      hop === 1 ? waitCorrelationId : `${waitCorrelationId}:hop-${hop}`,
+    idempotencyKey: runScopedKey(runId, waitCorrelationId, ...hopSuffix),
   };
 }
