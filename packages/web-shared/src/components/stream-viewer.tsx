@@ -25,7 +25,7 @@ interface StreamViewerProps {
   error?: string | null;
   /** True while the initial stream connection is being established */
   isLoading?: boolean;
-  /** Called when the user scrolls near the bottom, for triggering pagination */
+  /** Called when the user scrolls near the rendered end. */
   onScrollEnd?: () => void;
 }
 
@@ -74,7 +74,6 @@ export function StreamViewer({
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const prevChunkCountRef = useRef(0);
 
-  // Auto-scroll to bottom when new chunks arrive (live streaming)
   useEffect(() => {
     if (chunks.length > prevChunkCountRef.current && chunks.length > 0) {
       virtuosoRef.current?.scrollToIndex({
@@ -109,7 +108,7 @@ export function StreamViewer({
             <div>{error}</div>
           </div>
         ) : chunks.length === 0 ? (
-          <div className="border-b border-gray-alpha-400 bg-background-200 px-3 py-2 text-label-12 text-gray-900">
+          <div className="flex h-10 items-center border-b border-gray-alpha-400 bg-background-200 px-3 text-label-12 text-gray-900">
             {isLive ? 'Waiting for stream data...' : 'Stream is empty'}
           </div>
         ) : (
