@@ -188,8 +188,12 @@ export function annotateWithBaseline(results, baseline) {
   const methodology = (result) => result.methodologyVersion ?? 'legacy';
   const keyFor = (result, row) =>
     `${methodology(result)}/${result.backend}/${result.app}/${row.metric}/${row.scenario}`;
+  const resultKeyFor = (result) =>
+    `${methodology(result)}/${result.backend}/${result.app}`;
   const baselineRows = new Map();
+  const baselineResults = new Map();
   for (const result of baseline) {
+    baselineResults.set(resultKeyFor(result), result);
     for (const row of result.metrics ?? []) {
       baselineRows.set(keyFor(result, row), row);
     }
@@ -208,10 +212,16 @@ export function annotateWithBaseline(results, baseline) {
     if (Array.isArray(base.raw)) annotated.baselineRaw = base.raw;
     return annotated;
   };
-  return results.map((result) => ({
-    ...result,
-    metrics: (result.metrics ?? []).map((row) => annotate(result, row)),
-  }));
+  return results.map((result) => {
+    const baseResult = baselineResults.get(resultKeyFor(result));
+    return {
+      ...result,
+      metrics: (result.metrics ?? []).map((row) => annotate(result, row)),
+      ...(Array.isArray(baseResult?.sequentialRuns)
+        ? { baselineSequentialRuns: baseResult.sequentialRuns }
+        : {}),
+    };
+  });
 }
 
 const sum = (values) => values.reduce((total, v) => total + v, 0);
@@ -375,6 +385,38 @@ function renderStsoRowDiff(row) {
 }
 
 /**
+ * Renders a Datadog trace link per sequential-steps iteration (run 1 and run
+ * 2), when the deployment's `/api/bench` route reported a trace id. Lets
+ * anyone reading the comment jump straight to the trace for either run
+ * without hunting for it by deployment id / time window.
+ */
+function renderSequentialTracesSection(result) {
+  const runs2 = result.sequentialRuns ?? [];
+  const runs1 = result.baselineSequentialRuns ?? [];
+  if (runs2.length === 0 && runs1.length === 0) return '';
+
+  const traceLink = (run) =>
+    run?.traceId
+      ? `[trace](https://app.datadoghq.com/apm/trace/${run.traceId})`
+      : undefined;
+
+  const lines = ['', '**Sequential-steps run traces**', ''];
+  const count = Math.max(runs1.length, runs2.length);
+  for (let i = 0; i < count; i++) {
+    const r1 = runs1[i];
+    const r2 = runs2[i];
+    const r1Text = r1
+      ? `\`${r1.runId}\`${traceLink(r1) ? ` — ${traceLink(r1)}` : ' (no trace id)'}`
+      : '—';
+    const r2Text = r2
+      ? `\`${r2.runId}\`${traceLink(r2) ? ` — ${traceLink(r2)}` : ' (no trace id)'}`
+      : '—';
+    lines.push(`- Run 1: ${r1Text} · Run 2: ${r2Text}`);
+  }
+  return lines.join('\n');
+}
+
+/**
  * Renders a per-scenario histogram diff (bucketed step counts, run 2 vs run
  * 1) and a cumulative-time diff (sum of all STSO samples, run 2 vs run 1) for
  * every STSO row that has raw samples from both runs. This is a
@@ -491,6 +533,8 @@ function renderEntry(entry, { heading }) {
       lines.push(`Backend: \`${result.backend}\` · app: \`${result.app}\``, '');
     }
     lines.push(renderResultTable(result), '');
+    const tracesSection = renderSequentialTracesSection(result);
+    if (tracesSection) lines.push(tracesSection, '');
     const stsoDiff = renderStsoDiffSection(result);
     if (stsoDiff) lines.push(stsoDiff, '');
   }

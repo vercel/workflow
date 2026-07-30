@@ -200,6 +200,9 @@ interface StreamIterationResult {
 
 interface SequentialIterationResult {
   runId: string;
+  /** Datadog trace id for the triggering `/api/bench` request, when the
+   * deployment's route reports one (older deployments won't). */
+  traceId?: string;
   /** stsoMs[i] is the gap between steps i+1 and i+2 (1-indexed). */
   stsoMs: number[];
   /** Whole-run workflow overhead, anchored on the in-deployment clientStart. */
@@ -223,6 +226,8 @@ interface BenchTriggerResponse {
   runId: string;
   /** Date.now() stamped in the route immediately before start(). */
   clientStart: number;
+  /** Datadog trace id for this request, when the route reports one. */
+  traceId?: string;
 }
 
 function withTimeout<T>(
@@ -274,7 +279,11 @@ async function triggerBenchRun(
       `bench trigger for ${workflowFn} returned malformed body: ${JSON.stringify(data)?.slice(0, 200)}`
     );
   }
-  return { runId: data.runId, clientStart: data.clientStart };
+  return {
+    runId: data.runId,
+    clientStart: data.clientStart,
+    traceId: typeof data.traceId === 'string' ? data.traceId : undefined,
+  };
 }
 
 /** Poll a run's return value to completion (the handle polls internally). */
@@ -342,7 +351,7 @@ async function runStreamIteration(
 async function runSequentialIteration(
   stepCount: number
 ): Promise<SequentialIterationResult> {
-  const { runId, clientStart } = await triggerBenchRun(
+  const { runId, clientStart, traceId } = await triggerBenchRun(
     'benchSequentialStepsWorkflow',
     [stepCount]
   );
@@ -366,6 +375,7 @@ async function runSequentialIteration(
 
     return {
       runId,
+      traceId,
       stsoMs,
       woMs: workflowOverheadMs(clientStart, steps),
     };
@@ -557,6 +567,10 @@ interface MetricRow extends MetricStats {
 }
 
 const metricRows: MetricRow[] = [];
+
+/** Datadog trace ids for each sequential-steps iteration, for linking a run
+ * back to its trace directly from the rendered comment/summary. */
+const sequentialRuns: { runId: string; traceId?: string }[] = [];
 
 function recordMetric(
   metric: string,
@@ -802,6 +816,9 @@ describe('workflow benchmarks', () => {
         extraAttempts: Math.max(2, Math.ceil(SEQUENTIAL_ITERATIONS * 0.5)),
       }
     );
+    sequentialRuns.push(
+      ...results.map((r) => ({ runId: r.runId, traceId: r.traceId }))
+    );
     // Report STSO per step-index window. Gap k (between steps k and k+1,
     // 1-indexed) lives at stsoMs[k - 1].
     for (const { from, to, targets } of STSO_BUCKETS) {
@@ -857,6 +874,10 @@ describe('workflow benchmarks', () => {
       },
       scenarios: SCENARIO_DESCRIPTIONS,
       metrics: metricRows,
+      // Only populated when the sequential-steps scenario ran; omitted
+      // entirely (rather than `[]`) so older/other-scenario result files
+      // don't grow a meaningless empty field.
+      ...(sequentialRuns.length > 0 ? { sequentialRuns } : {}),
     };
     fs.writeFileSync(outputPath, JSON.stringify(results, null, 2));
     console.log(`[bench] Results written to ${outputPath}`);

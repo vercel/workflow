@@ -174,8 +174,11 @@ jobs:
           # `permissions: id-token: write` is on the job).
           # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
           BENCH_OUTPUT_FILE: bench-results-run1-${{ matrix.target.app }}-${{ matrix.target.world }}.json
+        # TEMPORARY: narrowed to the sequential-steps scenario only, to
+        # isolate run-to-run variance investigation. Remove `-t` to restore
+        # the full scenario suite.
         run: |
-          pnpm vitest run packages/core/e2e/benchmark.test.ts
+          pnpm vitest run packages/core/e2e/benchmark.test.ts -t "sequential steps"
 
       - name: Run benchmarks (run 2)
         env:
@@ -189,8 +192,9 @@ jobs:
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.target.project-slug }}
           GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           BENCH_OUTPUT_FILE: bench-results-run2-${{ matrix.target.app }}-${{ matrix.target.world }}.json
+        # TEMPORARY: see run 1's `-t` note above.
         run: |
-          pnpm vitest run packages/core/e2e/benchmark.test.ts
+          pnpm vitest run packages/core/e2e/benchmark.test.ts -t "sequential steps"
 
       - name: Upload run 1 results
         # Partial results are still useful when a scenario failed

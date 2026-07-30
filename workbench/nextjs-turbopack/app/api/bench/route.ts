@@ -1,3 +1,4 @@
+import { trace } from '@opentelemetry/api';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { start } from 'workflow/api';
@@ -57,7 +58,11 @@ export async function POST(request: NextRequest) {
     const clientStart = Date.now();
     // @ts-expect-error - arbitrary call to a dynamically resolved workflow
     const run = await start(fn, args);
-    return NextResponse.json({ runId: run.runId, clientStart });
+    // Surface this request's Datadog trace id so callers (the benchmark
+    // runner) can link a run back to its trace without having to search by
+    // deployment/time window.
+    const traceId = trace.getActiveSpan()?.spanContext().traceId;
+    return NextResponse.json({ runId: run.runId, clientStart, traceId });
   } catch (error) {
     return NextResponse.json(
       {
