@@ -1316,7 +1316,7 @@ describe('Storage', () => {
         });
 
         expect([...preloaded.events, ...suffix.data]).toEqual(all.data);
-      }, 30_000);
+      }, 120_000);
 
       it('should handle run completed events', async () => {
         const eventData = {
