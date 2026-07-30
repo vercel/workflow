@@ -25,7 +25,6 @@ import {
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
-  type StartedWorkflowRun,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
   type World,
@@ -325,9 +324,22 @@ function openHookAndWaitState(events: Event[]): {
 }
 
 type ReplayEventLog =
-  | { type: 'unloaded' }
+  | { type: 'loadAll' }
   | { type: 'ready'; log: MutableEventLog }
-  | { type: 'cached'; log: MutableEventLog };
+  | {
+      type: 'loadAfter';
+      log: MutableEventLog & { cursor: string };
+    };
+
+function nextEventLogLoad(log: MutableEventLog): ReplayEventLog {
+  if (log.cursor === null) {
+    return { type: 'loadAll' };
+  }
+  return {
+    type: 'loadAfter',
+    log: { events: log.events, cursor: log.cursor },
+  };
+}
 
 function appendEventLog(log: MutableEventLog, appended: MutableEventLog): void {
   const eventIds = new Set(log.events.map((event) => event.eventId));
@@ -534,9 +546,9 @@ export function workflowEntrypoint(
                   const invocationStartTime = Date.now();
                   let loopIteration = 0;
 
-                  // `ready` can replay once without a read. `cached` must load
-                  // events after its cursor before replaying again.
-                  let eventLog: ReplayEventLog = { type: 'unloaded' };
+                  // `ready` can replay once without a read. The other states
+                  // describe the next load exactly.
+                  let eventLog: ReplayEventLog = { type: 'loadAll' };
 
                   // Shared state: set by either the background step path
                   // or the run_started setup below.
@@ -823,7 +835,7 @@ export function workflowEntrypoint(
                         // Use cursor-based loading so the main loop can continue
                         // incrementally from here.
                         const loaded = await loadWorkflowRunEvents(runId);
-                        eventLog = { type: 'cached', log: loaded };
+                        eventLog = nextEventLogLoad(loaded);
 
                         // Check for pending steps: any step_created without
                         // a matching step_completed or step_failed.
@@ -1067,7 +1079,6 @@ export function workflowEntrypoint(
                         ...Attribute.WorkflowStartedAt(workflowStartedAt),
                       });
                     } else {
-                      let startedRun: StartedWorkflowRun;
                       try {
                         recordRunStartedCreateStart(false);
                         const result = await world.events.create(
@@ -1075,26 +1086,58 @@ export function workflowEntrypoint(
                           runStartedEvent,
                           { requestId }
                         );
-                        startedRun = result.run;
-                        workflowRun = startedRun;
+                        workflowRun = result.run;
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
                         // Anchors RSFS — see the declaration above.
                         runStartedReceivedAtMs = Date.now();
 
                         if (result.events?.length) {
-                          const log = {
-                            events: [...result.events],
-                            cursor: result.cursor ?? null,
-                          };
+                          const events = [...result.events];
                           if (result.hasMore) {
                             assert(
-                              log.cursor,
+                              result.cursor,
                               'Partial run_started event log requires a cursor'
                             );
-                            eventLog = { type: 'cached', log };
+                            eventLog = {
+                              type: 'loadAfter',
+                              log: {
+                                events,
+                                cursor: result.cursor,
+                              },
+                            };
                           } else {
-                            eventLog = { type: 'ready', log };
+                            eventLog = {
+                              type: 'ready',
+                              log: {
+                                events,
+                                cursor: result.cursor ?? null,
+                              },
+                            };
                           }
+                        }
+
+                        workflowStartedAt = +result.run.startedAt;
+                        span?.setAttributes({
+                          ...Attribute.WorkflowRunStatus(result.run.status),
+                          ...Attribute.WorkflowStartedAt(workflowStartedAt),
+                        });
+
+                        if (result.run.status !== 'running') {
+                          runtimeLogger.info(
+                            'Workflow already completed or failed, skipping',
+                            {
+                              workflowRunId: runId,
+                              status: result.run.status,
+                            }
+                          );
+
+                          // TODO: for `cancel`, we actually want to propagate a WorkflowCancelled event
+                          // inside the workflow context so the user can gracefully exit. this is SIGTERM
+                          // TODO: furthermore, there should be a timeout or a way to force cancel SIGKILL
+                          // so that we actually exit here without replaying the workflow at all, in the case
+                          // the replaying the workflow is itself failing.
+
+                          return;
                         }
                       } catch (err) {
                         // Run was concurrently completed/failed/cancelled
@@ -1129,33 +1172,12 @@ export function workflowEntrypoint(
                           return;
                         }
                       }
-                      workflowStartedAt = +startedRun.startedAt;
-
-                      span?.setAttributes({
-                        ...Attribute.WorkflowRunStatus(startedRun.status),
-                        ...Attribute.WorkflowStartedAt(workflowStartedAt),
-                      });
-
-                      if (startedRun.status !== 'running') {
-                        // Workflow has already completed or failed, so we can skip it
-                        runtimeLogger.info(
-                          'Workflow already completed or failed, skipping',
-                          {
-                            workflowRunId: runId,
-                            status: startedRun.status,
-                          }
-                        );
-
-                        // TODO: for `cancel`, we actually want to propagate a WorkflowCancelled event
-                        // inside the workflow context so the user can gracefully exit. this is SIGTERM
-                        // TODO: furthermore, there should be a timeout or a way to force cancel SIGKILL
-                        // so that we actually exit here without replaying the workflow at all, in the case
-                        // the replaying the workflow is itself failing.
-
-                        return;
-                      }
                     } // end else (non-turbo run_started)
                   } // end if (!workflowRun)
+                  assert(
+                    workflowRun,
+                    'Workflow run must be loaded before replay'
+                  );
 
                   // Resolve the encryption key for this run's deployment.
                   // Used eagerly here since both runWorkflow (input
@@ -1238,26 +1260,19 @@ export function workflowEntrypoint(
                       if (eventLog.type === 'ready') {
                         log = eventLog.log;
                       } else {
-                        const load =
-                          eventLog.type === 'cached' && eventLog.log.cursor
-                            ? {
-                                type: 'append' as const,
-                                log: eventLog.log,
-                                cursor: eventLog.log.cursor,
-                              }
-                            : { type: 'replace' as const };
                         const loaded = await loadWorkflowRunEvents(
                           runId,
-                          load.type === 'append' ? load.cursor : undefined
+                          eventLog.type === 'loadAfter'
+                            ? eventLog.log.cursor
+                            : undefined
                         );
-                        if (load.type === 'append') {
-                          appendEventLog(load.log, loaded);
-                          log = load.log;
+                        if (eventLog.type === 'loadAfter') {
+                          appendEventLog(eventLog.log, loaded);
+                          log = eventLog.log;
                         } else {
                           log = loaded;
                         }
                       }
-                      eventLog = { type: 'cached', log };
                       let events = log.events;
 
                       // Detect concurrent completion via the event log: if
@@ -1359,7 +1374,6 @@ export function workflowEntrypoint(
                         } else {
                           log = await loadWorkflowRunEvents(runId);
                         }
-                        eventLog = { type: 'cached', log };
                         events = log.events;
                       }
 
@@ -1411,6 +1425,7 @@ export function workflowEntrypoint(
                       // events.list. Captured here because nothing between this
                       // point and the inline executeStep mutates the event log.
                       preInlineWriteCursor = log.cursor;
+                      eventLog = { type: 'ready', log };
 
                       // Replay workflow
                       runtimeLogger.debug('Starting workflow replay', {
@@ -1542,7 +1557,7 @@ export function workflowEntrypoint(
                         // so a retry never re-issues an already-created event.
                         const suspensionStart = Date.now();
                         assert(
-                          eventLog.type === 'cached',
+                          eventLog.type === 'ready',
                           'Workflow suspended before its event log was loaded'
                         );
                         const suspensionLog = eventLog.log;
@@ -1648,6 +1663,7 @@ export function workflowEntrypoint(
                           });
                           return;
                         }
+                        eventLog = nextEventLogLoad(suspensionLog);
                         preStepBlockingMs += suspensionResult.hookCreationMs;
                         if (
                           suspensionResult.hasAttributeEvents &&
