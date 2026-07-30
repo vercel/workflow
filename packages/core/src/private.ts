@@ -4,11 +4,11 @@
 
 import { withResolvers } from '@workflow/utils';
 import type { WorldCapabilities } from '@workflow/world';
-import type { PayloadKey } from './serialization/encryption.js';
 import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import type { ReplayPayloadCache } from './replay-payload-cache.js';
 import type { Serializable } from './schemas.js';
+import type { PayloadKey } from './serialization/encryption.js';
 
 export type StepFunction<
   Args extends Serializable[] = any[],
@@ -421,6 +421,16 @@ export interface DeliveryBarrier {
  * To guarantee a later delivery gated on this one can never hang when this
  * delivery is abandoned (the workflow took a different branch or is
  * suspending and never observes it), the barrier auto-resolves at idle.
+ *
+ * INVARIANT required of every call site: a barrier that is ever `armed` must
+ * be paired with a delivery chain that runs unconditionally — attached when
+ * the event is consumed (waits, step results, waiting-consumer hook payloads,
+ * aborts), or by the `claim()` whose invocation is what arms it (buffered
+ * hook payloads). The idle check ({@link scheduleWhenIdle}) refuses to
+ * observe idle while an armed, self-resolving barrier is undelivered, and the
+ * safety net below is itself idle-gated — so an armed barrier with no
+ * unconditional chain would livelock every idle check in the run, including
+ * its own retirement.
  */
 export function registerDeliveryBarrier(
   ctx: WorkflowOrchestratorContext,
@@ -469,12 +479,61 @@ export function registerDeliveryBarrier(
 }
 
 /**
+ * Whether some registered branch-deciding delivery is going to reach the
+ * workflow without any further help (it is armed and not transitively parked
+ * behind an unclaimed buffered payload — see {@link resolvesOnItsOwn}) but
+ * has not been handed over yet.
+ *
+ * This is the delivery state `pendingDeliveries` cannot see. That counter
+ * covers the hydration window inside a serial `promiseQueue` slot and is
+ * released there, while the delivery's `resolve()` runs later, from a
+ * detached continuation behind {@link awaitEarlierDeliveries} — including its
+ * macrotask yield whenever the delivery had to defer. Replaying a batch of N
+ * parallel step results consumed in one drain window leaves N-1 of them
+ * parked on that yield with `pendingDeliveries` already at 0. An idle check
+ * armed during the same window (a pending `sleep()` arms one on every replay)
+ * could then observe "idle" mid-deferral and raise a `WorkflowSuspension`
+ * BEFORE the workflow's own continuations ran — a suspension carrying none of
+ * the follow-up work the batch was about to create, which the runtime
+ * dutifully schedules as nothing, leaving the run dormant until an unrelated
+ * timer fires (vercel/workflow#3183).
+ *
+ * Deliveries that do NOT resolve on their own must be excluded, not for
+ * accuracy but for termination: an unclaimed buffered hook payload is retired
+ * BY the idle safety net in {@link registerDeliveryBarrier}, so counting it
+ * here would gate its own retirement. Self-resolving deliveries always
+ * deliver from their own chains (see the INVARIANT on
+ * {@link registerDeliveryBarrier}) and never need that net, so waiting on
+ * them is deadlock-free.
+ */
+function hasParkedCommittedDelivery(ctx: WorkflowOrchestratorContext): boolean {
+  const barriers = ctx.pendingDeliveryBarriers;
+  if (!barriers || barriers.size === 0) {
+    return false;
+  }
+  // Shared across this call only — see `resolvesOnItsOwn`.
+  const selfResolving = new Map<number, boolean>();
+  for (const [index, entry] of barriers) {
+    if (resolvesOnItsOwn(barriers, index, entry, selfResolving)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Schedule a callback to fire only after all pending data deliveries
  * (step results, hook payloads) and async deserialization have completed.
- * Uses a polling loop: setTimeout(0) → check pendingDeliveries →
- * if > 0, wait for promiseQueue → repeat. This handles the multi-round
- * delivery pattern where each hook payload delivery cycle appends new
- * async work to the promiseQueue.
+ * Uses a polling loop: setTimeout(0) → check pendingDeliveries and the
+ * barrier registry → if anything is still in flight, wait for promiseQueue →
+ * repeat. This handles the multi-round delivery pattern where each hook
+ * payload delivery cycle appends new async work to the promiseQueue.
+ *
+ * "In flight" is two distinct windows, each with its own guard:
+ * `pendingDeliveries > 0` covers hydration inside the serial queue slots, and
+ * {@link hasParkedCommittedDelivery} covers the detached gap between a slot
+ * releasing that counter and the delivery's `resolve()` actually running —
+ * deliberately outside `pendingDeliveries` (see step.ts), and invisible to it.
  *
  * The initial `setTimeout(0)` macrotask is load-bearing and must NOT be
  * downgraded to a microtask (`queueMicrotask`/`Promise.resolve().then`).
@@ -493,8 +552,10 @@ export function scheduleWhenIdle(
   fn: () => void
 ): void {
   const check = () => {
-    if (ctx.pendingDeliveries > 0) {
-      // Still delivering data — wait for queue to drain, then re-check
+    if (ctx.pendingDeliveries > 0 || hasParkedCommittedDelivery(ctx)) {
+      // A delivery is still hydrating, or is committed but parked behind its
+      // deferral (whose resolve runs on a detached timer, not this queue).
+      // Either way: let the queue drain, then re-check a timer tick later.
       ctx.promiseQueue.then(() => {
         setTimeout(check, 0);
       });
