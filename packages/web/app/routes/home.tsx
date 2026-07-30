@@ -49,23 +49,7 @@ export default function Home() {
   };
 
   return (
-    <main
-      className="mx-auto w-full max-w-[1400px]"
-      aria-labelledby="workflow-activity-heading"
-    >
-      <header className="mb-5">
-        <h1
-          id="workflow-activity-heading"
-          className="text-heading-24 text-foreground"
-        >
-          Workflow activity
-        </h1>
-        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-          Inspect executions, resolve hooks, and review available workflow
-          definitions.
-        </p>
-      </header>
-
+    <main className="mx-auto w-full max-w-[1400px]">
       <Tabs value={tab} onValueChange={setTab} className="w-full gap-0">
         <TabsList
           className="mb-5 h-auto w-full justify-start gap-6 rounded-none border-0 border-b bg-transparent p-0"
