@@ -1,11 +1,9 @@
 import {
   decryptEnvelope,
   deriveRunPayloadKeys,
-  type PayloadKey,
-} from '@workflow/core/serialization-format';
-import {
   hydrateData,
   isEncryptedData,
+  type PayloadKey,
 } from '@workflow/core/serialization-format';
 import { getWebRevivers } from '@workflow/web-shared';
 import type { WorkflowRunStatus } from '@workflow/world';
@@ -59,6 +57,9 @@ export function useStreamReader(
 ) {
   const [chunks, setChunks] = useState<StreamChunk[]>([]);
   const [isLive, setIsLive] = useState(false);
+  const [isInitialLoading, setIsInitialLoading] = useState(
+    Boolean(streamId && runId)
+  );
   const [error, setError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const chunkIdRef = useRef(0);
@@ -130,6 +131,8 @@ export function useStreamReader(
   useEffect(() => {
     setChunks([]);
     setError(null);
+    setIsLive(false);
+    setIsInitialLoading(Boolean(streamId && runId));
     chunkIdRef.current = 0;
     frameCountRef.current = 0;
     serverCursorRef.current = null;
@@ -140,14 +143,13 @@ export function useStreamReader(
     }
 
     if (!streamId || !runId) {
-      setIsLive(false);
+      setIsInitialLoading(false);
       return;
     }
 
     let mounted = true;
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
-    setIsLive(true);
 
     const revivers = getWebRevivers();
 
@@ -320,6 +322,7 @@ export function useStreamReader(
           if (mounted) {
             setError('This stream is encrypted. Click Decrypt to view.');
             setIsLive(false);
+            setIsInitialLoading(false);
           }
           return;
         }
@@ -330,6 +333,7 @@ export function useStreamReader(
         if (!mounted || abortController.signal.aborted) return;
 
         setChunks(initialChunks);
+        setIsInitialLoading(false);
 
         // If the stream itself is done, no need to poll regardless of run status
         if (result.done) {
@@ -338,6 +342,7 @@ export function useStreamReader(
         }
 
         if (isRunActive(runStatusRef.current)) {
+          setIsLive(true);
           const poll = async () => {
             if (!mounted || abortController.signal.aborted) return;
             try {
@@ -375,6 +380,7 @@ export function useStreamReader(
         if (mounted) {
           setError(err instanceof Error ? err.message : String(err));
           setIsLive(false);
+          setIsInitialLoading(false);
         }
       }
     };
@@ -401,5 +407,5 @@ export function useStreamReader(
     }
   }, [runStatus]);
 
-  return { chunks, isLive, error };
+  return { chunks, isLive, isInitialLoading, error };
 }
