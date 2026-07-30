@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   getQueueTopicPrefix,
   parseQueueName,
+  QueuePayloadSchema,
   QueuePrefix,
   ValidQueueName,
 } from './queue.js';
@@ -121,5 +122,42 @@ describe('parseQueueName', () => {
       prefix: '__custom_wkf_workflow_',
       id: 'myFlow',
     });
+  });
+});
+
+describe('QueuePayloadSchema', () => {
+  // A probe issued to prepare a cross-deployment `start()` carries the run id
+  // it is about to create, which also makes it satisfy
+  // `WorkflowInvokePayloadSchema` (whose only required field is `runId`). Zod
+  // unions return the first matching member and strip keys that member doesn't
+  // declare, so if the invoke member were matched first the discriminator would
+  // be dropped and the runtime would reinterpret the probe as a run replay.
+  it('preserves the health-check discriminator on a probe that carries a runId', () => {
+    const parsed = QueuePayloadSchema.parse({
+      __healthCheck: true,
+      correlationId: 'corr_123',
+      runId: 'wrun_01ABC',
+    });
+
+    expect(parsed).toEqual({
+      __healthCheck: true,
+      correlationId: 'corr_123',
+      runId: 'wrun_01ABC',
+    });
+  });
+
+  it('preserves health-check payloads that carry no runId', () => {
+    expect(
+      QueuePayloadSchema.parse({
+        __healthCheck: true,
+        correlationId: 'corr_123',
+      })
+    ).toEqual({ __healthCheck: true, correlationId: 'corr_123' });
+  });
+
+  it('still resolves workflow invoke payloads', () => {
+    expect(
+      QueuePayloadSchema.parse({ runId: 'wrun_01ABC', stepId: 'step_1' })
+    ).toEqual({ runId: 'wrun_01ABC', stepId: 'step_1' });
   });
 });

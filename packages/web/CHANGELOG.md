@@ -1,5 +1,29 @@
 # @workflow/web
 
+## 5.0.0-beta.38
+
+### Minor Changes
+
+- [#2548](https://github.com/vercel/workflow/pull/2548) [`25715d4`](https://github.com/vercel/workflow/commit/25715d4521164836d7f2eb2493b73d13ec595b10) Thanks [@pranaygp](https://github.com/pranaygp)! - Add a framework-agnostic `@workflow/web/handler` export (`createWorkflowWebHandler`) that serves the observability UI as a single Web `Request`→`Response` handler under a configurable base path, plus a `@workflow/web/registry` for embedded-dashboard discovery.
+
+### Patch Changes
+
+- [#3197](https://github.com/vercel/workflow/pull/3197) [`e181f64`](https://github.com/vercel/workflow/commit/e181f64b72a52ed1ff2f7fd2fdc352dacbb576d2) Thanks [@mitul-s](https://github.com/mitul-s)! - Tighten stream list, chunk viewer, and shared loading skeleton styling to match the trace view.
+
+- Updated dependencies [[`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804)]:
+  - @workflow/world-local@5.0.0-beta.32
+
+## 5.0.0-beta.37
+
+### Patch Changes
+
+- [#3146](https://github.com/vercel/workflow/pull/3146) [`e8bc7d6`](https://github.com/vercel/workflow/commit/e8bc7d6aadcdb5f89de1be71cfcafe5e9085ed25) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Let observability tooling decrypt sealed (`encp`) payloads: key resolution now yields the run's full key capability, and `hydrateDataWithKey` dispatches on the envelope format.
+
+- [#3061](https://github.com/vercel/workflow/pull/3061) [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Check only the combined workflow endpoint in the observability health check.
+
+- Updated dependencies [[`b4ba79e`](https://github.com/vercel/workflow/commit/b4ba79ebc501248408474efdd6e353f1753d83e3), [`49276f2`](https://github.com/vercel/workflow/commit/49276f2d0b11d7552ac4504936cbca51df4ce98d), [`4ada27d`](https://github.com/vercel/workflow/commit/4ada27d35af197d66196288919581d839f87c9a3), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91)]:
+  - @workflow/world-local@5.0.0-beta.31
+
 ## 5.0.0-beta.36
 
 ### Patch Changes

@@ -15,6 +15,7 @@ import {
   getWorkflowRunEventsV4,
   throwForErrorResponse,
 } from './events-v4.js';
+import { splitEventDataForV4 } from './events.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
@@ -633,5 +634,135 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     expect(capturedMeta?.eventType).toBe('wait_created');
     expect('stateUpdatedAt' in (capturedMeta ?? {})).toBe(false);
     agent.assertNoPendingInterceptors();
+  });
+});
+
+/**
+ * `splitEventDataForV4` lifts allowlisted `eventData` fields into the frame
+ * meta, and `buildPostFrameMeta` copies them onto the wire field-by-field.
+ * `events.ts` spreads that meta into `CreateEventV4Input` (`...meta`), and a
+ * spread bypasses TypeScript's excess-property check — so a field that
+ * `buildPostFrameMeta` forgets to forward is dropped silently, with no build
+ * error and no runtime warning.
+ *
+ * That is exactly how `encryptionPublicKey` went missing: the run's public key
+ * was computed, put in the meta, spread into the v4 input, and then never
+ * written to the frame. The server therefore never saw it, never stored it on
+ * the run entity, and every cross-run writer fell back to the symmetric
+ * envelope. The failure looked like "the server hasn't shipped the feature".
+ */
+describe('v4 POST frame meta forwards every field the splitter produces', () => {
+  /** Decode `[u32_be meta_len][cbor_meta][u32_be body_len][body]`. */
+  function decodeFrameMeta(body: unknown): Record<string, unknown> {
+    const bytes =
+      body instanceof Uint8Array
+        ? body
+        : new Uint8Array(body as ArrayBufferLike);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const metaLen = view.getUint32(0, false);
+    return decode(bytes.subarray(4, 4 + metaLen)) as Record<string, unknown>;
+  }
+
+  async function postAndCaptureMeta(
+    data: Parameters<typeof splitEventDataForV4>[0]
+  ) {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    let captured: Record<string, unknown> | undefined;
+    agent
+      .get(origin)
+      .intercept({
+        path: `/api/v4/runs/wrun_1/events/${data.eventType}`,
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          captured = decodeFrameMeta(opts.body);
+          return encode({});
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    const { payload, meta } = splitEventDataForV4(data);
+    await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: data.eventType,
+        specVersion: 5,
+        payload,
+        ...meta,
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    return { meta, wireMeta: captured ?? {} };
+  }
+
+  it('carries encryptionPublicKey on run_created', async () => {
+    const key = 'ozGYxJP2piL8HTY0EukzPVQsyjo8x4L5ZA1xsFWllmA=';
+    const { meta, wireMeta } = await postAndCaptureMeta({
+      eventType: 'run_created',
+      specVersion: 5,
+      eventData: {
+        deploymentId: 'dpl_1',
+        workflowName: 'myWorkflow',
+        encryptionPublicKey: key,
+        input: new TextEncoder().encode('"in"'),
+      },
+    } as unknown as Parameters<typeof splitEventDataForV4>[0]);
+
+    expect(meta.encryptionPublicKey).toBe(key);
+    expect(wireMeta.encryptionPublicKey).toBe(key);
+  });
+
+  it('carries encryptionPublicKey on a resilient-start run_started', async () => {
+    const key = 'QJI1dJ/7ZK8npKmpxjvCYPso0tS92pqjwTS3uAajd0E=';
+    const { meta, wireMeta } = await postAndCaptureMeta({
+      eventType: 'run_started',
+      specVersion: 5,
+      eventData: {
+        deploymentId: 'dpl_1',
+        workflowName: 'myWorkflow',
+        encryptionPublicKey: key,
+      },
+    } as unknown as Parameters<typeof splitEventDataForV4>[0]);
+
+    expect(meta.encryptionPublicKey).toBe(key);
+    expect(wireMeta.encryptionPublicKey).toBe(key);
+  });
+
+  // Generic guard: whatever the splitter decides belongs in the frame meta must
+  // actually reach the wire. This fails for ANY field a future change adds to
+  // the splitter but forgets in buildPostFrameMeta, not just this one.
+  it('drops no meta field between the splitter and the wire', async () => {
+    const { meta, wireMeta } = await postAndCaptureMeta({
+      eventType: 'run_created',
+      specVersion: 5,
+      eventData: {
+        deploymentId: 'dpl_1',
+        workflowName: 'myWorkflow',
+        encryptionPublicKey: 'ozGYxJP2piL8HTY0EukzPVQsyjo8x4L5ZA1xsFWllmA=',
+        attributes: { foo: 'bar' },
+        allowReservedAttributes: true,
+        executionContext: { traceCarrier: {} },
+        input: new TextEncoder().encode('"in"'),
+      },
+    } as unknown as Parameters<typeof splitEventDataForV4>[0]);
+
+    const metaKeys = Object.keys(meta);
+    // Guard the guard: if the splitter stops producing fields this test is
+    // vacuous, so require it to have produced a meaningful set.
+    expect(metaKeys.length).toBeGreaterThan(3);
+    expect(Object.keys(wireMeta)).toEqual(expect.arrayContaining(metaKeys));
   });
 });

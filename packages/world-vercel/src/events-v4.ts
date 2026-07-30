@@ -156,6 +156,11 @@ export interface CreateEventV4Input {
   /** Opt-in for framework-level callers to write `$`-prefixed reserved
    *  attribute keys (attr_set / run_created / run_started). */
   allowReservedAttributes?: boolean;
+  /** The run's X25519 public key, base64 (run_created / resilient-start
+   *  run_started). Plaintext metadata, not a payload: the server stores it on
+   *  the run entity so cross-run writers can seal to it without holding the
+   *  run's symmetric key. */
+  encryptionPublicKey?: string;
   /** Client-measured time-to-first-step ms, riding on the run's first
    *  step_completed / step_failed. Consumed server-side for latency
    *  metrics; not read back. */
@@ -292,6 +297,9 @@ function buildPostFrameMeta(
   if (input.writer !== undefined) meta.writer = input.writer;
   if (input.allowReservedAttributes !== undefined) {
     meta.allowReservedAttributes = input.allowReservedAttributes;
+  }
+  if (input.encryptionPublicKey !== undefined) {
+    meta.encryptionPublicKey = input.encryptionPublicKey;
   }
   if (input.ttfs !== undefined) meta.ttfs = input.ttfs;
   if (input.stso !== undefined) meta.stso = input.stso;

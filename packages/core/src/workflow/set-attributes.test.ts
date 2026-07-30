@@ -1,7 +1,7 @@
 import { FatalError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WORKFLOW_SET_ATTRIBUTES } from '../symbols.js';
-import { experimental_setAttributes, setAttributes } from './set-attributes.js';
+import { setAttributes } from './set-attributes.js';
 
 describe('workflow.setAttributes', () => {
   const dispatchCalls: Array<{
@@ -91,14 +91,6 @@ describe('workflow.setAttributes', () => {
       )
     ).rejects.toBeInstanceOf(FatalError);
     expect(dispatchCalls).toHaveLength(0);
-  });
-
-  it('keeps the deprecated experimental_setAttributes alias working', async () => {
-    expect(experimental_setAttributes).toBe(setAttributes);
-    await experimental_setAttributes({ phase: 'init' });
-    expect(dispatchCalls).toEqual([
-      { changes: [{ key: 'phase', value: 'init' }], options: {} },
-    ]);
   });
 
   it('throws FatalError when called with a non-object', async () => {

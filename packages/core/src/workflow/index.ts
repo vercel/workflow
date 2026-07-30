@@ -15,7 +15,6 @@ export { createHook, createWebhook } from './create-hook.js';
 export { defineHook } from './define-hook.js';
 export { getWorkflowMetadata } from './get-workflow-metadata.js';
 export {
-  experimental_setAttributes,
   type SetAttributesOptions,
   setAttributes,
 } from './set-attributes.js';

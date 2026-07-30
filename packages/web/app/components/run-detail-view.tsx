@@ -8,6 +8,7 @@ import {
   NewTraceViewer,
   type SidebarDataContextValue,
   StreamViewer,
+  StreamViewerSkeleton,
   stepEventsToStepEntity,
 } from '@workflow/web-shared';
 import { type Event, isStepEventType, type WorkflowRun } from '@workflow/world';
@@ -427,6 +428,7 @@ export function RunDetailView({
   const {
     chunks: streamChunks,
     isLive: streamIsLive,
+    isInitialLoading: streamIsInitialLoading,
     error: streamError,
   } = useStreamReader(env, selectedStreamId, runId, encryptionKey, run.status);
 
@@ -780,38 +782,32 @@ export function RunDetailView({
 
             <TabsContent value="streams" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load stream data">
-                <div className="h-full flex gap-4">
+                <div className="relative -mx-6 flex h-full min-h-0 overflow-hidden border-t border-gray-alpha-400 bg-background-100">
                   {/* Stream list sidebar */}
-                  <div
-                    className="w-64 flex-shrink-0 border rounded-lg overflow-hidden"
-                    style={{
-                      borderColor: 'var(--ds-gray-300)',
-                      backgroundColor: 'var(--ds-background-100)',
-                    }}
-                  >
+                  <div className="flex w-[340px] shrink-0 flex-col border-r border-gray-alpha-400 bg-background-100">
                     <div
-                      className="px-3 py-2 border-b text-xs font-medium"
-                      style={{
-                        borderColor: 'var(--ds-gray-300)',
-                        color: 'var(--ds-gray-900)',
-                      }}
-                    >
-                      Streams ({streams.length})
-                    </div>
-                    <div className="overflow-auto max-h-[calc(100vh-400px)]">
+                      aria-hidden="true"
+                      className="h-10 min-h-10 border-b border-gray-alpha-400"
+                    />
+                    <div className="min-h-0 flex-1 divide-y divide-gray-400 overflow-y-auto">
                       {streamsLoading ? (
-                        <div className="p-4 flex items-center justify-center">
-                          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                        <div className="flex flex-col divide-y divide-gray-400">
+                          <div className="flex h-10 items-center pl-4 pr-2">
+                            <Skeleton className="h-3.5 w-24" />
+                          </div>
+                          <div className="flex h-10 items-center pl-4 pr-2">
+                            <Skeleton className="h-3.5 w-32" />
+                          </div>
+                          <div className="flex h-10 items-center pl-4 pr-2">
+                            <Skeleton className="h-3.5 w-20" />
+                          </div>
                         </div>
                       ) : streamsError ? (
-                        <div className="p-4 text-xs text-destructive">
+                        <div className="px-4 py-2 text-label-12 text-red-900">
                           {streamsError.message}
                         </div>
                       ) : streams.length === 0 ? (
-                        <div
-                          className="p-4 text-xs"
-                          style={{ color: 'var(--ds-gray-600)' }}
-                        >
+                        <div className="flex h-10 items-center px-4 text-label-12 text-gray-900">
                           No streams found for this run
                         </div>
                       ) : (
@@ -820,14 +816,11 @@ export function RunDetailView({
                             key={streamId}
                             type="button"
                             onClick={() => setSelectedStreamId(streamId)}
-                            className="w-full text-left px-3 py-2 text-xs font-mono truncate hover:bg-accent transition-colors"
-                            style={{
-                              backgroundColor:
-                                selectedStreamId === streamId
-                                  ? 'var(--ds-gray-200)'
-                                  : 'transparent',
-                              color: 'var(--ds-gray-1000)',
-                            }}
+                            className={`flex h-10 w-full min-w-0 items-center truncate pl-4 pr-2 text-left text-label-14 transition-colors ${
+                              selectedStreamId === streamId
+                                ? 'bg-gray-100 text-gray-1000 hover:bg-gray-200 active:bg-gray-200'
+                                : 'bg-transparent text-gray-900 hover:bg-gray-100 hover:text-gray-1000 focus-visible:bg-gray-100 focus-visible:text-gray-1000'
+                            }`}
                             title={streamId}
                           >
                             {streamId}
@@ -838,55 +831,48 @@ export function RunDetailView({
                   </div>
 
                   {/* Stream viewer */}
-                  <div className="flex-1 min-w-0">
-                    {selectedStreamId ? (
+                  <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-background-100">
+                    {streamsLoading ? (
+                      <div className="min-h-0 flex-1">
+                        <StreamViewerSkeleton />
+                      </div>
+                    ) : selectedStreamId ? (
                       streamError?.includes('encrypted') && !encryptionKey ? (
-                        <div
-                          className="h-full flex flex-col items-center justify-center gap-3 rounded-lg border p-4"
-                          style={{
-                            borderColor: 'var(--ds-gray-300)',
-                            backgroundColor: 'var(--ds-gray-100)',
-                          }}
-                        >
-                          <Lock
-                            className="h-6 w-6"
-                            style={{ color: 'var(--ds-gray-700)' }}
-                          />
-                          <div
-                            className="text-sm"
-                            style={{ color: 'var(--ds-gray-900)' }}
-                          >
-                            This stream is encrypted.
+                        <div className="flex h-full items-center justify-center p-4">
+                          <div className="flex flex-col items-center gap-3 text-center">
+                            <Lock className="h-8 w-8 text-gray-700" />
+                            <div className="space-y-1">
+                              <div className="text-label-14 font-medium text-gray-1000">
+                                Encrypted Stream
+                              </div>
+                              <div className="text-label-12 text-gray-900">
+                                Decrypt this stream to view its chunks.
+                              </div>
+                            </div>
+                            <DecryptButton
+                              onClick={handleDecrypt}
+                              loading={isDecrypting}
+                            />
                           </div>
-                          <DecryptButton
-                            onClick={handleDecrypt}
-                            loading={isDecrypting}
-                          />
                         </div>
                       ) : (
-                        <StreamViewer
-                          streamId={selectedStreamId}
-                          chunks={streamChunks}
-                          isLive={streamIsLive}
-                          error={
-                            streamError?.includes('encrypted')
-                              ? null
-                              : streamError
-                          }
-                        />
+                        <div className="min-h-0 flex-1">
+                          <StreamViewer
+                            streamId={selectedStreamId}
+                            chunks={streamChunks}
+                            isLive={streamIsLive}
+                            isLoading={streamIsInitialLoading}
+                            error={
+                              streamError?.includes('encrypted')
+                                ? null
+                                : streamError
+                            }
+                          />
+                        </div>
                       )
                     ) : (
-                      <div
-                        className="h-full flex items-center justify-center rounded-lg border"
-                        style={{
-                          borderColor: 'var(--ds-gray-300)',
-                          backgroundColor: 'var(--ds-gray-100)',
-                        }}
-                      >
-                        <div
-                          className="text-sm"
-                          style={{ color: 'var(--ds-gray-600)' }}
-                        >
+                      <div className="flex h-full items-center justify-center">
+                        <div className="text-label-14 text-gray-600">
                           {streams.length > 0
                             ? 'Select a stream to view its data'
                             : 'No streams available'}

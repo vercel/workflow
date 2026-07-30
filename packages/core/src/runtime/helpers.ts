@@ -19,9 +19,12 @@ import {
   ulidToDate,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-
-import { type CryptoKey, importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
+import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
+import {
+  deriveRunPayloadKeys,
+  type PayloadKey,
+} from '../serialization/encryption.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
@@ -86,6 +89,15 @@ export interface HealthCheckResult {
    * or a non-JSON plain-text health response.
    */
   workflowCoreVersion?: string;
+  /**
+   * The target run's X25519 public key (base64), returned only when the probe
+   * carried a `runId` and the responding deployment has encryption enabled.
+   *
+   * Lets a cross-deployment `start()` seal the workflow arguments using a
+   * response it was already waiting on, instead of making a separate
+   * key-lookup request.
+   */
+  encryptionPublicKey?: string;
 }
 
 /**
@@ -124,11 +136,43 @@ export async function handleHealthCheckMessage(
 ): Promise<void> {
   const world = await getWorldLazy();
   const streamName = getHealthCheckStreamName(healthCheck.correlationId);
+
+  // When the probe names a run the caller is about to create, publish that
+  // run's public key. We are executing inside the target deployment, so its
+  // key material is available locally (no API call), and the caller can then
+  // seal the workflow arguments straight from this response rather than
+  // making a separate key-lookup request.
+  //
+  // Only a *public* key may travel this way: the probe response stream is
+  // deliberately unauthenticated, so anything secret would be exposed.
+  // Best-effort — a failure here must not fail the health check itself, which
+  // callers also rely on for plain capability detection.
+  let encryptionPublicKey: string | undefined;
+  if (healthCheck.runId) {
+    try {
+      const rawKey = await world.getEncryptionKeyForRun?.(healthCheck.runId);
+      if (rawKey) {
+        encryptionPublicKey = bytesToBase64(
+          (await deriveRunKeyPair(rawKey)).publicKey
+        );
+      }
+    } catch (err) {
+      runtimeLogger.warn(
+        'Health check could not derive a run public key; the caller will fall back to a key lookup',
+        {
+          correlationId: healthCheck.correlationId,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      );
+    }
+  }
+
   const response = JSON.stringify({
     healthy: true,
     correlationId: healthCheck.correlationId,
     specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
     workflowCoreVersion,
+    ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
     timestamp: Date.now(),
   });
   // Use a deterministic fake runId derived from the correlationId so that
@@ -143,6 +187,13 @@ export interface HealthCheckOptions {
   timeout?: number;
   /** Deployment ID to send the health check to. Falls back to process.env.VERCEL_DEPLOYMENT_ID. */
   deploymentId?: string;
+  /**
+   * The run id the caller is about to create. When set, the responding
+   * deployment derives that run's public key locally and returns it as
+   * `encryptionPublicKey`, letting a cross-deployment `start()` seal the
+   * workflow arguments without a separate key lookup.
+   */
+  runId?: string;
   /**
    * Queue namespace of the target deployment (e.g. `'eve'` for topics like
    * `__eve_wkf_workflow_*`). Falls back to `WORKFLOW_QUEUE_NAMESPACE` in the
@@ -232,6 +283,7 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
   healthy: boolean;
   specVersion?: number;
   workflowCoreVersion?: string;
+  encryptionPublicKey?: string;
 } | null {
   if (chunks.length === 0) return null;
 
@@ -271,6 +323,7 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
     healthy: boolean;
     specVersion?: number;
     workflowCoreVersion?: string;
+    encryptionPublicKey?: string;
   } = {
     healthy: r.healthy as boolean,
   };
@@ -279,6 +332,9 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
   }
   if (typeof r.workflowCoreVersion === 'string') {
     parsed.workflowCoreVersion = r.workflowCoreVersion;
+  }
+  if (typeof r.encryptionPublicKey === 'string') {
+    parsed.encryptionPublicKey = r.encryptionPublicKey;
   }
   return parsed;
 }
@@ -307,7 +363,11 @@ export async function healthCheck(
   try {
     await world.queue(
       queueName,
-      { __healthCheck: true, correlationId },
+      {
+        __healthCheck: true,
+        correlationId,
+        ...(options?.runId ? { runId: options.runId } : {}),
+      },
       {
         // Use JSON transport so the health check works against both
         // old (JSON-only) and new (dual) deployments.
@@ -397,14 +457,25 @@ function recordRequestedEventCursor(
   requestedCursors.add(cursor);
 }
 
-function appendUniqueEvents(
+/**
+ * Appends events whose IDs are not already present in `target`.
+ *
+ * Pass the IDs currently present in `target` when appending repeatedly to the
+ * same array. The set is updated alongside `target`.
+ */
+export function appendUniqueEvents(
   target: Event[],
-  targetIds: Set<string>,
-  events: Event[]
+  events: readonly Event[],
+  targetIds?: Set<string>
 ): void {
+  if (events.length === 0) {
+    return;
+  }
+
+  const ids = targetIds ?? new Set(target.map((event) => event.eventId));
   for (const event of events) {
-    if (!targetIds.has(event.eventId)) {
-      targetIds.add(event.eventId);
+    if (!ids.has(event.eventId)) {
+      ids.add(event.eventId);
       target.push(event);
     }
   }
@@ -515,7 +586,7 @@ export async function loadWorkflowRunEvents(
           throw error;
         }
 
-        appendUniqueEvents(loadedEvents, loadedEventIds, response.data);
+        appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
         hasMore = response.hasMore;
         assertEventPaginationProgress(
           runId,
@@ -678,11 +749,7 @@ export async function withPreconditionRetry<T>(
         runId,
         log.cursor ?? undefined
       );
-      appendUniqueEvents(
-        log.events,
-        new Set(log.events.map((e) => e.eventId)),
-        loaded.events
-      );
+      appendUniqueEvents(log.events, loaded.events);
       // When several creates share one `log` (e.g. hook creations under
       // `Promise.all` in `handleSuspension`), concurrent 412s can reload
       // concurrently. The event merge above is safe — `appendUniqueEvents`
@@ -792,13 +859,21 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
 }
 
 /**
- * Returns a memoized accessor for the per-run AES-256 encryption key.
+ * Returns a memoized accessor for a run's full encryption capability.
  *
- * The first call resolves the key via `world.getEncryptionKeyForRun` (which
- * may do HKDF derivation locally on Vercel, or a network fetch from
- * external contexts) and imports it as a `CryptoKey`; subsequent calls
- * await the same cached promise. If the world doesn't support encryption
- * or the run has no key configured, the cached value is `undefined`.
+ * The first call resolves the run's key material via
+ * `world.getEncryptionKeyForRun` (which may do HKDF derivation locally on
+ * Vercel, or a network fetch from external contexts) and derives a
+ * {@link PayloadKey} from it; subsequent calls await the same cached promise.
+ * If the world doesn't support encryption or the run has no key configured,
+ * the cached value is `undefined`.
+ *
+ * The resolved value is deliberately the *full* capability — the symmetric AES
+ * key plus the run's X25519 keypair — not just a `CryptoKey`. A run reading
+ * its own event log can encounter sealed (`encp`) payloads that another run
+ * wrote to it (a cross-deployment hook resumption, say), and opening those
+ * needs the keypair. Resolving only the symmetric key would leave those
+ * payloads unopenable and wedge the run.
  *
  * Used by step / workflow handlers to defer the (potentially expensive)
  * key fetch until the first code path that actually needs it — typically
@@ -816,8 +891,8 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
 export function memoizeEncryptionKey(
   world: World,
   runOrId: WorkflowRun | string
-): () => Promise<CryptoKey | undefined> {
-  let cached: Promise<CryptoKey | undefined> | undefined;
+): () => Promise<PayloadKey | undefined> {
+  let cached: Promise<PayloadKey | undefined> | undefined;
   return () => {
     if (!cached) {
       cached = (async () => {
@@ -828,7 +903,11 @@ export function memoizeEncryptionKey(
           typeof runOrId === 'string'
             ? await world.getEncryptionKeyForRun?.(runOrId)
             : await world.getEncryptionKeyForRun?.(runOrId);
-        return rawKey ? await importKey(rawKey) : undefined;
+        // Resolve the *full* capability, not just the symmetric key: a run
+        // reading its own event log may encounter sealed (`encp`) payloads
+        // that another run wrote to it, and opening those needs the run's
+        // X25519 scalar as well.
+        return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
       })();
     }
     return cached;
