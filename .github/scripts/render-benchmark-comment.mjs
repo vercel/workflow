@@ -367,10 +367,11 @@ function renderOverlayBar(base, cur, maxCount) {
   return `${'█'.repeat(baseWidth)}${'░'.repeat(notchPos - baseWidth - 1)}┃`;
 }
 
-/** Renders main vs this run as one overlay bar per bucket (a fenced code
- * block keeps bars aligned in a monospace font), so the shape of the two
- * distributions — and exactly where this run diverged from the baseline — is
- * visible at a glance instead of only as numbers in a table. */
+/** Renders main vs this run as one overlay bar per bucket, with both counts
+ * and their delta on the same line (a fenced code block keeps everything
+ * aligned in a monospace font). This is the whole histogram diff — the shape
+ * of the two distributions and the per-bucket numbers behind it, without a
+ * second table restating them. */
 function renderStsoBarChart(buckets, { selfDiff } = {}) {
   const maxCount = Math.max(1, ...buckets.map((b) => Math.max(b.base, b.cur)));
   const labelWidth = Math.max(...buckets.map((b) => b.label.length));
@@ -390,19 +391,18 @@ function renderStsoBarChart(buckets, { selfDiff } = {}) {
     ).padEnd(BAR_CHART_WIDTH);
     const counts = selfDiff
       ? `steps ${String(cur).padStart(countWidth)}`
-      : `main ${String(base).padStart(countWidth)}  this ${String(cur).padStart(countWidth)}`;
+      : `main ${String(base).padStart(countWidth)}  this ${String(cur).padStart(countWidth)}  ${formatDeltaValue(cur - base).padStart(countWidth + 1)}`;
     lines.push(`${label.padStart(labelWidth)} ms  ${bar}  ${counts}`);
   }
   lines.push('```');
   return lines.join('\n');
 }
 
-/** Renders one STSO row's cumulative-time line, an ASCII bar-chart overlay,
- * and a bucketed histogram table (this run vs main). Bin width is chosen from
- * this row's own sample range, so every scenario gets a histogram that
- * actually spreads across multiple buckets rather than overflowing into
- * one — except "inline" rows, which use a hardcoded finer width (see
- * STSO_INLINE_BIN_WIDTH_MS). */
+/** Renders one STSO row's cumulative-time line and its histogram diff (this
+ * run vs main). Bin width is chosen from this row's own sample range, so every
+ * scenario gets a histogram that actually spreads across multiple buckets
+ * rather than overflowing into one — except "inline" rows, which use a
+ * hardcoded finer width (see STSO_INLINE_BIN_WIDTH_MS). */
 function renderStsoRowDiff(row) {
   // Until this lands on `main`, no baseline run has raw samples to diff
   // against. The shape of this run's distribution is still worth showing, so
@@ -446,23 +446,7 @@ function renderStsoRowDiff(row) {
     );
   }
   if (buckets.length > 0) {
-    lines.push(renderStsoBarChart(buckets, { selfDiff }), '');
-  }
-  if (selfDiff) {
-    lines.push('| Bucket (ms) | Steps |', '|---|---:|');
-    for (const { label, cur } of buckets) {
-      lines.push(`| ${label} | ${cur} |`);
-    }
-    return lines.join('\n');
-  }
-  lines.push(
-    '| Bucket (ms) | main steps | this run steps | Δ |',
-    '|---|---:|---:|---:|'
-  );
-  for (const { label, base, cur } of buckets) {
-    lines.push(
-      `| ${label} | ${base} | ${cur} | ${formatDeltaValue(cur - base)} |`
-    );
+    lines.push(renderStsoBarChart(buckets, { selfDiff }));
   }
   return lines.join('\n');
 }

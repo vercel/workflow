@@ -515,16 +515,17 @@ test('renders inline and queue-hop STSO histogram diffs against main', async () 
     /Cumulative STSO time: main 1440ms → this run 1070ms \(Δ -370ms, -26%\)/
   );
   // Inline rows are bucketed at a hardcoded 50ms, so the two fast samples
-  // land in 150-200 and the bucket the baseline occupied loses them.
-  assert.match(body, /\| 150-200 \| 0 \| 2 \| \+2 \|/);
-  assert.match(body, /\| 350-400 \| 4 \| 2 \| -2 \|/);
+  // land in 150-200 and the bucket the baseline occupied loses them. Counts
+  // and the per-bucket delta ride on the bar line; there is no second table.
+  assert.match(body, /^ *150-200 ms .*main 0 +this 2 +\+2$/m);
+  assert.match(body, /^ *350-400 ms .*main 4 +this 2 +-2$/m);
+  assert.doesNotMatch(body, /Bucket \(ms\)/);
   // Queue-hop rows keep the adaptive (much coarser) bin width.
-  assert.doesNotMatch(body, /\| 2100-2150 \|/);
-  assert.match(body, /\| 2000-2500 \| 2 \| 1 \| -1 \|/);
-  assert.match(body, /\| 2500-3000 \| 0 \| 1 \| \+1 \|/);
+  assert.doesNotMatch(body, /2100-2150 ms/);
+  assert.match(body, /^ *2000-2500 ms .*main 2 +this 1 +-1$/m);
+  assert.match(body, /^ *2500-3000 ms .*main 0 +this 1 +\+1$/m);
   // Overlay bars: solid run for main, notch for this run.
   assert.match(body, /█+┃/);
-  assert.match(body, /main \d+ +this \d+/);
   assert.match(
     body,
     /<sub>The \*\*STSO distribution\*\* section buckets every/
@@ -550,10 +551,10 @@ test('shows the STSO distribution alone when main has no raw samples', async () 
   assert.doesNotMatch(body, /STSO distribution vs `main`/);
   assert.match(body, /No `main` baseline with raw samples yet/);
   assert.match(body, /Cumulative STSO time: 520ms over 2 samples/);
-  // Single-series rendering: no main/this columns, no Δ column.
-  assert.match(body, /\| Bucket \(ms\) \| Steps \|/);
-  assert.match(body, /\| 150-200 \| 1 \|/);
-  assert.doesNotMatch(body, /this run steps/);
+  // Single-series rendering: one count per bucket, no main/this or delta.
+  assert.match(body, /^ *150-200 ms .*steps 1$/m);
+  assert.doesNotMatch(body, /this \d/);
+  assert.doesNotMatch(body, /Bucket \(ms\)/);
 });
 
 test('strips raw samples from the embedded history data block', async () => {
@@ -603,7 +604,7 @@ test('buckets negative STSO gaps separately from the slow tail', async () => {
     commit: 'abcdef1234567890',
   });
 
-  assert.match(body, /\| <0 \(skew\) \| 0 \| 1 \| \+1 \|/);
+  assert.match(body, /^ *<0 \(skew\) ms .*main 0 +this 1 +\+1$/m);
   // ...and the top bucket still reflects only genuinely slow samples.
-  assert.match(body, /\| 350-400 \| 1 \| 1 \| \+0 \|/);
+  assert.match(body, /^ *350-400 ms .*main 1 +this 1 +\+0$/m);
 });
