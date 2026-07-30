@@ -1,5 +1,15 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.38
+
+### Patch Changes
+
+- [#3197](https://github.com/vercel/workflow/pull/3197) [`e181f64`](https://github.com/vercel/workflow/commit/e181f64b72a52ed1ff2f7fd2fdc352dacbb576d2) Thanks [@mitul-s](https://github.com/mitul-s)! - Tighten stream list, chunk viewer, and shared loading skeleton styling to match the trace view.
+
+- Updated dependencies [[`b92c23c`](https://github.com/vercel/workflow/commit/b92c23ccb46d27066025acd8742da357603c79d8), [`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804)]:
+  - @workflow/core@5.0.0-beta.38
+  - @workflow/utils@5.0.0-beta.8
+
 ## 5.0.0-beta.37
 
 ### Major Changes

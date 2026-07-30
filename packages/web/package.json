@@ -1,19 +1,31 @@
 {
   "name": "@workflow/web",
   "description": "Workflow Observability UI",
-  "version": "5.0.0-beta.37",
+  "version": "5.0.0-beta.38",
   "type": "module",
   "private": false,
   "files": [
     "build",
     "server.js",
     "server.d.ts",
+    "handler.js",
+    "handler.d.ts",
+    "registry.js",
+    "registry.d.ts",
     "package.json"
   ],
   "exports": {
     "./server": {
       "types": "./server.d.ts",
       "default": "./server.js"
+    },
+    "./handler": {
+      "types": "./handler.d.ts",
+      "default": "./handler.js"
+    },
+    "./registry": {
+      "types": "./registry.d.ts",
+      "default": "./registry.js"
     },
     "./package.json": "./package.json"
   },
