@@ -31,9 +31,13 @@
  * - STSO  (step-to-step overhead): gap between consecutive step body
  *          executions (`steps[i].start - steps[i-1].end`) in a workflow with
  *          many trivial sequential steps. Both timestamps come from step
- *          bodies on the deployment. Reported per step-index range (see
- *          STSO_BUCKETS) because early steps behave differently from late ones
- *          (first-invocation fast paths, growing event log).
+ *          bodies on the deployment. Reported split by whether the step
+ *          ending the gap was 'inline' (same warm process as the step before
+ *          it) or a 'queue-hop' (first step of a fresh process — cold start
+ *          or a redispatch after the prior invocation's duration limit) —
+ *          the two have very different cost profiles and averaging them
+ *          together hides that. The workflow itself tags each step's kind
+ *          (see workflows/97_bench.ts's `stepKind`).
  * - WO    (workflow overhead): total time the run spends outside of step
  *          bodies over the whole sequential run, from the in-deployment
  *          `clientStart` to the end of the last step body:
@@ -146,15 +150,6 @@ const SO_NOMINAL_DURATION_MS = SO_CHUNK_COUNT * SO_INTERVAL_MS;
 // Provisional, like TTFS/SL above: re-tighten once in-deployment baselines land.
 const SO_TARGETS = { p75: 250, p90: 500, p99: 1000 };
 
-// STSO percentiles are reported for sampled step-index windows: the gap
-// between steps k and k+1 counts toward the window where `from <= k < to`.
-// The early window captures first-invocation behavior; the later ones capture
-// steady state with an increasingly large event log.
-const STSO_BUCKETS = [
-  { from: 1, to: 20, targets: { p75: 20, p90: 30, p99: 60 } },
-  { from: 101, to: 120, targets: { p75: 30, p90: 45, p99: 90 } },
-  { from: 1001, to: 1020, targets: { p75: 40, p90: 60, p99: 120 } },
-];
 // Guard timeouts so a single stuck run fails fast instead of eating the job.
 const RUN_TIMEOUT_MS = envInt('BENCH_RUN_TIMEOUT_MS', 120_000);
 // Preflight guard: a trivial 1-step run must complete within this window
@@ -172,6 +167,11 @@ const ZERO_SUCCESS_ABORT_ATTEMPTS = 3;
 interface BenchStepTiming {
   start: number;
   end: number;
+  /** 'queue-hop' if this was the first step body executed in its process
+   * (cold start or a fresh dispatch after the prior invocation ended);
+   * 'inline' for later steps in the same warm process. Set by the workflow
+   * itself (see workflows/97_bench.ts) — ground truth, not inferred. */
+  kind: 'inline' | 'queue-hop';
 }
 
 interface BenchStreamLatency {
@@ -193,8 +193,13 @@ interface StreamIterationResult {
 
 interface SequentialIterationResult {
   runId: string;
-  /** stsoMs[i] is the gap between steps i+1 and i+2 (1-indexed). */
-  stsoMs: number[];
+  /** STSO gaps preceding an 'inline' step (same warm process as the step
+   * before it) — the framework's pure step-to-step overhead. */
+  stsoInlineMs: number[];
+  /** STSO gaps preceding a 'queue-hop' step (first step of a fresh process:
+   * cold start or a redispatch via the queue after the prior invocation's
+   * duration limit) — dispatch + reinit overhead, not step-body cost. */
+  stsoQueueHopMs: number[];
   /** Whole-run workflow overhead, anchored on the in-deployment clientStart. */
   woMs: number;
 }
@@ -352,14 +357,17 @@ async function runSequentialIteration(
       );
     }
 
-    const stsoMs: number[] = [];
+    const stsoInlineMs: number[] = [];
+    const stsoQueueHopMs: number[] = [];
     for (let i = 1; i < steps.length; i++) {
-      stsoMs.push(steps[i].start - steps[i - 1].end);
+      const gap = steps[i].start - steps[i - 1].end;
+      (steps[i].kind === 'queue-hop' ? stsoQueueHopMs : stsoInlineMs).push(gap);
     }
 
     return {
       runId,
-      stsoMs,
+      stsoInlineMs,
+      stsoQueueHopMs,
       woMs: workflowOverheadMs(clientStart, steps),
     };
   } catch (error) {
@@ -508,6 +516,10 @@ interface MetricStats {
   p90: number;
   p99: number;
   samples: number;
+  /** Every sample (ms, ascending), not just the percentiles above: the PR
+   * comment diffs the whole STSO distribution against `main`, and
+   * percentiles alone hide *how many* samples moved and by how much. */
+  raw: number[];
 }
 
 interface MetricTargets {
@@ -533,6 +545,7 @@ function computeStats(samples: number[]): MetricStats {
     p90: round(percentile(90)),
     p99: round(percentile(99)),
     samples: sorted.length,
+    raw: sorted,
   };
 }
 
@@ -764,17 +777,23 @@ describe('workflow benchmarks', () => {
         extraAttempts: Math.max(2, Math.ceil(SEQUENTIAL_ITERATIONS * 0.5)),
       }
     );
-    // Report STSO per step-index window. Gap k (between steps k and k+1,
-    // 1-indexed) lives at stsoMs[k - 1].
-    for (const { from, to, targets } of STSO_BUCKETS) {
-      if (from >= SEQUENTIAL_STEP_COUNT) continue;
-      recordMetric(
-        'stso',
-        `${SCENARIO_SEQUENTIAL} (${from}-${Math.min(to, SEQUENTIAL_STEP_COUNT)})`,
-        results.flatMap((r) => r.stsoMs.slice(from - 1, to - 1)),
-        targets
-      );
-    }
+    // Report STSO split by whether the step that ends the gap was 'inline'
+    // (same warm process as the step before it — pure framework overhead) or
+    // a 'queue-hop' (first step of a fresh process — dispatch + reinit cost).
+    // Ground truth from the workflow itself (see workflows/97_bench.ts), not
+    // inferred from step index or trace timestamps. No targets yet: the two
+    // populations are new, and the old per-index-window targets described a
+    // different (index-bucketed) grouping.
+    recordMetric(
+      'stso',
+      `${SCENARIO_SEQUENTIAL} (inline)`,
+      results.flatMap((r) => r.stsoInlineMs)
+    );
+    recordMetric(
+      'stso',
+      `${SCENARIO_SEQUENTIAL} (queue-hop)`,
+      results.flatMap((r) => r.stsoQueueHopMs)
+    );
     // WO: whole-run overhead outside step bodies, anchored on the in-deployment
     // clientStart. Measured here rather than on the stream scenarios, where a
     // single step makes WO algebraically identical to TTFS.

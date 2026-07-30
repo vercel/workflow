@@ -458,3 +458,161 @@ test('CLI fails when completed with no results', async () => {
     )
   );
 });
+
+/** A sequential-steps result whose STSO rows carry raw samples, as the
+ * benchmark runner now records them (every gap, not a sampled window). */
+function sequentialResult({ inline, queueHop }) {
+  const stsoRow = (scenario, raw) => ({
+    metric: 'stso',
+    scenario,
+    unit: 'ms',
+    best: Math.min(...raw),
+    avg: raw.reduce((a, b) => a + b, 0) / raw.length,
+    p75: raw[Math.ceil(0.75 * raw.length) - 1],
+    p90: raw[Math.ceil(0.9 * raw.length) - 1],
+    p99: raw[Math.ceil(0.99 * raw.length) - 1],
+    samples: raw.length,
+    raw,
+  });
+  return sampleResult({
+    scenarios: [
+      { name: '1020 steps', description: 'trivial sequential steps' },
+    ],
+    metrics: [
+      stsoRow('1020 steps (inline)', inline),
+      stsoRow('1020 steps (queue-hop)', queueHop),
+    ],
+  });
+}
+
+test('renders inline and queue-hop STSO histogram diffs against main', async () => {
+  const { renderComment } = await loadModule();
+  const body = renderComment({
+    status: 'completed',
+    // Two inline steps move from the 350-400ms bucket down to 150-200ms.
+    results: [
+      sequentialResult({
+        inline: [160, 190, 360, 360],
+        queueHop: [2100, 2600],
+      }),
+    ],
+    baseline: [
+      sequentialResult({
+        inline: [360, 360, 360, 360],
+        queueHop: [2100, 2100],
+      }),
+    ],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+
+  // Collapsed by default — a drill-down, not the headline.
+  assert.match(
+    body,
+    /<details>\n<summary>📈 STSO distribution vs main \(inline \/ queue-hop histograms\)<\/summary>/
+  );
+  assert.match(body, /_1020 steps \(inline\)_/);
+  assert.match(body, /_1020 steps \(queue-hop\)_/);
+  // Cumulative time diff: inline 1440ms → 1070ms.
+  assert.match(
+    body,
+    /Cumulative STSO time: main 1440ms → this run 1070ms \(Δ -370ms, -26%\)/
+  );
+  // Inline rows are bucketed at a hardcoded 50ms, so the two fast samples
+  // land in 150-200 and the bucket the baseline occupied loses them. Counts
+  // and the per-bucket delta ride on the bar line; there is no second table.
+  assert.match(body, /^ *150-200 ms .*main 0 +this 2 +\+2$/m);
+  assert.match(body, /^ *350-400 ms .*main 4 +this 2 +-2$/m);
+  assert.doesNotMatch(body, /Bucket \(ms\)/);
+  // Queue-hop rows keep the adaptive (much coarser) bin width.
+  assert.doesNotMatch(body, /2100-2150 ms/);
+  assert.match(body, /^ *2000-2500 ms .*main 2 +this 1 +-1$/m);
+  assert.match(body, /^ *2500-3000 ms .*main 0 +this 1 +\+1$/m);
+  // Overlay bars: solid run for main, notch for this run.
+  assert.match(body, /█+┃/);
+  assert.match(
+    body,
+    /<sub>The collapsed \*\*STSO distribution\*\* section above buckets every/
+  );
+});
+
+test('shows the STSO distribution alone when main has no raw samples', async () => {
+  const { renderComment } = await loadModule();
+  const run = sequentialResult({ inline: [160, 360], queueHop: [2100] });
+  // A pre-raw-samples baseline: same rows, percentiles only.
+  const baseline = sequentialResult({ inline: [160, 360], queueHop: [2100] });
+  for (const row of baseline.metrics) delete row.raw;
+
+  const body = renderComment({
+    status: 'completed',
+    results: [run],
+    baseline: [baseline],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+
+  // Summary drops the "vs main" qualifier when there is nothing to diff.
+  assert.match(
+    body,
+    /<summary>📈 STSO distribution \(inline \/ queue-hop histograms\)<\/summary>/
+  );
+  assert.doesNotMatch(body, /STSO distribution vs main/);
+  assert.match(body, /No `main` baseline with raw samples yet/);
+  assert.match(body, /Cumulative STSO time: 520ms over 2 samples/);
+  // Single-series rendering: one count per bucket, no main/this or delta.
+  assert.match(body, /^ *150-200 ms .*steps 1$/m);
+  assert.doesNotMatch(body, /this \d/);
+  assert.doesNotMatch(body, /Bucket \(ms\)/);
+});
+
+test('strips raw samples from the embedded history data block', async () => {
+  const { renderComment, extractHistory } = await loadModule();
+  const inline = Array.from({ length: 1000 }, (_, i) => 200 + (i % 300));
+  const body = renderComment({
+    status: 'completed',
+    results: [sequentialResult({ inline, queueHop: [2100, 2600] })],
+    baseline: [sequentialResult({ inline, queueHop: [2100, 2600] })],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+
+  // The histogram renders for the current run...
+  assert.match(body, /<summary>📈 STSO distribution vs main/);
+  // ...but the ~1000 samples behind it never reach the embedded data block,
+  // which would otherwise blow past GitHub's comment size limit as history
+  // accumulates.
+  const history = extractHistory(body);
+  const row = history[0].results[0].metrics[0];
+  assert.strictEqual(row.raw, undefined);
+  assert.strictEqual(row.baselineRaw, undefined);
+  assert.strictEqual(row.samples, 1000);
+  assert.ok(body.length < 20_000, `comment is ${body.length} chars`);
+
+  // Re-rendering from that history keeps the table but drops the histogram.
+  const rerendered = renderComment({
+    status: 'running',
+    results: [],
+    history,
+    commit: 'ffffff1234567890',
+  });
+  assert.match(rerendered, /1020 steps \(inline\)/);
+  assert.doesNotMatch(rerendered, /STSO distribution/);
+});
+
+test('buckets negative STSO gaps separately from the slow tail', async () => {
+  const { renderComment } = await loadModule();
+  // Consecutive step timestamps come from different step bodies, so a gap can
+  // come out slightly negative under clock skew — it must not be counted with
+  // the slowest samples.
+  const body = renderComment({
+    status: 'completed',
+    results: [sequentialResult({ inline: [-40, 160, 360], queueHop: [2100] })],
+    baseline: [sequentialResult({ inline: [160, 360], queueHop: [2100] })],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+
+  assert.match(body, /^ *<0 \(skew\) ms .*main 0 +this 1 +\+1$/m);
+  // ...and the top bucket still reflects only genuinely slow samples.
+  assert.match(body, /^ *350-400 ms .*main 1 +this 1 +\+0$/m);
+});
