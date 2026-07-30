@@ -37,7 +37,7 @@ const tarballsUrl = process.env.TARBALLS_URL
 
 const Home = () => (
   <div className="[&_h1]:tracking-tighter [&_h2]:tracking-tighter [&_h3]:tracking-tighter [&_h4]:tracking-tighter [&_h5]:tracking-tighter [&_h6]:tracking-tighter">
-    <div className="mx-auto w-full max-w-[1200px]">
+    <div className="mx-auto w-full max-w-[1448px]">
       <Hero title={title} description={description} />
       {isPreview && deploymentUrl && (
         <div className="fixed bottom-4 right-4 z-50">

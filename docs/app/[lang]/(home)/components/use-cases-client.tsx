@@ -27,7 +27,7 @@ export const UseCasesClient = ({ useCases }: { useCases: UseCase[] }) => {
   };
 
   return (
-    <div className="grid grid-cols-12 gap-y-12 md:gap-x-8 px-4 py-8 sm:px-12 sm:py-12">
+    <div className="grid grid-cols-12 gap-y-12 md:gap-x-8 px-4 py-8 sm:px-6 sm:py-12">
       <div className="col-span-12 md:col-span-5 text-balance flex flex-col gap-2">
         <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40 flex flex-wrap sm:block items-center gap-x-2">
           Build anything with

@@ -719,9 +719,9 @@ export const Next = (props: ComponentProps<'svg'>) => (
 
 export const Frameworks = () => {
   return (
-    <div className="flex flex-col items-center gap-8 px-4 py-12 sm:py-16 sm:px-12 text-center">
+    <div className="flex flex-col items-center gap-8 px-4 py-12 sm:py-16 sm:px-6 text-center">
       <div className="flex flex-col gap-3 max-w-xl">
-        <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32">
+        <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
           Universally Compatible
         </h2>
         <p className="text-muted-foreground sm:text-lg">

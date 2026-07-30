@@ -5,8 +5,8 @@ import { O11yDashboard } from './o11y-dashboard';
 
 export function VercelSection(): JSX.Element {
   return (
-    <div className="grid grid-cols-12 gap-y-8 md:gap-x-8 overflow-hidden px-4 py-8 sm:px-12 sm:py-12">
-      <div className="col-span-12 md:col-span-5 grid gap-4 content-start self-center">
+    <div className="grid grid-cols-12 gap-y-8 md:gap-x-8 overflow-hidden px-4 py-8 sm:px-6 sm:py-12">
+      <div className="col-span-12 md:col-span-5 flex flex-col gap-4">
         <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
           Workflow SDK on Vercel
         </h2>

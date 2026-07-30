@@ -27,7 +27,7 @@ export async function userSignup(email) {
   },
   {
     code: `import { Resend } from 'resend';
-import { FatalError } from 'workflow'; 
+import { FatalError } from 'workflow';
 
 export async function sendWelcomeEmail(email) {
   "use step"
@@ -52,7 +52,7 @@ export async function sendWelcomeEmail(email) {
 ];
 
 export const Implementation = () => (
-  <div className="px-4 py-8 sm:py-12 sm:px-12 grid gap-12">
+  <div className="px-4 py-8 sm:py-12 sm:px-6 grid gap-12">
     <div className="max-w-3xl text-balance grid gap-2">
       <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
         Effortless setup
@@ -61,7 +61,7 @@ export const Implementation = () => (
         With a simple declarative API to define and use your workflows.
       </p>
     </div>
-    <div className="grid md:grid-cols-2 gap-8">
+    <div className="grid md:grid-cols-2 gap-6 md:gap-24">
       {data.map((item) => (
         <div
           key={item.caption}
