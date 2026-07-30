@@ -1,5 +1,38 @@
 'use client';
 
+import type { ChatStatus, FileUIPart, SourceDocumentUIPart } from 'ai';
+import {
+  CornerDownLeftIcon,
+  ImageIcon,
+  Monitor,
+  PlusIcon,
+  SquareIcon,
+  XIcon,
+} from 'lucide-react';
+import { nanoid } from 'nanoid';
+import type {
+  ChangeEvent,
+  ChangeEventHandler,
+  ClipboardEventHandler,
+  ComponentProps,
+  FormEvent,
+  FormEventHandler,
+  HTMLAttributes,
+  KeyboardEventHandler,
+  PropsWithChildren,
+  ReactNode,
+  RefObject,
+} from 'react';
+import {
+  Children,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   Command,
   CommandEmpty,
@@ -40,39 +73,6 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import type { ChatStatus, FileUIPart, SourceDocumentUIPart } from 'ai';
-import {
-  CornerDownLeftIcon,
-  ImageIcon,
-  Monitor,
-  PlusIcon,
-  SquareIcon,
-  XIcon,
-} from 'lucide-react';
-import { nanoid } from 'nanoid';
-import type {
-  ChangeEvent,
-  ChangeEventHandler,
-  ClipboardEventHandler,
-  ComponentProps,
-  FormEvent,
-  FormEventHandler,
-  HTMLAttributes,
-  KeyboardEventHandler,
-  PropsWithChildren,
-  ReactNode,
-  RefObject,
-} from 'react';
-import {
-  Children,
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
 
 // ============================================================================
 // Helpers

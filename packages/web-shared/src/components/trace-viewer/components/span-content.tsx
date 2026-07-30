@@ -5,10 +5,10 @@ import styles from '../trace-viewer.module.css';
 import type { SpanNode } from '../types';
 import { formatDuration } from '../util/timing';
 import {
+  computeSegments,
+  SEGMENT_CLASS_MAP,
   type Segment,
   type SegmentStatus,
-  SEGMENT_CLASS_MAP,
-  computeSegments,
 } from './span-segments';
 import type { ResourceType, SpanLayout } from './span-strategies';
 

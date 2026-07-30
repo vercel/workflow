@@ -1,5 +1,10 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.3.3/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.4.4/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
   "files": {
     "includes": [
       "**/*.js",
@@ -42,6 +47,17 @@
     "enabled": true,
     "rules": {
       "recommended": true,
+      "a11y": {
+        "noNoninteractiveElementToInteractiveRole": "warn",
+        "noStaticElementInteractions": "warn",
+        "noSvgWithoutTitle": "warn",
+        "useFocusableInteractive": "warn",
+        "useKeyWithClickEvents": "warn",
+        "useSemanticElements": "warn"
+      },
+      "security": {
+        "noDangerouslySetInnerHtml": "warn"
+      },
       "complexity": {
         "noExcessiveCognitiveComplexity": "warn",
         "noVoid": "off"

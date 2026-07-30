@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { PayloadKey } from '../serialization/encryption.js';
 import type { FlushableStreamState } from '../flushable-stream.js';
+import type { PayloadKey } from '../serialization/encryption.js';
 import type { WorkflowMetadata } from '../workflow/get-workflow-metadata.js';
 import type { StepMetadata } from './get-step-metadata.js';
 
@@ -89,9 +89,8 @@ export type StepContext = {
  */
 const CONTEXT_STORAGE_SYMBOL = Symbol.for('WORKFLOW_STEP_CONTEXT_STORAGE');
 
-export const contextStorage: AsyncLocalStorage<StepContext> =
-  ((globalThis as any)[CONTEXT_STORAGE_SYMBOL] as
-    | AsyncLocalStorage<StepContext>
-    | undefined) ??
-  ((globalThis as any)[CONTEXT_STORAGE_SYMBOL] =
-    new AsyncLocalStorage<StepContext>());
+export const contextStorage: AsyncLocalStorage<StepContext> = (() => {
+  const store = globalThis as any;
+  store[CONTEXT_STORAGE_SYMBOL] ??= new AsyncLocalStorage<StepContext>();
+  return store[CONTEXT_STORAGE_SYMBOL];
+})();

@@ -115,7 +115,7 @@ describe('AbortController in workflow VM', () => {
       controller.abort();
 
       // Only one abortRequested should exist
-      const hookItems = [...ctx.invocationsQueue.values()].filter(
+      const _hookItems = [...ctx.invocationsQueue.values()].filter(
         (item) => item.type === 'hook' && item.abortRequested
       );
       // The queue item was deleted by the event consumer for hook_received,
@@ -414,7 +414,7 @@ describe('AbortController in workflow VM', () => {
       const AbortController = createCreateAbortController(ctx);
 
       expect(ctx.invocationsQueue.size).toBe(0);
-      const controller = new AbortController();
+      const _controller = new AbortController();
       expect(ctx.invocationsQueue.size).toBe(1);
 
       const hookItem = [...ctx.invocationsQueue.values()][0];
@@ -454,7 +454,7 @@ describe('AbortController in workflow VM', () => {
     it('hook token from serialized payload is reused across replays', () => {
       ctx = setupWorkflowContext([]);
       const AbortController = createCreateAbortController(ctx);
-      const controller = new AbortController();
+      const _controller = new AbortController();
 
       // The hook token is deterministic because it's generated from a seeded ULID
       const hookItem = [...ctx.invocationsQueue.values()].find(
@@ -465,7 +465,7 @@ describe('AbortController in workflow VM', () => {
       // Create a second context with the same seed — tokens should match
       const ctx2 = setupWorkflowContext([]);
       const AbortController2 = createCreateAbortController(ctx2);
-      const controller2 = new AbortController2();
+      const _controller2 = new AbortController2();
 
       const hookItem2 = [...ctx2.invocationsQueue.values()].find(
         (item) => item.type === 'hook'

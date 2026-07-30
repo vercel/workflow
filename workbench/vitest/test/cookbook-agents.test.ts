@@ -2,16 +2,16 @@ import { waitForHook, waitForSleep } from '@workflow/vitest';
 import { describe, expect, it } from 'vitest';
 import { getRun, resumeHook, start } from 'workflow/api';
 import { durableAgentWorkflow } from '../workflows/cookbook/durable-agent.js';
-import { toolStreamingWorkflow } from '../workflows/cookbook/tool-streaming.js';
 import {
   approvalHook,
   humanInTheLoopWorkflow,
 } from '../workflows/cookbook/human-in-the-loop.js';
-import { toolOrchestrationWorkflow } from '../workflows/cookbook/tool-orchestration.js';
 import {
   stopHook,
   stopWorkflowDemo,
 } from '../workflows/cookbook/stop-workflow.js';
+import { toolOrchestrationWorkflow } from '../workflows/cookbook/tool-orchestration.js';
+import { toolStreamingWorkflow } from '../workflows/cookbook/tool-streaming.js';
 
 describe('durable-agent pattern', () => {
   it('steps execute as tool calls and return results', async () => {

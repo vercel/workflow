@@ -1,6 +1,7 @@
 // Keep existing imports so HMR discovery still works
 import * as wellKnownAgentSteps from '@/app/.well-known/agent/v1/steps';
 import * as _workflows from '@/workflows/3_streams';
+
 void wellKnownAgentSteps;
 void _workflows;
 

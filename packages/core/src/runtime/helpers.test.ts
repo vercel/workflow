@@ -16,8 +16,8 @@ import {
   healthCheck,
   latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
-  memoizeEncryptionKey,
   type MutableEventLog,
+  memoizeEncryptionKey,
   withPreconditionRetry,
 } from './helpers.js';
 

@@ -2,7 +2,7 @@
  * E2E test workflows for DurableAgent using @workflow/ai/test mock providers.
  */
 import { DurableAgent } from '@workflow/ai/agent';
-import { mockTextModel, mockSequenceModel } from '@workflow/ai/test';
+import { mockSequenceModel, mockTextModel } from '@workflow/ai/test';
 import { FatalError, getWritable } from 'workflow';
 import z from 'zod/v4';
 

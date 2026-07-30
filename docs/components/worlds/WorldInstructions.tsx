@@ -1,5 +1,5 @@
-import { ExternalLink } from 'lucide-react';
 import { Button } from '@vercel/geistdocs/components/button';
+import { ExternalLink } from 'lucide-react';
 import type { World } from './types';
 
 interface WorldInstructionsProps {

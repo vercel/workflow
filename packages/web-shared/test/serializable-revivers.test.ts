@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { hydrateData } from '@workflow/core/serialization-format';
-import { getCLIRevivers } from '../../cli/src/lib/inspect/hydration.js';
-import { getWebRevivers } from '../src/lib/hydration.js';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
+import { getCLIRevivers } from '../../cli/src/lib/inspect/hydration.js';
+import { getWebRevivers } from '../src/lib/hydration.js';
 
 const SERIALIZABLE_TYPES_PATH = fileURLToPath(
   new URL('../../core/src/serialization/types.ts', import.meta.url)

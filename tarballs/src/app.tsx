@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
+  buildInstallCommand,
   type Catalog,
+  formatBytes,
   type PackageManager,
   type PackedPackage,
-  buildInstallCommand,
-  formatBytes,
 } from './catalog';
 import {
   BranchIcon,

@@ -6,7 +6,7 @@ import type {
   LanguageModelV3,
   LanguageModelV3StreamPart,
 } from '@ai-sdk/provider';
-import { describe, expect, it, vi, beforeEach, type Mock } from 'vitest';
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { z } from 'zod';
 
 // ── Mock span that captures all setAttributes calls ──────────────────────
@@ -58,9 +58,6 @@ vi.mock('./stream-text-iterator.js', () => ({
 
 // ── Top-level imports after mocking ──────────────────────────────────────
 const { recordSpan: recordSpanMock } = await import('./telemetry.js');
-const { createSpan: createSpanMock, endSpan: endSpanMock } = await import(
-  './telemetry.js'
-);
 const { doStreamStep } = await import('./do-stream-step.js');
 const { DurableAgent } = await import('./durable-agent.js');
 const { streamTextIterator: streamTextIteratorFn } = await import(
@@ -597,8 +594,8 @@ describe('streamTextIterator outer span', () => {
       } as LanguageModelV3StreamPart,
     ];
 
-    const model = createMockModel(streamParts);
-    const { stream: writable } = createCollectingWritable();
+    const _model = createMockModel(streamParts);
+    const { stream: _writable } = createCollectingWritable();
 
     // Re-import to get the real streamTextIterator (not the mock for DurableAgent tests)
     // Since we mocked it globally for DurableAgent, we need to use the actual implementation

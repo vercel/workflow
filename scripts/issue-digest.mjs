@@ -212,7 +212,7 @@ function buildSlackPayload({
   digestIntervalDays,
   totalEligible,
 }) {
-  const shownCount = issues.length;
+  const _shownCount = issues.length;
   const title = `Top issues of last ${digestIntervalDays}d in ${repoFullName}`;
 
   const blocks = [

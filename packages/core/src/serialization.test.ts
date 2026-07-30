@@ -3010,7 +3010,7 @@ describe('step function serialization', () => {
     const stepId = 'step//workflows/test.ts//addNumbers';
 
     // Create a VM context like the workflow runner does
-    const { context, globalThis: vmGlobalThis } = createContext({
+    const { globalThis: vmGlobalThis } = createContext({
       seed: 'test',
       fixedTimestamp: 1714857600000,
     });
@@ -3072,7 +3072,7 @@ describe('step function serialization', () => {
     const stepId = 'step//workflows/test.ts//missingUseStep';
 
     // Create a VM context WITHOUT setting up WORKFLOW_USE_STEP
-    const { context, globalThis: vmGlobalThis } = createContext({
+    const { globalThis: vmGlobalThis } = createContext({
       seed: 'test',
       fixedTimestamp: 1714857600000,
     });
@@ -6193,7 +6193,7 @@ describe('isEncrypted', () => {
 // ============================================================================
 
 describe('AbortController serialization', () => {
-  const { context, globalThis: vmGlobalThis } = createContext({
+  const { globalThis: vmGlobalThis } = createContext({
     seed: 'test-abort-serde',
     fixedTimestamp: 1714857600000,
   });

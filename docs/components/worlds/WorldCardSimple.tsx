@@ -1,5 +1,10 @@
 'use client';
 
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@vercel/geistdocs/components/tooltip';
 import { BadgeCheck, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
 import { Badge } from '@/components/ui/badge';
@@ -10,11 +15,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@vercel/geistdocs/components/tooltip';
 import type { World } from './types';
 
 interface WorldCardSimpleProps {

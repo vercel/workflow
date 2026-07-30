@@ -109,7 +109,9 @@ ${registryEntries}
   fs.writeFileSync(outputPath, content, 'utf-8');
 
   console.log(`✓ Generated ${outputPath} with ${files.length} workflow(s)`);
-  files.forEach((file) => console.log(`  - workflows/${file}`));
+  for (const file of files) {
+    console.log(`  - workflows/${file}`);
+  }
 }
 
 // Run the generator

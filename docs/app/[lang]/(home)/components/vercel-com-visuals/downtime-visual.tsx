@@ -1,10 +1,10 @@
 'use client';
 
-import type { JSX } from 'react';
-import { cn } from '@/lib/utils';
-import { useState, useEffect, useRef } from 'react';
-import { AnimatePresence, motion, useInView } from 'motion/react';
 import { Spinner } from '@vercel/geistdocs/components/spinner';
+import { AnimatePresence, motion, useInView } from 'motion/react';
+import type { JSX } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { cn } from '@/lib/utils';
 
 export function DowntimeVisual(): JSX.Element {
   return (

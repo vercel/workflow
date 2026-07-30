@@ -147,7 +147,7 @@ describe('streamTextIterator', () => {
       ];
 
       // Second iteration - should trigger second doStreamStep call
-      const secondResult = await iterator.next(toolResults);
+      const _secondResult = await iterator.next(toolResults);
 
       // Verify the captured prompt contains providerOptions
       expect(capturedPrompt).toBeDefined();

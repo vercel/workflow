@@ -1,9 +1,12 @@
 'use client';
 
+import { useReducedMotion } from 'motion/react';
 import type { CSSProperties, JSX } from 'react';
 import { useEffect, useRef, useState } from 'react';
-import { useReducedMotion } from 'motion/react';
 import { diameter, radius } from './constants';
+import { useGlobeContext } from './context';
+import styles from './path.module.css';
+import type { Path, Point } from './types';
 import {
   _r,
   distance,
@@ -12,9 +15,6 @@ import {
   getPerspectiveLatitudeSegment,
   removeClosePoints,
 } from './utils';
-import type { Path, Point } from './types';
-import { useGlobeContext } from './context';
-import styles from './path.module.css';
 
 interface PathProps {
   color?: string;

@@ -211,7 +211,7 @@ describe('createCreateHook', () => {
     const hook = createHook();
 
     // Start awaiting the hook - it will process events asynchronously
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
@@ -241,7 +241,7 @@ describe('createCreateHook', () => {
     const hook = createHook();
 
     // Start awaiting the hook - it will process events asynchronously
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
@@ -450,7 +450,7 @@ describe('createCreateHook', () => {
     ]);
 
     const createHook = createCreateHook(ctx);
-    const hook = createHook({ token: 'test-token' });
+    const _hook = createHook({ token: 'test-token' });
 
     // Wait for event processing (hook_disposed removes from invocationsQueue)
     await vi.waitFor(() => {
@@ -561,7 +561,7 @@ describe('createCreateHook', () => {
     const hook = createHook({ token: 'my-custom-token' });
 
     // Start awaiting the hook
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
@@ -733,9 +733,9 @@ describe('createCreateHook', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
+    let _workflowError: Error | undefined;
     ctx.onWorkflowError = (err) => {
-      workflowError = err;
+      _workflowError = err;
     };
 
     const createHook = createCreateHook(ctx);
@@ -884,9 +884,9 @@ describe('createCreateHook', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
+    let _workflowError: Error | undefined;
     ctx.onWorkflowError = (err) => {
-      workflowError = err;
+      _workflowError = err;
     };
 
     const createHook = createCreateHook(ctx);
@@ -956,7 +956,7 @@ describe('createCreateHook', () => {
 
     const createHook = createCreateHook(ctx);
     const hook1 = createHook({ token: 'token-a' });
-    const hook2 = createHook({ token: 'token-b' });
+    const _hook2 = createHook({ token: 'token-b' });
 
     // Only dispose the first hook
     hook1.dispose();
@@ -1112,7 +1112,7 @@ describe('createCreateHook', () => {
     });
 
     // Start awaiting — this pushes a resolver to promises[] since payloadsQueue is empty
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     // Now dispose while the promise is pending — this should drain promises
     // and trigger suspension (not leave an orphaned promise)
@@ -1140,7 +1140,7 @@ describe('createCreateHook', () => {
     hook.dispose();
 
     // Then await — the event log is empty, so this should trigger suspension
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);

@@ -1,17 +1,17 @@
 'use client';
 
-import type { JSX } from 'react';
-import { AnimatedBar } from './animated-bar';
-import { cn } from '@/lib/utils';
 import {
-  motion,
-  useMotionValue,
-  animate,
-  useInView,
   AnimatePresence,
+  animate,
+  motion,
+  useInView,
+  useMotionValue,
   useReducedMotion,
 } from 'motion/react';
-import { useEffect, useRef, useState, useCallback } from 'react';
+import type { JSX } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { cn } from '@/lib/utils';
+import { AnimatedBar } from './animated-bar';
 
 const ANIMATION_CONFIG = {
   DURATION: 2000,

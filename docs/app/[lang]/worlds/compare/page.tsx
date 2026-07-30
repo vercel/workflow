@@ -1,9 +1,9 @@
+import { Button } from '@vercel/geistdocs/components/button';
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { Button } from '@vercel/geistdocs/components/button';
 import {
-  BenchmarkChart,
   BenchmarkBar,
+  BenchmarkChart,
 } from '@/components/worlds/BenchmarkChart';
 import { getWorldsData } from '@/lib/worlds-data';
 

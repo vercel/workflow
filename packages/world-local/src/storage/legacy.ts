@@ -2,8 +2,8 @@ import fs from 'node:fs/promises';
 import { RunExpiredError } from '@workflow/errors';
 import type { Event, EventResult, WorkflowRun } from '@workflow/world';
 import {
-  SPEC_VERSION_CURRENT,
   isTerminalWorkflowRunStatus,
+  SPEC_VERSION_CURRENT,
 } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {

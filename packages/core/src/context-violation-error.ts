@@ -64,7 +64,9 @@ export function renderPlain(c: FramedContent): string {
     const first = isLast ? '╰▶ ' : '├▶ ';
     const cont = isLast ? '   ' : '│  ';
     const raw = renderDetailPlain(detail).split('\n');
-    raw.forEach((line, i) => lines.push(`${i === 0 ? first : cont}${line}`));
+    raw.forEach((line, i) => {
+      lines.push(`${i === 0 ? first : cont}${line}`);
+    });
   });
   return lines.join('\n');
 }

@@ -1,7 +1,7 @@
+import { Button } from '@vercel/geistdocs/components/button';
 import Link from 'next/link';
 import type { ComponentProps } from 'react';
 import { CodeBlock } from '@/app/[lang]/(home)/components/code-block';
-import { Button } from '@vercel/geistdocs/components/button';
 import { cn } from '@/lib/utils';
 
 const DigitalOcean = (props: ComponentProps<'svg'>) => (
