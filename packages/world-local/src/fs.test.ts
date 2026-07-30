@@ -17,6 +17,7 @@ import {
 import { z } from 'zod';
 import {
   assertSafeEntityId,
+  deleteJSON,
   paginatedFileSystemQuery,
   readFirstByte,
   readJSONWithFallback,
@@ -112,6 +113,67 @@ describe('fs utilities', () => {
       expect(await readFirstByte(dataPath)).toBe(1);
       expect(await readFirstByte(nonEofPath)).toBe(0);
       expect(await readFirstByte(emptyPath)).toBeUndefined();
+    });
+  });
+
+  describe('deleteJSON', () => {
+    it('deletes the file and tolerates one that is already gone', async () => {
+      const filePath = path.join(testDir, 'victim.json');
+      await fs.writeFile(filePath, '{}');
+
+      await deleteJSON(filePath);
+      await expect(fs.access(filePath)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+
+      await expect(deleteJSON(filePath)).resolves.toBeUndefined();
+    });
+
+    it('propagates non-ENOENT unlink failures', async () => {
+      const eisdir = Object.assign(new Error('EISDIR: illegal operation'), {
+        code: 'EISDIR',
+      });
+      vi.spyOn(fs, 'unlink').mockRejectedValue(eisdir);
+
+      await expect(deleteJSON(path.join(testDir, 'x.json'))).rejects.toThrow(
+        'EISDIR'
+      );
+    });
+
+    it('retries transient EPERM unlink failures on Windows', async () => {
+      // On Windows, unlink fails with EPERM while a concurrent reader briefly
+      // holds the file open (e.g. hook polling racing deleteAllHooksForRun).
+      // Re-import the module with the platform stubbed so its module-level
+      // isWindows check takes the retry path.
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      vi.resetModules();
+      try {
+        const freshFsModule = await import('./fs.js');
+        const filePath = path.join(testDir, 'locked.json');
+        await fs.writeFile(filePath, '{}');
+
+        const eperm = Object.assign(
+          new Error('EPERM: operation not permitted, unlink'),
+          { code: 'EPERM' }
+        );
+        const unlinkSpy = vi
+          .spyOn(fs, 'unlink')
+          .mockRejectedValueOnce(eperm)
+          .mockRejectedValueOnce(eperm);
+
+        await freshFsModule.deleteJSON(filePath);
+
+        expect(unlinkSpy).toHaveBeenCalledTimes(3);
+        await expect(fs.access(filePath)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      } finally {
+        if (platform) {
+          Object.defineProperty(process, 'platform', platform);
+        }
+        vi.resetModules();
+      }
     });
   });
 
