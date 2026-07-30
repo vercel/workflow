@@ -38,10 +38,15 @@
  * collapses, and when it never arrives the run hangs.
  *
  * The first and third tests assert the CORRECT behavior — an abandoned barrier
- * retires within a bounded time, whatever unrelated deliveries are in flight —
- * so they fail on `main`. The second is a control: it passes, and shows the
- * traffic is the whole reason, since retirement happens immediately once the
- * counter reaches zero.
+ * retires within a bounded time, whatever unrelated deliveries are in flight.
+ * The second is a control, showing the traffic is the whole reason: retirement
+ * happens immediately once the counter reaches zero.
+ *
+ * FIXED by giving both polls a deadline. A barrier retires unconditionally
+ * after a fixed number of ticks, and `scheduleWhenIdle` fires anyway after a
+ * fixed number of poll rounds. The deadlines are backstops — the idle path is
+ * still the normal route out, which is what the control test pins — but
+ * without them neither loop has any escape from sustained traffic.
  */
 import { withResolvers } from '@workflow/utils';
 import { describe, expect, it } from 'vitest';
@@ -109,7 +114,7 @@ function startPokeStorm(ctx: WorkflowOrchestratorContext): () => void {
 }
 
 describe('delivery-barrier idle safety net vs. unrelated delivery traffic', () => {
-  it.fails('retires an abandoned barrier even while other deliveries keep arriving', async () => {
+  it('retires an abandoned barrier even while other deliveries keep arriving', async () => {
     const ctx = makeCtx();
     const stopStorm = startPokeStorm(ctx);
     try {
@@ -163,7 +168,7 @@ describe('delivery-barrier idle safety net vs. unrelated delivery traffic', () =
     ).toBe(true);
   });
 
-  it.fails('bounds scheduleWhenIdle rather than polling without a deadline', async () => {
+  it('bounds scheduleWhenIdle rather than polling without a deadline', async () => {
     const ctx = makeCtx();
     const stopStorm = startPokeStorm(ctx);
     try {

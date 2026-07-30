@@ -42,8 +42,18 @@
  *
  * Unlike the barrier-primitive tests in
  * `delivery-barrier-idle-collapse.test.ts`, this one needs no artificial
- * hydration latency and no manufactured idle window: it fails on `main` from
- * the event log alone.
+ * hydration latency and no manufactured idle window: it failed from the event
+ * log alone.
+ *
+ * FIXED by narrowing rule 1 to the unclaimed payload itself. A step still never
+ * gates on a buffered payload no consumer has taken — that is the case where
+ * the claim commonly sits downstream of the step result — but it does gate on
+ * an earlier ARMED wait or hook, whatever that delivery is itself waiting for.
+ * Rule 2 went away with it: there is no transitive "resolves on its own" walk
+ * left to poison. The step → wait → unclaimed-payload chain that leaves behind
+ * is not a deadlock, because the payload is its only root blocker and the
+ * safety net retires it once hydration goes quiet, releasing the chain in log
+ * order.
  */
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
@@ -256,7 +266,7 @@ function pendingStepNames(ctx: WorkflowOrchestratorContext): string[] {
 
 describe('buffered hook payload vs. a later step result', () => {
   for (const extraHops of [0, 1, 2, 4, 8, 16]) {
-    it.fails(`keeps the recorded ULID allocation with ${extraHops} extra step-branch hops`, async () => {
+    it(`keeps the recorded ULID allocation with ${extraHops} extra step-branch hops`, async () => {
       const events = await buildEventLog();
       const ctx = setupWorkflowContext(events);
 

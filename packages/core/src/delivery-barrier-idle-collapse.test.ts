@@ -40,7 +40,15 @@
  * it end to end would confound it with drain-window scheduling. They assert the
  * CORRECT behavior — a barrier is retired when its delivery reaches the
  * workflow, or when the delivery is genuinely abandoned, but not while it is in
- * flight — so they fail on `main`.
+ * flight.
+ *
+ * FIXED by retiring on the barrier's own terms instead of a global predicate.
+ * The idle check now only retires an UNARMED barrier — an unclaimed buffered
+ * hook payload, the one delivery that can be abandoned at the root. Every other
+ * barrier is committed: its `markDelivered()` runs from a chain that completes
+ * on its own, so the only thing that can hold it up is an earlier unclaimed
+ * payload, and retiring that releases it in log order. A deadline bounds the
+ * case idle cannot reach; see `delivery-barrier-idle-starvation.test.ts`.
  */
 import { withResolvers } from '@workflow/utils';
 import { describe, expect, it } from 'vitest';
@@ -140,7 +148,7 @@ function deliverLater(
 }
 
 describe('delivery-barrier idle safety net vs. in-flight deliveries', () => {
-  it.fails('keeps a barrier registered while its delivery is parked in awaitEarlierDeliveries', async () => {
+  it('keeps a barrier registered while its delivery is parked in awaitEarlierDeliveries', async () => {
     const ctx = makeCtx();
     const barriers = ctx.pendingDeliveryBarriers!;
 
@@ -174,7 +182,7 @@ describe('delivery-barrier idle safety net vs. in-flight deliveries', () => {
     expect(barriers.has(1)).toBe(true);
   });
 
-  it.fails('does not let a later delivery overtake an earlier one the idle tick retired', async () => {
+  it('does not let a later delivery overtake an earlier one the idle tick retired', async () => {
     const ctx = makeCtx();
     const order: string[] = [];
 
@@ -220,7 +228,7 @@ describe('delivery-barrier idle safety net vs. in-flight deliveries', () => {
     expect(order).toEqual(['step@1', 'step@1:drew-ulid', 'wait@2']);
   });
 
-  it.fails('retires every live barrier on a single idle tick, not just abandoned ones', async () => {
+  it('retires every live barrier on a single idle tick, not just abandoned ones', async () => {
     const ctx = makeCtx();
     const barriers = ctx.pendingDeliveryBarriers!;
 
@@ -274,9 +282,15 @@ describe('delivery-barrier idle safety net vs. in-flight deliveries', () => {
  * consumption time) — computes an empty deferral set, skips the yield, and
  * resolves on microtasks. It then draws its ULID first even though the log
  * ordered it second.
+ *
+ * FIXED by keeping a retired delivery visible to the registry for one more
+ * macrotask — the same yield a deferring delivery would have paid — in
+ * `recentlyDeliveredBarriers`. The live registry drops the entry immediately,
+ * as this test asserts; ordering visibility outlives it just long enough for
+ * the woken branch to reach its next suspension point.
  */
 describe('delivery-barrier retirement vs. the woken branch quiescing', () => {
-  it.fails('does not let a later delivery overtake the continuation an earlier one woke', async () => {
+  it('does not let a later delivery overtake the continuation an earlier one woke', async () => {
     const ctx = makeCtx();
     const order: string[] = [];
 

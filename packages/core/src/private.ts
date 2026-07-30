@@ -199,6 +199,29 @@ export interface WorkflowOrchestratorContext {
    */
   pendingDeliveryBarriers?: Map<number, DeliveryBarrierEntry>;
   /**
+   * Deliveries that have been handed to the workflow but whose continuation may
+   * still be running, keyed by the same event-log index as
+   * {@link WorkflowOrchestratorContext.pendingDeliveryBarriers}.
+   *
+   * `markDelivered()` resolves a barrier one statement before the `resolve()`
+   * that wakes the branch, so "delivered" means "resolve() ran", not "the woken
+   * branch reached its next suspension point" — which may be an arbitrary
+   * number of microtask hops later (see the macrotask yield in
+   * {@link awaitEarlierDeliveries}). Between those two moments the delivery is
+   * gone from the live registry, and anything reading the registry in that
+   * window — a delivery consumed in a later drain window, or a buffered hook
+   * payload whose `claim()` evaluates its deferral lazily — would compute an
+   * empty deferral set and overtake the branch it was supposed to follow.
+   *
+   * Entries live here for exactly one macrotask after retirement, which is the
+   * same yield a deferring delivery would have paid, and are gated on like live
+   * barriers. Gating on one can never deadlock: it has already delivered, so
+   * its `quiesced` promise is a plain timer.
+   *
+   * Optional for the same reason as `pendingDeliveryBarriers`.
+   */
+  recentlyDeliveredBarriers?: Map<number, QuiescingDeliveryEntry>;
+  /**
    * Invocation-scoped cache of prepared serialized payloads and immutable final
    * values. Prepared bytes survive fresh replay VMs; object graphs do not.
    */
@@ -225,6 +248,47 @@ interface DeliveryBarrierEntry {
    */
   armed: boolean;
 }
+
+/** A delivery that has been handed over but whose continuation may still run. */
+interface QuiescingDeliveryEntry {
+  kind: DeliveryKind;
+  /** Resolves once the branch this delivery woke has had a macrotask to run. */
+  quiesced: Promise<void>;
+}
+
+/**
+ * How long an abandoned barrier may hold up deliveries gated on it before the
+ * safety net retires it unconditionally, in `setTimeout(0)` ticks.
+ *
+ * The idle path below is the normal route out and fires within a tick or two of
+ * the system going quiet. This deadline exists for the case the idle path
+ * cannot serve: a run under a continuous stream of unrelated deliveries, where
+ * the idle predicate never holds. Observed live as a run making no progress for
+ * 3m19s across 228 deliveries to a hook nobody read; see
+ * `delivery-barrier-idle-starvation.test.ts`.
+ *
+ * Counted in raw ticks rather than poll rounds so it advances at a fixed rate
+ * regardless of how busy the `promiseQueue` is — a deadline that stretches with
+ * the traffic keeping the system non-idle would not be a deadline. The value is
+ * a compromise: long enough that it does not preempt a delivery merely taking
+ * its time, short enough to bound the stall. Whatever it is, it is a strict
+ * improvement on retiring at the first idle tick, which is what a barrier used
+ * to do while its own delivery was still in flight.
+ */
+const BARRIER_ABANDON_DEADLINE_TICKS = 32;
+
+/**
+ * How many poll rounds {@link scheduleWhenIdle} waits for the system to go idle
+ * before firing anyway.
+ *
+ * Counted in poll ROUNDS, not ticks, because each round waits out a full
+ * `promiseQueue` drain: the deadline therefore scales with real work, and only
+ * expires when that many complete drains have gone by with deliveries still in
+ * flight — a genuine storm, not one slow decrypt. That distinction matters
+ * because this function also schedules workflow suspensions, where firing early
+ * preempts data delivery.
+ */
+const IDLE_POLL_DEADLINE_ROUNDS = 16;
 
 /**
  * Which earlier kinds each delivery kind defers behind. Chosen so that no kind
@@ -263,9 +327,17 @@ const DEFER_BEHIND: Record<DeliveryKind, readonly DeliveryKind[]> = {
  * Whether `entry` will resolve on its own — it is armed, and every earlier
  * delivery it defers behind will likewise resolve on its own.
  *
- * A step delivery is always self-resolving: it skips uncommitted deliveries
- * (see {@link awaitEarlierDeliveries}), and the earlier steps it does defer
- * behind are self-resolving by the same argument, inducting down on index.
+ * A step delivery reports self-resolving unconditionally. That is a claim
+ * about liveness, not about timing: a step skips unclaimed buffered payloads
+ * (see {@link awaitEarlierDeliveries}), and while it may still gate on an
+ * earlier armed delivery that is itself parked behind one, the payload at the
+ * root of that chain is retired by the barrier safety net in
+ * {@link registerDeliveryBarrier} — which is not idle-gated — so the chain
+ * always drains without help from the caller of this predicate.
+ *
+ * The only caller that needs this is {@link hasParkedCommittedDelivery}, which
+ * gates suspensions. It excludes non-self-resolving entries so that a
+ * suspension does not wait on a payload the workflow may never read.
  *
  * Recursion terminates because every edge points to a strictly smaller index.
  * `memo` is required rather than an optimization: without it the walk is
@@ -331,47 +403,67 @@ function computeResolvesOnItsOwn(
  * suspension point first; see the comment at that `await` for why ordering the
  * `resolve()` calls alone is not enough.
  *
- * One asymmetry: a STEP result additionally skips any earlier delivery that
- * will not resolve on its own, i.e. one blocked (directly or transitively) on
- * a buffered hook payload no consumer has claimed. Such a payload is delivered
- * only when the workflow next reads the hook, and reaching that read very
- * commonly requires the step result itself (`await stepX()` before the read).
- * Gating the step on it would stall the workflow until the barrier's idle
- * safety net fires, which then releases every delivery queued behind that
- * payload at once — losing exactly the race this ordering exists to protect.
- * Waits and hooks keep gating on unclaimed payloads: for them, waiting for the
- * claim IS the ordering guarantee (a `wait_completed` must not preempt a
- * payload the log ordered first).
+ * One asymmetry: a STEP result skips an earlier buffered hook payload that no
+ * consumer has claimed yet. Such a payload is delivered only when the workflow
+ * next reads the hook, and reaching that read very commonly requires the step
+ * result itself (`await stepX()` before the read), so gating the step on it
+ * would stall the workflow until the safety net fires and then release every
+ * delivery queued behind the payload at once — losing exactly the race this
+ * ordering exists to protect. Waits and hooks keep gating on unclaimed
+ * payloads: for them, waiting for the claim IS the ordering guarantee (a
+ * `wait_completed` must not preempt a payload the log ordered first).
+ *
+ * The skip is deliberately narrow — only the unclaimed payload itself, not
+ * everything transitively behind it. A step used to skip an earlier armed
+ * delivery too whenever that delivery was itself waiting on an unclaimed
+ * payload, on the grounds that it would not resolve without the net. That is
+ * true but it is not a reason to race it: in the common `Promise.all([step,
+ * sleep-then-read-hook])` shape the wait completion is precisely what wakes
+ * the branch that goes on to claim the payload, so skipping it let the step
+ * result overtake a hook read the log had ordered first — the
+ * `CORRUPTED_EVENT_LOG` reproduced in `buffered-hook-claim-ordering.test.ts`.
+ * The resulting step → wait → unclaimed-payload chain is not a deadlock: the
+ * payload is the only root blocker, and the safety net retires it as soon as
+ * hydration goes quiet, in log order, so the chain drains in order behind it.
  */
 export async function awaitEarlierDeliveries(
   ctx: WorkflowOrchestratorContext,
   eventIndex: number | undefined,
   kind: DeliveryKind
 ): Promise<void> {
-  // Defensive: tolerate contexts that predate this field (test harnesses).
+  // Defensive: tolerate contexts that predate these fields (test harnesses).
+  const barriers = ctx.pendingDeliveryBarriers;
+  const quiescing = ctx.recentlyDeliveredBarriers;
   if (
     eventIndex === undefined ||
-    !ctx.pendingDeliveryBarriers ||
-    ctx.pendingDeliveryBarriers.size === 0
+    ((!barriers || barriers.size === 0) && (!quiescing || quiescing.size === 0))
   ) {
     return;
   }
-  const barriers = ctx.pendingDeliveryBarriers;
   const deferBehind = DEFER_BEHIND[kind];
   const earlier: Promise<void>[] = [];
-  // Shared across this call only — see `resolvesOnItsOwn`.
-  const selfResolving = new Map<number, boolean>();
-  for (const [index, entry] of barriers) {
-    if (index >= eventIndex || !deferBehind.includes(entry.kind)) {
-      continue;
+  if (barriers) {
+    for (const [index, entry] of barriers) {
+      if (index >= eventIndex || !deferBehind.includes(entry.kind)) {
+        continue;
+      }
+      if (kind === 'step' && !entry.armed) {
+        continue;
+      }
+      earlier.push(entry.delivered);
     }
-    if (
-      kind === 'step' &&
-      !resolvesOnItsOwn(barriers, index, entry, selfResolving)
-    ) {
-      continue;
+  }
+  if (quiescing) {
+    // A delivery that has been handed over but whose branch may still be
+    // running is ordered ahead of this one exactly as a live barrier would be.
+    // It is always safe to gate on: it has already delivered, so the wait is a
+    // bounded macrotask and can never deadlock.
+    for (const [index, entry] of quiescing) {
+      if (index >= eventIndex || !deferBehind.includes(entry.kind)) {
+        continue;
+      }
+      earlier.push(entry.quiesced);
     }
-    earlier.push(entry.delivered);
   }
   if (earlier.length > 0) {
     await Promise.all(earlier);
@@ -461,14 +553,15 @@ export function registerDeliveryBarrier(
       barriers.delete(eventIndex);
     }
     resolve();
+    beginQuiescing(ctx, eventIndex, kind);
   };
 
   // Safety net: if this delivery is never delivered to the workflow (its
   // branch was not taken / the run is suspending, or a buffered hook payload
   // is only claimed after a later delivery the workflow is still waiting on),
-  // resolve at idle so a later delivery gated on it cannot deadlock and the
+  // retire it anyway so a later delivery gated on it cannot deadlock and the
   // registry cannot leak an entry per abandoned delivery.
-  scheduleWhenIdle(ctx, finish);
+  scheduleBarrierRetirement(ctx, entry, finish, () => done);
 
   return {
     markDelivered: finish,
@@ -522,6 +615,71 @@ function hasParkedCommittedDelivery(ctx: WorkflowOrchestratorContext): boolean {
 }
 
 /**
+ * Record a just-retired delivery as still quiescing for one macrotask, so
+ * deliveries consumed in that window are still ordered behind the branch it
+ * woke. See {@link WorkflowOrchestratorContext.recentlyDeliveredBarriers}.
+ */
+function beginQuiescing(
+  ctx: WorkflowOrchestratorContext,
+  eventIndex: number,
+  kind: DeliveryKind
+): void {
+  const quiescing = (ctx.recentlyDeliveredBarriers ??= new Map());
+  const { promise, resolve } = withResolvers<void>();
+  const entry: QuiescingDeliveryEntry = { kind, quiesced: promise };
+  quiescing.set(eventIndex, entry);
+  setTimeout(() => {
+    if (quiescing.get(eventIndex) === entry) {
+      quiescing.delete(eventIndex);
+    }
+    resolve();
+  }, 0);
+}
+
+/**
+ * Retire an abandoned delivery barrier: when hydration goes quiet if nothing
+ * has committed to delivering it, and unconditionally once
+ * {@link BARRIER_ABANDON_DEADLINE_TICKS} have passed.
+ *
+ * The idle check only retires an UNARMED barrier — a buffered hook payload no
+ * consumer has claimed, which is the only delivery that can be abandoned at
+ * the root. Everything else is committed: a wait completion, a step result and
+ * a claimed payload all call `markDelivered()` from a chain that runs to
+ * completion on its own, so the only thing that can hold one up is an earlier
+ * unclaimed payload, and retiring that one releases it in log order. Retiring
+ * an armed barrier at idle instead is what made the registry collapse: hydration
+ * is already quiet while a delivery sits in `awaitEarlierDeliveries` waiting its
+ * turn, so a single idle tick used to retire every live barrier and hand the
+ * ordering back to the microtask race the registry exists to remove.
+ *
+ * The deadline covers the case idle cannot: continuous unrelated traffic keeps
+ * hydration busy forever, so the idle check never runs and an unclaimed payload
+ * blocks everything queued behind it indefinitely.
+ */
+function scheduleBarrierRetirement(
+  ctx: WorkflowOrchestratorContext,
+  entry: DeliveryBarrierEntry,
+  finish: () => void,
+  isRetired: () => boolean
+): void {
+  let ticks = 0;
+  const check = () => {
+    if (isRetired()) {
+      return;
+    }
+    if (
+      ++ticks >= BARRIER_ABANDON_DEADLINE_TICKS ||
+      (!entry.armed && ctx.pendingDeliveries === 0)
+    ) {
+      finish();
+      return;
+    }
+    setTimeout(check, 0);
+  };
+  setTimeout(check, 0);
+}
+
+/**
  * Schedule a callback to fire only after all pending data deliveries
  * (step results, hook payloads) and async deserialization have completed.
  * Uses a polling loop: setTimeout(0) → check pendingDeliveries and the
@@ -534,6 +692,13 @@ function hasParkedCommittedDelivery(ctx: WorkflowOrchestratorContext): boolean {
  * {@link hasParkedCommittedDelivery} covers the detached gap between a slot
  * releasing that counter and the delivery's `resolve()` actually running —
  * deliberately outside `pendingDeliveries` (see step.ts), and invisible to it.
+ *
+ * The poll gives up after {@link IDLE_POLL_DEADLINE_ROUNDS} rounds and fires
+ * anyway. Without a deadline this loop has no escape: a run under continuous
+ * delivery traffic keeps something in flight indefinitely, and every caller
+ * that needs the callback for liveness waits forever — observed live as a run
+ * making no progress for 3m19s under a stream of pokes to a hook nobody read
+ * (`delivery-barrier-idle-starvation.test.ts`).
  *
  * The initial `setTimeout(0)` macrotask is load-bearing and must NOT be
  * downgraded to a microtask (`queueMicrotask`/`Promise.resolve().then`).
@@ -551,8 +716,10 @@ export function scheduleWhenIdle(
   ctx: WorkflowOrchestratorContext,
   fn: () => void
 ): void {
+  let rounds = 0;
   const check = () => {
-    if (ctx.pendingDeliveries > 0 || hasParkedCommittedDelivery(ctx)) {
+    const busy = ctx.pendingDeliveries > 0 || hasParkedCommittedDelivery(ctx);
+    if (busy && ++rounds < IDLE_POLL_DEADLINE_ROUNDS) {
       // A delivery is still hydrating, or is committed but parked behind its
       // deferral (whose resolve runs on a detached timer, not this queue).
       // Either way: let the queue drain, then re-check a timer tick later.
