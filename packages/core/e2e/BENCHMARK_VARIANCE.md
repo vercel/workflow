@@ -32,7 +32,7 @@ anything.
 | inline STSO — cumulative / mean | sd ≈ 5% of mean; **observed range 13%** | treat ±10% as the floor |
 | inline STSO — p99 | 661-835 ms (±12%) | the ±15% 🔻 threshold is barely above noise |
 | inline STSO — tail count (>700 ms) | 8-28 samples | do not gate on it |
-| queue-hop STSO — count | **0-3 reported, 3-7 actual** | see finding 3; currently unreliable |
+| queue-hop STSO — count | **always 3 actual; 0 or 3 reported** | see finding 3; currently unreliable |
 | queue-hop STSO — per-hop cost | 1545-4663 ms (n≤3/run) | too few samples to read |
 | TTFS — p50 | ±3% within an environment | usable; see the environment bias in finding 5 |
 | TTFS — Best | 0-17 fast samples out of 30 | not a usable signal |
@@ -146,30 +146,43 @@ contained two more:
 32ac8e7 (3 hops reported): ... 1152, 1216, 1318, 1346, 2064, 3663
 ```
 
-Counting reported hops plus inline samples above 1500 ms, the **actual** number
-of invocation boundaries per run ranges 3-7 while the reported count ranges 0-3:
+The number of boundaries is not a matter of opinion: an invocation is capped at
+~120 s, so a run of duration `WO` must cross `ceil(WO / 120s) - 1` of them. For
+every run here except the broken `repl-det` branch that is **exactly 3**.
+Detection, however, is all-or-nothing — 3 of 3, or 0 of 3, never in between:
 
-| Run | reported hops | inline samples >1.5 s | actual boundaries |
-|---|---:|---:|---:|
-| PROD 8bda7ce | 3 | 0 | 3 |
-| PROD 4a9d26b | 3 | 0 | 3 |
-| PROD 32ac8e7 | 3 | 2 (2064, 3663) | 5 |
-| #3213 ×3, #3101 | 3 | 0 | 3 |
-| #3236 | 3 | 4 (4263-4752) | 7 |
-| #3170 | **0** | 3 (1630, 2851, 3408) | 3 |
+| Run | WO | boundaries required | reported hops | inline >1.5 s |
+|---|---:|---:|---:|---:|
+| PROD 8bda7ce | 416 s | 3 | 3 | 0 |
+| PROD 4a9d26b | 397 s | 3 | 3 | 0 |
+| PROD 32ac8e7 | 451 s | 3 | 3 | 2 (2064, 3663) |
+| #3213 ×3, #3101 | 396-423 s | 3 | 3 | 0 |
+| #3236 | 429 s | 3 | 3 | 4 (4263-4752) |
+| #3170 | 368 s | 3 | **0** | 3 (1630, 2851, 3408) |
+| #3238 | 414 s | 3 | **0** | 3 (1700, 2503, 2589) |
+| repl-det | 1389 s | **11** | **0** | 455 (branch is broken) |
+
+Note what this does *not* say. Where all 3 hops were detected, extra inline
+samples above 1.5 s are **genuine multi-second stalls, not mislabeled hops** —
+32ac8e7's two and #3236's four are real. The >1.5 s heuristic is only a reliable
+hop-finder on runs that reported none.
+
+The all-or-nothing pattern is itself informative: a per-boundary coin flip would
+produce 1-of-3 and 2-of-3 runs constantly, and none appear in eleven runs. It
+looks like a per-run property — whether that deployment had a warm instance
+available for the run's whole duration.
 
 Consequences:
 
-- The inline population is contaminated by 0-4 multi-second samples,
-  unpredictably. This is part of what I previously attributed to unexplained
-  infrastructure jitter.
-- `32ac8e7`'s apparent 13% production regression is partly this: it carries two
-  mislabeled hops worth ~5.7 s. Excluding samples >1.5 s, its mean drops
-  433 → 429 and cumulative 440.4 → 434.6 — smaller, but the bulk of its gap is
-  still a genuinely slow deployment.
-- Removing suspected hops does **not** tighten the null spread (14.7% vs 13.5%),
-  so mislabeling is a second, independent contaminant rather than the main
-  driver.
+- On affected runs the inline population absorbs three multi-second samples
+  (~1.6-3.4 s each, ~8 s total), and the queue-hop row vanishes entirely.
+- Removing all samples >1.5 s does **not** tighten the null spread (14.7% vs
+  13.5%), so mislabeling is a second, independent contaminant rather than the
+  main driver of run-to-run variance.
+- The hypothesis is warm-instance reuse but has **not been directly observed**.
+  It is consistent with the documented Fluid behavior, with the boundary
+  arithmetic, and with the magnitude of the orphaned samples — but the decisive
+  test is below.
 
 No clean fix is available in the workflow alone. `COMPUTE_INSTANCE_ID`
 (`packages/core/src/runtime/compute-instance.ts`) has exactly the same blind
@@ -177,6 +190,13 @@ spot by construction — its own docstring notes it is "shared by every invocati
 it handles." The only invocation-scoped identifier in the tree is
 `requestIdStorage` (keyed on `x-vercel-id`) in `packages/world-vercel/src/queue.ts`,
 which step bodies cannot currently see. See open item 1.
+
+**How to confirm it directly.** #3186 (landed 22:20) persists the compute
+instance that ran each step attempt, and #2989 emits it as the OTEL
+`faas.instance` span attribute. Take one run that reported 3 hops and one that
+reported 0, and group their step attempts by instance id: warm reuse predicts
+the 0-hop run shows a single `cinst_` across all 1020 attempts while the 3-hop
+run shows four. That settles it without any new instrumentation.
 
 ### 4. Body and tail are separate signals that move independently
 
