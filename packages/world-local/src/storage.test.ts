@@ -4915,23 +4915,20 @@ describe('Storage', () => {
       ).toHaveLength(0);
     });
 
-    it('should order the terminal event after a hook_received accepted while the terminal call was stalled', async () => {
-      // The replay-ordering half of the guard. events.list() sorts by
-      // (createdAt, eventId), both normally allocated at createImpl()
-      // entry. Interleaving: run_completed enters and allocates its (older)
-      // key, stalls before writing the terminal marker; a hook_received
-      // then enters with a newer key and legitimately wins the promote
-      // arbitration; the terminal call resumes and appends its event. With
-      // the entry-allocated key the accepted hook would replay AFTER the
-      // terminal event. The terminal transition must therefore re-derive
-      // its key at the marker+reap linearization point, dominating every
-      // reader-visible event of the run.
+    it('should order the terminal event after a hook_received racing the terminal transition', async () => {
+      // The replay-ordering half of the guard. Appends — including the
+      // terminal transition and every hook_received stage→promote — are
+      // serialized by the run's cross-process append lock, and each event's
+      // key is allocated at the publish point to dominate the run's current
+      // tail. A racing resume therefore collapses to exactly two outcomes:
+      // it commits BELOW the terminal event (accepted before the transition
+      // took the lock), or it is rejected outright (the marker was already
+      // durable). It can never surface after the terminal event.
       //
-      // The stall is reproduced by intercepting the terminal marker's
-      // writeExclusive — the first cross-process-visible step of the
-      // transition — and running the full hook_received to completion
-      // inside the interception (the marker is not yet on disk, so the
-      // hook is accepted).
+      // The old stall interleaving (a terminal call minting its key early,
+      // losing the promote arbitration to a newer resume, then appending
+      // with the stale key) is structurally excluded now: no key exists
+      // before the lock is held, and the lock is held through the publish.
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
@@ -4942,44 +4939,41 @@ describe('Storage', () => {
         token: 'token-stalled-terminal',
       });
 
-      const markerPath = runTerminalMarkerPath(testDir, run.runId);
-      const realWriteExclusive = fsModule.writeExclusive;
-      let intercepted = false;
-      const spy = vi
-        .spyOn(fsModule, 'writeExclusive')
-        .mockImplementation(async (filePath, data) => {
-          if (!intercepted && filePath === markerPath) {
-            intercepted = true;
-            await storage.events.create(run.runId, {
-              eventType: 'hook_received',
-              correlationId: hook.hookId,
-              eventData: { payload: {} },
-            });
-          }
-          return realWriteExclusive(filePath, data);
-        });
-
-      try {
-        await updateRun(storage, run.runId, 'run_completed', {
+      // A second storage instance has an independent in-process lock map —
+      // from the locking standpoint it behaves like another OS process, so
+      // the two creates genuinely race on the on-disk append lock.
+      const other = createStorage(testDir);
+      const [resumeResult] = await Promise.allSettled([
+        other.events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: {} },
+        }),
+        updateRun(storage, run.runId, 'run_completed', {
           output: new Uint8Array([9]),
-        });
-      } finally {
-        spy.mockRestore();
-      }
-      expect(intercepted).toBe(true);
+        }),
+      ]);
 
       const events = await storage.events.list({
         runId: run.runId,
         pagination: { sortOrder: 'asc' },
       });
       const types = events.data.map((e) => e.eventType);
-      expect(types.filter((t) => t === 'hook_received')).toHaveLength(1);
-      // The accepted hook must replay BEFORE the terminal event, and the
-      // terminal event must be the last event of the run.
-      expect(types.indexOf('hook_received')).toBeLessThan(
-        types.indexOf('run_completed')
-      );
+      // The terminal event is always the run's last event.
       expect(types.at(-1)).toBe('run_completed');
+      if (resumeResult.status === 'fulfilled') {
+        // Accepted → it replays before the terminal event.
+        expect(types.filter((t) => t === 'hook_received')).toHaveLength(1);
+        expect(types.indexOf('hook_received')).toBeLessThan(
+          types.indexOf('run_completed')
+        );
+      } else {
+        // Rejected → it never became visible to any reader.
+        expect(types.filter((t) => t === 'hook_received')).toHaveLength(0);
+      }
+      // Either way the committed positions are dense and id-ordered.
+      const seqs = events.data.map((e) => e.seq);
+      expect(seqs).toEqual(events.data.map((_, i) => i + 1));
     });
 
     // chmod-based permission simulation is a no-op for directories on
@@ -5034,17 +5028,24 @@ describe('Storage', () => {
     );
 
     it.skipIf(process.platform === 'win32')(
-      'should abort the terminal transition when the dominance scan fails',
+      'should abort the terminal transition when the position rescan fails',
       async () => {
-        // mintRunDominantEventKey's ordering guarantee depends on seeing
-        // every visible event of the run. A non-ENOENT readdir failure must
-        // abort the terminal transition before the state write instead of
-        // silently minting a wall-clock key with no dominance guarantee.
+        // When the run's position counter is missing (a run adopted from a
+        // pre-seq storage version, or a broken-lock recovery), the append
+        // session re-derives the tail by scanning the run's visible events.
+        // The scan's ordering guarantee depends on seeing every event, and
+        // the terminal event's position is allocated BEFORE the terminal
+        // state writes — so a non-ENOENT readdir failure must abort the
+        // transition while it is still retryable.
         const run = await createRun(storage, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
           input: new Uint8Array(),
         });
+        await fs.rm(
+          path.join(testDir, '.locks', 'runs', `${run.runId}.seq.json`),
+          { force: true }
+        );
         const eventsDir = path.join(testDir, 'events');
         await fs.chmod(eventsDir, 0o000);
 

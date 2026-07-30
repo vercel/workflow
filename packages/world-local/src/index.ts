@@ -73,6 +73,15 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   return {
     specVersion: SPEC_VERSION_CURRENT,
+    capabilities: {
+      // Event creation enforces the precondition snapshot
+      // (`stateEventCount` / `stateCursor` / `writerId`) with a decision
+      // fence evaluated under the run's cross-process append lock: a
+      // create whose snapshot the log's decisions have moved past is
+      // rejected with 412 before anything is written. See AppendSession
+      // in storage/append-lock.ts.
+      preconditionGuard: true,
+    },
     ...queue,
     ...storage,
     ...instrumentObject('world.streams', {

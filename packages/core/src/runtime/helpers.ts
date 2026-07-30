@@ -540,8 +540,14 @@ function shouldRetryWithoutEventCursor(
  * are checked. On a cursor-less full load of a fully-positioned log, the
  * first event must be seq 1 — a larger head means the first page silently
  * dropped events.
+ *
+ * Exported for the runtime's pre-replay gate: `loadWorkflowRunEvents` covers
+ * its own pagination, but the replay log has two more append sources — the
+ * inline write-response delta and the `run_started` preload — so the runtime
+ * re-asserts contiguity on the merged array immediately before handing it to
+ * the VM, the one point every fast path converges through.
  */
-function assertEventSequenceContiguity(
+export function assertEventSequenceContiguity(
   runId: string,
   events: readonly Event[],
   isFullLoad: boolean

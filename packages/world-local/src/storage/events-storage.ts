@@ -59,6 +59,11 @@ import {
   writeExclusive,
   writeJSON,
 } from '../fs.js';
+import {
+  type AppendFenceParams,
+  type AppendSession,
+  withRunAppendLock,
+} from './append-lock.js';
 import { stripEventDataRefs } from './filters.js';
 import {
   getObjectCreatedAt,
@@ -67,7 +72,6 @@ import {
   hookTokenClaimPath,
   isHookDisposalCommitted,
   isRunTerminalCommitted,
-  mintRunDominantEventKey,
   monotonicUlid,
   pendingHookEventPath,
   reapPendingHookEvents,
@@ -644,6 +648,38 @@ export function createEventsStorage(
         assertSafeEntityId('correlationId', data.correlationId);
       }
 
+      // For run_created events, use client-provided runId or generate one
+      // server-side. Hoisted out of createImpl because the run-scoped append
+      // lock below is keyed by the run id.
+      let effectiveRunId: string;
+      if (data.eventType === 'run_created' && (!runId || runId === '')) {
+        effectiveRunId = `wrun_${monotonicUlid()}`;
+      } else if (!runId) {
+        throw new Error('runId is required for non-run_created events');
+      } else {
+        effectiveRunId = runId;
+      }
+
+      // Precondition snapshot for the decision fence (see AppendSession).
+      const fence: AppendFenceParams | undefined =
+        params?.stateEventCount !== undefined
+          ? {
+              stateEventCount: params.stateEventCount,
+              stateCursor: params.stateCursor,
+              writerId: params.writerId,
+            }
+          : undefined;
+
+      // Every append runs under the run's cross-process append serializer:
+      // commit-ordered positions (dense `seq` + tail-dominant event keys)
+      // require that the allocation and the publish it covers cannot
+      // interleave with another writer's. This is the filesystem analogue
+      // of world-postgres's per-run advisory transaction lock.
+      const runLockedCreate = () =>
+        withRunAppendLock(basedir, effectiveRunId, tag, fence, (session) =>
+          createImpl(session)
+        );
+
       // Step lifecycle events are serialized per-step via an in-process mutex
       // so that the "check state, then write" sequence in step_started /
       // step_completed / step_failed / step_retrying is atomic. step_created
@@ -653,7 +689,7 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.${tag}`
           : `${runId}-${data.correlationId}`;
-        return withInProcessLock(stepLocks, lockKey, () => createImpl());
+        return withInProcessLock(stepLocks, lockKey, runLockedCreate);
       }
       // `hook_created` is serialized per-(runId, hookId) so the
       // "claim token, write hook entity, write event" sequence runs to
@@ -682,28 +718,18 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.hook.${tag}`
           : `${runId}-${data.correlationId}.hook`;
-        return withInProcessLock(hookLocks, lockKey, () => createImpl());
+        return withInProcessLock(hookLocks, lockKey, runLockedCreate);
       }
-      return createImpl();
+      return runLockedCreate();
 
-      async function createImpl(): Promise<EventResult> {
-        // Most paths use the freshly-generated candidate eventId. The
-        // hook_created dedup-recovery path below may reassign it to
-        // the canonical eventId persisted in the durable token claim
-        // so concurrent / cross-process workers converge on a single
-        // event in the log.
+      async function createImpl(session: AppendSession): Promise<EventResult> {
+        // Provisional candidate key. It is used for pre-publish artifacts
+        // written before the event's log position exists (the hook token
+        // claim's convergence id, legacy recovery markers); every publish
+        // point below replaces it with a commit-ordered position from the
+        // append session, allocated immediately before the write it covers.
         let eventId = `evnt_${monotonicUlid()}`;
         const now = new Date();
-
-        // For run_created events, use client-provided runId or generate one server-side
-        let effectiveRunId: string;
-        if (data.eventType === 'run_created' && (!runId || runId === '')) {
-          effectiveRunId = `wrun_${monotonicUlid()}`;
-        } else if (!runId) {
-          throw new Error('runId is required for non-run_created events');
-        } else {
-          effectiveRunId = runId;
-        }
 
         // Validate client-provided runId timestamp is within acceptable threshold
         if (data.eventType === 'run_created' && runId && runId !== '') {
@@ -801,12 +827,16 @@ export function createEventsStorage(
 
               if (created) {
                 // We created the run — also write the run_created event.
-                const runCreatedEventId = `evnt_${monotonicUlid()}`;
+                // Allocated before the main event's own publish-point
+                // allocation below, so the synthetic run_created takes the
+                // lower position and replays first.
+                const runCreatedPosition = await session.allocate();
                 const runCreatedEvent: Event = {
                   eventType: 'run_created',
                   runId: effectiveRunId,
-                  eventId: runCreatedEventId,
-                  createdAt: now,
+                  eventId: runCreatedPosition.eventId,
+                  createdAt: runCreatedPosition.createdAt,
+                  seq: runCreatedPosition.seq,
                   specVersion: effectiveSpecVersion,
                   eventData: {
                     deploymentId: runInputData.deploymentId,
@@ -820,6 +850,7 @@ export function createEventsStorage(
                   },
                 };
                 await storeEvent(runCreatedEvent);
+                await session.commit();
                 currentRun = createdRun;
               } else {
                 // Run already exists (concurrent run_created won the
@@ -895,14 +926,17 @@ export function createEventsStorage(
             currentRun.status === 'cancelled'
           ) {
             // Return existing state (idempotent)
+            const position = await session.allocate();
             const event: Event = {
               ...data,
               runId: effectiveRunId,
-              eventId,
-              createdAt: now,
+              eventId: position.eventId,
+              createdAt: position.createdAt,
+              seq: position.seq,
               specVersion: effectiveSpecVersion,
             };
             await storeEvent(event);
+            await session.commit();
             const resolveData =
               params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
             return {
@@ -1069,6 +1103,11 @@ export function createEventsStorage(
         let step: Step | undefined;
         let hook: Hook | undefined;
         let wait: Wait | undefined;
+        // Set when a legacy hook_created recovery adopted another
+        // (pre-upgrade) process's pinned event key: the event keeps that
+        // stale key and carries no position, so the publish block below
+        // must not allocate one for it.
+        let adoptedLegacyEventKey = false;
         // Lazy step start: set true when this step_started atomically created
         // the step (the caller won the create-claim). Surfaced on EventResult
         // as the runtime's exactly-once ownership signal.
@@ -1116,24 +1155,25 @@ export function createEventsStorage(
             ''
           );
           await reapPendingHookEvents(basedir, effectiveRunId, tag);
-          // Re-derive this terminal event's replay-ordering key at the
-          // linearization point. The eventId/createdAt allocated at
-          // createImpl() entry can predate a hook_received that
-          // legitimately won the promote arbitration while this invocation
-          // was stalled before the marker write; events.list() sorts by
-          // (createdAt, eventId), so the stale key would order the terminal
-          // event BEFORE that accepted hook on replay. Every accepted hook
-          // is reader-visible by the end of the reap, so a key that
-          // strictly dominates all visible events of the run guarantees the
-          // terminal event replays last. See mintRunDominantEventKey for
-          // the dominance argument.
-          const dominantKey = await mintRunDominantEventKey(
-            basedir,
-            effectiveRunId,
-            tag
-          );
-          eventId = dominantKey.eventId;
-          event = { ...event, eventId, createdAt: dominantKey.createdAt };
+          // Allocate the terminal event's position at the linearization
+          // point, before the terminal state writes below: an allocation
+          // failure (an unreadable log during the adoption rescan, a fence
+          // rejection) must abort the transition while it is still
+          // retryable, never after the run state says terminal. No key
+          // re-mint (mintRunDominantEventKey) is needed anymore: every
+          // append — including a `hook_received` stage→promote — holds the
+          // run's append lock, so the allocated key necessarily dominates
+          // every reader-visible event of the run. The marker + reap remain
+          // as the durable terminal signal and the arbitration against
+          // staged files left by crashed holders.
+          const terminalPosition = await session.allocate();
+          eventId = terminalPosition.eventId;
+          event = {
+            ...event,
+            eventId,
+            createdAt: terminalPosition.createdAt,
+            seq: terminalPosition.seq,
+          };
         }
 
         // Create/update entity based on event type (event-sourced architecture)
@@ -1505,18 +1545,16 @@ export function createEventsStorage(
               );
               // Write the synthetic step_created event so replay observes it
               // (the client step consumer sets hasCreatedEvent only on a
-              // step_created event). Its eventId is a fresh monotonic ULID.
-              // Ordering vs. the step_started event row does not affect
-              // correctness: the step_started consumer is a no-op and only
-              // step_created flips hasCreatedEvent, so the end state is the
-              // same whichever sorts first — this matches the resilient
-              // run_started → run_created precedent in this file.
-              const stepCreatedEventId = `evnt_${monotonicUlid()}`;
+              // step_created event). Allocated before the step_started
+              // event's own publish-point allocation below, so the
+              // step_created takes the lower position and replays first.
+              const stepCreatedPosition = await session.allocate();
               const stepCreatedEvent: Event = {
                 eventType: 'step_created',
                 runId: effectiveRunId,
-                eventId: stepCreatedEventId,
-                createdAt: now,
+                eventId: stepCreatedPosition.eventId,
+                createdAt: stepCreatedPosition.createdAt,
+                seq: stepCreatedPosition.seq,
                 specVersion: effectiveSpecVersion,
                 correlationId: data.correlationId,
                 eventData: {
@@ -1528,11 +1566,12 @@ export function createEventsStorage(
                 taggedPath(
                   basedir,
                   'events',
-                  `${effectiveRunId}-${stepCreatedEventId}`,
+                  `${effectiveRunId}-${stepCreatedPosition.eventId}`,
                   tag
                 ),
                 stepCreatedEvent
               );
+              await session.commit();
               validatedStep = createdStep;
               stepCreatedLazily = true;
             }
@@ -1702,10 +1741,13 @@ export function createEventsStorage(
           // Atomically claim the token using an exclusive-create constraint file.
           // This avoids the TOCTOU race of the previous read-all-then-check approach.
           const constraintPath = hookTokenClaimPath(basedir, hookData.token);
-          // Persist `eventId` in the claim so concurrent / cross-
-          // process retries can converge on a single canonical
-          // `hook_created` event path. See the recovery comment
-          // below.
+          // `eventId` here is the provisional candidate id, persisted so a
+          // reader can tell this claim was written by a version that
+          // records ids (the recovery path below branches on its
+          // presence). The published event's id is allocated later, at the
+          // commit-ordered append point — recovery convergence relies on
+          // the correlationId probe under the run append lock, not on this
+          // id.
           const claimContent = JSON.stringify({
             token: hookData.token,
             hookId: data.correlationId,
@@ -1852,78 +1894,68 @@ export function createEventsStorage(
               existingClaim?.runId === effectiveRunId &&
               existingClaim.hookId === data.correlationId
             ) {
-              // Adopt a canonical eventId for the recovery write. The
-              // outer event publish (`writeExclusive(eventPath)`)
-              // either succeeds (we publish the canonical event,
-              // repairing a partial write left by the original
-              // claimant) or returns `false` and we throw
-              // `EntityConflictError` (the event was already
-              // published — a real duplicate). Either way the log
-              // ends with exactly one `hook_created` event for this
-              // `(runId, hookId)`.
+              // Our own prior claim, but no completed creation is proven
+              // yet. Probe the log for an already-published hook_created
+              // for this `(runId, hookId)`: the claim file and hook entity
+              // are written before the event, and the three writes are not
+              // atomic, so a crash can leave the claim without the event.
               //
-              // The canonical eventId comes from one of two places:
+              //   - Event found → a real duplicate. Repair the hook entity
+              //     from the PERSISTED event's payload (the original
+              //     publisher may have crashed between its event publish
+              //     and its deferred entity write) and surface the benign
+              //     conflict to the runtime's concurrent-replay catch path.
               //
-              //   - `existingClaim.eventId` for claims written by
-              //     this version (the writer above persists the
-              //     candidate eventId atomically with the claim).
-              //     The eventId is durable, so the outer
-              //     `writeExclusive(eventPath)` alone is enough to
-              //     arbitrate publication: it fails iff the event
-              //     was already published at that exact path.
+              //   - Event missing → the original claimant crashed before
+              //     its publish; this retry repairs the log. The recovery
+              //     write takes a FRESHLY allocated position (in the entity
+              //     block below, like a first write) rather than adopting
+              //     the crashed writer's key: that key was minted before
+              //     the run's current tail, and publishing under it would
+              //     commit an event below positions readers have already
+              //     passed — exactly the ordering hole commit-ordered
+              //     appends exist to close. Convergence still holds: every
+              //     append for this run is serialized by the run append
+              //     lock, and every retry runs this probe first, so at most
+              //     one recovery publishes.
               //
-              //   - The recovery-marker sidecar for legacy claims
-              //     written before `eventId` was persisted inline
-              //     in the claim. The marker is itself a
-              //     `writeExclusive`, so the first retry pins its
-              //     candidate eventId as canonical and subsequent
-              //     retries adopt it. Without this, two processes
-              //     both reading the same legacy claim would each
-              //     generate their own eventId, land their
-              //     `writeExclusive(eventPath)` calls at different
-              //     paths, and append two events.
-              //
-              //     For legacy claims we also must probe the event
-              //     log for an existing `hook_created` event BEFORE
-              //     pinning a canonical eventId: the pre-upgrade
-              //     writer may have already published the event
-              //     with its own eventId, and the marker has no way
-              //     of knowing that eventId after the fact. Without
-              //     this probe, a post-upgrade retry would pin a
-              //     different eventId, write a hook entity, and
-              //     publish a duplicate event at the marker's path.
-              let canonicalEventId: string;
-              if (existingClaim.eventId) {
-                canonicalEventId = existingClaim.eventId;
-              } else {
-                const alreadyPublishedEventId =
-                  await findExistingHookCreatedEventId(
-                    basedir,
-                    effectiveRunId,
-                    data.correlationId
-                  );
-                if (alreadyPublishedEventId !== null) {
-                  // The pre-upgrade writer may have crashed between
-                  // its event publish and its hook entity write —
-                  // repair the entity from the persisted event's
-                  // payload before surfacing the benign duplicate.
-                  await repairHookEntityFromPersistedEvent(
-                    basedir,
-                    effectiveRunId,
-                    data.correlationId,
-                    alreadyPublishedEventId,
-                    tag
-                  );
-                  throw new EntityConflictError(
-                    `Hook "${data.correlationId}" already created`
-                  );
-                }
+              // Legacy claims (written before `eventId` was persisted
+              // inline) additionally pin a canonical id through the
+              // recovery-marker sidecar, purely for convergence with
+              // pre-upgrade processes that don't hold the append lock. An
+              // adopted legacy key keeps its original (stale) position in
+              // the sort order and carries no seq — an unpositioned event
+              // the contiguity check tolerates. This path is unreachable
+              // for runs created by this version.
+              const alreadyPublishedEventId =
+                await findExistingHookCreatedEventId(
+                  basedir,
+                  effectiveRunId,
+                  data.correlationId
+                );
+              if (alreadyPublishedEventId !== null) {
+                await repairHookEntityFromPersistedEvent(
+                  basedir,
+                  effectiveRunId,
+                  data.correlationId,
+                  alreadyPublishedEventId,
+                  tag
+                );
+                throw new EntityConflictError(
+                  `Hook "${data.correlationId}" already created`
+                );
+              }
+              if (!existingClaim.eventId) {
+                // Allocate this retry's position up front so the pin — the
+                // id pre-upgrade processes converge on — names the id this
+                // process will actually publish under.
+                const legacyPosition = await session.allocate();
                 const pinned = await pinCanonicalEventIdForLegacyClaim(
                   basedir,
                   hookData.token,
                   effectiveRunId,
                   data.correlationId,
-                  eventId
+                  legacyPosition.eventId
                 );
                 if (pinned === null) {
                   // Lost the marker race and the marker file is
@@ -1936,29 +1968,40 @@ export function createEventsStorage(
                     `Hook "${data.correlationId}" already created`
                   );
                 }
-                canonicalEventId = pinned;
+                if (pinned === legacyPosition.eventId) {
+                  eventId = legacyPosition.eventId;
+                  event = {
+                    ...event,
+                    eventId,
+                    createdAt: legacyPosition.createdAt,
+                    seq: legacyPosition.seq,
+                  };
+                } else {
+                  // Another (pre-upgrade) process pinned its candidate as
+                  // canonical — adopt it, unpositioned (see above). The
+                  // allocation above is discarded: it is never committed,
+                  // and nothing later in a hook_created append allocates,
+                  // so the run's committed positions stay dense.
+                  eventId = pinned;
+                  const canonicalCreatedAt =
+                    ulidToDate(eventId.replace(/^evnt_/, '')) ?? now;
+                  event = {
+                    ...data,
+                    runId: effectiveRunId,
+                    eventId,
+                    createdAt: canonicalCreatedAt,
+                    specVersion: effectiveSpecVersion,
+                  };
+                  adoptedLegacyEventKey = true;
+                }
               }
-
-              // Rebuild `event` with the canonical eventId and a
-              // deterministic `createdAt` derived from the eventId
-              // (a ULID) so two workers writing the same event
-              // produce byte-identical content.
-              eventId = canonicalEventId;
-              const canonicalCreatedAt =
-                ulidToDate(eventId.replace(/^evnt_/, '')) ?? now;
-              event = {
-                ...data,
-                runId: effectiveRunId,
-                eventId,
-                createdAt: canonicalCreatedAt,
-                specVersion: effectiveSpecVersion,
-              };
               writeHookEntityWithOverwrite = true;
             } else {
               // Cross-hook / cross-run conflict: a different
               // (runId, hookId) holds this token. Create a
               // hook_conflict event so the workflow can fail
               // gracefully when the hook is awaited.
+              const conflictPosition = await session.allocate();
               const conflictEvent: Event = {
                 eventType: 'hook_conflict',
                 correlationId: data.correlationId,
@@ -1969,8 +2012,9 @@ export function createEventsStorage(
                     : {}),
                 },
                 runId: effectiveRunId,
-                eventId,
-                createdAt: now,
+                eventId: conflictPosition.eventId,
+                createdAt: conflictPosition.createdAt,
+                seq: conflictPosition.seq,
                 specVersion: effectiveSpecVersion,
               };
 
@@ -1978,6 +2022,7 @@ export function createEventsStorage(
               // same path the read cache keys on) so an immediate
               // replay can serve it without rereading from disk.
               await storeEvent(conflictEvent);
+              await session.commit();
 
               const resolveData =
                 params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
@@ -1994,6 +2039,23 @@ export function createEventsStorage(
                 hook: undefined,
               };
             }
+          }
+
+          // Allocate the hook_created event's commit-ordered position
+          // before the index entries below are written with its id (the
+          // index tolerates a dangling entry if this append is later lost,
+          // but never an entry naming an id that changes afterwards). The
+          // legacy recovery path above may have already fixed the key —
+          // positioned (pin won) or adopted/unpositioned (pin lost).
+          if (event.seq === undefined && !adoptedLegacyEventKey) {
+            const position = await session.allocate();
+            eventId = position.eventId;
+            event = {
+              ...event,
+              eventId,
+              createdAt: position.createdAt,
+              seq: position.seq,
+            };
           }
 
           // Compute the hook entity now, but defer its write until
@@ -2035,8 +2097,8 @@ export function createEventsStorage(
 
           // Index entries before the event publish (see hook-index.ts
           // crash-ordering invariant). `eventId` is final here — the
-          // dedup-recovery branch above already reassigned it to the
-          // canonical id when applicable.
+          // allocation block above (or the legacy recovery branch) already
+          // fixed the key this append publishes under.
           await writeHookCreatedIndexEntries(
             basedir,
             hookData.token,
@@ -2235,6 +2297,23 @@ export function createEventsStorage(
           throw new HookNotFoundError(data.correlationId);
         }
 
+        // Allocate the event's commit-ordered position at the publish
+        // point, unless an earlier block already fixed the key (the
+        // hook_created entity block, a legacy-key adoption). Everything
+        // from here to the publish runs under the run's append lock, so
+        // the allocated key — minted to sort strictly after the run's
+        // current tail — cannot be overtaken by another writer.
+        if (event.seq === undefined && !adoptedLegacyEventKey) {
+          const position = await session.allocate();
+          eventId = position.eventId;
+          event = {
+            ...event,
+            eventId,
+            createdAt: position.createdAt,
+            seq: position.seq,
+          };
+        }
+
         const compositeKey = `${effectiveRunId}-${eventId}`;
         const eventPath = taggedPath(basedir, 'events', compositeKey, tag);
         // Capture the serialized payload before the write's `await` so the
@@ -2367,6 +2446,14 @@ export function createEventsStorage(
           throw new EntityConflictError(
             `Event "${eventId}" already exists for run "${effectiveRunId}"`
           );
+        }
+
+        // Persist the position counter now that the publish is durable. A
+        // lost publish above threw without committing, so its allocation
+        // is discarded and the run's committed positions stay dense. An
+        // adopted legacy key carries no position — nothing to commit.
+        if (event.seq !== undefined) {
+          await session.commit();
         }
 
         // The event is now committed; cache it so an immediate sequential

@@ -191,7 +191,7 @@ describe('executeStep — compute instance stamping', () => {
       workflowStartedAt: Date.now(),
       stepId,
       stepName,
-      stateUpdatedAt: 1_700_000_000_000,
+      preconditionSnapshot: { stateUpdatedAt: 1_700_000_000_000 },
     });
 
     const started = createSpy.mock.calls.filter(

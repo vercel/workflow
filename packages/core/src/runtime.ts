@@ -50,6 +50,7 @@ import {
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
   appendUniqueEvents,
+  assertEventSequenceContiguity,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -1590,6 +1591,16 @@ export function workflowEntrypoint(
                         eventCount: events.length,
                       });
                       replayStart = Date.now();
+                      // Density gate at the point every load path converges:
+                      // the paginated load asserts its own window, but the
+                      // inline write-response delta and the run_started
+                      // preload merge into `events` without passing through
+                      // it. A gap here means an event was silently omitted —
+                      // fail loudly now instead of replaying into a
+                      // divergence several invocations later. Contiguity
+                      // only (no head check): a cached suffix restart is a
+                      // legitimate mid-log view.
+                      assertEventSequenceContiguity(runId, events, false);
                       // Start every missing decrypt/decompress operation before
                       // VM setup. Web Crypto work can overlap bundle evaluation;
                       // consumers still deserialize and resolve in event order.
