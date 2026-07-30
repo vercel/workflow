@@ -483,20 +483,26 @@ describe('abort delivery ordering against an earlier step result', () => {
 
 // ─── 4. registry scan cost ─────────────────────────────────────────────────
 //
-// `resolvesOnItsOwn` walks the registry recursively: an armed hook re-checks
-// every earlier wait and step, an armed wait every earlier hook and step, and
-// so on. Unmemoized that is T(n) = Σ T(j) — exponential — and the registry is
-// not small by construction: `EventsConsumer` drains consecutively consumable
-// events synchronously while barriers only retire on microtask-driven
-// deliveries, so a fan-out of `Promise.race([hook, sleep(watchdog)])` branches
-// accumulates one barrier per branch per kind (measured: 49 live barriers for
-// 24 branches).
+// The registry is not small by construction: `EventsConsumer` drains
+// consecutively consumable events synchronously while barriers only retire on
+// microtask-driven deliveries, so a fan-out of `Promise.race([hook,
+// sleep(watchdog)])` branches accumulates one barrier per branch per kind
+// (measured: 49 live barriers for 24 branches). Deciding what a delivery defers
+// behind must therefore stay linear in registry size.
 //
-// The scan runs synchronously, before `awaitEarlierDeliveries` first awaits,
-// so timing the call alone measures it. Unmemoized, 40 alternating armed
-// hook/wait barriers is ~10^8 recursive calls — minutes. Memoized it is
-// linear. The bound is deliberately loose; this is an order-of-magnitude
-// guard, not a benchmark.
+// It has not always been. Deciding whether a barrier would "resolve on its own"
+// is a recursive walk — an armed hook re-checking every earlier wait and step,
+// an armed wait every earlier hook and step — which is T(n) = Σ T(j),
+// exponential, ~10^8 calls at the 40 barriers below, minutes of wall time. It is
+// memoized per call to bring that back to linear, and `awaitEarlierDeliveries`
+// no longer consults it at all: a step defers behind every earlier ARMED
+// delivery, which one pass answers. The walk survives only in
+// `hasParkedCommittedDelivery`, off the per-delivery path.
+//
+// The scan runs synchronously, before `awaitEarlierDeliveries` first awaits, so
+// timing the call alone measures it. The bound is deliberately loose; this is an
+// order-of-magnitude guard against reintroducing a superlinear scan, not a
+// benchmark.
 describe('delivery-barrier registry scan cost', () => {
   it('stays linear in registry size for a step delivery', () => {
     const ctx = {
