@@ -606,6 +606,18 @@ export function createEventsStorage(
     rememberStoredEvent(event, eventPath, serializedEvent);
   }
 
+  const preloadRunEvents = (runId: string) =>
+    paginatedFileSystemQuery({
+      directory: path.join(basedir, 'events'),
+      schema: EventSchema,
+      cachedItems: eventCache,
+      filePrefix: `${runId}-`,
+      sortOrder: 'asc',
+      limit: 1000,
+      getCreatedAt: getObjectCreatedAt('evnt'),
+      getId: (event) => event.eventId,
+    });
+
   // Per-instance in-process mutexes. Two storage instances sharing
   // one data directory get independent lock maps, which makes them
   // behave like two separate OS processes from the locking
@@ -1202,12 +1214,17 @@ export function createEventsStorage(
           // Reuse currentRun from validation (already read above)
           if (currentRun) {
             // If already running, return the run without inserting a
-            // duplicate event.  This makes run_started idempotent for
-            // concurrent invocations.  We omit preloaded events here
-            // because this is a rare race-condition path — the runtime
-            // falls back to loadWorkflowRunEvents().
+            // duplicate event. This makes run_started idempotent for
+            // concurrent invocations.
             if (currentRun.status === 'running') {
-              return { run: currentRun, maxEvents: getMaxEventsPerRun() };
+              const preloaded = await preloadRunEvents(effectiveRunId);
+              return {
+                run: currentRun,
+                events: preloaded.data,
+                cursor: preloaded.cursor,
+                hasMore: preloaded.hasMore,
+                maxEvents: getMaxEventsPerRun(),
+              };
             }
 
             run = await writeRunUnderLifecycleLock(
@@ -2410,19 +2427,10 @@ export function createEventsStorage(
         let cursor: string | null | undefined;
         let hasMore: boolean | undefined;
         if (data.eventType === 'run_started' && run) {
-          const allEvents = await paginatedFileSystemQuery({
-            directory: path.join(basedir, 'events'),
-            schema: EventSchema,
-            cachedItems: eventCache,
-            filePrefix: `${effectiveRunId}-`,
-            sortOrder: 'asc',
-            limit: 1000,
-            getCreatedAt: getObjectCreatedAt('evnt'),
-            getId: (e) => e.eventId,
-          });
-          events = allEvents.data;
-          cursor = allEvents.cursor;
-          hasMore = allEvents.hasMore;
+          const preloaded = await preloadRunEvents(effectiveRunId);
+          events = preloaded.data;
+          cursor = preloaded.cursor;
+          hasMore = preloaded.hasMore;
         }
 
         // Inline-delta optimization: on a step-terminal write the inline

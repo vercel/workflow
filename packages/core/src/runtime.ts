@@ -39,6 +39,7 @@ import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
+import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import {
   getMaxEventsOverride,
   getMaxQueueDeliveries,
@@ -66,7 +67,6 @@ import {
   handleReplayBudgetExhausted,
   ReplayBudget,
 } from './runtime/replay-budget.js';
-import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
@@ -1090,11 +1090,7 @@ export function workflowEntrypoint(
 
                         if (result.events?.length) {
                           const events = [...result.events];
-                          if (result.hasMore) {
-                            assert(
-                              result.cursor,
-                              'Partial run_started event log requires a cursor'
-                            );
+                          if (result.hasMore && result.cursor) {
                             eventLog = {
                               type: 'loadAfter',
                               log: {
@@ -1102,6 +1098,8 @@ export function workflowEntrypoint(
                                 cursor: result.cursor,
                               },
                             };
+                          } else if (result.hasMore) {
+                            eventLog = { type: 'loadAll' };
                           } else {
                             eventLog = {
                               type: 'ready',
@@ -1113,6 +1111,11 @@ export function workflowEntrypoint(
                           }
                         }
 
+                        if (!result.run.startedAt) {
+                          throw new WorkflowRuntimeError(
+                            `Workflow run "${runId}" has no "startedAt" timestamp`
+                          );
+                        }
                         workflowStartedAt = +result.run.startedAt;
                         span?.setAttributes({
                           ...Attribute.WorkflowRunStatus(result.run.status),

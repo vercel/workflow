@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   type CreateEventRequest,
   type Event,
+  type EventResult,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
   type World,
@@ -68,7 +69,7 @@ function getWorkflowTransformCode(workflowName: string) {
  * wait races with a hook payload that landed durably first.
  */
 async function runStaleWaitReplayScenario(options: {
-  preload: 'legacy' | 'complete' | 'partial';
+  preload: 'legacy' | 'complete' | 'partial' | 'partialWithoutCursor';
   omitWaitCompletionFromDelta?: boolean;
   terminalFailureAfterWaitCompletion?: boolean;
 }) {
@@ -182,14 +183,16 @@ async function runStaleWaitReplayScenario(options: {
   ];
 
   const staleEventsCursor = 'cursor-after-stale-events';
-  const preloadedEvents =
-    options.preload === 'partial' ? staleEvents.slice(0, 3) : staleEvents;
+  const partialPreload =
+    options.preload === 'partial' || options.preload === 'partialWithoutCursor';
+  const preloadedEvents = partialPreload
+    ? staleEvents.slice(0, 3)
+    : staleEvents;
   const lastPreloadedEvent = preloadedEvents.at(-1);
   assert(lastPreloadedEvent);
-  const preloadedCursor =
-    options.preload === 'partial'
-      ? lastPreloadedEvent.eventId
-      : staleEventsCursor;
+  const preloadedCursor = partialPreload
+    ? lastPreloadedEvent.eventId
+    : staleEventsCursor;
   const hookReceivedEvent = event({
     eventType: 'hook_received',
     specVersion: SPEC_VERSION_CURRENT,
@@ -251,16 +254,16 @@ async function runStaleWaitReplayScenario(options: {
   // the scenario degenerates into a run failure instead of a suspension.
   registerStepFunction('drainStep', async () => undefined);
 
-  const runStartedResponse = {
+  const runStartedResponse: EventResult = {
     run: workflowRun,
     events: preloadedEvents,
-    ...(options.preload !== 'legacy'
-      ? {
-          cursor: preloadedCursor,
-          hasMore: options.preload === 'partial',
-        }
-      : {}),
   };
+  if (options.preload === 'partialWithoutCursor') {
+    runStartedResponse.hasMore = true;
+  } else if (options.preload !== 'legacy') {
+    runStartedResponse.cursor = preloadedCursor;
+    runStartedResponse.hasMore = options.preload === 'partial';
+  }
 
   const createEvent = vi.fn(
     async (_runId: string, request: CreateEventRequest) => {
@@ -548,6 +551,27 @@ describe('workflow handler wait completion replay', () => {
           )
         )
     ).toBe(false);
+    expectHookBranchQueued(result);
+  });
+
+  it('falls back to a full reload when a partial preload omits its cursor', async () => {
+    const result = await runStaleWaitReplayScenario({
+      preload: 'partialWithoutCursor',
+    });
+
+    expect(result.listEvents.mock.calls[0]?.[0].pagination).toEqual({
+      sortOrder: 'asc',
+      cursor: undefined,
+    });
+    expect(result.listedPages[0]?.map((event) => event.eventType)).toEqual([
+      'run_created',
+      'run_started',
+      'hook_created',
+      'step_created',
+      'step_started',
+      'step_completed',
+      'wait_created',
+    ]);
     expectHookBranchQueued(result);
   });
 

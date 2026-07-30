@@ -15,6 +15,7 @@ import { encode as encodeRunId, REGION_IDS } from './run-id/index.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+const STARTED_AT = new Date('2026-06-10T00:00:00.000Z');
 
 function mockAgent() {
   const agent = new MockAgent();
@@ -138,7 +139,13 @@ describe('createWorkflowRunEvent stateUpdatedAt wire field', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({ run: { runId: 'wrun_1', status: 'running' } });
+          return encode({
+            run: {
+              runId: 'wrun_1',
+              status: 'running',
+              startedAt: STARTED_AT,
+            },
+          });
         },
         {
           headers: {
@@ -174,7 +181,13 @@ describe('createWorkflowRunEvent stateUpdatedAt wire field', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({ run: { runId: 'wrun_1', status: 'running' } });
+          return encode({
+            run: {
+              runId: 'wrun_1',
+              status: 'running',
+              startedAt: STARTED_AT,
+            },
+          });
         },
         {
           headers: {
@@ -200,21 +213,38 @@ describe('createWorkflowRunEvent stateUpdatedAt wire field', () => {
 describe('createWorkflowRunEvent result contract', () => {
   it.each([
     {
+      case: 'run_started without its run',
       eventType: 'run_started',
       data: { eventType: 'run_started', specVersion: 2 },
+      response: {},
     },
     {
+      case: 'step_started without its step',
       eventType: 'step_started',
       data: {
         eventType: 'step_started',
         correlationId: 'step_1',
         specVersion: 2,
       },
+      response: {},
     },
-  ])('rejects a $eventType response without its entity', async ({
-    eventType,
-    data,
-  }) => {
+    {
+      case: 'run_started without startedAt',
+      eventType: 'run_started',
+      data: { eventType: 'run_started', specVersion: 2 },
+      response: { run: { runId: 'wrun_1', status: 'running' } },
+    },
+    {
+      case: 'step_started without startedAt',
+      eventType: 'step_started',
+      data: {
+        eventType: 'step_started',
+        correlationId: 'step_1',
+        specVersion: 2,
+      },
+      response: { step: { stepId: 'step_1', status: 'running' } },
+    },
+  ])('rejects $case', async ({ eventType, data, response }) => {
     const agent = mockAgent();
     agent
       .get(ORIGIN)
@@ -222,7 +252,7 @@ describe('createWorkflowRunEvent result contract', () => {
         path: `/api/v4/runs/wrun_1/events/${eventType}`,
         method: 'POST',
       })
-      .reply(200, encode({}), {
+      .reply(200, encode(response), {
         headers: {
           'x-wf-event-id': 'evnt_1',
           'x-wf-run-id': 'wrun_1',
@@ -260,7 +290,13 @@ async function postStepStartedMeta(
       200,
       (opts: { body?: unknown }) => {
         capturedMeta = decodePostedMeta(opts.body);
-        return encode({ step: { stepId: 'step_1', status: 'running' } });
+        return encode({
+          step: {
+            stepId: 'step_1',
+            status: 'running',
+            startedAt: STARTED_AT,
+          },
+        });
       },
       {
         headers: {
