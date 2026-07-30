@@ -243,7 +243,9 @@ type AttributeKey =
   | 'lastReceivedAt'
   | 'disposedAt'
   | 'isSystem'
-  | 'errorCode';
+  | 'errorCode'
+  // Analytics-only provenance (AnalyticsEvent / AnalyticsStep), not on Event.
+  | 'computeInstanceId';
 
 const attributeOrder: AttributeKey[] = [
   'workflowName',

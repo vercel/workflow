@@ -142,15 +142,8 @@ export const events = schema.table(
     eventDataJson: jsonb('payload'),
     eventData: Cbor<unknown>()('payload_cbor'),
     specVersion: integer('spec_version'),
-    // `occurredAt` and `computeInstanceId` are readable Event fields this
-    // world does not persist, so they are omitted from the column contract.
   } satisfies DrizzlishOfType<
-    Cborized<
-      Omit<Event, 'occurredAt' | 'computeInstanceId'> & {
-        eventData?: undefined;
-      },
-      'eventData'
-    >
+    Cborized<Omit<Event, 'occurredAt'> & { eventData?: undefined }, 'eventData'>
   >,
   (tb) => [
     index().on(tb.runId),

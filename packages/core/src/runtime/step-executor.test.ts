@@ -4,9 +4,10 @@ import { join } from 'node:path';
 import type { Event, World } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../private.js';
 import { dehydrateStepArguments } from '../serialization.js';
+import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { executeStep } from './step-executor.js';
 
 // The retry ceiling (`authoritativeAttempt`) is what bounds a step that keeps
@@ -181,19 +182,7 @@ describe('executeStep — compute instance stamping', () => {
 
     // computeInstanceId rides in CreateEventParams, which world-local does not
     // persist — so observe the call itself rather than the stored event.
-    const creates: Array<{
-      eventType: string;
-      params?: { computeInstanceId?: string; stateUpdatedAt?: number };
-    }> = [];
-    const realCreate = world.events.create.bind(world.events);
-    world.events.create = ((
-      rid: Parameters<typeof realCreate>[0],
-      data: Parameters<typeof realCreate>[1],
-      params: Parameters<typeof realCreate>[2]
-    ) => {
-      creates.push({ eventType: data.eventType, params });
-      return realCreate(rid, data, params);
-    }) as typeof world.events.create;
+    const createSpy = vi.spyOn(world.events, 'create');
 
     await executeStep({
       world,
@@ -205,12 +194,12 @@ describe('executeStep — compute instance stamping', () => {
       stateUpdatedAt: 1_700_000_000_000,
     });
 
-    const started = creates.filter((c) => c.eventType === 'step_started');
-    expect(started).toHaveLength(1);
-    expect(started[0]?.params?.computeInstanceId).toMatch(
-      /^cinst_[0-9A-HJKMNP-TV-Z]{26}$/
+    const started = createSpy.mock.calls.filter(
+      ([, data]) => data.eventType === 'step_started'
     );
+    expect(started).toHaveLength(1);
+    expect(started[0]?.[2]?.computeInstanceId).toBe(COMPUTE_INSTANCE_ID);
     // Both ride the same params object — neither may clobber the other.
-    expect(started[0]?.params?.stateUpdatedAt).toBe(1_700_000_000_000);
+    expect(started[0]?.[2]?.stateUpdatedAt).toBe(1_700_000_000_000);
   });
 });

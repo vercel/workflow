@@ -13,7 +13,13 @@ import {
   pluralize,
   stepDisplayName,
 } from '@workflow/utils';
-import type { Event, SerializedData, Step, World } from '@workflow/world';
+import type {
+  CreateEventParams,
+  Event,
+  SerializedData,
+  Step,
+  World,
+} from '@workflow/world';
 import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -506,6 +512,14 @@ export async function executeStep(
           !isOptimisticInlineStartExplicitlyDisabled()));
 
     let step: Step;
+    // Params for the `step_started` create on either path below: the ambient
+    // compute-instance stamp plus the optimistic-concurrency claim guard.
+    const startEventParams: CreateEventParams = {
+      computeInstanceId: COMPUTE_INSTANCE_ID,
+      ...(params.stateUpdatedAt !== undefined
+        ? { stateUpdatedAt: params.stateUpdatedAt }
+        : {}),
+    };
     // `Date.now()` taken immediately before the `step_started` create is
     // issued (either path below) — anchors RSFS's end point. See
     // StepLatencyEventData.rsfs and the call sites below.
@@ -565,12 +579,7 @@ export async function executeStep(
             // (412) rejection surfaces via reconcileOptimisticStart as a
             // non-translatable error: the body result is discarded and the
             // rejection propagates to the caller.
-            {
-              computeInstanceId: COMPUTE_INSTANCE_ID,
-              ...(params.stateUpdatedAt !== undefined
-                ? { stateUpdatedAt: params.stateUpdatedAt }
-                : {}),
-            }
+            startEventParams
           );
         }
       );
@@ -631,12 +640,7 @@ export async function executeStep(
           // (412) rejection is intentionally NOT translated by
           // startErrorToResult below, so it propagates to the caller for a
           // fresh replay.
-          {
-            computeInstanceId: COMPUTE_INSTANCE_ID,
-            ...(params.stateUpdatedAt !== undefined
-              ? { stateUpdatedAt: params.stateUpdatedAt }
-              : {}),
-          }
+          startEventParams
         );
 
         if (!startResult.step) {

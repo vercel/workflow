@@ -644,8 +644,6 @@ export const EventSchema = AllEventsSchema.and(
     createdAt: z.coerce.date(),
     occurredAt: z.coerce.date().optional(),
     specVersion: z.number().optional(),
-    /** Compute instance that wrote this event, when the world persists it. */
-    computeInstanceId: z.string().optional(),
   })
 );
 
@@ -709,11 +707,10 @@ export interface CreateEventParams {
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
   /**
-   * Compute instance whose handler is writing this event — i.e. the instance
-   * that ran the work it records (`COMPUTE_INSTANCE_ID` in @workflow/core).
-   * Ambient per-event identity, like {@link requestId}, which distinguishes
-   * invocations *within* an instance. Worlds may persist it; observability uses
-   * the pair to tell same-instance from same-invocation execution.
+   * Compute instance whose handler is writing this event (`COMPUTE_INSTANCE_ID`
+   * in @workflow/core). Ambient per-event identity like {@link requestId},
+   * which distinguishes invocations *within* an instance. Read back via
+   * `AnalyticsEventSchema` / `AnalyticsStepSchema`.
    */
   computeInstanceId?: string;
   /**

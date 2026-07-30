@@ -257,9 +257,8 @@ function buildPostFrameMeta(
   if (input.correlationId !== undefined)
     meta.correlationId = input.correlationId;
   if (input.vercelId !== undefined) meta.vercelId = input.vercelId;
-  if (input.computeInstanceId !== undefined) {
+  if (input.computeInstanceId !== undefined)
     meta.computeInstanceId = input.computeInstanceId;
-  }
   if (input.occurredAt !== undefined) meta.occurredAt = input.occurredAt;
   if (input.remoteRefBehavior !== undefined) {
     meta.remoteRefBehavior = input.remoteRefBehavior;
