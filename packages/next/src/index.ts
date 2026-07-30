@@ -321,6 +321,29 @@ function registerWorkflowDiagnosticsManifestCopy(metadata: {
   globalWithMarker[marker].push(metadata);
 }
 
+/**
+ * `ws` (used by world-vercel's events WS transport) has optional native
+ * accelerator deps (`bufferutil`, `utf-8-validate`). Webpack bundles their JS
+ * wrapper but can't bundle the native `.node` binding, leaving a broken
+ * partial import that throws "bufferUtil.mask is not a function" at runtime
+ * on the server build (Turbopack doesn't hit this — it externalizes Node
+ * packages differently). Mark them external so `ws` resolves them via a real
+ * `require()` from node_modules at runtime instead, where it falls back to
+ * its pure-JS implementation if they're absent.
+ */
+function externalizeWsNativeAccelerators(webpackConfig: {
+  externals?: unknown;
+}): void {
+  const names = ['bufferutil', 'utf-8-validate'];
+  if (Array.isArray(webpackConfig.externals)) {
+    webpackConfig.externals.push(...names);
+  } else if (webpackConfig.externals) {
+    webpackConfig.externals = [webpackConfig.externals, ...names];
+  } else {
+    webpackConfig.externals = names;
+  }
+}
+
 export function withWorkflow(
   nextConfigOrFn:
     | NextConfig
@@ -570,6 +593,10 @@ export function withWorkflow(
         test: /.*\.(mjs|cjs|cts|ts|tsx|js|jsx)$/,
         loader: loaderPath,
       });
+
+      if (args[1]?.isServer) {
+        externalizeWsNativeAccelerators(webpackConfig);
+      }
 
       return existingWebpackModify
         ? (existingWebpackModify(...args) ?? webpackConfig)

@@ -30,6 +30,7 @@ import {
   parseRetryAfter,
 } from './http-core.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
+import { getWsEventsTransport, toEventsWsUrl } from './ws-transport.js';
 
 /**
  * Issue an instrumented v4 request through the global `fetch` — NOT undici's
@@ -385,24 +386,24 @@ export async function createWorkflowRunEventV4(
   input: CreateEventV4Input,
   config?: APIConfig
 ): Promise<CreateEventV4Result> {
-  // getHttpConfig sets the Authorization header (explicit config.token or
-  // per-request OIDC fallback) — same contract as the v3 makeRequest path.
-  const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
-  const headers = new Headers(baseHeaders);
-  headers.set('Content-Type', 'application/octet-stream');
+  const meta = buildPostFrameMeta(input);
+  const payload = input.payload ?? new Uint8Array(0);
 
-  const frame = encodeFrame(
-    buildPostFrameMeta(input),
-    input.payload ?? new Uint8Array(0)
-  );
-
-  const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/${encodeURIComponent(input.eventType)}`;
-  const response = await fetchV4(
-    url,
-    { method: 'POST', headers, body: frame },
-    config,
-    'createEvent'
-  );
+  const response = isWsEventsTransportEnabled()
+    ? await postEventFrameOverWs(
+        input.runId,
+        input.eventType,
+        meta,
+        payload,
+        config
+      )
+    : await postEventFrameOverHttp(
+        input.runId,
+        input.eventType,
+        meta,
+        payload,
+        config
+      );
 
   const eventId = response.headers.get(V4_RESPONSE_HEADERS.eventId);
   const runId = response.headers.get(V4_RESPONSE_HEADERS.runId);
@@ -423,6 +424,154 @@ export async function createWorkflowRunEventV4(
       : {};
 
   return { eventId, runId, createdAt, body };
+}
+
+/**
+ * A `Response`-like contract: the only two members `createWorkflowRunEventV4`
+ * reads off the transport result. `fetch`'s `Response` satisfies this
+ * structurally, so the HTTP branch returns a real `Response` unchanged; the
+ * WS branch builds a minimal object with the same shape instead of forcing
+ * WS replies to imitate HTTP status/headers any further than this.
+ */
+interface FrameResponseLike {
+  headers: { get(name: string): string | null };
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+/**
+ * WS events transport gate — POC flag (see workflow-architecture.md notes).
+ * Only `createWorkflowRunEventV4` (POST) is wired to it; GET/LIST stay on
+ * HTTP, since they're not on the hot per-step path and the wire protocol
+ * for LIST (a streamed, sentinel-terminated multi-frame response) doesn't
+ * map onto a single WS message.
+ *
+ * Opt-in: defaults to HTTP unless `WORKFLOW_EVENTS_TRANSPORT=ws` is set.
+ * Was previously defaulted ON for this branch so the existing e2e/benchmark
+ * suite would exercise the WS path without any dedicated wiring — that's no
+ * longer needed now that a dedicated Vercel preview deployment sets this
+ * env var explicitly for its own deployment only (see
+ * `.github/workflows/tests.yml`'s `e2e-vercel-ws-transport` job), so every
+ * other deployment/test now genuinely reflects the HTTP-only default a real
+ * user would get.
+ */
+export function isWsEventsTransportEnabled(): boolean {
+  return process.env.WORKFLOW_EVENTS_TRANSPORT === 'ws';
+}
+
+async function postEventFrameOverHttp(
+  runId: string,
+  eventType: string,
+  meta: Record<string, unknown>,
+  payload: Uint8Array,
+  config: APIConfig | undefined
+): Promise<FrameResponseLike> {
+  // getHttpConfig sets the Authorization header (explicit config.token or
+  // per-request OIDC fallback) — same contract as the v3 makeRequest path.
+  const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
+  const headers = new Headers(baseHeaders);
+  headers.set('Content-Type', 'application/octet-stream');
+
+  const frame = encodeFrame(meta, payload);
+  const url = `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventType)}`;
+  return fetchV4(
+    url,
+    { method: 'POST', headers, body: frame },
+    config,
+    'createEvent'
+  );
+}
+
+/** Flatten the reply frame's meta into the small header record
+ *  `errorFromV4Response` already knows how to read (retry-after,
+ *  x-vercel-mitigated) — reuses that function unchanged instead of growing
+ *  a WS-specific error path. */
+function replyMetaToHeaderRecord(
+  meta: Record<string, unknown>
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (typeof meta.eventId === 'string')
+    out[V4_RESPONSE_HEADERS.eventId] = meta.eventId;
+  if (typeof meta.runId === 'string')
+    out[V4_RESPONSE_HEADERS.runId] = meta.runId;
+  if (typeof meta.createdAt === 'string')
+    out[V4_RESPONSE_HEADERS.createdAt] = meta.createdAt;
+  if (typeof meta.retryAfter === 'string') out['retry-after'] = meta.retryAfter;
+  if (typeof meta.mitigated === 'string')
+    out['x-vercel-mitigated'] = meta.mitigated;
+  return out;
+}
+
+// Each logged at most once per process — both branches below are expected
+// to repeat (every event), and a per-request log would just be noise.
+let loggedWsProxyFallback = false;
+let loggedWsInUse = false;
+
+async function postEventFrameOverWs(
+  runId: string,
+  eventType: string,
+  meta: Record<string, unknown>,
+  payload: Uint8Array,
+  config: APIConfig | undefined
+): Promise<FrameResponseLike> {
+  const { baseUrl, headers, usingProxy } = await getHttpConfig(config);
+  if (usingProxy) {
+    // The ws transport was only ever designed for the direct
+    // workflow-server path. `getHttpConfig`'s `usingProxy` branch resolves
+    // `baseUrl` to `api.vercel.com/v1/workflow`, an HTTP-only REST gateway
+    // that (as far as we know) does not forward a raw WebSocket upgrade
+    // through to the actual workflow-server target — it would either
+    // reject the upgrade outright or hand the route a plain forwarded HTTP
+    // request that never went through Vercel's platform-level WS-upgrade
+    // path, which is exactly what produces workflow-server's
+    // "experimental_upgradeWebSocket is not available in the current
+    // runtime environment" error. Fall back to HTTP instead of attempting
+    // (and failing) a WS connection the proxy can't serve.
+    if (!loggedWsProxyFallback) {
+      loggedWsProxyFallback = true;
+      console.warn(
+        `world-vercel: ws events transport requested but a World with projectConfig ` +
+          `(api-workflow proxy, resolved baseUrl: ${baseUrl}) is active — falling back.`
+      );
+    }
+    return postEventFrameOverHttp(runId, eventType, meta, payload, config);
+  }
+  if (!loggedWsInUse) {
+    loggedWsInUse = true;
+    console.log(
+      `world-vercel: using ws events transport (baseUrl: ${baseUrl}).`
+    );
+  }
+  const wsUrl = toEventsWsUrl(baseUrl, runId);
+  const transport = getWsEventsTransport(wsUrl, headersToRecord(headers));
+
+  // `runId` is NOT repeated here — it's already in `wsUrl` (the connection
+  // is scoped to this one run). The server's WsRequestFrameSchema
+  // (frames.ts) is a discriminated union on `type`, with the type's
+  // payload nested under a field named after it — `event: meta` for
+  // `type: 'event'` — so a future request type is a new variant, not a
+  // reshape of what's already on the wire. See the server's
+  // docs/ws-protocol.md.
+  const reply = await transport.request((reqId) =>
+    encodeFrame({ reqId, type: 'event', event: meta }, payload)
+  );
+
+  const status =
+    typeof reply.meta.status === 'number' ? reply.meta.status : 200;
+  if (status < 200 || status >= 300) {
+    throw errorFromV4Response(
+      status,
+      replyMetaToHeaderRecord(reply.meta),
+      new TextDecoder().decode(reply.body),
+      'createEvent',
+      `${wsUrl}#runs/${encodeURIComponent(runId)}/events`
+    );
+  }
+
+  const headerRecord = replyMetaToHeaderRecord(reply.meta);
+  return {
+    headers: { get: (name) => headerRecord[name.toLowerCase()] ?? null },
+    arrayBuffer: async () => reply.body.slice().buffer as ArrayBuffer,
+  };
 }
 
 /**
