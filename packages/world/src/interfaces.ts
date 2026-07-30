@@ -329,6 +329,15 @@ export interface WorldCapabilities {
    * ignore `stateUpdatedAt` must leave this unset so runtime optimizations
    * that rely on the 412 fence (see `WORKFLOW_PRECONDITION_GUARD`) are not
    * enabled without an actual fence behind them.
+   *
+   * A World declaring this should honour the whole snapshot the runtime sends,
+   * not just the watermark: `stateUpdatedAt`, `stateEventCount` (the count
+   * fence, which catches an event missing at or below the watermark — the case
+   * the watermark provably cannot see) and, optionally, `stateCursor` (return
+   * the missing events on the 412 to save the client a reload). See
+   * `CreateEventParams` for each field's contract. The runtime does not branch
+   * on which halves are implemented; a World that ignores the count simply
+   * fences less.
    */
   preconditionGuard?: boolean;
 

@@ -11,6 +11,7 @@ import {
 } from '@workflow/world';
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   boolean,
   customType,
   index,
@@ -113,6 +114,38 @@ export const runs = schema.table(
      * older SDKs, which fall back to the symmetric path.
      */
     encryptionPublicKey: varchar('encryption_public_key'),
+    /**
+     * Commit-ordered append state. `nextEventSeq` is the number of events
+     * committed to this run's log — the next event takes `nextEventSeq + 1`.
+     * `lastEventId` is the id of the run's current log tail; new event ids are
+     * minted at the append point to sort strictly after it, so event-id order
+     * == seq order == commit order. Both are only read/written inside the
+     * per-run append transaction (see `allocateEventPositions` in storage.ts),
+     * which serializes appends via a run-scoped advisory lock.
+     */
+    nextEventSeq: bigint('next_event_seq', { mode: 'number' })
+      .default(0)
+      .notNull(),
+    lastEventId: varchar('last_event_id'),
+    /**
+     * Decision-fence state. `lastFencedSeq` is the position of the last
+     * *decision* event — a create that carried a precondition snapshot
+     * (replay-derived: step/hook/wait creations, terminal transitions).
+     * Facts (`hook_received`, `step_completed`, …) arrive without a snapshot
+     * and never bump it, mirroring Temporal's buffered events: a fact landing
+     * after a writer's snapshot must not invalidate its decisions, or a run
+     * under a steady inbound-hook load restarts its replay on every write
+     * and stops making progress. A fenced create is rejected iff a *foreign*
+     * decision landed past its snapshot.
+     *
+     * `writerSnapshot` / `writerBaseCount` are the sibling credit: the
+     * several creates one suspension flushes share one snapshot; the first
+     * establishes the credit and the rest match it instead of fencing on the
+     * decisions their own batch just appended.
+     */
+    lastFencedSeq: bigint('last_fenced_seq', { mode: 'number' }),
+    writerSnapshot: varchar('writer_snapshot'),
+    writerBaseCount: bigint('writer_base_count', { mode: 'number' }),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at')
       .defaultNow()
@@ -125,7 +158,13 @@ export const runs = schema.table(
     Cborized<
       Omit<WorkflowRun, 'input'> & { input?: unknown },
       'input' | 'output' | 'executionContext' | 'error'
-    >
+    > & {
+      nextEventSeq: number;
+      lastEventId?: string;
+      lastFencedSeq?: number;
+      writerSnapshot?: string;
+      writerBaseCount?: number;
+    }
   >,
   (tb) => [index().on(tb.workflowName), index().on(tb.status)]
 );
@@ -142,12 +181,38 @@ export const events = schema.table(
     eventDataJson: jsonb('payload'),
     eventData: Cbor<unknown>()('payload_cbor'),
     specVersion: integer('spec_version'),
+    /**
+     * Dense per-run log position (1, 2, 3, …) allocated at the append point
+     * inside the per-run append transaction. Null on events written before
+     * the World gained commit-ordered appends (and on legacy-spec runs).
+     * See the `seq` field contract on `EventSchema` in `@workflow/world`.
+     */
+    seq: bigint('seq', { mode: 'number' }),
+    /**
+     * Fence forensics: the `stateEventCount` the create carried (null for
+     * facts / unfenced creates). Records how many events the writer's replay
+     * had loaded when it derived this event, which is what makes post-hoc
+     * corruption attribution possible: a decision whose fenceCount already
+     * covers a competing decision batch proves the divergence happened
+     * *inside the engine on identical input* (delivery-order nondeterminism)
+     * rather than in storage ordering or fence admission.
+     */
+    fenceCount: bigint('fence_count', { mode: 'number' }),
   } satisfies DrizzlishOfType<
-    Cborized<Omit<Event, 'occurredAt'> & { eventData?: undefined }, 'eventData'>
+    Cborized<
+      Omit<Event, 'occurredAt'> & { eventData?: undefined },
+      'eventData'
+    > & {
+      fenceCount?: number;
+    }
   >,
   (tb) => [
     index().on(tb.runId),
     index().on(tb.correlationId),
+    // Dense positions must be unique per run. Multiple NULLs are allowed
+    // (pre-migration events), and the append serializer makes real
+    // collisions impossible — this index is the invariant's tripwire.
+    uniqueIndex('workflow_events_run_seq_unique').on(tb.runId, tb.seq),
     // Runtime-correlated one-shot events must be unique per (run, correlation)
     // — without
     // this, two concurrent invocations producing identical correlationIds

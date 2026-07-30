@@ -8,13 +8,15 @@ related:
   - /docs/api-reference/workflow-errors/entity-conflict-error
 ---
 
-`PreconditionFailedError` is thrown by world implementations when an event creation is rejected because the client's event-log snapshot is stale — a newer out-of-band event (such as a received hook or a completed step) was recorded after the snapshot the client replayed from. It corresponds to HTTP 412 Precondition Failed semantics.
+`PreconditionFailedError` is thrown by world implementations when an event creation is rejected because the client's event-log snapshot is stale — either a newer out-of-band event (such as a received hook or a completed step) was recorded after the snapshot the client replayed from, or the snapshot is missing an event recorded at or before it. It corresponds to HTTP 412 Precondition Failed semantics.
 
-This only occurs when the optimistic-concurrency guard is enabled via `WORKFLOW_PRECONDITION_GUARD=1` (see [Runtime Tuning](/docs/configuration/runtime-tuning)); event creations that carry no snapshot are never rejected with this error.
+This only occurs while the optimistic-concurrency guard is enabled (`WORKFLOW_PRECONDITION_GUARD`, on by default — see [Runtime Tuning](/docs/configuration/runtime-tuning)); event creations that carry no snapshot are never rejected with this error.
 
 <Callout>
-The Workflow runtime handles this error automatically: it reloads the event log and retries, ultimately re-enqueueing the run for a fresh replay if it cannot catch up. You will only encounter it when interacting with world storage APIs directly.
+The Workflow runtime handles this error automatically: it restarts the replay in the same invocation from a corrected event log, and re-invokes the run for a fresh replay only once its in-process restart budget is spent. It never retries the rejected creation as-is, because a replay working from a corrected log derives different events. You will only encounter it when interacting with world storage APIs directly.
 </Callout>
+
+A world may attach the events the client was missing to the rejection as `details`, which lets the runtime restart without re-reading the event log. Doing so is optional, and the runtime falls back to a full reload when the details are absent or unusable.
 
 ```typescript lineNumbers
 import { PreconditionFailedError } from "workflow/errors"
@@ -40,6 +42,8 @@ definition={`
 interface PreconditionFailedError {
   /** Delay in seconds before the operation should be retried. Present when the server sends a Retry-After header. */
   retryAfter?: number;
+  /** Optional rejection payload. A world may put the events the client was missing here, as \`{ events, cursor }\`, so the runtime can restart its replay without re-reading the event log. */
+  details?: unknown;
   /** The error message. */
   message: string;
 }

@@ -388,3 +388,23 @@ export function getReplayDivergenceMaxRetries(): number {
     { integer: true }
   );
 }
+
+// A stale-snapshot rejection (412) means the replay's event log was missing an
+// event the World had already recorded, so the replay is re-derived from a
+// corrected log inside the same invocation. Bounded because a persistently
+// rejected write should escalate rather than spin: after this many restarts the
+// run is re-invoked (a new invocation, possibly in a different region), and from
+// there the queue's delivery limit applies.
+export const PRECONDITION_MAX_INPROCESS_RESTARTS = 3;
+
+/**
+ * Effective in-process replay-restart budget for stale-snapshot rejections.
+ * Override via `WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS`.
+ */
+export function getPreconditionMaxInProcessRestarts(): number {
+  return envNumber(
+    'WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS',
+    PRECONDITION_MAX_INPROCESS_RESTARTS,
+    { integer: true }
+  );
+}

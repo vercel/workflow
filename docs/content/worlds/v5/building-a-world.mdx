@@ -106,6 +106,28 @@ Keep the owning Run available for at least as long as its token remains unavaila
 
 **Automatic Hook Cleanup:** When a run ends, remove its live Hooks. Make each token available unless its `tokenRetentionUntil` is still in the future. A `hook_disposed` event always makes the token available immediately.
 
+### Optional: The Event Creation Precondition Guard
+
+A replay writes events derived from the event log it loaded, so a write made from an event log that no longer matches the store can commit events no correct replay would produce. To let a World fence those writes, `events.create()` params may carry a description of the snapshot the caller replayed from:
+
+- `stateUpdatedAt` — the timestamp encoded in the latest loaded event's ID.
+- `stateEventCount` — how many events the caller loaded. Only sent together with `stateUpdatedAt`; ignore a count that arrives without one.
+- `stateCursor` — the caller's event-log cursor. Advisory, and only meaningful on the reject path (see below).
+
+Enforcing the guard means rejecting the creation with a `PreconditionFailedError` when either holds:
+
+1. An event was recorded after `stateUpdatedAt` that the caller could not have loaded.
+2. More events were recorded at or before `stateUpdatedAt` than `stateEventCount` — the caller's snapshot is missing one.
+
+Two rules make this safe:
+
+- **Compare at or below `stateUpdatedAt`, not strictly below.** Events routinely share a millisecond with the caller's latest event, and a strict comparison misses exactly those.
+- **Every uncertainty must allow the write.** If your record of a run's events is incomplete, expired, or cannot answer the question, accept the creation. A rejection must always mean a real discrepancy, because the runtime responds to one by discarding a replay.
+
+A rejection may optionally carry the events the caller was missing, as `{ events, cursor }` on the error's `details`. Only include them when you can prove the set is complete — that those events fully account for the discrepancy and are not truncated. Otherwise omit them, and the runtime performs a full reload instead.
+
+A World that enforces the guard should declare `capabilities.preconditionGuard`, which the runtime also reads to keep event-log delta optimizations enabled. A World that ignores these params must not declare it.
+
 ## Queue Interface
 
 The Queue interface handles asynchronous workflow execution, including queued step work:

@@ -263,6 +263,7 @@ const attributeOrder: AttributeKey[] = [
   'disposedAt',
   'correlationId',
   'eventType',
+  'seq',
   'deploymentId',
   'computeInstanceId',
   'specVersion',
@@ -312,6 +313,7 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   deploymentId: 'Deployment ID',
   computeInstanceId: 'Compute Instance ID',
   specVersion: 'Spec Version',
+  seq: 'Log Position',
   workflowCoreVersion: '@workflow/core version',
   occurredAt: 'Occurred',
   createdAt: 'Created',
@@ -430,6 +432,7 @@ const attributeToDisplayFn: Record<
   deploymentId: (value: unknown) => String(value),
   computeInstanceId: (value: unknown) => String(value),
   specVersion: (value: unknown) => String(value),
+  seq: (value: unknown) => String(value),
   workflowCoreVersion: (value: unknown) => String(value),
   // Tenancy (we don't show these)
   ownerId: (_value: unknown) => null,

@@ -64,6 +64,14 @@ export function createWorld(
 
   return {
     specVersion: SPEC_VERSION_CURRENT,
+    capabilities: {
+      // Event creation enforces the precondition snapshot (`stateUpdatedAt` /
+      // `stateEventCount` / `stateCursor`) with a transactional currency
+      // fence: a create whose snapshot the log has moved past is rejected
+      // with 412 inside the append transaction. See allocateEventPositions
+      // in storage.ts.
+      preconditionGuard: true,
+    },
     ...storage,
     ...streamer,
     ...queue,
