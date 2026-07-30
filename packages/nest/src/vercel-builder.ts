@@ -3,7 +3,6 @@ import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import {
   createBaseBuilderConfig,
-  createWorkflowWorldTargetEsbuildPlugin,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 import * as esbuild from 'esbuild';
@@ -198,14 +197,6 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
       logLevel: 'warning',
       sourcemap: false,
       minify: false,
-      // Alias @workflow/core/runtime/world-target to the selected world
-      // package so start()/getWorld() work inside the app function — the same
-      // static world injection the framework plugins apply.
-      plugins: [
-        createWorkflowWorldTargetEsbuildPlugin({
-          workingDir: this.#workingDir,
-        }),
-      ],
     });
 
     await this.createPackageJson(appFuncDir, 'commonjs');

@@ -28,22 +28,6 @@ The Workflow SDK community can be found on [GitHub Discussions](https://github.c
 
 Contributions to Workflow SDK are welcome and highly appreciated. Please use GitHub [issues](https://github.com/vercel/workflow/issues) and [discussions](https://github.com/vercel/workflow/discussions) to collaborate with the team and wider community.
 
-## Author list
-
-Workflow SDK was built by engineers at [Vercel](https://vercel.com) and the [Open Source Community](https://github.com/vercel/workflow/graphs/contributors).
-
-The initial core contributing engineers are:
-
-- Adrian Lam ([@adriandlam](https://github.com/adriandlam))
-- Dillon Mulroy ([@dmmulroy](https://github.com/dmmulroy))
-- Gal Schlezinger ([@Schniz](https://github.com/Schniz))
-- JJ Kasper ([@ijjk](https://github.com/ijjk))
-- Nathan Rajlich ([@TooTallNate](https://github.com/TooTallNate))
-- Peter Wielander ([@VaguelySerious](https://github.com/VaguelySerious))
-- Pranay Prakash ([@pranaygp](https://github.com/pranaygp))
-
-The Workflow SDK logo was designed by Cecilio Ruiz [@ceciliorz](https://x.com/ceciliorz)
-
 ---
 
 ## Security

@@ -3,11 +3,6 @@ import { nitro } from 'nitro/vite';
 import { defineConfig } from 'vite';
 import { workflow } from 'workflow/vite';
 
-const nitroPlugins =
-  process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres'
-    ? ['plugins/start-pg-world.ts']
-    : [];
-
 export default defineConfig({
   plugins: [nitro(), workflow()],
   // Mirror the `@repo/*` tsconfig path alias for Vite's bundler. Nitro
@@ -23,6 +18,6 @@ export default defineConfig({
   },
   nitro: {
     serverDir: './',
-    plugins: nitroPlugins,
+    plugins: ['plugins/start-pg-world.ts'],
   },
 });

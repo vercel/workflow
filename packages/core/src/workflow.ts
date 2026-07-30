@@ -15,7 +15,7 @@ import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
-import type { CryptoKey } from './encryption.js';
+import type { PayloadKey } from './serialization/encryption.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
@@ -122,7 +122,7 @@ interface WorkflowSessionOptions {
   readonly workflowCode: string;
   readonly workflowRun: WorkflowRun;
   readonly events: Event[];
-  readonly encryptionKey: CryptoKey | undefined;
+  readonly encryptionKey: PayloadKey | undefined;
   readonly replayPayloadCache: ReplayPayloadCache;
   readonly runReadyBarrier?: Promise<unknown>;
   readonly worldCapabilities?: WorldCapabilities;
@@ -246,7 +246,7 @@ export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
   events: Event[],
-  encryptionKey: CryptoKey | undefined,
+  encryptionKey: PayloadKey | undefined,
   /**
    * Optional per-run cache for replay payload preparation and immutable final
    * values. Owned by the inline execution loop for this invocation.

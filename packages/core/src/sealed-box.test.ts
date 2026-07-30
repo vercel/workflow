@@ -5,7 +5,10 @@ import {
   encrypt as aesGcmEncrypt,
 } from './encryption.js';
 import {
+  base64ToBytes,
+  bytesToBase64,
   decapsulate,
+  decodeRunPublicKey,
   deriveRunKeyPair,
   encapsulate,
   open,
@@ -426,5 +429,90 @@ describe('sealed-box', () => {
         RuntimeDecryptionError
       );
     });
+  });
+});
+
+describe('base64 helpers', () => {
+  it('matches node:crypto Buffer encoding for random byte strings', () => {
+    // Hand-rolled because the module must run in the browser and the VM; that
+    // makes an independent cross-check worthwhile.
+    for (const length of [0, 1, 2, 3, 4, 31, 32, 33, 64, 255]) {
+      const bytes = new Uint8Array(length);
+      globalThis.crypto.getRandomValues(bytes);
+      const expected = Buffer.from(bytes).toString('base64');
+      expect(bytesToBase64(bytes)).toBe(expected);
+      expect(base64ToBytes(expected)).toEqual(bytes);
+    }
+  });
+
+  it('round-trips a derived public key', async () => {
+    const { publicKey } = await deriveRunKeyPair(K);
+    const encoded = bytesToBase64(publicKey);
+    // 32 bytes -> 44 base64 chars including padding.
+    expect(encoded).toHaveLength(44);
+    expect(base64ToBytes(encoded)).toEqual(publicKey);
+  });
+
+  it('returns undefined for malformed base64 rather than throwing', () => {
+    // A corrupt public key read from storage must degrade to "no usable key"
+    // (falling back to the symmetric path), not crash a resumption.
+    expect(base64ToBytes('not valid base64!!')).toBeUndefined();
+    expect(base64ToBytes('****')).toBeUndefined();
+  });
+
+  it('rejects malformed shapes instead of returning a truncated key', () => {
+    // A lenient decoder is worse than a throwing one here: silently returning
+    // a short key makes a corrupt value look *present*, so the caller seals to
+    // garbage rather than taking the symmetric fallback.
+    for (const bad of [
+      'AAAAA', // length % 4 === 1: the trailing char encodes no byte
+      'AA=A', // padding in the middle
+      'A=AA',
+      'AAA=A', // characters after padding
+      'AB', // final quantum with non-zero unused bits
+      'AAB',
+      'AAAA=', // padding that does not land on a 4-char boundary
+    ]) {
+      expect(
+        base64ToBytes(bad),
+        `expected ${bad} to be rejected`
+      ).toBeUndefined();
+    }
+  });
+
+  it('rejects a malformed public key at the decode boundary', () => {
+    // decodeRunPublicKey is the funnel every caller uses, so the strictness
+    // has to show up there rather than only in the raw decoder.
+    expect(decodeRunPublicKey('AAAAA')).toBeUndefined();
+    expect(decodeRunPublicKey('AA=A')).toBeUndefined();
+    expect(decodeRunPublicKey(undefined)).toBeUndefined();
+    // Right encoding, wrong length.
+    expect(
+      decodeRunPublicKey(bytesToBase64(new Uint8Array(31)))
+    ).toBeUndefined();
+    // And the happy path still resolves.
+    const valid = bytesToBase64(new Uint8Array(32).fill(3));
+    expect(decodeRunPublicKey(valid)).toEqual(new Uint8Array(32).fill(3));
+  });
+
+  it('accepts every canonical encoding Buffer produces', () => {
+    // Guard against the strictness overshooting into false negatives.
+    for (let length = 0; length <= 48; length++) {
+      const bytes = new Uint8Array(length);
+      globalThis.crypto.getRandomValues(bytes);
+      const encoded = Buffer.from(bytes).toString('base64');
+      expect(base64ToBytes(encoded), `length ${length}`).toEqual(bytes);
+      // Unpadded form must decode identically.
+      expect(
+        base64ToBytes(encoded.replace(/=+$/, '')),
+        `length ${length}`
+      ).toEqual(bytes);
+    }
+  });
+
+  it('tolerates missing padding', () => {
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+    const padded = bytesToBase64(bytes);
+    expect(base64ToBytes(padded.replace(/=+$/, ''))).toEqual(bytes);
   });
 });

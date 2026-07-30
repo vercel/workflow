@@ -544,6 +544,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             executionContext?: Record<string, any>;
             attributes?: Record<string, string>;
             allowReservedAttributes?: true;
+            encryptionPublicKey?: string;
           };
           if (
             runInputData.deploymentId &&
@@ -574,6 +575,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   | SerializedContent
                   | undefined,
                 attributes: runInputData.attributes,
+                // Must be mirrored here too: this is the path that recreates a
+                // run from the queued message, which is exactly when the key
+                // would otherwise be lost for the rest of the run's life.
+                encryptionPublicKey: runInputData.encryptionPublicKey,
                 status: 'pending',
               })
               .onConflictDoNothing()
@@ -592,6 +597,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   executionContext: runInputData.executionContext,
                   attributes: runInputData.attributes,
                   allowReservedAttributes: runInputData.allowReservedAttributes,
+                  encryptionPublicKey: runInputData.encryptionPublicKey,
                 },
                 specVersion: effectiveSpecVersion,
               });
@@ -821,6 +827,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           executionContext?: Record<string, any>;
           attributes?: Record<string, string>;
           allowReservedAttributes?: true;
+          encryptionPublicKey?: string;
         };
         validateAttributeChanges(
           Object.entries(eventData.attributes ?? {}).map(([key, value]) => ({
@@ -844,6 +851,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               | SerializedContent
               | undefined,
             attributes: eventData.attributes,
+            encryptionPublicKey: eventData.encryptionPublicKey,
             status: 'pending',
           })
           .onConflictDoNothing()

@@ -4,12 +4,15 @@ import type { TLSSocket } from 'node:tls';
 import { Agent } from 'undici';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  createEventsDispatcher,
+  createStreamDispatcher,
   DEFAULT_AGENT_OPTIONS,
   EVENTS_AGENT_OPTIONS,
   getDispatcher,
   getEventsDispatcher,
   getStreamCloseDispatcher,
   getStreamDispatcher,
+  STREAM_AGENT_OPTIONS,
   STREAM_CLOSE_RETRY_OPTIONS,
   STREAM_RETRY_OPTIONS,
 } from './http-client.js';
@@ -94,7 +97,24 @@ describe('agent transport', () => {
   // Flipping either silently would regress one side or the other.
   it('enables HTTP/2 for the events API only', () => {
     expect(EVENTS_AGENT_OPTIONS.allowH2).toBe(true);
+    expect(STREAM_AGENT_OPTIONS.allowH2).toBe(true);
     expect(DEFAULT_AGENT_OPTIONS.allowH2).toBe(false);
+  });
+
+  // `allowH2` alone buys nothing: undici gates in-flight requests per
+  // connection on `pipelining`, so `pipelining: 1` reduces an H2 agent to H1
+  // behavior (one stream per connection). These two constants are the
+  // difference between multiplexing and not — see EVENTS_AGENT_OPTIONS.
+  it('gives the events agent a pipelining depth that permits multiplexing', () => {
+    expect(EVENTS_AGENT_OPTIONS.pipelining).toBeGreaterThan(1);
+  });
+
+  // Inverse guard: stream appends are not idempotent, so they must NOT
+  // multiplex — one connection-level failure would fail (and retry) several
+  // appends at once. See STREAM_AGENT_OPTIONS.
+  it('keeps stream writes and the H1 default at one request per connection', () => {
+    expect(STREAM_AGENT_OPTIONS.pipelining).toBe(1);
+    expect(DEFAULT_AGENT_OPTIONS.pipelining).toBe(1);
   });
 });
 
@@ -197,5 +217,208 @@ describe('HTTP/2 over global fetch with an undici dispatcher', () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('ok');
     expect(negotiatedAlpn).toBe('h2');
+  });
+});
+
+// Negotiating h2 is not the same as using it. This measures the property the
+// events agent actually exists for: concurrent POSTs sharing ONE connection as
+// parallel H2 streams. It is the regression test the config-only assertions
+// above cannot be — before the pipelining + interceptor fix, `allowH2` was true
+// and ALPN was h2, yet 16 concurrent requests still produced 8 serialized
+// requests over 8 TCP connections, exactly like the H1 agent.
+describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
+  const CONCURRENCY = 16;
+
+  let server: Http2SecureServer;
+  let port: number;
+  let sessions: number;
+  let maxConcurrentStreams: number;
+  let inFlight: number;
+  let receivedBodies: string[];
+  let release: Array<() => void>;
+  let flakyAttempts: number;
+
+  /**
+   * Holds every request open until `CONCURRENCY` of them are in flight, so peak
+   * concurrency is observed rather than timed. A periodic flush (see `burst`)
+   * drains whatever is waiting when that target is never reached — which is the
+   * expected outcome for a non-multiplexing agent, and must fail the assertion
+   * rather than hang the test.
+   */
+  function onArrival(path: string): Promise<void> {
+    // The pool-warming request is not part of the barrier — it must complete on
+    // its own so the burst starts from an established session.
+    if (!path.startsWith('/req-')) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      inFlight++;
+      maxConcurrentStreams = Math.max(maxConcurrentStreams, inFlight);
+      release.push(resolve);
+      if (release.length >= CONCURRENCY) {
+        for (const r of release.splice(0)) r();
+      }
+    });
+  }
+
+  beforeAll(async () => {
+    server = createSecureServer({ key: TEST_KEY, cert: TEST_CERT });
+    server.on('session', (session) => {
+      sessions++;
+      // Agents are closed while the pool still holds idle sessions; the
+      // resulting resets are expected teardown noise, not test failures.
+      session.on('error', () => undefined);
+    });
+    server.on('sessionError', () => undefined);
+    server.on('clientError', () => undefined);
+    server.on('stream', (stream, headers) => {
+      stream.on('error', () => undefined);
+      const chunks: Buffer[] = [];
+      stream.on('data', (c: Buffer) => chunks.push(c));
+      stream.on('end', () => {
+        void (async () => {
+          const path = String(headers[':path']);
+          receivedBodies.push(Buffer.concat(chunks).toString());
+          await onArrival(path);
+          if (path.startsWith('/req-')) inFlight--;
+          // `/flaky` fails once so RetryAgent re-dispatches it.
+          if (path === '/flaky' && ++flakyAttempts === 1) {
+            stream.respond({ ':status': 503 });
+            stream.end('retry me');
+            return;
+          }
+          stream.respond({ ':status': 200 });
+          stream.end(path);
+        })();
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    port = (server.address() as AddressInfo).port;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  });
+
+  /** Loopback TLS escape hatch — the only deviation from production wiring. */
+  const LOOPBACK = { connect: { rejectUnauthorized: false } };
+
+  async function burst(dispatcher: unknown) {
+    sessions = 0;
+    maxConcurrentStreams = 0;
+    inFlight = 0;
+    receivedBodies = [];
+    release = [];
+    flakyAttempts = 0;
+    // Warm the pool so connection setup isn't conflated with the stream gate:
+    // a cold burst races ALPN negotiation and fans out across connections.
+    await fetch(`https://127.0.0.1:${port}/warm`, {
+      dispatcher,
+      method: 'POST',
+      body: 'warm',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+    } as any);
+    const sessionsAfterWarm = sessions;
+    // Repeating, not one-shot: an agent that caps in-flight requests below
+    // CONCURRENCY delivers the burst in several waves, and every wave needs
+    // draining or the remainder blocks forever.
+    const timer = setInterval(() => {
+      for (const r of release.splice(0)) r();
+    }, 250);
+    const bodies = await Promise.all(
+      Array.from({ length: CONCURRENCY }, (_, i) =>
+        fetch(`https://127.0.0.1:${port}/req-${i}`, {
+          method: 'POST',
+          body: JSON.stringify({ i }),
+          dispatcher,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+        } as any).then((r) => r.text())
+      )
+    );
+    clearInterval(timer);
+    return { bodies, sessionsAfterWarm };
+  }
+
+  it('multiplexes concurrent event writes onto a single connection', async () => {
+    // The real production factory — so dropping the interceptor from
+    // createEventsDispatcher fails here, not just changing the constants.
+    const agent = createEventsDispatcher(LOOPBACK);
+    try {
+      const { bodies, sessionsAfterWarm } = await burst(agent);
+
+      expect(maxConcurrentStreams).toBe(CONCURRENCY);
+      // No new TCP/TLS session beyond the warmed one — the whole point.
+      expect(sessions).toBe(sessionsAfterWarm);
+      // Re-buffering the body must not corrupt or cross-wire payloads.
+      expect(bodies.sort()).toEqual(
+        Array.from({ length: CONCURRENCY }, (_, i) => `/req-${i}`).sort()
+      );
+      expect(receivedBodies.filter((b) => b !== 'warm').sort()).toEqual(
+        Array.from({ length: CONCURRENCY }, (_, i) =>
+          JSON.stringify({ i })
+        ).sort()
+      );
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it('does not multiplex stream writes (non-idempotent appends stay isolated)', async () => {
+    const agent = createStreamDispatcher(STREAM_RETRY_OPTIONS, LOOPBACK);
+    try {
+      await burst(agent);
+      // Bounded by the pool size, not by CONCURRENCY: each connection carries
+      // at most one append, so a reset can only ever fail one write.
+      expect(maxConcurrentStreams).toBeLessThanOrEqual(
+        STREAM_AGENT_OPTIONS.connections
+      );
+      expect(maxConcurrentStreams).toBeLessThan(CONCURRENCY);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it('resends the full body when a re-buffered request is retried', async () => {
+    // The interceptor consumes the request body to make it multiplexable, but
+    // RetryAgent re-dispatches with the *original* (now exhausted) stream. If the
+    // drained buffer were not reused, the retry would arrive with an empty body.
+    const agent = createEventsDispatcher(LOOPBACK);
+    receivedBodies = [];
+    flakyAttempts = 0;
+    const payload = JSON.stringify({ chunk: 'x'.repeat(64) });
+    try {
+      const response = await fetch(`https://127.0.0.1:${port}/flaky`, {
+        method: 'PUT',
+        body: payload,
+        dispatcher: agent,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+      } as any);
+      expect(response.status).toBe(200);
+      expect(flakyAttempts).toBe(2);
+      expect(receivedBodies).toEqual([payload, payload]);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it('WORKFLOW_H2_MULTIPLEX=0 falls back to one request per connection', async () => {
+    const previous = process.env.WORKFLOW_H2_MULTIPLEX;
+    process.env.WORKFLOW_H2_MULTIPLEX = '0';
+    // Read when the dispatcher is built, so the kill switch only takes effect
+    // for agents created after it is set.
+    const agent = createEventsDispatcher(LOOPBACK);
+    try {
+      await burst(agent);
+      expect(maxConcurrentStreams).toBeLessThan(CONCURRENCY);
+    } finally {
+      await agent.close();
+      if (previous === undefined) {
+        delete process.env.WORKFLOW_H2_MULTIPLEX;
+      } else {
+        process.env.WORKFLOW_H2_MULTIPLEX = previous;
+      }
+    }
   });
 });

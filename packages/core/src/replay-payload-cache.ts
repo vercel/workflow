@@ -1,5 +1,5 @@
 import type { Event, WorkflowRun } from '@workflow/world';
-import type { CryptoKey } from './encryption.js';
+import type { PayloadKey } from './serialization/encryption.js';
 import {
   type PreparedReplayPayload,
   prepareReplayPayload,
@@ -40,9 +40,10 @@ export class ReplayPayloadCache {
     Promise<PreparedReplayPayload>
   >();
   private readonly primitiveStepResults = new Map<string, unknown>();
+  private nextUnscannedEventIndex = 0;
 
   constructor(
-    private readonly encryptionKey: CryptoKey | undefined,
+    private readonly encryptionKey: PayloadKey | undefined,
     private readonly preparer: ReplayPayloadPreparer = prepareReplayPayload
   ) {}
 
@@ -66,7 +67,15 @@ export class ReplayPayloadCache {
     };
 
     start(this.workflowInputKey(workflowRun.runId), workflowRun.input);
-    for (const event of events) {
+    // This cache is scoped to one invocation and its append-only event log.
+    // Full snapshot reloads preserve the already-seen prefix, so its length is
+    // enough to locate events appended since the previous replay.
+    for (
+      let index = this.nextUnscannedEventIndex;
+      index < events.length;
+      index++
+    ) {
+      const event = events[index];
       switch (event.eventType) {
         case 'step_completed':
           start(
@@ -88,6 +97,7 @@ export class ReplayPayloadCache {
           break;
       }
     }
+    this.nextUnscannedEventIndex = events.length;
 
     // Prewarming is speculative and must not fail replay before the matching
     // event is consumed. allSettled also attaches rejection handlers eagerly.

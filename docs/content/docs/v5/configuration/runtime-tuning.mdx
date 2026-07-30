@@ -123,6 +123,14 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Debug log filter with wildcards and negation.
 - Examples: `workflow:*`, `workflow:*,-workflow:telemetry:*`.
 
+## Transport
+
+### `WORKFLOW_H2_MULTIPLEX`
+
+- Default: enabled
+- On the Vercel World, lets concurrent event-log requests share one HTTP/2 connection instead of one connection per in-flight request.
+- Set `0` to send one event request per connection.
+
 ## Queue namespace
 
 ### `WORKFLOW_QUEUE_NAMESPACE`

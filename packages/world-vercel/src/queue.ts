@@ -13,6 +13,7 @@ import {
 } from '@workflow/world';
 import { decode as cborDecode, encode as cborEncode } from 'cbor-x';
 import { z } from 'zod/v4';
+import { missingDeploymentIdMessage } from './deployment-id.js';
 import { getDispatcher } from './http-client.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
@@ -175,7 +176,12 @@ const FALLBACK_REGION = 'iad1';
 
 /**
  * Extract the workflow run ID from a queue payload, returning `undefined` for
- * payloads that don't carry one (e.g. health-check messages).
+ * payloads that don't carry one.
+ *
+ * Health-check payloads usually have no run ID, but a probe issued to prepare a
+ * cross-deployment `start()` carries the run id it is about to create. Reading
+ * it here is intentional: it routes the probe to the region the run will live
+ * in, matching the invoke that follows.
  */
 function getRunIdFromPayload(payload: QueuePayload): string | undefined {
   if ('runId' in payload && typeof payload.runId === 'string') {
@@ -312,6 +318,13 @@ function getPhysicalQueueName(
       '[workflow] WORKFLOW_SEQUENTIAL_REPLAYS=1: routing flow messages to per-run queue topics'
     );
   }
+  // Health checks are matched before the runId branch: a probe issued to
+  // prepare a cross-deployment `start()` carries the run id it is about to
+  // create, and must still get its per-probe topic rather than being routed to
+  // that run's serialized replay topic.
+  if ('__healthCheck' in payload && typeof payload.correlationId === 'string') {
+    return `${queueName}_${payload.correlationId}`;
+  }
   if ('runId' in payload && typeof payload.runId === 'string') {
     // Inline step execution: full parallelism via a per-step topic.
     if ('stepId' in payload && typeof payload.stepId === 'string') {
@@ -319,9 +332,6 @@ function getPhysicalQueueName(
     }
     // Orchestrator replay: serialize per run.
     return `${queueName}_${payload.runId}`;
-  }
-  if ('__healthCheck' in payload && typeof payload.correlationId === 'string') {
-    return `${queueName}_${payload.correlationId}`;
   }
   return queueName;
 }
@@ -368,9 +378,8 @@ export function createQueue(config?: APIConfig): Queue {
     const deploymentId = opts?.deploymentId ?? process.env.VERCEL_DEPLOYMENT_ID;
     if (!deploymentId) {
       throw new Error(
-        'No deploymentId provided and VERCEL_DEPLOYMENT_ID environment variable is not set. ' +
-          'Queue messages require a deployment ID to route correctly. ' +
-          'Either set VERCEL_DEPLOYMENT_ID or provide deploymentId in options.'
+        `${missingDeploymentIdMessage('Enqueuing a workflow message')} ` +
+          'Callers outside a deployment can instead pass an explicit deploymentId in options.'
       );
     }
 
@@ -515,10 +524,13 @@ export function createQueue(config?: APIConfig): Queue {
     };
   };
 
+  // `start()` resolves the current deployment before writing anything, so this
+  // is where a Vercel world running outside a deployment fails — ahead of any
+  // state write, and regardless of whether credentials happen to be valid.
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
     const deploymentId = process.env.VERCEL_DEPLOYMENT_ID;
     if (!deploymentId) {
-      throw new Error('VERCEL_DEPLOYMENT_ID environment variable is not set');
+      throw new Error(missingDeploymentIdMessage('Starting a workflow run'));
     }
     return deploymentId;
   };
