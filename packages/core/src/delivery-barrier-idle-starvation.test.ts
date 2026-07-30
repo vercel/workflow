@@ -45,9 +45,17 @@
  *
  * FIXED by giving both polls a deadline. An unclaimed payload's barrier
  * retires after a bounded number of ticks whatever the traffic, and
- * `scheduleWhenIdle` fires anyway after a bounded number of poll rounds. Both
- * are backstops — the idle condition is still the normal route out, which is
- * what the control test pins.
+ * `scheduleWhenIdle` fires anyway after a bounded number of poll rounds
+ * WITHOUT DELIVERY PROGRESS. Both are backstops — the idle condition is still
+ * the normal route out, which is what the control test pins.
+ *
+ * That qualifier is the whole of the second defect this PR fixed. Rounds
+ * counted flat bound batch width rather than starvation, because delivering a
+ * drain window in log order legitimately costs a round per event; the budget
+ * has to measure rounds in which nothing reached workflow code. The three
+ * tests at the end of this suite pin the resulting semantics from both sides:
+ * it fires on a stall, it does not fire on progress, and progress does not buy
+ * permanent immunity — once progress stops the budget starts again.
  *
  * The deadline deliberately does NOT apply to an ARMED barrier. Those are
  * committed deliveries with unconditional chains, and force-retiring one on a
@@ -297,6 +305,42 @@ describe('delivery-barrier safety net vs. unrelated delivery traffic', () => {
     expect(delivered.length).toBe(batch);
     // The suspension may fire once the batch is done. It may not fire during.
     expect(firedAfter).toBe(batch);
+  });
+
+  it('fires once progress stops, having been reset by progress before that', async () => {
+    // The third side of the deadline, and the guard on the fix for the second:
+    // resetting the budget on progress must not amount to disabling it. A run
+    // that delivers for a while and then stalls with traffic still in flight
+    // has to reach the callback, or the bound this suite exists to add is gone
+    // for every run that ever delivered anything — which is all of them.
+    const ctx = makeCtx();
+    const storm = startPokeStorm(ctx);
+    try {
+      // Long enough that the budget is reset many times over: on a flat count
+      // this batch alone would exhaust it twice.
+      const batch = 32;
+      const all = Array.from({ length: batch }, (_, index) =>
+        deliverStepResult(ctx, index, () => {})
+      );
+
+      let fired = false;
+      scheduleWhenIdle(ctx, () => {
+        fired = true;
+      });
+
+      await Promise.all(all.map((d) => d.delivered));
+      // Not during: every round of the batch made progress.
+      expect(fired).toBe(false);
+
+      // Now nothing delivers again, but the storm keeps `pendingDeliveries`
+      // above zero, so the idle condition can never be met and only the budget
+      // can end this.
+      await macrotasks(40);
+      expect(fired).toBe(true);
+      expect(storm.lowWaterMark()).toBeGreaterThan(0);
+    } finally {
+      storm.stop();
+    }
   });
 
   it('drains a fan-out of unclaimed payloads gating a later delivery', async () => {
