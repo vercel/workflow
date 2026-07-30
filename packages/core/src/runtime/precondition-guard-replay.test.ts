@@ -29,6 +29,7 @@ import {
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { runtimeLogger } from '../logger.js';
 import { registerStepFunction } from '../private.js';
 import { workflowEntrypoint } from '../runtime.js';
 import {
@@ -415,6 +416,7 @@ async function runPreconditionScenario(options: {
     createParams,
     listEvents,
     queue,
+    runId,
     staleEventsCursor,
     staleSnapshotMs,
     OUTSIDE_EVENT_MS,
@@ -1075,6 +1077,46 @@ describe('precondition guard through the real replay loop', () => {
     // trusted again — the second restart does the authoritative full reload.
     expect(result.waitCompletedRejectionCount()).toBe(2);
     expect(cursorlessLoads(result.listEvents)).toBe(1);
+  });
+
+  it('reports whether a restarted replay reloaded the events it was missing', async () => {
+    const warn = vi.spyOn(runtimeLogger, 'warn');
+    const result = await runPreconditionScenario({
+      rejectWaitCompletedTimes: 2,
+      attachDelta: 'complete',
+    });
+    await result.handlerInvocation;
+
+    const reloads = warn.mock.calls
+      .filter(
+        ([message]) =>
+          message ===
+          'Restarted replay reloaded its event log after a stale-snapshot rejection'
+      )
+      .map(([, fields]) => fields as Record<string, unknown>);
+
+    // The first restart consumes the attached delta, which supplies exactly the
+    // outside event the snapshot was missing: the log grew by one.
+    expect(reloads[0]).toMatchObject({
+      workflowRunId: result.runId,
+      outcome: 'grew',
+      added: 1,
+      dropped: 0,
+      source: 'inline-delta',
+      preconditionRestarts: 1,
+    });
+    // The second rejection reloads in full and gets back the same set, because
+    // the World has nothing further to report. That is the diagnostic worth
+    // having: client and World disagree about the same set of events, so the
+    // re-derived snapshot will be rejected again until the bound is spent.
+    expect(reloads[1]).toMatchObject({
+      outcome: 'unchanged',
+      added: 0,
+      dropped: 0,
+      source: 'full-reload',
+      preconditionRestarts: 2,
+    });
+    expect(reloads[1].eventsBefore).toBe(reloads[1].eventsAfter);
   });
 
   it('ignores an attached delta when a sibling claim in the same batch was accepted', async () => {

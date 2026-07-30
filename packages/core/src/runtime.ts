@@ -267,6 +267,15 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
   return true;
 }
 
+/** How many of `ids` are absent from `present`. */
+function countMissingIds(ids: Iterable<string>, present: Set<string>): number {
+  let missing = 0;
+  for (const id of ids) {
+    if (!present.has(id)) missing++;
+  }
+  return missing;
+}
+
 /**
  * The lineage root of a loaded run: its `$rootRunId` attribute, or its own id
  * when it is itself a root.
@@ -717,6 +726,65 @@ export function workflowEntrypoint(
                   // has thrown away its replay and started over in-process.
                   let preconditionRestarts = 0;
                   /**
+                   * Event ids the discarded replay held, kept until the next
+                   * load resolves so a restart can report what its reload
+                   * actually found. Without this a 412 only ever tells you that
+                   * a restart happened, which conflates two very different
+                   * situations: a log that grew (expected — the fence did its
+                   * job) and a log that came back identical, which means client
+                   * and backend disagree about the count for the same set of
+                   * events and the restart will re-derive the same snapshot and
+                   * be rejected again.
+                   */
+                  let preconditionRestartBaseline: {
+                    ids: Set<string>;
+                    restart: number;
+                    reason: string;
+                    source: 'inline-delta' | 'full-reload';
+                  } | null = null;
+                  /**
+                   * Report what a stale-snapshot restart's reload found, once
+                   * the log this replay will actually consume is in hand.
+                   *
+                   * `grew` is the expected case and gives 412 volume a
+                   * denominator. `unchanged` means the reload disagreed with
+                   * the rejection, so this replay re-derives the same snapshot
+                   * and is rejected again until the budget is spent. `shrank`
+                   * should be impossible: every load path only adds to a run's
+                   * log.
+                   */
+                  const reportPreconditionRestartReload = (
+                    events: Event[]
+                  ): void => {
+                    const baseline = preconditionRestartBaseline;
+                    if (!baseline) return;
+                    preconditionRestartBaseline = null;
+
+                    const reloadedIds = new Set(
+                      events.map((event) => event.eventId)
+                    );
+                    const added = countMissingIds(reloadedIds, baseline.ids);
+                    const dropped = countMissingIds(baseline.ids, reloadedIds);
+                    const outcome =
+                      dropped > 0 ? 'shrank' : added > 0 ? 'grew' : 'unchanged';
+
+                    runtimeLogger.warn(
+                      'Restarted replay reloaded its event log after a stale-snapshot rejection',
+                      {
+                        workflowRunId: runId,
+                        outcome,
+                        added,
+                        dropped,
+                        eventsBefore: baseline.ids.size,
+                        eventsAfter: reloadedIds.size,
+                        preconditionRestarts: baseline.restart,
+                        reason: baseline.reason,
+                        source: baseline.source,
+                        loopIteration,
+                      }
+                    );
+                  };
+                  /**
                    * Recover from a stale-snapshot rejection by restarting the
                    * replay inside this invocation, returning false when the
                    * per-invocation budget is spent (the caller then falls back
@@ -768,6 +836,18 @@ export function workflowEntrypoint(
                     // to merge it into; with no base log the restart has to load
                     // the whole thing anyway.
                     const usedDelta = Boolean(delta && cachedEvents);
+                    // Snapshot the set being discarded while it is still in
+                    // hand; the comparison happens once the next load resolves.
+                    preconditionRestartBaseline = cachedEvents
+                      ? {
+                          ids: new Set(
+                            cachedEvents.map((event) => event.eventId)
+                          ),
+                          restart: preconditionRestarts,
+                          reason,
+                          source: usedDelta ? 'inline-delta' : 'full-reload',
+                        }
+                      : null;
                     if (usedDelta) {
                       // Consumed by the loop's first branch
                       // (`pendingInlineDelta && cachedEvents`) with no
@@ -787,6 +867,10 @@ export function workflowEntrypoint(
                       preloadedEvents = undefined;
                       preloadedEventsCursor = undefined;
                       pendingInlineDelta = null;
+                      // The corrected log inserts the missing events BELOW the
+                      // length already scanned for payload prewarming, shifting
+                      // every later position. Only a full rescan sees them.
+                      replayPayloadCache.resetScan();
                     }
                     runtimeLogger.warn(
                       'Event creation rejected as stale; restarting replay in-process',
@@ -1512,6 +1596,8 @@ export function workflowEntrypoint(
                       // a cached array to merge it into. Reassigned again after
                       // the wait pass, which may swap in a freshly loaded array.
                       cachedEvents = events;
+
+                      reportPreconditionRestartReload(events);
 
                       // Detect concurrent completion via the event log: if
                       // any other handler wrote a terminal run event, exit
