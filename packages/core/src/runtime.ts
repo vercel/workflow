@@ -22,6 +22,7 @@ import {
   isLegacySpecVersion,
   ROOT_RUN_ID_ATTRIBUTE,
   resolveQueueNamespace,
+  type RunInput,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   WorkflowInvokePayloadSchema,
@@ -35,7 +36,7 @@ import {
 } from './classify-error.js';
 import { describeError } from './describe-error.js';
 import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
-import { runtimeLogger } from './logger.js';
+import { type Logger, runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import {
@@ -163,6 +164,138 @@ function clampMaxEvents(serverValue: number | undefined): number | undefined {
   const override = getMaxEventsOverride();
   if (override === undefined) return serverValue;
   return serverValue === undefined ? override : Math.min(serverValue, override);
+}
+
+/**
+ * Refuse a queue delivery whose run was created in a different environment than
+ * this deployment runs in.
+ *
+ * `start()` performs two writes that must land in the same tenant: the
+ * `run_created` event, attributed to whatever environment the *caller*
+ * authenticates as, and the queue message, pinned to a *deployment*. A
+ * misconfigured caller can split them — writing the run to one environment
+ * while addressing the message to a deployment in another. The consumer then
+ * finds no run under its own tenant and the backend's resilient start
+ * (`run_started` creates the run when `run_created` was never seen) mints a
+ * SECOND copy of the same run id in this environment. Both copies are real: the
+ * creator's sits pending forever, this one executes, and every subsequent
+ * cross-tenant queue ack fails to find its message.
+ *
+ * Nothing external is needed to catch this: the creator's environment rides the
+ * message in `runInput.environment` and this process already knows its own. So
+ * compare them and stop BEFORE `run_started` — the write that would create the
+ * fork. Refusing after it would be too late.
+ *
+ * Returns `true` when the caller must abandon the delivery. Skipped whenever
+ * either side is unknown, which keeps every existing setup on its current
+ * behavior: worlds with no environment dimension (`world-local`,
+ * `world-postgres`) don't implement `getEnvironment`, and runs started by an
+ * older SDK carry no `environment` field.
+ */
+function refuseCrossEnvironmentDelivery({
+  world,
+  runInput,
+  runId,
+  runLogger,
+}: {
+  world: World;
+  runInput: RunInput | undefined;
+  runId: string;
+  runLogger: Logger;
+}): boolean {
+  const creatorEnvironment = runInput?.environment;
+  if (!creatorEnvironment) return false;
+
+  const currentEnvironment = world.getEnvironment?.();
+  if (!currentEnvironment || currentEnvironment === creatorEnvironment) {
+    return false;
+  }
+
+  runLogger.error(
+    `Refusing to run this workflow: it was created in the "${creatorEnvironment}" ` +
+      `environment but this deployment runs in "${currentEnvironment}". ` +
+      'Executing it here would create a second copy of the same run id in ' +
+      'both environments — one pending forever, one running — so the queue ' +
+      'message is being discarded without executing and without retrying. ' +
+      'The client that called start() wrote the run to its own environment ' +
+      'but addressed the queue message to a deployment in another one. Check ' +
+      'that the environment that client authenticates as (WORKFLOW_VERCEL_ENV ' +
+      "for CLI and CI clients, or the OIDC token's environment inside a " +
+      'deployment) matches the environment of the deployment it targets. The ' +
+      `run it created is still pending in "${creatorEnvironment}" and will ` +
+      'not run.',
+    {
+      workflowRunId: runId,
+      creatorEnvironment,
+      currentEnvironment,
+      pinnedDeploymentId: runInput?.deploymentId,
+    }
+  );
+  return true;
+}
+
+/**
+ * Log when a `start()`-enqueued message pinned to one deployment is delivered
+ * to a different one.
+ *
+ * A first-delivery message carries `runInput.deploymentId` — the deployment
+ * `start()` addressed it to — so comparing that against this handler's own
+ * deployment detects mis-delivery directly. This is a DIAGNOSTIC, not a gate:
+ * it warns and lets the invocation proceed, deliberately.
+ *
+ * Why this one only warns while its environment sibling above refuses: a
+ * differing deployment id is not by itself evidence of the fork we care about.
+ * The environment pair is exact — two named environments that disagree — and it
+ * is the dimension the run's tenant is keyed on. Deployment ids disagree for
+ * benign reasons too: `world-local` derives its id from the installed package
+ * version (`dpl_local@<version>`), so upgrading the SDK mid-run changes it with
+ * nothing wrong. Refusing on that signal would strand correct runs, and
+ * refusing before `run_started` leaves no server-side record to explain why.
+ * Anyone tempted to promote this to a hard failure has to handle that first.
+ *
+ * Skipped unless BOTH ids are known — `getDeploymentId()` throws in worlds that
+ * require a deployment and have none, and a re-enqueued message carries no
+ * `runInput` at all.
+ */
+async function warnOnDeploymentPinningMismatch({
+  world,
+  runInput,
+  runId,
+  runLogger,
+}: {
+  world: World;
+  runInput: RunInput | undefined;
+  runId: string;
+  runLogger: Logger;
+}): Promise<void> {
+  const pinnedDeploymentId = runInput?.deploymentId;
+  if (!pinnedDeploymentId) return;
+
+  let currentDeploymentId: string | undefined;
+  try {
+    currentDeploymentId = await world.getDeploymentId();
+  } catch {
+    // Worlds that require a deployment id throw when there isn't one. That is
+    // not a mismatch — there is simply nothing to compare against.
+    return;
+  }
+  if (!currentDeploymentId || currentDeploymentId === pinnedDeploymentId) {
+    return;
+  }
+
+  runLogger.error(
+    'Queue message was delivered to a deployment it was not pinned to. ' +
+      'The run was created targeting a different deployment, so this ' +
+      'invocation may be replaying against code the run was not started on. ' +
+      'Continuing — this is expected if the Workflow SDK version changed ' +
+      'mid-run in local development, where the deployment id is derived from ' +
+      'that version.',
+    {
+      workflowRunId: runId,
+      pinnedDeploymentId,
+      currentDeploymentId,
+    }
+  );
 }
 
 function getWorkflowSetupErrorCode(err: unknown): RunErrorCode | null {
@@ -499,6 +632,34 @@ export function workflowEntrypoint(
               const world = await trace('workflow.route.get_world', async () =>
                 getWorld()
               );
+              // Both checks below look at `runInput`, so both are no-ops on a
+              // re-enqueued message (which carries none) — they only ever run on
+              // a first delivery, the one that could create the run.
+              //
+              // Returning acks the message. That is deliberate: the mismatch is
+              // baked into this message, so every redelivery would reach the
+              // same verdict, and throwing would just hot-loop the handler until
+              // MAX_QUEUE_DELIVERIES with the same error each time. It matches
+              // how the run_started path already discards deliveries whose
+              // verdict cannot change (EntityConflictError, RunExpiredError).
+              if (
+                refuseCrossEnvironmentDelivery({
+                  world,
+                  runInput,
+                  runId,
+                  runLogger,
+                })
+              ) {
+                return;
+              }
+              // Diagnostic only — see the helper for why this warns instead of
+              // refusing the invocation.
+              await warnOnDeploymentPinningMismatch({
+                world,
+                runInput,
+                runId,
+                runLogger,
+              });
               return trace(
                 `workflow.execute ${workflowDisplayName(workflowName)}`,
                 { kind: spanKind, links: spanLinks },

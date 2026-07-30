@@ -481,6 +481,29 @@ export interface World extends Queue, Streamer, Storage {
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
 
   /**
+   * The environment this World's writes are attributed to by the backend
+   * (`@workflow/world-vercel`: `'production' | 'preview' | 'development'`).
+   *
+   * Synchronous and side-effect free: implementations derive this from
+   * configuration or environment variables they already hold, never from a
+   * network call. Return `undefined` when the environment can't be determined.
+   *
+   * The value MUST match the attribution the backend will actually apply to
+   * this client's writes — for `world-vercel` that means keeping it in lockstep
+   * with the `x-vercel-environment` header (proxy path) and the OIDC token's
+   * `environment` claim (in-deployment path). A value that merely looks
+   * plausible is worse than `undefined`, because callers use it to detect
+   * cross-tenant mismatches and a wrong answer manufactures a false one.
+   *
+   * `start()` stamps this into the queue message's `runInput` so the consuming
+   * deployment can tell that a message it was handed was created against a
+   * different environment than its own. Not all Worlds have an environment
+   * dimension — local dev and Postgres have exactly one tenant, so they omit
+   * this and the check is skipped.
+   */
+  getEnvironment?(): string | undefined;
+
+  /**
    * World-specific display fields for a run.
    *
    * Tooling — e.g. the `workflow inspect` CLI — calls this to enrich a

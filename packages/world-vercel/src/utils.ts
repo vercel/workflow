@@ -244,6 +244,39 @@ export const getHttpUrl = (
   return { baseUrl, usingProxy };
 };
 
+/**
+ * The environment this client's writes will be attributed to by the backend.
+ *
+ * Two distinct auth paths, two distinct sources — and this must mirror both
+ * exactly, because callers compare it against the environment a *different*
+ * client reported to detect a cross-tenant fork (see `World.getEnvironment`):
+ *
+ * - **With `projectConfig`** (CLI, CI, the observability dashboard — anything
+ *   going through the api.vercel.com proxy with a Vercel auth token): the proxy
+ *   attributes the write to the `x-vercel-environment` header, so the answer is
+ *   whatever {@link getHeaders} puts there. Both read this one function so they
+ *   cannot drift; the `|| 'production'` default is part of that contract, not
+ *   an incidental fallback.
+ *
+ * - **Without `projectConfig`** (inside a Vercel deployment, authenticating
+ *   with the per-request OIDC token): the backend reads the token's
+ *   `environment` claim, which the platform mints to match `VERCEL_ENV`.
+ *
+ * Returns `undefined` when neither source is available (e.g. a bare Node
+ * process with no Vercel env vars). `undefined` is the honest answer there and
+ * callers skip their checks — guessing `'production'` would fabricate a
+ * mismatch against a genuine preview deployment.
+ */
+export const resolveClientEnvironment = (
+  config: APIConfig | undefined
+): string | undefined => {
+  const projectConfig = config?.projectConfig;
+  if (projectConfig) {
+    return projectConfig.environment || 'production';
+  }
+  return process.env.VERCEL_ENV || undefined;
+};
+
 export const getHeaders = (
   config: APIConfig | undefined,
   options: { usingProxy: boolean }
@@ -259,9 +292,14 @@ export const getHeaders = (
     headers.set(TEST_LIMIT_OVERRIDES_HEADER, testLimitOverrides);
   }
   if (projectConfig) {
+    // Derived from the same helper `getEnvironment` uses so the header and the
+    // value stamped into `runInput` can never disagree — a drift between them
+    // would make the cross-environment guard either miss a real fork or
+    // reject a legitimate start.
     headers.set(
       'x-vercel-environment',
-      projectConfig.environment || 'production'
+      // biome-ignore lint/style/noNonNullAssertion: projectConfig is present, so the helper always returns a string
+      resolveClientEnvironment(config)!
     );
     if (projectConfig.projectId) {
       headers.set('x-vercel-project-id', projectConfig.projectId);
