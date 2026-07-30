@@ -6,9 +6,16 @@ name: Performance Benchmarks
 # the same comment; previous results stay available in a collapsed history
 # section (state is embedded in the comment body itself).
 #
-# Runs on pushes to main (against the production deployment) purely to produce
-# baseline artifacts; PR runs download the most recent main baseline and show
-# avg-latency deltas against it in the comment.
+# The benchmark job runs the suite twice back-to-back against the same
+# deployment; the comment shows run 2 diffed against run 1 (same commit, same
+# deployment) so the delta reflects benchmark noise rather than an actual perf
+# change vs main.
+#
+# TEMPORARY (websockets-vs-HTTP A/B test): run 2 is currently pointed at a
+# second, WORKFLOW_EVENTS_TRANSPORT=ws deployment of the same commit instead
+# of run 1's deployment, so the delta reflects WS vs HTTP transport rather
+# than run-to-run noise. See the "Deploy WS-transport preview for run 2" step
+# and its usage below; revert both to restore the noise-isolation comparison.
 
 on:
   pull_request:
@@ -135,8 +142,16 @@ jobs:
 
       # Builds the packages the benchmark runner imports (same pattern as the
       # e2e-vercel jobs in tests.yml); hits the turbo remote cache in CI.
+      # TEMPORARY: broadened from just `@workflow/cli` to every non-workbench
+      # package (same filter setup-workflow-dev's own "Build all packages"
+      # step uses) because the "Deploy WS-transport preview" step below runs
+      # `vercel build` locally on the runner instead of Vercel's own
+      # server-side build — so every workspace dep the nextjs-turbopack
+      # workbench's example workflows import (`workflow`, `@workflow/ai`,
+      # ...) must already be built, rather than relying on Vercel's build
+      # pipeline to do it.
       - name: Build packages
-        run: pnpm turbo run build --filter='@workflow/cli'
+        run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Wait for Vercel deployment
         id: waitForDeployment
@@ -148,7 +163,61 @@ jobs:
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
-      - name: Run benchmarks
+      # TEMPORARY (websockets-vs-HTTP A/B test): run 2 needs
+      # WORKFLOW_EVENTS_TRANSPORT=ws, which is a runtime env var baked into a
+      # deployment at deploy time — it can't be toggled per-request against
+      # the one deployment `waitForDeployment` found above (that one stays on
+      # the HTTP default, for run 1). So this creates a *second*, independent
+      # deployment of the same commit/project with that one var set, via
+      # `vercel pull`/`build`/`deploy --prebuilt` (which hands back the new
+      # deployment's URL synchronously) rather than
+      # vercel/wait-for-deployment-action, which only polls for the
+      # passively-created deployment from Vercel's GitHub App integration.
+      # Same pattern as the websockets PR's own `e2e-vercel-ws-transport` job
+      # (vercel/workflow#3084), adapted to the nextjs-turbopack app here.
+      - name: Deploy WS-transport preview for run 2
+        id: wsDeploy
+        if: matrix.target.world == 'vercel'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+        run: |
+          set -euo pipefail
+          # No --cwd: this project has a "Root Directory" setting
+          # (workbench/nextjs-turbopack) configured in Vercel itself, which
+          # is applied relative to wherever these commands run. Passing
+          # --cwd=workbench/nextjs-turbopack here would double that path
+          # (workbench/nextjs-turbopack/workbench/nextjs-turbopack, which
+          # doesn't exist) — `vercel build` warns and falls back gracefully,
+          # but `vercel deploy --prebuilt` hard-errors on it. Running from
+          # the repo root (actions/checkout's default cwd) instead lets
+          # Vercel's own Root Directory setting resolve the subdirectory,
+          # matching how the passive GitHub-integration deployment (used
+          # for run 1) already works.
+          npx vercel@56.2.0 pull --yes --environment=preview \
+            --project="${{ matrix.target.project-id }}" --scope="team_nO2mCG4W8IxPIeKoSsqwAxxB" \
+            --token="$VERCEL_TOKEN"
+          npx vercel@56.2.0 build \
+            --scope="team_nO2mCG4W8IxPIeKoSsqwAxxB" --token="$VERCEL_TOKEN"
+          # `vercel deploy` writes the new deployment's URL to stdout and
+          # progress/logs to stderr — do not redirect stderr into this capture.
+          URL=$(npx vercel@56.2.0 deploy --prebuilt --yes \
+            -e WORKFLOW_EVENTS_TRANSPORT=ws \
+            --scope="team_nO2mCG4W8IxPIeKoSsqwAxxB" --token="$VERCEL_TOKEN")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          DEPLOYMENT_ID=$(npx vercel@56.2.0 inspect "$URL" --format=json \
+            --scope="team_nO2mCG4W8IxPIeKoSsqwAxxB" --token="$VERCEL_TOKEN" 2>/dev/null \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{}})" || true)
+          echo "deploymentId=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"
+
+      # Normally both runs hit the same deployment (back-to-back, same
+      # commit) so the PR comment's run-2-vs-run-1 delta isolates benchmark
+      # noise from real perf deltas. TEMPORARY (websockets-vs-HTTP A/B test):
+      # run 1 still uses that deployment (HTTP transport, the default), but
+      # run 2 below is pointed at the dedicated WS-transport deployment from
+      # the step above instead — so the delta between them now reflects
+      # WS vs HTTP, not noise. Revert run 2's DEPLOYMENT_URL/VERCEL_DEPLOYMENT_ID
+      # back to `steps.waitForDeployment.outputs.*` once this comparison is done.
+      - name: Run benchmarks (run 1)
         env:
           DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
           APP_NAME: ${{ matrix.target.app }}
@@ -165,16 +234,49 @@ jobs:
           # ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN env vars (auto-set when
           # `permissions: id-token: write` is on the job).
           # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
+          BENCH_OUTPUT_FILE: bench-results-run1-${{ matrix.target.app }}-${{ matrix.target.world }}.json
+        # TEMPORARY: narrowed to the sequential-steps scenario only, to
+        # isolate run-to-run variance investigation. Remove `-t` to restore
+        # the full scenario suite.
         run: |
-          pnpm vitest run packages/core/e2e/benchmark.test.ts
+          pnpm vitest run packages/core/e2e/benchmark.test.ts -t "sequential steps"
 
-      - name: Upload benchmark results
+      - name: Run benchmarks (run 2)
+        env:
+          # TEMPORARY (websockets-vs-HTTP A/B test): points at the dedicated
+          # WS-transport deployment from the step above, not
+          # `steps.waitForDeployment` (which run 1 uses). Revert to
+          # `steps.waitForDeployment.outputs.deployment-url` /
+          # `.deployment-id` once the comparison is done.
+          DEPLOYMENT_URL: ${{ steps.wsDeploy.outputs.url }}
+          APP_NAME: ${{ matrix.target.app }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.wsDeploy.outputs.deploymentId }}
+          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
+          WORKFLOW_VERCEL_PROJECT: ${{ matrix.target.project-id }}
+          WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.target.project-slug }}
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BENCH_OUTPUT_FILE: bench-results-run2-${{ matrix.target.app }}-${{ matrix.target.world }}.json
+        # TEMPORARY: see run 1's `-t` note above.
+        run: |
+          pnpm vitest run packages/core/e2e/benchmark.test.ts -t "sequential steps"
+
+      - name: Upload run 1 results
         # Partial results are still useful when a scenario failed
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bench-results-${{ matrix.target.app }}-${{ matrix.target.world }}
-          path: bench-results-*.json
+          name: bench-results-run1-${{ matrix.target.app }}-${{ matrix.target.world }}
+          path: bench-results-run1-*.json
+          if-no-files-found: ignore
+
+      - name: Upload run 2 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-run2-${{ matrix.target.app }}-${{ matrix.target.world }}
+          path: bench-results-run2-*.json
           if-no-files-found: ignore
 
   # Phase 3: Update the PR comment with the results (collapsing history)
@@ -192,43 +294,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download benchmark results
+      # Run 2 is "current" (results-dir) and run 1 is the "baseline" for the
+      # delta columns — both are the same commit, run back-to-back in the
+      # benchmark job above, so the delta shows run-to-run noise rather than a
+      # perf comparison against main.
+      - name: Download run 2 results
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          pattern: bench-results-*
+          pattern: bench-results-run2-*
           path: benchmark-results
           merge-multiple: true
 
-      # Baseline for the avg-delta column: results from the most recent
-      # successful run of this workflow on main. Uses gh (first-party) rather
-      # than a third-party cross-run artifact action. Filtering to push /
-      # workflow_dispatch events matters for more than tidiness: it excludes
-      # artifacts uploaded by fork PR runs, whose head branch can also be
-      # named "main" (artifact poisoning).
-      - name: Download baseline results from main
+      - name: Download run 1 results
         continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          run_id=$(gh run list \
-            --repo "$GITHUB_REPOSITORY" \
-            --workflow benchmarks.yml \
-            --branch main \
-            --status success \
-            --limit 20 \
-            --json databaseId,event \
-            --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")][0].databaseId // empty')
-          if [ -z "$run_id" ]; then
-            echo "No successful benchmark run found on main; skipping baseline"
-            exit 0
-          fi
-          echo "Using baseline artifacts from run $run_id"
-          gh run download "$run_id" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern 'bench-results-*' \
-            --dir baseline-results \
-            || echo "Run $run_id has no benchmark artifacts; skipping baseline"
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bench-results-run1-*
+          path: baseline-results
+          merge-multiple: true
 
       - name: Find existing benchmark comment
         uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3.1.0

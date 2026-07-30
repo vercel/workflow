@@ -12,8 +12,8 @@
  * Usage:
  *   node render-benchmark-comment.mjs \
  *     --status running|completed|failed \
- *     [--results-dir <dir>]        # dir with bench-results-*.json files
- *     [--baseline-dir <dir>]       # main-branch results to diff averages against
+ *     [--results-dir <dir>]        # dir with run 2's bench-results-*.json files
+ *     [--baseline-dir <dir>]       # run 1's results (same commit) to diff against
  *     [--previous-body <file>]     # previous comment body to carry history from
  *     [--commit <sha>] [--run-url <url>] \
  *     [--output <file>]            # defaults to stdout
@@ -166,14 +166,13 @@ function formatMs(value) {
 
 /**
  * Annotates each metric row with the matching baseline values (best, p75, p90,
- * p99) from the most recent main-branch run, keyed by
+ * p99) from the paired baseline run — run 1 of the same commit, run
+ * back-to-back with the "current" run (run 2) in the same job — keyed by
  * methodologyVersion/backend/app/metric/scenario. The methodology version is
  * part of the key so a change to the measurement window (e.g. the switch to
- * the in-deployment trigger) does not diff incomparable numbers: an old
- * baseline won't match the new run, and the delta stays blank until `main` has
- * produced a same-methodology baseline. The annotations are stored on the entry
- * so history re-renders keep showing the deltas each run was originally
- * compared against.
+ * the in-deployment trigger) does not diff incomparable numbers. The
+ * annotations are stored on the entry so history re-renders keep showing the
+ * deltas each run was originally compared against.
  */
 // Which run field each baseline annotation is compared against, and where the
 // baseline value is read from (best falls back to a pre-rename baseline's min).
@@ -189,8 +188,12 @@ export function annotateWithBaseline(results, baseline) {
   const methodology = (result) => result.methodologyVersion ?? 'legacy';
   const keyFor = (result, row) =>
     `${methodology(result)}/${result.backend}/${result.app}/${row.metric}/${row.scenario}`;
+  const resultKeyFor = (result) =>
+    `${methodology(result)}/${result.backend}/${result.app}`;
   const baselineRows = new Map();
+  const baselineResults = new Map();
   for (const result of baseline) {
+    baselineResults.set(resultKeyFor(result), result);
     for (const row of result.metrics ?? []) {
       baselineRows.set(keyFor(result, row), row);
     }
@@ -203,21 +206,262 @@ export function annotateWithBaseline(results, baseline) {
       const value = from(base);
       if (typeof value === 'number') annotated[annotation] = value;
     }
+    // Raw samples (when the run recorded them) enable the histogram/cumulative
+    // diff below the table — kept separate from BASELINE_FIELDS since it's an
+    // array, not a numeric percentile.
+    if (Array.isArray(base.raw)) annotated.baselineRaw = base.raw;
     return annotated;
   };
-  return results.map((result) => ({
-    ...result,
-    metrics: (result.metrics ?? []).map((row) => annotate(result, row)),
-  }));
+  return results.map((result) => {
+    const baseResult = baselineResults.get(resultKeyFor(result));
+    return {
+      ...result,
+      metrics: (result.metrics ?? []).map((row) => annotate(result, row)),
+      ...(Array.isArray(baseResult?.sequentialRuns)
+        ? { baselineSequentialRuns: baseResult.sequentialRuns }
+        : {}),
+    };
+  });
 }
 
-// Deltas beyond ±this vs main get a directional marker: 🔻 for a regression,
+const sum = (values) => values.reduce((total, v) => total + v, 0);
+
+/** Buckets samples into fixed-width ms bins; anything past `binWidth *
+ * maxBins` is folded into a single overflow bucket, so a handful of outliers
+ * don't blow up the table width. */
+function buildHistogram(samples, binWidth, maxBins) {
+  const counts = new Array(maxBins).fill(0);
+  let overflow = 0;
+  for (const v of samples) {
+    const idx = Math.floor(v / binWidth);
+    if (idx >= 0 && idx < maxBins) counts[idx]++;
+    else overflow++;
+  }
+  return { counts, overflow };
+}
+
+// Target bin count for the STSO histogram diff — the actual bin *width* is
+// derived per-row from the observed sample range (see chooseBinWidth), since
+// a fixed width picked for one scenario's typical latency (e.g. sub-100ms)
+// silently dumps every sample into a single overflow bucket for another
+// (e.g. a colder run at 200-500ms/step).
+const STSO_HISTOGRAM_TARGET_BINS = 12;
+
+/** Rounds a raw bin width up to a "nice" 1/2/5 * 10^n step, so bucket
+ * boundaries read cleanly (e.g. 20ms, 50ms) instead of arbitrary fractions. */
+function chooseBinWidth(maxValue, targetBins) {
+  if (!Number.isFinite(maxValue) || maxValue <= 0) return 1;
+  const raw = maxValue / targetBins;
+  const magnitude = 10 ** Math.floor(Math.log10(raw));
+  const normalized = raw / magnitude;
+  const niceNormalized =
+    normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return niceNormalized * magnitude;
+}
+
+function formatDeltaValue(delta, unit = '') {
+  return `${delta >= 0 ? '+' : ''}${Math.round(delta)}${unit}`;
+}
+
+/** Non-empty (bucket label, run 1 count, run 2 count) triples for a
+ * histogram, including the overflow bucket (labeled `${max}+`) when either
+ * run has samples there. Shared by the bar chart and the table so both
+ * render from the exact same bucketing. */
+function nonEmptyBuckets(current, baseline, binWidth, binCount) {
+  const buckets = [];
+  for (let i = 0; i < binCount; i++) {
+    if (current.counts[i] === 0 && baseline.counts[i] === 0) continue;
+    buckets.push({
+      label: `${i * binWidth}-${(i + 1) * binWidth}`,
+      base: baseline.counts[i],
+      cur: current.counts[i],
+    });
+  }
+  if (current.overflow > 0 || baseline.overflow > 0) {
+    buckets.push({
+      label: `${binCount * binWidth}+`,
+      base: baseline.overflow,
+      cur: current.overflow,
+    });
+  }
+  return buckets;
+}
+
+// Bar width (characters) for the ASCII histogram overlay.
+const BAR_CHART_WIDTH = 24;
+
+/**
+ * Renders one bucket as a single overlay bar: a solid `█` run for run 1's
+ * count, a `┃` notch marking exactly where run 2's count lands, and — only
+ * when run 2 exceeds run 1 — a lighter `░` run bridging the gap between them
+ * so the extension past the base bar is visually distinct from the base
+ * itself. One glance shows both run 1's magnitude (bar length/shade) and run
+ * 2's relative position (the notch) without needing two separate bars.
+ */
+function renderOverlayBar(base, cur, maxCount) {
+  if (maxCount <= 0) return '';
+  const scale = (count) =>
+    count <= 0
+      ? 0
+      : Math.max(1, Math.round((count / maxCount) * BAR_CHART_WIDTH));
+  const baseWidth = scale(base);
+  const notchPos = scale(cur);
+  if (notchPos <= baseWidth) {
+    // Notch sits inside (or right at the end of) the solid base bar.
+    const notchIndex = Math.max(0, notchPos - 1);
+    return (
+      '█'.repeat(notchIndex) +
+      '┃' +
+      '█'.repeat(Math.max(0, baseWidth - notchIndex - 1))
+    );
+  }
+  // Run 2 exceeds run 1: extend past the base in a lighter shade, capped by
+  // the notch marking run 2's exact value.
+  return `${'█'.repeat(baseWidth)}${'░'.repeat(notchPos - baseWidth - 1)}┃`;
+}
+
+/** Renders run 1 vs run 2 as one overlay bar per bucket (a fenced code
+ * block keeps bars aligned in a monospace font), so the shape of the two
+ * distributions — and exactly how far run 2 diverged from run 1 — is
+ * visible at a glance instead of only as numbers in a table. */
+function renderStsoBarChart(buckets) {
+  const maxCount = Math.max(1, ...buckets.map((b) => Math.max(b.base, b.cur)));
+  const labelWidth = Math.max(...buckets.map((b) => b.label.length));
+  const lines = ['```'];
+  for (const { label, base, cur } of buckets) {
+    const bar = renderOverlayBar(base, cur, maxCount).padEnd(BAR_CHART_WIDTH);
+    lines.push(
+      `${label.padStart(labelWidth)} ms  ${bar}  R1 ${base}  R2 ${cur}`
+    );
+  }
+  lines.push('```');
+  return lines.join('\n');
+}
+
+// TEMPORARY (websockets-vs-HTTP A/B test): "inline" steps (same warm process
+// as the step before them) cluster tightly — the adaptive bin width was
+// hiding a bimodal split between them (e.g. a fast ~150-250ms mode vs a
+// slower ~300-400ms+ mode) behind ~500ms-wide bins. Hardcode a finer 50ms
+// width for just this scenario so that split is visible; queue-hop steps
+// (dispatch + cold reinit, much larger and sparser) keep the adaptive width.
+const STSO_INLINE_BIN_WIDTH_MS = 50;
+
+/** Renders one STSO row's cumulative-time line, an ASCII bar-chart overlay,
+ * and a bucketed histogram table (run 2 vs run 1). Bin width is chosen from
+ * this row's own sample range, so every scenario gets a histogram that
+ * actually spreads across multiple buckets rather than overflowing into
+ * one — except "inline" rows, which use a hardcoded finer width (see
+ * STSO_INLINE_BIN_WIDTH_MS). */
+function renderStsoRowDiff(row) {
+  const maxValue = Math.max(...row.raw, ...row.baselineRaw);
+  const binWidth = row.scenario.includes('(inline)')
+    ? STSO_INLINE_BIN_WIDTH_MS
+    : chooseBinWidth(maxValue, STSO_HISTOGRAM_TARGET_BINS);
+  // +1 bin of headroom so the max sample lands inside the range rather than
+  // exactly on (and thus overflowing) the last edge.
+  const binCount = Math.ceil(maxValue / binWidth) + 1;
+
+  const current = buildHistogram(row.raw, binWidth, binCount);
+  const baseline = buildHistogram(row.baselineRaw, binWidth, binCount);
+  const currentTotal = sum(row.raw);
+  const baselineTotal = sum(row.baselineRaw);
+  const totalDelta = currentTotal - baselineTotal;
+  const totalPct =
+    baselineTotal > 0 ? (totalDelta / baselineTotal) * 100 : undefined;
+  const pctSuffix =
+    totalPct === undefined ? '' : `, ${formatDeltaValue(totalPct)}%`;
+
+  const buckets = nonEmptyBuckets(current, baseline, binWidth, binCount);
+
+  const lines = [
+    '',
+    `_${row.scenario}_`,
+    '',
+    `Cumulative STSO time: run 1 ${Math.round(baselineTotal)}ms → run 2 ${Math.round(currentTotal)}ms (Δ ${formatDeltaValue(totalDelta, 'ms')}${pctSuffix})`,
+    '',
+  ];
+  if (buckets.length > 0) {
+    lines.push(renderStsoBarChart(buckets), '');
+  }
+  lines.push(
+    '| Bucket (ms) | Run 1 steps | Run 2 steps | Δ |',
+    '|---|---:|---:|---:|'
+  );
+  for (const { label, base, cur } of buckets) {
+    lines.push(
+      `| ${label} | ${base} | ${cur} | ${formatDeltaValue(cur - base)} |`
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Renders a Datadog trace link per sequential-steps iteration (run 1 and run
+ * 2), when the deployment's `/api/bench` route reported a trace id. Lets
+ * anyone reading the comment jump straight to the trace for either run
+ * without hunting for it by deployment id / time window.
+ */
+function renderSequentialTracesSection(result) {
+  const runs2 = result.sequentialRuns ?? [];
+  const runs1 = result.baselineSequentialRuns ?? [];
+  if (runs2.length === 0 && runs1.length === 0) return '';
+
+  const traceLink = (run) =>
+    run?.traceId
+      ? `[trace](https://app.datadoghq.com/apm/trace/${run.traceId})`
+      : undefined;
+
+  const lines = ['', '**Sequential-steps run traces**', ''];
+  const count = Math.max(runs1.length, runs2.length);
+  for (let i = 0; i < count; i++) {
+    const r1 = runs1[i];
+    const r2 = runs2[i];
+    const r1Text = r1
+      ? `\`${r1.runId}\`${traceLink(r1) ? ` — ${traceLink(r1)}` : ' (no trace id)'}`
+      : '—';
+    const r2Text = r2
+      ? `\`${r2.runId}\`${traceLink(r2) ? ` — ${traceLink(r2)}` : ' (no trace id)'}`
+      : '—';
+    lines.push(`- Run 1: ${r1Text} · Run 2: ${r2Text}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Renders a per-scenario histogram diff (bucketed step counts, run 2 vs run
+ * 1) and a cumulative-time diff (sum of all STSO samples, run 2 vs run 1) for
+ * every STSO row that has raw samples from both runs. This is a
+ * complement to the Best/P75/P90/P99 table: percentiles hide *how many*
+ * steps moved and by how much in aggregate, which is what these two views
+ * are for.
+ */
+function renderStsoDiffSection(result) {
+  const rows = (result.metrics ?? []).filter(
+    (row) =>
+      row.metric === 'stso' &&
+      Array.isArray(row.raw) &&
+      Array.isArray(row.baselineRaw)
+  );
+  if (rows.length === 0) return '';
+
+  const lines = [
+    '',
+    '**STSO histogram & cumulative time diff (run 2 vs run 1)**',
+  ];
+  for (const row of rows) {
+    lines.push(renderStsoRowDiff(row));
+  }
+  return lines.join('\n');
+}
+
+// Deltas beyond ±this vs the paired baseline run get a directional marker: 🔻 for a regression,
 // 💚 for an improvement. Smaller moves show the percentage alone.
 const DELTA_MARK_THRESHOLD_PCT = 15;
 
 /**
- * Formats a vs-main delta, e.g. " (+4.2%)"; empty without a baseline. Moves
- * worse than +15% are flagged 🔻 and moves better than -15% are flagged 💚.
+ * Formats a delta vs the paired baseline run, e.g. " (+4.2%)"; empty without a
+ * baseline. Moves worse than +15% are flagged 🔻 and moves better than -15%
+ * are flagged 💚.
  */
 function formatDelta(current, baseline) {
   if (
@@ -273,7 +517,7 @@ function renderResultTable(result) {
     // Abbreviations only — the definitions live in the comment footer.
     const name = label ? `**${label.name}**` : row.metric;
     const targets = row.targets ?? {};
-    // Deltas vs main are shown on Best/P75/P90/P99.
+    // Deltas vs the paired baseline run are shown on Best/P75/P90/P99.
     lines.push(
       `| ${name} | ${row.scenario} | ${formatMs(row.best)}${formatDelta(row.best, row.baselineBest)} | ${formatCell(row.p75, targets.p75)}${formatDelta(row.p75, row.baselineP75)} | ${formatCell(row.p90, targets.p90)}${formatDelta(row.p90, row.baselineP90)} | ${formatCell(row.p99, targets.p99)}${formatDelta(row.p99, row.baselineP99)} | ${row.samples} |`
     );
@@ -300,6 +544,10 @@ function renderEntry(entry, { heading }) {
       lines.push(`Backend: \`${result.backend}\` · app: \`${result.app}\``, '');
     }
     lines.push(renderResultTable(result), '');
+    const tracesSection = renderSequentialTracesSection(result);
+    if (tracesSection) lines.push(tracesSection, '');
+    const stsoDiff = renderStsoDiffSection(result);
+    if (stsoDiff) lines.push(stsoDiff, '');
   }
   return lines.join('\n');
 }
@@ -355,7 +603,7 @@ function renderFooter(entries) {
   const smallprint = [
     ...(hasBaseline
       ? [
-          '<sub>Best/P75/P90/P99 deltas compare against the most recent benchmark run on `main` at the time of this run. 🔻 flags a delta worse than +15%, 💚 one better than −15%.</sub>',
+          '<sub>Best/P75/P90/P99 deltas compare two back-to-back runs of this same commit against the same deployment, so they reflect run-to-run benchmark noise rather than a change vs `main`. 🔻 flags a delta worse than +15%, 💚 one better than −15%.</sub>',
           '',
         ]
       : []),
