@@ -529,7 +529,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     tx: AppendTx,
     runId: string,
     count: number,
-    params?: { stateEventCount?: number; stateCursor?: string }
+    params?: {
+      stateEventCount?: number;
+      stateCursor?: string;
+      writerId?: string;
+    }
   ): Promise<EventPosition[]> => {
     await acquireRunAppendLock(tx, runId);
     const { runs } = Schema;
@@ -566,25 +570,40 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     }
 
     const fenceCount = params?.stateEventCount;
+    const creditKey = params?.writerId ?? params?.stateCursor;
     const isFenced = fenceCount !== undefined;
     let establishCredit = false;
     if (isFenced) {
-      const lastFenced = row.lastFencedSeq ?? 0;
-      if (lastFenced <= fenceCount) {
-        // Every decision in the log is inside the caller's snapshot; any
-        // newer events are facts, which don't invalidate it.
+      // Experiment switch (prototype): `tail` rejects a fenced create when
+      // ANY event (fact or decision) landed past the snapshot; `decision`
+      // (default) rejects only on foreign decisions. Tail is strictly safer
+      // against delivery-order-sensitive derivations at the cost of restart
+      // churn under steady fact traffic.
+      const fenceBase =
+        process.env.WORKFLOW_POSTGRES_EVENT_FENCE === 'tail'
+          ? tail
+          : (row.lastFencedSeq ?? 0);
+      if (fenceBase <= fenceCount) {
+        // Every fenced-against event in the log is inside the caller's
+        // snapshot; anything newer is tolerated by the active mode.
         establishCredit = true;
       } else if (
-        params?.stateCursor !== undefined &&
-        row.writerSnapshot === params.stateCursor &&
+        creditKey !== undefined &&
+        row.writerSnapshot === creditKey &&
         row.writerBaseCount === fenceCount
       ) {
-        // Sibling of the writer that established the credit: same snapshot,
-        // already proven current when the first sibling appended.
+        // Sibling of the writer that established the credit. The key is the
+        // caller's `writerId` when it sends one: two invocations that loaded
+        // the identical prefix present byte-identical cursor+count, so a
+        // snapshot-keyed credit would admit both writers' sets and interleave
+        // two derivations (observed in the step-storm repro: alternating
+        // decision batches whose correlation ordinals invert against commit
+        // order). The cursor fallback only serves older runtimes that don't
+        // send a writer identity.
       } else {
         throw new PreconditionFailedError(
-          `Event log for run "${runId}" has decisions past the caller's snapshot: ` +
-            `last decision at position ${lastFenced}, snapshot loaded ${fenceCount} events`
+          `Event log for run "${runId}" has moved past the caller's snapshot: ` +
+            `fence position ${fenceBase}, snapshot loaded ${fenceCount} events`
         );
       }
     }
@@ -608,7 +627,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           : {}),
         ...(establishCredit
           ? {
-              writerSnapshot: params?.stateCursor ?? null,
+              writerSnapshot: creditKey ?? null,
               writerBaseCount: fenceCount,
             }
           : {}),
@@ -861,6 +880,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                 eventData: 'eventData' in data ? data.eventData : undefined,
                 specVersion: effectiveSpecVersion,
                 seq: position.seq,
+                fenceCount: params?.stateEventCount,
               })
               .returning({ createdAt: Schema.events.createdAt });
             return { value, position };
@@ -1476,6 +1496,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                     },
                     specVersion: effectiveSpecVersion,
                     seq: positions[0].seq,
+                    fenceCount: params?.stateEventCount,
                   })
                   .onConflictDoNothing();
               }
@@ -1560,6 +1581,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                 eventData: storedEventData,
                 specVersion: effectiveSpecVersion,
                 seq: stepStartedPosition.seq,
+                fenceCount: params?.stateEventCount,
               })
               .returning({ createdAt: events.createdAt });
 
@@ -1826,6 +1848,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   eventData: conflictEventData,
                   specVersion: effectiveSpecVersion,
                   seq: conflictPosition.seq,
+                  fenceCount: params?.stateEventCount,
                 })
                 .returning({ createdAt: events.createdAt });
 
@@ -1943,6 +1966,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                 eventData: storedEventData,
                 specVersion: effectiveSpecVersion,
                 seq: position.seq,
+                fenceCount: params?.stateEventCount,
               })
               .returning({ createdAt: events.createdAt });
 
@@ -2058,6 +2082,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                 eventData: storedEventData,
                 specVersion: effectiveSpecVersion,
                 seq: position.seq,
+                fenceCount: params?.stateEventCount,
               })
               .returning({ createdAt: events.createdAt });
           }

@@ -1,0 +1,390 @@
+{
+  "completedAt": "2026-07-30T00:09:14.210Z",
+  "deploymentUrl": "http://localhost:3200",
+  "partial": false,
+  "budgetExhausted": false,
+  "plannedAttempts": 24,
+  "config": {
+    "stepStormAttempts": 24,
+    "hookStormAttempts": 0,
+    "hookSleepAttempts": 0,
+    "concurrency": 8,
+    "budgetMs": 4500000,
+    "runTimeoutMs": 240000,
+    "hookTimeoutMs": 60000,
+    "rounds": 6,
+    "width": 8,
+    "watchdogMs": 2500,
+    "stepDelayMs": 2200,
+    "stepDelayJitterMs": 250,
+    "jitterBuckets": 5,
+    "betweenRoundSleepMs": 1000,
+    "reconcileBase": 2,
+    "attrWrites": 1,
+    "pokeIntervalMs": 750,
+    "pokeJitterMs": 250,
+    "hookResumeStaggerMs": 400,
+    "hookResumeOffsetMs": 0,
+    "iterations": 8,
+    "sleepMs": 5000,
+    "resumeDelayMs": 15000,
+    "resumeJitterMs": 10000,
+    "sleepBranchWaitCount": 2,
+    "sleepBranchWaitMs": 1000,
+    "sleepBranchWaitSpacingMs": 250,
+    "returnOnWake": true,
+    "attempts": 24
+  },
+  "distribution": {
+    "completed": 0,
+    "CORRUPTED_EVENT_LOG": 0,
+    "USER_ERROR": 0,
+    "RUNTIME_ERROR": 0,
+    "stuck": 24,
+    "other": 0,
+    "infra": 0
+  },
+  "scenarioDistribution": {
+    "step-storm": {
+      "completed": 0,
+      "CORRUPTED_EVENT_LOG": 0,
+      "USER_ERROR": 0,
+      "RUNTIME_ERROR": 0,
+      "stuck": 24,
+      "other": 0,
+      "infra": 0
+    },
+    "hook-storm": {
+      "completed": 0,
+      "CORRUPTED_EVENT_LOG": 0,
+      "USER_ERROR": 0,
+      "RUNTIME_ERROR": 0,
+      "stuck": 0,
+      "other": 0,
+      "infra": 0
+    },
+    "hook-sleep": {
+      "completed": 0,
+      "CORRUPTED_EVENT_LOG": 0,
+      "USER_ERROR": 0,
+      "RUNTIME_ERROR": 0,
+      "stuck": 0,
+      "other": 0,
+      "infra": 0
+    }
+  },
+  "results": [
+    {
+      "attempt": 6,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369432351-6-9yw3uqylnb4",
+      "runId": "wrun_01KYR4Z4APYQTCW3H5WZWPRAGV",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240635,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 3,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369432351-3-tz6ij1068u",
+      "runId": "wrun_01KYR4Z4AJ801KVXZ6H4DZ3T7Q",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240640,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 8,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369432351-8-9nlqfwq8edc",
+      "runId": "wrun_01KYR4Z4AQM196Z97R8DYS7HBH",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240641,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 2,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369432351-2-bek4s9p55w4",
+      "runId": "wrun_01KYR4Z4AK5A4FRGWS6KGP4BDV",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240642,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 4,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369432351-4-ebcco1ze15e",
+      "runId": "wrun_01KYR4Z4ADZJA6FEH4RGYXMB7P",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240643,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 1,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369432351-1-t6x4ar65gap",
+      "runId": "wrun_01KYR4Z4AJ801KVXZ6H4DZ3T7P",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240643,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 7,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369432351-7-otr5jlfs38",
+      "runId": "wrun_01KYR4Z4APYQTCW3H5WZWPRAGW",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240644,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 5,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369432351-5-dnoxhgi42kb",
+      "runId": "wrun_01KYR4Z4AK5A4FRGWS6KGP4BDW",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240644,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 11,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369672992-11-40jan1swj0c",
+      "runId": "wrun_01KYR56F90YF0TD8S7WKQGRE7F",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240555,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 16,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369672995-16-vgot51naixk",
+      "runId": "wrun_01KYR56F9368V871E94DX0YAMY",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240554,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 10,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369672991-10-368jacccrfp",
+      "runId": "wrun_01KYR56F8ZVWYAZF7B6H4FH8Q3",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240558,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 9,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369672987-9-q9qsle54ivb",
+      "runId": "wrun_01KYR56F8VANRZN9PV4ZW9TD7S",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240563,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 15,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369672995-15-ufstd0mb7k",
+      "runId": "wrun_01KYR56F9368V871E94DX0YAMX",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240555,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 13,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369672994-13-e6abcvvywc",
+      "runId": "wrun_01KYR56F92K62JA298H2ZENSVM",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240557,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 12,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369672993-12-tsgmhba7v9",
+      "runId": "wrun_01KYR56F91MB39CSX7Q6VGGD69",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240559,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 14,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369672994-14-l40zojvik3l",
+      "runId": "wrun_01KYR56F92K62JA298H2ZENSVN",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240558,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 19,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369913549-19-j9zveoq47ch",
+      "runId": "wrun_01KYR5DT6D04PCYQW8WB3CSF3F",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240660,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 17,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369913547-17-kw9266rkmvr",
+      "runId": "wrun_01KYR5DT6BR8PG8Q124BH0WD2V",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240663,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 22,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369913551-22-64e57vew8qw",
+      "runId": "wrun_01KYR5DT6F3HMM8JQ5NF07RZE5",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240659,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 24,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369913552-24-jh0h424ctmo",
+      "runId": "wrun_01KYR5DT6G86VGKSRMD5DWFSKM",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240658,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 20,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369913550-20-5hjs50p1qd2",
+      "runId": "wrun_01KYR5DT6EYW2GK5PG6N1K7ENZ",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240660,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 21,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369913550-21-n55d1cax0u",
+      "runId": "wrun_01KYR5DT6EYW2GK5PG6N1K7EP0",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240660,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 23,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369913552-23-qgcghxsmo",
+      "runId": "wrun_01KYR5DT6G86VGKSRMD5DWFSKK",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240658,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    },
+    {
+      "attempt": 18,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785369913549-18-c6bkcavzn0i",
+      "runId": "wrun_01KYR5DT6D04PCYQW8WB3CSF3E",
+      "outcome": "stuck",
+      "status": "pending",
+      "durationMs": 240661,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 0
+      }
+    }
+  ]
+}

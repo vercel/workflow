@@ -217,6 +217,51 @@ if (process.platform === 'win32') {
         expectDenseLog(log.data, 5);
       });
 
+      it('rejects a second writer presenting the identical snapshot', async () => {
+        // Two invocations that loaded the same prefix send byte-identical
+        // cursor+count. The credit must be keyed on the writer identity, not
+        // the snapshot: admitting both interleaves two derivations' write
+        // sets (observed as alternating decision batches whose correlation
+        // ordinals invert against commit order → CORRUPTED_EVENT_LOG).
+        const runId = await createRun();
+        await events.create(runId, { eventType: 'run_started' });
+        const snapshot = { stateEventCount: 2, stateCursor: 'same-cursor' };
+
+        // Writer A flushes two siblings.
+        await events.create(
+          runId,
+          {
+            eventType: 'step_created',
+            correlationId: 'a-1',
+            eventData: { stepName: 'a-1', input: new Uint8Array([1]) },
+          },
+          { ...snapshot, writerId: 'writer-A' }
+        );
+        await events.create(
+          runId,
+          {
+            eventType: 'step_created',
+            correlationId: 'a-2',
+            eventData: { stepName: 'a-2', input: new Uint8Array([2]) },
+          },
+          { ...snapshot, writerId: 'writer-A' }
+        );
+
+        // Writer B raced the same replay from the same prefix: same snapshot,
+        // different writer. It must be fenced, not credited.
+        await expect(
+          events.create(
+            runId,
+            {
+              eventType: 'step_created',
+              correlationId: 'b-1',
+              eventData: { stepName: 'b-1', input: new Uint8Array([3]) },
+            },
+            { ...snapshot, writerId: 'writer-B' }
+          )
+        ).rejects.toSatisfy(PreconditionFailedError.is);
+      });
+
       it('rolls the entity mutation back with the fenced event', async () => {
         const runId = await createRun();
         await events.create(runId, { eventType: 'run_started' });

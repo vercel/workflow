@@ -794,6 +794,17 @@ export interface CreateEventParams {
    */
   stateCursor?: string;
   /**
+   * Opaque identity of the invocation that derived this event (advisory,
+   * sent only alongside the snapshot fields). A fencing World that credits
+   * the several creates of one suspension flush against a shared snapshot
+   * needs this to tell *whose* siblings they are: two invocations that
+   * loaded the identical prefix present byte-identical `stateCursor` +
+   * `stateEventCount`, and crediting on the snapshot alone would admit both
+   * writers' sets, interleaving two derivations into an order no replay can
+   * reproduce. A World without sibling crediting may ignore it.
+   */
+  writerId?: string;
+  /**
    * Timestamp for when the event occurred on the client side. Worlds that
    * support this can persist it separately from `createdAt`, which represents
    * when the backing service accepted or stored the event.

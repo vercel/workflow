@@ -188,8 +188,23 @@ export const events = schema.table(
      * See the `seq` field contract on `EventSchema` in `@workflow/world`.
      */
     seq: bigint('seq', { mode: 'number' }),
+    /**
+     * Fence forensics: the `stateEventCount` the create carried (null for
+     * facts / unfenced creates). Records how many events the writer's replay
+     * had loaded when it derived this event, which is what makes post-hoc
+     * corruption attribution possible: a decision whose fenceCount already
+     * covers a competing decision batch proves the divergence happened
+     * *inside the engine on identical input* (delivery-order nondeterminism)
+     * rather than in storage ordering or fence admission.
+     */
+    fenceCount: bigint('fence_count', { mode: 'number' }),
   } satisfies DrizzlishOfType<
-    Cborized<Omit<Event, 'occurredAt'> & { eventData?: undefined }, 'eventData'>
+    Cborized<
+      Omit<Event, 'occurredAt'> & { eventData?: undefined },
+      'eventData'
+    > & {
+      fenceCount?: number;
+    }
   >,
   (tb) => [
     index().on(tb.runId),

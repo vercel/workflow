@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { types } from 'node:util';
 import {
   CorruptedEventLogError,
@@ -386,6 +387,14 @@ export function workflowEntrypoint(
           ? incomingTraceCarrier
           : undefined;
         const { requestId } = metadata;
+        // Writer identity for the precondition fence's sibling credit: the
+        // several creates one suspension flushes share a snapshot, and a
+        // fencing World must let those siblings through while rejecting a
+        // *different* invocation that loaded the identical prefix (same
+        // cursor, same count — indistinguishable by snapshot alone, and
+        // admitting both interleaves two derivations' write sets into an
+        // order no replay can reproduce). Unique per invocation delivery.
+        const writerId = randomUUID();
         const workflowName = metadata.queueName.slice(workflowPrefix.length);
 
         // --- Max delivery check ---
@@ -1459,7 +1468,11 @@ export function workflowEntrypoint(
                         try {
                           await world.events.create(runId, waitEvent, {
                             requestId,
-                            ...preconditionSnapshotParams(events, eventsCursor),
+                            ...preconditionSnapshotParams(
+                              events,
+                              eventsCursor,
+                              writerId
+                            ),
                           });
                         } catch (err) {
                           if (EntityConflictError.is(err)) {
@@ -1623,7 +1636,11 @@ export function workflowEntrypoint(
                           },
                           {
                             requestId,
-                            ...preconditionSnapshotParams(events, eventsCursor),
+                            ...preconditionSnapshotParams(
+                              events,
+                              eventsCursor,
+                              writerId
+                            ),
                           }
                         );
                       } catch (err) {
@@ -1723,6 +1740,7 @@ export function workflowEntrypoint(
                             run: workflowRun,
                             span,
                             requestId,
+                            writerId,
                             eventLog: suspensionLog,
                             runReadyBarrier,
                           });
@@ -2353,7 +2371,8 @@ export function workflowEntrypoint(
                         // enforce the guard ignore it.
                         const inlineClaimSnapshot = preconditionSnapshotParams(
                           cachedEvents ?? [],
-                          preInlineWriteCursor
+                          preInlineWriteCursor,
+                          writerId
                         );
 
                         replayBudget.pause();

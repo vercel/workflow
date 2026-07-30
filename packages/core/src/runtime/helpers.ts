@@ -783,6 +783,7 @@ export interface PreconditionSnapshotParams {
   stateUpdatedAt?: number;
   stateEventCount?: number;
   stateCursor?: string;
+  writerId?: string;
 }
 
 /**
@@ -799,7 +800,8 @@ export interface PreconditionSnapshotParams {
  */
 export function preconditionSnapshotParams(
   events: Event[],
-  cursor?: string | null
+  cursor?: string | null,
+  writerId?: string
 ): PreconditionSnapshotParams {
   if (!isPreconditionGuardEnabled()) {
     return {};
@@ -812,6 +814,7 @@ export function preconditionSnapshotParams(
     stateUpdatedAt,
     stateEventCount: events.length,
     ...(cursor ? { stateCursor: cursor } : {}),
+    ...(writerId ? { writerId } : {}),
   };
 }
 

@@ -39,6 +39,12 @@ export interface SuspensionHandlerParams {
   span?: Span;
   requestId?: string;
   /**
+   * Identity of this invocation, forwarded on every snapshot-carrying create
+   * so a fencing World credits only THIS writer's sibling creates against the
+   * shared snapshot (see `CreateEventParams.writerId`).
+   */
+  writerId?: string;
+  /**
    * The runtime's loaded event log. Every event creation this suspension makes
    * is sent with the precondition snapshot derived from it, so a backend that
    * has recorded an event the replay did not see rejects the write with a 412
@@ -205,6 +211,7 @@ export async function handleSuspension({
   run,
   span,
   requestId,
+  writerId,
   eventLog,
   runReadyBarrier,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
@@ -242,7 +249,7 @@ export async function handleSuspension({
     }
     return world.events.create(runId, data, {
       ...params,
-      ...preconditionSnapshotParams(eventLog.events, eventLog.cursor),
+      ...preconditionSnapshotParams(eventLog.events, eventLog.cursor, writerId),
     });
   };
   // Separate queue items by type
