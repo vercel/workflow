@@ -225,6 +225,14 @@ Both branches trigger the release workflow (`.github/workflows/release.yml`) on 
 
 When backporting changes to `stable`, any conflicts involving docs app files (outside of `docs/content/`) or `skills/` files should be resolved by keeping the `stable` branch version (discarding the incoming change from `main`). Conflicts in `docs/content/` should be resolved normally. The backport GitHub Action handles this automatically.
 
+#### The `changeset-release/main` branch is never deployed
+
+Every Vercel project rooted in this repo sets `git.deploymentEnabled` to `false` for `changeset-release/main` in its `vercel.json`. **When you add a new Vercel project, add that key to its `vercel.json` too.**
+
+The changesets action force-pushes `changeset-release/main`, and it can point at exactly main's HEAD SHA. Vercel keeps one commit status per project per SHA, so a preview deployment of that branch overwrites the production deployment's status for the same commit — and `vercel/wait-for-deployment-action`, which reads the deployment ID out of that status, then hands a production e2e run a preview deployment ID, forking the run across environments.
+
+Because those PRs have no deployment of their own, CI treats them specially: the Vercel e2e lanes in `tests.yml` resolve main's production deployment for the PR's base SHA (`.github/scripts/resolve-production-deployment.mjs`) and run as `production`, while the deployment-dependent jobs in `docs-checks.yml`, `tarballs-checks.yml`, and `benchmarks.yml` are skipped. Anything new that waits on a deployment needs the same treatment.
+
 ### Changesets
 
 - `workflow` and `@workflow/core` use changesets' "fixed" versioning strategy — they always have the same version number
