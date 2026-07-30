@@ -297,7 +297,9 @@ let loggedSequentialReplays = false;
  * must not depend on the build-time package, so the check is duplicated.
  */
 function isSequentialReplaysEnabled(): boolean {
-  return process.env.WORKFLOW_SEQUENTIAL_REPLAYS === '1';
+  return !['false', '0'].includes(
+    (process.env.WORKFLOW_SEQUENTIAL_REPLAYS || '').toLowerCase()
+  );
 }
 
 function getPhysicalQueueName(
