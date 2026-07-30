@@ -49,13 +49,47 @@ export default function Home() {
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-4">
-      <Tabs value={tab} onValueChange={setTab} className="w-full">
-        <TabsList className="mb-4">
-          <TabsTrigger value="runs">Runs</TabsTrigger>
-          <TabsTrigger value="hooks">Hooks</TabsTrigger>
+    <main
+      className="mx-auto w-full max-w-[1400px]"
+      aria-labelledby="workflow-activity-heading"
+    >
+      <header className="mb-5">
+        <h1
+          id="workflow-activity-heading"
+          className="text-heading-24 text-foreground"
+        >
+          Workflow activity
+        </h1>
+        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+          Inspect executions, resolve hooks, and review available workflow
+          definitions.
+        </p>
+      </header>
+
+      <Tabs value={tab} onValueChange={setTab} className="w-full gap-0">
+        <TabsList
+          className="mb-5 h-auto w-full justify-start gap-6 rounded-none border-0 border-b bg-transparent p-0"
+          aria-label="Workflow activity views"
+        >
+          <TabsTrigger
+            value="runs"
+            className="rounded-none border-b-2 border-transparent px-0 py-3 shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+          >
+            Runs
+          </TabsTrigger>
+          <TabsTrigger
+            value="hooks"
+            className="rounded-none border-b-2 border-transparent px-0 py-3 shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+          >
+            Hooks
+          </TabsTrigger>
           {isLocalBackend && (
-            <TabsTrigger value="workflows">Workflows</TabsTrigger>
+            <TabsTrigger
+              value="workflows"
+              className="rounded-none border-b-2 border-transparent px-0 py-3 shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+            >
+              Workflows
+            </TabsTrigger>
           )}
         </TabsList>
         <TabsContent value="runs">
@@ -79,6 +113,6 @@ export default function Home() {
           </TabsContent>
         )}
       </Tabs>
-    </div>
+    </main>
   );
 }

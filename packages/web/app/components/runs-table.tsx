@@ -2,8 +2,8 @@ import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun, WorkflowRunStatus } from '@workflow/world';
 import {
   AlertCircle,
-  ArrowDownAZ,
-  ArrowUpAZ,
+  ArrowDown,
+  ArrowUp,
   Loader2,
   MoreHorizontal,
   RefreshCw,
@@ -31,6 +31,7 @@ import {
 import {
   Table,
   TableBody,
+  TableCaption,
   TableCell,
   TableHead,
   TableHeader,
@@ -48,6 +49,7 @@ import {
 import { useTableSelection } from '~/lib/hooks/use-table-selection';
 import { fetchEvents, fetchRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
+import { formatDuration } from '~/lib/utils';
 import {
   cancelRun,
   getErrorMessage,
@@ -139,6 +141,7 @@ function LazyDropdownMenu({
           size="icon"
           className="h-8 w-8"
           onClick={(e) => e.stopPropagation()}
+          aria-label={`Actions for run ${runId}`}
         >
           <MoreHorizontal className="h-4 w-4" />
         </Button>
@@ -205,7 +208,6 @@ function useWorkflowFilter() {
       const params = new URLSearchParams(searchParams.toString());
       if (value === 'all') {
         params.delete('workflow');
-        params.delete('status');
       } else {
         params.set('workflow', value);
       }
@@ -255,6 +257,49 @@ function usePeriodFilter() {
   );
 }
 
+// Helper: Clear all list filters
+function useClearFilters() {
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const [searchParams] = useSearchParams();
+
+  return useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete('workflow');
+    params.delete('status');
+    params.delete('period');
+    navigate(`${pathname}?${params.toString()}`);
+  }, [navigate, pathname, searchParams]);
+}
+
+function RunDuration({
+  startedAt,
+  completedAt,
+}: {
+  startedAt: Date | string | undefined;
+  completedAt: Date | string | undefined;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!startedAt || completedAt) {
+      return;
+    }
+
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [completedAt, startedAt]);
+
+  if (!startedAt) {
+    return <span aria-label="Not started">—</span>;
+  }
+
+  const endTime = completedAt ? new Date(completedAt).getTime() : now;
+  const durationMs = Math.max(0, endTime - new Date(startedAt).getTime());
+
+  return <span>{formatDuration(durationMs)}</span>;
+}
+
 // Filter controls component
 interface FilterControlsProps {
   workflowNameFilter: string | 'all';
@@ -273,6 +318,8 @@ interface FilterControlsProps {
   onPeriodChange: (value: string) => void;
   onSortToggle: () => void;
   onRefresh: () => void;
+  onClearFilters: () => void;
+  hasActiveFilters: boolean;
   lastRefreshTime: Date | null;
 }
 
@@ -291,21 +338,26 @@ function FilterControls({
   onPeriodChange,
   onSortToggle,
   onRefresh,
+  onClearFilters,
+  hasActiveFilters,
   lastRefreshTime,
 }: FilterControlsProps) {
   return (
-    <div className="flex items-center justify-between">
-      <div className="flex items-end gap-2">
-        <p className="text-sm text-muted-foreground">Last refreshed</p>
+    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex min-h-9 items-center gap-1.5 text-sm text-muted-foreground">
+        <span>Updated</span>
         {lastRefreshTime && (
           <RelativeTime
             date={lastRefreshTime}
-            className="text-sm text-muted-foreground"
+            className="text-sm"
             type="distance"
           />
         )}
       </div>
-      <div className="flex items-center gap-4">
+      <div
+        className="flex flex-wrap items-center gap-2"
+        aria-label="Run filters and controls"
+      >
         {showPeriodPicker && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -315,7 +367,10 @@ function FilterControls({
                   onValueChange={onPeriodChange}
                   disabled={loading}
                 >
-                  <SelectTrigger className="w-[150px] h-9">
+                  <SelectTrigger
+                    className="h-9 w-[150px]"
+                    aria-label="Time window"
+                  >
                     <SelectValue placeholder="Time window" />
                   </SelectTrigger>
                   <SelectContent>
@@ -355,11 +410,11 @@ function FilterControls({
           onValueChange={onWorkflowChange}
           disabled={loading}
         >
-          <SelectTrigger className="w-[180px] h-9">
+          <SelectTrigger className="h-9 w-[180px]" aria-label="Workflow">
             <SelectValue placeholder="Filter by workflow" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Workflows</SelectItem>
+            <SelectItem value="all">All workflows</SelectItem>
             {Array.from(seenWorkflowNames)
               .sort()
               .map((name) => (
@@ -377,7 +432,10 @@ function FilterControls({
                 onValueChange={onStatusChange}
                 disabled={loading}
               >
-                <SelectTrigger className="w-[140px] h-9">
+                <SelectTrigger
+                  className="h-9 w-[140px]"
+                  aria-label="Run status"
+                >
                   <SelectValue placeholder="Filter by status" />
                 </SelectTrigger>
                 <SelectContent>
@@ -409,11 +467,11 @@ function FilterControls({
               disabled={loading}
             >
               {sortOrder === 'desc' ? (
-                <ArrowDownAZ className="h-4 w-4" />
+                <ArrowDown className="h-4 w-4" />
               ) : (
-                <ArrowUpAZ className="h-4 w-4" />
+                <ArrowUp className="h-4 w-4" />
               )}
-              {sortOrder === 'desc' ? 'Newest' : 'Oldest'}
+              {sortOrder === 'desc' ? 'Newest first' : 'Oldest first'}
             </Button>
           </TooltipTrigger>
           <TooltipContent>
@@ -422,6 +480,16 @@ function FilterControls({
               : 'Showing oldest first'}
           </TooltipContent>
         </Tooltip>
+        {hasActiveFilters && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClearFilters}
+            disabled={loading}
+          >
+            Clear filters
+          </Button>
+        )}
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -434,7 +502,7 @@ function FilterControls({
               Refresh
             </Button>
           </TooltipTrigger>
-          <TooltipContent>Note that this resets pages</TooltipContent>
+          <TooltipContent>Refresh runs and reset loaded pages</TooltipContent>
         </Tooltip>
       </div>
     </div>
@@ -453,6 +521,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   const [searchParams] = useSearchParams();
   const handleWorkflowFilter = useWorkflowFilter();
   const handleStatusFilter = useStatusFilter();
+  const handleClearFilters = useClearFilters();
   const { serverConfig } = useServerConfig();
 
   // Validate status parameter - only allow known valid statuses or 'all'
@@ -463,7 +532,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
     (rawStatus && validStatuses.includes(rawStatus as WorkflowRunStatus))
       ? (rawStatus as WorkflowRunStatus | 'all')
       : undefined;
-  const workflowNameFilter = searchParams.get('workflow') as string | 'all';
+  const workflowNameFilter = searchParams.get('workflow') ?? 'all';
   const rawPeriod = searchParams.get('period');
   const period: PeriodId = isPeriodId(rawPeriod) ? rawPeriod : DEFAULT_PERIOD;
   const periodPreset =
@@ -493,6 +562,10 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   // window entirely — this also keeps the SWR cache key stable across the
   // local backend's empty-data poll.
   const isVercelBackend = serverConfig.backendId?.includes('vercel') ?? false;
+  const hasActiveFilters =
+    workflowNameFilter !== 'all' ||
+    (status !== undefined && status !== 'all') ||
+    (isVercelBackend && period !== DEFAULT_PERIOD);
 
   // Frozen listing window per period so every cursor page shares the same
   // bounds. Read from a module-scope store (not component state) so the SWR
@@ -530,6 +603,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
     startTime: listingWindow?.startTime,
     endTime: listingWindow?.endTime,
   });
+  const loading = isLoading;
 
   // Remember the plan window across period changes (a 402 response for an
   // out-of-plan window carries no pageInfo, but the picker should stay
@@ -562,7 +636,9 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   const [isBulkReenqueuing, setIsBulkReenqueuing] = useState(false);
 
   const isLocalAndHasMissingData =
-    isLocal && (!localDataDirPath || !runs.length);
+    isLocal &&
+    !hasActiveFilters &&
+    (!localDataDirPath || (!loading && !runs.length));
 
   // Track seen workflow names from loaded data
   useEffect(() => {
@@ -578,8 +654,6 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
     }
   }, [runs]);
 
-  const loading = isLoading;
-
   // Track when we've completed the initial load
   useEffect(() => {
     if (!loading && !hasLoadedOnce) {
@@ -588,10 +662,9 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   }, [loading, hasLoadedOnce]);
 
   // Reset hasLoadedOnce when filters change
-  // biome-ignore lint/correctness/useExhaustiveDependencies: Want to reset on any filter change
   useEffect(() => {
     setHasLoadedOnce(false);
-  }, [workflowNameFilter, status, sortOrder]);
+  }, [period, sortOrder, status, workflowNameFilter]);
 
   const onReload = useCallback(() => {
     setLastRefreshTime(() => new Date());
@@ -735,7 +808,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   );
 
   return (
-    <div>
+    <div className="space-y-4">
       <FilterControls
         workflowNameFilter={workflowNameFilter}
         status={status}
@@ -751,18 +824,24 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
         onPeriodChange={handlePeriodFilter}
         onSortToggle={toggleSortOrder}
         onRefresh={onReload}
+        onClearFilters={handleClearFilters}
+        hasActiveFilters={hasActiveFilters}
         lastRefreshTime={lastRefreshTime}
       />
 
-      <Card className="overflow-hidden mt-4 bg-background">
+      <Card className="overflow-hidden bg-background shadow-none">
         <CardContent
           ref={setScrollRoot}
-          className="p-0 max-h-[calc(100vh-280px)] overflow-auto"
+          className="min-h-80 max-h-[calc(100vh-340px)] overflow-auto p-0"
         >
-          <Table>
+          <Table className="min-w-[920px]">
+            <TableCaption className="sr-only">
+              Workflow runs, ordered{' '}
+              {sortOrder === 'desc' ? 'newest first' : 'oldest first'}
+            </TableCaption>
             <TableHeader>
               <TableRow>
-                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10 w-10">
+                <TableHead className="sticky top-0 z-10 h-10 w-12 border-b bg-muted/60">
                   <Checkbox
                     checked={selection.isAllSelected(runs)}
                     indeterminate={selection.isSomeSelected(runs)}
@@ -771,29 +850,31 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                     disabled={!runs.length}
                   />
                 </TableHead>
-                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
-                  Workflow
+                <TableHead className="sticky top-0 z-10 h-10 w-[42%] border-b bg-muted/60 text-xs">
+                  Run
                 </TableHead>
-                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
-                  Run ID
-                </TableHead>
-                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                <TableHead className="sticky top-0 z-10 h-10 w-[16%] border-b bg-muted/60 text-xs">
                   Status
                 </TableHead>
-                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                <TableHead className="sticky top-0 z-10 h-10 w-[14%] border-b bg-muted/60 text-xs">
                   Started
                 </TableHead>
-                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                <TableHead className="sticky top-0 z-10 h-10 w-[14%] border-b bg-muted/60 text-xs">
                   Completed
                 </TableHead>
-                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10 w-10"></TableHead>
+                <TableHead className="sticky top-0 z-10 h-10 w-24 border-b bg-muted/60 text-right text-xs">
+                  Duration
+                </TableHead>
+                <TableHead className="sticky top-0 z-10 h-10 w-12 border-b bg-muted/60">
+                  <span className="sr-only">Actions</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {error ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="h-[400px]">
-                    <div className="flex items-center justify-center h-full">
+                  <TableCell colSpan={7} className="h-80">
+                    <div className="flex h-full items-center justify-center">
                       <Alert variant="destructive" className="max-w-md">
                         <AlertCircle className="h-4 w-4" />
                         <AlertTitle>
@@ -808,29 +889,46 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                 </TableRow>
               ) : loading && !hasLoadedOnce ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="h-[400px]">
-                    <div className="flex items-center justify-center h-full">
+                  <TableCell colSpan={7} className="h-80">
+                    <div
+                      className="flex h-full items-center justify-center"
+                      aria-live="polite"
+                    >
                       <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                      <span className="sr-only">Loading workflow runs</span>
                     </div>
                   </TableCell>
                 </TableRow>
               ) : runs.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="h-[400px]">
-                    <div className="text-sm text-center text-muted-foreground flex flex-col items-center justify-center gap-3 h-full">
-                      <span className="text-sm">
-                        No workflow runs found
-                        {isLocalAndHasMissingData ? (
-                          <> in {localDirText}</>
+                  <TableCell colSpan={7} className="h-80">
+                    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground">
+                      <p className="font-medium text-foreground">
+                        {hasActiveFilters
+                          ? 'No runs match these filters'
+                          : 'No workflow runs yet'}
+                      </p>
+                      <p>
+                        {hasActiveFilters ? (
+                          'Change or clear the filters to see more runs.'
+                        ) : isLocalAndHasMissingData ? (
+                          <>
+                            Run a workflow in {localDirText}. This view will
+                            update automatically.
+                          </>
                         ) : (
-                          ''
+                          'New workflow runs will appear here.'
                         )}
-                        .
-                      </span>
-                      {isLocalAndHasMissingData && (
-                        <span className="text-sm flex items-center gap-2">
-                          This view will update once you run a workflow.
-                        </span>
+                      </p>
+                      {hasActiveFilters && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="mt-2"
+                          onClick={handleClearFilters}
+                        >
+                          Clear filters
+                        </Button>
                       )}
                     </div>
                   </TableCell>
@@ -839,56 +937,69 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                 runs.map((run) => (
                   <TableRow
                     key={run.runId}
-                    className="cursor-pointer group relative"
+                    className="group relative cursor-pointer"
                     onClick={() => onRunClick(run.runId)}
-                    data-selected={selection.isSelected(run)}
+                    data-state={
+                      selection.isSelected(run) ? 'selected' : undefined
+                    }
                   >
-                    <TableCell className="py-2">
+                    <TableCell className="py-3">
                       <Checkbox
                         checked={selection.isSelected(run)}
                         onCheckedChange={() => selection.toggleSelection(run)}
                         aria-label={`Select run ${run.runId}`}
                       />
                     </TableCell>
-                    <TableCell className="py-2">
-                      <CopyableText text={run.workflowName} overlay>
-                        {parseWorkflowName(run.workflowName)?.shortName || '?'}
+                    <TableCell className="min-w-0 py-3">
+                      <CopyableText
+                        text={run.workflowName}
+                        className="min-w-0 gap-1.5"
+                      >
+                        <span className="truncate text-sm font-medium text-foreground">
+                          {parseWorkflowName(run.workflowName)?.shortName ||
+                            '?'}
+                        </span>
+                      </CopyableText>
+                      <CopyableText
+                        text={run.runId}
+                        overlay
+                        className="mt-1 block max-w-full pr-6 font-mono text-xs text-muted-foreground"
+                      >
+                        <span className="block truncate">{run.runId}</span>
                       </CopyableText>
                     </TableCell>
-                    <TableCell className="font-mono text-xs py-2">
-                      <CopyableText text={run.runId} overlay>
-                        {run.runId}
-                      </CopyableText>
+                    <TableCell className="py-3">
+                      <StatusBadge status={run.status} context={run} />
                     </TableCell>
-                    <TableCell className="py-2">
-                      <StatusBadge
-                        status={run.status}
-                        context={run}
-                        durationMs={
-                          run.startedAt
-                            ? (run.completedAt
-                                ? new Date(run.completedAt).getTime()
-                                : Date.now()) -
-                              new Date(run.startedAt).getTime()
-                            : undefined
-                        }
+                    <TableCell className="py-3 text-xs text-muted-foreground">
+                      {run.startedAt ? (
+                        <RelativeTime
+                          date={run.startedAt}
+                          type="distance"
+                          className="whitespace-nowrap"
+                        />
+                      ) : (
+                        <span aria-label="Not started">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="py-3 text-xs text-muted-foreground">
+                      {run.completedAt ? (
+                        <RelativeTime
+                          date={run.completedAt}
+                          type="distance"
+                          className="whitespace-nowrap"
+                        />
+                      ) : (
+                        <span aria-label="Not completed">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="py-3 text-right font-mono text-xs tabular-nums text-muted-foreground">
+                      <RunDuration
+                        startedAt={run.startedAt}
+                        completedAt={run.completedAt}
                       />
                     </TableCell>
-                    <TableCell className="py-2 text-muted-foreground text-xs">
-                      {run.startedAt ? (
-                        <RelativeTime date={run.startedAt} />
-                      ) : (
-                        '-'
-                      )}
-                    </TableCell>
-                    <TableCell className="py-2 text-muted-foreground text-xs">
-                      {run.completedAt ? (
-                        <RelativeTime date={run.completedAt} />
-                      ) : (
-                        '-'
-                      )}
-                    </TableCell>
-                    <TableCell className="py-2">
+                    <TableCell className="py-3 text-right">
                       <LazyDropdownMenu
                         env={env}
                         runId={run.runId}
@@ -915,26 +1026,22 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
               so the next page is fetched before the user reaches the end. */}
           <div ref={sentinelRef} aria-hidden className="h-px" />
         </CardContent>
-      </Card>
-
-      <div className="flex items-center justify-between mt-4 text-sm text-muted-foreground">
-        <div>
-          {runs.length > 0 && (
-            <>
-              Showing {runs.length} run{runs.length === 1 ? '' : 's'}
-              {!hasMore && !loading ? ' · end of list' : ''}
-            </>
+        <div className="flex min-h-11 items-center justify-between gap-4 border-t bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
+          <div>
+            {runs.length > 0
+              ? `${runs.length} run${runs.length === 1 ? '' : 's'}${!hasMore && !loading ? ' · end of list' : ''}`
+              : 'No runs to show'}
+          </div>
+          {isVercelBackend && (
+            <div className="text-right">
+              {periodPreset.label}
+              {planInfo?.upgradeAvailable
+                ? ` · plan window ${planInfo.currentLookbackDays} day${planInfo.currentLookbackDays === 1 ? '' : 's'}`
+                : ''}
+            </div>
           )}
         </div>
-        {isVercelBackend && (
-          <div>
-            {periodPreset.label}
-            {planInfo?.upgradeAvailable
-              ? ` · plan window ${planInfo.currentLookbackDays} day${planInfo.currentLookbackDays === 1 ? '' : 's'}`
-              : ''}
-          </div>
-        )}
-      </div>
+      </Card>
 
       <SelectionBar
         selectionCount={selection.selectionCount}

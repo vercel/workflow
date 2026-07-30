@@ -178,13 +178,13 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
         <div className="sticky top-0 z-50 bg-background border-b px-6 py-4">
           <div className="flex items-center justify-between w-full">
             <div className="flex items-center gap-4">
-              <Link to="/">
-                <h1
-                  className="flex items-center gap-2"
-                  title="Workflow Observability"
-                >
-                  <Logo />
-                </h1>
+              <Link
+                to="/"
+                className="flex items-center gap-2"
+                aria-label="Workflow activity home"
+                title="Workflow activity"
+              >
+                <Logo />
               </Link>
               <div className="h-6 w-px bg-border" aria-hidden="true" />
               <ConnectionStatus />
