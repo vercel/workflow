@@ -291,7 +291,12 @@ function RunDuration({
   }, [completedAt, startedAt]);
 
   if (!startedAt) {
-    return <span aria-label="Not started">—</span>;
+    return (
+      <span>
+        <span aria-hidden="true">—</span>
+        <span className="sr-only">Not started</span>
+      </span>
+    );
   }
 
   const endTime = completedAt ? new Date(completedAt).getTime() : now;
@@ -356,6 +361,7 @@ function FilterControls({
       </div>
       <div
         className="flex flex-wrap items-center gap-2"
+        role="group"
         aria-label="Run filters and controls"
       >
         {showPeriodPicker && (
@@ -662,6 +668,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   }, [loading, hasLoadedOnce]);
 
   // Reset hasLoadedOnce when filters change
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset when any list key changes
   useEffect(() => {
     setHasLoadedOnce(false);
   }, [period, sortOrder, status, workflowNameFilter]);
@@ -979,7 +986,10 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                           className="whitespace-nowrap"
                         />
                       ) : (
-                        <span aria-label="Not started">—</span>
+                        <span>
+                          <span aria-hidden="true">—</span>
+                          <span className="sr-only">Not started</span>
+                        </span>
                       )}
                     </TableCell>
                     <TableCell className="py-3 text-xs text-muted-foreground">
@@ -990,7 +1000,10 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                           className="whitespace-nowrap"
                         />
                       ) : (
-                        <span aria-label="Not completed">—</span>
+                        <span>
+                          <span aria-hidden="true">—</span>
+                          <span className="sr-only">Not completed</span>
+                        </span>
                       )}
                     </TableCell>
                     <TableCell className="py-3 text-right font-mono text-xs tabular-nums text-muted-foreground">
