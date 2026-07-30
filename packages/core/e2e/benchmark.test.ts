@@ -2,6 +2,11 @@
  * Benchmark runner measuring the workflow runtime's core latency metrics
  * against a deployed workbench app.
  *
+ * Before reading a delta in the PR comment as a regression, see
+ * BENCHMARK_VARIANCE.md in this directory: it measures the run-to-run noise
+ * floor of each metric against real CI data (inline STSO ±8%, TTFS Best not
+ * usable at all), and records which apparent signals are artifacts.
+ *
  * Every run is triggered through an in-deployment route (`POST /api/bench` on
  * the workbench app) rather than by calling `start()` from this CI process. The
  * route stamps `clientStart` with the deployment's own clock immediately before
