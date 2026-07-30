@@ -7,13 +7,14 @@
  * Two rules interact. Both are deliberate; together they are not sound.
  *
  *  1. A step result SKIPS any earlier delivery that will not "resolve on its
- *     own" — `private.ts:368-371`, justified at `:336-344`. The motivating case
+ *     own" — the deferral loop in `awaitEarlierDeliveries`, justified on
+ *     `resolvesOnItsOwn`. The motivating case
  *     is an unclaimed buffered hook payload: it is delivered only when the
  *     workflow next reads the hook, and reaching that read commonly requires
  *     the step result itself, so gating the step on it would stall the run
  *     until the idle safety net fires.
  *
- *  2. `resolvesOnItsOwn` is TRANSITIVE — `private.ts:296-319`. An armed wait or
+ *  2. `resolvesOnItsOwn` is TRANSITIVE. An armed wait or
  *     hook barrier reports false whenever an earlier barrier it defers behind
  *     reports false.
  *
@@ -37,8 +38,8 @@
  * payload: every hook case in `step-delivery-ordering.test.ts`,
  * `step-delivery-hop-count.test.ts` and `delivery-barrier-coverage.test.ts`
  * registers its awaiter before the drain starts, so it takes the ARMED
- * `promises.length > 0` path in `hook.ts:283-345` and never exercises
- * `claim()`'s claim-time deferral at `hook.ts:361-384`.
+ * waiting-consumer path in `workflow/hook.ts` and never exercises `claim()`'s
+ * claim-time deferral.
  *
  * Unlike the barrier-primitive tests in
  * `delivery-barrier-idle-collapse.test.ts`, this one needs no artificial
@@ -49,8 +50,10 @@
  * gates on a buffered payload no consumer has taken — that is the case where
  * the claim commonly sits downstream of the step result — but it does gate on
  * an earlier ARMED wait or hook, whatever that delivery is itself waiting for.
- * Rule 2 went away with it: there is no transitive "resolves on its own" walk
- * left to poison. The step → wait → unclaimed-payload chain that leaves behind
+ * Rule 2 went away with it: `awaitEarlierDeliveries` no longer consults
+ * `resolvesOnItsOwn` at all, so there is no transitive walk left to poison (it
+ * survives only in `hasParkedCommittedDelivery`, on the suspension path).
+ * The step → wait → unclaimed-payload chain that leaves behind
  * is not a deadlock, because the payload is its only root blocker and the
  * safety net retires it once hydration goes quiet, releasing the chain in log
  * order.
@@ -175,13 +178,49 @@ const event = (
  * On replay all three of evnt_4, evnt_5 and evnt_6 land in one drain window, so
  * the delivery-barrier registry is the only thing deciding which branch draws
  * ULID[3] — and it must decide the way the log records.
+ *
+ * `order` selects between that log and its mirror image, in which the two
+ * writers interleaved the other way: the step result was appended BEFORE the
+ * wait completion, so the step branch legitimately woke first and `afterStep`
+ * drew ULID[3]. The mirror is a control. It passes on `main` — the engine's
+ * bias is toward the step result, so it happens to reproduce this log and
+ * corrupt the other — and it has to keep passing, because a "fix" that merely
+ * flips the bias toward hooks would turn this one red while turning the case
+ * above green.
  */
-async function buildEventLog(): Promise<Event[]> {
+async function buildEventLog(
+  order: 'waitFirst' | 'stepFirst' = 'waitFirst'
+): Promise<Event[]> {
   const ops: Promise<unknown>[] = [];
   const [hookPayload, stepAResult] = await Promise.all([
     dehydrateStepReturnValue({ kind: 'ping' }, 'wrun_test', undefined, ops),
     dehydrateStepReturnValue('ok', 'wrun_test', undefined, ops),
   ]);
+
+  const waitCompleted = (eventId: string) =>
+    event(eventId, 'wait_completed', `wait_${ULIDS[2]}`, {
+      resumeAt: RESUME_AT,
+    });
+  const stepCompleted = (eventId: string) =>
+    event(eventId, 'step_completed', `step_${ULIDS[1]}`, {
+      stepName: 'stepA',
+      result: stepAResult,
+    });
+  // Whichever delivery the log ordered first is the branch that drew ULID[3].
+  const [first, second, firstDrawn, secondDrawn] =
+    order === 'waitFirst'
+      ? [
+          waitCompleted('evnt_5'),
+          stepCompleted('evnt_6'),
+          'afterHook',
+          'afterStep',
+        ]
+      : [
+          stepCompleted('evnt_5'),
+          waitCompleted('evnt_6'),
+          'afterStep',
+          'afterHook',
+        ];
 
   return [
     event('evnt_0', 'hook_created', `hook_${ULIDS[0]}`, {
@@ -197,18 +236,13 @@ async function buildEventLog(): Promise<Event[]> {
       token: 'tok',
       payload: hookPayload,
     }),
-    event('evnt_5', 'wait_completed', `wait_${ULIDS[2]}`, {
-      resumeAt: RESUME_AT,
-    }),
-    event('evnt_6', 'step_completed', `step_${ULIDS[1]}`, {
-      stepName: 'stepA',
-      result: stepAResult,
-    }),
+    first,
+    second,
     event('evnt_7', 'step_created', `step_${ULIDS[3]}`, {
-      stepName: 'afterHook',
+      stepName: firstDrawn,
     }),
     event('evnt_8', 'step_created', `step_${ULIDS[4]}`, {
-      stepName: 'afterStep',
+      stepName: secondDrawn,
     }),
   ];
 }
@@ -246,7 +280,7 @@ function workflowBody(ctx: WorkflowOrchestratorContext, extraHops: number) {
         // The sleep is what makes `hook_received` BUFFERED on replay: this
         // branch is parked here, with no awaiter registered on the hook, when
         // the drain reaches evnt_4. The payload is therefore delivered by
-        // `claim()` (`hook.ts:361-384`) rather than the armed path.
+        // `claim()` in `workflow/hook.ts` rather than the armed path.
         await sleep('5s');
         for await (const payload of hook) {
           void payload;
@@ -289,6 +323,31 @@ describe('buffered hook payload vs. a later step result', () => {
         );
       }
       expect(pendingStepNames(ctx)).toEqual(['afterHook', 'afterStep']);
+      expect(ctx.eventsConsumer.eventIndex).toBe(events.length);
+    });
+  }
+
+  // The mirror image, as a control: same shape, opposite interleaving. It
+  // passes on `main` and must keep passing, so the assertions above can only
+  // be satisfied by following log order — not by preferring hooks to steps.
+  for (const extraHops of [0, 4, 16]) {
+    it(`follows the mirrored log too, with ${extraHops} extra step-branch hops`, async () => {
+      const events = await buildEventLog('stepFirst');
+      const ctx = setupWorkflowContext(events);
+
+      const error = await replay(ctx, workflowBody(ctx, extraHops));
+
+      if (!WorkflowSuspension.is(error)) {
+        throw new Error(
+          error === undefined
+            ? 'expected the replay to suspend, but it completed'
+            : error instanceof Error
+              ? error.message
+              : String(error),
+          { cause: error }
+        );
+      }
+      expect(pendingStepNames(ctx)).toEqual(['afterStep', 'afterHook']);
       expect(ctx.eventsConsumer.eventIndex).toBe(events.length);
     });
   }

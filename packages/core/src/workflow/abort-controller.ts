@@ -221,9 +221,9 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           // deterministic regardless of reason-hydration (decryption) latency.
           //
           // It is released inside the slot, before the detached deferral, so
-          // `scheduleWhenIdle` can still reach idle and retire the barriers
-          // that deferral may be waiting on — the same shape as the hook and
-          // step paths.
+          // idle stays reachable for an unclaimed buffered hook payload that
+          // deferral may be parked on — the same shape as the hook and step
+          // paths, and the only barrier idle retires (see step.ts).
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             let reason: unknown;

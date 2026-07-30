@@ -1,12 +1,23 @@
 /**
  * The backend-inversion mechanism, reproduced entirely inside core.
  *
- * A World that mints event IDs client-side (ULID) but reads them back with
- * `ORDER BY id` + `WHERE id > cursor` can commit an event whose ID sorts BELOW
- * a cursor a reader has already passed. Measured on the postgres world:
- * `step_created` commits an average of 32ms (max 319ms) after its ULID time and
- * `step_completed` 300ms (max 936ms), so a smaller-ULID event landing behind a
- * live reader's cursor is routine, not hypothetical.
+ * A World that orders events by a ULID minted before the commit, and reads
+ * them back with `ORDER BY id` + `WHERE id > cursor`, can commit an event
+ * whose ID sorts BELOW a cursor a reader has already passed. Measured on the
+ * postgres world: `step_created` commits an average of 32ms (max 319ms) after
+ * its ULID time and `step_completed` 300ms (max 936ms), so a smaller-ULID
+ * event landing behind a live reader's cursor is routine, not hypothetical.
+ *
+ * This is not a `world-postgres` class. `world-vercel` reads through
+ * workflow-server, which stores events in DynamoDB keyed by the event ULID and
+ * paginates with an `eid:<eventId>` cursor — `between({eventId: cursor},
+ * {eventId: MAX_EVENT_ID})` on the `byWorkflowRunId` index — an ID-ordered
+ * range strictly after the cursor, the same shape. Those IDs are minted per
+ * server instance (`EventId.make()`), and the server documents the residual
+ * gap itself: its monotonic factory "only fixes *intra-instance* ordering.
+ * Cross-instance ordering for the same run still depends on wall-clock
+ * agreement; an append-tail fence on the run is a separate follow-up." Two
+ * instances appending for one run is the ordinary case under the storm repro.
  *
  * `packages/core` has no defence here and no way to notice. Its only watermark
  * is the opaque World cursor threaded through `loadWorkflowRunEvents`
@@ -221,7 +232,11 @@ describe('an event committed below the reader watermark', () => {
     expect(boundStepName(ctx, ULIDS[2])).toBe('afterA');
   });
 
-  it('binds the same ULID to afterB when that event is missing from the view', async () => {
+  // CHARACTERIZATION, not a contract: this is what the engine does while it
+  // has no way to notice the hole. A guard that detects the gap and refuses to
+  // proceed — the direction the count-guard work points — would turn this red
+  // for a good reason, and that is a fix, not a regression.
+  it('binds the same ULID to afterB when that event is missing from the view (characterization)', async () => {
     const events = staleView(await canonicalLog());
     const ctx = setupWorkflowContext(events);
 
