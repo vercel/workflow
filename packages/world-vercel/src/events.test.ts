@@ -197,6 +197,52 @@ describe('createWorkflowRunEvent stateUpdatedAt wire field', () => {
   });
 });
 
+describe('createWorkflowRunEvent result contract', () => {
+  it.each([
+    {
+      eventType: 'run_started',
+      data: { eventType: 'run_started', specVersion: 2 },
+    },
+    {
+      eventType: 'step_started',
+      data: {
+        eventType: 'step_started',
+        correlationId: 'step_1',
+        specVersion: 2,
+      },
+    },
+  ])('rejects a $eventType response without its entity', async ({
+    eventType,
+    data,
+  }) => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/wrun_1/events/${eventType}`,
+        method: 'POST',
+      })
+      .reply(200, encode({}), {
+        headers: {
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+        },
+      });
+
+    await expect(
+      createWorkflowRunEvent('wrun_1', data as AnyEventRequest, undefined, {
+        token: 'test-token',
+        dispatcher: agent,
+      })
+    ).rejects.toMatchObject({
+      name: 'WorkflowWorldError',
+      code: 'SCHEMA_VALIDATION',
+    });
+    agent.assertNoPendingInterceptors();
+  });
+});
+
 /**
  * The split's meta allowlist IS the eventData wire contract on v4. The
  * type-level `assertEventDataWireContractExhaustive` guard in events.ts

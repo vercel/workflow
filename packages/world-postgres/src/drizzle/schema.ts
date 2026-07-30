@@ -105,6 +105,14 @@ export const runs = schema.table(
       .$type<Record<string, string>>()
       .default({})
       .notNull(),
+    /**
+     * The run's X25519 public key (base64), stamped at creation by SDKs that
+     * support sealed (`encp`) envelopes. Lets cross-run writers seal payloads
+     * to this run without holding its symmetric key. Not secret — the private
+     * scalar is re-derived on demand and never stored. Null on runs created by
+     * older SDKs, which fall back to the symmetric path.
+     */
+    encryptionPublicKey: varchar('encryption_public_key'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at')
       .defaultNow()
@@ -214,6 +222,9 @@ export const hooks = schema.table(
     specVersion: integer('spec_version'),
     isWebhook: boolean('is_webhook').default(true),
     isSystem: boolean('is_system').default(false),
+    // Server-synthesized resume slice. Not carried by the hook_created event,
+    // so this backend leaves it null; reads fall back to runs.get.
+    resumeContext: Cbor<NonNullable<Hook['resumeContext']>>()('resume_context'),
   } satisfies DrizzlishOfType<Cborized<Hook, 'metadata'>>,
   (tb) => [index().on(tb.runId), index().on(tb.token)]
 );

@@ -31,6 +31,10 @@ function runCheck(file) {
   }
 }
 
+function runRender(file) {
+  return execFileSync('node', [SCRIPT, file], { encoding: 'utf8' });
+}
+
 test('infra is not a gating outcome', () => {
   assert.ok(!gatingOutcomes.includes('infra'));
   assert.ok(!gatingOutcomes.includes('completed'));
@@ -146,6 +150,50 @@ test('--check exits 1 on a corruption-class regression', () => {
       { outcome: 'infra', errorCode: 'HOOK_RESUME_FAILED' },
       { outcome: 'CORRUPTED_EVENT_LOG', errorCode: 'CORRUPTED_EVENT_LOG' },
     ],
+  });
+  assert.strictEqual(runCheck(file), 1);
+});
+
+test('buildEntry carries partial-run metadata through to the summary', () => {
+  const entry = buildEntry({
+    partial: true,
+    budgetExhausted: true,
+    plannedAttempts: 1400,
+    results: [{ outcome: 'completed' }, { outcome: 'CORRUPTED_EVENT_LOG' }],
+  });
+  assert.strictEqual(entry.missingResults, false);
+  assert.strictEqual(entry.partial, true);
+  assert.strictEqual(entry.budgetExhausted, true);
+  assert.strictEqual(entry.plannedAttempts, 1400);
+  assert.strictEqual(entry.total, 2);
+});
+
+test('buildEntry defaults a complete file to non-partial', () => {
+  const entry = buildEntry({ results: [{ outcome: 'completed' }] });
+  assert.strictEqual(entry.partial, false);
+  assert.strictEqual(entry.budgetExhausted, false);
+  assert.strictEqual(entry.plannedAttempts, 0);
+});
+
+test('a partial result file renders as partial, not as a missing file', () => {
+  const file = writeTempResults({
+    partial: true,
+    budgetExhausted: true,
+    plannedAttempts: 1400,
+    results: [{ outcome: 'completed' }, { outcome: 'CORRUPTED_EVENT_LOG' }],
+  });
+  const output = runRender(file);
+  assert.ok(!output.includes('No result file was produced'));
+  assert.ok(output.includes('partial'));
+  assert.ok(output.includes('1400'));
+});
+
+test('--check still gates on regressions in a partial result file', () => {
+  const file = writeTempResults({
+    partial: true,
+    budgetExhausted: true,
+    plannedAttempts: 1400,
+    results: [{ outcome: 'completed' }, { outcome: 'CORRUPTED_EVENT_LOG' }],
   });
   assert.strictEqual(runCheck(file), 1);
 });

@@ -14,7 +14,6 @@ import type {
   CreateEventParams,
   Event,
   EventResult,
-  EventResultFor,
   Hook,
   SerializedData,
   Step,
@@ -628,11 +627,11 @@ export function createEventsStorage(
 
   return {
     clearCache,
-    async create<T extends AnyEventRequest>(
+    async create(
       runId: string | null,
-      data: T,
+      data: AnyEventRequest,
       params?: CreateEventParams
-    ): Promise<EventResultFor<T>> {
+    ): Promise<EventResult> {
       // Validate request-supplied IDs before they're concatenated into
       // filesystem paths. This is the primary defense against path traversal
       // attacks where a client supplies runId / correlationId values like
@@ -660,11 +659,7 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.${tag}`
           : `${runId}-${data.correlationId}`;
-        return (await withInProcessLock(
-          stepLocks,
-          lockKey,
-          createImpl
-        )) as EventResultFor<T>;
+        return withInProcessLock(stepLocks, lockKey, createImpl);
       }
       // `hook_created` is serialized per-(runId, hookId) so the
       // "claim token, write hook entity, write event" sequence runs to
@@ -693,13 +688,9 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.hook.${tag}`
           : `${runId}-${data.correlationId}.hook`;
-        return (await withInProcessLock(
-          hookLocks,
-          lockKey,
-          createImpl
-        )) as EventResultFor<T>;
+        return withInProcessLock(hookLocks, lockKey, createImpl);
       }
-      return (await createImpl()) as EventResultFor<T>;
+      return createImpl();
 
       async function createImpl(): Promise<EventResult> {
         // Most paths use the freshly-generated candidate eventId. The
@@ -768,6 +759,7 @@ export function createEventsStorage(
               executionContext?: Record<string, any>;
               attributes?: Record<string, string>;
               allowReservedAttributes?: true;
+              encryptionPublicKey?: string;
             };
             if (
               runInputData.deploymentId &&
@@ -800,6 +792,10 @@ export function createEventsStorage(
                 startedAt: undefined,
                 completedAt: undefined,
                 attributes: runInputData.attributes ?? {},
+                // Must be mirrored here too: this is the path that recreates a
+                // run from the queued message, which is exactly when the key
+                // would otherwise be lost for the rest of the run's life.
+                encryptionPublicKey: runInputData.encryptionPublicKey,
                 createdAt: now,
                 updatedAt: now,
               };
@@ -826,6 +822,7 @@ export function createEventsStorage(
                     attributes: runInputData.attributes,
                     allowReservedAttributes:
                       runInputData.allowReservedAttributes,
+                    encryptionPublicKey: runInputData.encryptionPublicKey,
                   },
                 };
                 await storeEvent(runCreatedEvent);
@@ -853,6 +850,9 @@ export function createEventsStorage(
           throw new WorkflowRunNotFoundError(effectiveRunId);
         }
         if (data.eventType === 'attr_set' && !currentRun) {
+          throw new WorkflowRunNotFoundError(effectiveRunId);
+        }
+        if (data.eventType === 'run_started' && !currentRun) {
           throw new WorkflowRunNotFoundError(effectiveRunId);
         }
 
@@ -1155,6 +1155,7 @@ export function createEventsStorage(
             executionContext?: Record<string, any>;
             attributes?: Record<string, string>;
             allowReservedAttributes?: true;
+            encryptionPublicKey?: string;
           };
           validateAttributeChanges(
             Object.entries(runData.attributes ?? {}).map(([key, value]) => ({
@@ -1179,6 +1180,7 @@ export function createEventsStorage(
             startedAt: undefined,
             completedAt: undefined,
             attributes: runData.attributes ?? {},
+            encryptionPublicKey: runData.encryptionPublicKey,
             createdAt: now,
             updatedAt: now,
           };
@@ -1228,6 +1230,7 @@ export function createEventsStorage(
                 startedAt: currentRun.startedAt ?? now,
                 updatedAt: now,
                 attributes: currentRun.attributes,
+                encryptionPublicKey: currentRun.encryptionPublicKey,
               }
             );
           }
@@ -1255,6 +1258,7 @@ export function createEventsStorage(
                 completedAt: now,
                 updatedAt: now,
                 attributes: currentRun.attributes,
+                encryptionPublicKey: currentRun.encryptionPublicKey,
               }
             );
             await Promise.all([
@@ -1293,6 +1297,7 @@ export function createEventsStorage(
                 completedAt: now,
                 updatedAt: now,
                 attributes: currentRun.attributes,
+                encryptionPublicKey: currentRun.encryptionPublicKey,
               }
             );
             await Promise.all([
@@ -1323,6 +1328,7 @@ export function createEventsStorage(
                 completedAt: now,
                 updatedAt: now,
                 attributes: currentRun.attributes,
+                encryptionPublicKey: currentRun.encryptionPublicKey,
               }
             );
             await Promise.all([

@@ -1,5 +1,36 @@
 # @workflow/world-local
 
+## 5.0.0-beta.32
+
+### Patch Changes
+
+- [#3142](https://github.com/vercel/workflow/pull/3142) [`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Revert the static workflow world target injection: the world package is again resolved at runtime from `WORKFLOW_TARGET_WORLD` instead of being aliased into host bundles at build time.
+
+- Updated dependencies [[`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804)]:
+  - @workflow/utils@5.0.0-beta.8
+  - @workflow/errors@5.0.0-beta.14
+
+## 5.0.0-beta.31
+
+### Major Changes
+
+- [#3112](https://github.com/vercel/workflow/pull/3112) [`4ada27d`](https://github.com/vercel/workflow/commit/4ada27d35af197d66196288919581d839f87c9a3) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Remove deprecated world-specific factory aliases in favor of `createWorld`.
+
+- [#3061](https://github.com/vercel/workflow/pull/3061) [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Remove legacy step queue topics and payloads now that queued steps use the workflow topic and combined flow handler.
+
+### Minor Changes
+
+- [#3095](https://github.com/vercel/workflow/pull/3095) [`b4ba79e`](https://github.com/vercel/workflow/commit/b4ba79ebc501248408474efdd6e353f1753d83e3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Persist and transport the new optional `encryptionPublicKey` field on workflow runs, carried on `run_created` (and `run_started` for resilient start).
+
+### Patch Changes
+
+- [#3144](https://github.com/vercel/workflow/pull/3144) [`49276f2`](https://github.com/vercel/workflow/commit/49276f2d0b11d7552ac4504936cbca51df4ce98d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Warn when the Local World starts inside a Vercel deployment, and fail with an actionable error instead of a confusing `ENOENT` when its data directory cannot be created on a read-only filesystem.
+
+- Updated dependencies [[`8c12358`](https://github.com/vercel/workflow/commit/8c12358075897ef1fdcc4ce3847579df63c8ca7a), [`b4ba79e`](https://github.com/vercel/workflow/commit/b4ba79ebc501248408474efdd6e353f1753d83e3), [`a86035f`](https://github.com/vercel/workflow/commit/a86035f71f60e22170cae231cc6fb07e39928cc6), [`d24c91c`](https://github.com/vercel/workflow/commit/d24c91cfde678e9a4935ee94b9597b5696d6792b), [`fc81f45`](https://github.com/vercel/workflow/commit/fc81f4502fa6d8d9a7a5c48b44394dc39c141a86), [`49276f2`](https://github.com/vercel/workflow/commit/49276f2d0b11d7552ac4504936cbca51df4ce98d), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91)]:
+  - @workflow/world@5.0.0-beta.23
+  - @workflow/utils@5.0.0-beta.7
+  - @workflow/errors@5.0.0-beta.13
+
 ## 5.0.0-beta.30
 
 ### Minor Changes

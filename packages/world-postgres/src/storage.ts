@@ -13,7 +13,6 @@ import type {
   CreateEventParams,
   Event,
   EventResult,
-  EventResultFor,
   ExperimentalSetAttributesResult,
   GetEventParams,
   Hook,
@@ -468,11 +467,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     .prepare('events_get_wait_for_validation');
 
   return {
-    async create<T extends AnyEventRequest>(
+    async create(
       runId: string | null,
-      data: T,
+      data: AnyEventRequest,
       params?: CreateEventParams
-    ): Promise<EventResultFor<T>> {
+    ): Promise<EventResult> {
       let eventId: string | undefined;
       const getEventId = () => (eventId ??= `wevt_${ulid()}`);
 
@@ -551,6 +550,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             executionContext?: Record<string, any>;
             attributes?: Record<string, string>;
             allowReservedAttributes?: true;
+            encryptionPublicKey?: string;
           };
           if (
             runInputData.deploymentId &&
@@ -581,6 +581,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   | SerializedContent
                   | undefined,
                 attributes: runInputData.attributes,
+                // Must be mirrored here too: this is the path that recreates a
+                // run from the queued message, which is exactly when the key
+                // would otherwise be lost for the rest of the run's life.
+                encryptionPublicKey: runInputData.encryptionPublicKey,
                 status: 'pending',
               })
               .onConflictDoNothing()
@@ -599,6 +603,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   executionContext: runInputData.executionContext,
                   attributes: runInputData.attributes,
                   allowReservedAttributes: runInputData.allowReservedAttributes,
+                  encryptionPublicKey: runInputData.encryptionPublicKey,
                 },
                 specVersion: effectiveSpecVersion,
               });
@@ -638,17 +643,20 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
         // Route to legacy handler for pre-event-sourcing runs
         if (isLegacySpecVersion(currentRun.specVersion)) {
-          return (await handleLegacyEventPostgres(
+          return handleLegacyEventPostgres(
             drizzle,
             effectiveRunId,
             getEventId(),
             data,
             currentRun,
             params
-          )) as EventResultFor<T>;
+          );
         }
       }
       if (data.eventType === 'attr_set' && !currentRun) {
+        throw new WorkflowRunNotFoundError(effectiveRunId);
+      }
+      if (data.eventType === 'run_started' && !currentRun) {
         throw new WorkflowRunNotFoundError(effectiveRunId);
       }
 
@@ -700,7 +708,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           return {
             event: stripEventDataRefs(parsed, resolveData),
             run: fullRun ? deserializeRunError(compact(fullRun)) : undefined,
-          } as EventResultFor<T>;
+          };
         }
 
         // For run_started on terminal runs, use RunExpiredError so the
@@ -828,6 +836,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           executionContext?: Record<string, any>;
           attributes?: Record<string, string>;
           allowReservedAttributes?: true;
+          encryptionPublicKey?: string;
         };
         validateAttributeChanges(
           Object.entries(eventData.attributes ?? {}).map(([key, value]) => ({
@@ -851,6 +860,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               | SerializedContent
               | undefined,
             attributes: eventData.attributes,
+            encryptionPublicKey: eventData.encryptionPublicKey,
             status: 'pending',
           })
           .onConflictDoNothing()
@@ -885,7 +895,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           if (fullRun) {
             return {
               run: deserializeRunError(compact(fullRun)),
-            } as EventResultFor<T>;
+            };
           }
         }
 
@@ -1567,7 +1577,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               run,
               step,
               hook: undefined,
-            } as EventResultFor<T>;
+            };
           }
         } else {
           const [hookValue] = await drizzle
@@ -1848,7 +1858,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         cursor,
         hasMore,
         ...(stepCreatedLazily ? { stepCreated: true } : {}),
-      } as EventResultFor<T>;
+      };
     },
     async get(
       runId: string,

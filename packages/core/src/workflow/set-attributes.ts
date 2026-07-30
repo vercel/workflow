@@ -27,11 +27,6 @@ export interface SetAttributesOptions {
 }
 
 /**
- * @deprecated Use {@link SetAttributesOptions} instead.
- */
-export type ExperimentalSetAttributesOptions = SetAttributesOptions;
-
-/**
  * Attach plaintext string key/value metadata to the current workflow run.
  *
  * Callable only from a workflow body (`'use workflow'`). The call is
@@ -101,9 +96,3 @@ export async function setAttributes(
     allowReservedAttributes ? { allowReservedAttributes: true } : {}
   );
 }
-
-/**
- * @deprecated The feature is no longer experimental — use
- * {@link setAttributes} instead.
- */
-export const experimental_setAttributes = setAttributes;

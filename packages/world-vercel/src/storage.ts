@@ -41,9 +41,9 @@ export function createStorage(config?: APIConfig): Storage {
         listWorkflowRunSteps(params, config)) as Storage['steps']['list'],
     },
     events: {
-      create: <T extends AnyEventRequest>(
+      create: (
         runId: string | null,
-        data: T,
+        data: AnyEventRequest,
         params?: CreateEventParams
       ) => createWorkflowRunEvent(runId, data, params, config),
       get: (runId, eventId, params) => getEvent(runId, eventId, params, config),

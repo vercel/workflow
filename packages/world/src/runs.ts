@@ -100,6 +100,26 @@ export const WorkflowRunBaseSchema = z.object({
    * the attributes-mvp changelog entry.
    */
   attributes: z.record(z.string(), z.string()).default({}),
+  /**
+   * The run's X25519 public key, base64-encoded (~44 chars).
+   *
+   * Lets any party that can read this run seal a payload *to* it without
+   * being able to read the run's data — used for cross-run writes such as a
+   * hook resumption from another deployment, or a child workflow writing into
+   * a forwarded stream. The matching private scalar is never stored: it is
+   * re-derived on demand from the deployment's own key material, so this
+   * field is not secret and its presence does not weaken the run's
+   * confidentiality.
+   *
+   * Stamped at run creation by SDKs that support sealed (`encp`) envelopes.
+   * **Presence is the writer-side gate**: a run only carries a public key if
+   * the runtime that created it could also open sealed payloads, and runs are
+   * pinned to their creating deployment. Writers therefore seal iff this
+   * field is set, and otherwise fall back to fetching the symmetric per-run
+   * key. Absent on runs created by older SDKs, and on worlds that do not
+   * implement `getEncryptionKeyForRun` (encryption disabled).
+   */
+  encryptionPublicKey: z.string().optional(),
   expiredAt: z.coerce.date().optional(),
   startedAt: z.coerce.date().optional(),
   completedAt: z.coerce.date().optional(),

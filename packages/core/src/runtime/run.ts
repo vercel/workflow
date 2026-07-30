@@ -10,7 +10,10 @@ import {
   type WorkflowRunStatus,
   type World,
 } from '@workflow/world';
-import { type CryptoKey, importKey } from '../encryption.js';
+import {
+  deriveRunPayloadKeys,
+  type PayloadKey,
+} from '../serialization/encryption.js';
 import {
   getExternalRevivers,
   hydrateRunError,
@@ -103,7 +106,7 @@ export class Run<TResult> {
    * reused for returnValue, getReadable(), etc.
    * @internal
    */
-  #encryptionKeyPromise: Promise<CryptoKey | undefined> | null = null;
+  #encryptionKeyPromise: Promise<PayloadKey | undefined> | null = null;
 
   /**
    * When true, run_created failed and the run may not exist yet (the
@@ -125,13 +128,13 @@ export class Run<TResult> {
    * to be resolved once.
    * @internal
    */
-  #getEncryptionKey(): Promise<CryptoKey | undefined> {
+  #getEncryptionKey(): Promise<PayloadKey | undefined> {
     if (!this.#encryptionKeyPromise) {
       this.#encryptionKeyPromise = (async () => {
         const world = await this.#lazyWorldPromise;
         const run = await world.runs.get(this.runId);
         const rawKey = await world.getEncryptionKeyForRun?.(run);
-        return rawKey ? await importKey(rawKey) : undefined;
+        return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
       })();
     }
     return this.#encryptionKeyPromise;
@@ -143,7 +146,7 @@ export class Run<TResult> {
    * unobserved run lookup.
    * @internal
    */
-  #getEncryptionKeyLazily(): () => Promise<CryptoKey | undefined> {
+  #getEncryptionKeyLazily(): () => Promise<PayloadKey | undefined> {
     return () => this.#getEncryptionKey();
   }
 

@@ -4,14 +4,17 @@ import {
   flushablePipe,
   pollWritableLock,
 } from '../flushable-stream.js';
+import { bytesToBase64 } from '../sealed-box.js';
 import {
   getExternalReducers,
   getSerializeStream,
+  isRunPayloadKeys,
   WorkflowServerWritableStream,
 } from '../serialization.js';
 import {
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+  STREAM_SERVER_PUBLIC_KEY_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
 } from '../symbols.js';
 import { getWorkflowRunStreamId } from '../util.js';
@@ -138,6 +141,16 @@ export function getWritable<W = any>(
         writable: false,
       }
     );
+  }
+  // Publish this run's X25519 public key on the handle so that a run this
+  // writable is forwarded to can seal frames without looking anything up.
+  // The key is already resolved on the step context, so this costs nothing
+  // here and saves the receiver a round trip.
+  if (isRunPayloadKeys(ctx.encryptionKey)) {
+    Object.defineProperty(serialize.writable, STREAM_SERVER_PUBLIC_KEY_SYMBOL, {
+      value: bytesToBase64(ctx.encryptionKey.keyPair.publicKey),
+      writable: false,
+    });
   }
 
   cache.set(name, { writable: serialize.writable, state });

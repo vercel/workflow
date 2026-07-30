@@ -38,7 +38,6 @@ import {
   type Event,
   type EventDataPayloadField,
   type EventResult,
-  type EventResultFor,
   EventSchema,
   EventTypeSchema,
   type GetEventParams,
@@ -153,6 +152,13 @@ interface SplitEventData {
     writer?: Record<string, unknown>;
     /** Reserved-attribute-key opt-in (attr_set / run_created / run_started). */
     allowReservedAttributes?: boolean;
+    /**
+     * The run's X25519 public key, base64 (run_created / resilient-start
+     * run_started). Plaintext metadata, not a payload: it is not secret, and
+     * the server stores it on the run entity so cross-run writers can seal to
+     * it without holding the run's symmetric key.
+     */
+    encryptionPublicKey?: string;
     /** Client-measured time-to-first-step ms (step_completed / step_failed). */
     ttfs?: number;
     /** Client-measured step-to-step overhead ms (step_completed / step_failed). */
@@ -199,6 +205,7 @@ type MetaSourceField =
   | 'changes'
   | 'writer'
   | 'allowReservedAttributes'
+  | 'encryptionPublicKey'
   | 'ttfs'
   | 'stso'
   | 'stepCount'
@@ -353,6 +360,9 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.allowReservedAttributes === 'boolean') {
     meta.allowReservedAttributes = eventData.allowReservedAttributes;
+  }
+  if (typeof eventData.encryptionPublicKey === 'string') {
+    meta.encryptionPublicKey = eventData.encryptionPublicKey;
   }
   // Client-measured latency telemetry on step terminal events (TTFS / STSO).
   // The server consumes these for metrics; they are not read back.
@@ -612,12 +622,12 @@ export async function getWorkflowRunEvents(
   } as PaginatedResponse<Event>;
 }
 
-export async function createWorkflowRunEvent<T extends AnyEventRequest>(
+export async function createWorkflowRunEvent(
   id: string | null,
-  data: T,
+  data: AnyEventRequest,
   params?: CreateEventParams,
   config?: APIConfig
-): Promise<EventResultFor<T>> {
+): Promise<EventResult> {
   try {
     // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
     // socket/headers timeouts, transient 5xx) in-process for event types that
@@ -627,10 +637,26 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     // the next queue delivery. Non-retryable
     // types (step_started, step_retrying, hook_received) run once. See
     // ./event-retry for the validated per-event classification.
-    return (await withEventPostRetry(
+    const result = await withEventPostRetry(
       () => createWorkflowRunEventInner(id, data, params, config),
       data.eventType
-    )) as EventResultFor<T>;
+    );
+    if (
+      (data.eventType === 'run_created' || data.eventType === 'run_started') &&
+      !result.run
+    ) {
+      throw new WorkflowWorldError(
+        `${data.eventType} response is missing the run entity`,
+        { code: 'SCHEMA_VALIDATION' }
+      );
+    }
+    if (data.eventType === 'step_started' && !result.step) {
+      throw new WorkflowWorldError(
+        'step_started response is missing the step entity',
+        { code: 'SCHEMA_VALIDATION' }
+      );
+    }
+    return result;
   } catch (err) {
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (

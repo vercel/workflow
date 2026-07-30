@@ -499,6 +499,13 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
     executionContext: z.record(z.string(), z.any()).optional(),
     attributes: z.record(z.string(), z.string()).optional(),
     allowReservedAttributes: z.literal(true).optional(),
+    /**
+     * The run's X25519 public key (base64), stamped by SDKs that support
+     * sealed (`encp`) envelopes. Persisted onto the run entity so that
+     * cross-run writers can seal payloads to this run without holding its
+     * symmetric key. Not secret — see `WorkflowRunBaseSchema`.
+     */
+    encryptionPublicKey: z.string().optional(),
   }),
 });
 
@@ -521,6 +528,13 @@ const RunStartedEventSchema = BaseEventSchema.extend({
       executionContext: z.record(z.string(), z.any()).optional(),
       attributes: z.record(z.string(), z.string()).optional(),
       allowReservedAttributes: z.literal(true).optional(),
+      /**
+       * Mirrors `run_created.eventData.encryptionPublicKey`. Carried here for
+       * the resilient-start path: when the `run_created` write failed, the
+       * server creates the run from this event instead, and without the key
+       * the run would silently lose its ability to receive sealed writes.
+       */
+      encryptionPublicKey: z.string().optional(),
     })
     .optional(),
 });

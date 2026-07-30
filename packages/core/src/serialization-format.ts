@@ -10,6 +10,33 @@ import { getEventDataRefFields } from '@workflow/world';
 import { parse, unflatten } from 'devalue';
 
 // ---------------------------------------------------------------------------
+// Key material (browser-safe re-exports)
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-exported from the envelope layer so browser consumers (web dashboard,
+ * web-shared) can resolve key material without importing
+ * `@workflow/core/serialization`, whose module graph reaches Node built-ins
+ * (`node:util`, `node:async_hooks`) and cannot be bundled for the browser.
+ *
+ * Everything below is Web Crypto only: `serialization/encryption.ts`,
+ * `encryption.ts` and `sealed-box.ts` are all free of Node dependencies.
+ */
+export {
+  type DecryptionKey,
+  decrypt as decryptEnvelope,
+  deriveRunPayloadKeys,
+  encrypt as encryptEnvelope,
+  isRunPayloadKeys,
+  isSealTarget,
+  type PayloadKey,
+  type RunPayloadKeys,
+  runPayloadKeys,
+  type SealTarget,
+  sealTo,
+} from './serialization/encryption.js';
+
+// ---------------------------------------------------------------------------
 // Format prefix constants and encoding/decoding
 // ---------------------------------------------------------------------------
 
@@ -18,6 +45,17 @@ export const SerializationFormat = {
   DEVALUE_V1: 'devl',
   /** Encrypted payload (inner payload has its own format prefix after decryption) */
   ENCRYPTED: 'encr',
+  /**
+   * Sealed payload — asymmetrically encrypted to a run's X25519 public key
+   * (inner payload has its own format prefix after opening).
+   *
+   * Written by cross-run writers that hold only the recipient run's public
+   * key. Opening it requires the run's private scalar rather than the
+   * symmetric per-run key, so o11y display treats it as ciphertext via
+   * {@link isEncryptedData} but {@link hydrateDataWithKey} does not attempt
+   * an AES-GCM decrypt on it.
+   */
+  SEALED: 'encp',
   /** Gzip-compressed payload (inner payload has its own format prefix after decompression) */
   GZIP: 'gzip',
   /** Zstandard-compressed payload (inner payload has its own format prefix after decompression) */
@@ -140,7 +178,15 @@ export function isExpiredStub(data: unknown): boolean {
 }
 
 /**
- * Check if a binary value has the 'encr' format prefix indicating encryption.
+ * Check if a binary value is ciphertext — either a symmetrically encrypted
+ * payload ('encr') or a sealed cross-run payload ('encp').
+ *
+ * This is the predicate display layers want: both schemes are opaque bytes
+ * that must not be fed to the devalue parser, and both render as the same
+ * "Encrypted" affordance in the CLI and web UI. Use {@link isSealedData} when
+ * the *scheme* matters — notably when choosing a decryption path, since a
+ * sealed payload needs the run's private scalar rather than its symmetric key.
+ *
  * Browser-safe — does not depend on the full serialization module.
  */
 export function isEncryptedData(data: unknown): boolean {
@@ -148,7 +194,24 @@ export function isEncryptedData(data: unknown): boolean {
     return false;
   }
   const prefix = formatDecoder.decode(data.subarray(0, FORMAT_PREFIX_LENGTH));
-  return prefix === SerializationFormat.ENCRYPTED;
+  return (
+    prefix === SerializationFormat.ENCRYPTED ||
+    prefix === SerializationFormat.SEALED
+  );
+}
+
+/**
+ * Check if a binary value has the 'encp' format prefix, indicating a sealed
+ * (asymmetrically encrypted) cross-run payload.
+ *
+ * Browser-safe — does not depend on the full serialization module.
+ */
+export function isSealedData(data: unknown): boolean {
+  if (!(data instanceof Uint8Array) || data.length < FORMAT_PREFIX_LENGTH) {
+    return false;
+  }
+  const prefix = formatDecoder.decode(data.subarray(0, FORMAT_PREFIX_LENGTH));
+  return prefix === SerializationFormat.SEALED;
 }
 
 /**
@@ -352,21 +415,34 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
  * decryption. Used by o11y tooling (web UI, CLI) when the user requests
  * decryption.
  *
- * @param value - The value to hydrate (may be encrypted)
+ * @param value - The value to hydrate (may be encrypted or sealed)
  * @param revivers - Devalue revivers for deserialization
- * @param key - AES-256 encryption key (if provided, encrypted data will be decrypted)
+ * @param key - The run's key material. Pass `RunPayloadKeys` (from
+ *   `deriveRunPayloadKeys`) to open both symmetric (`encr`) and sealed
+ *   (`encp`) payloads; a bare `CryptoKey` opens only the symmetric ones.
+ *   Typed as a read capability so a write-only seal target — which could open
+ *   neither scheme — is rejected at compile time rather than failing here.
  */
 export async function hydrateDataWithKey(
   value: unknown,
   revivers: Revivers,
-  key: import('./encryption.js').CryptoKey | undefined
+  key: import('./serialization/encryption.js').DecryptionKey | undefined
 ): Promise<unknown> {
   let data = value;
   if (data instanceof Uint8Array && isEncryptedData(data) && key) {
-    // Decrypt: strip 'encr' prefix, AES-GCM decrypt, then hydrate the result
-    const { decrypt } = await import('./encryption.js');
-    const { payload } = decodeFormatPrefix(data);
-    data = await decrypt(key, payload);
+    // Envelope-aware decrypt: handles both `encr` (AES-GCM under the run's
+    // symmetric key) and `encp` (sealed to the run's X25519 public key by
+    // some other run), dispatching on the format prefix.
+    const { decrypt, isRunPayloadKeys } = await import(
+      './serialization/encryption.js'
+    );
+    // Opening a sealed payload needs the run's private scalar. If the caller
+    // supplied only a symmetric key, leave the bytes as ciphertext so the UI
+    // keeps showing its "Encrypted" affordance, rather than surfacing a
+    // decryption error for something that was never openable with this key.
+    if (!isSealedData(data) || isRunPayloadKeys(key)) {
+      data = await decrypt(data, key);
+    }
   }
   if (data instanceof Uint8Array && isCompressedData(data)) {
     // Decompress: strip the codec prefix and inflate. gzip uses the

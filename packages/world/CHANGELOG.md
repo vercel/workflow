@@ -1,5 +1,25 @@
 # @workflow/world
 
+## 5.0.0-beta.23
+
+### Major Changes
+
+- [#3061](https://github.com/vercel/workflow/pull/3061) [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Remove legacy step queue topics and payloads now that queued steps use the workflow topic and combined flow handler.
+
+### Minor Changes
+
+- [#3095](https://github.com/vercel/workflow/pull/3095) [`b4ba79e`](https://github.com/vercel/workflow/commit/b4ba79ebc501248408474efdd6e353f1753d83e3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Persist and transport the new optional `encryptionPublicKey` field on workflow runs, carried on `run_created` (and `run_started` for resilient start).
+
+- [#3099](https://github.com/vercel/workflow/pull/3099) [`a86035f`](https://github.com/vercel/workflow/commit/a86035f71f60e22170cae231cc6fb07e39928cc6) Thanks [@TooTallNate](https://github.com/TooTallNate)! - The cross-deployment capability probe now returns the target run's public key, letting `start()` seal workflow arguments without a separate key-lookup request.
+
+### Patch Changes
+
+- [#3111](https://github.com/vercel/workflow/pull/3111) [`8c12358`](https://github.com/vercel/workflow/commit/8c12358075897ef1fdcc4ce3847579df63c8ca7a) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Clarify runtime invariants and compression behavior.
+
+- [#3125](https://github.com/vercel/workflow/pull/3125) [`d24c91c`](https://github.com/vercel/workflow/commit/d24c91cfde678e9a4935ee94b9597b5696d6792b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Hooks can carry an optional `resumeContext`; when present, `resumeHook`/`resumeWebhook` resume from it directly instead of fetching the full run, saving a round trip per resume. When the context also carries the run's `encryptionPublicKey`, the resume seals its payload (`encp`) directly to that key, so a default webhook resume needs neither a run read nor a run-key lookup. These two optimizations fall back independently: it fetches the full run when the context is absent, and uses symmetric encryption when no usable public key is available.
+
+- [#3088](https://github.com/vercel/workflow/pull/3088) [`fc81f45`](https://github.com/vercel/workflow/commit/fc81f4502fa6d8d9a7a5c48b44394dc39c141a86) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Stream writes dispatch the first chunk of an idle stream immediately (flush window default 0 instead of 10ms). Fast producers keep full batching via in-flight accumulation; set `streamFlushIntervalMs` (World option) or `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` (env, takes precedence) above 0 to opt into a windowed leading edge.
+
 ## 5.0.0-beta.22
 
 ### Minor Changes

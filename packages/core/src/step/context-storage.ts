@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { CryptoKey } from '../encryption.js';
+import type { PayloadKey } from '../serialization/encryption.js';
 import type { FlushableStreamState } from '../flushable-stream.js';
 import type { WorkflowMetadata } from '../workflow/get-workflow-metadata.js';
 import type { StepMetadata } from './get-step-metadata.js';
@@ -57,7 +57,7 @@ export type StepContext = {
    */
   preCompletionOps: Promise<void>[];
   closureVars?: Record<string, any>;
-  encryptionKey?: CryptoKey;
+  encryptionKey?: PayloadKey;
   writables?: Map<string, CachedWritable>;
   /**
    * Turbo mode only: a promise that resolves once the backgrounded
