@@ -21,17 +21,27 @@ export type { ModuleOptions };
  * `globalThis.require` makes `typeof require` truthy for *every* bundled
  * dependency in this ESM server output, so any library that feature-detects
  * `require` will take its CJS path here. That is safe because (a) it never
- * touches the client bundle, (b) the `typeof require === 'undefined'` guard
- * makes it a no-op in CJS chunks where a real `require` already exists, and
- * (c) the `require` we install is a working `createRequire`, so a library that
- * switches to the require path gets a functional `require`, not a broken stub.
- * The behavior to watch for is a bundled lib that, on seeing `require`, does
- * `require()` of an ESM-only dependency on a Node version without `require(ESM)`
- * support.
+ * touches the client bundle, (b) the guard makes it a no-op where a real
+ * `require` already exists, and (c) the `require` we install is a working
+ * `createRequire`, so a library that switches to the require path gets a
+ * functional `require`, not a broken stub. The behavior to watch for is a
+ * bundled lib that, on seeing `require`, does `require()` of an ESM-only
+ * dependency on a Node version without `require(ESM)` support.
+ *
+ * The guard reads `globalThis.require` rather than the bare identifier: a
+ * bundled module may declare its own top-level `const require` (as
+ * `@workflow/core`'s runtime world loader does), and Rollup hoists that
+ * declaration into the chunk's module scope without renaming it, since the
+ * banner isn't part of the module graph it analyzes. `typeof require` would then
+ * read a const in its temporal dead zone and throw
+ * `ReferenceError: Cannot access 'require' before initialization` on the first
+ * line of the server bundle — the server never boots. A property read is safe
+ * regardless of what the chunk declares; a chunk that has its own `require`
+ * keeps using it, because the local binding shadows the global.
  */
 function addNodeRequireBanner(config: RollupConfig): void {
   const banner =
-    "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
+    "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof globalThis.require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
   const output = config.output;
   if (output == null) {
     config.output = { banner };

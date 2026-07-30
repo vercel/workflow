@@ -14,8 +14,19 @@ import type { Plugin, Rollup } from 'vite';
 // Prepend a `createRequire`-backed global `require` to the server chunks so the
 // real `node:http2` resolves. This mirrors the same fix the @workflow/sveltekit
 // and @workflow/nitro plugins apply for their bundled server builds.
+//
+// The guard reads `globalThis.require` rather than the bare identifier: a bundled
+// module may declare its own top-level `const require` (as `@workflow/core`'s
+// runtime world loader does), and Rollup hoists that declaration into the chunk's
+// module scope without renaming it, since the banner isn't part of the module
+// graph it analyzes. `typeof require` would then read a const in its temporal
+// dead zone and throw `ReferenceError: Cannot access 'require' before
+// initialization` on the first line of the server bundle — the server never
+// boots. A property read is safe regardless of what the chunk declares; a chunk
+// that has its own `require` keeps using it, because the local binding shadows
+// the global.
 export const NODE_REQUIRE_BANNER =
-  "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
+  "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof globalThis.require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
 
 /** Prepend NODE_REQUIRE_BANNER to an existing rollup `banner` option, which may
  *  be absent, a string, or a per-chunk function. */
@@ -36,8 +47,8 @@ function prependBanner(
  * Gated to the SSR production build: a `node:module` import would break the
  * client/browser bundle, and dev (`react-router dev`) loads dependencies
  * natively via Vite's SSR runner where a real `require` already exists. The
- * `typeof require === 'undefined'` guard keeps it a safe no-op in any CJS chunk,
- * and `node:module` is always available in the Node server runtime.
+ * `typeof globalThis.require === 'undefined'` guard keeps it a safe no-op in any
+ * CJS chunk, and `node:module` is always available in the Node server runtime.
  */
 export function nodeRequireBanner(): Plugin {
   return {
