@@ -359,9 +359,8 @@ function FilterControls({
           />
         )}
       </div>
-      <div
+      <fieldset
         className="flex flex-wrap items-center gap-2"
-        role="group"
         aria-label="Run filters and controls"
       >
         {showPeriodPicker && (
@@ -510,7 +509,7 @@ function FilterControls({
           </TooltipTrigger>
           <TooltipContent>Refresh runs and reset loaded pages</TooltipContent>
         </Tooltip>
-      </div>
+      </fieldset>
     </div>
   );
 }
