@@ -1,5 +1,5 @@
-import { expect, test, vi } from 'vitest';
 import { hydrateWorkflowReturnValue } from '@workflow/core/serialization';
+import { expect, test, vi } from 'vitest';
 import type { Hook } from '../workflows/hooks.ts';
 import { jsonlines } from './jsonlines.mjs';
 import { createFetcher, startServer } from './util.mjs';

@@ -1,8 +1,8 @@
 import { waitForHook } from '@workflow/vitest';
 import { describe, expect, it } from 'vitest';
 import { resumeHook, start } from 'workflow/api';
-import { serializableStepsWorkflow } from '../workflows/cookbook/serializable-steps.js';
 import { durableCounter } from '../workflows/cookbook/durable-objects.js';
+import { serializableStepsWorkflow } from '../workflows/cookbook/serializable-steps.js';
 
 describe('serializable steps', () => {
   it('step-as-factory: provider is constructed inside step context', async () => {

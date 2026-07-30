@@ -54,9 +54,9 @@ function appendFramedDetails(
     const head = isLast ? '╰▶ ' : '├▶ ';
     const cont = isLast ? '   ' : '│  ';
     const text = `${detail.label}: ${detail.value}`;
-    text
-      .split('\n')
-      .forEach((line, i) => lines.push(`${i === 0 ? head : cont}${line}`));
+    text.split('\n').forEach((line, i) => {
+      lines.push(`${i === 0 ? head : cont}${line}`);
+    });
   });
   return lines.join('\n');
 }

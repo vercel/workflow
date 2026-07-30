@@ -25,8 +25,8 @@ import {
 import {
   dehydrateWorkflowArguments,
   type PayloadKey,
-  sealTo,
   SerializationFormat,
+  sealTo,
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
