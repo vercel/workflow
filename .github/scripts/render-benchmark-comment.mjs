@@ -338,14 +338,25 @@ function renderStsoBarChart(buckets) {
   return lines.join('\n');
 }
 
+// TEMPORARY (websockets-vs-HTTP A/B test): "inline" steps (same warm process
+// as the step before them) cluster tightly — the adaptive bin width was
+// hiding a bimodal split between them (e.g. a fast ~150-250ms mode vs a
+// slower ~300-400ms+ mode) behind ~500ms-wide bins. Hardcode a finer 50ms
+// width for just this scenario so that split is visible; queue-hop steps
+// (dispatch + cold reinit, much larger and sparser) keep the adaptive width.
+const STSO_INLINE_BIN_WIDTH_MS = 50;
+
 /** Renders one STSO row's cumulative-time line, an ASCII bar-chart overlay,
  * and a bucketed histogram table (run 2 vs run 1). Bin width is chosen from
  * this row's own sample range, so every scenario gets a histogram that
  * actually spreads across multiple buckets rather than overflowing into
- * one. */
+ * one — except "inline" rows, which use a hardcoded finer width (see
+ * STSO_INLINE_BIN_WIDTH_MS). */
 function renderStsoRowDiff(row) {
   const maxValue = Math.max(...row.raw, ...row.baselineRaw);
-  const binWidth = chooseBinWidth(maxValue, STSO_HISTOGRAM_TARGET_BINS);
+  const binWidth = row.scenario.includes('(inline)')
+    ? STSO_INLINE_BIN_WIDTH_MS
+    : chooseBinWidth(maxValue, STSO_HISTOGRAM_TARGET_BINS);
   // +1 bin of headroom so the max sample lands inside the range rather than
   // exactly on (and thus overflowing) the last edge.
   const binCount = Math.ceil(maxValue / binWidth) + 1;
