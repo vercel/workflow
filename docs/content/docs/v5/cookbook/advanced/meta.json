@@ -1,9 +1,4 @@
 {
   "title": "Advanced",
-  "pages": [
-    "child-workflows",
-    "upgrading-workflows",
-    "serializable-steps",
-    "publishing-libraries"
-  ]
+  "pages": ["serializable-steps", "publishing-libraries"]
 }

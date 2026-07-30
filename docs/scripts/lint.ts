@@ -19,6 +19,7 @@ import {
   v5WorldsSource,
   worldsSource,
 } from '../lib/geistdocs/source';
+import { getRegistryItemIds } from '../lib/patterns/manifest';
 import { getWorldIds } from '../lib/worlds-data';
 import nextConfig from '../next.config';
 
@@ -28,7 +29,13 @@ const STATIC_APP_LINK_FILES = [
   'app/[lang]/(home)/components/templates/index.tsx',
   'app/[lang]/worlds/page.tsx',
 ];
-const KNOWN_APP_PATHS = new Set(['/', '/docs', '/cookbook', '/worlds']);
+const KNOWN_APP_PATHS = new Set([
+  '/',
+  '/docs',
+  '/cookbook',
+  '/worlds',
+  '/patterns',
+]);
 
 type UrlMeta = { hashes?: string[] };
 type Scanned = {
@@ -75,6 +82,7 @@ async function getSharedUrls(): Promise<Map<string, UrlMeta>> {
     '/v5/cookbook',
     '/worlds',
     '/worlds/compare',
+    '/patterns',
     '/llms.txt',
     '/sitemap.md',
   ]) {
@@ -82,6 +90,9 @@ async function getSharedUrls(): Promise<Map<string, UrlMeta>> {
   }
   for (const id of getWorldIds()) {
     urls.set(`/worlds/${id}`, {});
+  }
+  for (const id of getRegistryItemIds()) {
+    urls.set(`/patterns/${id}`, {});
   }
   for (const asset of await listFilesRecursive(join(DOCS_DIR, 'public'))) {
     urls.set(`/${asset}`, {});

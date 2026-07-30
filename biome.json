@@ -27,7 +27,8 @@
       "!**/.nitro",
       "!**/.output",
       "!**/.tanstack",
-      "!**/routeTree.gen.ts"
+      "!**/routeTree.gen.ts",
+      "!docs/lib/patterns/generated"
     ],
     "ignoreUnknown": true
   },

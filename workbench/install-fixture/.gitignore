@@ -1,0 +1,9 @@
+.next
+.swc
+next-env.d.ts
+app/.well-known
+# populated by materialize-patterns / shadcn install in CI
+app/workflows/*
+!app/workflows/.gitkeep
+lib/
+tsconfig.tsbuildinfo

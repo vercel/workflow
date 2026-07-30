@@ -31,22 +31,22 @@ const config: NextConfig = {
       },
       {
         source: '/docs/cookbook',
-        destination: '/cookbook',
+        destination: '/patterns',
         permanent: true,
       },
       {
         source: '/docs/cookbook/:path*',
-        destination: '/cookbook/:path*',
+        destination: '/patterns',
         permanent: true,
       },
       {
         source: '/cookbooks',
-        destination: '/cookbook',
+        destination: '/patterns',
         permanent: true,
       },
       {
         source: '/cookbooks/:path*',
-        destination: '/cookbook/:path*',
+        destination: '/patterns',
         permanent: true,
       },
       {
@@ -116,20 +116,15 @@ const config: NextConfig = {
         destination: '/worlds',
         permanent: true,
       },
-      // Foundations "Common Patterns" page was retired in favor of dedicated
-      // cookbook recipes. Path-level redirect lands visitors on the cookbook
-      // overview where each pattern (Sequential & Parallel, Workflow
-      // Composition, Timeouts, etc.) has its own page. Note: anchor fragments
-      // from old links (#timeout-pattern, #direct-await-flattening, etc.) are
-      // dropped on redirect — Next.js redirects() does not match anchors.
+      // Foundations "Common Patterns" page was retired — now part of /patterns
       {
         source: '/docs/foundations/common-patterns',
-        destination: '/cookbook',
+        destination: '/patterns',
         permanent: true,
       },
       {
         source: '/docs/foundations/control-flow-patterns',
-        destination: '/cookbook',
+        destination: '/patterns',
         permanent: true,
       },
       // The Migration Guides section was replaced by Comparisons (#2676):
@@ -196,31 +191,167 @@ const config: NextConfig = {
         destination: '/docs/comparisons',
         permanent: false,
       },
-      // Cookbook: child-workflows and distributed-abort-controller moved
-      // from common-patterns (now "Reliability Patterns") to advanced
+      // /registry → /patterns (renamed)
+      { source: '/registry', destination: '/patterns', permanent: true },
       {
-        source: '/cookbook/common-patterns/child-workflows',
-        destination: '/cookbook/advanced/child-workflows',
+        source: '/registry/:id',
+        destination: '/patterns/:id',
+        permanent: true,
+      },
+      // Renamed patterns
+      {
+        source: '/patterns/distributed-abort-controller',
+        destination: '/patterns/kill-switch',
         permanent: true,
       },
       {
-        source: '/cookbook/common-patterns/distributed-abort-controller',
-        destination: '/cookbook/advanced/distributed-abort-controller',
+        source: '/r/distributed-abort-controller',
+        destination: '/r/kill-switch',
         permanent: true,
       },
-      // Cookbook: stop-workflow → agent-stop-signal → agent-cancellation.
-      // The page now covers both Hard Cancellation (run.cancel()) and Stop
-      // Signal (hook + Promise.race) as named patterns, so the broader
-      // "Agent Cancellation" title fits both. Both prior URLs land directly
-      // on the current page (no redirect chains).
+      {
+        source: '/patterns/rate-limiting',
+        destination: '/patterns/handling-rate-limits',
+        permanent: true,
+      },
+      {
+        source: '/r/rate-limiting',
+        destination: '/r/handling-rate-limits',
+        permanent: true,
+      },
+      // Cookbook → Patterns redirects (cookbook pages merged into patterns)
+      { source: '/cookbook', destination: '/patterns', permanent: true },
+      {
+        source: '/cookbook/agent-patterns/agent-cancellation',
+        destination: '/patterns/agent-cancellation',
+        permanent: true,
+      },
       {
         source: '/cookbook/agent-patterns/stop-workflow',
-        destination: '/cookbook/agent-patterns/agent-cancellation',
+        destination: '/patterns/agent-cancellation',
         permanent: true,
       },
       {
         source: '/cookbook/agent-patterns/agent-stop-signal',
-        destination: '/cookbook/agent-patterns/agent-cancellation',
+        destination: '/patterns/agent-cancellation',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/agent-patterns/durable-agent',
+        destination: '/patterns/durable-agent',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/agent-patterns/human-in-the-loop',
+        destination: '/patterns/human-in-the-loop',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/integrations/ai-sdk',
+        destination: '/patterns/ai-sdk',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/integrations/chat-sdk',
+        destination: '/patterns/chat-sdk',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/integrations/sandbox',
+        destination: '/patterns/sandbox',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/common-patterns/batching',
+        destination: '/patterns/batching',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/common-patterns/idempotency',
+        destination: '/patterns/idempotency',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/common-patterns/rate-limiting',
+        destination: '/patterns/handling-rate-limits',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/common-patterns/saga',
+        destination: '/patterns/saga',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/common-patterns/scheduling',
+        destination: '/patterns/scheduling',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/common-patterns/sequential-and-parallel',
+        destination: '/patterns/sequential-and-parallel',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/common-patterns/timeouts',
+        destination: '/patterns/timeouts',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/common-patterns/webhooks',
+        destination: '/patterns/webhooks',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/common-patterns/workflow-composition',
+        destination: '/patterns/workflow-composition',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/common-patterns/child-workflows',
+        destination: '/patterns/child-workflows',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/common-patterns/distributed-abort-controller',
+        destination: '/patterns/kill-switch',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/advanced/child-workflows',
+        destination: '/patterns/child-workflows',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/advanced/distributed-abort-controller',
+        destination: '/patterns/kill-switch',
+        permanent: true,
+      },
+      // v5 cookbook pages merged into patterns (only advanced/serializable-steps
+      // and advanced/publishing-libraries remain as docs)
+      { source: '/v5/cookbook', destination: '/patterns', permanent: true },
+      {
+        source: '/v5/cookbook/agent-patterns/:id',
+        destination: '/patterns/:id',
+        permanent: true,
+      },
+      {
+        source: '/v5/cookbook/common-patterns/:id',
+        destination: '/patterns/:id',
+        permanent: true,
+      },
+      {
+        source: '/v5/cookbook/integrations/:id',
+        destination: '/patterns/:id',
+        permanent: true,
+      },
+      {
+        source: '/v5/cookbook/advanced/child-workflows',
+        destination: '/patterns/child-workflows',
+        permanent: true,
+      },
+      {
+        source: '/v5/cookbook/advanced/upgrading-workflows',
+        destination: '/patterns/upgrading-workflows',
         permanent: true,
       },
       // setAttributes graduated from experimental_setAttributes; the API
