@@ -124,8 +124,13 @@ export function extractHistory(body) {
  * comment's data block. The sequential-steps scenario records ~1000 STSO
  * samples per run (plus the baseline's), which would blow past GitHub's
  * comment size limit within a couple of history entries; the percentiles and
- * baseline annotations — everything the history tables render — are kept. The
- * histogram diff is therefore only shown for the current run.
+ * baseline annotations — everything the history tables render — are kept.
+ *
+ * This does not affect the histogram diff against `main`: that reads its
+ * baseline from the artifacts the workflow downloads into --baseline-dir,
+ * which keep their raw samples. What it costs is the collapsed "Previous
+ * results" entries, re-rendered from this block on a later commit of the same
+ * PR — they show their tables but not their histograms.
  */
 function stripRawSamples(entries) {
   return entries.map((entry) => ({
