@@ -458,10 +458,24 @@ function recordRequestedEventCursor(
 }
 
 /**
- * Appends events whose IDs are not already present in `target`.
+ * Appends events whose IDs are not already present in `target`, keeping
+ * `target` sorted by event id.
  *
  * Pass the IDs currently present in `target` when appending repeatedly to the
  * same array. The set is updated alongside `target`.
+ *
+ * Sort order matters beyond tidiness: the runtime treats the last element as
+ * the newest event (it is the precondition snapshot's watermark, see
+ * {@link latestEventStateUpdatedAt}) and the replay consumes the log as an
+ * ordered sequence. Event ids are unprefixed 26-character ULIDs, so
+ * lexicographic id order *is* canonical backend order, including within a
+ * single millisecond — re-sorting reproduces exactly the order a fresh ordered
+ * load would return.
+ *
+ * Every append source should already be strictly above the tail (a
+ * cursor-delimited page, or a write-response delta). The re-sort is therefore
+ * defence in depth, and the warning is the point: it turns "this can't happen"
+ * into a signal. Cost in the normal case is one string comparison per event.
  */
 export function appendUniqueEvents(
   target: Event[],
@@ -473,11 +487,23 @@ export function appendUniqueEvents(
   }
 
   const ids = targetIds ?? new Set(target.map((event) => event.eventId));
+  let outOfOrder = false;
   for (const event of events) {
-    if (!ids.has(event.eventId)) {
-      ids.add(event.eventId);
-      target.push(event);
+    if (ids.has(event.eventId)) {
+      continue;
     }
+    ids.add(event.eventId);
+    const tail = target[target.length - 1];
+    if (tail && event.eventId < tail.eventId) {
+      outOfOrder = true;
+    }
+    target.push(event);
+  }
+  if (outOfOrder) {
+    target.sort((a, b) => (a.eventId < b.eventId ? -1 : 1));
+    runtimeLogger.warn('Event log merged out of order; re-sorted by eventId', {
+      eventCount: target.length,
+    });
   }
 }
 
@@ -635,19 +661,11 @@ export async function loadWorkflowRunEvents(
 }
 
 /**
- * Maximum number of times a replay-context event creation will reload the
- * event log and retry after the backend rejects it as stale (412). After this
- * many failed reloads the precondition error propagates so the run is
- * re-invoked from the queue with a fresh replay.
+ * The runtime's loaded event-log snapshot: the events replayed so far and the
+ * cursor positioned after them. Handed to helpers that derive the precondition
+ * snapshot from it; they do not mutate it.
  */
-export const PRECONDITION_MAX_RELOAD_RETRIES = 2;
-
-/**
- * A mutable view of the runtime's in-memory event log. `withPreconditionRetry`
- * appends freshly-loaded events to `events` (in place) and advances `cursor`
- * when it reloads, so the caller's loaded snapshot stays current.
- */
-export interface MutableEventLog {
+export interface LoadedEventLog {
   events: Event[];
   cursor: string | null;
 }
@@ -666,15 +684,18 @@ export function isPreconditionGuardEnabled(): boolean {
 
 /**
  * The `stateUpdatedAt` value to send with a replay-context event creation: the
- * ULID time (epoch ms) of the latest event the runtime has loaded. Events are
- * stored in ascending order, so the last one is the newest. Returns `undefined`
- * when there are no events or the latest id is not a decodable ULID.
+ * ULID time (epoch ms) of the latest event the runtime has loaded. The log is
+ * kept sorted by event id (see {@link appendUniqueEvents}), so its tail *is*
+ * its maximum ULID time — which is what lets the count sent alongside it be
+ * read as "events at or below this watermark". Returns `undefined` when there
+ * are no events or the latest id is not a decodable ULID.
  *
  * Granularity: snapshots are epoch-milliseconds, and the backend allows an
  * equal-timestamp snapshot (an up-to-date client must not be rejected). Two
  * out-of-band events landing in the same millisecond where only the first was
- * loaded therefore pass the guard undetected — the guard is best-effort by
- * design, and fails open rather than livelocking.
+ * loaded therefore pass this half of the guard undetected — that is exactly
+ * the hole `stateEventCount` closes, since the count of events at or below the
+ * watermark differs even when the watermarks are equal.
  */
 export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
   const last = events[events.length - 1];
@@ -700,66 +721,85 @@ export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
 }
 
 /**
- * The `stateUpdatedAt` to attach to a replay-context event creation:
- * the loaded snapshot's ULID time when the precondition guard is enabled,
- * `undefined` (no guard, backend behaves as before) otherwise.
+ * The precondition snapshot a replay-context event creation sends, describing
+ * the event log the replay derived the event from.
+ *
+ * The three fields are one indivisible unit: the backend reads the count only
+ * relative to the watermark, and returns its inline delta only relative to the
+ * cursor. Passing them as a single object is what keeps them from drifting
+ * apart at a call site.
  */
-export function stateUpdatedAtForCreate(events: Event[]): number | undefined {
-  return isPreconditionGuardEnabled()
-    ? latestEventStateUpdatedAt(events)
-    : undefined;
+export interface PreconditionSnapshotParams {
+  stateUpdatedAt?: number;
+  stateEventCount?: number;
+  stateCursor?: string;
 }
 
 /**
- * Runs a replay-context event creation with the optimistic-concurrency guard.
+ * Build the precondition snapshot to attach to a replay-context event creation.
  *
- * `op` receives the current `stateUpdatedAt` (the ULID time of the latest
- * loaded event) to pass to `world.events.create`. If the backend rejects the
- * creation as stale (`PreconditionFailedError` / 412), the event log is
- * reloaded to completion from the last cursor, merged into `log` in place, and
- * `op` is retried with the now-newer snapshot — up to
- * `PRECONDITION_MAX_RELOAD_RETRIES` times. If it still fails, the error is
- * rethrown so the run falls back to a queue re-invocation. Non-precondition
- * errors are rethrown immediately.
+ * Returns an empty object — no guard, backend behaves as before — when the
+ * guard is disabled or the watermark is not derivable. All three fields fail
+ * open together: a count without a watermark is meaningless to the backend, and
+ * a cursor without either would invite a delta nobody asked for.
+ *
+ * `stateEventCount` is `events.length` because the watermark is the log's
+ * *maximum* ULID time, so every loaded event is at or below it.
  */
-export async function withPreconditionRetry<T>(
-  runId: string,
-  log: MutableEventLog,
-  op: (stateUpdatedAt: number | undefined) => Promise<T>
-): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await op(stateUpdatedAtForCreate(log.events));
-    } catch (error) {
-      if (
-        !PreconditionFailedError.is(error) ||
-        attempt >= PRECONDITION_MAX_RELOAD_RETRIES
-      ) {
-        throw error;
-      }
-      runtimeLogger.info(
-        'Event creation rejected as stale; reloading event log and retrying',
-        {
-          workflowRunId: runId,
-          attempt: attempt + 1,
-          maxRetries: PRECONDITION_MAX_RELOAD_RETRIES,
-        }
-      );
-      const loaded = await loadWorkflowRunEvents(
-        runId,
-        log.cursor ?? undefined
-      );
-      appendUniqueEvents(log.events, loaded.events);
-      // When several creates share one `log` (e.g. hook creations under
-      // `Promise.all` in `handleSuspension`), concurrent 412s can reload
-      // concurrently. The event merge above is safe — `appendUniqueEvents`
-      // builds its dedup set synchronously right before appending — but this
-      // cursor write is last-write-wins, so an interleaved older reload can
-      // briefly regress the cursor. The only consequence is refetching a few
-      // already-deduped events on a later load; correctness is unaffected.
-      log.cursor = loaded.cursor ?? log.cursor;
+export function preconditionSnapshotParams(
+  events: Event[],
+  cursor?: string | null
+): PreconditionSnapshotParams {
+  if (!isPreconditionGuardEnabled()) {
+    return {};
+  }
+  const stateUpdatedAt = latestEventStateUpdatedAt(events);
+  if (stateUpdatedAt === undefined) {
+    return {};
+  }
+  return {
+    stateUpdatedAt,
+    stateEventCount: events.length,
+    ...(cursor ? { stateCursor: cursor } : {}),
+  };
+}
+
+/**
+ * The events a rejecting World attached to a `PreconditionFailedError`, when it
+ * returned the ones the client's snapshot was missing inline.
+ *
+ * Returns `null` for anything else — no details, a World that did not implement
+ * this, or a payload that does not narrow cleanly. Callers fall back to
+ * reloading the event log, which is always correct; this is untrusted-shaped
+ * data on a failure path, so nothing here is repaired.
+ */
+export function preconditionEventDelta(
+  error: unknown
+): { events: Event[]; cursor: string | null } | null {
+  if (!PreconditionFailedError.is(error)) {
+    return null;
+  }
+  const details = error.details;
+  if (typeof details !== 'object' || details === null) {
+    return null;
+  }
+  const { events, cursor } = details as { events?: unknown; cursor?: unknown };
+  if (!Array.isArray(events) || events.length === 0) {
+    return null;
+  }
+  for (const event of events) {
+    if (
+      typeof event !== 'object' ||
+      event === null ||
+      typeof (event as { eventId?: unknown }).eventId !== 'string'
+    ) {
+      return null;
     }
   }
+  return {
+    events: events as Event[],
+    cursor: typeof cursor === 'string' ? cursor : null,
+  };
 }
 
 /**

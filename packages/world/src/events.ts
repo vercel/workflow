@@ -722,8 +722,63 @@ export interface CreateEventParams {
    * timestamp must pass (anti-livelock, so an up-to-date client is never
    * rejected). A backend that ignores this field simply disables the guard —
    * the client falls open and behaves as before.
+   *
+   * A watermark alone cannot see an event *missing at or below* it, which is
+   * the failure that actually corrupts a replay — see {@link stateEventCount}
+   * for the second half of the guard.
    */
   stateUpdatedAt?: number;
+  /**
+   * How many loaded events have a ULID time at or below {@link stateUpdatedAt}.
+   * Since `stateUpdatedAt` is the *maximum* ULID time in the loaded log, this
+   * equals the loaded array's length. Sent **only** together with
+   * `stateUpdatedAt`; a World must ignore a count that arrives without one.
+   *
+   * This closes the hole a watermark cannot: the watermark proves only "no
+   * newer event exists", while a replay corrupts its log by missing an event
+   * at or *below* its own frontier — a concurrent writer commits in the same
+   * ULID millisecond as the client's last loaded event, so the two watermarks
+   * compare equal and the write is accepted against a log that is one event
+   * short. Because correlation IDs are positional ordinals of a single seeded
+   * sequence, that one-event difference renames every entity after it.
+   *
+   * Backend contract (for World implementers who want to support this half):
+   *
+   * - Count **every** created event for the run, including replay-origin ones.
+   *   Unlike the watermark, this is not restricted to out-of-band writes: the
+   *   race being fenced is one replay against another.
+   * - Reject with 412 when the count of recorded events at ULID time
+   *   `<= stateUpdatedAt` is strictly **greater** than `stateEventCount`.
+   * - Compare **at or below** `stateUpdatedAt`, never strictly below (the
+   *   missing event routinely shares the client's frontier millisecond) and
+   *   never against a total (all the creates of one suspension share one
+   *   snapshot, so a total would reject every sibling after the first).
+   * - **One-sided safety is mandatory.** Anything that makes the backend's
+   *   count incomplete, uncomputable, or expired must *allow* the write. A
+   *   rejection has to imply a real hole, because the client responds to it by
+   *   discarding and re-deriving its whole replay.
+   *
+   * See also the millisecond-granularity caveat on `stateUpdatedAt`: the count
+   * is what makes an equal-timestamp snapshot safe to accept.
+   */
+  stateEventCount?: number;
+  /**
+   * The client's current event-log cursor (advisory). Sent alongside the other
+   * two snapshot fields so a World that rejects the write MAY return the
+   * events the client is missing on the 412 itself, saving the client a
+   * follow-up `events.list`.
+   *
+   * Distinct from {@link sinceCursor}: a World must **not** compute a delta for
+   * this on the accepted path — it exists purely to make a rejection cheaper.
+   * Returning events on a 412 is OPTIONAL, and the returned set must be
+   * provably complete (it must account for the entire discrepancy the
+   * rejection reported) or omitted entirely: a cursor filters by lexicographic
+   * event id while a hole is defined by ULID time, so a naive
+   * "everything after the cursor" delta can silently exclude the very event
+   * the client is missing. A client that receives nothing does the
+   * authoritative full reload, which is always correct.
+   */
+  stateCursor?: string;
   /**
    * Timestamp for when the event occurred on the client side. Worlds that
    * support this can persist it separately from `createdAt`, which represents

@@ -142,8 +142,21 @@ export interface WorkflowOrchestratorContext {
    */
   invocationsQueue: Map<string, QueueItem>;
   onWorkflowError: (error: Error) => void;
-  generateUlid: () => string;
+  /**
+   * Mints the ULID body of a correlation id. `scope` identifies the *call site*
+   * — what entity is being created, e.g. a step name plus an argument
+   * fingerprint — and is combined with a per-scope invocation counter. Under the
+   * positional scheme the scope is ignored (see `correlation-id.ts`), so every
+   * call site passes one regardless.
+   */
+  generateUlid: (scope?: string) => string;
   generateNanoid: () => string;
+  /**
+   * Mints a hook token for a hook whose token the caller did not pin. Derived
+   * from the hook's correlation id under the call-site scheme, drawn from the
+   * run's shared PRNG stream under the positional one.
+   */
+  generateHookToken: (correlationId: string) => string;
   /**
    * Sequential promise queue that ensures all event-driven promise resolutions
    * (step results, hook payloads, failures, suspensions) happen in event log
