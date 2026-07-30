@@ -1,5 +1,15 @@
 # @workflow/world-local
 
+## 5.0.0-beta.32
+
+### Patch Changes
+
+- [#3142](https://github.com/vercel/workflow/pull/3142) [`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Revert the static workflow world target injection: the world package is again resolved at runtime from `WORKFLOW_TARGET_WORLD` instead of being aliased into host bundles at build time.
+
+- Updated dependencies [[`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804)]:
+  - @workflow/utils@5.0.0-beta.8
+  - @workflow/errors@5.0.0-beta.14
+
 ## 5.0.0-beta.31
 
 ### Major Changes
