@@ -38,7 +38,6 @@ import {
   type Event,
   type EventDataPayloadField,
   type EventResult,
-  type EventResultFor,
   EventSchema,
   EventTypeSchema,
   type GetEventParams,
@@ -608,12 +607,12 @@ export async function getWorkflowRunEvents(
   } as PaginatedResponse<Event>;
 }
 
-export async function createWorkflowRunEvent<T extends AnyEventRequest>(
+export async function createWorkflowRunEvent(
   id: string | null,
-  data: T,
+  data: AnyEventRequest,
   params?: CreateEventParams,
   config?: APIConfig
-): Promise<EventResultFor<T>> {
+): Promise<EventResult> {
   try {
     // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
     // socket/headers timeouts, transient 5xx) in-process for event types that
@@ -623,10 +622,26 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     // the next queue delivery. Non-retryable
     // types (step_started, step_retrying, hook_received) run once. See
     // ./event-retry for the validated per-event classification.
-    return (await withEventPostRetry(
+    const result = await withEventPostRetry(
       () => createWorkflowRunEventInner(id, data, params, config),
       data.eventType
-    )) as EventResultFor<T>;
+    );
+    if (
+      (data.eventType === 'run_created' || data.eventType === 'run_started') &&
+      !result.run
+    ) {
+      throw new WorkflowWorldError(
+        `${data.eventType} response is missing the run entity`,
+        { code: 'SCHEMA_VALIDATION' }
+      );
+    }
+    if (data.eventType === 'step_started' && !result.step) {
+      throw new WorkflowWorldError(
+        'step_started response is missing the step entity',
+        { code: 'SCHEMA_VALIDATION' }
+      );
+    }
+    return result;
   } catch (err) {
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (

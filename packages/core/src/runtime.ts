@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { types } from 'node:util';
 import {
   CorruptedEventLogError,
@@ -24,7 +25,6 @@ import {
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
-  type StartedWorkflowRun,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
   type World,
@@ -323,6 +323,34 @@ function openHookAndWaitState(events: Event[]): {
   return { openHook, openWait };
 }
 
+type ReplayEventLog =
+  | { type: 'loadAll' }
+  | { type: 'ready'; log: MutableEventLog }
+  | {
+      type: 'loadAfter';
+      log: MutableEventLog & { cursor: string };
+    };
+
+function nextEventLogLoad(log: MutableEventLog): ReplayEventLog {
+  if (log.cursor === null) {
+    return { type: 'loadAll' };
+  }
+  return {
+    type: 'loadAfter',
+    log: { events: log.events, cursor: log.cursor },
+  };
+}
+
+function appendEventLog(log: MutableEventLog, appended: MutableEventLog): void {
+  const eventIds = new Set(log.events.map((event) => event.eventId));
+  for (const event of appended.events) {
+    if (!eventIds.has(event.eventId)) {
+      log.events.push(event);
+    }
+  }
+  log.cursor = appended.cursor ?? log.cursor;
+}
+
 /**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
@@ -518,24 +546,9 @@ export function workflowEntrypoint(
                   const invocationStartTime = Date.now();
                   let loopIteration = 0;
 
-                  // Event cache: keep loaded events in memory across loop iterations.
-                  // On the first iteration we do a full load; on subsequent iterations
-                  // we fetch only events created after the last known cursor.
-                  let cachedEvents: Event[] | null = null;
-                  let eventsCursor: string | null = null;
-
-                  // Inline-delta optimization: when an inline step's terminal
-                  // write returns the event-log delta since the pre-write
-                  // cursor (a supporting World only), we stash it here so the
-                  // next loop iteration consumes it in place of the incremental
-                  // events.list round-trip. Each value is consumed exactly once
-                  // and then cleared. Null means "no delta pending — fetch
-                  // normally". See the consume site at the top of the loop and
-                  // the produce site after inline executeStep.
-                  let pendingInlineDelta: {
-                    events: Event[];
-                    cursor: string | null;
-                  } | null = null;
+                  // `ready` can replay once without a read. The other states
+                  // describe the next load exactly.
+                  let eventLog: ReplayEventLog = { type: 'loadAll' };
 
                   // Shared state: set by either the background step path
                   // or the run_started setup below.
@@ -544,7 +557,6 @@ export function workflowEntrypoint(
                   // response. Undefined ⇒ no enforcement (older servers, turbo).
                   let maxEventsLimit: number | undefined;
                   let workflowStartedAt = -1;
-                  let preloadedEventLog: MutableEventLog | undefined;
 
                   // Latency telemetry (TTFS) state — see runtime/step-latency.ts.
                   // Whether this invocation's FIRST event snapshot contained
@@ -734,22 +746,19 @@ export function workflowEntrypoint(
                       // owned recovery and then transitions to queued/bare
                       // retries trips the combined ceiling. This still bounds
                       // timeouts, which write no error for the post-body guard
-                      // to catch. The load also primes the replay's
-                      // `cachedEvents`/`eventsCursor` (the post-step
-                      // continuation below refreshes them once the step's
-                      // terminal event lands).
+                      // to catch.
                       let bgAuthoritativeAttempt = metadata.attempt;
                       const bgMaxRetries =
                         getStepFunction(incomingStepName)?.maxRetries ??
                         DEFAULT_STEP_MAX_RETRIES;
                       if (metadata.attempt > bgMaxRetries + 1) {
                         const loaded = await loadWorkflowRunEvents(runId);
-                        cachedEvents = loaded.events;
-                        eventsCursor = loaded.cursor;
                         bgAuthoritativeAttempt =
-                          countStepStartedEvents(cachedEvents, incomingStepId, {
-                            type: 'totalAttempts',
-                          }) + 1;
+                          countStepStartedEvents(
+                            loaded.events,
+                            incomingStepId,
+                            { type: 'totalAttempts' }
+                          ) + 1;
                       }
 
                       // Pause the replay budget while the step body runs —
@@ -826,14 +835,13 @@ export function workflowEntrypoint(
                         // Use cursor-based loading so the main loop can continue
                         // incrementally from here.
                         const loaded = await loadWorkflowRunEvents(runId);
-                        cachedEvents = loaded.events;
-                        eventsCursor = loaded.cursor;
+                        eventLog = nextEventLogLoad(loaded);
 
                         // Check for pending steps: any step_created without
                         // a matching step_completed or step_failed.
                         const stepCreatedIds = new Set<string | undefined>();
                         const stepTerminalIds = new Set<string | undefined>();
-                        for (const e of cachedEvents) {
+                        for (const e of loaded.events) {
                           if (e.eventType === 'step_created') {
                             stepCreatedIds.add(e.correlationId);
                           } else if (
@@ -862,7 +870,7 @@ export function workflowEntrypoint(
                           if (
                             isInlineOwnershipEnabled() &&
                             hasPendingStepOwnedByMessage(
-                              cachedEvents,
+                              loaded.events,
                               pendingStepIds,
                               metadata.messageId
                             )
@@ -889,7 +897,7 @@ export function workflowEntrypoint(
                           'All parallel steps done, replaying inline after background step',
                           { workflowRunId: runId }
                         );
-                        const runCreatedEvent = cachedEvents.find(
+                        const runCreatedEvent = loaded.events.find(
                           (event) => event.eventType === 'run_created'
                         );
                         let replayInput: unknown;
@@ -920,7 +928,6 @@ export function workflowEntrypoint(
                           completedAt: undefined,
                         };
                         workflowStartedAt = bgStartedAt;
-                        // cachedEvents and eventsCursor already set from load above
                       } else {
                         return;
                       }
@@ -1031,7 +1038,10 @@ export function workflowEntrypoint(
                       // the no-load preloaded branch; iteration 2 then takes the
                       // existing post-preloaded full reload to pick up a cursor
                       // without a spurious "cursor missing" warning.
-                      preloadedEventLog = { events: [], cursor: null };
+                      eventLog = {
+                        type: 'ready',
+                        log: { events: [], cursor: null },
+                      };
                       const now = new Date();
                       workflowRun = {
                         runId,
@@ -1069,7 +1079,6 @@ export function workflowEntrypoint(
                         ...Attribute.WorkflowStartedAt(workflowStartedAt),
                       });
                     } else {
-                      let startedRun: StartedWorkflowRun;
                       try {
                         recordRunStartedCreateStart(false);
                         const result = await world.events.create(
@@ -1077,35 +1086,58 @@ export function workflowEntrypoint(
                           runStartedEvent,
                           { requestId }
                         );
-                        startedRun = result.run;
-                        workflowRun = startedRun;
+                        workflowRun = result.run;
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
                         // Anchors RSFS — see the declaration above.
                         runStartedReceivedAtMs = Date.now();
 
                         if (result.events?.length) {
-                          let events = result.events;
-                          let cursor = result.cursor ?? null;
+                          const events = [...result.events];
                           if (result.hasMore) {
-                            const loaded = await loadWorkflowRunEvents(
-                              runId,
-                              cursor ?? undefined
+                            assert(
+                              result.cursor,
+                              'Partial run_started event log requires a cursor'
                             );
-                            if (cursor) {
-                              const preloadedIds = new Set(
-                                events.map((event) => event.eventId)
-                              );
-                              events = events.concat(
-                                loaded.events.filter(
-                                  (event) => !preloadedIds.has(event.eventId)
-                                )
-                              );
-                            } else {
-                              events = loaded.events;
-                            }
-                            cursor = loaded.cursor ?? cursor;
+                            eventLog = {
+                              type: 'loadAfter',
+                              log: {
+                                events,
+                                cursor: result.cursor,
+                              },
+                            };
+                          } else {
+                            eventLog = {
+                              type: 'ready',
+                              log: {
+                                events,
+                                cursor: result.cursor ?? null,
+                              },
+                            };
                           }
-                          preloadedEventLog = { events, cursor };
+                        }
+
+                        workflowStartedAt = +result.run.startedAt;
+                        span?.setAttributes({
+                          ...Attribute.WorkflowRunStatus(result.run.status),
+                          ...Attribute.WorkflowStartedAt(workflowStartedAt),
+                        });
+
+                        if (result.run.status !== 'running') {
+                          runtimeLogger.info(
+                            'Workflow already completed or failed, skipping',
+                            {
+                              workflowRunId: runId,
+                              status: result.run.status,
+                            }
+                          );
+
+                          // TODO: for `cancel`, we actually want to propagate a WorkflowCancelled event
+                          // inside the workflow context so the user can gracefully exit. this is SIGTERM
+                          // TODO: furthermore, there should be a timeout or a way to force cancel SIGKILL
+                          // so that we actually exit here without replaying the workflow at all, in the case
+                          // the replaying the workflow is itself failing.
+
+                          return;
                         }
                       } catch (err) {
                         // Run was concurrently completed/failed/cancelled
@@ -1140,33 +1172,12 @@ export function workflowEntrypoint(
                           return;
                         }
                       }
-                      workflowStartedAt = +startedRun.startedAt;
-
-                      span?.setAttributes({
-                        ...Attribute.WorkflowRunStatus(startedRun.status),
-                        ...Attribute.WorkflowStartedAt(workflowStartedAt),
-                      });
-
-                      if (startedRun.status !== 'running') {
-                        // Workflow has already completed or failed, so we can skip it
-                        runtimeLogger.info(
-                          'Workflow already completed or failed, skipping',
-                          {
-                            workflowRunId: runId,
-                            status: startedRun.status,
-                          }
-                        );
-
-                        // TODO: for `cancel`, we actually want to propagate a WorkflowCancelled event
-                        // inside the workflow context so the user can gracefully exit. this is SIGTERM
-                        // TODO: furthermore, there should be a timeout or a way to force cancel SIGKILL
-                        // so that we actually exit here without replaying the workflow at all, in the case
-                        // the replaying the workflow is itself failing.
-
-                        return;
-                      }
                     } // end else (non-turbo run_started)
                   } // end if (!workflowRun)
+                  assert(
+                    workflowRun,
+                    'Workflow run must be loaded before replay'
+                  );
 
                   // Resolve the encryption key for this run's deployment.
                   // Used eagerly here since both runWorkflow (input
@@ -1245,103 +1256,24 @@ export function workflowEntrypoint(
                     // as the `sinceCursor` for the inline-delta optimization.
                     let preInlineWriteCursor: string | null = null;
                     try {
-                      // Load events — use cached events with incremental fetch on subsequent iterations.
-                      // The server always returns a cursor when there are events (even on the
-                      // final page), so we can reliably use it for incremental loading.
-                      let events: Event[];
-                      if (pendingInlineDelta && cachedEvents) {
-                        // Fast path: the previous iteration's inline step
-                        // terminal write returned the authoritative event-log
-                        // delta since the pre-write cursor, so we consume it
-                        // here instead of issuing an incremental events.list.
-                        // The delta is byte-for-byte what events.list(cursor)
-                        // would have returned at write time — it includes this
-                        // handler's own step events, any attr_set the step body
-                        // wrote, and any in-band events (e.g. hook_received,
-                        // wait_completed) another writer appended since the
-                        // cursor — so skipping the fetch cannot drop events or
-                        // skew the prefix from the server's log.
-                        const delta = pendingInlineDelta;
-                        pendingInlineDelta = null;
-                        if (delta.events.length > 0) {
-                          const existingIds = new Set(
-                            cachedEvents.map((e) => e.eventId)
-                          );
-                          for (const e of delta.events) {
-                            if (!existingIds.has(e.eventId)) {
-                              existingIds.add(e.eventId);
-                              cachedEvents.push(e);
-                            }
-                          }
-                        }
-                        eventsCursor = delta.cursor ?? eventsCursor;
-                        events = cachedEvents;
-                      } else if (cachedEvents === null) {
-                        // First iteration: use preloaded events if available,
-                        // otherwise do a full load with cursor.
-                        if (preloadedEventLog) {
-                          events = preloadedEventLog.events;
-                          eventsCursor = preloadedEventLog.cursor;
-                        } else {
-                          const loaded = await loadWorkflowRunEvents(runId);
-                          events = loaded.events;
-                          eventsCursor = loaded.cursor;
-                        }
-                      } else if (eventsCursor) {
-                        // Subsequent iteration: fetch only new events since last cursor
+                      let log: MutableEventLog;
+                      if (eventLog.type === 'ready') {
+                        log = eventLog.log;
+                      } else {
                         const loaded = await loadWorkflowRunEvents(
                           runId,
-                          eventsCursor
+                          eventLog.type === 'loadAfter'
+                            ? eventLog.log.cursor
+                            : undefined
                         );
-                        // Dedupe by eventId: a previous iteration may have
-                        // appended a refreshed wait-completion delta before
-                        // the next loop observes the advanced cursor, so an
-                        // incremental fetch can return events we already have
-                        // locally.
-                        if (loaded.events.length > 0) {
-                          const existingIds = new Set(
-                            cachedEvents.map((e) => e.eventId)
-                          );
-                          for (const e of loaded.events) {
-                            if (!existingIds.has(e.eventId)) {
-                              existingIds.add(e.eventId);
-                              cachedEvents.push(e);
-                            }
-                          }
+                        if (eventLog.type === 'loadAfter') {
+                          appendEventLog(eventLog.log, loaded);
+                          log = eventLog.log;
+                        } else {
+                          log = loaded;
                         }
-                        eventsCursor = loaded.cursor ?? eventsCursor;
-                        events = cachedEvents;
-                      } else if (preloadedEventLog) {
-                        // Iteration 2 after iteration 1 used preloaded events
-                        // (which don't carry a cursor). Do a full load now to
-                        // pick up any events written since the preloaded set
-                        // and obtain a cursor for subsequent incremental
-                        // loads. This is the expected path, not a bug.
-                        runtimeLogger.debug(
-                          'No cursor after preloaded-events first iteration; doing full reload to pick up cursor.',
-                          { workflowRunId: runId }
-                        );
-                        const loaded = await loadWorkflowRunEvents(runId);
-                        cachedEvents = loaded.events;
-                        eventsCursor = loaded.cursor;
-                        events = cachedEvents;
-                      } else {
-                        // No cursor available despite having cached events
-                        // and no preloaded-events explanation. All World
-                        // implementations are required to return a cursor
-                        // when there are events, so this signals a bug in
-                        // the World. Fall back to a full reload to avoid
-                        // stale data.
-                        runtimeLogger.warn(
-                          'Event cursor missing after initial load — falling back to full reload. ' +
-                            'This indicates a bug in the World implementation.',
-                          { workflowRunId: runId }
-                        );
-                        const loaded = await loadWorkflowRunEvents(runId);
-                        cachedEvents = loaded.events;
-                        eventsCursor = loaded.cursor;
-                        events = cachedEvents;
                       }
+                      let events = log.events;
 
                       // Detect concurrent completion via the event log: if
                       // any other handler wrote a terminal run event, exit
@@ -1383,14 +1315,10 @@ export function workflowEntrypoint(
                         }));
 
                       for (const waitEvent of waitsToComplete) {
-                        const waitLog: MutableEventLog = {
-                          events,
-                          cursor: eventsCursor,
-                        };
                         try {
                           await withPreconditionRetry(
                             runId,
-                            waitLog,
+                            log,
                             (stateUpdatedAt) =>
                               world.events.create(runId, waitEvent, {
                                 requestId,
@@ -1409,9 +1337,6 @@ export function workflowEntrypoint(
                             continue;
                           }
                           throw err;
-                        } finally {
-                          // Reloads inside the guard may have advanced the cursor.
-                          eventsCursor = waitLog.cursor;
                         }
                       }
 
@@ -1424,10 +1349,10 @@ export function workflowEntrypoint(
                         // reload for older worlds that cannot give us a stable
                         // cursor, or if the cursor delta does not include the
                         // wait completion this handler just attempted.
-                        if (eventsCursor) {
+                        if (log.cursor) {
                           const loaded = await loadWorkflowRunEvents(
                             runId,
-                            eventsCursor
+                            log.cursor
                           );
                           const completedWaitIdsAfterCursor = new Set(
                             loaded.events
@@ -1442,26 +1367,14 @@ export function workflowEntrypoint(
                           );
 
                           if (sawAllWaitCompletions) {
-                            const existingIds = new Set(
-                              events.map((e) => e.eventId)
-                            );
-                            for (const event of loaded.events) {
-                              if (!existingIds.has(event.eventId)) {
-                                existingIds.add(event.eventId);
-                                events.push(event);
-                              }
-                            }
-                            eventsCursor = loaded.cursor ?? eventsCursor;
+                            appendEventLog(log, loaded);
                           } else {
-                            const loaded = await loadWorkflowRunEvents(runId);
-                            events = loaded.events;
-                            eventsCursor = loaded.cursor;
+                            log = await loadWorkflowRunEvents(runId);
                           }
                         } else {
-                          const loaded = await loadWorkflowRunEvents(runId);
-                          events = loaded.events;
-                          eventsCursor = loaded.cursor;
+                          log = await loadWorkflowRunEvents(runId);
                         }
+                        events = log.events;
                       }
 
                       // Completing elapsed waits refreshes the event snapshot.
@@ -1487,9 +1400,6 @@ export function workflowEntrypoint(
                         );
                       }
 
-                      // Update cache reference (may have been set for first time)
-                      cachedEvents = events;
-
                       // Latency telemetry: judge TTFS eligibility against the
                       // invocation's first snapshot. Waits completed above
                       // would already disqualify via the event-type check, so
@@ -1513,8 +1423,9 @@ export function workflowEntrypoint(
                       // terminal write so it can return the event-log delta —
                       // letting the next iteration skip the incremental
                       // events.list. Captured here because nothing between this
-                      // point and the inline executeStep mutates eventsCursor.
-                      preInlineWriteCursor = eventsCursor;
+                      // point and the inline executeStep mutates the event log.
+                      preInlineWriteCursor = log.cursor;
+                      eventLog = { type: 'ready', log };
 
                       // Replay workflow
                       runtimeLogger.debug('Starting workflow replay', {
@@ -1645,21 +1556,11 @@ export function workflowEntrypoint(
                         // guard per-create (rather than wrapping the whole call)
                         // so a retry never re-issues an already-created event.
                         const suspensionStart = Date.now();
-                        // The snapshot refresh above always sets cachedEvents
-                        // before the replay can suspend. Re-narrow it for this
-                        // catch scope instead of defaulting to an empty array:
-                        // that fallback would silently disarm the precondition
-                        // guard (no snapshot sent) and let a mid-suspension
-                        // reload merge into a throwaway array.
-                        if (!cachedEvents) {
-                          throw new Error(
-                            'Invariant violation: workflow suspended before its event log was loaded'
-                          );
-                        }
-                        const suspensionLog: MutableEventLog = {
-                          events: cachedEvents,
-                          cursor: eventsCursor,
-                        };
+                        assert(
+                          eventLog.type === 'ready',
+                          'Workflow suspended before its event log was loaded'
+                        );
+                        const suspensionLog = eventLog.log;
                         let suspensionResult: Awaited<
                           ReturnType<typeof handleSuspension>
                         >;
@@ -1762,7 +1663,7 @@ export function workflowEntrypoint(
                           });
                           return;
                         }
-                        eventsCursor = suspensionLog.cursor;
+                        eventLog = nextEventLogLoad(suspensionLog);
                         preStepBlockingMs += suspensionResult.hookCreationMs;
                         if (
                           suspensionResult.hasAttributeEvents &&
@@ -2090,7 +1991,7 @@ export function workflowEntrypoint(
                         // Open hooks/waits in the cumulative log, computed
                         // once for the two gates below.
                         const openHookWaitState = openHookAndWaitState(
-                          cachedEvents ?? []
+                          suspensionLog.events
                         );
 
                         // Inline-delta fast path gate. We request the delta —
@@ -2220,7 +2121,7 @@ export function workflowEntrypoint(
                         // cumulative log, resume/parallel invocations are possible
                         // for the rest of the run, so turbo must latch off
                         // permanently — checked here via `openHookAndWaitState`
-                        // over the cumulative `cachedEvents`.
+                        // over the cumulative event log.
                         //
                         // NOTE: `WORKFLOW_SEQUENTIAL_REPLAYS=1` (per-run flow
                         // topics consumed with `maxConcurrency: 1`) would in
@@ -2258,7 +2159,7 @@ export function workflowEntrypoint(
                         // snapshot has a local-clock createdAt, so under
                         // turbo only the run-id ULID timestamp is trusted.
                         const latencyTracking = computeStepLatencyTracking({
-                          events: cachedEvents ?? [],
+                          events: suspensionLog.events,
                           invocationStartedClean:
                             invocationStartedClean === true,
                           runCreatedAtMs:
@@ -2269,7 +2170,7 @@ export function workflowEntrypoint(
                           preStepBlockingMs,
                           preStepBlockingBeforeAttrMs,
                           // This suspension's own hook/wait writes are not in
-                          // cachedEvents yet, so report them explicitly.
+                          // the loaded event log yet, so report them explicitly.
                           suspensionHasWaits:
                             err.waitCount > 0 ||
                             suspensionResult.waitTimeout !== undefined,
@@ -2289,7 +2190,7 @@ export function workflowEntrypoint(
                         // this is a no-op outside guarded deployments; Worlds
                         // that don't enforce the guard ignore it.
                         const inlineClaimStateUpdatedAt =
-                          stateUpdatedAtForCreate(cachedEvents ?? []);
+                          stateUpdatedAtForCreate(suspensionLog.events);
 
                         replayBudget.pause();
                         let stepResults: Awaited<
@@ -2337,7 +2238,7 @@ export function workflowEntrypoint(
                                   s.lazyStepInput !== undefined
                                     ? 1
                                     : countStepStartedEvents(
-                                        cachedEvents,
+                                        suspensionLog.events,
                                         s.correlationId,
                                         {
                                           type: 'ownedBy',
@@ -2593,12 +2494,8 @@ export function workflowEntrypoint(
                         // (completed/failed/skipped/gone) — loop back to replay
                         // (the workflow observes the terminal events on replay).
                         //
-                        // If the single inline step's terminal write returned an
-                        // inline delta (supporting World + the single-step gate
-                        // above), stash it so the next iteration's load consumes
-                        // it instead of issuing an incremental events.list. Only
-                        // the completed path carries a delta; multi-step batches
-                        // never request one.
+                        // A complete inline delta is fresh enough for the next
+                        // replay, so consume it without another events.list.
                         if (inlineExecutions.length === 1) {
                           const only = stepResults[0];
                           if (
@@ -2606,9 +2503,10 @@ export function workflowEntrypoint(
                             only.inlineDelta &&
                             !only.inlineDelta.hasMore
                           ) {
-                            pendingInlineDelta = {
-                              events: only.inlineDelta.events,
-                              cursor: only.inlineDelta.cursor,
+                            appendEventLog(suspensionLog, only.inlineDelta);
+                            eventLog = {
+                              type: 'ready',
+                              log: suspensionLog,
                             };
                           }
                         }
