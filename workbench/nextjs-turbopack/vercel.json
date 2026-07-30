@@ -1,6 +1,7 @@
 {
   "env": {
-    "WORKFLOW_PUBLIC_MANIFEST": "1"
+    "WORKFLOW_PUBLIC_MANIFEST": "1",
+    "WORKFLOW_H2_MULTIPLEX": "0"
   },
   "regions": [
     "iad1",
