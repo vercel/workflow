@@ -34,8 +34,12 @@ function FeatureCard({ title, description, visual }: Feature): JSX.Element {
   return (
     <div className="flex flex-col items-stretch justify-between gap-6 md:gap-10 py-8 sm:py-12">
       <div className="flex flex-col gap-2">
-        <h3 className="text-heading-20 lg:text-heading-24">{title}</h3>
-        <p className="text-lg text-muted-foreground">{description}</p>
+        <h3 className="text-heading-20 sm:text-heading-24 lg:text-heading-32">
+          {title}
+        </h3>
+        <p className="text-lg text-muted-foreground sm:max-w-lg">
+          {description}
+        </p>
       </div>
       <div className="@container flex items-center justify-center overflow-hidden">
         {visual}
@@ -76,7 +80,7 @@ export function FeatureGridExtended(): JSX.Element {
   return (
     <>
       {/* AI SDK + Agents — 2 col */}
-      <div className="grid lg:grid-cols-2">
+      <div className="grid lg:grid-cols-2 gap-6 md:gap-24">
         {features.slice(0, 2).map((feature) => (
           <FeatureCard key={feature.title} {...feature} />
         ))}

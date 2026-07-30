@@ -154,7 +154,7 @@ export const Intro = async () => {
           code with simple directives.
         </p>
       </div>
-      <div className="col-span-12 md:col-span-7 flex items-center justify-center">
+      <div className="col-span-12 md:col-span-7">
         <IntroTabs
           withWorkflow={
             <WorkflowExample
