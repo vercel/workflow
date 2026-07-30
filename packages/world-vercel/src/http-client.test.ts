@@ -144,6 +144,30 @@ describe('agent transport', () => {
     expect(stream.headersTimeout).toBe(DEFAULT_HEADERS_TIMEOUT_MS);
     expect(stream.bodyTimeout).toBe(DEFAULT_BODY_TIMEOUT_MS);
   });
+
+  // Both receive windows have to clear undici's defaults (256 KiB stream,
+  // 512 KiB connection), and the connection window has to leave room for more
+  // than one stream's worth. Whichever is left at its default becomes the
+  // binding constraint by itself: a single read stalls on the stream window,
+  // concurrent reads stall on the shared connection window. See
+  // getEventsAgentOptions.
+  it('raises both H2 receive windows on the events agent', () => {
+    // undici's own defaults, not HTTP/2's 65535 — see undici
+    // lib/dispatcher/client.js, kHTTP2InitialWindowSize / kHTTP2ConnectionWindowSize.
+    const UNDICI_DEFAULT_STREAM_WINDOW = 262_144;
+    const UNDICI_DEFAULT_CONNECTION_WINDOW = 524_288;
+    const events = getEventsAgentOptions();
+
+    expect(events.initialWindowSize).toBeGreaterThan(
+      UNDICI_DEFAULT_STREAM_WINDOW
+    );
+    expect(events.connectionWindowSize).toBeGreaterThan(
+      UNDICI_DEFAULT_CONNECTION_WINDOW
+    );
+    expect(events.connectionWindowSize).toBeGreaterThan(
+      events.initialWindowSize
+    );
+  });
 });
 
 describe('getAgentOptions', () => {
