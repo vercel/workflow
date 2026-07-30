@@ -6,6 +6,7 @@ import {
   RunExpiredError,
   ThrottleError,
   TooEarlyError,
+  WorkflowRuntimeError,
 } from '@workflow/errors';
 import {
   createWorkflowBaseUrl,
@@ -23,9 +24,9 @@ import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
-import type { PayloadKey } from '../serialization/encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
+import type { PayloadKey } from '../serialization/encryption.js';
 import {
   cancelAbortReaders,
   dehydrateStepError,
@@ -42,12 +43,11 @@ import {
   normalizeUnknownError,
   promoteAbortErrorToFatal,
 } from '../types.js';
-
+import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import {
   isOptimisticInlineStartEnabled,
   isOptimisticInlineStartExplicitlyDisabled,
 } from './constants.js';
-import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
 import {
@@ -771,6 +771,11 @@ export async function executeStep(
     try {
       const attempt = step.attempt;
 
+      if (!step.startedAt) {
+        throw new WorkflowRuntimeError(
+          `Step "${stepId}" has no "startedAt" timestamp`
+        );
+      }
       const stepStartedAt = step.startedAt;
       // Use the provided encryption key when available, otherwise resolve
       // through the memoized accessor declared at the top of this trace.

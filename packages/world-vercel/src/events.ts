@@ -641,18 +641,21 @@ export async function createWorkflowRunEvent(
       () => createWorkflowRunEventInner(id, data, params, config),
       data.eventType
     );
-    if (
-      (data.eventType === 'run_created' || data.eventType === 'run_started') &&
-      !result.run
-    ) {
+    if (data.eventType === 'run_created' && !result.run) {
       throw new WorkflowWorldError(
         `${data.eventType} response is missing the run entity`,
         { code: 'SCHEMA_VALIDATION' }
       );
     }
-    if (data.eventType === 'step_started' && !result.step) {
+    if (data.eventType === 'run_started' && !result.run?.startedAt) {
       throw new WorkflowWorldError(
-        'step_started response is missing the step entity',
+        'run_started response is missing run.startedAt',
+        { code: 'SCHEMA_VALIDATION' }
+      );
+    }
+    if (data.eventType === 'step_started' && !result.step?.startedAt) {
+      throw new WorkflowWorldError(
+        'step_started response is missing step.startedAt',
         { code: 'SCHEMA_VALIDATION' }
       );
     }

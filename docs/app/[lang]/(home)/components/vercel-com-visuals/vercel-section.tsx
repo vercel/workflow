@@ -1,6 +1,6 @@
+import { Button } from '@vercel/geistdocs/components/button';
 import Link from 'next/link';
 import type { JSX } from 'react';
-import { Button } from '@vercel/geistdocs/components/button';
 import { O11yDashboard } from './o11y-dashboard';
 
 export function VercelSection(): JSX.Element {
