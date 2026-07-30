@@ -281,10 +281,10 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // is likewise released inside the slot, before the detached defer, so
           // idle stays reachable for the one barrier this deferral can be
           // parked on that has no chain of its own: an unclaimed buffered hook
-          // payload. Idle does NOT retire armed barriers — doing so retired
-          // deliveries that were still in flight and handed their ordering back
-          // to the microtask race — so an armed barrier leaves the registry
-          // from its own delivery chain, or on the safety net's deadline. See
+          // payload. Neither idle nor the abandon deadline retires an armed
+          // barrier — doing so retired deliveries that were still in flight and
+          // handed their ordering back to the microtask race — so an armed
+          // barrier leaves the registry only from its own delivery chain. See
           // `scheduleBarrierRetirement` in private.ts.
           const completedEventId = event.eventId;
           const serializedResult = event.eventData.result;
