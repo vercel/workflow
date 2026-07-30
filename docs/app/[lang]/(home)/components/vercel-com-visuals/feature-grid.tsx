@@ -32,7 +32,7 @@ const features: Feature[] = [
 
 function FeatureCard({ title, description, visual }: Feature): JSX.Element {
   return (
-    <div className="flex flex-col items-stretch justify-between gap-6 md:gap-10 px-4 py-8 sm:py-12 sm:px-6">
+    <div className="flex flex-col items-stretch justify-between gap-6 md:gap-10 py-8 sm:py-12">
       <p className="text-heading-20 lg:text-heading-24 text-gray-900">
         <span className="text-gray-1000">{title}</span> {description}
       </p>
@@ -45,8 +45,8 @@ function FeatureCard({ title, description, visual }: Feature): JSX.Element {
 
 function FeatureCardWide({ title, description, visual }: Feature): JSX.Element {
   return (
-    <div className="flex flex-col items-center gap-8 md:gap-12 px-4 py-8 sm:py-12 sm:px-6">
-      <div className="flex flex-col items-center max-w-[800px] text-center mx-auto">
+    <div className="flex flex-col items-center gap-8 md:gap-12">
+      <div className="flex flex-col items-center max-w-[800px] text-left sm:text-center mx-auto">
         <h3 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
           {title}
         </h3>

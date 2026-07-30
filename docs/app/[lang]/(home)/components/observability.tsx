@@ -49,7 +49,7 @@ const rows = [
 ];
 
 export const Observability = () => (
-  <div className="grid grid-rows-[auto_1fr] gap-12 px-4 py-8 sm:py-12 sm:px-6">
+  <div className="grid grid-rows-[auto_1fr] gap-12 py-8 sm:py-12">
     <h2 className="font-medium text-xl tracking-tight sm:text-2xl text-muted-foreground">
       <span className="text-foreground">Observability</span>. Inspect every run
       end‑to‑end. Pause, replay, and time‑travel through steps with traces,

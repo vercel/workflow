@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { Button } from '@vercel/geistdocs/components/button';
 
 export const CTA = () => (
-  <section className="px-4 sm:px-6 py-10 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+  <section className="py-10 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
     <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
       Create your first workflow today.
     </h2>

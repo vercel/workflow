@@ -38,7 +38,7 @@ const data = [
 ];
 
 export const Templates = () => (
-  <div className="grid grid-cols-12 gap-y-12 md:gap-x-8 px-4 py-8 sm:px-6 sm:py-12">
+  <div className="grid grid-cols-12 gap-y-12 md:gap-x-8 py-8 sm:py-12">
     <div className="col-span-12 md:col-span-5 grid gap-4 content-start">
       <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40 lg:text-heading-40">
         Get started

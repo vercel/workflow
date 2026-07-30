@@ -22,7 +22,7 @@ type HeroProps = {
 
 export const Hero = ({ title, description }: HeroProps) => {
   return (
-    <section className="mt-[var(--fd-nav-height)] space-y-6 px-4 pt-24 sm:pt-32 pb-32 text-center">
+    <section className="mt-[var(--fd-nav-height)] space-y-6 pt-24 sm:pt-32 pb-32 text-center">
       <div className="mx-auto w-full max-w-4xl space-y-5">
         <h1 className="text-center text-balance text-heading-40 sm:text-heading-48 xl:text-heading-64">
           {title}

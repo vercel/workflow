@@ -52,7 +52,7 @@ export async function sendWelcomeEmail(email) {
 ];
 
 export const Implementation = () => (
-  <div className="px-4 py-8 sm:py-12 sm:px-6 grid gap-12">
+  <div className="py-8 sm:py-12 grid gap-12">
     <div className="max-w-3xl text-balance grid gap-2">
       <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
         Effortless setup
