@@ -34,6 +34,24 @@ export interface BenchStepTiming {
   start: number;
   /** Date.now() at step body exit (just before step_completed is sent) */
   end: number;
+  /** 'queue-hop' if this is the first step body executed in this process
+   * (module state persists across warm invocations, so a fresh process means
+   * a cold start or a fresh dispatch from the queue after the previous
+   * invocation ended); 'inline' for every subsequent step in the same
+   * process. See {@link stepKind}. */
+  kind: 'inline' | 'queue-hop';
+}
+
+// Process-global, initialized once per process. A fresh process (cold start,
+// or redispatch via the queue after the prior invocation's ~duration limit)
+// resets this to false, so the first step body it runs is tagged
+// 'queue-hop'; every step after that in the same warm process is 'inline'.
+let hasExecutedStepInProcess = false;
+
+function stepKind(): 'inline' | 'queue-hop' {
+  const kind = hasExecutedStepInProcess ? 'inline' : 'queue-hop';
+  hasExecutedStepInProcess = true;
+  return kind;
 }
 
 export interface BenchStreamChunk {
@@ -123,15 +141,17 @@ function soChunk(
 
 async function timedNoopStep(index: number): Promise<BenchStepTiming> {
   'use step';
+  const kind = stepKind();
   const start = Date.now();
   // No body work: `end - start` is ~0, so the gap between consecutive step
   // timings is pure framework overhead.
   void index;
-  return { start, end: Date.now() };
+  return { start, end: Date.now(), kind };
 }
 
 async function timedStreamingStep(chunks: number): Promise<BenchStepTiming> {
   'use step';
+  const kind = stepKind();
   const start = Date.now();
   const writable = getWritable<BenchStreamChunk>();
   const writer = writable.getWriter();
@@ -141,7 +161,7 @@ async function timedStreamingStep(chunks: number): Promise<BenchStepTiming> {
   writer.releaseLock();
   // Close so the benchmark reader's read loop terminates.
   await writable.close();
-  return { start, end: Date.now() };
+  return { start, end: Date.now(), kind };
 }
 
 /**
