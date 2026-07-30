@@ -538,7 +538,9 @@ export interface DeliveryBarrier {
  * `pendingDeliveryBarriers` is not initialized.
  *
  * Pass `armed: false` for a delivery whose resolution waits on workflow code
- * asking for it (a buffered hook payload); call `arm()` when it does.
+ * asking for it (a buffered hook payload); call `arm()` when it does. Pair it
+ * with `abandonableAfter`: the payload's own hydration, before which no claim
+ * could have taken it and so its being unclaimed says nothing.
  *
  * To guarantee a later delivery gated on this one can never hang when this
  * delivery is abandoned (the workflow took a different branch or is
@@ -561,7 +563,7 @@ export function registerDeliveryBarrier(
   ctx: WorkflowOrchestratorContext,
   eventIndex: number | undefined,
   kind: DeliveryKind,
-  options: { armed?: boolean } = {}
+  options: { armed?: boolean; abandonableAfter?: Promise<unknown> } = {}
 ): DeliveryBarrier {
   const barriers = ctx.pendingDeliveryBarriers;
   if (!barriers || eventIndex === undefined) {
@@ -594,7 +596,13 @@ export function registerDeliveryBarrier(
   // is only claimed after a later delivery the workflow is still waiting on),
   // retire it anyway so a later delivery gated on it cannot deadlock and the
   // registry cannot leak an entry per abandoned delivery.
-  scheduleBarrierRetirement(ctx, entry, finish, () => done);
+  scheduleBarrierRetirement(
+    ctx,
+    entry,
+    finish,
+    () => done,
+    options.abandonableAfter
+  );
 
   return {
     markDelivered: finish,
@@ -701,12 +709,26 @@ function beginQuiescing(
  * cannot — continuous delivery traffic keeps hydration busy indefinitely, so
  * the idle condition never holds and an unclaimed payload blocks everything
  * queued behind it for as long as the traffic lasts.
+ *
+ * Neither condition is evaluated before `abandonableAfter` settles. Retiring
+ * an unarmed barrier infers abandonment from the absence of a claim, and that
+ * inference is only available once a claim could have handed something over —
+ * a buffered payload that is still hydrating has not been passed over by
+ * anyone. Left unguarded the two conditions conspire during that window: the
+ * payload's own hydration holds `pendingDeliveries` above zero, so the idle
+ * route cannot fire, and the deadline retires the barrier precisely BECAUSE
+ * its hydration was slow. With a production hydration (S3 fetch + decrypt,
+ * 10-500ms) against a deadline of a few dozen ticks, that is the common case
+ * for a buffered payload rather than an edge one. `abandonableAfter` must
+ * always settle — the caller's hydration resolves it from a `finally` — or
+ * the barrier is never retired at all.
  */
 function scheduleBarrierRetirement(
   ctx: WorkflowOrchestratorContext,
   entry: DeliveryBarrierEntry,
   finish: () => void,
-  isRetired: () => boolean
+  isRetired: () => boolean,
+  abandonableAfter?: Promise<unknown>
 ): void {
   let ticks = 0;
   const check = () => {
@@ -724,7 +746,14 @@ function scheduleBarrierRetirement(
     }
     setTimeout(check, 0);
   };
-  setTimeout(check, 0);
+  const start = () => {
+    setTimeout(check, 0);
+  };
+  if (abandonableAfter) {
+    void abandonableAfter.then(start, start);
+  } else {
+    start();
+  }
 }
 
 /**

@@ -132,6 +132,48 @@ function deliverStepResult(
 }
 
 /**
+ * Faithful model of a BUFFERED hook payload — the no-waiting-consumer branch
+ * of `workflow/hook.ts`. The barrier is registered UNARMED while the event is
+ * consumed, the payload hydrates in a serial `promiseQueue` slot, and the
+ * outcome is parked for a later `claim()`.
+ *
+ * `claim()` arms the barrier synchronously (its first statement, before any
+ * await), then waits on hydration, evaluates its deferral at claim time, and
+ * hands the payload over.
+ */
+function bufferHookPayload(
+  ctx: WorkflowOrchestratorContext,
+  eventIndex: number,
+  hydration: Promise<void>
+): { claim: (onDelivered: () => void) => Promise<void> } {
+  const hydrated = withResolvers<void>();
+  const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook', {
+    armed: false,
+    abandonableAfter: hydrated.promise,
+  });
+  ctx.pendingDeliveries++;
+  ctx.promiseQueue = ctx.promiseQueue.then(async () => {
+    try {
+      await hydration;
+    } finally {
+      ctx.pendingDeliveries--;
+      hydrated.resolve();
+    }
+  });
+  return {
+    claim: (onDelivered: () => void) => {
+      barrier.arm();
+      return hydrated.promise
+        .then(() => awaitEarlierDeliveries(ctx, eventIndex, 'hook'))
+        .then(() => {
+          barrier.markDelivered();
+          onDelivered();
+        });
+    },
+  };
+}
+
+/**
  * Model of a delivery consumed in a LATER drain window than the one above — a
  * `wait_completed` (`workflow/sleep.ts`) or a hook payload with a waiting
  * consumer (`workflow/hook.ts`). It reads the registry when its own event is
@@ -319,6 +361,60 @@ describe('delivery-barrier safety net vs. in-flight deliveries', () => {
     await macrotasks(3);
 
     expect(order).toEqual(['step@0', 'step@0:drew-ulid', 'wait@1']);
+  });
+
+  it('does not start the abandon clock on a payload that is not claimable yet', async () => {
+    // The same slow-hydration trap on the UNARMED side, which is the side the
+    // deadline still applies to.
+    //
+    // A buffered payload is retired as abandoned on the theory that no
+    // consumer has claimed it. That inference is only available once a
+    // consumer COULD have: `claim()` cannot hand anything over until the
+    // payload's own hydration resolves. While it is still hydrating, "nobody
+    // has claimed it" carries no information about abandonment.
+    //
+    // Worse, the two retirement conditions conspire during that window. The
+    // payload's own hydration holds `pendingDeliveries` above zero, so the
+    // idle route — the one that would otherwise wait for it — cannot fire, and
+    // the deadline is left to retire the barrier *because* its hydration is
+    // slow. On the real Vercel world an S3 fetch and decrypt runs 10-500ms
+    // against a deadline of a few dozen `setTimeout(0)` ticks, so this is the
+    // common case for a buffered payload, not a pathological one.
+    const ctx = makeCtx();
+    const barriers = ctx.pendingDeliveryBarriers!;
+    const order: string[] = [];
+    // An explicit gate rather than a sleep, so the test measures the rule and
+    // not the machine it runs on. 48 macrotasks is comfortably past the
+    // deadline however the host clamps its timers.
+    const hydrating = withResolvers<void>();
+
+    const payload = bufferHookPayload(ctx, 0, hydrating.promise);
+
+    await macrotasks(48);
+    expect(ctx.pendingDeliveries).toBe(1);
+    expect(barriers.has(0)).toBe(true);
+
+    // The workflow reaches its hook read while the payload is still in flight.
+    // `claim()` arms the barrier here, so the step result consumed next must
+    // be ordered behind it.
+    const claimed = payload.claim(() => {
+      order.push('hook@0');
+      void (async () => {
+        for (let i = 0; i < 8; i++) {
+          await Promise.resolve();
+        }
+        order.push('hook@0:drew-ulid');
+      })();
+    });
+    const step = deliverStepResult(ctx, 1, () => {
+      order.push('step@1');
+    });
+
+    hydrating.resolve();
+    await Promise.all([claimed, step.delivered]);
+    await macrotasks(3);
+
+    expect(order).toEqual(['hook@0', 'hook@0:drew-ulid', 'step@1']);
   });
 });
 
