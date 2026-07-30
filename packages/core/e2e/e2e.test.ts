@@ -443,6 +443,33 @@ describe('e2e', () => {
     expect(returnValue).toBe('B');
   });
 
+  // Interleaves VM-retention modes: retained boundaries (primitive step
+  // args), demoted boundaries (object args), sleeps, a step-vs-sleep race,
+  // and a hook resolved in parallel with a step. Asserts the exact composite
+  // result so a dropped/duplicated/misordered boundary fails loudly.
+  test('retainedInterleavingWorkflow', { timeout: 90_000 }, async () => {
+    const token = Math.random().toString(36).slice(2);
+    const run = await start(await e2e('retainedInterleavingWorkflow'), [
+      token,
+    ]);
+
+    const hook = await waitForHook(token, { runId: run.runId });
+    await resumeHook(hook, { delta: 5 });
+
+    const returnValue = await run.returnValue;
+    expect(returnValue).toEqual({
+      a: 3,
+      b: 3,
+      c: 13,
+      d: 23,
+      e: 13,
+      f: 24,
+      winner: 'step',
+      g: 137,
+      h: 142,
+    });
+  });
+
   test.skipIf(!isNext)(
     'importedStepOnlyWorkflow',
     { timeout: 60_000 },
