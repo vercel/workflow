@@ -123,7 +123,9 @@ export const WORKFLOW_QUEUE_TRIGGER = createWorkflowQueueTrigger();
  * at call time.
  */
 export function isSequentialReplaysEnabled(): boolean {
-  return process.env.WORKFLOW_SEQUENTIAL_REPLAYS === '1';
+  return !['false', '0'].includes(
+    (process.env.WORKFLOW_SEQUENTIAL_REPLAYS || '').toLowerCase()
+  );
 }
 
 export function getWorkflowQueueTrigger(options?: { namespace?: string }) {
