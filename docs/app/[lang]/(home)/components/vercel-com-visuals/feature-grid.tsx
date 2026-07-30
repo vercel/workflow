@@ -11,19 +11,19 @@ interface Feature {
 
 const features: Feature[] = [
   {
-    title: 'Deep integration with AI SDK.',
+    title: 'Deep integration with AI SDK',
     description:
       'Use familiar AI SDK patterns, plus durability, observability, and retries so agents stay reliable in production.',
     visual: <AiSdkVisual />,
   },
   {
-    title: 'Durable agents by default.',
+    title: 'Durable agents by default',
     description:
       'High-performance streaming, persistence, and resumable runs work out of the box. No infrastructure setup required.',
     visual: <AgentsVisual />,
   },
   {
-    title: 'Inspect every run end\u2011to\u2011end.',
+    title: 'Inspect every run end\u2011to\u2011end',
     description:
       'Observability is built into the SDK and works anywhere you run it. When using workflow on Vercel, observability is built into the Vercel dashboard with no configuration or storage.',
     visual: <O11yVisual />,
@@ -33,9 +33,10 @@ const features: Feature[] = [
 function FeatureCard({ title, description, visual }: Feature): JSX.Element {
   return (
     <div className="flex flex-col items-stretch justify-between gap-6 md:gap-10 py-8 sm:py-12">
-      <p className="text-heading-20 lg:text-heading-24 text-gray-900">
-        <span className="text-gray-1000">{title}</span> {description}
-      </p>
+      <div className="flex flex-col gap-2">
+        <h3 className="text-heading-20 lg:text-heading-24">{title}</h3>
+        <p className="text-lg text-muted-foreground">{description}</p>
+      </div>
       <div className="@container flex items-center justify-center overflow-hidden">
         {visual}
       </div>
@@ -54,7 +55,9 @@ function FeatureCardWide({ title, description, visual }: Feature): JSX.Element {
           {description}
         </p>
       </div>
-      <div className="@container w-full max-w-[1200px]">{visual}</div>
+      <div className="@container w-full max-w-[1200px] px-px overflow-hidden">
+        {visual}
+      </div>
     </div>
   );
 }
