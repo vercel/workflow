@@ -10,6 +10,12 @@ name: Performance Benchmarks
 # deployment; the comment shows run 2 diffed against run 1 (same commit, same
 # deployment) so the delta reflects benchmark noise rather than an actual perf
 # change vs main.
+#
+# TEMPORARY (websockets-vs-HTTP A/B test): run 2 is currently pointed at a
+# second, WORKFLOW_EVENTS_TRANSPORT=ws deployment of the same commit instead
+# of run 1's deployment, so the delta reflects WS vs HTTP transport rather
+# than run-to-run noise. See the "Deploy WS-transport preview for run 2" step
+# and its usage below; revert both to restore the noise-isolation comparison.
 
 on:
   pull_request:
@@ -136,8 +142,16 @@ jobs:
 
       # Builds the packages the benchmark runner imports (same pattern as the
       # e2e-vercel jobs in tests.yml); hits the turbo remote cache in CI.
+      # TEMPORARY: broadened from just `@workflow/cli` to every non-workbench
+      # package (same filter setup-workflow-dev's own "Build all packages"
+      # step uses) because the "Deploy WS-transport preview" step below runs
+      # `vercel build` locally on the runner instead of Vercel's own
+      # server-side build — so every workspace dep the nextjs-turbopack
+      # workbench's example workflows import (`workflow`, `@workflow/ai`,
+      # ...) must already be built, rather than relying on Vercel's build
+      # pipeline to do it.
       - name: Build packages
-        run: pnpm turbo run build --filter='@workflow/cli'
+        run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Wait for Vercel deployment
         id: waitForDeployment
@@ -149,13 +163,60 @@ jobs:
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
-      # Two back-to-back runs of the same commit against the same deployment,
-      # rather than one run diffed against a separate main-branch baseline run
-      # (different commit, different time). This isolates benchmark noise
-      # (run-to-run variance) from real perf deltas: the PR comment compares
-      # run 2 against run 1, so a flagged regression means "this run was
-      # slower than the other run of the exact same code," not "this commit
-      # is slower than whatever main happened to measure."
+      # TEMPORARY (websockets-vs-HTTP A/B test): run 2 needs
+      # WORKFLOW_EVENTS_TRANSPORT=ws, which is a runtime env var baked into a
+      # deployment at deploy time — it can't be toggled per-request against
+      # the one deployment `waitForDeployment` found above (that one stays on
+      # the HTTP default, for run 1). So this creates a *second*, independent
+      # deployment of the same commit/project with that one var set, via
+      # `vercel pull`/`build`/`deploy --prebuilt` (which hands back the new
+      # deployment's URL synchronously) rather than
+      # vercel/wait-for-deployment-action, which only polls for the
+      # passively-created deployment from Vercel's GitHub App integration.
+      # Same pattern as the websockets PR's own `e2e-vercel-ws-transport` job
+      # (vercel/workflow#3084), adapted to the nextjs-turbopack app here.
+      - name: Deploy WS-transport preview for run 2
+        id: wsDeploy
+        if: matrix.target.world == 'vercel'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+        run: |
+          set -euo pipefail
+          # No --cwd: this project has a "Root Directory" setting
+          # (workbench/nextjs-turbopack) configured in Vercel itself, which
+          # is applied relative to wherever these commands run. Passing
+          # --cwd=workbench/nextjs-turbopack here would double that path
+          # (workbench/nextjs-turbopack/workbench/nextjs-turbopack, which
+          # doesn't exist) — `vercel build` warns and falls back gracefully,
+          # but `vercel deploy --prebuilt` hard-errors on it. Running from
+          # the repo root (actions/checkout's default cwd) instead lets
+          # Vercel's own Root Directory setting resolve the subdirectory,
+          # matching how the passive GitHub-integration deployment (used
+          # for run 1) already works.
+          npx vercel@56.2.0 pull --yes --environment=preview \
+            --project="${{ matrix.target.project-id }}" --scope="team_nO2mCG4W8IxPIeKoSsqwAxxB" \
+            --token="$VERCEL_TOKEN"
+          npx vercel@56.2.0 build \
+            --scope="team_nO2mCG4W8IxPIeKoSsqwAxxB" --token="$VERCEL_TOKEN"
+          # `vercel deploy` writes the new deployment's URL to stdout and
+          # progress/logs to stderr — do not redirect stderr into this capture.
+          URL=$(npx vercel@56.2.0 deploy --prebuilt --yes \
+            -e WORKFLOW_EVENTS_TRANSPORT=ws \
+            --scope="team_nO2mCG4W8IxPIeKoSsqwAxxB" --token="$VERCEL_TOKEN")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          DEPLOYMENT_ID=$(npx vercel@56.2.0 inspect "$URL" --format=json \
+            --scope="team_nO2mCG4W8IxPIeKoSsqwAxxB" --token="$VERCEL_TOKEN" 2>/dev/null \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{}})" || true)
+          echo "deploymentId=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"
+
+      # Normally both runs hit the same deployment (back-to-back, same
+      # commit) so the PR comment's run-2-vs-run-1 delta isolates benchmark
+      # noise from real perf deltas. TEMPORARY (websockets-vs-HTTP A/B test):
+      # run 1 still uses that deployment (HTTP transport, the default), but
+      # run 2 below is pointed at the dedicated WS-transport deployment from
+      # the step above instead — so the delta between them now reflects
+      # WS vs HTTP, not noise. Revert run 2's DEPLOYMENT_URL/VERCEL_DEPLOYMENT_ID
+      # back to `steps.waitForDeployment.outputs.*` once this comparison is done.
       - name: Run benchmarks (run 1)
         env:
           DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
@@ -182,9 +243,14 @@ jobs:
 
       - name: Run benchmarks (run 2)
         env:
-          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
+          # TEMPORARY (websockets-vs-HTTP A/B test): points at the dedicated
+          # WS-transport deployment from the step above, not
+          # `steps.waitForDeployment` (which run 1 uses). Revert to
+          # `steps.waitForDeployment.outputs.deployment-url` /
+          # `.deployment-id` once the comparison is done.
+          DEPLOYMENT_URL: ${{ steps.wsDeploy.outputs.url }}
           APP_NAME: ${{ matrix.target.app }}
-          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.wsDeploy.outputs.deploymentId }}
           WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
