@@ -183,6 +183,25 @@ export interface WorkflowOrchestratorContext {
    */
   pendingOrderedDeliveries?: number;
   /**
+   * Monotonic count of deliveries actually handed to workflow code — every
+   * `markDelivered()`, and nothing else. Retirements by the abandonment
+   * safety net are deliberately excluded.
+   *
+   * {@link scheduleWhenIdle} uses it to tell a system that is BUSY from one
+   * that is STUCK, which its round budget alone cannot do. Delivering a drain
+   * window in log order costs one macrotask per deferring delivery, so a
+   * window of K events needs K rounds to clear and a fixed budget becomes a
+   * cap on batch width: past it the callback fires mid-batch, and for a hook
+   * consumer that callback raises a `WorkflowSuspension`.
+   *
+   * The exclusion is what keeps the escape hatch working. A stream of pokes to
+   * a hook nobody reads produces retirement after retirement and no delivery
+   * at all, so the budget is never reset and the suspension still fires — the
+   * 3m19s stall the deadline was added for. Progress means the workflow
+   * received something, not that the engine was busy.
+   */
+  deliveryProgress?: number;
+  /**
    * Ordered registry of in-flight "branch-deciding" deliveries — the
    * resolutions a workflow typically `Promise.race`s on, or awaits from
    * independent concurrent branches: hook payloads (`hook_received`), wait
@@ -605,7 +624,15 @@ export function registerDeliveryBarrier(
   );
 
   return {
-    markDelivered: finish,
+    markDelivered: () => {
+      if (!done) {
+        // Counted before `finish()` flips `done`, and only for a real
+        // hand-over: the safety net calls `finish` directly. See
+        // `deliveryProgress`.
+        ctx.deliveryProgress = (ctx.deliveryProgress ?? 0) + 1;
+      }
+      finish();
+    },
     arm: () => {
       entry.armed = true;
     },
@@ -770,12 +797,21 @@ function scheduleBarrierRetirement(
  * releasing that counter and the delivery's `resolve()` actually running —
  * deliberately outside `pendingDeliveries` (see step.ts), and invisible to it.
  *
- * The poll gives up after {@link IDLE_POLL_DEADLINE_ROUNDS} rounds and fires
- * anyway. Without a deadline this loop has no escape: a run under continuous
- * delivery traffic keeps something in flight indefinitely, and every caller
- * that needs the callback for liveness waits forever — observed live as a run
- * making no progress for 3m19s under a stream of pokes to a hook nobody read
- * (`delivery-barrier-idle-starvation.test.ts`).
+ * The poll gives up after {@link IDLE_POLL_DEADLINE_ROUNDS} rounds WITHOUT
+ * PROGRESS and fires anyway. Without a deadline this loop has no escape: a run
+ * under continuous delivery traffic keeps something in flight indefinitely,
+ * and every caller that needs the callback for liveness waits forever —
+ * observed live as a run making no progress for 3m19s under a stream of pokes
+ * to a hook nobody read (`delivery-barrier-idle-starvation.test.ts`).
+ *
+ * The budget resets on every delivery that reaches workflow code
+ * ({@link WorkflowOrchestratorContext.deliveryProgress}), because counted flat
+ * it is not a deadline but a cap on how many events one drain window may
+ * deliver. Log-ordered delivery costs a macrotask per deferring delivery, so a
+ * window of K events takes K rounds; at K past the budget the callback fires
+ * into the middle of the batch and a suspension preempts every delivery after
+ * it. Resetting on progress keeps the escape hatch — a poke storm retires
+ * barriers without ever delivering, so the budget runs out as intended.
  *
  * The initial `setTimeout(0)` macrotask is load-bearing and must NOT be
  * downgraded to a microtask (`queueMicrotask`/`Promise.resolve().then`).
@@ -794,11 +830,19 @@ export function scheduleWhenIdle(
   fn: () => void
 ): void {
   let rounds = 0;
+  let seenProgress = ctx.deliveryProgress ?? 0;
   const check = () => {
     const busy =
       ctx.pendingDeliveries > 0 ||
       (ctx.pendingOrderedDeliveries ?? 0) > 0 ||
       hasParkedCommittedDelivery(ctx);
+    const progress = ctx.deliveryProgress ?? 0;
+    if (progress !== seenProgress) {
+      // Something reached workflow code since the last round, so the budget
+      // is measuring a wide batch rather than a stall. Start it over.
+      seenProgress = progress;
+      rounds = 0;
+    }
     if (busy && ++rounds < IDLE_POLL_DEADLINE_ROUNDS) {
       // A delivery is still hydrating, or is committed but parked behind its
       // deferral (whose resolve runs on a detached timer, not this queue).
