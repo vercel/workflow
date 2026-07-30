@@ -32,7 +32,7 @@ import { version } from './version.js';
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
-export const WORKFLOW_SERVER_URL_OVERRIDE = '';
+export const WORKFLOW_SERVER_URL_OVERRIDE = 'https://workflow-server-o9a22thwh.vercel.sh';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
