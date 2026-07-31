@@ -131,6 +131,20 @@ function getMaxEventsPerRun(): number {
 // but a shared filesystem), exactly matching the cross-process
 // semantics without spawning subprocesses.
 
+/**
+ * The time an event orders and paginates by. A slot-numbered run's order is its
+ * slot order — the position *is* the order, the way the sort key is for the
+ * other backends — so every such event reports the same time and lets the
+ * event-id tie-break do the ordering. Ordering those by `createdAt` reads the
+ * log in an order no replay produced: a writer that loses a slot re-proposes
+ * above the winner while keeping the stamp it started with, and a caller that
+ * reserves slots for a whole flush commits them in whatever order the network
+ * returns. A ULID-numbered run keeps its wall-clock order, which its ids agree
+ * with anyway.
+ */
+const eventOrderTime = (event: { eventId: string; createdAt: Date }): number =>
+  slotFromId(event.eventId) === undefined ? event.createdAt.getTime() : 0;
+
 const HookTokenClaimSchema = z.object({
   // The token-claim writer below has always persisted `hookId`, but
   // this read schema previously omitted it, which is the bug fixed
@@ -268,6 +282,7 @@ async function findExistingHookCreatedEventId(
       event.correlationId === correlationId,
     limit: 1,
     getCreatedAt: getObjectCreatedAt('evnt'),
+    getOrderTime: eventOrderTime,
     getId: (event) => event.eventId,
   });
   return result.data[0]?.eventId ?? null;
@@ -630,6 +645,7 @@ export function createEventsStorage(
         ? { cursor: params.sinceCursor }
         : {}),
       getCreatedAt: getObjectCreatedAt('evnt'),
+      getOrderTime: eventOrderTime,
       getId: (event) => event.eventId,
     });
     const maxSlot = params?.maxSlot ?? 0;
@@ -2821,6 +2837,7 @@ export function createEventsStorage(
             sortOrder: 'asc',
             limit: 1000,
             getCreatedAt: getObjectCreatedAt('evnt'),
+            getOrderTime: eventOrderTime,
             getId: (e) => e.eventId,
           });
           events = allEvents.data;
@@ -2869,6 +2886,7 @@ export function createEventsStorage(
             sortOrder: 'asc',
             cursor: params.sinceCursor,
             getCreatedAt: getObjectCreatedAt('evnt'),
+            getOrderTime: eventOrderTime,
             getId: (e) => e.eventId,
           });
           events =
@@ -2929,6 +2947,7 @@ export function createEventsStorage(
         limit: params.pagination?.limit,
         cursor: params.pagination?.cursor,
         getCreatedAt: getObjectCreatedAt('evnt'),
+        getOrderTime: eventOrderTime,
         getId: (event) => event.eventId,
       });
 
@@ -2961,6 +2980,7 @@ export function createEventsStorage(
         limit: params.pagination?.limit,
         cursor: params.pagination?.cursor,
         getCreatedAt: getObjectCreatedAt('evnt'),
+        getOrderTime: eventOrderTime,
         getId: (event) => event.eventId,
       });
 

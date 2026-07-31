@@ -579,6 +579,14 @@ interface PaginatedFileSystemQueryConfig<T> {
   cursor?: string;
   getCreatedAt(filename: string): Date | null;
   getId?(item: T): string;
+  /**
+   * The time an item sorts and paginates by, when that is not its `createdAt`.
+   * A slot-numbered event log orders by slot — the position is the order — and
+   * a writer that loses a slot re-proposes above the winner while keeping the
+   * stamp it started with, so `createdAt` there disagrees with the log. Such an
+   * item reports one shared time and lets the `getId` tie-break order it.
+   */
+  getOrderTime?: (item: NoInfer<T>) => number;
 }
 // Cursor format: "timestamp|id" for tie-breaking
 interface ParsedCursor {
@@ -615,6 +623,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     cursor,
     getCreatedAt,
     getId,
+    getOrderTime = (item: T) => item.createdAt.getTime(),
   } = config;
 
   // Validate filePrefix (typically `${runId}-`) so request-derived prefixes
@@ -718,7 +727,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
       // Double-check cursor filtering with actual createdAt from JSON
       // (in case ULID timestamp differs from stored createdAt)
       if (parsedCursor) {
-        const itemTime = item.createdAt.getTime();
+        const itemTime = getOrderTime(item);
         const cursorTime = parsedCursor.timestamp.getTime();
 
         if (sortOrder === 'desc') {
@@ -746,8 +755,8 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
 
   // 5. Sort by createdAt (and by ID for tie-breaking if getId is provided)
   validItems.sort((a, b) => {
-    const aTime = a.createdAt.getTime();
-    const bTime = b.createdAt.getTime();
+    const aTime = getOrderTime(a);
+    const bTime = getOrderTime(b);
     const timeComparison = sortOrder === 'asc' ? aTime - bTime : bTime - aTime;
 
     // If timestamps are equal and we have getId, use ID for stable sorting
@@ -768,7 +777,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
   const nextCursor =
     items.length > 0
       ? createCursor(
-          items[items.length - 1].createdAt,
+          new Date(getOrderTime(items[items.length - 1])),
           getId?.(items[items.length - 1])
         )
       : null;
