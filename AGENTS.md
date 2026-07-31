@@ -231,7 +231,7 @@ Every Vercel project rooted in this repo sets `git.deploymentEnabled` to `false`
 
 The changesets action force-pushes `changeset-release/main`, and it can point at exactly main's HEAD SHA. Vercel keeps one commit status per project per SHA, so a preview deployment of that branch overwrites the production deployment's status for the same commit — and `vercel/wait-for-deployment-action`, which reads the deployment ID out of that status, then hands a production e2e run a preview deployment ID, forking the run across environments.
 
-Because those PRs have no deployment of their own, CI treats them specially: the Vercel e2e lanes in `tests.yml` resolve main's production deployment for the PR's base SHA (`.github/scripts/resolve-production-deployment.mjs`) and run as `production`, while the deployment-dependent jobs in `docs-checks.yml`, `tarballs-checks.yml`, and `benchmarks.yml` are skipped. Anything new that waits on a deployment needs the same treatment.
+Because those PRs have no deployment of their own, CI treats them specially: the Vercel e2e lanes in `tests.yml` run `vercel/wait-for-deployment-action` a second way — `environment: production` with `sha` pinned to the PR's base SHA — so they test main's production deployment and run as `production`. (The commit-status ID that action reads is unambiguous for main SHAs precisely because this repo no longer deploys `changeset-release/main`, the only branch that ever deployed a commit main also deployed.) The deployment-dependent jobs in `docs-checks.yml`, `tarballs-checks.yml`, and `benchmarks.yml` are skipped. Anything new that waits on a deployment needs the same treatment.
 
 ### Changesets
 

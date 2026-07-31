@@ -398,19 +398,23 @@ jobs:
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
-      - name: Resolving the production deployment (changeset-release PR)
+      # The base SHA, not the PR head: that is the main commit whose
+      # production deployment carries the code under test. Waiting on it also
+      # means a production build still in flight is waited out instead of
+      # testing whatever happens to be aliased to production. The commit-status
+      # ID this action reads is unambiguous for main SHAs once this repo stops
+      # deploying `changeset-release/main` (see above) — that branch was the
+      # only one that ever deployed a commit main also deployed.
+      - name: Waiting for the Vercel deployment (changeset-release PR)
         id: prodDeployment
         if: ${{ startsWith(github.head_ref, 'changeset-release/') }}
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
-          VERCEL_TEAM_ID: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
-          PROJECT_SLUG: ${{ matrix.app.project-slug }}
-          # The base SHA, not the PR head: that is the main commit whose
-          # production deployment carries the code under test. Matching on it
-          # also means we wait out a production build still in flight instead
-          # of testing whatever happens to be aliased to production.
-          EXPECTED_SHA: ${{ github.event.pull_request.base.sha }}
-        run: node .github/scripts/resolve-production-deployment.mjs
+        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
+        with:
+          project-slug: ${{ matrix.app.project-slug }}
+          timeout: 1000
+          check-interval: 15
+          environment: production
+          sha: ${{ github.event.pull_request.base.sha }}
 
       - name: Record E2E start time
         id: e2eStart
@@ -526,15 +530,16 @@ jobs:
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
-      - name: Resolving the production deployment (changeset-release PR)
+      - name: Waiting for the Vercel deployment (changeset-release PR)
         id: prodDeployment
         if: ${{ startsWith(github.head_ref, 'changeset-release/') }}
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
-          VERCEL_TEAM_ID: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
-          PROJECT_SLUG: "example-nextjs-workflow-turbopack"
-          EXPECTED_SHA: ${{ github.event.pull_request.base.sha }}
-        run: node .github/scripts/resolve-production-deployment.mjs
+        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
+        with:
+          project-slug: "example-nextjs-workflow-turbopack"
+          timeout: 1000
+          check-interval: 15
+          environment: production
+          sha: ${{ github.event.pull_request.base.sha }}
 
       - name: Run Multi-Region E2E Tests
         run: pnpm vitest run packages/core/e2e/e2e-region.test.ts --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-multi-region-$APP_NAME.json"
