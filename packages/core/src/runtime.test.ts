@@ -15,6 +15,7 @@ import {
 import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from './private.js';
+import { getWorkflowMetadata } from './step/get-workflow-metadata.js';
 import { REPLAY_DIVERGENCE_MAX_RETRIES } from './runtime/constants.js';
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
@@ -1463,6 +1464,17 @@ describe('workflowEntrypoint turbo mode', () => {
     return undefined;
   });
 
+  // Records the workflow start time the step body observes, which is the one
+  // the synthesized run row carries under turbo.
+  let turboObservedStartedAt: Date | undefined;
+  registerStepFunction('turboMetadataStep', async () => {
+    turboObservedStartedAt = getWorkflowMetadata().workflowStartedAt;
+    return undefined;
+  });
+
+  const oneMetadataStepWorkflow = `const s = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turboMetadataStep");
+    async function workflow() { return await s(); }${xform('workflow')}`;
+
   const oneStepWorkflow = `const s = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turboStep");
     async function workflow() { return await s(); }${xform('workflow')}`;
 
@@ -1732,6 +1744,30 @@ describe('workflowEntrypoint turbo mode', () => {
       (c) => (c[1] as any).eventType === 'run_started'
     );
     expect((redeliverRunStarted?.[2] as any)?.skipPreload).toBeUndefined();
+  });
+
+  it('sends run_started the same instant it synthesizes the run from', async () => {
+    // Turbo starts the run against a locally synthesized run row, so the start
+    // time this invocation reports comes from the client clock. Backends that
+    // persist `occurredAt` record the run's `startedAt` from it, so sending it
+    // is what makes a later replay — which reads the persisted run — report the
+    // same `workflowStartedAt` this pass already captured into its steps.
+    turboObservedStartedAt = undefined;
+    const { handlerPromise, eventsCreate } = await driveTurbo({
+      runId: 'wrun_turbo_occurred_at',
+      attempt: 1,
+      source: oneMetadataStepWorkflow,
+      specVersion: SPEC_VERSION_SLOT_IDENTITY,
+    });
+    expect((await handlerPromise).status).toBe(204);
+
+    const runStarted = eventsCreate.mock.calls.find(
+      (c) => (c[1] as any).eventType === 'run_started'
+    );
+    const occurredAt = (runStarted?.[2] as { occurredAt?: Date } | undefined)
+      ?.occurredAt;
+    expect(occurredAt).toBeInstanceOf(Date);
+    expect(turboObservedStartedAt).toEqual(occurredAt);
   });
 
   it('exits turbo (no forced optimistic) when the suspension creates a wait', async () => {
