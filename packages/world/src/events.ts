@@ -765,6 +765,13 @@ export interface CreateEventParams {
    *   rejection has to imply a real hole, because the client responds to it by
    *   discarding and re-deriving its whole replay.
    *
+   * A rejecting World MAY also report the comparison it rejected on, as
+   * `recordedAtOrBelow` and `stateUpdatedAt` on the error's `details` — the
+   * count it arrived at and the watermark it counted against. Both or neither.
+   * The client uses them to check that a reloaded log actually reached that
+   * count before it spends another replay on it; reporting nothing means each
+   * reload is treated as unchecked rather than as unsatisfied.
+   *
    * See also the millisecond-granularity caveat on `stateUpdatedAt`: the count
    * is what makes an equal-timestamp snapshot safe to accept.
    */

@@ -236,9 +236,21 @@ export interface CreateEventV4Input {
  */
 export interface PreconditionFailureDetails {
   /** The events the client's snapshot was missing, in server order. */
-  events: Event[];
+  events?: Event[];
   /** Cursor positioned after the returned events, when the server sent one. */
   cursor?: string;
+  /**
+   * How many events the server had recorded at or below `stateUpdatedAt` when
+   * it rejected the write — the left-hand side of the comparison that produced
+   * the 412. Present only alongside `stateUpdatedAt`.
+   */
+  recordedAtOrBelow?: number;
+  /**
+   * The snapshot watermark (epoch ms) `recordedAtOrBelow` was counted against:
+   * the `stateUpdatedAt` the rejected request sent, echoed back so the client
+   * does not have to correlate the rejection with the request that caused it.
+   */
+  stateUpdatedAt?: number;
 }
 
 export interface CreateEventV4Result {
@@ -371,6 +383,7 @@ function errorFromV4Response(
       code?: string;
       events?: unknown;
       cursor?: unknown;
+      details?: unknown;
     };
     if (typeof json.message === 'string') message = json.message;
     if (typeof json.code === 'string') code = json.code;
@@ -395,7 +408,7 @@ function errorFromV4Response(
 }
 
 /**
- * Pick the inline event delta off a 412 body.
+ * Pick the inline event delta and the rejection's own numbers off a 412 body.
  *
  * A rejecting server MAY attach the events the client's snapshot was missing,
  * so the runtime can correct its event log without a follow-up events.list.
@@ -405,29 +418,87 @@ function errorFromV4Response(
  * the same "no delta" shape as one that declined to prove it, and the client
  * needs a single fallback path for both.
  *
+ * Independently of any delta, the server reports the comparison that produced
+ * the rejection (`details.recorded` at or below `details.stateUpdatedAt`). That
+ * turns a restart's reload into something checkable: the corrected log must
+ * hold at least that many events at or below that watermark, or the restart
+ * has not recovered anything and re-deriving the replay will be rejected the
+ * same way. Both halves are optional and decoded independently — a delta with
+ * no numbers and numbers with no delta are both useful, and the numbers are
+ * the more useful half, since it is the *absent* delta that leaves the client
+ * guessing whether its reload worked.
+ *
  * Anything unexpected in the payload is dropped rather than repaired: this is
- * untrusted-shaped data on a failure path, and the fallback (a full reload) is
- * always correct.
+ * untrusted-shaped data on a failure path, and the fallback (a full reload,
+ * unchecked) is always correct.
  */
 function decodePreconditionDetails(json: {
   events?: unknown;
   cursor?: unknown;
+  details?: unknown;
 }): PreconditionFailureDetails | undefined {
-  if (!Array.isArray(json.events) || json.events.length === 0) return undefined;
+  const events = decodeInlineDelta(json.events);
+  const rejection = decodeRejectionCounts(json.details);
+  if (!events && !rejection) return undefined;
+  return {
+    ...(events
+      ? {
+          events,
+          ...(typeof json.cursor === 'string' ? { cursor: json.cursor } : {}),
+        }
+      : {}),
+    ...rejection,
+  };
+}
+
+/**
+ * The events off a 412 body, or undefined when the payload does not narrow to a
+ * usable set. Partial credit is not on offer: one unusable entry disqualifies
+ * the whole delta, because a delta is only a shortcut if it is complete.
+ */
+function decodeInlineDelta(raw: unknown): Event[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
   const events: Event[] = [];
-  for (const raw of json.events) {
-    if (typeof raw !== 'object' || raw === null) return undefined;
-    const candidate = raw as Record<string, unknown>;
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) return undefined;
+    const candidate = entry as Record<string, unknown>;
     if (typeof candidate.eventId !== 'string') return undefined;
     if (hasUnusablePayload(candidate)) return undefined;
     // Same decoder the success-path delta uses: the JSON body carries nested
     // eventData dates as ISO strings and the runtime calls .getTime() on them.
     events.push(coerceEventDates(candidate));
   }
-  return {
-    events,
-    ...(typeof json.cursor === 'string' ? { cursor: json.cursor } : {}),
+  return events;
+}
+
+/**
+ * The rejection's own comparison, off the 412 body's diagnostic `details` bag.
+ *
+ * Both numbers are required together: a count with no watermark cannot be
+ * checked against anything, and a watermark with no count says nothing. Values
+ * that are not non-negative integers are dropped — a checked restart is an
+ * optimization, and a malformed one must degrade to the unchecked path rather
+ * than fabricate a verdict.
+ */
+function decodeRejectionCounts(
+  raw: unknown
+): { recordedAtOrBelow: number; stateUpdatedAt: number } | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const { recorded, stateUpdatedAt } = raw as {
+    recorded?: unknown;
+    stateUpdatedAt?: unknown;
   };
+  if (
+    !isNonNegativeInteger(recorded) ||
+    !isNonNegativeInteger(stateUpdatedAt)
+  ) {
+    return undefined;
+  }
+  return { recordedAtOrBelow: recorded, stateUpdatedAt };
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
 /**

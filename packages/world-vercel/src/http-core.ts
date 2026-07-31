@@ -160,7 +160,8 @@ export function parseRetryAfter(
  *   - 410 → RunExpiredError (runtime exits without retrying)
  *   - 412 → PreconditionFailedError + retryAfter + details (stale precondition
  *     snapshot — the optimistic-concurrency guard on event creation; `details`
- *     carries the events the backend returned inline, when it did)
+ *     carries the events the backend returned inline and the counts it rejected
+ *     on, when it sent either)
  *   - 425 → TooEarlyError + retryAfter (step retry pacing — see #1806 for what
  *     happens when a 425 degrades into an untyped error)
  *   - 429 → ThrottleError + retryAfter, EXCEPT a firewall challenge (429 +
@@ -181,8 +182,8 @@ export function errorForResponse(
     url?: string;
     mitigated?: string | null;
     /** Rejection detail for a 412 — the events the backend says the client's
-     *  snapshot was missing, when it returned them inline. Ignored for every
-     *  other status. */
+     *  snapshot was missing (when it returned them inline) and the comparison
+     *  it rejected on. Ignored for every other status. */
     details?: unknown;
   } = {}
 ): Error {
