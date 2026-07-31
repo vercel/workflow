@@ -14,7 +14,13 @@
  */
 
 import { WorkflowWorldError } from '@workflow/errors';
-import { FIRST_SLOT, slotEventId, slotFromId } from '@workflow/world';
+import {
+  FIRST_SLOT,
+  SLOT_RETRY_BUDGET_MS,
+  slotEventId,
+  slotFromId,
+  slotRetryDelay,
+} from '@workflow/world';
 import { and, desc, eq } from 'drizzle-orm';
 import { type Drizzle, Schema } from './drizzle/index.js';
 
@@ -25,19 +31,6 @@ import { type Drizzle, Schema } from './drizzle/index.js';
  * first, which on the start path is routinely `run_started`.
  */
 export const RUN_CREATED_SLOT = FIRST_SLOT;
-
-/** First backoff after losing a position; doubled each round. */
-export const SLOT_RETRY_BASE_MS = 5;
-
-/** Ceiling for a single backoff, so a contended run keeps making attempts. */
-export const SLOT_RETRY_MAX_DELAY_MS = 250;
-
-/**
- * How long a writer keeps looking for a free position before giving up.
- * Exhausting it surfaces as a 503, so the caller — in practice a queue
- * delivery — retries the whole operation instead of the run stalling on it.
- */
-export const SLOT_RETRY_BUDGET_MS = 30_000;
 
 /** Postgres unique-violation code. */
 const UNIQUE_VIOLATION = '23505';
@@ -102,14 +95,6 @@ export async function eventExists(
     )
     .limit(1);
   return row !== undefined;
-}
-
-/** Full jitter over an exponentially growing, capped window. */
-export function slotRetryDelay(round: number): number {
-  return (
-    Math.random() *
-    Math.min(SLOT_RETRY_BASE_MS * 2 ** round, SLOT_RETRY_MAX_DELAY_MS)
-  );
 }
 
 /** The event ids a single create publishes. */
