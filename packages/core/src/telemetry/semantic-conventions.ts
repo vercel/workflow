@@ -175,6 +175,14 @@ export const WorkflowRouteModuleBodyInitMs = SemanticConvention<number>(
   'workflow.route.module_body_init_ms'
 );
 
+/**
+ * Compute instance handling this route — the synthesized `COMPUTE_INSTANCE_ID`.
+ * Uses OTEL `faas.instance` (execution-environment id, reused across
+ * invocations to the same function):
+ * https://opentelemetry.io/docs/specs/semconv/attributes-registry/faas/
+ */
+export const FaasInstance = SemanticConvention<string>('faas.instance');
+
 // Step attributes
 
 /** Name of the step function being executed */

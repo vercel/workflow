@@ -707,6 +707,13 @@ export interface CreateEventParams {
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
   /**
+   * Compute instance whose handler is writing this event (`COMPUTE_INSTANCE_ID`
+   * in @workflow/core). Ambient per-event identity like {@link requestId},
+   * which distinguishes invocations *within* an instance. Read back via
+   * `AnalyticsEventSchema` / `AnalyticsStepSchema`.
+   */
+  computeInstanceId?: string;
+  /**
    * Epoch ms (the ULID time of the latest event the runtime has loaded during
    * replay). Sent by replay-context creates so the backend can reject the event
    * when a newer out-of-band event was recorded after this snapshot, enabling
@@ -730,6 +737,14 @@ export interface CreateEventParams {
    * when the backing service accepted or stored the event.
    */
   occurredAt?: Date;
+  /**
+   * Number of consecutive replay divergences resolved by this event write.
+   *
+   * This is request telemetry, not workflow state. Worlds may use it for
+   * metrics and diagnostics, but must not require it for event
+   * materialization or persist it into the event log.
+   */
+  replayDivergenceCount?: number;
   /**
    * Inline-delta optimization (opt-in). When set, the World MAY return,
    * on the resulting {@link EventResult}, the first page of events written

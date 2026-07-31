@@ -1,5 +1,19 @@
 # @workflow/core
 
+## 5.0.0-beta.38
+
+### Patch Changes
+
+- [#3198](https://github.com/vercel/workflow/pull/3198) [`b92c23c`](https://github.com/vercel/workflow/commit/b92c23ccb46d27066025acd8742da357603c79d8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Don't observe idle — and raise a `WorkflowSuspension` — while a delivery that is committed to reaching the workflow is still parked between its serial queue slot and its detached `resolve()`. A run with an outstanding `sleep()` replaying a batch of parallel step results could suspend inside that gap with none of the batch's follow-up work queued, going dormant until an unrelated timer fired.
+
+- [#3142](https://github.com/vercel/workflow/pull/3142) [`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Revert the static workflow world target injection: the world package is again resolved at runtime from `WORKFLOW_TARGET_WORLD` instead of being aliased into host bundles at build time.
+
+- Updated dependencies [[`34975f6`](https://github.com/vercel/workflow/commit/34975f6b7dd8e0dad874e852eac04c9652f5971d), [`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804)]:
+  - @workflow/world-vercel@5.0.0-beta.34
+  - @workflow/utils@5.0.0-beta.8
+  - @workflow/world-local@5.0.0-beta.32
+  - @workflow/errors@5.0.0-beta.14
+
 ## 5.0.0-beta.37
 
 ### Major Changes

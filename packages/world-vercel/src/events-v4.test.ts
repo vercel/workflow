@@ -8,13 +8,13 @@ import {
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { splitEventDataForV4 } from './events.js';
 import {
   createWorkflowRunEventV4,
   getEventV4,
   getWorkflowRunEventsV4,
   throwForErrorResponse,
 } from './events-v4.js';
-import { splitEventDataForV4 } from './events.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
