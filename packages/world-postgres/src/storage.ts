@@ -748,8 +748,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // `run_created` and the queue send concurrently, so a delivery's
       // `run_started` can arrive while the run is still being published. A stale
       // "no" would number that one event with a ULID on an otherwise
-      // slot-numbered run, and the hole it leaves in the numbering costs the log
-      // its completeness proof for life.
+      // slot-numbered run, and a ULID names no position: the replay would read
+      // it wherever its timestamp happens to sort rather than where the writer
+      // meant it to go.
       if (currentRun && data.eventType !== 'run_created') {
         slotMode = usesSlotIdentity(currentRun.specVersion);
       }

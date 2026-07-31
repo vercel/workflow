@@ -166,8 +166,8 @@ describe('reserve', () => {
 describe('release', () => {
   it('does not recycle an abandoned interior slot', async () => {
     // The position may already sit below a sibling that published, and no
-    // caller can tell from here. A hole costs a reader its completeness proof;
-    // an inversion costs the run.
+    // caller can tell from here. A hole is a position nothing ever wrote; an
+    // inversion is an event a replay reads before the one it followed.
     const book = createSlotBook(basedir);
     const [first, second] = await Promise.all([
       book.reserve(RUN_ID),

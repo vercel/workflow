@@ -801,10 +801,10 @@ export interface CreateEventParams {
    * taken, reject the write with `SlotConflictError` (HTTP 409) instead of
    * minting a different id — a lost slot means the client replayed against an
    * event log missing at least one event, so its whole proposed event, not just
-   * its id, is suspect. Reject a mismatch in either direction with a 400: an id
-   * of this shape on a run that does not use slot identity, or an absent or
-   * ULID-shaped id on a run that does, would leave the log unable to prove its
-   * own completeness.
+   * its id, is suspect. Reject a mismatch in either direction with a 400: a
+   * ULID names a time and a slot names a position, so a log holding both sorts
+   * partly by one and partly by the other and no replay can read it in the order
+   * it was written.
    *
    * A World that ignores this field keeps minting ids itself, which is correct
    * only for runs that were never stamped with slot identity in the first

@@ -147,7 +147,7 @@ describe('numbering', () => {
     );
   });
 
-  it('proves completeness: the highest slot is the event count', async () => {
+  it('numbers a run densely when every write it makes lands', async () => {
     const runId = await newSlotRun();
     await Promise.all(
       Array.from({ length: 5 }, (_, index) =>
@@ -161,7 +161,7 @@ describe('numbering', () => {
   it('leaves a rejected write’s position unused instead of recycling it', async () => {
     // The rejected op's position sits below its concurrent sibling's, so handing
     // it to the next writer would order that writer's event below one that
-    // already published. The hole costs a reader the density proof; the
+    // already published. The hole costs a reader nothing it was promised; the
     // inversion would cost the run.
     const runId = await newSlotRun();
     const [rejected, accepted] = await Promise.allSettled([
