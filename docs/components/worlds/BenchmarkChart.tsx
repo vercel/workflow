@@ -133,7 +133,7 @@ export function BenchmarkBar({
   data: WorldsStatus;
   benchmarkName: string;
 }) {
-  const { worlds, maxTime, minTime } = useMemo(() => {
+  const { worlds, maxTime } = useMemo(() => {
     const worldEntries = Object.entries(data.worlds)
       .filter(([, w]) => w.benchmark?.metrics?.[benchmarkName])
       .map(([id, w]) => ({

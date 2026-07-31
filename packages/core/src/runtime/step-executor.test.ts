@@ -4,9 +4,10 @@ import { join } from 'node:path';
 import type { Event, World } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../private.js';
 import { dehydrateStepArguments } from '../serialization.js';
+import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { executeStep } from './step-executor.js';
 
 // The retry ceiling (`authoritativeAttempt`) is what bounds a step that keeps
@@ -162,5 +163,43 @@ describe('executeStep — retry ceiling (authoritativeAttempt)', () => {
       'step_failed'
     );
     expect(ceilingFailures).toHaveLength(0);
+  });
+});
+
+describe('executeStep — compute instance stamping', () => {
+  afterEach(() => {
+    counter += 1;
+  });
+
+  it('stamps computeInstanceId on step_started without displacing the claim fence', async () => {
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+    });
+
+    // computeInstanceId rides in CreateEventParams, which world-local does not
+    // persist — so observe the call itself rather than the stored event.
+    const createSpy = vi.spyOn(world.events, 'create');
+
+    await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      eventCreateFence: { stateUpdatedAt: 1_700_000_000_000 },
+    });
+
+    const started = createSpy.mock.calls.filter(
+      ([, data]) => data.eventType === 'step_started'
+    );
+    expect(started).toHaveLength(1);
+    expect(started[0]?.[2]?.computeInstanceId).toBe(COMPUTE_INSTANCE_ID);
+    // Both ride the same params object — neither may clobber the other.
+    expect(started[0]?.[2]?.stateUpdatedAt).toBe(1_700_000_000_000);
   });
 });

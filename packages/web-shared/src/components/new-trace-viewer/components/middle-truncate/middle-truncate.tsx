@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useRef } from 'react';
 import type { ClipboardEvent, ComponentPropsWithoutRef, JSX } from 'react';
+import { useCallback, useRef } from 'react';
 import { cn } from '../../../../lib/cn';
 import {
   getMiddleTruncateCopyText,
