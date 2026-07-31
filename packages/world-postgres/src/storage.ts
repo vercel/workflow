@@ -1411,11 +1411,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               // side of the materialization would, hence the shared
               // transaction.
               //
-              // It takes a position of its own, which on a claimed write is
-              // necessarily one this world allocated: a caller that defers a
-              // step_created cannot know it will be synthesized, so it never
-              // claims a slot for it. Losing that position rolls the transaction
-              // back for a retry, so the insert must not swallow the collision.
+              // It takes a position of its own — the one below the claim on a
+              // claimed write, the next free one otherwise. Losing that position
+              // rolls the transaction back for a retry, so the insert must not
+              // swallow the collision.
               const stepCreatedEventId = await ids.extra();
               const insertStepCreated = tx.insert(events).values({
                 runId: effectiveRunId,

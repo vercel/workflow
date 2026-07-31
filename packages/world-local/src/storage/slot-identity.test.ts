@@ -147,6 +147,84 @@ describe('numbering', () => {
   });
 });
 
+/**
+ * A lazy step start: a `step_started` carrying the step's creation data, which
+ * the world materializes into a step plus the `step_created` event the caller
+ * deferred — one request, two events.
+ */
+async function startStepLazily(
+  runId: string,
+  stepId: string,
+  eventId?: string
+): Promise<string> {
+  const result = await storage.events.create(
+    runId,
+    {
+      eventType: 'step_started',
+      specVersion: SPEC_VERSION_SLOT_IDENTITY,
+      correlationId: stepId,
+      eventData: { stepName: 'a-step', input: new Uint8Array(), attempt: 0 },
+    },
+    eventId === undefined ? undefined : { eventId }
+  );
+  if (!result.event) {
+    throw new Error('Expected an event');
+  }
+  return result.event.eventId;
+}
+
+describe('a write that publishes two events', () => {
+  it('numbers the deferred step_created below the claim', async () => {
+    // The caller reserves both positions and names only the top one, so the
+    // pair is fixed before either lands — which is what keeps it off the slot
+    // the next write of the same batch is holding.
+    const runId = await newSlotRun();
+    const startedEventId = await startStepLazily(
+      runId,
+      'step_a',
+      slotEventId(3)
+    );
+    expect(startedEventId).toBe(slotEventId(3));
+    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
+  });
+
+  it('allocates both positions for a start that claims neither', async () => {
+    const runId = await newSlotRun();
+    await startStepLazily(runId, 'step_a');
+    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
+  });
+
+  it('keeps every claim in a burst of lazy starts', async () => {
+    // The suspension flush issues its lazy starts at once, each having reserved
+    // two positions. A second event numbered off the log as this world sees it
+    // would take the slot the next start in the batch claimed, and cost every
+    // start after the first its claim — collapsing the fan-out to one step.
+    const runId = await newSlotRun();
+    const claims = Array.from({ length: 10 }, (_, index) =>
+      slotEventId(FIRST_SLOT + 2 * (index + 1))
+    );
+    const ids = await Promise.all(
+      claims.map((eventId, index) =>
+        startStepLazily(runId, `step_${index}`, eventId)
+      )
+    );
+    expect(ids).toEqual(claims);
+    const slots = await slotsOf(runId);
+    expect([...slots].sort((a, b) => a - b)).toEqual(
+      Array.from({ length: 2 * claims.length + 1 }, (_, i) => FIRST_SLOT + i)
+    );
+  });
+
+  it('rejects a claim that leaves no room for the second event', async () => {
+    // The run's own run_created holds the first slot, so a claim of the second
+    // means the caller reserved one position for a write that publishes two.
+    const runId = await newSlotRun();
+    await expect(
+      startStepLazily(runId, 'step_a', slotEventId(FIRST_SLOT + 1))
+    ).rejects.toThrow(/leaves no slot below it/);
+  });
+});
+
 describe('mode is pinned to the run', () => {
   it('rejects a slot id claimed on a ULID-numbered run', async () => {
     const created = await storage.events.create(null, {

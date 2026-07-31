@@ -1008,6 +1008,17 @@ export function createEventsStorage(
           }
         }
 
+        // Lazy step start: a step_started carrying step-creation data
+        // (stepName + input) is allowed to arrive with no prior step_created
+        // — it creates the step on the fly (see the materialization block
+        // below). This mirrors the resilient run_started path. Detect it here
+        // so the second event it publishes can be numbered alongside the
+        // first, the entity-creation terminal-run guard treats it like a
+        // creation, and the "step must exist" ordering guard doesn't reject it.
+        const createsChildEntity = isChildEntityCreationEvent(data);
+        const lazyStepStart =
+          createsChildEntity && data.eventType === 'step_started';
+
         // ============================================================
         // EVENT ID: the caller's slot claim, an allocated slot, or a ULID
         // ============================================================
@@ -1023,6 +1034,11 @@ export function createEventsStorage(
         // asserting the log is complete up to that position) or allocated here
         // for a caller that has no log — a step completion reporting in, a
         // cancellation from an API call.
+        //
+        // The position of the second event a lazy start publishes, when this
+        // one publishes two. Consumed by the materialization below; released
+        // again if that block turns out not to need it.
+        let companionSlot: number | undefined;
         if (params?.eventId !== undefined) {
           const claimedSlot = slotFromId(params.eventId);
           if (!slotMode) {
@@ -1041,13 +1057,38 @@ export function createEventsStorage(
           reservedRunId = effectiveRunId;
           reserved.add(claimedSlot);
           slots.claim(effectiveRunId, claimedSlot);
-          if (await slots.isWritten(effectiveRunId, claimedSlot)) {
-            // Reject a doomed claim before the materialization below creates
-            // the step, hook or wait this event will now never accompany. A
-            // caller that re-proposes at the next slot would otherwise
-            // collide with its own orphan and read that as "my write already
-            // landed". See SlotBook.isWritten.
-            throw await slotConflict(effectiveRunId, eventId, params);
+          // One request, two events: a lazy start also publishes the
+          // `step_created` it deferred. A claim names the *top* of the pair,
+          // so the second event takes the slot immediately below it — the
+          // caller reserved both positions and named only one, which is what
+          // keeps the pair from landing on a position another write in the
+          // same batch is already holding.
+          if (lazyStepStart) {
+            companionSlot = claimedSlot - 1;
+            if (companionSlot < RUN_CREATED_SLOT + 1) {
+              throw new WorkflowWorldError(
+                `Event id "${params.eventId}" leaves no slot below it in run "${effectiveRunId}" for the "step_created" published alongside it`,
+                { status: 400 }
+              );
+            }
+            reserved.add(companionSlot);
+            slots.claim(effectiveRunId, companionSlot);
+          }
+          // Reject a doomed claim before the materialization below creates
+          // the step, hook or wait this event will now never accompany. A
+          // caller that re-proposes at the next slot would otherwise
+          // collide with its own orphan and read that as "my write already
+          // landed". See SlotBook.isWritten.
+          for (const slot of companionSlot === undefined
+            ? [claimedSlot]
+            : [companionSlot, claimedSlot]) {
+            if (await slots.isWritten(effectiveRunId, slot)) {
+              throw await slotConflict(
+                effectiveRunId,
+                slotEventId(slot),
+                params
+              );
+            }
           }
         } else if (slotMode) {
           reservedRunId = effectiveRunId;
@@ -1059,16 +1100,6 @@ export function createEventsStorage(
         // ============================================================
         // VALIDATION: Terminal state and event ordering checks
         // ============================================================
-
-        // Lazy step start: a step_started carrying step-creation data
-        // (stepName + input) is allowed to arrive with no prior step_created
-        // — it creates the step on the fly (see the materialization block
-        // below). This mirrors the resilient run_started path. Detect it here
-        // so the entity-creation terminal-run guard treats it like a creation
-        // and the "step must exist" ordering guard doesn't reject it.
-        const createsChildEntity = isChildEntityCreationEvent(data);
-        const lazyStepStart =
-          createsChildEntity && data.eventType === 'step_started';
 
         // Run terminal state validation
         if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
@@ -1724,7 +1755,13 @@ export function createEventsStorage(
               // run_started → run_created precedent in this file.
               let stepCreatedEventId = `evnt_${monotonicUlid()}`;
               if (slotMode) {
-                const slot = await slots.reserve(effectiveRunId);
+                // A claimed start numbers this event one below its own
+                // position, which the caller reserved for exactly this. A start
+                // that allocated takes the next free slot instead: nothing
+                // outside this world named either position.
+                const slot =
+                  companionSlot ?? (await slots.reserve(effectiveRunId));
+                companionSlot = undefined;
                 reserved.add(slot);
                 stepCreatedEventId = slotEventId(slot);
               }
@@ -2679,6 +2716,15 @@ export function createEventsStorage(
         // replay can serve it without rereading from disk.
         rememberStoredEvent(event, eventPath, serializedEvent);
         slots.observe(effectiveRunId, eventId);
+        if (companionSlot !== undefined) {
+          // A start that carried creation data for a step that already existed
+          // synthesized no `step_created`, so the position below it went
+          // unused. Hand it back instead of leaving it outstanding for the life
+          // of the process, where it would block the allocator from ever
+          // filling that position.
+          reserved.delete(companionSlot);
+          slots.release(effectiveRunId, companionSlot);
+        }
 
         // Write the hook entity ONLY now that the event publish has
         // committed. Doing this earlier (in the `hook_created`

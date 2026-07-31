@@ -107,9 +107,12 @@ export interface EventIds {
   primary: () => string;
   /**
    * An additional event written in the same breath — the synthetic
-   * `step_created` of a lazy step start. Its position is allocated here even
-   * when the caller named its own for the primary event, because a caller that
-   * defers a `step_created` cannot know it will be synthesized.
+   * `step_created` of a lazy step start.
+   *
+   * A claim names the *top* of the pair, so this event takes the position
+   * immediately below it: the caller reserved both and named one. Numbering it
+   * off the log instead would hand it a position another write of the same
+   * concurrent batch is already holding, and cost that write its claim.
    */
   extra: () => Promise<string>;
 }
@@ -178,23 +181,40 @@ export async function placeEvent<T>(
       options.claimedSlot === undefined
         ? slotEventId(await take())
         : slotEventId(options.claimedSlot);
+    /** Positions the caller named, which are the caller's to resolve. */
+    const claimed = options.claimedSlot === undefined ? [] : [primary];
     try {
       return await options.write({
         primary: () => primary,
-        extra: async () => slotEventId(await take()),
+        extra: async () => {
+          if (options.claimedSlot === undefined) {
+            return slotEventId(await take());
+          }
+          const slot = options.claimedSlot - 1;
+          if (slot <= FIRST_SLOT) {
+            // The run's own `run_created` holds the first slot, so a claim of
+            // the second leaves nowhere for a second event to go: the caller
+            // reserved one position for a write that publishes two.
+            throw new WorkflowWorldError(
+              `Event id "${primary}" leaves no slot below it in run "${runId}" for the second event published alongside it`,
+              { status: 400 }
+            );
+          }
+          const id = slotEventId(slot);
+          claimed.push(id);
+          return id;
+        },
       });
     } catch (error) {
       if (!isEventKeyViolation(error)) {
         throw error;
       }
-      // A claimed write can also lose on its extra event's position, which is
-      // this world's to reallocate — only a claim that is itself taken is the
-      // caller's problem.
-      if (
-        options.claimedSlot !== undefined &&
-        (await eventExists(drizzle, runId, primary))
-      ) {
-        throw await options.onClaimTaken();
+      // Only a position the caller named is the caller's problem; one this
+      // world allocated is reallocated below without ever surfacing.
+      for (const id of claimed) {
+        if (await eventExists(drizzle, runId, id)) {
+          throw await options.onClaimTaken();
+        }
       }
       if (Date.now() >= deadline) {
         throw new WorkflowWorldError(
