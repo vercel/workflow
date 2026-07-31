@@ -114,6 +114,35 @@ export const RunInputSchema = z.object({
 });
 export type RunInput = z.infer<typeof RunInputSchema>;
 
+/**
+ * Hook resume data carried through the queue for resilient resumeHook().
+ * Only present on the queue delivery triggered by resumeHook() — re-enqueues
+ * omit this. When the runtime processes the message and detects that the
+ * corresponding hook_received event is missing (e.g., because events.create()
+ * failed with a transient 429/5xx while queue() succeeded), it materializes
+ * the hook_received event from this payload.
+ *
+ * `resumeId` is a client-minted ULID used as an idempotency key: both the
+ * direct hook_received write (from resumeHook) and the runtime fallback write
+ * include it in `eventData.resumeId`, so the runtime can dedup by checking
+ * whether any existing hook_received event already carries the same resumeId.
+ */
+export const HookInputSchema = z.object({
+  /** correlationId of the target hook (hookId) */
+  hookId: z.string(),
+  /** Client-minted ULID; idempotency key shared across both write paths */
+  resumeId: z.string(),
+  /**
+   * The hook's token, written into the materialized event's
+   * `eventData.token` so it gets the same replay-divergence guard as a
+   * directly written hook_received event. Optional for wire compatibility.
+   */
+  token: z.string().optional(),
+  /** Dehydrated payload to deliver to the hook */
+  payload: z.unknown(),
+});
+export type HookInput = z.infer<typeof HookInputSchema>;
+
 export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
   traceCarrier: TraceCarrierSchema.optional(),
@@ -125,6 +154,14 @@ export const WorkflowInvokePayloadSchema = z.object({
       count: z.number().int().positive(),
     })
     .optional(),
+  /**
+   * Re-invocations so far in this chain of stale-snapshot (precondition)
+   * rejections. Counted on the message because the in-process restart budget
+   * lives in the invocation closure and the queue's delivery count resets on
+   * every fresh enqueue, so without this a permanently fenced run would cycle
+   * forever instead of failing.
+   */
+  preconditionReinvocations: z.number().int().positive().optional(),
   /** Number of times this message has been re-enqueued due to server errors (5xx) */
   serverErrorRetryCount: z.number().int().optional(),
   /** Step ID for inline step execution in combined handler. If provided, the flow execution
@@ -134,6 +171,8 @@ export const WorkflowInvokePayloadSchema = z.object({
   stepName: z.string().optional(),
   /** Run creation data, only present on the first queue delivery from start() */
   runInput: RunInputSchema.optional(),
+  /** Hook resume data, only present on the queue delivery from resumeHook() */
+  hookInput: HookInputSchema.optional(),
 });
 
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;
