@@ -17,6 +17,7 @@ import {
 } from '@workflow/utils/parse-name';
 import {
   type Event,
+  FIRST_SLOT,
   getQueueTopicPrefix,
   isLegacySpecVersion,
   ROOT_RUN_ID_ATTRIBUTE,
@@ -24,6 +25,7 @@ import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   slotFromId,
+  usesSlotIdentity,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
   type World,
@@ -1056,6 +1058,20 @@ export function workflowEntrypoint(
                       // intentionally truthy here — do not change the load
                       // branches' `if (preloadedEvents)` checks to test length.
                       preloadedEvents = [];
+                      // A slot-numbered run's first two positions are the run's
+                      // own: `run_created` from start(), then the `run_started`
+                      // in flight above. Both are certain before any write of
+                      // this invocation, and turbo replays against the empty
+                      // snapshot skipped just above — so seed the floor with
+                      // them here rather than waiting for the backgrounded
+                      // response to report it. Waiting loses the race: a
+                      // suspension reserves its whole batch of positions
+                      // synchronously, so a batch that starts numbering from an
+                      // empty log claims the two the run already holds and the
+                      // ops holding them lose their claims.
+                      if (usesSlotIdentity(runInput.specVersion)) {
+                        knownSlotFloor = FIRST_SLOT + 1;
+                      }
                       const now = new Date();
                       workflowRun = {
                         runId,
