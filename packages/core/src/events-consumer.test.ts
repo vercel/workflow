@@ -1,7 +1,15 @@
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
-import { describe, expect, it, vi } from 'vitest';
-import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  DEFERRED_CHECK_DELAY_MS,
+  EventConsumerResult,
+  EventsConsumer,
+} from './events-consumer.js';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 // Helper function to create mock events
 function createMockEvent(overrides: Partial<Event> = {}): Event {
@@ -468,12 +476,63 @@ describe('EventsConsumer', () => {
         expect(consumer.eventIndex).toBe(1);
       });
 
-      // Wait past the internal 100ms unconsumed-event setTimeout window to
-      // ensure the cancelled check truly does not fire.
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      // Wait past the internal unconsumed-event setTimeout window to ensure the
+      // cancelled check truly does not fire.
+      await new Promise((resolve) =>
+        setTimeout(resolve, DEFERRED_CHECK_DELAY_MS * 1.5)
+      );
 
       // The new callback consumed the event, so onUnconsumedEvent should NOT be called
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+
+    it('waits while a delivery is in flight, then reports once it lands', async () => {
+      vi.stubEnv('WORKFLOW_DEFERRED_CHECK_DELAY_MS', '10');
+      const event = createMockEvent();
+      const onUnconsumedEvent = vi.fn();
+      let inFlight = true;
+      const consumer = new EventsConsumer([event], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryInFlight: () => inFlight,
+      });
+
+      consumer.subscribe(
+        vi.fn().mockReturnValue(EventConsumerResult.NotConsumed)
+      );
+
+      // Many delay windows pass. A delivery still on its way to the workflow
+      // means the consumer for this event has not been registered YET — which
+      // is not the same thing as the event being orphaned.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+
+      inFlight = false;
+      await vi.waitFor(() => {
+        expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
+      });
+    });
+
+    it('reports once the grace budget runs out even if a delivery never lands', async () => {
+      vi.stubEnv('WORKFLOW_DEFERRED_CHECK_DELAY_MS', '10');
+      vi.stubEnv('WORKFLOW_DEFERRED_CHECK_MAX_GRACE_MS', '50');
+      const event = createMockEvent();
+      const onUnconsumedEvent = vi.fn();
+      const consumer = new EventsConsumer([event], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+        // Never clears: a delivery that is abandoned must not park the check
+        // forever, or a genuinely orphaned event would never be reported.
+        isDeliveryInFlight: () => true,
+      });
+
+      consumer.subscribe(
+        vi.fn().mockReturnValue(EventConsumerResult.NotConsumed)
+      );
+
+      await vi.waitFor(() => {
+        expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
+      });
     });
   });
 });
