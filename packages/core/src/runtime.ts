@@ -4,6 +4,7 @@ import {
   CorruptedEventLogError,
   EntityConflictError,
   FatalError,
+  HookNotFoundError,
   MaxEventsExceededError,
   PreconditionFailedError,
   ReplayDivergenceError,
@@ -29,6 +30,7 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
+import { decodeTime } from 'ulid';
 import {
   classifyRunError,
   isRetryableWorldError,
@@ -115,6 +117,7 @@ export {
 } from './runtime/helpers.js';
 export {
   getHookByToken,
+  type ResumedHook,
   resumeHook,
   resumeWebhook,
 } from './runtime/resume-hook.js';
@@ -402,6 +405,7 @@ export function workflowEntrypoint(
           stepName: incomingStepName,
           replayDivergence,
           runInput,
+          hookInput,
         } = WorkflowInvokePayloadSchema.parse(message_);
         // `start()` always attaches a trace carrier, but
         // serializeTraceCarrier() returns `{}` when no OTEL SDK is registered
@@ -1404,6 +1408,168 @@ export function workflowEntrypoint(
                           events.length,
                           maxEventsLimit
                         );
+                      }
+
+                      // --- Resilient resume: materialize missing hook_received ---
+                      // `resumeHook()` writes `hook_received` first and only
+                      // enqueues a resume carrying `hookInput` if that direct
+                      // write fails with a retryable error (transient 429/5xx).
+                      // In that recovery path, `hookInput` contains the
+                      // dehydrated payload plus a client-minted idempotency
+                      // key (`resumeId`). If no existing `hook_received` event
+                      // already carries that `resumeId`, we materialize one
+                      // here so replay can see the payload. Mirrors `start()`'s
+                      // resilient path for run_created → run_started.
+                      //
+                      // NOTE: this snapshot check is a non-atomic
+                      // check-then-act — it suppresses the common sequential
+                      // redelivery case, but two CONCURRENT deliveries of the
+                      // same queue message can both pass it and commit two
+                      // rows (no World currently enforces uniqueness on
+                      // hook_received). Replay dedups `hook_received` events
+                      // sharing a `resumeId` (see `workflow/hook.ts`) as
+                      // defense-in-depth: every replay whose loaded log
+                      // contains both rows delivers once, deterministically.
+                      // That is still not a cross-invocation exactly-once
+                      // guarantee — concurrent invocations each replaying a
+                      // pre-duplicate snapshot see only their own row. The
+                      // correctness boundary that closes the concurrent
+                      // window is the storage-level (runId, resumeId)
+                      // constraint arriving with the successor
+                      // parallel-resume work, which builds on the resumeId
+                      // protocol introduced here.
+                      if (hookInput) {
+                        const alreadyMaterialized = events.some(
+                          (e) =>
+                            e.eventType === 'hook_received' &&
+                            e.correlationId === hookInput.hookId &&
+                            (e.eventData as { resumeId?: string } | undefined)
+                              ?.resumeId === hookInput.resumeId
+                        );
+                        if (!alreadyMaterialized) {
+                          // The resumeId is a ULID minted in resumeHook() at
+                          // resume time, so its embedded timestamp dates the
+                          // materialized event to when the resume actually
+                          // happened rather than after the queue round-trip —
+                          // keeping latency attribution honest on the one
+                          // path (backend errors + retries) where it matters
+                          // most. Guarded: hookInput.resumeId is typed as an
+                          // opaque string, so a non-ULID value simply omits
+                          // occurredAt.
+                          let occurredAt: Date | undefined;
+                          try {
+                            occurredAt = new Date(
+                              decodeTime(hookInput.resumeId)
+                            );
+                          } catch {
+                            occurredAt = undefined;
+                          }
+                          try {
+                            const result = await world.events.create(
+                              runId,
+                              {
+                                eventType: 'hook_received',
+                                specVersion:
+                                  workflowRun.specVersion ??
+                                  SPEC_VERSION_CURRENT,
+                                correlationId: hookInput.hookId,
+                                eventData: {
+                                  ...(hookInput.token
+                                    ? { token: hookInput.token }
+                                    : {}),
+                                  payload: hookInput.payload as any,
+                                  resumeId: hookInput.resumeId,
+                                },
+                              },
+                              { requestId, occurredAt }
+                            );
+                            if (result.event) {
+                              // The server returns a "lazy" response for
+                              // hook_received — the payload field on
+                              // result.event.eventData may be a RefDescriptor
+                              // (when the payload exceeded the inline size
+                              // and was offloaded to blob storage) rather
+                              // than the raw bytes. Replay would then fail
+                              // when it tries to deserialize the descriptor
+                              // as a Uint8Array. Substitute the eventData we
+                              // already have locally so the in-memory event
+                              // matches what `getWorkflowRunEvents` would
+                              // return after client-side ref hydration.
+                              events.push({
+                                ...result.event,
+                                eventData: {
+                                  ...(hookInput.token
+                                    ? { token: hookInput.token }
+                                    : {}),
+                                  payload: hookInput.payload as any,
+                                  resumeId: hookInput.resumeId,
+                                },
+                              } as Event);
+                            }
+                            runtimeLogger.warn(
+                              'Materialized hook_received event from queue payload (resilient resume)',
+                              {
+                                workflowRunId: runId,
+                                hookId: hookInput.hookId,
+                                resumeId: hookInput.resumeId,
+                              }
+                            );
+                            span?.setAttributes({
+                              ...Attribute.HookResilientResumeMaterialized(
+                                true
+                              ),
+                            });
+                          } catch (err) {
+                            if (EntityConflictError.is(err)) {
+                              // No current World enforces uniqueness on
+                              // hook_received (a duplicate insert succeeds
+                              // rather than conflicting), so today this
+                              // branch is defensive only — the duplicate-row
+                              // case is instead neutralized by the replay-
+                              // side resumeId dedup (see the NOTE above).
+                              //
+                              // Known gap while defensive: swallowing the
+                              // conflict leaves this invocation's local
+                              // `events` without the payload, so this replay
+                              // proceeds as if the resume hadn't happened
+                              // (the workflow re-suspends) and forward
+                              // progress relies on the conflicting writer's
+                              // own queue delivery or a later redelivery.
+                              //
+                              // Rebase contract for the parallel-resume
+                              // successor (which adds the storage-level
+                              // (runId, resumeId) constraint that makes this
+                              // branch live): a conflict whose canonical
+                              // event matches this resumeId must be treated
+                              // as success AND the canonical event appended
+                              // to the local log so THIS replay delivers the
+                              // payload; a real conflict (different claim)
+                              // must rethrow so the queue redelivers.
+                              runtimeLogger.info(
+                                'Hook resilient-resume materialization skipped (already exists)',
+                                {
+                                  workflowRunId: runId,
+                                  hookId: hookInput.hookId,
+                                  resumeId: hookInput.resumeId,
+                                }
+                              );
+                            } else if (HookNotFoundError.is(err)) {
+                              // The hook was disposed between resumeHook()
+                              // and this queue delivery. Drop the resume —
+                              // there is no active awaiter to deliver it to.
+                              runtimeLogger.warn(
+                                'Hook was disposed before resilient resume could materialize — dropping payload',
+                                {
+                                  workflowRunId: runId,
+                                  hookId: hookInput.hookId,
+                                  resumeId: hookInput.resumeId,
+                                }
+                              );
+                            } else {
+                              throw err;
+                            }
+                          }
+                        }
                       }
 
                       // Latency telemetry: judge TTFS eligibility against the
