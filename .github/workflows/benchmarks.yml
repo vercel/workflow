@@ -141,7 +141,7 @@ jobs:
       - name: Wait for Vercel deployment
         id: waitForDeployment
         if: matrix.target.world == 'vercel'
-        uses: vercel/wait-for-deployment-action@8f3aadd772de13644bb7ecbaf0a68c477897cd31 # matching deployment status
+        uses: vercel/wait-for-deployment-action@080c5868620fc8ed3f98ccc9417d69d79a3f6207 # matching deployment status
         with:
           project-slug: ${{ matrix.target.project-slug }}
           timeout: 1000

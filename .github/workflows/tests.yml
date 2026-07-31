@@ -381,7 +381,7 @@ jobs:
 
       - name: Waiting for the Vercel deployment
         id: waitForDeployment
-        uses: vercel/wait-for-deployment-action@8f3aadd772de13644bb7ecbaf0a68c477897cd31 # matching deployment status
+        uses: vercel/wait-for-deployment-action@080c5868620fc8ed3f98ccc9417d69d79a3f6207 # matching deployment status
         with:
           project-slug: ${{ matrix.app.project-slug }}
           timeout: 1000
@@ -487,7 +487,7 @@ jobs:
 
       - name: Waiting for the Vercel deployment
         id: waitForDeployment
-        uses: vercel/wait-for-deployment-action@8f3aadd772de13644bb7ecbaf0a68c477897cd31 # matching deployment status
+        uses: vercel/wait-for-deployment-action@080c5868620fc8ed3f98ccc9417d69d79a3f6207 # matching deployment status
         with:
           project-slug: "example-nextjs-workflow-turbopack"
           timeout: 1000
