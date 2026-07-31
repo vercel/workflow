@@ -726,7 +726,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     // A slot-numbered run names its own event ids, so the id has to reach the
     // wire: the backend reads it from the frame meta and inserts it
     // conditionally. Dropped, the backend mints a ULID instead and the run
-    // silently loses the density its completeness check depends on.
+    // silently reverts to server-assigned identity mid-log.
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();

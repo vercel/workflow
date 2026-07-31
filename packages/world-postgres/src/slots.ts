@@ -2,10 +2,11 @@
  * Slot identity for the postgres world.
  *
  * A slot-numbered run names its events by position: `evnt_…001` is the first
- * event of the run, `evnt_…002` the second, with no gaps. Density is the point
- * — it is what lets a reader prove its copy of a log is complete — so the two
- * things this module has to get right are that a position is written at most
- * once and that a lost position is never left behind as a hole.
+ * event of the run, `evnt_…002` the second. Contention on a position is the
+ * point — it is what makes a concurrent write detectable rather than silent —
+ * so the two things this module has to get right are that a position is written
+ * at most once and that a position this allocator loses is retried rather than
+ * abandoned as a hole.
  *
  * The authority for both is the events table's primary key, `(run_id, id)`: the
  * INSERT either lands or raises a unique violation, and a writer that loses the
