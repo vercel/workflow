@@ -7,7 +7,7 @@ import type {
   CreateEventParams,
   CreateEventRequest,
   Event,
-  EventResult,
+  EventResultFor,
   HealthCheckPayload,
   ValidQueueName,
   WorkflowRun,
@@ -766,10 +766,10 @@ export async function withPreconditionRetry<T>(
 }
 
 /** Creates one event on a bound run, carrying replay-recovery telemetry. */
-export type EventCreator = (
-  data: CreateEventRequest,
+export type EventCreator = <T extends CreateEventRequest>(
+  data: T,
   params?: CreateEventParams
-) => Promise<EventResult>;
+) => Promise<EventResultFor<T>>;
 
 /**
  * CORS headers for health check responses.
