@@ -1014,6 +1014,16 @@ export function workflowEntrypoint(
                       // handler, optimistic step_started, terminal run writes) so
                       // nothing is written before the run exists.
                       recordRunStartedCreateStart(true);
+                      // The instant this invocation calls the run started, sent
+                      // with the event and reused for the synthesized run row
+                      // below. Backends that persist `occurredAt` record the
+                      // run's `startedAt` from it, which is what keeps
+                      // `workflowStartedAt` identical between this optimistic
+                      // pass and every later replay that reads the persisted
+                      // run. Without it the two disagree by the round-trip, and
+                      // a step's captured metadata no longer matches the
+                      // workflow's on the next replay.
+                      const now = new Date();
                       const startedPromise = world.events.create(
                         runId,
                         runStartedEvent,
@@ -1024,7 +1034,7 @@ export function workflowEntrypoint(
                         // run_started request the chained first step_started
                         // waits on — shortening time-to-second-step — and the
                         // wasted list+resolve it would otherwise compute.
-                        { requestId, skipPreload: true }
+                        { requestId, skipPreload: true, occurredAt: now }
                       );
                       runReadyBarrier = startedPromise;
                       // Turbo backgrounds run_started, so the non-turbo assignment
@@ -1071,7 +1081,6 @@ export function workflowEntrypoint(
                       if (usesSlotIdentity(runInput.specVersion)) {
                         knownSlotFloor = FIRST_SLOT + 1;
                       }
-                      const now = new Date();
                       workflowRun = {
                         runId,
                         status: 'running',
