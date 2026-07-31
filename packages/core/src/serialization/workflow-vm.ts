@@ -9,7 +9,7 @@
  */
 
 import { devalueVmCodec } from './codec-devalue-vm.js';
-import { SerializationFormat, isFormatPrefix } from './types.js';
+import { isFormatPrefix, SerializationFormat } from './types.js';
 
 const FORMAT_PREFIX_LENGTH = 4;
 let _encoder: { encode(s: string): Uint8Array };
