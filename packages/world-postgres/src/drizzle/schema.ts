@@ -133,7 +133,7 @@ export const runs = schema.table(
 export const events = schema.table(
   'workflow_events',
   {
-    eventId: varchar('id').primaryKey(),
+    eventId: varchar('id').notNull(),
     eventType: varchar('type').$type<Event['eventType']>().notNull(),
     correlationId: varchar('correlation_id'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -146,7 +146,11 @@ export const events = schema.table(
     Cborized<Omit<Event, 'occurredAt'> & { eventData?: undefined }, 'eventData'>
   >,
   (tb) => [
-    index().on(tb.runId),
+    // Event ids are only unique within their run: under slot identity every run
+    // numbers its own log from 1, so `evnt_0…001` exists once per run. The run
+    // leads the key so the range scans in `list` stay a single index seek, and
+    // it subsumes the plain `run_id` index the table used to carry.
+    primaryKey({ columns: [tb.runId, tb.eventId] }),
     index().on(tb.correlationId),
     // Runtime-correlated one-shot events must be unique per (run, correlation)
     // — without
@@ -167,7 +171,7 @@ export const steps = schema.table(
   'workflow_steps',
   {
     runId: varchar('run_id').notNull(),
-    stepId: varchar('step_id').primaryKey(),
+    stepId: varchar('step_id').notNull(),
     stepName: varchar('step_name').notNull(),
     status: stepStatus('status').notNull(),
     /** @deprecated */
@@ -203,7 +207,13 @@ export const steps = schema.table(
       'output' | 'input' | 'error'
     >
   >,
-  (tb) => [index().on(tb.runId), index().on(tb.status)]
+  (tb) => [
+    // A step id is a correlation id, which under slot identity is only unique
+    // within its run — same reasoning as `workflow_events`. Every step query in
+    // this world is already run-scoped, so the run leads the key.
+    primaryKey({ columns: [tb.runId, tb.stepId] }),
+    index().on(tb.status),
+  ]
 );
 
 export const hooks = schema.table(

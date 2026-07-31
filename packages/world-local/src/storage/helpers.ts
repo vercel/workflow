@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { FIRST_SLOT, maxSlotOf, slotEventId } from '@workflow/world';
 import { decodeTime, monotonicFactory } from 'ulid';
 import {
   hasTag,
@@ -209,6 +210,46 @@ export async function reapPendingHookEvents(
 }
 
 /**
+ * The event ids of `runId` that are visible in the given tag's view, read from
+ * the event filenames alone — no file contents, so the cost is one `readdir`
+ * however large the log is.
+ *
+ * A missing `events` directory means the run provably has no events yet. Any
+ * other failure is thrown: callers derive an event key from this scan, and a
+ * silently short answer would mint a key that collides with, or fails to
+ * dominate, an event that is actually there.
+ */
+export async function listRunEventIds(
+  basedir: string,
+  runId: string,
+  tag?: string
+): Promise<string[]> {
+  let files: string[] = [];
+  try {
+    files = await fs.readdir(path.join(basedir, 'events'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
+  const prefix = `${runId}-`;
+  const eventIds: string[] = [];
+  for (const file of files) {
+    if (!file.startsWith(prefix) || !file.endsWith('.json')) {
+      continue;
+    }
+    const fileId = file.slice(0, -'.json'.length);
+    // Mirror read visibility: untagged files are visible to every tag,
+    // tagged files only to their own tag.
+    if (!isUntagged(fileId) && !(tag && hasTag(fileId, tag))) {
+      continue;
+    }
+    eventIds.push(stripTag(fileId).slice(prefix.length));
+  }
+  return eventIds;
+}
+
+/**
  * Mint an event key (eventId + createdAt) that sorts strictly AFTER every
  * reader-visible event of the run in the given tag's view.
  *
@@ -229,38 +270,35 @@ export async function reapPendingHookEvents(
  * >= every visible event's `createdAt`, which was stamped at that event's
  * `createImpl()` entry — before its publish, and thus before this call.
  * Equal-`createdAt` ties fall to the strictly-dominant eventId.
+ *
+ * A slot-numbered run takes the slot above the highest visible one, which
+ * dominates by construction, paired with the wall clock — `createdAt` needs
+ * only to be >= every visible one, by the same argument as above. This is
+ * the one allocation that deliberately does *not* fill a hole below the max:
+ * a lower slot would sort before the events it has to follow, and density
+ * matters less here than replay order, since a hole below a terminal event
+ * means the run already lost an event it can never write.
  */
 export async function mintRunDominantEventKey(
   basedir: string,
   runId: string,
-  tag?: string
+  tag: string | undefined,
+  slotMode: boolean
 ): Promise<{ eventId: string; createdAt: Date }> {
-  let files: string[] = [];
-  try {
-    files = await fs.readdir(path.join(basedir, 'events'));
-  } catch (error) {
-    // Only ENOENT ("no events directory yet") means there is provably
-    // nothing visible to dominate. Any other failure would silently mint a
-    // wall-clock key with no dominance guarantee over an already-accepted
-    // hook — abort the terminal transition instead; its retry re-runs this
-    // scan.
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw error;
-    }
+  const eventIds = await listRunEventIds(basedir, runId, tag);
+  if (slotMode) {
+    // Above every event on disk, and above the run's own first slot even when
+    // that event has not landed yet: only `run_created` may occupy it, and a
+    // terminal event is never the run's first.
+    return {
+      eventId: slotEventId(
+        Math.max(maxSlotOf(eventIds.map(toEventRef)), FIRST_SLOT) + 1
+      ),
+      createdAt: new Date(),
+    };
   }
-  const prefix = `${runId}-`;
   let maxUlid: string | null = null;
-  for (const file of files) {
-    if (!file.startsWith(prefix) || !file.endsWith('.json')) {
-      continue;
-    }
-    const fileId = file.slice(0, -'.json'.length);
-    // Mirror read visibility: untagged files are visible to every tag,
-    // tagged files only to their own tag.
-    if (!isUntagged(fileId) && !(tag && hasTag(fileId, tag))) {
-      continue;
-    }
-    const candidate = stripTag(fileId).slice(prefix.length);
+  for (const candidate of eventIds) {
     if (!maxUlid || candidate > maxUlid) {
       maxUlid = candidate;
     }
@@ -277,6 +315,10 @@ export async function mintRunDominantEventKey(
     }
   }
   return { eventId: `evnt_${monotonicUlid(ts)}`, createdAt: new Date(ts) };
+}
+
+function toEventRef(eventId: string): { eventId: string } {
+  return { eventId };
 }
 
 /**
