@@ -113,6 +113,10 @@ Vercel team ID for API requests. Automatically detected.
 
 Custom base URL for the Vercel workflow API. Automatically detected.
 
+### `WORKFLOW_H2_MULTIPLEX`
+
+Enabled by default. Lets concurrent event-log requests share one HTTP/2 connection instead of opening one connection per in-flight request. Set to `0` to send one event request per connection.
+
 ### Programmatic configuration
 
 {/*@skip-typecheck: incomplete code sample*/}

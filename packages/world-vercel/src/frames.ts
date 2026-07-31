@@ -79,41 +79,63 @@ export async function* decodeFrames(
     return out;
   };
 
-  while (true) {
-    if (!(await refill(4))) return;
-    const metaLen = new DataView(buffer.buffer, buffer.byteOffset, 4).getUint32(
-      0,
-      false
-    );
-    take(4);
+  try {
+    while (true) {
+      if (!(await refill(4))) return;
+      const metaLen = new DataView(
+        buffer.buffer,
+        buffer.byteOffset,
+        4
+      ).getUint32(0, false);
+      take(4);
 
-    if (!(await refill(metaLen))) {
-      throw new Error('decodeFrames: truncated meta block');
-    }
-    const meta = decode(take(metaLen)) as Record<string, unknown>;
+      if (!(await refill(metaLen))) {
+        throw new Error('decodeFrames: truncated meta block');
+      }
+      const meta = decode(take(metaLen)) as Record<string, unknown>;
 
-    if (!(await refill(4))) {
-      throw new Error('decodeFrames: truncated body length');
-    }
-    const bodyLen = new DataView(buffer.buffer, buffer.byteOffset, 4).getUint32(
-      0,
-      false
-    );
-    take(4);
+      if (!(await refill(4))) {
+        throw new Error('decodeFrames: truncated body length');
+      }
+      const bodyLen = new DataView(
+        buffer.buffer,
+        buffer.byteOffset,
+        4
+      ).getUint32(0, false);
+      take(4);
 
-    if (bodyLen > 0) {
-      if (!(await refill(bodyLen))) {
+      if (bodyLen > 0 && !(await refill(bodyLen))) {
         throw new Error('decodeFrames: truncated body bytes');
       }
-      // Slice (not subarray) so the yielded body owns its bytes —
-      // subsequent reads into the buffer won't overwrite it.
+      // Slice (not subarray) so the yielded body owns its bytes — later
+      // reads into the buffer won't overwrite it; bodyLen 0 yields empty.
       yield { meta, body: buffer.slice(0, bodyLen) };
       take(bodyLen);
-    } else {
-      yield { meta, body: new Uint8Array(0) };
-    }
 
-    if (meta._end === 1) return;
+      if (meta._end === 1) return;
+    }
+  } finally {
+    // Release the source when the consumer stops before EOF (early
+    // break/return): an unconsumed body pins its undici socket out of the
+    // connection pool. No-op once the stream is already drained.
+    //
+    // Fire-and-forget, NOT awaited: on a service-backed World this cancel
+    // can hit the network (an H2 stream reset, or an H1 socket teardown),
+    // and awaiting it here would block every early-exit caller (getEventV4,
+    // every replay's list read) on that round-trip. Awaiting it previously
+    // hung indefinitely on the Next.js Vercel Function lanes specifically —
+    // same class of bug as the abort-stream reader in #2807.
+    closeQuietly(() => chunks.return?.());
+  }
+}
+
+/** Best-effort source cleanup, safe to run detached from a `finally`:
+ *  swallows errors so cleanup can't mask the original outcome. */
+function closeQuietly(close: () => unknown): void {
+  try {
+    void Promise.resolve(close()).catch(() => {});
+  } catch {
+    // best-effort
   }
 }
 
@@ -122,9 +144,15 @@ export async function* decodeFrames(
 async function* readerToIterator(
   reader: ReadableStreamDefaultReader<Uint8Array>
 ): AsyncGenerator<Uint8Array> {
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) return;
-    if (value) yield value;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (value) yield value;
+    }
+  } finally {
+    // Cancel on early exit so the socket is released, not just unlocked.
+    // Fire-and-forget — see closeQuietly's call site above.
+    closeQuietly(() => reader.cancel());
   }
 }
