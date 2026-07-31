@@ -213,9 +213,15 @@ export async function runWorkflow(
         updateTimestamp(+event.createdAt);
       },
       onUnconsumedEvent: (event) => {
+        // Name what the replay was waiting for instead. An unconsumable event
+        // is almost always one whose entity this replay never issued, or
+        // issued under a different correlation ID; the pending invocation
+        // queue is the only place that distinction is visible, and without it
+        // the log names a symptom with no way to reach the cause.
+        const pending = [...workflowContext.invocationsQueue.keys()];
         workflowDiscontinuation.reject(
           new ReplayDivergenceError(
-            `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}.`,
+            `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. Pending invocations: ${pending.length > 0 ? pending.join(', ') : '(none)'}.`,
             { eventId: event.eventId }
           )
         );

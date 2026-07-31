@@ -2499,10 +2499,32 @@ export function workflowEntrypoint(
                           // the sibling executions to settle first so no owned
                           // body is in flight when the ack path runs.
                           if (requiresFreshReplay(stepErr)) {
-                            await Promise.allSettled(stepExecutionPromises);
+                            const settled = await Promise.allSettled(
+                              stepExecutionPromises
+                            );
                             runtimeLogger.warn(
                               'Inline step claim rejected as stale; re-invoking run for a fresh replay',
-                              { workflowRunId: runId, loopIteration }
+                              {
+                                workflowRunId: runId,
+                                loopIteration,
+                                // Which members of the batch were fenced and
+                                // which committed. A fence is per-write, so a
+                                // batch can be split: the rejected claim wrote
+                                // nothing, but a sibling holding a different
+                                // slot may have committed its step. That
+                                // asymmetry is the shape to look for when a
+                                // later replay cannot consume a step event.
+                                batchSteps: inlineExecutions
+                                  .map(
+                                    (s, i) =>
+                                      `${s.correlationId}:${settled[i]?.status === 'rejected' ? 'rejected' : 'settled'}`
+                                  )
+                                  .join(', '),
+                                errorMessage:
+                                  stepErr instanceof Error
+                                    ? stepErr.message
+                                    : String(stepErr),
+                              }
                             );
                             // The finally below resumes the replay budget
                             // before this return completes.

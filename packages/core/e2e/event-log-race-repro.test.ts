@@ -373,6 +373,30 @@ function validateStormReturn(value: unknown): {
   return { stragglers };
 }
 
+/**
+ * Reads a terminal-failed run's error through `returnValue()`, which hydrates
+ * the stored payload into an Error. Returns undefined when the read itself
+ * fails — the outcome is already known from `errorCode`, so a missing message
+ * degrades the report rather than the classification.
+ */
+async function readFailureMessage(
+  run: Run<unknown>
+): Promise<{ name?: string; message?: string } | undefined> {
+  try {
+    await run.returnValue();
+    return undefined;
+  } catch (err) {
+    if (WorkflowRunFailedError.is(err)) {
+      const cause = err.cause;
+      return {
+        name: cause instanceof Error ? cause.name : err.name,
+        message: cause instanceof Error ? cause.message : err.message,
+      };
+    }
+    return undefined;
+  }
+}
+
 async function pollTerminalRun(
   run: Run<unknown>,
   startedAt: number,
@@ -412,13 +436,20 @@ async function pollTerminalRun(
         errorCode?: string;
         error?: { name?: string; message?: string };
       };
+      // `runs.get` hands back the raw serialized error payload, not an Error, so
+      // reading `.message` off it yields undefined and the report records the
+      // code with no diagnosis. Read the failure through the public
+      // return-value path, which hydrates it. For a corruption that message
+      // carries the divergent event and what the replay was waiting for, which
+      // is the whole reason to keep the report.
+      const hydrated = await readFailureMessage(run);
       return {
         ...base,
         outcome: classifyFailure(failure.errorCode),
         status: runData.status,
         errorCode: failure.errorCode,
-        errorMessage: failure.error?.message,
-        errorName: failure.error?.name,
+        errorMessage: hydrated?.message ?? failure.error?.message,
+        errorName: hydrated?.name ?? failure.error?.name,
         durationMs: Date.now() - startedAt,
       };
     }
