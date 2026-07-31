@@ -742,6 +742,157 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('surfaces the comparison a 412 rejected on, with no delta attached', async () => {
+    // The numbers are the half a restart can always act on: with them it can
+    // check that its reloaded log actually reached what the backend had
+    // recorded, instead of spending another restart to find out.
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        412,
+        JSON.stringify({
+          success: false,
+          code: 'precondition-failed',
+          message: 'Run state is stale',
+          details: {
+            recorded: 4,
+            stateEventCount: 3,
+            stateUpdatedAt: 1747742400000,
+          },
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      );
+
+    const error = await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: 5,
+        correlationId: 'wait_1',
+        stateUpdatedAt: 1747742400000,
+        stateEventCount: 3,
+        stateCursor: 'eid:evnt_3',
+      },
+      { token: 'test-token', dispatcher: agent }
+    ).catch((err: unknown) => err);
+
+    expect(PreconditionFailedError.is(error)).toBe(true);
+    expect((error as PreconditionFailedError).details).toEqual({
+      recordedAtOrBelow: 4,
+      stateUpdatedAt: 1747742400000,
+    });
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('keeps the rejection counts when the delta beside them is unusable', async () => {
+    // The two halves are decoded independently: losing the shortcut must not
+    // also lose the evidence that says whether a reload healed the gap.
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        412,
+        JSON.stringify({
+          success: false,
+          code: 'precondition-failed',
+          message: 'Run state is stale',
+          cursor: 'eid:evnt_missing_1',
+          events: [{ noEventId: true }],
+          details: { recorded: 9, stateUpdatedAt: 1747742400000 },
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      );
+
+    const error = await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: 5,
+        correlationId: 'wait_1',
+        stateUpdatedAt: 1747742400000,
+        stateEventCount: 3,
+        stateCursor: 'eid:evnt_3',
+      },
+      { token: 'test-token', dispatcher: agent }
+    ).catch((err: unknown) => err);
+
+    expect(PreconditionFailedError.is(error)).toBe(true);
+    // No `events`, and therefore no `cursor` either — a cursor without the
+    // events it sits after would move the client past a gap it never merged.
+    expect((error as PreconditionFailedError).details).toEqual({
+      recordedAtOrBelow: 9,
+      stateUpdatedAt: 1747742400000,
+    });
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('ignores rejection counts that are incomplete or out of range', async () => {
+    // Checking a restart is an optimization, so a verdict that cannot be read
+    // degrades to the unchecked path rather than being repaired into one.
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    for (const details of [
+      { recorded: 4 },
+      { stateUpdatedAt: 1747742400000 },
+      { recorded: -1, stateUpdatedAt: 1747742400000 },
+      { recorded: '4', stateUpdatedAt: 1747742400000 },
+    ]) {
+      agent
+        .get(origin)
+        .intercept({
+          path: '/api/v4/runs/wrun_1/events/wait_created',
+          method: 'POST',
+        })
+        .reply(
+          412,
+          JSON.stringify({
+            success: false,
+            code: 'precondition-failed',
+            message: 'Run state is stale',
+            details,
+          }),
+          { headers: { 'content-type': 'application/json' } }
+        );
+
+      const error = await createWorkflowRunEventV4(
+        {
+          runId: 'wrun_1',
+          eventType: 'wait_created',
+          specVersion: 5,
+          correlationId: 'wait_1',
+          stateUpdatedAt: 1747742400000,
+          stateEventCount: 3,
+        },
+        { token: 'test-token', dispatcher: agent }
+      ).catch((err: unknown) => err);
+
+      expect(PreconditionFailedError.is(error)).toBe(true);
+      expect((error as PreconditionFailedError).details).toBeUndefined();
+    }
+
+    agent.assertNoPendingInterceptors();
+  });
+
   it('forwards stateUpdatedAt in the frame meta (precondition guard)', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';

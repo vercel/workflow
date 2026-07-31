@@ -15,6 +15,10 @@
  *    delayed re-invocation instead of failing the run — and that escalation is
  *    itself counted on the queue message, so a run that can never observe its
  *    own log completely fails loudly rather than cycling restart chains.
+ * 4. The bound is a ceiling, not a quota: a restart whose reload demonstrably
+ *    cannot produce a different write — the log came back unchanged, or still
+ *    short of the count the World reported it rejected on — escalates
+ *    immediately rather than replaying the same snapshot again.
  *
  * Modeled on wait-completion-replay.test.ts, but with real ULID event IDs so
  * latestEventStateUpdatedAt() actually derives snapshot times.
@@ -27,7 +31,7 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-import { monotonicFactory } from 'ulid';
+import { monotonicFactory, ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../logger.js';
 import { registerStepFunction } from '../private.js';
@@ -433,6 +437,9 @@ async function runPreconditionScenario(options: {
 async function runCompletedRejectionScenario({
   turbo = false,
   preconditionReinvocations,
+  growLogPerRejection = false,
+  echoRejectionCounts = false,
+  recordedOffset = 1,
 }: {
   /**
    * Deliver the message the way `start()` does (run input inline, first
@@ -443,6 +450,23 @@ async function runCompletedRejectionScenario({
   turbo?: boolean;
   /** Escalations already spent, as a re-invoked message carries them. */
   preconditionReinvocations?: number;
+  /**
+   * Append an outside event to the durable log on every rejection, so each
+   * restart's reload comes back longer than the last. Without it the log never
+   * moves, which is itself a distinct case: a restart that reloads the same set
+   * it already had cannot produce a different write.
+   */
+  growLogPerRejection?: boolean;
+  /**
+   * Echo the comparison the rejection was made on, the way a World that
+   * implements the optional half of the guard contract does.
+   */
+  echoRejectionCounts?: boolean;
+  /**
+   * How far the echoed `recordedAtOrBelow` sits above what the client sent —
+   * i.e. how many events the World claims the client is missing.
+   */
+  recordedOffset?: number;
 } = {}) {
   vi.spyOn(Date, 'now').mockReturnValue(+fixedNow);
 
@@ -487,8 +511,35 @@ async function runCompletedRejectionScenario({
   ];
   const staleEventsCursor = 'cursor-after-stale-events';
 
+  // A step body's setAttributes() write: genuinely out-of-band, and consumed
+  // unconditionally during replay, so it lengthens the log without changing
+  // what the workflow does. Stamped *below* the newest event, which is the
+  // production shape of a hole — an event the client's snapshot covered by time
+  // and still did not contain, so the reload lengthens the log without moving
+  // the watermark.
+  let holeIndex = 0;
+  const holeEvent = (): Event => {
+    holeIndex += 1;
+    const t = +staleEvents[0].createdAt + holeIndex;
+    return {
+      eventType: 'attr_set',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        changes: [{ key: `outside-${holeIndex}`, value: 'set' }],
+        writer: { type: 'step', stepId: 'step_outside', attempt: 1 },
+      },
+      runId,
+      eventId: `evnt_${ulid(t)}`,
+      createdAt: new Date(t),
+    } as unknown as Event;
+  };
+
   const createParams: SnapshotParams[] = [];
   const createRequests: CreateEventRequest[] = [];
+  const rejectedSnapshots: Array<{
+    stateUpdatedAt: number;
+    stateEventCount: number;
+  }> = [];
   let capturedHandler:
     | ((
         message: unknown,
@@ -528,8 +579,29 @@ async function runCompletedRejectionScenario({
         };
       }
       if (request.eventType === 'run_completed') {
+        // What the log actually held when this attempt was rejected, recorded
+        // from the World's side so the assertions do not have to re-derive the
+        // snapshot the runtime was supposed to send.
+        const stateEventCount = staleEvents.length;
+        const stateUpdatedAt = Math.max(
+          ...staleEvents.map((e) => e.createdAt.getTime())
+        );
+        rejectedSnapshots.push({ stateUpdatedAt, stateEventCount });
+        if (growLogPerRejection) {
+          staleEvents.push(holeEvent());
+          // The World returns its own order, which is eventId order.
+          staleEvents.sort((a, b) => (a.eventId < b.eventId ? -1 : 1));
+        }
         throw new PreconditionFailedError(
-          'Run state is stale: an out-of-band event was recorded after the client snapshot.'
+          'Run state is stale: an out-of-band event was recorded after the client snapshot.',
+          echoRejectionCounts
+            ? {
+                details: {
+                  recordedAtOrBelow: stateEventCount + recordedOffset,
+                  stateUpdatedAt,
+                },
+              }
+            : undefined
         );
       }
       return { event: event(request) };
@@ -595,9 +667,9 @@ async function runCompletedRejectionScenario({
     createRequests,
     listEvents,
     queue,
-    staleEventCount: staleEvents.length,
     staleEventsCursor,
-    runStartedSnapshotMs: +startedAt + 200,
+    /** The snapshot the log held at each rejection, oldest first. */
+    rejectedSnapshots,
   };
 }
 
@@ -1140,7 +1212,11 @@ describe('precondition guard through the real replay loop', () => {
   });
 
   it('bounds in-process restarts, then schedules a single delayed re-invocation instead of failing the run', async () => {
-    const result = await runCompletedRejectionScenario();
+    // Each rejection lengthens the log, so every restart has something new to
+    // replay against and the bound is what stops the chain.
+    const result = await runCompletedRejectionScenario({
+      growLogPerRejection: true,
+    });
 
     // The handler must NOT throw (the turbo path has already acked the
     // message, so a rethrow would strand the run until the queue's ~300s
@@ -1152,17 +1228,20 @@ describe('precondition guard through the real replay loop', () => {
     });
 
     // One attempt per replay: the original plus one per in-process restart.
-    // The stale result is never re-posted — each attempt is a fresh replay.
     const runCompletedCreates = result.createParams.filter(
       (c) => c.eventType === 'run_completed'
     );
     expect(runCompletedCreates).toHaveLength(
       1 + getPreconditionMaxInProcessRestarts()
     );
-    for (const create of runCompletedCreates) {
-      expect(create.stateUpdatedAt).toBe(result.runStartedSnapshotMs);
-      expect(create.stateEventCount).toBe(result.staleEventCount);
-    }
+    // The stale result is never re-posted: every attempt carries the snapshot
+    // of the log as it stood when that attempt ran, not the first one's.
+    expect(
+      runCompletedCreates.map((c) => ({
+        stateUpdatedAt: c.stateUpdatedAt,
+        stateEventCount: c.stateEventCount,
+      }))
+    ).toEqual(result.rejectedSnapshots);
     // And the runtime must not convert the rejection into a run failure.
     expect(
       result.createParams.filter((c) => c.eventType === 'run_failed')
@@ -1171,7 +1250,9 @@ describe('precondition guard through the real replay loop', () => {
 
   it('honours the restart bound override', async () => {
     process.env.WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS = '1';
-    const result = await runCompletedRejectionScenario();
+    const result = await runCompletedRejectionScenario({
+      growLogPerRejection: true,
+    });
 
     await expect(result.handlerInvocation).resolves.toEqual({
       timeoutSeconds: getPreconditionReinvokeDelaySeconds(),
@@ -1179,6 +1260,91 @@ describe('precondition guard through the real replay loop', () => {
     expect(
       result.createParams.filter((c) => c.eventType === 'run_completed')
     ).toHaveLength(1 + getPreconditionMaxInProcessRestarts());
+  });
+
+  it('stops restarting once a full reload comes back unchanged, escalating instead', async () => {
+    // Nothing appends to the log, so the reload returns the same set the
+    // rejected snapshot was built from. Re-deriving the replay from it produces
+    // the same write and earns the same rejection, so the remaining restarts
+    // are dead weight — spend the escalation now, where a fresh invocation
+    // reads through a different function instance.
+    const warn = vi.spyOn(runtimeLogger, 'warn');
+    const result = await runCompletedRejectionScenario();
+
+    await expect(result.handlerInvocation).resolves.toEqual({
+      timeoutSeconds: getPreconditionReinvokeDelaySeconds(),
+    });
+    expect(
+      result.createParams.filter((c) => c.eventType === 'run_completed')
+    ).toHaveLength(2);
+    expect(
+      warn.mock.calls.filter(
+        ([message, fields]) =>
+          message ===
+            'Event creation rejected as stale; skipping further in-process restarts' &&
+          (fields as { stalledReason?: string }).stalledReason ===
+            'reload-unchanged'
+      )
+    ).toHaveLength(1);
+  });
+
+  it('stops restarting when a grown reload is still short of what the World recorded', async () => {
+    // The log moved, so `unchanged` does not catch this — but the World said it
+    // had two events at or below the watermark that the reload did not produce,
+    // so the next attempt will send the same deficient count. This is the case
+    // the echoed comparison exists for.
+    const warn = vi.spyOn(runtimeLogger, 'warn');
+    const result = await runCompletedRejectionScenario({
+      growLogPerRejection: true,
+      echoRejectionCounts: true,
+      recordedOffset: 2,
+    });
+
+    await expect(result.handlerInvocation).resolves.toEqual({
+      timeoutSeconds: getPreconditionReinvokeDelaySeconds(),
+    });
+    expect(
+      result.createParams.filter((c) => c.eventType === 'run_completed')
+    ).toHaveLength(2);
+    expect(
+      warn.mock.calls.filter(
+        ([message, fields]) =>
+          message ===
+            'Event creation rejected as stale; skipping further in-process restarts' &&
+          (fields as { stalledReason?: string }).stalledReason ===
+            'reload-short-of-recorded'
+      )
+    ).toHaveLength(1);
+  });
+
+  it('keeps restarting while each reload holds what the World said it recorded', async () => {
+    // Same echoed comparison, but the appended event accounts for it: the
+    // reload holds everything the World claimed, so the rejection is about
+    // currency rather than a hole and the bound is what stops the chain.
+    const warn = vi.spyOn(runtimeLogger, 'warn');
+    const result = await runCompletedRejectionScenario({
+      growLogPerRejection: true,
+      echoRejectionCounts: true,
+    });
+    await result.handlerInvocation;
+
+    expect(
+      result.createParams.filter((c) => c.eventType === 'run_completed')
+    ).toHaveLength(1 + getPreconditionMaxInProcessRestarts());
+    // Every reload was checked against the World's own numbers and cleared them
+    // — the restarts continued on evidence, not on an absent verdict.
+    const reloads = warn.mock.calls
+      .filter(
+        ([message]) =>
+          message ===
+          'Restarted replay reloaded its event log after a stale-snapshot rejection'
+      )
+      .map(([, fields]) => fields as { satisfied?: boolean; outcome?: string });
+    expect(reloads).toHaveLength(getPreconditionMaxInProcessRestarts());
+    for (const reload of reloads) {
+      expect(reload.satisfied).toBe(true);
+      expect(reload.outcome).toBe('grew');
+    }
   });
 
   it('counts the escalation on the re-invocation message so the chain has a run-level bound', async () => {

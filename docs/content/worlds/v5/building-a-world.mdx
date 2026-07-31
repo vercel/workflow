@@ -126,6 +126,8 @@ Two rules make this safe:
 
 A rejection may optionally carry the events the caller was missing, as `{ events, cursor }` on the error's `details`. Only include them when you can prove the set is complete — that those events fully account for the discrepancy and are not truncated — and that every one of them belongs to the run being written. The runtime merges them straight into the replay's event log, so anything else there is worse than no delta at all. Otherwise omit them, and the runtime performs a full reload instead.
 
+A rejection may also report the comparison it was made on, as `recordedAtOrBelow` and `stateUpdatedAt` on the same `details` — how many events you had recorded at or below the snapshot's watermark, and the watermark they were counted against. Send both or neither. The runtime uses them to check that a reloaded event log actually reached that count before it spends another replay on it, so a reload that keeps coming up short escalates immediately instead of repeating. Omitting them is always valid: the runtime then treats each reload as unchecked rather than as unsatisfied.
+
 A World that enforces the guard should declare `capabilities.preconditionGuard`, which the runtime also reads to keep event-log delta optimizations enabled. A World that ignores these params must not declare it.
 
 ## Queue Interface

@@ -53,6 +53,7 @@ import {
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
   appendUniqueEvents,
+  countEventsAtOrBelow,
   type EventCreator,
   getQueueOverhead,
   getWorkflowQueueName,
@@ -63,6 +64,7 @@ import {
   memoizeEncryptionKey,
   parseHealthCheckPayload,
   preconditionEventDelta,
+  preconditionExpectation,
   preconditionSnapshotParams,
   queueMessage,
   withHealthCheck,
@@ -751,7 +753,32 @@ export function workflowEntrypoint(
                     restart: number;
                     reason: string;
                     source: 'inline-delta' | 'full-reload';
+                    /**
+                     * What the World said it had recorded at or below the
+                     * rejected snapshot's watermark, when it reported it. The
+                     * reloaded log must have reached that count, which is a
+                     * stronger check than "did the log change at all": a reload
+                     * that grew by one when it was three events short still
+                     * cannot make progress.
+                     */
+                    expectation: {
+                      recordedAtOrBelow: number;
+                      stateUpdatedAt: number;
+                    } | null;
                   } | null = null;
+                  /**
+                   * Why further in-process restarts are pointless, once one has
+                   * been shown to be. Set from the evidence a completed restart
+                   * produced — an authoritative reload that came back with the
+                   * same events, or one still short of the count the World
+                   * rejected on — and read by `restartReplayInProcess` to spend
+                   * the escalation immediately rather than the rest of the
+                   * budget. A fresh invocation is the useful next step: it
+                   * reloads from a different function instance, and on
+                   * `world-vercel` possibly a different region, so it is not
+                   * bound to whatever this one cannot see.
+                   */
+                  let preconditionRestartsStalled: string | null = null;
                   /**
                    * Report what a stale-snapshot restart's reload found, once
                    * the log this replay will actually consume is in hand.
@@ -759,9 +786,17 @@ export function workflowEntrypoint(
                    * `grew` is the expected case and gives 412 volume a
                    * denominator. `unchanged` means the reload disagreed with
                    * the rejection, so this replay re-derives the same snapshot
-                   * and is rejected again until the budget is spent. `shrank`
-                   * should be impossible: every load path only adds to a run's
-                   * log.
+                   * and is rejected again. `shrank` should be impossible: every
+                   * load path only adds to a run's log.
+                   *
+                   * When the World reported the comparison it rejected on, the
+                   * reload is also *checked* against it (`satisfied`), which
+                   * catches the case `outcome` alone cannot: a log that grew but
+                   * is still short of the events the rejection was about.
+                   *
+                   * Either negative verdict, on an authoritative reload, marks
+                   * further restarts stalled — the evidence that they would be
+                   * spent re-deriving the same rejected snapshot.
                    */
                   const reportPreconditionRestartReload = (
                     events: Event[]
@@ -777,6 +812,31 @@ export function workflowEntrypoint(
                     const dropped = countMissingIds(baseline.ids, reloadedIds);
                     const outcome =
                       dropped > 0 ? 'shrank' : added > 0 ? 'grew' : 'unchanged';
+                    const expectation = baseline.expectation;
+                    const heldAtOrBelow = expectation
+                      ? countEventsAtOrBelow(events, expectation.stateUpdatedAt)
+                      : undefined;
+                    const satisfied =
+                      expectation === null || heldAtOrBelow === undefined
+                        ? undefined
+                        : heldAtOrBelow >= expectation.recordedAtOrBelow;
+
+                    // Only an authoritative reload is evidence. A delta-fed
+                    // restart that came up short says nothing about the log:
+                    // the World only promised the delta accounted for the
+                    // rejection it computed it against, and the next restart
+                    // reloads in full anyway (deltas are trusted once).
+                    const stalledReason =
+                      baseline.source !== 'full-reload'
+                        ? null
+                        : outcome === 'unchanged'
+                          ? 'reload-unchanged'
+                          : satisfied === false
+                            ? 'reload-short-of-recorded'
+                            : null;
+                    if (stalledReason) {
+                      preconditionRestartsStalled = stalledReason;
+                    }
 
                     runtimeLogger.warn(
                       'Restarted replay reloaded its event log after a stale-snapshot rejection',
@@ -791,6 +851,17 @@ export function workflowEntrypoint(
                         reason: baseline.reason,
                         source: baseline.source,
                         loopIteration,
+                        // Absent when the World reported no comparison: the
+                        // reload went unchecked, not unsatisfied.
+                        ...(expectation
+                          ? {
+                              satisfied,
+                              heldAtOrBelow,
+                              recordedAtOrBelow: expectation.recordedAtOrBelow,
+                              stateUpdatedAt: expectation.stateUpdatedAt,
+                            }
+                          : {}),
+                        ...(stalledReason ? { stalledReason } : {}),
                       }
                     );
                   };
@@ -810,6 +881,15 @@ export function workflowEntrypoint(
                    * to be re-derived — which the loop does by discarding its
                    * cached log, since `runWorkflow` then builds a fresh VM,
                    * seed and correlation-id sequence from the reloaded events.
+                   *
+                   * Also returns false, budget or no budget, once a completed
+                   * restart has shown that restarting cannot help — an
+                   * authoritative reload that came back with the same events, or
+                   * one still short of the count the World rejected on. Both are
+                   * verdicts about what this invocation is able to read, and
+                   * re-deriving the replay over the same log only produces the
+                   * same rejected snapshot again, so the remaining budget is
+                   * better spent on the escalation the caller falls back to.
                    */
                   const restartReplayInProcess = (
                     reason: string,
@@ -831,6 +911,19 @@ export function workflowEntrypoint(
                     ) {
                       return false;
                     }
+                    if (preconditionRestartsStalled) {
+                      runtimeLogger.warn(
+                        'Event creation rejected as stale; skipping further in-process restarts',
+                        {
+                          workflowRunId: runId,
+                          reason,
+                          loopIteration,
+                          preconditionRestarts,
+                          stalledReason: preconditionRestartsStalled,
+                        }
+                      );
+                      return false;
+                    }
                     preconditionRestarts++;
                     // A World MAY return the events we were missing on the 412.
                     // Trust it only on the FIRST restart: its completeness proof
@@ -847,7 +940,8 @@ export function workflowEntrypoint(
                     // the whole thing anyway.
                     const usedDelta = Boolean(delta && cachedEvents);
                     // Snapshot the set being discarded while it is still in
-                    // hand; the comparison happens once the next load resolves.
+                    // hand, together with the comparison the World rejected on;
+                    // both are checked once the next load resolves.
                     preconditionRestartBaseline = cachedEvents
                       ? {
                           ids: new Set(
@@ -856,6 +950,7 @@ export function workflowEntrypoint(
                           restart: preconditionRestarts,
                           reason,
                           source: usedDelta ? 'inline-delta' : 'full-reload',
+                          expectation: preconditionExpectation(error),
                         }
                       : null;
                     if (usedDelta) {

@@ -12,6 +12,7 @@ import {
 } from '../serialization.js';
 import {
   appendUniqueEvents,
+  countEventsAtOrBelow,
   getWorkflowQueueName,
   handleHealthCheckMessage,
   healthCheck,
@@ -19,6 +20,7 @@ import {
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
   preconditionEventDelta,
+  preconditionExpectation,
   preconditionSnapshotParams,
 } from './helpers.js';
 
@@ -724,6 +726,105 @@ describe('preconditionEventDelta', () => {
     expect(delta({ events: [{ noEventId: true }] })).toBe(null);
     expect(delta({ events: [null] })).toBe(null);
     expect(delta('not-an-object')).toBe(null);
+  });
+
+  it('returns null when the World reported counts but attached no events', () => {
+    // The two halves of a 412's details are independent: reporting what was
+    // recorded is not offering a delta.
+    expect(
+      delta({ recordedAtOrBelow: 4, stateUpdatedAt: 1_700_000_000_000 })
+    ).toBe(null);
+  });
+});
+
+describe('countEventsAtOrBelow', () => {
+  const WATERMARK = 1_700_000_000_000;
+
+  it('counts events at or below the watermark, inclusive of equality', () => {
+    // Equality is the case that matters: the backend's guard allows an
+    // equal-timestamp snapshot, so an event sharing the watermark's
+    // millisecond is inside the set being counted, not outside it.
+    const events = [
+      makeUlidEvent(WATERMARK - 1),
+      makeUlidEvent(WATERMARK),
+      makeUlidEvent(WATERMARK + 1),
+    ];
+
+    expect(countEventsAtOrBelow(events, WATERMARK)).toBe(2);
+  });
+
+  it('counts nothing for an empty log', () => {
+    expect(countEventsAtOrBelow([], WATERMARK)).toBe(0);
+  });
+
+  it('counts an undecodable event id as at or below', () => {
+    // The only caller compares this against a count the backend reported, so an
+    // id it cannot read must not read as a missing event: that would make an
+    // id-format problem look like an event log that never healed.
+    const events = [
+      { ...makeUlidEvent(WATERMARK + 1), eventId: 'evnt_not-a-ulid' } as Event,
+      makeUlidEvent(WATERMARK + 1),
+    ];
+
+    expect(countEventsAtOrBelow(events, WATERMARK)).toBe(1);
+  });
+});
+
+describe('preconditionExpectation', () => {
+  const expectation = (details: unknown) =>
+    preconditionExpectation(new PreconditionFailedError('stale', { details }));
+
+  it('returns the comparison a World reported it rejected on', () => {
+    expect(
+      expectation({
+        recordedAtOrBelow: 4,
+        stateUpdatedAt: 1_700_000_000_000,
+        // Deltas and counts travel in the same bag; each is read on its own.
+        events: [makeUlidEvent(1_700_000_000_000)],
+      })
+    ).toEqual({ recordedAtOrBelow: 4, stateUpdatedAt: 1_700_000_000_000 });
+  });
+
+  it('accepts a zero count', () => {
+    // Not a useful rejection, but 0 is a legitimate count and must not be
+    // mistaken for an absent one.
+    expect(expectation({ recordedAtOrBelow: 0, stateUpdatedAt: 0 })).toEqual({
+      recordedAtOrBelow: 0,
+      stateUpdatedAt: 0,
+    });
+  });
+
+  it('returns null unless both numbers are present', () => {
+    // A count with no watermark cannot be checked against anything, and a
+    // watermark with no count says nothing.
+    expect(expectation({ recordedAtOrBelow: 4 })).toBe(null);
+    expect(expectation({ stateUpdatedAt: 1_700_000_000_000 })).toBe(null);
+    expect(expectation({})).toBe(null);
+  });
+
+  it('returns null for values that are not non-negative integers', () => {
+    // A checked restart is an optimization: a malformed verdict must degrade to
+    // the unchecked path rather than be repaired into one.
+    expect(
+      expectation({ recordedAtOrBelow: -1, stateUpdatedAt: 1_700_000_000_000 })
+    ).toBe(null);
+    expect(
+      expectation({ recordedAtOrBelow: 1.5, stateUpdatedAt: 1_700_000_000_000 })
+    ).toBe(null);
+    expect(expectation({ recordedAtOrBelow: '4', stateUpdatedAt: 1 })).toBe(
+      null
+    );
+    expect(
+      expectation({ recordedAtOrBelow: Number.NaN, stateUpdatedAt: 1 })
+    ).toBe(null);
+  });
+
+  it('returns null for no details, a non-object, and a non-precondition error', () => {
+    expect(preconditionExpectation(new PreconditionFailedError('stale'))).toBe(
+      null
+    );
+    expect(expectation('not-an-object')).toBe(null);
+    expect(preconditionExpectation(new Error('boom'))).toBe(null);
   });
 });
 

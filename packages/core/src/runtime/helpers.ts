@@ -670,6 +670,43 @@ export function isPreconditionGuardEnabled(): boolean {
 }
 
 /**
+ * The ULID time (epoch ms) an event id encodes, or `undefined` when it is not a
+ * decodable ULID.
+ *
+ * Event ids are prefixed ULIDs (e.g. `evnt_01ARYZ…`) and `ulidToDate` only
+ * decodes the bare 26-character ULID, so the prefix comes off first.
+ */
+function eventIdTime(eventId: string): number | undefined {
+  const underscore = eventId.lastIndexOf('_');
+  const rawUlid = underscore === -1 ? eventId : eventId.slice(underscore + 1);
+  return ulidToDate(rawUlid)?.getTime();
+}
+
+/**
+ * How many of `events` sit at or below `watermark`, the same "at or below"
+ * relation the backend's count guard evaluates.
+ *
+ * Undecodable event ids count as at or below. That is the direction that keeps
+ * this from manufacturing a verdict: the only caller compares the result
+ * against a count the backend reported, and treating an id it cannot read as
+ * *missing* would make an unrelated id-format problem look like an event log
+ * that never healed.
+ */
+export function countEventsAtOrBelow(
+  events: Event[],
+  watermark: number
+): number {
+  let count = 0;
+  for (const event of events) {
+    const time = eventIdTime(event.eventId);
+    if (time === undefined || time <= watermark) {
+      count++;
+    }
+  }
+  return count;
+}
+
+/**
  * The `stateUpdatedAt` value to send with a replay-context event creation: the
  * *maximum* ULID time (epoch ms) over the events the runtime has loaded. Returns
  * `undefined` when there are no events or that id is not a decodable ULID.
@@ -703,12 +740,8 @@ export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
   if (latest === undefined) {
     return undefined;
   }
-  // Event IDs are prefixed ULIDs (e.g. `evnt_01ARYZ...`); ulidToDate only
-  // decodes the bare 26-char ULID, so strip the prefix first.
   const eventId = latest;
-  const underscore = eventId.lastIndexOf('_');
-  const rawUlid = underscore === -1 ? eventId : eventId.slice(underscore + 1);
-  const time = ulidToDate(rawUlid)?.getTime();
+  const time = eventIdTime(eventId);
   if (time === undefined) {
     // Fail open: a non-decodable id disarms the guard for this create (no
     // snapshot sent). Log so a fleet-wide silent disarm is diagnosable.
@@ -822,6 +855,49 @@ export type EventCreator = (
   data: CreateEventRequest,
   params?: CreateEventParams
 ) => Promise<EventResult>;
+
+/**
+ * The comparison a rejecting World says it rejected on: how many events it had
+ * recorded at or below the snapshot watermark the rejected write sent.
+ *
+ * This is what makes a restart's reload checkable rather than hopeful. The
+ * relation is monotone — a run's event log only ever grows, and the watermark is
+ * fixed — so after the restart has corrected its log,
+ * `countEventsAtOrBelow(events, stateUpdatedAt)` must have reached
+ * `recordedAtOrBelow`. If it has not, the reload did not recover the events the
+ * rejection was about, and re-deriving the replay produces the same snapshot and
+ * earns the same rejection.
+ *
+ * Returns `null` for a World that does not report it, or for anything that does
+ * not narrow to two non-negative integers. Absence is not evidence: callers must
+ * treat an unreported comparison as "unchecked", never as "unsatisfied".
+ */
+export function preconditionExpectation(
+  error: unknown
+): { recordedAtOrBelow: number; stateUpdatedAt: number } | null {
+  if (!PreconditionFailedError.is(error)) {
+    return null;
+  }
+  const details = error.details;
+  if (typeof details !== 'object' || details === null) {
+    return null;
+  }
+  const { recordedAtOrBelow, stateUpdatedAt } = details as {
+    recordedAtOrBelow?: unknown;
+    stateUpdatedAt?: unknown;
+  };
+  if (
+    !isNonNegativeInteger(recordedAtOrBelow) ||
+    !isNonNegativeInteger(stateUpdatedAt)
+  ) {
+    return null;
+  }
+  return { recordedAtOrBelow, stateUpdatedAt };
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
 
 /**
  * CORS headers for health check responses.

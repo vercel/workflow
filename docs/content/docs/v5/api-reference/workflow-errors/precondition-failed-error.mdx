@@ -20,6 +20,8 @@ The Workflow runtime handles this error automatically: it restarts the replay in
 
 A world may attach the events the client was missing to the rejection as `details`, which lets the runtime restart without re-reading the event log. Doing so is optional, and the runtime falls back to a full reload when the details are absent or unusable.
 
+The same `details` may report the comparison the rejection was made on, as `recordedAtOrBelow` and `stateUpdatedAt`. The runtime uses them to check that a reloaded event log actually reached that count: a reload that comes back unchanged, or still short of it, cannot produce a different write, so the run escalates to a fresh invocation immediately rather than spending its remaining in-process restarts. A world that reports nothing here loses only that shortcut.
+
 ```typescript lineNumbers
 import { PreconditionFailedError } from "workflow/errors"
 declare const world: { events: { create(...args: any[]): Promise<any> } }; // @setup
@@ -44,7 +46,7 @@ definition={`
 interface PreconditionFailedError {
   /** Delay in seconds before the operation should be retried. Present when the server sends a Retry-After header. */
   retryAfter?: number;
-  /** Optional rejection payload. A world may put the events the client was missing here, as \`{ events, cursor }\`, so the runtime can restart its replay without re-reading the event log. */
+  /** Optional rejection payload. A world may put the events the client was missing here, as \`{ events, cursor }\`, so the runtime can restart its replay without re-reading the event log, and the comparison it rejected on, as \`{ recordedAtOrBelow, stateUpdatedAt }\`. */
   details?: unknown;
   /** The error message. */
   message: string;
