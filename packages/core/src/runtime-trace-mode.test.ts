@@ -33,6 +33,12 @@ import { workflowEntrypoint } from './runtime.js';
 import { dehydrateWorkflowArguments } from './serialization.js';
 import { getNextTraceCarrier, getWorkflowTraceMode } from './telemetry.js';
 
+// These tests exercise the node:vm engine's replay loop internals against
+// mock worlds. Pin the engine explicitly — QuickJS is the default, and
+// dispatching there would instantiate a WASM VM per entrypoint call (and
+// bypass the node replay loop these tests assert on).
+process.env.WORKFLOW_VM = 'node';
+
 vi.mock('@vercel/functions', () => ({
   waitUntil: vi.fn((p: Promise<unknown>) => {
     p.catch(() => {});

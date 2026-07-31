@@ -78,8 +78,13 @@ describe('useQuickJSVm', () => {
     delete process.env.WORKFLOW_VM;
   });
 
-  it('defaults to node:vm (false) when nothing is configured', () => {
-    expect(useQuickJSVm(makeRun())).toBe(false);
+  it('defaults to QuickJS (true) when nothing is configured', () => {
+    expect(useQuickJSVm(makeRun())).toBe(true);
+  });
+
+  it('an empty WORKFLOW_VM value also resolves to the QuickJS default', () => {
+    process.env.WORKFLOW_VM = '';
+    expect(useQuickJSVm(makeRun())).toBe(true);
   });
 
   it('returns true when WORKFLOW_VM=quickjs is set in the environment', () => {

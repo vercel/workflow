@@ -1,8 +1,8 @@
 /**
  * VM engine selection for workflow execution.
  *
- * The Node.js `node:vm` engine is the default. The QuickJS WASM engine is
- * opt-in via the `WORKFLOW_VM` env var or `executionContext.workflowVm`.
+ * The QuickJS WASM engine is the default. The Node.js `node:vm` engine is
+ * opt-in via `WORKFLOW_VM=node` or `executionContext.workflowVm`.
  *
  * Both engines implement the same event-replay execution model: on every
  * workflow handler invocation the workflow function is re-executed from the
@@ -53,7 +53,8 @@ export function getWorkflowVmFromEnv(
  * when `WORKFLOW_VM` is set on the client) takes precedence so a run keeps
  * executing on the engine it started on. When the run doesn't specify an
  * engine, the `WORKFLOW_VM` env var on the workflow handler decides.
- * The default is the `node:vm` engine.
+ * The default is the QuickJS engine; `WORKFLOW_VM=node` opts back into
+ * the `node:vm` engine.
  *
  * Throws if `WORKFLOW_VM` or `executionContext.workflowVm` is set to an
  * unknown value.
@@ -71,7 +72,7 @@ export function useQuickJSVm(workflowRun: WorkflowRun): boolean {
     }
     return vmFromRun === 'quickjs';
   }
-  return getWorkflowVmFromEnv() === 'quickjs';
+  return getWorkflowVmFromEnv() !== 'node';
 }
 
 /**

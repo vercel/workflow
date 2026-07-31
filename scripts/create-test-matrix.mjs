@@ -165,32 +165,37 @@ matrix.app.push({
 });
 
 // Cross-product with the workflow VM engine axis: every app is tested
-// against both the default node:vm engine and the opt-in QuickJS WASM
-// engine (WORKFLOW_VM=quickjs). Each engine gets its own artifactSuffix
-// and runLabel so CI artifacts and job names are unique. The `vm` field
-// is surfaced to the workflow dev server via the WORKFLOW_VM env var in
-// tests.yml.
-const VMS = ['node', 'quickjs'];
+// against both the default QuickJS WASM engine and the opt-in node:vm
+// engine (WORKFLOW_VM=node) — the QuickJS legs deliberately leave
+// WORKFLOW_VM unset so they exercise the default-selection path end to
+// end, not just an explicit opt-in. Each engine gets its own
+// artifactSuffix and runLabel so CI artifacts and job names are unique.
+// The `vm` field is surfaced to the workflow dev server via the
+// WORKFLOW_VM env var in tests.yml (empty ⇒ engine default).
+const VMS = [
+  { vm: '', label: 'quickjs' }, // default engine (QuickJS)
+  { vm: 'node', label: 'node' }, // explicit node:vm opt-in
+];
 matrix.app = matrix.app.flatMap((app) =>
-  VMS.map((vm) => ({
+  VMS.map(({ vm, label }) => ({
     ...app,
     vm,
-    runLabel: [app.runLabel, vm].filter(Boolean).join(' '),
-    artifactSuffix: [app.artifactSuffix, vm].filter(Boolean).join('-'),
+    runLabel: [app.runLabel, label].filter(Boolean).join(' '),
+    artifactSuffix: [app.artifactSuffix, label].filter(Boolean).join('-'),
   }))
 );
 
-// QuickJS engine with VM-memory snapshotting at maximum churn
-// (WORKFLOW_SNAPSHOT_THRESHOLD=1 snapshots at every qualifying
-// suspension) — exercises the save/restore/delete lifecycle and the
-// restore + partial-replay determinism on every run.
+// QuickJS engine (the default — WORKFLOW_VM left unset) with VM-memory
+// snapshotting at maximum churn (WORKFLOW_SNAPSHOT_THRESHOLD=1 snapshots
+// at every qualifying suspension) — exercises the save/restore/delete
+// lifecycle and the restore + partial-replay determinism on every run.
 matrix.app.push(
   createMatrixEntry(
     'nextjs-turbopack',
     'example-nextjs-workflow-turbopack',
     DEV_TEST_CONFIGS['nextjs-turbopack'],
     {
-      vm: 'quickjs',
+      vm: '',
       snapshotThreshold: '1',
       runLabel: 'quickjs-snapshot',
       artifactSuffix: 'quickjs-snapshot',

@@ -254,9 +254,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Workflow VM engines: node:vm (default) and the opt-in QuickJS
-        # WASM engine (WORKFLOW_VM=quickjs).
-        vm: [node, quickjs]
+        # Workflow VM engines: QuickJS WASM (the default — WORKFLOW_VM left
+        # unset) and the explicit node:vm opt-in (WORKFLOW_VM=node).
+        vm: [quickjs, node]
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -278,7 +278,8 @@ jobs:
         run: pnpm test
         working-directory: workbench/vitest
         env:
-          WORKFLOW_VM: ${{ matrix.vm }}
+          # quickjs is the engine default — leave WORKFLOW_VM unset for it.
+          WORKFLOW_VM: ${{ matrix.vm == 'node' && 'node' || '' }}
 
   e2e-package-build:
     name: Build Shared E2E Packages
@@ -331,12 +332,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Workflow VM engines: node:vm (default) and the opt-in QuickJS
-        # WASM engine. The env var is set on the e2e test runner, which is
-        # the client that starts runs against the deployed app — start()
-        # stamps executionContext.workflowVm so the deployed handler
-        # executes each run on the requested engine.
-        vm: [node, quickjs]
+        # Workflow VM engines: QuickJS WASM (the default — WORKFLOW_VM left
+        # unset so the default-selection path is exercised end to end) and
+        # the explicit node:vm opt-in (WORKFLOW_VM=node). The env var is set
+        # on the e2e test runner, which is the client that starts runs
+        # against the deployed app — start() stamps
+        # executionContext.workflowVm so the deployed handler executes each
+        # run on the requested engine.
+        vm: [quickjs, node]
         app:
           - name: "example"
             project-id: "prj_xWq20Dd860HHAfzMjK2Mb6TPVxMa"
@@ -437,13 +440,16 @@ jobs:
         run: echo "ms=$(($(date +%s) * 1000))" >> "$GITHUB_OUTPUT"
 
       - name: Run E2E Tests
-        run: pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-prod-$APP_NAME-$WORKFLOW_VM.json"
+        run: pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-prod-$APP_NAME-$MATRIX_VM.json"
         env:
           NODE_OPTIONS: "--enable-source-maps"
           DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url || steps.prodDeployment.outputs.deployment-url }}
           VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id || steps.prodDeployment.outputs.deployment-id }}
           APP_NAME: ${{ matrix.app.name }}
-          WORKFLOW_VM: ${{ matrix.vm }}
+          # quickjs is the engine default — leave WORKFLOW_VM unset for it
+          # (MATRIX_VM carries the label for file/job naming).
+          WORKFLOW_VM: ${{ matrix.vm == 'node' && 'node' || '' }}
+          MATRIX_VM: ${{ matrix.vm }}
           # changeset-release PRs test main's production deployment, so they
           # must be treated as a production run everywhere downstream.
           WORKFLOW_VERCEL_ENV: ${{ (github.ref == 'refs/heads/main' || startsWith(github.head_ref, 'changeset-release/')) && 'production' || 'preview' }}
@@ -482,8 +488,8 @@ jobs:
         if: always()
         env:
           APP_NAME: ${{ matrix.app.name }}
-          WORKFLOW_VM: ${{ matrix.vm }}
-        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Vercel Prod ($APP_NAME - $WORKFLOW_VM)" >> $GITHUB_STEP_SUMMARY || true
+          MATRIX_VM: ${{ matrix.vm }}
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Vercel Prod ($APP_NAME - $MATRIX_VM)" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         if: always()
@@ -925,9 +931,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Workflow VM engines: node:vm (default) and the opt-in QuickJS
-        # WASM engine (WORKFLOW_VM=quickjs).
-        vm: [node, quickjs]
+        # Workflow VM engines: QuickJS WASM (the default — WORKFLOW_VM left
+        # unset) and the explicit node:vm opt-in (WORKFLOW_VM=node).
+        vm: [quickjs, node]
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -1038,7 +1044,9 @@ jobs:
           DEV_TEST_CONFIG: '{"generatedStepRegistrationPath":"app/.well-known/workflow/v1/flow/__step_registrations.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000,"testWorkflowFile":"96_many_steps.ts"}'
           DEV_SERVER_LOG_PATH: "${{ github.workspace }}/nextjs-server.log"
           WORKFLOW_DEV_HMR_LOGS: "1"
-          WORKFLOW_VM: ${{ matrix.vm }}
+          # quickjs is the engine default — leave WORKFLOW_VM unset for it
+          # (MATRIX_VM carries the label for reporting).
+          WORKFLOW_VM: ${{ matrix.vm == 'node' && 'node' || '' }}
           MATRIX_VM: ${{ matrix.vm }}
 
       - name: Print Next.js server logs
