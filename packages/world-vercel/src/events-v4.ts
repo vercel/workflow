@@ -135,6 +135,11 @@ export interface CreateEventV4Input {
   hookTokenRetentionUntil?: Date;
   hookIsWebhook?: boolean;
   hookIsSystem?: boolean;
+  /** hook_received's resilient-resume idempotency key (see
+   *  `HookReceivedEventSchema.eventData.resumeId` in @workflow/world).
+   *  Needs server-side support to be persisted; forwarded for
+   *  forward-compatibility. */
+  resumeId?: string;
   errorCode?: string;
   /** run_cancelled's optional free-text cancellation reason. Small plaintext
    *  metadata, capped at 512 chars by the @workflow/world schema. */
@@ -209,6 +214,8 @@ export interface CreateEventV4Input {
    * without a loaded event log; older servers ignore it entirely.
    */
   stateUpdatedAt?: number;
+  /** Number of consecutive replay divergences resolved by this write. */
+  replayDivergenceCount?: number;
 }
 
 interface CreateEventV4ResultBase {
@@ -288,6 +295,7 @@ function buildPostFrameMeta(
   if (input.hookIsWebhook !== undefined)
     meta.hookIsWebhook = input.hookIsWebhook;
   if (input.hookIsSystem !== undefined) meta.hookIsSystem = input.hookIsSystem;
+  if (input.resumeId !== undefined) meta.resumeId = input.resumeId;
   if (input.errorCode !== undefined) meta.errorCode = input.errorCode;
   if (input.cancelReason !== undefined) meta.cancelReason = input.cancelReason;
   if (input.ownerMessageId !== undefined) {
@@ -320,6 +328,9 @@ function buildPostFrameMeta(
   if (input.skipPreload !== undefined) meta.skipPreload = input.skipPreload;
   if (input.stateUpdatedAt !== undefined) {
     meta.stateUpdatedAt = input.stateUpdatedAt;
+  }
+  if (input.replayDivergenceCount !== undefined) {
+    meta.replayDivergenceCount = input.replayDivergenceCount;
   }
   return meta;
 }

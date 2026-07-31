@@ -39,7 +39,7 @@ export default async function WorldsPage() {
 
           {/* Content */}
           <div className="relative z-10 mt-32 sm:mt-28 mx-auto w-full max-w-3xl space-y-3 sm:space-y-5">
-            <h1 className="text-center font-semibold text-4xl leading-[1.1] tracking-tight sm:text-5xl xl:text-6xl text-balance">
+            <h1 className="text-center text-balance text-heading-40 sm:text-heading-48 xl:text-heading-64">
               Worlds
             </h1>
             <p className="text-balance text-muted-foreground sm:text-xl leading-relaxed">
@@ -78,7 +78,7 @@ export default async function WorldsPage() {
             {/* Left: Text content */}
             <div className="space-y-4 mt-4 max-w-md">
               <div className="flex items-center gap-2.5">
-                <h2 className="font-semibold text-2xl tracking-tight sm:text-3xl">
+                <h2 className="text-heading-24 sm:text-heading-32">
                   Provider Benchmarks
                 </h2>
                 <Badge variant="outline" className="text-sm">
@@ -147,7 +147,7 @@ export default async function WorldsPage() {
         {/* Learn More Section */}
         <section className="border-t px-4 py-8 sm:pt-24 sm:pb-16 sm:px-12">
           <div className="max-w-2xl mx-auto text-center space-y-4">
-            <h2 className="font-semibold text-3xl tracking-tight sm:text-4xl">
+            <h2 className="text-heading-32 sm:text-heading-40">
               Learn more about worlds
             </h2>
             <p className="text-muted-foreground">

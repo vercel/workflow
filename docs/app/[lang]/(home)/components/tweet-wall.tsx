@@ -213,7 +213,7 @@ function TweetCard({ url, name, username, image, tweet }: Tweet) {
       href={url}
       target="_blank"
       rel="noopener noreferrer"
-      className="flex flex-col gap-3 rounded-lg border p-4 md:p-5 hover:border-foreground/20 transition-colors"
+      className="flex flex-col gap-3 rounded-lg border bg-background-100 p-4 md:p-5 hover:border-foreground/20 transition-colors"
     >
       <div className="flex items-center gap-2.5">
         <Avatar className="size-9">
@@ -236,11 +236,11 @@ function TweetCard({ url, name, username, image, tweet }: Tweet) {
 }
 
 export const TweetWall = () => (
-  <div className="p-8 sm:p-12 px-4 py-8 sm:py-12 sm:px-12 grid gap-8">
-    <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl lg:text-[40px] text-center text-balance">
+  <div className="py-8 sm:py-12 grid gap-8">
+    <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40 sm:text-center sm:text-balance">
       What builders say about Workflow SDK
     </h2>
-    <div className="columns-1 gap-4 space-y-4 md:columns-2 lg:columns-3">
+    <div className="columns-1 gap-4 space-y-4 md:columns-2 lg:columns-3 mt-6">
       {TWEETS.map((tweet) => (
         <div key={tweet.username} className="break-inside-avoid">
           <TweetCard {...tweet} />

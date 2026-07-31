@@ -138,6 +138,16 @@ interface SplitEventData {
     hookTokenRetentionUntil?: Date;
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
+    /**
+     * Resilient-resume idempotency key on hook_received (see
+     * `HookReceivedEventSchema` in @workflow/world). NOTE: current
+     * workflow-server builds persisted eventData from an explicit meta
+     * allowlist that does not yet include this key, so until server support
+     * lands the persisted event won't carry it and the runtime's
+     * resilient-resume dedup is effective only within a single invocation
+     * (its locally pushed copy). Forwarding it now is forward-compatible.
+     */
+    resumeId?: string;
     errorCode?: string;
     cancelReason?: string;
     /** Inline-ownership stamp on step_started (owning queue message ID). */
@@ -197,6 +207,7 @@ type MetaSourceField =
   | 'tokenRetentionUntil'
   | 'isWebhook'
   | 'isSystem'
+  | 'resumeId'
   | 'errorCode'
   | 'cancelReason'
   | 'ownerMessageId'
@@ -308,6 +319,13 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.isSystem === 'boolean') {
     meta.hookIsSystem = eventData.isSystem;
+  }
+  // hook_received's resilient-resume idempotency key. Requires server-side
+  // support to be persisted onto the event row (see the note on
+  // SplitEventData.meta.resumeId); forwarded unconditionally so it starts
+  // working as soon as the server learns the key.
+  if (typeof eventData.resumeId === 'string') {
+    meta.resumeId = eventData.resumeId;
   }
   if (typeof eventData.errorCode === 'string') {
     meta.errorCode = eventData.errorCode;
@@ -744,6 +762,9 @@ async function createWorkflowRunEventInner(
         : {}),
       ...(params?.stateUpdatedAt !== undefined
         ? { stateUpdatedAt: params.stateUpdatedAt }
+        : {}),
+      ...(params?.replayDivergenceCount !== undefined
+        ? { replayDivergenceCount: params.replayDivergenceCount }
         : {}),
       occurredAt: params?.occurredAt ?? new Date(),
       // Opt-in inline-delta: forward the cursor the runtime held before

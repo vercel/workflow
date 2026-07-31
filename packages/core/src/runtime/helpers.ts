@@ -4,7 +4,10 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  CreateEventParams,
+  CreateEventRequest,
   Event,
+  EventResultFor,
   HealthCheckPayload,
   ValidQueueName,
   WorkflowRun,
@@ -761,6 +764,12 @@ export async function withPreconditionRetry<T>(
     }
   }
 }
+
+/** Creates one event on a bound run, carrying replay-recovery telemetry. */
+export type EventCreator = <T extends CreateEventRequest>(
+  data: T,
+  params?: CreateEventParams
+) => Promise<EventResultFor<T>>;
 
 /**
  * CORS headers for health check responses.
