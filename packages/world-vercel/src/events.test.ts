@@ -347,6 +347,51 @@ describe('createWorkflowRunEvent computeInstanceId wire field', () => {
   });
 });
 
+describe('createWorkflowRunEvent replayDivergenceCount wire field', () => {
+  it('carries recovery telemetry in v4 frame metadata', async () => {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_completed',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return encode({ run: { runId: 'wrun_1', status: 'completed' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEvent(
+      'wrun_1',
+      {
+        eventType: 'run_completed',
+        specVersion: 2,
+        eventData: { result: 'ok' },
+      } as AnyEventRequest,
+      {
+        replayDivergenceCount: 2,
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.replayDivergenceCount).toBe(2);
+    expect(capturedMeta?.eventData).toBeUndefined();
+    agent.assertNoPendingInterceptors();
+  });
+});
+
 /**
  * The split's meta allowlist IS the eventData wire contract on v4. The
  * type-level `assertEventDataWireContractExhaustive` guard in events.ts

@@ -407,6 +407,14 @@ const HookReceivedEventSchema = BaseEventSchema.extend({
   eventData: z.object({
     token: z.string().optional(),
     payload: SerializedDataSchema,
+    /**
+     * Optional idempotency key used by the resilient resumeHook() path.
+     * When present, the workflow runtime uses this to dedup a hook_received
+     * event that may have been written both directly (by resumeHook) and by
+     * the runtime's queue-payload fallback. Matches `HookInput.resumeId` on
+     * the WorkflowInvokePayload.
+     */
+    resumeId: z.string().optional(),
   }),
 });
 
@@ -737,6 +745,14 @@ export interface CreateEventParams {
    * when the backing service accepted or stored the event.
    */
   occurredAt?: Date;
+  /**
+   * Number of consecutive replay divergences resolved by this event write.
+   *
+   * This is request telemetry, not workflow state. Worlds may use it for
+   * metrics and diagnostics, but must not require it for event
+   * materialization or persist it into the event log.
+   */
+  replayDivergenceCount?: number;
   /**
    * Inline-delta optimization (opt-in). When set, the World MAY return,
    * on the resulting {@link EventResult}, the first page of events written
