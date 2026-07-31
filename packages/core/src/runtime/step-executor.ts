@@ -43,12 +43,11 @@ import {
   normalizeUnknownError,
   promoteAbortErrorToFatal,
 } from '../types.js';
-
+import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import {
   isOptimisticInlineStartEnabled,
   isOptimisticInlineStartExplicitlyDisabled,
 } from './constants.js';
-import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
 import {
