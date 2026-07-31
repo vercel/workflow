@@ -7,13 +7,17 @@
  * cursor that accepted a ULID keeps accepting a slot — and because the width is
  * fixed, lexicographic order is numeric order.
  *
- * Slots start at 1 and are allocated contiguously, which is what makes
- * contention explicit: two writers proposing one position cannot both win, and
- * the loser is told which events it was missing. Zero is left unused because
- * the inclusive lower fence for range queries over a run's events is the
- * all-zero id.
+ * Slots start at 1 and are handed out above every position the allocator has
+ * seen, never into a lower one that happens to be free. That makes contention
+ * explicit — two writers proposing one position cannot both win, and the loser
+ * is told which events it was missing — and it keeps slot order, which is the
+ * order a replay reads the log in, a linear extension of what actually
+ * happened. Filling a hole would place an event below ones that preceded it,
+ * and a replay reaching a `step_completed` below its own `step_started` diverges
+ * for good. Zero is left unused because the inclusive lower fence for
+ * range queries over a run's events is the all-zero id.
  *
- * Allocation being contiguous does not make a published log gap-free, so
+ * Allocation being append-only does not make a published log gap-free, so
  * `events.length === maxSlot` is not a completeness proof. A slot claimed by an
  * operation that then fails for a reason of its own is never filled, and if a
  * later slot has already been published the gap is permanent. Nothing may treat
