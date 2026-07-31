@@ -1,5 +1,16 @@
 # @workflow/sveltekit
 
+## 4.0.15
+
+### Patch Changes
+
+- [#3233](https://github.com/vercel/workflow/pull/3233) [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix HTTP/2 requests failing in SvelteKit production builds (undici's bundled `node:http2` could not load, falling back to a stub).
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.5
+  - @workflow/rollup@4.0.15
+  - @workflow/vite@4.0.15
+
 ## 4.0.14
 
 ### Patch Changes

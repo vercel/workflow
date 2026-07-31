@@ -1,5 +1,11 @@
 # @workflow/errors
 
+## 4.2.1
+
+### Patch Changes
+
+- [#2986](https://github.com/vercel/workflow/pull/2986) [`72ea6c8`](https://github.com/vercel/workflow/commit/72ea6c8edefb01a03acd25bef5efd4cdb9e03fa1) Thanks [@shalabhc](https://github.com/shalabhc)! - Enforce a server-supplied per-run event limit (default 25K)
+
 ## 4.2.0
 
 ### Minor Changes
