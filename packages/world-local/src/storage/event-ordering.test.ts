@@ -4,7 +4,6 @@ import path from 'node:path';
 import { PreconditionFailedError } from '@workflow/errors';
 import type { Event, Storage } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
-import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createStorage } from '../storage.js';
 

@@ -160,7 +160,7 @@ function eventIdTime(eventId: string | null): number | null {
  */
 export class AppendSession {
   private state: AppendCounterState | null = null;
-  private fenceChecked = false;
+  private admitted = false;
 
   constructor(
     private readonly basedir: string,
@@ -214,9 +214,54 @@ export class AppendSession {
   }
 
   /**
-   * Allocate the next commit-ordered position. The first allocation of a
-   * fenced session (a create carrying a precondition snapshot) enforces the
-   * decision fence before anything is handed out; every allocation of a
+   * Enforce the decision fence for a session whose create carries a
+   * precondition snapshot. MUST be called (and must not throw) before the
+   * append performs ANY side effect — entity writes, claim files, the
+   * terminal marker: unlike the postgres backend, where a 412 rolls the
+   * whole transaction back, a filesystem write cannot be unwound, and a
+   * rejected decision that already wrote its entity strands an orphan (a
+   * step that executes without its `step_created` ever entering the log; a
+   * terminal marker that rejects every later resume). Idempotent; a
+   * session without a snapshot admits trivially. The append lock is held
+   * from here through the publish, so nothing can move the log between
+   * this check and the allocation it covers.
+   */
+  async ensureAdmitted(): Promise<void> {
+    if (this.admitted) {
+      return;
+    }
+    if (this.fence?.stateEventCount === undefined) {
+      this.admitted = true;
+      return;
+    }
+    const state = await this.load();
+    const fenceCount = this.fence.stateEventCount;
+    const creditKey = this.fence.writerId ?? this.fence.stateCursor;
+    const fenceBase = state.lastFencedSeq ?? 0;
+    if (fenceBase <= fenceCount) {
+      // Every fenced-against event in the log is inside the caller's
+      // snapshot — establish the sibling credit for the rest of its
+      // suspension batch. In-memory only; persisted by the commit that
+      // follows a successful publish.
+      state.writerSnapshot = creditKey;
+      state.writerBaseCount = fenceCount;
+    } else if (
+      creditKey !== undefined &&
+      state.writerSnapshot === creditKey &&
+      state.writerBaseCount === fenceCount
+    ) {
+      // Sibling of the writer that established the credit.
+    } else {
+      throw new PreconditionFailedError(
+        `Event log for run "${this.runId}" has moved past the caller's snapshot: ` +
+          `fence position ${fenceBase}, snapshot loaded ${fenceCount} events`
+      );
+    }
+    this.admitted = true;
+  }
+
+  /**
+   * Allocate the next commit-ordered position. Every allocation of a
    * fenced session advances `lastFencedSeq`.
    *
    * The minted key sorts strictly after the run's current tail: its ULID
@@ -226,32 +271,8 @@ export class AppendSession {
    * process's random ULID bits.
    */
   async allocate(): Promise<EventPosition> {
+    await this.ensureAdmitted();
     const state = await this.load();
-
-    if (this.fence?.stateEventCount !== undefined && !this.fenceChecked) {
-      this.fenceChecked = true;
-      const fenceCount = this.fence.stateEventCount;
-      const creditKey = this.fence.writerId ?? this.fence.stateCursor;
-      const fenceBase = state.lastFencedSeq ?? 0;
-      if (fenceBase <= fenceCount) {
-        // Every fenced-against event in the log is inside the caller's
-        // snapshot — establish the sibling credit for the rest of its
-        // suspension batch.
-        state.writerSnapshot = creditKey;
-        state.writerBaseCount = fenceCount;
-      } else if (
-        creditKey !== undefined &&
-        state.writerSnapshot === creditKey &&
-        state.writerBaseCount === fenceCount
-      ) {
-        // Sibling of the writer that established the credit.
-      } else {
-        throw new PreconditionFailedError(
-          `Event log for run "${this.runId}" has moved past the caller's snapshot: ` +
-            `fence position ${fenceBase}, snapshot loaded ${fenceCount} events`
-        );
-      }
-    }
 
     const tailTs = eventIdTime(state.lastEventId);
     let ts = Date.now();

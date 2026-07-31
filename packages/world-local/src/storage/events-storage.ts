@@ -723,6 +723,15 @@ export function createEventsStorage(
       return runLockedCreate();
 
       async function createImpl(session: AppendSession): Promise<EventResult> {
+        // Decision fence, before ANY side effect. A fenced create whose
+        // snapshot is stale must be rejected while the append is still a
+        // pure no-op: entity writes, claim files, and the terminal marker
+        // cannot be rolled back on this backend, and a rejected decision
+        // that already wrote them strands orphans (a step that executes
+        // without its step_created ever entering the log; a terminal
+        // marker that rejects every later resume).
+        await session.ensureAdmitted();
+
         // Provisional candidate key. It is used for pre-publish artifacts
         // written before the event's log position exists (the hook token
         // claim's convergence id, legacy recovery markers); every publish
