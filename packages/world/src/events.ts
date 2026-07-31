@@ -701,6 +701,30 @@ export function isChildEntityCreationEvent(
 }
 
 /**
+ * Whether an event request encodes a *decision* — content derived from the
+ * writer's replay of a log prefix (which steps/hooks/waits exist and under
+ * which correlation ids, attribute values, the terminal outcome) — as
+ * opposed to a *fact* (a completion, receipt, or claim whose content is
+ * independent of the writer's view, e.g. `step_completed`, `hook_received`,
+ * `wait_completed`, a non-lazy `step_started`).
+ *
+ * Worlds that enforce the `stateEventCount` precondition fence apply it to
+ * decision events only: a stale decision would bake an unreplayable
+ * derivation into the log, while a stale fact is byte-identical to a fresh
+ * one and takes its meaning from the commit-assigned log position anyway.
+ * Fencing facts converts steady inbound traffic into replay-restart churn
+ * without preventing anything (see vercel/workflow#3201, "fence only
+ * decision writes; accept facts unfenced").
+ */
+export function isDecisionEvent(event: AnyEventRequest): boolean {
+  return (
+    isChildEntityCreationEvent(event) ||
+    isTerminalRunEventType(event.eventType) ||
+    event.eventType === 'attr_set'
+  );
+}
+
+/**
  * Event request for creating a new workflow run.
  * Can be used with a client-generated runId or null for server-generated.
  */

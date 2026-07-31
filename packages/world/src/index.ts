@@ -44,6 +44,7 @@ export {
   HookCreatedEventSchema,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
+  isDecisionEvent,
   isHookEventRequiringExistence,
   isHookLifecycleEventType,
   isRunEventType,

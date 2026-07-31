@@ -34,6 +34,7 @@ import {
   HookSchema,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
+  isDecisionEvent,
   isHookEventRequiringExistence,
   isLegacySpecVersion,
   isTerminalRunEventType,
@@ -641,6 +642,23 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     async create(runId, data, params): Promise<EventResult> {
       let eventId: string | undefined;
       const getEventId = () => (eventId ??= `wevt_${ulid()}`);
+
+      // Fence only decision writes. Facts (completions, receipts, non-lazy
+      // claims) pass unfenced and never bump the fence even when the
+      // runtime attaches a snapshot: a stale fact is byte-identical to a
+      // fresh one and takes its meaning from the commit-assigned position,
+      // so fencing it only converts steady traffic into replay-restart
+      // churn. See isDecisionEvent. Shadows `params` for everything below
+      // so no allocation site can accidentally fence a fact.
+      params =
+        params?.stateEventCount !== undefined && !isDecisionEvent(data)
+          ? {
+              ...params,
+              stateEventCount: undefined,
+              stateCursor: undefined,
+              writerId: undefined,
+            }
+          : params;
 
       // For run_created events, use client-provided runId or generate one server-side
       let effectiveRunId: string;

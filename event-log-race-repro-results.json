@@ -1,0 +1,380 @@
+{
+  "completedAt": "2026-07-31T19:34:56.313Z",
+  "deploymentUrl": "http://localhost:3000",
+  "partial": true,
+  "budgetExhausted": false,
+  "plannedAttempts": 48,
+  "config": {
+    "stepStormAttempts": 24,
+    "hookStormAttempts": 24,
+    "hookSleepAttempts": 0,
+    "concurrency": 6,
+    "budgetMs": 2700000,
+    "runTimeoutMs": 240000,
+    "hookTimeoutMs": 60000,
+    "rounds": 6,
+    "width": 8,
+    "watchdogMs": 2500,
+    "stepDelayMs": 2200,
+    "stepDelayJitterMs": 250,
+    "jitterBuckets": 5,
+    "betweenRoundSleepMs": 1000,
+    "reconcileBase": 2,
+    "attrWrites": 1,
+    "pokeIntervalMs": 750,
+    "pokeJitterMs": 250,
+    "hookResumeStaggerMs": 400,
+    "hookResumeOffsetMs": 0,
+    "iterations": 8,
+    "sleepMs": 5000,
+    "resumeDelayMs": 15000,
+    "resumeJitterMs": 10000,
+    "sleepBranchWaitCount": 2,
+    "sleepBranchWaitMs": 1000,
+    "sleepBranchWaitSpacingMs": 250,
+    "returnOnWake": true,
+    "attempts": 22
+  },
+  "distribution": {
+    "completed": 0,
+    "CORRUPTED_EVENT_LOG": 16,
+    "USER_ERROR": 0,
+    "RUNTIME_ERROR": 0,
+    "stuck": 6,
+    "other": 0,
+    "infra": 0
+  },
+  "scenarioDistribution": {
+    "step-storm": {
+      "completed": 0,
+      "CORRUPTED_EVENT_LOG": 16,
+      "USER_ERROR": 0,
+      "RUNTIME_ERROR": 0,
+      "stuck": 6,
+      "other": 0,
+      "infra": 0
+    },
+    "hook-storm": {
+      "completed": 0,
+      "CORRUPTED_EVENT_LOG": 0,
+      "USER_ERROR": 0,
+      "RUNTIME_ERROR": 0,
+      "stuck": 0,
+      "other": 0,
+      "infra": 0
+    },
+    "hook-sleep": {
+      "completed": 0,
+      "CORRUPTED_EVENT_LOG": 0,
+      "USER_ERROR": 0,
+      "RUNTIME_ERROR": 0,
+      "stuck": 0,
+      "other": 0,
+      "infra": 0
+    }
+  },
+  "results": [
+    {
+      "attempt": 4,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785525959317-4-d3h1cd73ud8",
+      "runId": "wrun_01KYWT7YSH8DNGCHD8V3SYHB92",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 47365,
+      "pressure": {
+        "resumesFailed": 1,
+        "resumesSent": 46
+      }
+    },
+    {
+      "attempt": 5,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785525959317-5-7s6z70w3o9k",
+      "runId": "wrun_01KYWT7YSQ9KG85SPHG61RK320",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 52372,
+      "pressure": {
+        "resumesFailed": 1,
+        "resumesSent": 53
+      }
+    },
+    {
+      "attempt": 6,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785525959317-6-az6e9r42s0m",
+      "runId": "wrun_01KYWT7YSKJQENM1862ZH0QWCJ",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 57377,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 58
+      }
+    },
+    {
+      "attempt": 3,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785525959317-3-adqhco1vsl7",
+      "runId": "wrun_01KYWT7YSPT91N9FA33HYAWSWR",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 57377,
+      "pressure": {
+        "resumesFailed": 1,
+        "resumesSent": 57
+      }
+    },
+    {
+      "attempt": 2,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785525959317-2-ytiroq24vs9",
+      "runId": "wrun_01KYWT7YSMQAG9HGNE2X0P5Y05",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 58379,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 61
+      }
+    },
+    {
+      "attempt": 1,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785525959316-1-zgqooo6qo7",
+      "runId": "wrun_01KYWT7YSDYM3N6GB6XQPDH94W",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 74417,
+      "pressure": {
+        "resumesFailed": 1,
+        "resumesSent": 75
+      }
+    },
+    {
+      "attempt": 11,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526018043-11-7qzxk4vvlq6",
+      "runId": "wrun_01KYWT9QZV6PR3CRJZJKYR60ZK",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 59167,
+      "pressure": {
+        "resumesFailed": 1,
+        "resumesSent": 58
+      }
+    },
+    {
+      "attempt": 8,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526013026-8-9l3p853f83m",
+      "runId": "wrun_01KYWT9K33D32M41RHWNF0TBA3",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 85230,
+      "pressure": {
+        "resumesFailed": 1,
+        "resumesSent": 86
+      }
+    },
+    {
+      "attempt": 10,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526017057-10-9tw94sta6o5",
+      "runId": "wrun_01KYWT9Q12PPQQEPFA3ME7XT66",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 82201,
+      "pressure": {
+        "resumesFailed": 1,
+        "resumesSent": 81
+      }
+    },
+    {
+      "attempt": 7,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526008090-7-gim43zi4v5",
+      "runId": "wrun_01KYWT9E8TFZW2WXBYHD6CK4S3",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 93442,
+      "pressure": {
+        "resumesFailed": 1,
+        "resumesSent": 88
+      }
+    },
+    {
+      "attempt": 9,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526017022-9-aok2diklrs",
+      "runId": "wrun_01KYWT9PZYMYBW2W1EQYAW2B82",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 122434,
+      "pressure": {
+        "resumesFailed": 1,
+        "resumesSent": 121
+      }
+    },
+    {
+      "attempt": 16,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526101990-16-cndv8xnryc5",
+      "runId": "wrun_01KYWTC9Z60M0ZNYWY9SJF9ANH",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 54124,
+      "pressure": {
+        "resumesFailed": 1,
+        "resumesSent": 53
+      }
+    },
+    {
+      "attempt": 15,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526100159-15-o3nhkc4v16",
+      "runId": "wrun_01KYWTC85ZWKDK1AQW55329GAA",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 56090,
+      "pressure": {
+        "resumesFailed": 1,
+        "resumesSent": 58
+      }
+    },
+    {
+      "attempt": 14,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526098391-14-x1b3c0l432m",
+      "runId": "wrun_01KYWTC6EQSKVN092JCRW7CFNK",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 79131,
+      "pressure": {
+        "resumesFailed": 1,
+        "resumesSent": 79
+      }
+    },
+    {
+      "attempt": 12,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526034427-12-hvv6n7prhw9",
+      "runId": "wrun_01KYWTA7ZVE6F08XDCM9GG58YW",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 167479,
+      "pressure": {
+        "resumesFailed": 1,
+        "resumesSent": 167
+      }
+    },
+    {
+      "attempt": 13,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526077668-13-28nrkxvtaws",
+      "runId": "wrun_01KYWTBJ74TA4PV45Q6WV2PV21",
+      "outcome": "CORRUPTED_EVENT_LOG",
+      "status": "failed",
+      "errorCode": "CORRUPTED_EVENT_LOG",
+      "durationMs": 177519,
+      "pressure": {
+        "resumesFailed": 1,
+        "resumesSent": 166
+      }
+    },
+    {
+      "attempt": 17,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526140003-17-isd9nbmlec8",
+      "runId": "wrun_01KYWTDF331ZGNM2X18GRYJZG3",
+      "outcome": "stuck",
+      "status": "running",
+      "durationMs": 240551,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 235
+      }
+    },
+    {
+      "attempt": 19,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526156744-19-7ssiujcgf7f",
+      "runId": "wrun_01KYWTDZE9PEEHD28XDGQK76V8",
+      "outcome": "stuck",
+      "status": "running",
+      "durationMs": 240473,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 234
+      }
+    },
+    {
+      "attempt": 18,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526156515-18-2x6gb29p0e",
+      "runId": "wrun_01KYWTDZ73A3N39YD6T8K0D5XW",
+      "outcome": "stuck",
+      "status": "running",
+      "durationMs": 240567,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 238
+      }
+    },
+    {
+      "attempt": 20,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526177959-20-z6e4bfhkclg",
+      "runId": "wrun_01KYWTEM57JSY563M0NBWER2RP",
+      "outcome": "stuck",
+      "status": "running",
+      "durationMs": 240526,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 241
+      }
+    },
+    {
+      "attempt": 21,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526202383-21-fy0cv8cra9i",
+      "runId": "wrun_01KYWTFC0GNYG2N24Z0QB8JBPE",
+      "outcome": "stuck",
+      "status": "running",
+      "durationMs": 240412,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 225
+      }
+    },
+    {
+      "attempt": 22,
+      "scenario": "step-storm",
+      "token": "event-log-race-step-storm-1785526255676-22-plhsqm7rxm",
+      "runId": "wrun_01KYWTH01W6H4A88BJ9396KMBS",
+      "outcome": "stuck",
+      "status": "running",
+      "durationMs": 240255,
+      "pressure": {
+        "resumesFailed": 0,
+        "resumesSent": 240
+      }
+    }
+  ]
+}

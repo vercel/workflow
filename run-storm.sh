@@ -18,9 +18,11 @@ mkdir -p "$RESULTS_DIR"
 
 echo "=== Storm: $LABEL (world=$WORLD, step=$STEP_ATTEMPTS, hook=$HOOK_ATTEMPTS) ==="
 
-# 1. Clean state
+# 1. Clean state. NOTE: `next start` serves the PREBUILT .next bundle, which
+# embeds the workflow packages — rebuild the workbench after ANY package
+# change or the storm measures stale code.
 rm -rf "$WB/.next/workflow-data"
-SERVER_ENV=(WORKFLOW_PUBLIC_MANIFEST=1 PORT=$PORT)
+SERVER_ENV=(WORKFLOW_PUBLIC_MANIFEST=1 PORT=$PORT WORKFLOW_LOCAL_APPEND_DEBUG=1)
 TEST_ENV=()
 if [ "$WORLD" = "postgres" ]; then
   DB="storm_$(echo "$LABEL" | tr -c 'a-z0-9' '_')"
@@ -56,7 +58,7 @@ rm -f "$REPO_DIR/event-log-race-repro-results.json"
   EVENT_LOG_RACE_REPRO_STEP_STORM_ATTEMPTS="$STEP_ATTEMPTS" \
   EVENT_LOG_RACE_REPRO_HOOK_STORM_ATTEMPTS="$HOOK_ATTEMPTS" \
   EVENT_LOG_RACE_REPRO_ATTEMPTS=0 \
-  EVENT_LOG_RACE_REPRO_CONCURRENCY=8 \
+  EVENT_LOG_RACE_REPRO_CONCURRENCY=6 \
   EVENT_LOG_RACE_REPRO_BUDGET_MS=2700000 \
   pnpm vitest run packages/core/e2e/event-log-race-repro.test.ts --reporter=default \
   > "/tmp/storm-test-$LABEL.log" 2>&1)
