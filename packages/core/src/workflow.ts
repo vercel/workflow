@@ -15,7 +15,10 @@ import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
-import type { WorkflowOrchestratorContext } from './private.js';
+import {
+  hasInFlightDelivery,
+  type WorkflowOrchestratorContext,
+} from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import type { MutableEventLog } from './runtime/helpers.js';
@@ -208,6 +211,10 @@ export async function runWorkflow(
     // by step/hook/sleep callbacks as events are processed.
     const promiseQueueHolder = { current: Promise.resolve() };
 
+    // Assigned immediately below. The consumer needs to test the context's
+    // delivery state, and the context needs the consumer.
+    let workflowContext: WorkflowOrchestratorContext;
+
     const eventsConsumer = new EventsConsumer(events, {
       onConsumedEvent: (event) => {
         updateTimestamp(+event.createdAt);
@@ -221,9 +228,11 @@ export async function runWorkflow(
         );
       },
       getPromiseQueue: () => promiseQueueHolder.current,
+      isDeliveryInFlight: () =>
+        workflowContext !== undefined && hasInFlightDelivery(workflowContext),
     });
 
-    const workflowContext: WorkflowOrchestratorContext = {
+    workflowContext = {
       runId: workflowRun.runId,
       encryptionKey,
       worldCapabilities,
