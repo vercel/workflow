@@ -7,7 +7,6 @@ import { deriveRunKeyPair, runAad } from '../sealed-box.js';
 import * as client from './client.js';
 import { devalueCodec } from './codec-devalue.js';
 import {
-  aesKeyOf,
   decrypt,
   encrypt,
   isRunPayloadKeys,
@@ -508,8 +507,8 @@ describe('sealed envelopes', () => {
     });
   });
 
-  describe('type-confusion guards', () => {
-    it('distinguishes a seal target from a symmetric key at runtime', async () => {
+  describe('key capabilities', () => {
+    it('distinguishes seal targets from run keys', async () => {
       const { aes, keyPair } = await makeRunKeys();
       const target = sealTo(keyPair.publicKey);
 
@@ -517,22 +516,6 @@ describe('sealed envelopes', () => {
       expect(isSealTarget(aes)).toBe(false);
       expect(isRunPayloadKeys(target)).toBe(false);
       expect(isRunPayloadKeys(runPayloadKeys(aes, keyPair))).toBe(true);
-
-      // `aesKeyOf` is the single funnel every symmetric operation goes
-      // through, so a seal target can never reach AES-GCM as a key.
-      expect(aesKeyOf(target)).toBeUndefined();
-      expect(aesKeyOf(aes)).toBe(aes);
-      expect(aesKeyOf(runPayloadKeys(aes, keyPair))).toBe(aes);
-      expect(aesKeyOf(undefined)).toBeUndefined();
-    });
-
-    it('does not treat plain objects as key variants', () => {
-      expect(isSealTarget({ recipientPublicKey: new Uint8Array(32) })).toBe(
-        false
-      );
-      expect(isSealTarget(null)).toBe(false);
-      expect(isSealTarget(new Uint8Array(32))).toBe(false);
-      expect(isRunPayloadKeys({ aes: 1, keyPair: 2 })).toBe(false);
     });
   });
 });

@@ -1,6 +1,12 @@
-import type { WorkflowRun, World } from '@workflow/world';
+import type { CreateEventRequest, WorkflowRun, World } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkflowSuspension } from '../global.js';
+import { deriveRunPayloadKeys } from '../serialization/encryption.js';
+import {
+  hydrateStepArguments,
+  peekFormatPrefix,
+  SerializationFormat,
+} from '../serialization.js';
 import { handleSuspension } from './suspension-handler.js';
 
 vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
@@ -52,6 +58,7 @@ describe('handleSuspension', () => {
       suspension: new WorkflowSuspension(pending, globalThis),
       world,
       run,
+      encryptionKey: undefined,
     });
 
     expect(eventsCreate).toHaveBeenCalledWith(
@@ -65,6 +72,42 @@ describe('handleSuspension', () => {
       }),
       expect.anything()
     );
+  });
+
+  it('uses the supplied encryption key without resolving it again', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const world = createWorld(eventsCreate);
+    const encryptionKey = await deriveRunPayloadKeys(
+      new Uint8Array(32).fill(7)
+    );
+    const pending = new Map([
+      [
+        'hook_with_metadata',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_with_metadata',
+          token: 'order:encrypted',
+          metadata: { visibility: 'private' },
+        },
+      ],
+    ]);
+
+    await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+      encryptionKey,
+    });
+
+    expect(world.getEncryptionKeyForRun).not.toHaveBeenCalled();
+    const createdEvent = eventsCreate.mock.calls[0]?.[1] as CreateEventRequest;
+    const metadata = createdEvent.eventData?.metadata as Uint8Array;
+    expect(peekFormatPrefix(metadata)).toBe(SerializationFormat.ENCRYPTED);
+    await expect(
+      hydrateStepArguments(metadata, run.runId, encryptionKey)
+    ).resolves.toEqual({ visibility: 'private' });
   });
 
   it('marks hook.getConflict()-awaited creations without converting them into wait timeouts', async () => {
@@ -90,6 +133,7 @@ describe('handleSuspension', () => {
       suspension: new WorkflowSuspension(pending, globalThis),
       world,
       run,
+      encryptionKey: undefined,
     });
 
     expect(eventsCreate).toHaveBeenCalledWith(
@@ -136,6 +180,7 @@ describe('handleSuspension', () => {
       suspension: new WorkflowSuspension(pending, globalThis),
       world,
       run,
+      encryptionKey: undefined,
     });
 
     expect(result.hasAwaitedHookCreation).toBe(true);
@@ -163,6 +208,7 @@ describe('handleSuspension', () => {
       suspension: new WorkflowSuspension(pending, globalThis),
       world,
       run,
+      encryptionKey: undefined,
     });
 
     expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual([
@@ -202,6 +248,7 @@ describe('handleSuspension', () => {
         suspension: new WorkflowSuspension(pending, globalThis),
         world,
         run,
+        encryptionKey: undefined,
       });
 
       // Cap of 1: only the first step is deferred; s2 and s3 are eager-created.
@@ -249,6 +296,7 @@ describe('handleSuspension', () => {
       suspension: new WorkflowSuspension(pending, globalThis),
       world,
       run,
+      encryptionKey: undefined,
     });
 
     // Nothing runs inline: the step keeps its eager step_created (owned) and is
@@ -279,6 +327,7 @@ describe('handleSuspension', () => {
       suspension: new WorkflowSuspension(pending, globalThis),
       world,
       run,
+      encryptionKey: undefined,
     });
 
     expect(result.hasAwaitedHookCreation).toBe(false);
@@ -318,6 +367,7 @@ describe('handleSuspension', () => {
       suspension: new WorkflowSuspension(pending, globalThis),
       world,
       run,
+      encryptionKey: undefined,
     });
 
     const hookCalls = eventsCreate.mock.calls.map(([, event]) => ({
@@ -351,6 +401,7 @@ describe('handleSuspension', () => {
       suspension: new WorkflowSuspension(pending, globalThis),
       world,
       run,
+      encryptionKey: undefined,
     });
 
     const hookCalls = eventsCreate.mock.calls.map(([, event]) => ({
@@ -387,6 +438,7 @@ describe('handleSuspension', () => {
       suspension: new WorkflowSuspension(pending, globalThis),
       world,
       run,
+      encryptionKey: undefined,
     });
 
     expect(result.hasHookConflict).toBe(true);

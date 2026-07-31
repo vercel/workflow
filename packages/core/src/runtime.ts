@@ -1641,6 +1641,7 @@ export function workflowEntrypoint(
                             suspension: err,
                             world,
                             run: workflowRun,
+                            encryptionKey,
                             span,
                             requestId,
                             eventLog: suspensionLog,

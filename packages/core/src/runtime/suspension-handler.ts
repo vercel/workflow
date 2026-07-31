@@ -17,7 +17,6 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-import { importKey } from '../encryption.js';
 import type {
   AttributeInvocationQueueItem,
   HookInvocationQueueItem,
@@ -26,6 +25,7 @@ import type {
   WorkflowSuspension,
 } from '../global.js';
 import { runtimeLogger } from '../logger.js';
+import type { PayloadKey } from '../serialization/encryption.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
@@ -36,6 +36,12 @@ export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
   world: World;
   run: WorkflowRun;
+  /**
+   * The run's already-resolved encryption key. The workflow runtime shares
+   * this with replay payload hydration and suspension serialization so the
+   * World is not asked to derive or fetch the same key twice.
+   */
+  encryptionKey: PayloadKey | undefined;
   span?: Span;
   requestId?: string;
   /**
@@ -201,6 +207,7 @@ export async function handleSuspension({
   suspension,
   world,
   run,
+  encryptionKey,
   span,
   requestId,
   eventLog,
@@ -280,10 +287,6 @@ export async function handleSuspension({
       hookItemsByToken.set(item.token, [item]);
     }
   }
-
-  // Resolve encryption key for this run
-  const rawKey = await world.getEncryptionKeyForRun?.(run);
-  const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
 
   // Gate payload compression on the run's specVersion.
   const compression =

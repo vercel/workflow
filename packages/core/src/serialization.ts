@@ -38,7 +38,6 @@ import {
   decompress,
 } from './serialization/compression.js';
 import {
-  aesKeyOf,
   decrypt,
   deriveRunPayloadKeys,
   type EncryptionKeyParam,
@@ -128,7 +127,6 @@ export {
   deriveRunPayloadKeys,
   isSealTarget,
   isRunPayloadKeys,
-  aesKeyOf,
 };
 
 // Re-export the legacy SerializationFormatType for backwards compatibility.
@@ -386,7 +384,7 @@ export function getDeserializeStream(
         // wrong kind of key" have very different causes.
         const usable = sealed
           ? isRunPayloadKeys(keyState.key)
-          : aesKeyOf(keyState.key) !== undefined;
+          : keyState.key !== undefined && !isSealTarget(keyState.key);
         if (!usable) {
           controller.error(
             new RuntimeDecryptionError(
