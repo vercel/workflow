@@ -63,9 +63,9 @@ export function createWorld(
   const streamer = createStreamer(pool, drizzle);
 
   return {
-    // What this world stamps on new runs, which is not the newest version it
-    // can read: slot identity is readable everywhere and minted only where
-    // WORKFLOW_SLOT_IDENTITY is set.
+    // What this world stamps on new runs: slot identity, unless
+    // WORKFLOW_SLOT_IDENTITY switches it off. Every world reads both schemes
+    // whatever this says.
     specVersion: mintedSpecVersion(),
     ...storage,
     ...streamer,

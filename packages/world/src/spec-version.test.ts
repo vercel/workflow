@@ -75,31 +75,30 @@ describe('isLegacySpecVersion', () => {
 });
 
 describe('mintedSpecVersion', () => {
-  it('mints the current version by default', () => {
-    expect(mintedSpecVersion({})).toBe(SPEC_VERSION_CURRENT);
+  it('mints slot identity by default', () => {
+    expect(mintedSpecVersion({})).toBe(SPEC_VERSION_SLOT_IDENTITY);
   });
 
-  it('mints slot identity when the flag is set', () => {
-    for (const value of ['1', 'true']) {
-      expect(mintedSpecVersion({ [SLOT_IDENTITY_ENV_VAR]: value })).toBe(
-        SPEC_VERSION_SLOT_IDENTITY
-      );
-    }
-  });
-
-  it('treats any other value as off', () => {
-    // An unset-but-present variable is the shape a shell leaves behind, and it
-    // must not silently switch a deployment's event identity scheme.
-    for (const value of ['', '0', 'false', 'yes']) {
+  it('mints the previous version when the flag is switched off', () => {
+    for (const value of ['0', 'false']) {
       expect(mintedSpecVersion({ [SLOT_IDENTITY_ENV_VAR]: value })).toBe(
         SPEC_VERSION_CURRENT
       );
     }
   });
 
+  it('treats any other value as on', () => {
+    // An unset-but-present variable is the shape a shell leaves behind, and it
+    // must not silently switch a deployment's event identity scheme. Opting
+    // out takes an explicit `0`/`false`.
+    for (const value of ['', '1', 'true', 'yes']) {
+      expect(mintedSpecVersion({ [SLOT_IDENTITY_ENV_VAR]: value })).toBe(
+        SPEC_VERSION_SLOT_IDENTITY
+      );
+    }
+  });
+
   it('mints nothing a world cannot read', () => {
-    expect(
-      requiresNewerWorld(mintedSpecVersion({ [SLOT_IDENTITY_ENV_VAR]: '1' }))
-    ).toBe(false);
+    expect(requiresNewerWorld(mintedSpecVersion({}))).toBe(false);
   });
 });

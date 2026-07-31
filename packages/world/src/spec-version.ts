@@ -49,10 +49,10 @@ export const SPEC_VERSION_SLOT_IDENTITY = 6 as SpecVersion;
  * Current spec version (event-sourced architecture with native attributes
  * and compressed payloads).
  *
- * This is the version new runs are stamped with, which is a *lower* bar than
- * the newest version this build can read — see
- * {@link SPEC_VERSION_MAX_SUPPORTED}. Slot identity ships behind a flag, so it
- * is readable everywhere before it is minted anywhere.
+ * The floor a world stamps on new runs, and a *lower* bar than the newest
+ * version this build can read — see {@link SPEC_VERSION_MAX_SUPPORTED}. What a
+ * world actually stamps comes from {@link mintedSpecVersion}; this is what it
+ * falls back to when slot identity is switched off.
  */
 export const SPEC_VERSION_CURRENT =
   SPEC_VERSION_SUPPORTS_COMPRESSION as SpecVersion;
@@ -62,16 +62,15 @@ export const SPEC_VERSION_CURRENT =
  * by {@link requiresNewerWorld} rather than misread.
  *
  * Distinct from {@link SPEC_VERSION_CURRENT} because a world has to be able to
- * read a version before anything may mint it: the flag that turns slot identity
- * on for new runs would otherwise make every world reject the runs it had just
- * created. Worlds opt into minting individually, via the `specVersion` they
- * declare.
+ * read a version before anything may mint it, and because a world that mints
+ * slot identity still has to read the spec-5 runs it created before the switch.
+ * Worlds opt into minting individually, via the `specVersion` they declare.
  */
 export const SPEC_VERSION_MAX_SUPPORTED =
   SPEC_VERSION_SLOT_IDENTITY as SpecVersion;
 
 /**
- * Environment variable that opts new runs into slot identity.
+ * Environment variable that opts new runs out of slot identity.
  *
  * Read per `createWorld()` call rather than at module load, so a test or a
  * single process can create worlds in both modes.
@@ -80,20 +79,20 @@ export const SLOT_IDENTITY_ENV_VAR = 'WORKFLOW_SLOT_IDENTITY';
 
 /**
  * The spec version a world should stamp on the runs it creates: slot identity
- * when {@link SLOT_IDENTITY_ENV_VAR} is set, otherwise
+ * unless {@link SLOT_IDENTITY_ENV_VAR} disables it, in which case
  * {@link SPEC_VERSION_CURRENT}.
  *
  * Every world reads runs up to {@link SPEC_VERSION_MAX_SUPPORTED} whatever this
- * returns, so turning the flag on in one place does not make the runs it creates
- * unreadable elsewhere.
+ * returns, so turning the flag off in one place does not make the runs another
+ * process created unreadable here.
  */
 export function mintedSpecVersion(
   env: Record<string, string | undefined> = process.env
 ): SpecVersion {
   const value = env[SLOT_IDENTITY_ENV_VAR];
-  return value === '1' || value === 'true'
-    ? SPEC_VERSION_SLOT_IDENTITY
-    : SPEC_VERSION_CURRENT;
+  return value === '0' || value === 'false'
+    ? SPEC_VERSION_CURRENT
+    : SPEC_VERSION_SLOT_IDENTITY;
 }
 
 /**
