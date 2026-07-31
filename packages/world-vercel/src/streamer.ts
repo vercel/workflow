@@ -9,6 +9,7 @@ import {
   getStreamCloseDispatcher,
   getStreamDispatcher,
 } from './http-client.js';
+import { getVercelDiagnostics, instrumentedFetch } from './http-core.js';
 import {
   type APIConfig,
   getHttpConfig,
@@ -23,11 +24,15 @@ import {
 export const MAX_CHUNKS_PER_REQUEST = 1000;
 const DEFAULT_STREAM_MUTATION_TIMEOUT_MS = 30_000;
 
+// All stream requests share the instrumented envelope (`instrumentedFetch`):
+// an OTEL client span, trace-context injection, `DEBUG` logging, and the
+// x-vercel diagnostic headers — the same coverage the v3/v4 paths have.
+//
 // Stream writes (the PUT write/close path) go through the H2 stream
 // dispatchers: they send a fully-buffered body (or none), so they benefit from
 // H2 multiplexing without hitting the duplex issues that keep the long-lived
-// live-read (GET) on plain fetch. The two mutations have different retry
-// policies because they differ in idempotency:
+// live-read (GET) on the global dispatcher. The two mutations have different
+// retry policies because they differ in idempotency:
 //  - chunk appends are NOT idempotent, so getStreamDispatcher's policy (see
 //    STREAM_RETRY_OPTIONS) retries only on transient connection errors and
 //    HTTP 429 — both of which guarantee the chunk was never persisted — and
@@ -37,7 +42,9 @@ const DEFAULT_STREAM_MUTATION_TIMEOUT_MS = 30_000;
 //    protocol relies on that, surfacing transient reconciliation states as
 //    retriable 503s with the stream left durably closing.
 // Snapshot reads (chunks/info) go through makeRequest (default H1 dispatcher);
-// the live-read and list use plain fetch().
+// the live-read (GET) and list keep the global dispatcher (no custom retry) and
+// no request timeout — the live read is long-lived and a whole-request deadline
+// would truncate it.
 
 function getStreamUrl(
   name: string,
@@ -63,38 +70,41 @@ function getStreamMutationTimeoutMs() {
   return DEFAULT_STREAM_MUTATION_TIMEOUT_MS;
 }
 
+/**
+ * Issue an instrumented stream mutation (a `write` or `close` PUT), throwing on
+ * a non-2xx and draining the response body so undici can release the pooled
+ * connection.
+ *
+ * The per-request deadline is handed to `instrumentedFetch`, which raises a
+ * typed, retryable `WorkflowWorldError` on expiry instead of the opaque
+ * `AbortError` that a bare `AbortSignal.timeout` surfaces.
+ */
 async function fetchStreamMutation(
   url: URL,
-  init: RequestInit,
+  init: { method: string; headers: Headers; body?: string | Uint8Array },
   operation: 'write' | 'close',
   config?: APIConfig
-) {
-  const timeoutMs = getStreamMutationTimeoutMs();
-  try {
-    return await fetch(url, {
-      ...init,
-      signal: AbortSignal.timeout(timeoutMs),
-      // Stream mutations go through the dedicated H2 stream dispatchers rather
-      // than the global agent — see the note at the top of this file. Close is
-      // idempotent (unlike chunk appends), so it gets the dispatcher that
-      // retries 5xx, which the server's close-barrier protocol depends on.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici's dispatcher option isn't in @types/node's RequestInit
-      dispatcher:
-        operation === 'close'
-          ? getStreamCloseDispatcher(config)
-          : getStreamDispatcher(config),
-    } as any);
-  } catch (err) {
-    if (
-      err instanceof Error &&
-      (err.name === 'AbortError' || err.name === 'TimeoutError')
-    ) {
-      throw new Error(`Stream ${operation} timed out after ${timeoutMs}ms`, {
-        cause: err,
-      });
-    }
-    throw err;
-  }
+): Promise<void> {
+  const response = await instrumentedFetch({
+    method: init.method,
+    url: url.toString(),
+    headers: init.headers,
+    body: init.body,
+    // Stream mutations go through the dedicated H2 stream dispatchers rather
+    // than the global agent — see the note at the top of this file. Close is
+    // idempotent (unlike chunk appends), so it gets the dispatcher that
+    // retries 5xx, which the server's close-barrier protocol depends on.
+    dispatcher:
+      operation === 'close'
+        ? getStreamCloseDispatcher(config)
+        : getStreamDispatcher(config),
+    timeoutMs: getStreamMutationTimeoutMs(),
+    logLabel: url.pathname,
+    buildError: async (res) =>
+      createStreamRequestError(operation, url, res, await res.text()),
+  });
+  // Drain the (empty) response so undici can release the pooled connection.
+  await response.text();
 }
 
 function createStreamRequestError(
@@ -103,13 +113,10 @@ function createStreamRequestError(
   response: Response,
   text: string
 ): Error {
-  const context = [`PUT ${url.origin}${url.pathname}`];
-  for (const header of ['x-vercel-id', 'x-vercel-error']) {
-    const value = response.headers.get(header);
-    if (value) {
-      context.push(`${header}=${value}`);
-    }
-  }
+  const context = [
+    `PUT ${url.origin}${url.pathname}`,
+    ...getVercelDiagnostics(response.headers),
+  ];
 
   return new Error(
     `Stream ${operation} failed: HTTP ${response.status} (${context.join('; ')}): ${text}`
@@ -188,7 +195,7 @@ export function createStreamer(config?: APIConfig): Streamer {
 
       const httpConfig = await getHttpConfig(config);
       const url = getStreamUrl(name, resolvedRunId, httpConfig);
-      const response = await fetchStreamMutation(
+      await fetchStreamMutation(
         url,
         {
           method: 'PUT',
@@ -198,10 +205,6 @@ export function createStreamer(config?: APIConfig): Streamer {
         'write',
         config
       );
-      const text = await response.text();
-      if (!response.ok) {
-        throw createStreamRequestError('write', url, response, text);
-      }
     },
 
     async writeToStreamMulti(
@@ -231,7 +234,7 @@ export function createStreamer(config?: APIConfig): Streamer {
         const batch = chunks.slice(i, i + MAX_CHUNKS_PER_REQUEST);
         const body = encodeMultiChunks(batch);
         const url = getStreamUrl(name, resolvedRunId, httpConfig);
-        const response = await fetchStreamMutation(
+        await fetchStreamMutation(
           url,
           {
             method: 'PUT',
@@ -241,10 +244,6 @@ export function createStreamer(config?: APIConfig): Streamer {
           'write',
           config
         );
-        const text = await response.text();
-        if (!response.ok) {
-          throw createStreamRequestError('write', url, response, text);
-        }
       }
     },
 
@@ -255,7 +254,7 @@ export function createStreamer(config?: APIConfig): Streamer {
       const httpConfig = await getHttpConfig(config);
       httpConfig.headers.set('X-Stream-Done', 'true');
       const url = getStreamUrl(name, resolvedRunId, httpConfig);
-      const response = await fetchStreamMutation(
+      await fetchStreamMutation(
         url,
         {
           method: 'PUT',
@@ -264,10 +263,6 @@ export function createStreamer(config?: APIConfig): Streamer {
         'close',
         config
       );
-      const text = await response.text();
-      if (!response.ok) {
-        throw createStreamRequestError('close', url, response, text);
-      }
     },
 
     async readFromStream(name: string, startIndex?: number) {
@@ -281,13 +276,18 @@ export function createStreamer(config?: APIConfig): Streamer {
       // actually aborts the in-flight HTTP request instead of leaving
       // the socket hanging until the server times out.
       const abortController = new AbortController();
-      const response = await fetch(url, {
+      // Live read: keep the global dispatcher and no request timeout so the
+      // long-lived, reconnecting read isn't truncated.
+      const response = await instrumentedFetch({
+        method: 'GET',
+        url: url.toString(),
         headers: httpConfig.headers,
+        dispatcher: undefined,
+        timeoutMs: null,
         signal: abortController.signal,
+        logLabel: url.pathname,
+        buildError: (res) => new Error(`Failed to fetch stream: ${res.status}`),
       });
-      if (!response.ok) {
-        throw new Error(`Failed to fetch stream: ${response.status}`);
-      }
       if (!response.body) {
         throw new Error('No response body for stream');
       }
@@ -358,12 +358,15 @@ export function createStreamer(config?: APIConfig): Streamer {
       const url = new URL(
         `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/streams`
       );
-      const response = await fetch(url, {
+      const response = await instrumentedFetch({
+        method: 'GET',
+        url: url.toString(),
         headers: httpConfig.headers,
+        dispatcher: undefined,
+        timeoutMs: null,
+        logLabel: url.pathname,
+        buildError: (res) => new Error(`Failed to list streams: ${res.status}`),
       });
-      if (!response.ok) {
-        throw new Error(`Failed to list streams: ${response.status}`);
-      }
       return (await response.json()) as string[];
     },
   };

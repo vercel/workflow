@@ -379,15 +379,15 @@ function contentLength(headers: unknown): number {
  *
  * 2. Streamed request body. `client-h2.js` also returns busy for a body that is
  *    a stream / async iterable, because such a body can error mid-flight and
- *    take unrelated in-flight requests down with it. events-v4 dispatches
- *    through undici's own `request()` with a materialized `Uint8Array`, so its
- *    bodies already arrive buffered and skip this branch; a caller that hands
- *    down a streamed body (as the global `fetch` does — it converts every body
- *    into an async iterable) would otherwise stay serialized. Draining it back
- *    into a Buffer restores the buffered-body shape undici needs, at the cost of
- *    one copy of an already-in-memory payload. Bodies without a usable
- *    `content-length`, or above H2_REBUFFER_MAX_BYTES, are passed through
- *    untouched (and stay serialized) rather than buffered blind.
+ *    take unrelated in-flight requests down with it. events-v4 hands us a fully
+ *    materialized `Uint8Array`, but it dispatches through the global `fetch`
+ *    (deliberately — that is what keeps v4 traffic visible in Vercel's outgoing
+ *    -requests view, see events-v4.ts), and `fetch` converts every body into an
+ *    async iterable on the way down. Draining it back into a Buffer restores the
+ *    buffered-body shape undici needs, at the cost of one copy of an
+ *    already-in-memory payload. Bodies without a usable `content-length`, or
+ *    above H2_REBUFFER_MAX_BYTES, are passed through untouched (and stay
+ *    serialized) rather than buffered blind.
  *
  * Without both of these, `pipelining` alone leaves the events agent at one
  * in-flight request per connection.

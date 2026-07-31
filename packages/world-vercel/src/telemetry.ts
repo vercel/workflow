@@ -87,6 +87,27 @@ export async function getSpanKind(
   return otel.SpanKind[field];
 }
 
+/**
+ * Injects the active trace context into the given request headers using the
+ * registered propagator (typically W3C `traceparent`/`tracestate` plus
+ * `baggage`). Call inside an active client span so the receiving server can
+ * parent its spans to it.
+ *
+ * No-ops when `@opentelemetry/api` is unavailable or no SDK/propagator is
+ * registered (the default no-op propagator injects nothing).
+ */
+export async function injectTraceContextIntoHeaders(
+  headers: Headers
+): Promise<void> {
+  const otel = await getOtelApi();
+  if (!otel) return;
+  const carrier: Record<string, string> = {};
+  otel.propagation.inject(otel.context.active(), carrier);
+  for (const [key, value] of Object.entries(carrier)) {
+    headers.set(key, value);
+  }
+}
+
 // Semantic conventions for World/Storage tracing
 // Standard OTEL conventions: https://opentelemetry.io/docs/specs/semconv/http/http-spans/
 function SemanticConvention<T>(...names: string[]) {

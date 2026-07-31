@@ -386,6 +386,16 @@ describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
   let flakyAttempts: number;
 
   /**
+   * Paths that participate in the concurrency barrier: the synthetic burst
+   * paths, plus the real v4 event-write path (`/api/v4/...`) used by the
+   * end-to-end test. The pool-warming request and `/flaky` are excluded — they
+   * must complete on their own.
+   */
+  function isBarrierPath(path: string): boolean {
+    return path.startsWith('/req-') || path.startsWith('/api/v4/');
+  }
+
+  /**
    * Holds every request open until `CONCURRENCY` of them are in flight, so peak
    * concurrency is observed rather than timed. A periodic flush (see `burst`)
    * drains whatever is waiting when that target is never reached — which is the
@@ -395,7 +405,7 @@ describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
   function onArrival(path: string): Promise<void> {
     // The pool-warming request is not part of the barrier — it must complete on
     // its own so the burst starts from an established session.
-    if (!path.startsWith('/req-')) return Promise.resolve();
+    if (!isBarrierPath(path)) return Promise.resolve();
     return new Promise<void>((resolve) => {
       inFlight++;
       maxConcurrentStreams = Math.max(maxConcurrentStreams, inFlight);
@@ -425,11 +435,23 @@ describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
           const path = String(headers[':path']);
           receivedBodies.push(Buffer.concat(chunks).toString());
           await onArrival(path);
-          if (path.startsWith('/req-')) inFlight--;
+          if (isBarrierPath(path)) inFlight--;
           // `/flaky` fails once so RetryAgent re-dispatches it.
           if (path === '/flaky' && ++flakyAttempts === 1) {
             stream.respond({ ':status': 503 });
             stream.end('retry me');
+            return;
+          }
+          // The v4 create-event contract: the client requires these response
+          // headers and CBOR-decodes the body.
+          if (path.startsWith('/api/v4/')) {
+            stream.respond({
+              ':status': 200,
+              'x-wf-event-id': `evnt_${receivedBodies.length}`,
+              'x-wf-run-id': 'wrun_1',
+              'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+            });
+            stream.end();
             return;
           }
           stream.respond({ ':status': 200 });
@@ -547,6 +569,69 @@ describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
       expect(receivedBodies).toEqual([payload, payload]);
     } finally {
       await agent.close();
+    }
+  });
+
+  it('multiplexes real v4 event writes (createWorkflowRunEventV4 end to end)', async () => {
+    // The tests above drive the transport with a synthetic `fetch`. This one
+    // drives the actual production call, which matters because the events
+    // client hands its frame to the *global* `fetch` (so v4 traffic stays
+    // visible in Vercel's outgoing-requests view). `fetch` streamifies the
+    // body, which is exactly what trips undici's second H2 busy() gate — so
+    // this is the path where the interceptor's re-buffering has to work.
+    const { createWorkflowRunEventV4 } = await import('./events-v4.js');
+    const previousUrl = process.env.VERCEL_WORKFLOW_SERVER_URL;
+    process.env.VERCEL_WORKFLOW_SERVER_URL = `https://127.0.0.1:${port}`;
+    const agent = createEventsDispatcher(LOOPBACK);
+    sessions = 0;
+    maxConcurrentStreams = 0;
+    inFlight = 0;
+    receivedBodies = [];
+    release = [];
+    // Warm the pool so ALPN negotiation isn't conflated with the stream gate.
+    await fetch(`https://127.0.0.1:${port}/warm`, {
+      dispatcher: agent,
+      method: 'POST',
+      body: 'warm',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+    } as any);
+    const sessionsAfterWarm = sessions;
+    const timer = setInterval(() => {
+      for (const r of release.splice(0)) r();
+    }, 250);
+    try {
+      const results = await Promise.all(
+        Array.from({ length: CONCURRENCY }, (_, i) =>
+          createWorkflowRunEventV4(
+            {
+              runId: 'wrun_1',
+              eventType: 'step_started',
+              payload: new TextEncoder().encode(`payload-${i}`),
+            },
+            { token: 'test-token', dispatcher: agent }
+          )
+        )
+      );
+
+      expect(results).toHaveLength(CONCURRENCY);
+      expect(maxConcurrentStreams).toBe(CONCURRENCY);
+      expect(sessions).toBe(sessionsAfterWarm);
+      // Every frame arrived whole: re-buffering must not truncate or drop the
+      // body it drained off the fetch stream.
+      const frames = receivedBodies.filter((b) => b !== 'warm');
+      expect(frames).toHaveLength(CONCURRENCY);
+      expect(frames.every((b) => b.length > 0)).toBe(true);
+      expect(frames.map((b) => b.slice(b.indexOf('payload-'))).sort()).toEqual(
+        Array.from({ length: CONCURRENCY }, (_, i) => `payload-${i}`).sort()
+      );
+    } finally {
+      clearInterval(timer);
+      await agent.close();
+      if (previousUrl === undefined) {
+        delete process.env.VERCEL_WORKFLOW_SERVER_URL;
+      } else {
+        process.env.VERCEL_WORKFLOW_SERVER_URL = previousUrl;
+      }
     }
   });
 
