@@ -5,11 +5,13 @@ import {
   HookNotFoundError,
   RunExpiredError,
   RunNotSupportedError,
+  SlotConflictError,
   TooEarlyError,
   WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  CreateEventParams,
   Event,
   EventResult,
   Hook,
@@ -34,8 +36,12 @@ import {
   isTerminalWorkflowRunStatus,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_MAX_SUPPORTED,
   StepSchema,
+  slotEventId,
+  slotFromId,
   ulidToDate,
+  usesSlotIdentity,
   validateAttributeChanges,
   validateUlidTimestamp,
   WaitSchema,
@@ -85,6 +91,7 @@ import {
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
+import { createSlotBook, RUN_CREATED_SLOT } from './slots.js';
 
 /**
  * Per-run event ceiling the Local World reports on run responses (mirrors the
@@ -506,6 +513,8 @@ export function createEventsStorage(
   const cachedPathsByRunId = new Map<string, Set<string>>();
   let totalCachedEventBytes = 0;
 
+  const slots = createSlotBook(basedir, tag);
+
   function deleteCachedEvent(eventPath: string): void {
     const event = eventCache.get(eventPath);
     if (!event) {
@@ -525,6 +534,7 @@ export function createEventsStorage(
     for (const cachedPath of cachedPathsByRunId.get(runId) ?? []) {
       deleteCachedEvent(cachedPath);
     }
+    slots.forget(runId);
   }
 
   function clearCache(): void {
@@ -532,6 +542,7 @@ export function createEventsStorage(
     cachedEventBytes.clear();
     cachedPathsByRunId.clear();
     totalCachedEventBytes = 0;
+    slots.clear();
   }
 
   function cacheEvent(
@@ -592,6 +603,64 @@ export function createEventsStorage(
     }
   }
 
+  /**
+   * The events a caller that just lost a slot is missing: one ascending page of
+   * the run's log after the cursor it wrote from, minus anything at or below the
+   * highest slot it already held. Because slots are dense, that second filter is
+   * exact — a caller cannot be missing an event whose position it can name.
+   *
+   * Returned inline with the conflict so the common case (a handful of events
+   * arrived out of band) costs the caller no extra round-trip. `hasMore` is
+   * forwarded verbatim: an overflowing delta is the caller's signal to page from
+   * `cursor` instead of treating this as the whole story.
+   */
+  async function eventsAfterClaim(
+    runId: string,
+    params: CreateEventParams | undefined
+  ): Promise<{ events: Event[]; cursor: string | null; hasMore: boolean }> {
+    const page = await paginatedFileSystemQuery({
+      directory: path.join(basedir, 'events'),
+      schema: EventSchema,
+      cachedItems: eventCache,
+      filePrefix: `${runId}-`,
+      sortOrder: 'asc',
+      ...(typeof params?.sinceCursor === 'string'
+        ? { cursor: params.sinceCursor }
+        : {}),
+      getCreatedAt: getObjectCreatedAt('evnt'),
+      getId: (event) => event.eventId,
+    });
+    const maxSlot = params?.maxSlot ?? 0;
+    const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+    const missing = page.data.filter(
+      (event) => (slotFromId(event.eventId) ?? 0) > maxSlot
+    );
+    return {
+      events:
+        resolveData === 'none'
+          ? missing.map((event) => stripEventDataRefs(event, resolveData))
+          : missing,
+      cursor: page.cursor,
+      hasMore: page.hasMore,
+    };
+  }
+
+  /**
+   * The 409 a caller gets when the slot it named turns out to belong to someone
+   * else, carrying the events it is missing so it can merge, replay and
+   * re-propose at a free position.
+   */
+  async function slotConflict(
+    runId: string,
+    eventId: string,
+    params: CreateEventParams | undefined
+  ): Promise<SlotConflictError> {
+    return new SlotConflictError(
+      `Slot ${slotFromId(eventId)} of run "${runId}" is already taken`,
+      { eventId, ...(await eventsAfterClaim(runId, params)) }
+    );
+  }
+
   async function storeEvent(event: Event): Promise<void> {
     const eventPath = taggedPath(
       basedir,
@@ -643,6 +712,36 @@ export function createEventsStorage(
       if ('correlationId' in data && typeof data.correlationId === 'string') {
         assertSafeEntityId('correlationId', data.correlationId);
       }
+      if (params?.eventId !== undefined) {
+        assertSafeEntityId('eventId', params.eventId);
+      }
+
+      // A slot-numbered create reserves its position before running the
+      // validation and materialization that may still reject it. Handing the
+      // reservation back on the way out is what keeps the log dense: an
+      // abandoned slot below a sibling's published one is a hole that can never
+      // be filled, and a log with a hole can no longer prove it is complete.
+      const reserved = new Set<number>();
+      let reservedRunId: string | undefined;
+      /**
+       * Hands the slots of a create that never published back to the allocator,
+       * so an abandoned reservation below a sibling's published slot does not
+       * become a hole the run can never fill.
+       */
+      async function releasingSlots(
+        result: Promise<EventResult>
+      ): Promise<EventResult> {
+        try {
+          return await result;
+        } catch (error) {
+          if (reservedRunId !== undefined) {
+            for (const slot of reserved) {
+              slots.release(reservedRunId, slot);
+            }
+          }
+          throw error;
+        }
+      }
 
       // Step lifecycle events are serialized per-step via an in-process mutex
       // so that the "check state, then write" sequence in step_started /
@@ -653,7 +752,9 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.${tag}`
           : `${runId}-${data.correlationId}`;
-        return withInProcessLock(stepLocks, lockKey, () => createImpl());
+        return releasingSlots(
+          withInProcessLock(stepLocks, lockKey, () => createImpl())
+        );
       }
       // `hook_created` is serialized per-(runId, hookId) so the
       // "claim token, write hook entity, write event" sequence runs to
@@ -682,9 +783,11 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.hook.${tag}`
           : `${runId}-${data.correlationId}.hook`;
-        return withInProcessLock(hookLocks, lockKey, () => createImpl());
+        return releasingSlots(
+          withInProcessLock(hookLocks, lockKey, () => createImpl())
+        );
       }
-      return createImpl();
+      return releasingSlots(createImpl());
 
       async function createImpl(): Promise<EventResult> {
         // Most paths use the freshly-generated candidate eventId. The
@@ -718,6 +821,18 @@ export function createEventsStorage(
 
         // specVersion is always sent by the runtime, but we provide a fallback for safety
         const effectiveSpecVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
+
+        // Whether this run numbers its events by slot. Read from what was
+        // persisted, never from this request or this build, so a run stays in
+        // the mode it was created in for life — a run whose log holds ULID ids
+        // must never be handed a slot id, and vice versa. `run_created` is the
+        // one event that decides the mode instead of reading it; the
+        // resilient-start path below decides it too, on the request that
+        // creates the run.
+        let slotMode =
+          data.eventType === 'run_created'
+            ? usesSlotIdentity(effectiveSpecVersion)
+            : await slots.usesSlots(effectiveRunId);
 
         // Get current run state for validation (if not creating a new run)
         // Skip run validation for step_completed and step_retrying - they only operate
@@ -800,8 +915,14 @@ export function createEventsStorage(
               );
 
               if (created) {
-                // We created the run — also write the run_created event.
-                const runCreatedEventId = `evnt_${monotonicUlid()}`;
+                // We created the run, so this request also decided its mode.
+                slotMode = usesSlotIdentity(effectiveSpecVersion);
+                // We created the run — also write the run_created event. Its
+                // slot needs no allocation: a run's own `run_created` provably
+                // has nothing before it.
+                const runCreatedEventId = slotMode
+                  ? slotEventId(RUN_CREATED_SLOT)
+                  : `evnt_${monotonicUlid()}`;
                 const runCreatedEvent: Event = {
                   eventType: 'run_created',
                   runId: effectiveRunId,
@@ -820,6 +941,7 @@ export function createEventsStorage(
                   },
                 };
                 await storeEvent(runCreatedEvent);
+                slots.observe(effectiveRunId, runCreatedEventId);
                 currentRun = createdRun;
               } else {
                 // Run already exists (concurrent run_created won the
@@ -834,6 +956,17 @@ export function createEventsStorage(
               }
             }
           }
+        }
+
+        // The run entity we just read is the authority on the mode, and it can
+        // appear between the probe above and this read: start() issues
+        // `run_created` and the queue send concurrently, so the delivery's
+        // `run_started` can arrive while the run is still being published. A
+        // stale "no" there would number that one event with a ULID on an
+        // otherwise slot-numbered run, and the hole it leaves in the numbering
+        // costs the log its completeness proof for life.
+        if (currentRun && data.eventType !== 'run_created') {
+          slotMode = usesSlotIdentity(currentRun.specVersion);
         }
 
         // run_failed on a non-existent run is rejected to match the
@@ -857,7 +990,7 @@ export function createEventsStorage(
           if (requiresNewerWorld(currentRun.specVersion)) {
             throw new RunNotSupportedError(
               currentRun.specVersion!,
-              SPEC_VERSION_CURRENT
+              SPEC_VERSION_MAX_SUPPORTED
             );
           }
 
@@ -871,6 +1004,55 @@ export function createEventsStorage(
               params
             );
           }
+        }
+
+        // ============================================================
+        // EVENT ID: the caller's slot claim, an allocated slot, or a ULID
+        // ============================================================
+        // A slot-numbered run's ids name positions in its log, so an id is
+        // either claimed by a caller that holds the log (and is therefore
+        // asserting the log is complete up to that position) or allocated here
+        // for a caller that has no log — a step completion reporting in, a
+        // cancellation from an API call.
+        if (params?.eventId !== undefined) {
+          const claimedSlot = slotFromId(params.eventId);
+          if (!slotMode) {
+            throw new WorkflowWorldError(
+              `Event id "${params.eventId}" was supplied for run "${effectiveRunId}", whose events are not numbered by slot`,
+              { status: 400 }
+            );
+          }
+          if (claimedSlot === undefined) {
+            throw new WorkflowWorldError(
+              `Event id "${params.eventId}" is not a slot id, and run "${effectiveRunId}" numbers its events by slot`,
+              { status: 400 }
+            );
+          }
+          eventId = params.eventId;
+          reservedRunId = effectiveRunId;
+          reserved.add(claimedSlot);
+          slots.claim(effectiveRunId, claimedSlot);
+          if (await slots.isWritten(effectiveRunId, claimedSlot)) {
+            // Reject a doomed claim before the materialization below creates
+            // the step, hook or wait this event will now never accompany. A
+            // caller that re-proposes at the next slot would otherwise
+            // collide with its own orphan and read that as "my write already
+            // landed". See SlotBook.isWritten.
+            throw await slotConflict(effectiveRunId, eventId, params);
+          }
+        } else if (slotMode) {
+          reservedRunId = effectiveRunId;
+          // A run's own `run_created` owns the first slot — provably, since
+          // nothing precedes it — so every other event allocates above it, even
+          // when that event is the first to arrive here.
+          const slot = await slots.reserve(
+            effectiveRunId,
+            data.eventType === 'run_created'
+              ? RUN_CREATED_SLOT
+              : RUN_CREATED_SLOT + 1
+          );
+          reserved.add(slot);
+          eventId = slotEventId(slot);
         }
 
         // ============================================================
@@ -1127,13 +1309,40 @@ export function createEventsStorage(
           // strictly dominates all visible events of the run guarantees the
           // terminal event replays last. See mintRunDominantEventKey for
           // the dominance argument.
-          const dominantKey = await mintRunDominantEventKey(
-            basedir,
-            effectiveRunId,
-            tag
-          );
-          eventId = dominantKey.eventId;
-          event = { ...event, eventId, createdAt: dominantKey.createdAt };
+          //
+          // A key the *caller* chose is left alone. Its slot was picked from
+          // the caller's own log, so a concurrent event either sits below it
+          // (and already replays first) or takes the slot itself — in which
+          // case the publish below conflicts and the caller merges and
+          // re-proposes, which is the stronger answer. Re-numbering it here
+          // would also be actively wrong: the caller reserves slots for a
+          // whole flush of concurrent ops at once, so moving this one to
+          // "highest visible + 1" would steal the slot a sibling op is still
+          // in flight with.
+          if (params?.eventId === undefined) {
+            const dominantKey = await mintRunDominantEventKey(
+              basedir,
+              effectiveRunId,
+              tag,
+              slotMode
+            );
+            const staleSlot = slotFromId(eventId);
+            const dominantSlot = slotFromId(dominantKey.eventId);
+            if (staleSlot !== undefined && staleSlot !== dominantSlot) {
+              // Only reachable when the log moved under us, which means the
+              // slot we held is now someone else's written event — handing it
+              // back leaves no hole.
+              reserved.delete(staleSlot);
+              slots.release(effectiveRunId, staleSlot);
+            }
+            if (dominantSlot !== undefined) {
+              reservedRunId = effectiveRunId;
+              reserved.add(dominantSlot);
+              slots.claim(effectiveRunId, dominantSlot);
+            }
+            eventId = dominantKey.eventId;
+            event = { ...event, eventId, createdAt: dominantKey.createdAt };
+          }
         }
 
         // Create/update entity based on event type (event-sourced architecture)
@@ -1505,13 +1714,19 @@ export function createEventsStorage(
               );
               // Write the synthetic step_created event so replay observes it
               // (the client step consumer sets hasCreatedEvent only on a
-              // step_created event). Its eventId is a fresh monotonic ULID.
+              // step_created event). Its eventId is a second slot, or a fresh
+              // monotonic ULID — one request, two events.
               // Ordering vs. the step_started event row does not affect
               // correctness: the step_started consumer is a no-op and only
               // step_created flips hasCreatedEvent, so the end state is the
               // same whichever sorts first — this matches the resilient
               // run_started → run_created precedent in this file.
-              const stepCreatedEventId = `evnt_${monotonicUlid()}`;
+              let stepCreatedEventId = `evnt_${monotonicUlid()}`;
+              if (slotMode) {
+                const slot = await slots.reserve(effectiveRunId);
+                reserved.add(slot);
+                stepCreatedEventId = slotEventId(slot);
+              }
               const stepCreatedEvent: Event = {
                 eventType: 'step_created',
                 runId: effectiveRunId,
@@ -1533,6 +1748,7 @@ export function createEventsStorage(
                 ),
                 stepCreatedEvent
               );
+              slots.observe(effectiveRunId, stepCreatedEventId);
               validatedStep = createdStep;
               stepCreatedLazily = true;
             }
@@ -2215,11 +2431,17 @@ export function createEventsStorage(
         // race here; whoever links the file first wins, the loser
         // throws EntityConflictError, and the runtime's existing
         // concurrent-replay catch path at suspension-handler.ts:142
-        // swallows it. For all other event types, eventIds are
-        // monotonic ULIDs (globally unique by construction) so a
-        // collision indicates a real bug and EntityConflictError is
+        // swallows it. For all other event types of a ULID-numbered run,
+        // eventIds are monotonic ULIDs (globally unique by construction) so
+        // a collision indicates a real bug and EntityConflictError is
         // also the right surface — same shape as step_created's
         // claim-file behavior.
+        //
+        // A slot-numbered run collides by design: the id names a position in
+        // the log, so a loser is not a bug but a writer whose log was missing
+        // an event. It gets a SlotConflictError carrying that event instead
+        // (see below), and this write is the authority that decides it — the
+        // allocator's book is only ever a hint.
         // Last-instant re-validation for `hook_received` (see the acceptance
         // check above). The per-hook in-process lock already serializes
         // resume vs. dispose within one storage instance; this second check
@@ -2311,10 +2533,15 @@ export function createEventsStorage(
           );
           const staged = await writeExclusive(stagedPath, serializedEvent);
           if (!staged) {
-            // eventId is a freshly generated ULID; its staging path can
-            // only be occupied by a previous crashed attempt of this very
-            // event, which never promoted. Surface the same conflict shape
-            // as a visible-path collision.
+            // For a ULID-numbered run the eventId is freshly generated, so
+            // its staging path can only be occupied by a previous crashed
+            // attempt of this very event, which never promoted. A
+            // slot-numbered run can also collide here with another instance
+            // that allocated the same slot from its own book. Either way the
+            // event is not reader-visible, so there is no delta to hand back
+            // and nothing for the caller to merge: surface the same conflict
+            // shape as a visible-path collision, and let the allocator
+            // re-probe on the retry.
             throw new EntityConflictError(
               `Event "${eventId}" already exists for run "${effectiveRunId}"`
             );
@@ -2364,6 +2591,22 @@ export function createEventsStorage(
               tag
             );
           }
+          if (slotMode) {
+            // Losing a slot means someone else's event occupies this position,
+            // so the log this event was derived from is missing at least that
+            // event — the whole proposed event is stale, not just its id. Hand
+            // back what the caller is missing so it can merge, replay and
+            // re-propose, and forget the run's book so the next allocation
+            // re-reads the log this instance evidently does not have.
+            //
+            // Reaching here means the slot was taken *after* the pre-check at
+            // the claim site, so the entity this event was going to describe
+            // has already been materialized. Only two storage instances
+            // sharing a directory can do that, since one instance's book
+            // hands the same slot to nobody else.
+            slots.forget(effectiveRunId);
+            throw await slotConflict(effectiveRunId, eventId, params);
+          }
           throw new EntityConflictError(
             `Event "${eventId}" already exists for run "${effectiveRunId}"`
           );
@@ -2372,6 +2615,7 @@ export function createEventsStorage(
         // The event is now committed; cache it so an immediate sequential
         // replay can serve it without rereading from disk.
         rememberStoredEvent(event, eventPath, serializedEvent);
+        slots.observe(effectiveRunId, eventId);
 
         // Write the hook entity ONLY now that the event publish has
         // committed. Doing this earlier (in the `hook_created`

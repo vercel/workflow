@@ -1,4 +1,5 @@
 import {
+  EntityConflictError,
   PreconditionFailedError,
   SlotConflictError,
   WorkflowWorldError,
@@ -29,6 +30,7 @@ import {
   memoizeEncryptionKey,
   mergeLoadedEvents,
   PRECONDITION_MAX_RELOAD_RETRIES,
+  requiresFreshReplay,
   reserveSlot,
   stateUpdatedAtForCreate,
   toMutableEventLog,
@@ -537,6 +539,26 @@ describe('slot bookkeeping', () => {
     ).toBe(0);
   });
 
+  it('starts at a floor the snapshot cannot show', () => {
+    // Turbo replays against an empty log while its `run_started` write is still
+    // in flight, so the snapshot alone would number the first claim onto a slot
+    // that write already holds.
+    const log = toMutableEventLog([], null, 2);
+    expect(log.maxSlot).toBe(2);
+    expect(reserveSlot(log)).toBe(3);
+  });
+
+  it('ignores a floor the snapshot has already passed', () => {
+    const log = toMutableEventLog([slotEvent(5)], 'c0', 2);
+    expect(log.maxSlot).toBe(5);
+  });
+
+  it('keeps the floor across a merge', () => {
+    const log = toMutableEventLog([], null, 2);
+    mergeLoadedEvents(log, [slotEvent(1)]);
+    expect(log.maxSlot).toBe(2);
+  });
+
   it('never lowers maxSlot when an older delta is merged in', () => {
     const log = toMutableEventLog([slotEvent(1), slotEvent(3)], 'c0');
     mergeLoadedEvents(log, [slotEvent(2)]);
@@ -807,6 +829,27 @@ describe('withEventCreateFence', () => {
     ).resolves.toBe('done');
     expect(op).toHaveBeenLastCalledWith({ stateUpdatedAt: time + 1000 });
     expect(eventsListMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('requiresFreshReplay', () => {
+  it('covers both fences, so neither numbering fails the run', () => {
+    // Each fence reports an incomplete view in its own dialect. A caller that
+    // recognises only one of them fails runs on the other.
+    expect(requiresFreshReplay(new PreconditionFailedError('stale'))).toBe(
+      true
+    );
+    expect(
+      requiresFreshReplay(
+        new SlotConflictError('taken', { eventId: slotEventId(3) })
+      )
+    ).toBe(true);
+  });
+
+  it('leaves every other rejection to its own handler', () => {
+    expect(requiresFreshReplay(new EntityConflictError('exists'))).toBe(false);
+    expect(requiresFreshReplay(new Error('boom'))).toBe(false);
+    expect(requiresFreshReplay(undefined)).toBe(false);
   });
 });
 

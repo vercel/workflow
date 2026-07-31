@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { QueuePrefix, World } from '@workflow/world';
-import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
+import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { warnIfRunningInVercelDeployment } from './build-target-mismatch.js';
 import type { Config } from './config.js';
 import { config, resolveRecoverActiveRuns } from './config.js';
@@ -72,7 +72,10 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   );
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   return {
-    specVersion: SPEC_VERSION_CURRENT,
+    // What this world stamps on new runs, which is not the newest version it
+    // can read: slot identity is readable everywhere and minted only where
+    // WORKFLOW_SLOT_IDENTITY is set.
+    specVersion: mintedSpecVersion(),
     ...queue,
     ...storage,
     ...instrumentObject('world.streams', {

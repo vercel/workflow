@@ -669,12 +669,26 @@ export interface MutableEventLog {
   reserved: number;
 }
 
-/** A `MutableEventLog` over a freshly loaded snapshot. */
+/**
+ * A `MutableEventLog` over a freshly loaded snapshot.
+ *
+ * `slotFloor` is a slot known to be published that the snapshot may not contain
+ * — the run's own `run_started`, whose write turbo backgrounds while replaying
+ * against an empty log. Numbering a claim from the snapshot alone would then
+ * propose a slot that is already taken, so every first write of a turbo
+ * invocation would conflict and cost the run an extra replay.
+ */
 export function toMutableEventLog(
   events: Event[],
-  cursor: string | null
+  cursor: string | null,
+  slotFloor = 0
 ): MutableEventLog {
-  return { events, cursor, maxSlot: maxSlotOf(events), reserved: 0 };
+  return {
+    events,
+    cursor,
+    maxSlot: Math.max(maxSlotOf(events), slotFloor),
+    reserved: 0,
+  };
 }
 
 /**
@@ -960,6 +974,20 @@ export function withEventCreateFence<T>(
   return withPreconditionRetry(runId, log, (stateUpdatedAt) =>
     op({ stateUpdatedAt })
   );
+}
+
+/**
+ * Whether a rejected event create means "this replay's view of the log was
+ * incomplete", the one condition whose only remedy is replaying from the top.
+ *
+ * Both fences report it, one per numbering: a 412 says the snapshot's watermark
+ * is behind, a 409 says the slot this replay counted to is already occupied.
+ * Neither is a failure of the run — the run's own decisions may simply need
+ * revising against the events it did not see — so a caller that gets one
+ * re-invokes for a fresh replay rather than failing.
+ */
+export function requiresFreshReplay(error: unknown): boolean {
+  return PreconditionFailedError.is(error) || SlotConflictError.is(error);
 }
 
 /**

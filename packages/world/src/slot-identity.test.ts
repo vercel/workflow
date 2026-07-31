@@ -1,5 +1,6 @@
 import { ulid } from 'ulid';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   FIRST_SLOT,
   isSlotId,
@@ -17,9 +18,9 @@ describe('slotIdBody', () => {
     expect(body).toHaveLength(SLOT_ID_WIDTH);
     expect(`evnt_${body}`).toHaveLength(`evnt_${ulid()}`.length);
     // Crockford base32 starts with the decimal digits, so the padded body
-    // parses as a ULID — this is what keeps every existing schema, sort key and
-    // range fence working unchanged.
-    expect(ulidToDate(body)).not.toBeNull();
+    // satisfies the ULID syntax — this is what keeps every existing schema,
+    // sort key and range fence working unchanged.
+    expect(z.string().ulid().safeParse(body).success).toBe(true);
   });
 
   it('orders lexicographically by slot at a fixed width', () => {
@@ -57,6 +58,24 @@ describe('slotFromId', () => {
   it('reads no slot out of a body of the wrong width', () => {
     expect(slotFromId('evnt_1')).toBeUndefined();
     expect(slotFromId(`evnt_${'1'.repeat(SLOT_ID_WIDTH + 1)}`)).toBeUndefined();
+  });
+});
+
+describe('a slot carries no timestamp', () => {
+  it('reports no time rather than epoch 0', () => {
+    // Passing the ULID syntax check is what makes a slot portable; decoding a
+    // *time* out of one is always a bug. Two that this guards: the sandbox
+    // clock is set from the events it consumes, so epoch 0 would rewind a
+    // replaying workflow's `Date.now()` to 1970; and world-local prefilters
+    // cursor pagination on the time in the filename, so epoch 0 would hide
+    // every slot-numbered event from an ascending page.
+    expect(ulidToDate(slotIdBody(FIRST_SLOT))).toBeNull();
+    expect(ulidToDate(slotEventId(FIRST_SLOT))).toBeNull();
+    expect(ulidToDate(slotIdBody(123_456))).toBeNull();
+  });
+
+  it('still reads the time out of a ULID', () => {
+    expect(ulidToDate(ulid())?.getTime()).toBeGreaterThan(0);
   });
 });
 

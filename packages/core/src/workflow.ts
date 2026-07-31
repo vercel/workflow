@@ -18,6 +18,7 @@ import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
+import type { MutableEventLog } from './runtime/helpers.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
@@ -74,7 +75,15 @@ async function drainPendingQueueItems(
    * In turbo mode, gates final `*_created` writes on backgrounded
    * `run_started`. Undefined when `run_started` is awaited.
    */
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  /**
+   * The replay's event log, so the drain's writes claim their slots from the
+   * same source the terminal `run_completed` / `run_failed` write draws from.
+   * Without it the drain writes unfenced — the World picks the next free slot —
+   * and the terminal write, numbering from a snapshot taken before the drain,
+   * proposes the slot the drain just took and loses it.
+   */
+  eventLog?: MutableEventLog
 ): Promise<void> {
   if (pendingQueue.size === 0) return;
   // Implicitly dispose any abort hooks (system hooks) that are still alive at
@@ -101,6 +110,7 @@ async function drainPendingQueueItems(
       world,
       run: workflowRun,
       runReadyBarrier,
+      eventLog,
     });
   } catch (err) {
     runtimeLogger.warn(
@@ -137,7 +147,13 @@ export async function runWorkflow(
    * Features supported by the World executing this workflow. Missing
    * capabilities are treated as unsupported.
    */
-  worldCapabilities?: WorldCapabilities
+  worldCapabilities?: WorldCapabilities,
+  /**
+   * The caller's event log for this replay. Its only use here is the end-of-run
+   * drain, whose writes have to be ordered with the caller's terminal write —
+   * see {@link drainPendingQueueItems}.
+   */
+  eventLog?: MutableEventLog
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
@@ -859,7 +875,8 @@ export async function runWorkflow(
         vmGlobalThis,
         workflowRun,
         'completed',
-        runReadyBarrier
+        runReadyBarrier,
+        eventLog
       );
 
       return dehydrated;
@@ -876,7 +893,8 @@ export async function runWorkflow(
         vmGlobalThis,
         workflowRun,
         'failed',
-        runReadyBarrier
+        runReadyBarrier,
+        eventLog
       );
 
       throw err;
