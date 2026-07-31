@@ -889,3 +889,94 @@ describe('sealed (encp) hook payloads', () => {
     expect(unwrapResult(r2.completed!.result)).toEqual(payload);
   });
 });
+
+describe('global surface parity', () => {
+  const runToCompletion = async (body: string) => {
+    const code = `
+      async function workflow() { ${body} }
+      workflow.workflowId = "workflow//test//workflow";
+      globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+    `;
+    const run = makeRun();
+    const result = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [runCreatedEvent(run)],
+    });
+    return result;
+  };
+
+  it('crypto.randomUUID and getRandomValues are present and deterministic across invocations', async () => {
+    const body = `
+      var bytes = crypto.getRandomValues(new Uint8Array(8));
+      return { uuid: crypto.randomUUID(), bytes: Array.from(bytes) };
+    `;
+    const r1 = await runToCompletion(body);
+    const r2 = await runToCompletion(body);
+    expect(r1.completed).toBeDefined();
+    const v1 = unwrapResult(r1.completed!.result) as any;
+    const v2 = unwrapResult(r2.completed!.result) as any;
+    // Replay determinism: same seeded PRNG → identical values on every
+    // invocation of the same run.
+    expect(v1.uuid).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
+    expect(v2.uuid).toBe(v1.uuid);
+    expect(v2.bytes).toEqual(v1.bytes);
+  });
+
+  it('crypto.subtle methods throw with step-function guidance', async () => {
+    const result = await runToCompletion(`
+      try {
+        await crypto.subtle.digest("SHA-256", new Uint8Array(1));
+        return { threw: false };
+      } catch (e) {
+        return { threw: true, name: e.name, message: e.message };
+      }
+    `);
+    const value = unwrapResult(result.completed!.result) as any;
+    expect(value.threw).toBe(true);
+    expect(value.message).toContain('step function');
+  });
+
+  it('process.env is present (frozen copy, matching the node engine)', async () => {
+    const result = await runToCompletion(`
+      return {
+        hasProcess: typeof process === "object",
+        envIsObject: typeof process.env === "object",
+        frozen: Object.isFrozen(process.env),
+      };
+    `);
+    expect(unwrapResult(result.completed!.result)).toEqual({
+      hasProcess: true,
+      envIsObject: true,
+      frozen: true,
+    });
+  });
+
+  it('Intl constructors and explicit-locale toLocale* calls throw loudly instead of diverging silently', async () => {
+    const result = await runToCompletion(`
+      var out = {};
+      try { new Intl.NumberFormat("de-DE"); out.intl = "no-throw"; }
+      catch (e) { out.intl = e.message.indexOf("ICU") !== -1 ? "threw" : e.message; }
+      try { (1234.5).toLocaleString("de-DE"); out.number = "no-throw"; }
+      catch (e) { out.number = "threw"; }
+      try { new Date(0).toLocaleDateString("de-DE"); out.date = "no-throw"; }
+      catch (e) { out.date = "threw"; }
+      try { "a".localeCompare("b", "de-DE"); out.compare = "no-throw"; }
+      catch (e) { out.compare = "threw"; }
+      // No-argument forms keep working with the engine default.
+      out.plain = (1234.5).toLocaleString();
+      out.plainCompare = "a".localeCompare("b");
+      return out;
+    `);
+    const value = unwrapResult(result.completed!.result) as any;
+    expect(value.intl).toBe('threw');
+    expect(value.number).toBe('threw');
+    expect(value.date).toBe('threw');
+    expect(value.compare).toBe('threw');
+    expect(typeof value.plain).toBe('string');
+    expect(value.plainCompare).toBeLessThan(0);
+  });
+});
