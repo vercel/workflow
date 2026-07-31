@@ -6,21 +6,21 @@
  * during the migration period.
  */
 
-import { describe, it, expect } from 'vitest';
-import * as workflow from './workflow.js';
-import * as step from './step.js';
-import * as client from './client.js';
-import {
-  dehydrateWorkflowArguments,
-  hydrateWorkflowArguments,
-  dehydrateWorkflowReturnValue,
-  hydrateWorkflowReturnValue,
-  dehydrateStepArguments,
-  hydrateStepArguments,
-  dehydrateStepReturnValue,
-  hydrateStepReturnValue,
-} from '../serialization.js';
+import { describe, expect, it } from 'vitest';
 import { importKey } from '../encryption.js';
+import {
+  dehydrateStepArguments,
+  dehydrateStepReturnValue,
+  dehydrateWorkflowArguments,
+  dehydrateWorkflowReturnValue,
+  hydrateStepArguments,
+  hydrateStepReturnValue,
+  hydrateWorkflowArguments,
+  hydrateWorkflowReturnValue,
+} from '../serialization.js';
+import * as client from './client.js';
+import * as step from './step.js';
+import * as workflow from './workflow.js';
 
 const testData = {
   primitives: [42, 'hello', true, null],
