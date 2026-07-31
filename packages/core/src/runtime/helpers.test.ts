@@ -34,6 +34,7 @@ import {
   requiresFreshReplay,
   reserveSlot,
   stateUpdatedAtForCreate,
+  stepClaimFence,
   toMutableEventLog,
   withEventCreateFence,
   withPreconditionRetry,
@@ -530,7 +531,7 @@ describe('slot bookkeeping', () => {
     // element is not necessarily its newest event.
     const log = toMutableEventLog([slotEvent(3), slotEvent(1)], 'c0');
     expect(log.maxSlot).toBe(3);
-    expect(log.reserved).toBe(0);
+    expect(log.nextSlot).toBe(4);
   });
 
   it('reports maxSlot 0 for an empty or ULID-numbered log', () => {
@@ -567,19 +568,31 @@ describe('slot bookkeeping', () => {
     expect(log.events).toHaveLength(3);
   });
 
-  it('raises maxSlot and drops reservations when a newer delta is merged in', () => {
+  it('raises the reservation pointer past a newer delta', () => {
     const log = toMutableEventLog([slotEvent(1)], 'c0');
     reserveSlot(log);
     reserveSlot(log);
-    expect(log.reserved).toBe(2);
+    expect(log.nextSlot).toBe(4);
 
     mergeLoadedEvents(log, [slotEvent(2), slotEvent(5)]);
 
     expect(log.maxSlot).toBe(5);
-    // The merged events are the authority on which slots are taken, so the
-    // outstanding reservations (slots 2 and 3) are void.
-    expect(log.reserved).toBe(0);
     expect(reserveSlot(log)).toBe(6);
+  });
+
+  it('never rewinds the reservation pointer onto an outstanding slot', () => {
+    // A writer that loses its slot merges the delta and reserves again while
+    // its siblings are still in flight on theirs. Rewinding to `maxSlot + 1`
+    // would hand it slot 4, which a sibling already holds.
+    const log = toMutableEventLog([slotEvent(1)], 'c0');
+    expect(reserveSlot(log)).toBe(2);
+    expect(reserveSlot(log)).toBe(3);
+    expect(reserveSlot(log)).toBe(4);
+
+    mergeLoadedEvents(log, [slotEvent(2)]);
+
+    expect(log.maxSlot).toBe(2);
+    expect(reserveSlot(log)).toBe(5);
   });
 
   it('deduplicates merged events by id', () => {
@@ -640,7 +653,7 @@ describe('slot bookkeeping', () => {
     eventCreateFenceFor(log, SPEC_VERSION_SLOT_IDENTITY - 1, {
       extraEvents: 1,
     });
-    expect(log.reserved).toBe(0);
+    expect(log.nextSlot).toBe(1);
   });
 
   it('proposes no event id for a ULID-numbered run', () => {
@@ -648,7 +661,7 @@ describe('slot bookkeeping', () => {
     const log = toMutableEventLog([], null);
     const fence = eventCreateFenceFor(log, SPEC_VERSION_SLOT_IDENTITY - 1);
     expect(fence?.eventId).toBeUndefined();
-    expect(log.reserved).toBe(0);
+    expect(log.nextSlot).toBe(1);
   });
 });
 
@@ -857,6 +870,93 @@ describe('withEventCreateFence', () => {
     ).resolves.toBe('done');
     expect(op).toHaveBeenLastCalledWith({ stateUpdatedAt: time + 1000 });
     expect(eventsListMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('stepClaimFence', () => {
+  const slotEvent = (slot: number) => makeEvent(slotEventId(slot));
+
+  beforeEach(() => {
+    eventsListMock.mockReset();
+  });
+
+  it('numbers a batch in the order its claims were built, not the order they fire', async () => {
+    // The batch is built during replay and only starts racing afterwards, so
+    // the slot of each member has to be fixed at build time for the numbering
+    // to be replay-stable.
+    const log = toMutableEventLog([slotEvent(1)], 'c0');
+    const first = stepClaimFence('wrun_test', log, SPEC_VERSION_SLOT_IDENTITY, {
+      extraEvents: 1,
+    });
+    const second = stepClaimFence('wrun_test', log, SPEC_VERSION_SLOT_IDENTITY);
+
+    const claimed: (string | undefined)[] = [];
+    const record = (fence?: { eventId?: string }) => {
+      claimed.push(fence?.eventId);
+      return Promise.resolve('ok');
+    };
+    // Fired in reverse: the numbering must not depend on it.
+    await second(record);
+    await first(record);
+
+    expect(claimed).toEqual([slotEventId(4), slotEventId(3)]);
+  });
+
+  it('reclaims a lost slot in place, keeping the batch adjacent', async () => {
+    // The server allocates an outside event from the same next-free pointer
+    // the client reserves from, so losing a claim is routine. Abandoning the
+    // batch on it would leave this step's events far later in the log than its
+    // siblings' — an order no single replay can consume — and leave the lost
+    // slot permanently empty.
+    const log = toMutableEventLog([slotEvent(1)], 'c0');
+    const claim = stepClaimFence('wrun_test', log, SPEC_VERSION_SLOT_IDENTITY);
+    const sibling = stepClaimFence(
+      'wrun_test',
+      log,
+      SPEC_VERSION_SLOT_IDENTITY
+    );
+
+    const claimed: string[] = [];
+    const op = vi.fn(async (fence?: { eventId?: string }) => {
+      claimed.push(fence?.eventId as string);
+      if (claimed.length === 1) {
+        // An out-of-band hook took slot 2 while the batch was being built.
+        throw new SlotConflictError('taken', {
+          eventId: fence?.eventId as string,
+          events: [slotEvent(2)],
+          cursor: 'c1',
+        });
+      }
+      return 'done';
+    });
+
+    await expect(claim(op)).resolves.toBe('done');
+    await expect(sibling(async (f) => f?.eventId)).resolves.toBe(
+      slotEventId(3)
+    );
+    // Reclaimed above the merged event rather than propagating the conflict.
+    expect(claimed).toEqual([slotEventId(2), slotEventId(4)]);
+  });
+
+  it('leaves a ULID-numbered batch on one shared watermark, unretried', async () => {
+    // A 412 compares time, so every member of the batch carries the same fence
+    // value and the batch fails as a unit — which is what the caller's
+    // fresh-replay path expects.
+    const time = 1_700_000_000_000;
+    const log = toMutableEventLog([makeUlidEvent(time)], 'c0');
+    const claim = stepClaimFence(
+      'wrun_test',
+      log,
+      SPEC_VERSION_SLOT_IDENTITY - 1
+    );
+    const op = vi.fn(async () => {
+      throw new PreconditionFailedError('stale');
+    });
+
+    await expect(claim(op)).rejects.toBeInstanceOf(PreconditionFailedError);
+    expect(op).toHaveBeenCalledTimes(1);
+    expect(op).toHaveBeenCalledWith({ stateUpdatedAt: time });
+    expect(eventsListMock).not.toHaveBeenCalled();
   });
 });
 

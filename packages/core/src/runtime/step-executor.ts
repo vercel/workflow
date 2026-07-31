@@ -49,7 +49,11 @@ import {
   isOptimisticInlineStartExplicitlyDisabled,
 } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
-import { type EventCreateFence, memoizeEncryptionKey } from './helpers.js';
+import {
+  type EventCreateFence,
+  type FencedCreate,
+  memoizeEncryptionKey,
+} from './helpers.js';
 import {
   computeStepLatencyEventData,
   type StepLatencyEventData,
@@ -135,23 +139,27 @@ export interface StepExecutorParams {
    */
   inlineDeltaSinceCursor?: string;
   /**
-   * Concurrency fence to attach to this step's `step_started` claim: the event
-   * slot the claim occupies, or the caller's replay snapshot (`stateUpdatedAt`,
-   * epoch ms of the latest event it loaded) for a run on the older numbering.
+   * Runs this step's `step_started` claim under its run's concurrency fence:
+   * the event slot the claim occupies, or the caller's replay snapshot
+   * (`stateUpdatedAt`, epoch ms of the latest event it loaded) for a run on the
+   * older numbering.
    *
    * On the lazy inline path the claim is the step's FIRST durable write (its
    * `step_created` is deferred), so without a fence it would be unguarded
    * entirely: a replay working from a stale view could claim — and then commit —
    * a step scheduled without observing an out-of-band event. A fencing World
    * rejects such a claim with `SlotConflictError` (409) or
-   * `PreconditionFailedError` (412); executeStep does NOT translate either
-   * rejection (re-claiming in place would still commit the stale schedule), so
-   * it propagates for the caller to abandon the batch and force a fresh replay.
+   * `PreconditionFailedError` (412).
+   *
+   * Whether a rejection is retried in place is the caller's decision, made per
+   * scheme — see `stepClaimFence`. Either way executeStep does NOT translate a
+   * rejection that reaches it, so an unretried one propagates for the caller to
+   * abandon the batch and force a fresh replay.
    *
    * Undefined when the caller has no snapshot, or when the watermark guard is
    * disabled on a run that uses it; Worlds that fence neither way ignore it.
    */
-  eventCreateFence?: EventCreateFence;
+  claimFence?: FencedCreate;
   /**
    * Suppress optimistic inline start for this step regardless of
    * `WORKFLOW_OPTIMISTIC_INLINE_START` / `forceOptimisticStart`: take the
@@ -259,6 +267,10 @@ export async function executeStep(
     stepName,
   } = params;
   const isVercel = process.env.VERCEL_URL !== undefined;
+  // Unfenced when the caller passes no fence — every World that fences
+  // ignores the field it does not understand, so this is the same create it
+  // was before either mechanism existed.
+  const runClaim: FencedCreate = params.claimFence ?? ((op) => op(undefined));
   // Gate payload compression on the run's specVersion.
   const compression =
     (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
@@ -515,11 +527,13 @@ export async function executeStep(
 
     let step: Step;
     // Params for the `step_started` create on either path below: the ambient
-    // compute-instance stamp plus the claim fence.
-    const startEventParams: CreateEventParams = {
+    // compute-instance stamp plus whichever fence the claim is running under.
+    const startEventParams = (
+      fence: EventCreateFence | undefined
+    ): CreateEventParams => ({
       computeInstanceId: COMPUTE_INSTANCE_ID,
-      ...params.eventCreateFence,
-    };
+      ...fence,
+    });
     // `Date.now()` taken immediately before the `step_started` create is
     // issued (either path below) — anchors RSFS's end point. See
     // StepLatencyEventData.rsfs and the call sites below.
@@ -559,27 +573,29 @@ export async function executeStep(
           // RSFS measures the run_started-to-POST stretch, and the barrier
           // wait IS part of that stretch under turbo.
           stepStartPostSentAtMs = Date.now();
-          return world.events.create(
-            workflowRunId,
-            {
-              eventType: 'step_started',
-              specVersion: SPEC_VERSION_CURRENT,
-              correlationId: stepId,
-              eventData: {
-                stepName,
-                workflowName,
-                input: params.lazyStepInput,
-                // Inline-ownership stamp — see StepExecutorParams.ownerMessageId.
-                ...(params.ownerMessageId !== undefined
-                  ? { ownerMessageId: params.ownerMessageId }
-                  : {}),
+          // Fence the claim — see StepExecutorParams.claimFence. A rejection
+          // the fence does not retry surfaces via reconcileOptimisticStart as a
+          // non-translatable error: the body result is discarded and the
+          // rejection propagates to the caller.
+          return runClaim((fence) =>
+            world.events.create(
+              workflowRunId,
+              {
+                eventType: 'step_started',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: stepId,
+                eventData: {
+                  stepName,
+                  workflowName,
+                  input: params.lazyStepInput,
+                  // Inline-ownership stamp — see StepExecutorParams.ownerMessageId.
+                  ...(params.ownerMessageId !== undefined
+                    ? { ownerMessageId: params.ownerMessageId }
+                    : {}),
+                },
               },
-            },
-            // Fence the claim — see StepExecutorParams.eventCreateFence. A 409/412
-            // rejection surfaces via reconcileOptimisticStart as a
-            // non-translatable error: the body result is discarded and the
-            // rejection propagates to the caller.
-            startEventParams
+              startEventParams(fence)
+            )
           );
         }
       );
@@ -620,26 +636,29 @@ export async function executeStep(
             ? { ownerMessageId: params.ownerMessageId }
             : {};
         stepStartPostSentAtMs = Date.now();
-        const startResult = await world.events.create(
-          workflowRunId,
-          {
-            eventType: 'step_started',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: stepId,
-            eventData:
-              params.lazyStepInput !== undefined
-                ? {
-                    stepName,
-                    workflowName,
-                    input: params.lazyStepInput,
-                    ...ownershipStamp,
-                  }
-                : { stepName, ...ownershipStamp },
-          },
-          // Fence the claim — see StepExecutorParams.eventCreateFence. A 409/412
-          // rejection is intentionally NOT translated by startErrorToResult
-          // below, so it propagates to the caller for a fresh replay.
-          startEventParams
+        // Fence the claim — see StepExecutorParams.claimFence. A rejection the
+        // fence does not retry is intentionally NOT translated by
+        // startErrorToResult below, so it propagates to the caller for a fresh
+        // replay.
+        const startResult = await runClaim((fence) =>
+          world.events.create(
+            workflowRunId,
+            {
+              eventType: 'step_started',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: stepId,
+              eventData:
+                params.lazyStepInput !== undefined
+                  ? {
+                      stepName,
+                      workflowName,
+                      input: params.lazyStepInput,
+                      ...ownershipStamp,
+                    }
+                  : { stepName, ...ownershipStamp },
+            },
+            startEventParams(fence)
+          )
         );
 
         if (!startResult.step) {
