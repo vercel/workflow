@@ -42,3 +42,6 @@ packages/swc-plugin-workflow/build-hash.json
 workbench/nextjs-*/public/.well-known/workflow
 workbench/sveltekit/static/.well-known/workflow
 
+
+# Local e2e diagnostics dumps
+e2e-diagnostics-*.json
