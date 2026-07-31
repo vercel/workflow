@@ -260,7 +260,20 @@ export const getHttpUrl = (
  *
  * - **Without `projectConfig`** (inside a Vercel deployment, authenticating
  *   with the per-request OIDC token): the backend reads the token's
- *   `environment` claim, which the platform mints to match `VERCEL_ENV`.
+ *   `environment` claim, which the platform mints as
+ *   `customEnvironment?.slug ?? envTarget` — and `VERCEL_TARGET_ENV` is
+ *   populated from exactly the same pair (`customEnvironmentSlug ||
+ *   envTarget`), so it matches the claim by construction. `VERCEL_ENV` alone
+ *   would be wrong for Vercel *custom* environments: it reports `preview`
+ *   there while the claim (and therefore the tenant) carries the custom
+ *   environment's slug, which would make the cross-environment guard refuse a
+ *   legitimate delivery. `VERCEL_ENV` remains as the fallback for contexts
+ *   where `VERCEL_TARGET_ENV` isn't injected (e.g. `vercel dev`).
+ *
+ * Note for custom environments on the `projectConfig` path: the proxy accepts
+ * a custom environment's slug **or ID** in `x-vercel-environment` but always
+ * attributes the write to the **slug**. Configure the slug (not the ID) so the
+ * value stamped into `runInput` matches what the consuming deployment sees.
  *
  * Returns `undefined` when neither source is available (e.g. a bare Node
  * process with no Vercel env vars). `undefined` is the honest answer there and
@@ -274,7 +287,7 @@ export const resolveClientEnvironment = (
   if (projectConfig) {
     return projectConfig.environment || 'production';
   }
-  return process.env.VERCEL_ENV || undefined;
+  return process.env.VERCEL_TARGET_ENV || process.env.VERCEL_ENV || undefined;
 };
 
 export const getHeaders = (

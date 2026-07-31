@@ -160,6 +160,7 @@ describe('resolveClientEnvironment', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     delete process.env.VERCEL_ENV;
+    delete process.env.VERCEL_TARGET_ENV;
   });
 
   afterEach(() => {
@@ -189,6 +190,27 @@ describe('resolveClientEnvironment', () => {
   it('reads VERCEL_ENV when there is no projectConfig (in-deployment OIDC path)', () => {
     process.env.VERCEL_ENV = 'preview';
     expect(resolveClientEnvironment(undefined)).toBe('preview');
+  });
+
+  it('prefers VERCEL_TARGET_ENV over VERCEL_ENV (custom environments)', () => {
+    // In a Vercel custom environment the OIDC token's `environment` claim is
+    // the custom environment's slug (the platform mints
+    // `customEnvironment?.slug ?? envTarget`), while VERCEL_ENV reports
+    // 'preview'. VERCEL_TARGET_ENV is populated from the same
+    // slug-or-target pair as the claim, so it is the value the backend keys
+    // the tenant on — returning 'preview' here would false-refuse a
+    // legitimate delivery to a custom-environment deployment.
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_TARGET_ENV = 'staging';
+    expect(resolveClientEnvironment(undefined)).toBe('staging');
+  });
+
+  it('agrees with VERCEL_TARGET_ENV in the standard environments too', () => {
+    // For production/preview, VERCEL_TARGET_ENV equals VERCEL_ENV, so
+    // preferring it changes nothing outside custom environments.
+    process.env.VERCEL_ENV = 'production';
+    process.env.VERCEL_TARGET_ENV = 'production';
+    expect(resolveClientEnvironment(undefined)).toBe('production');
   });
 
   it('returns undefined when neither source is available', () => {
