@@ -15,7 +15,9 @@
  *
  * The VM bootstrap is deliberately split into two phases:
  *   1. Static initialization (`initWorkflowVM`) — run-independent setup:
- *      VM creation, the serde bundle, and the workflow primitives.
+ *      VM creation and the workflow primitives. (Serialization lives on
+ *      the host — see quickjs-serde.ts — so no serde code is evaluated
+ *      in the VM.)
  *   2. Per-run initialization (inline in `runQuickJSWorkflow`) — seeded
  *      PRNG/ULID host functions, workflow bundle evaluation, run metadata,
  *      workflow input, and start.
@@ -36,13 +38,14 @@ import {
   type WasiOptions,
 } from 'quickjs-wasi';
 import seedrandom from 'seedrandom';
+import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
 import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
 import { decrypt } from '../serialization/encryption.js';
 import { quickjsExtensions, quickjsWasm } from './quickjs-assets.generated.js';
+import { createQuickJSSerde, type QuickJSSerde } from './quickjs-serde.js';
 import { runIdCreatedAt } from './run-id-time.js';
-import { VM_SERDE_BUNDLE } from './vm-serde-bundle.generated.js';
 
 // ---- Host -> VM payload preparation ----
 
@@ -382,13 +385,14 @@ globalThis[Symbol.for("WORKFLOW_USE_STEP")] = function(stepId, closureVarsFn) {
     var correlationId = "step_" + globalThis.__generateUlid();
     // Capture 'this' for method invocations (e.g., MyClass.method())
     var thisVal = (this !== undefined && this !== null && this !== globalThis) ? this : undefined;
-    // Serialize step input using the host-provided devalue serializer.
-    // This produces a format-prefixed Uint8Array ("devl" + devalue.stringify).
-    var input = globalThis[Symbol.for("workflow-serialize")]({
+    // The RAW input value. Serialization happens on the host, which reads
+    // this through a handle when it collects the pending op — no
+    // serializer code runs inside the VM.
+    var input = {
       args: args,
       closureVars: closureVarsFn ? closureVarsFn() : undefined,
       thisVal: thisVal,
-    });
+    };
     globalThis.__pending.push({
       type: "step",
       correlationId: correlationId,
@@ -573,15 +577,14 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   var isDisposed = false;
   var hasCreatedEvent = false;
 
-  // Register in pending operations.
-  // Serialize metadata inside the VM so Response/Request objects are
-  // properly handled by the devalue reducers before crossing the boundary.
+  // Register in pending operations. Metadata stays a RAW value; the host
+  // serializes it through a handle when it collects the pending op.
   var pendingOp = {
     type: "hook",
     correlationId: correlationId,
     token: token,
     isWebhook: !!options.isWebhook,
-    metadata: options.metadata ? globalThis[Symbol.for("workflow-serialize")](options.metadata) : undefined,
+    metadata: options.metadata,
     hasCreatedEvent: false,
   };
   globalThis.__pending.push(pendingOp);
@@ -782,8 +785,8 @@ WorkflowAbortSignal.prototype.throwIfAborted = function() {
       : __makeAbortError();
   }
 };
-// Expose for the serde bundle's revivers (evaluated before this bootstrap;
-// they look the class up lazily at revive time).
+// Expose for the host serde's revivers (they look the class up lazily,
+// through a handle, at revive time).
 globalThis.__WorkflowAbortSignal = WorkflowAbortSignal;
 
 // Registry of live abort signals keyed by their hook correlationId. The
@@ -814,17 +817,17 @@ globalThis.AbortController.prototype.abort = function(reason) {
   if (this.signal.aborted) return; // already aborted (e.g. from replay)
   this.signal._setAborted(reason);
   // Mark the pending hook op so the host records the abort. The payload
-  // is serialized in the VM so the reason crosses the boundary with
+  // stays a RAW value; the host serializes it through a handle with full
   // type fidelity (Errors, DOMException, custom values).
   var token = this[__ABORT_HOOK_TOKEN];
   for (var i = 0; i < globalThis.__pending.length; i++) {
     var item = globalThis.__pending[i];
     if (item.type === "hook" && item.token === token) {
       item.abortRequested = true;
-      item.abortPayload = globalThis[Symbol.for("workflow-serialize")]({
+      item.abortPayload = {
         aborted: true,
         reason: reason,
-      });
+      };
       break;
     }
   }
@@ -897,9 +900,10 @@ globalThis[Symbol.for("WORKFLOW_GET_STREAM_ID")] = function(namespace) {
  * Phase 1 — static (run-independent) VM initialization.
  *
  * Creates a QuickJS VM and loads everything that does not depend on a
- * specific workflow run: the serde bundle (devalue-based serialization
- * used at the host/VM boundary) and the workflow-primitive bootstrap
- * (useStep / sleep / createHook / Response-Request polyfills).
+ * specific workflow run: the workflow-primitive bootstrap (useStep /
+ * sleep / createHook / Response-Request polyfills). Serialization is
+ * host-side (quickjs-serde.ts) and captures its intrinsics from the VM
+ * right after this returns.
  *
  * `getNowMs` backs the VM's WASI clock (`Date.now()` / `new Date()`
  * inside the VM). The callback itself is static — the per-run state it
@@ -991,9 +995,6 @@ async function initWorkflowVM(
     extensions: assets.extensions,
     wasi,
   });
-
-  // Evaluate the VM serde bundle
-  vm.evalCode(VM_SERDE_BUNDLE, 'vm-serde.js').dispose();
 
   // Bootstrap workflow primitives
   vm.evalCode(VM_BOOTSTRAP, 'bootstrap.js').dispose();
@@ -1088,6 +1089,11 @@ export async function startQuickJSWorkflow(
   const interruptBudget: InterruptBudget = { start: Date.now() };
   const vm = await initWorkflowVM(() => vmNowMs, interruptBudget);
 
+  // Host-side serde: captures the VM's intrinsics (bootstrap included)
+  // before any user code runs. All serialization now happens on the host
+  // through handles — no serializer code is evaluated inside the VM.
+  const serde = createQuickJSSerde(vm);
+
   // Any throw between here and the terminal paths (which dispose the VM
   // inside checkWorkflowState / extractError before RETURNING) would leak
   // a live QuickJS instance and its WASM linear memory for the lifetime
@@ -1121,18 +1127,27 @@ export async function startQuickJSWorkflow(
       vm.setProp(vm.global, '__generateNanoid', nanoidFn);
     }
 
-    // Inject a deterministic timestamp for the VM's ULID factory. ULIDs
-    // produced inside the VM use this as their time prefix instead of
-    // Date.now(), so two concurrent workflow invocations of the same run
-    // produce IDENTICAL correlationIds (the random portion also matches
-    // because the PRNG is seeded the same way) and the world's
+    // Host-side deterministic ULID generator for correlationIds. Uses the
+    // same `ulid` package and monotonic factory as before, drawing from
+    // the SAME seeded PRNG instance as the VM's Math.random — so the
+    // interleaved draw sequence (and therefore every correlationId) is
+    // byte-identical to what the previous in-VM ULID factory produced for
+    // the same run. The time prefix is derived from the runId's embedded
+    // ULID (stable across invocations by construction — unlike
+    // `startedAt`, which differs between turbo's synthesized run object
+    // and the durably stored run), so two concurrent invocations of the
+    // same run produce IDENTICAL correlationIds and the world's
     // EntityConflictError on `events.create` dedups one of each pair.
-    // Derived from the runId's embedded ULID (stable across invocations by
-    // construction — unlike `startedAt`, which differs between turbo's
-    // synthesized run object and the durably stored run).
-    vm.evalCode(
-      `globalThis.__ulidTimestamp = ${runIdCreatedAt(workflowRun.runId) ?? (+workflowRun.createdAt || startedAt)};`
-    ).dispose();
+    {
+      const ulidFactory = monotonicFactory(() => rng());
+      const ulidTimestamp =
+        runIdCreatedAt(workflowRun.runId) ??
+        (+workflowRun.createdAt || startedAt);
+      using ulidFn = vm.newFunction('__generateUlid', () =>
+        vm.newString(ulidFactory(ulidTimestamp))
+      );
+      vm.setProp(vm.global, '__generateUlid', ulidFn);
+    }
 
     // `process.env` — parity with the node:vm engine, which exposes a frozen
     // copy of the host env (vm/index.ts). Injected per run so the snapshot of
@@ -1185,7 +1200,9 @@ export async function startQuickJSWorkflow(
         byteLength: decryptedInput.byteLength,
         source: runCreatedInput ? 'run_created' : 'queueMessage.runInput',
       });
-      const inputHandle = vm.newUint8Array(decryptedInput);
+      // Build the argument value directly in the VM via the host-side
+      // serde (guest code never sees the wire bytes).
+      const inputHandle = serde.deserialize(decryptedInput);
       vm.setProp(vm.global, '__wdk_input', inputHandle);
       inputHandle.dispose();
     } else if (runInput === undefined && events.length > 0) {
@@ -1242,24 +1259,30 @@ export async function startQuickJSWorkflow(
         __wfnErr.name = "WorkflowNotRegisteredError";
         throw __wfnErr;
       }
-      var __args = globalThis.__wdk_input
-        ? globalThis[Symbol.for("workflow-deserialize")](globalThis.__wdk_input)
+      var __args = globalThis.__wdk_input !== undefined
+        ? globalThis.__wdk_input
         : [];
       delete globalThis.__wdk_input;
       if (!Array.isArray(__args)) __args = [__args];
       __wfn.apply(null, __args).then(
-        function(result) { globalThis.__workflowResult = globalThis[Symbol.for("workflow-serialize")](result); },
+        function(result) {
+          // Store the RAW result; the host serializes it through a handle.
+          // A separate done flag distinguishes "completed with undefined"
+          // from "not completed".
+          globalThis.__workflowDone = true;
+          globalThis.__workflowResult = result;
+        },
         function(error) {
           // Preserve display info on the host-side failed object
-          // (matches the legacy host-visible shape) AND serialize the
-          // entire thrown value so the host can dehydrate the original
+          // (matches the legacy host-visible shape) AND keep the RAW
+          // thrown value so the host can serialize the original
           // type-identity, cause chain, or non-Error throws verbatim
           // through the standard error pipeline.
           globalThis.__workflowError = {
             message: error && error.message != null ? String(error.message) : String(error),
             stack: error && error.stack ? error.stack : "",
             name: error && error.name ? error.name : (error instanceof Error ? "Error" : typeof error),
-            valueBytes: globalThis[Symbol.for("workflow-serialize")](error),
+            value: error,
           };
         }
       );
@@ -1280,6 +1303,7 @@ export async function startQuickJSWorkflow(
       do {
         madeProgress = await processEvents(
           vm,
+          serde,
           events,
           advanceClock,
           options.encryptionKey
@@ -1308,6 +1332,7 @@ export async function startQuickJSWorkflow(
     // ---- Check result ----
     return makeLiveSession(
       vm,
+      serde,
       interruptBudget,
       advanceClock,
       options.encryptionKey
@@ -1337,11 +1362,12 @@ function makeSettledSession(
  */
 function makeLiveSession(
   vm: QuickJS,
+  serde: QuickJSSerde,
   interruptBudget: InterruptBudget,
   advanceClock: (ms: number) => void,
   encryptionKey?: DecryptionKey
 ): QuickJSWorkflowSession {
-  const result = checkWorkflowState(vm, { keepAliveOnSuspend: true });
+  const result = checkWorkflowState(vm, serde, { keepAliveOnSuspend: true });
   let alive = !!result.suspended;
 
   const session: QuickJSWorkflowSession = {
@@ -1363,6 +1389,7 @@ function makeLiveSession(
       do {
         madeProgress = await processEvents(
           vm,
+          serde,
           newEvents,
           advanceClock,
           encryptionKey
@@ -1374,7 +1401,9 @@ function makeLiveSession(
         } while (batch > 0);
       } while (madeProgress && --maxIterations > 0);
 
-      const next = checkWorkflowState(vm, { keepAliveOnSuspend: true });
+      const next = checkWorkflowState(vm, serde, {
+        keepAliveOnSuspend: true,
+      });
       if (!next.suspended) alive = false;
       session.result = next;
       return next;
@@ -1397,6 +1426,7 @@ function makeLiveSession(
 
 async function processEvents(
   vm: QuickJS,
+  serde: QuickJSSerde,
   events: Event[],
   advanceClock: (ms: number) => void,
   encryptionKey?: DecryptionKey
@@ -1447,11 +1477,11 @@ async function processEvents(
               prefix: new TextDecoder().decode(decryptedOutput.subarray(0, 4)),
               byteLength: decryptedOutput.byteLength,
             });
-            const bytesHandle = vm.newUint8Array(decryptedOutput);
-            vm.setProp(vm.global, '__tmp_result', bytesHandle);
-            bytesHandle.dispose();
+            const valueHandle = serde.deserialize(decryptedOutput);
+            vm.setProp(vm.global, '__tmp_result', valueHandle);
+            valueHandle.dispose();
             vm.evalCode(
-              `globalThis.__resolvers[${cidJs}].resolve(globalThis[Symbol.for("workflow-deserialize")](globalThis.__tmp_result));` +
+              `globalThis.__resolvers[${cidJs}].resolve(globalThis.__tmp_result);` +
                 `delete globalThis.__resolvers[${cidJs}];` +
                 `delete globalThis.__tmp_result;`
             ).dispose();
@@ -1496,13 +1526,12 @@ async function processEvents(
             // (TypeError, FatalError with original cause chain, etc.) with
             // the original message and stack preserved.
             const decrypted = await prepareBytesForVM(errorData, encryptionKey);
-            const bytesHandle = vm.newUint8Array(decrypted);
-            vm.setProp(vm.global, '__tmp_error', bytesHandle);
-            bytesHandle.dispose();
+            const errorHandle = serde.deserialize(decrypted);
+            vm.setProp(vm.global, '__tmp_error', errorHandle);
+            errorHandle.dispose();
             vm.evalCode(
               `(function(){` +
-                `var e=globalThis[Symbol.for("workflow-deserialize")](globalThis.__tmp_error);` +
-                `globalThis.__resolvers[${cidJs}].reject(e);` +
+                `globalThis.__resolvers[${cidJs}].reject(globalThis.__tmp_error);` +
                 `delete globalThis.__resolvers[${cidJs}];` +
                 `delete globalThis.__tmp_error;` +
                 `})()`
@@ -1666,12 +1695,12 @@ async function processEvents(
               rawAbortPayload,
               encryptionKey
             );
-            const bytesHandle = vm.newUint8Array(decrypted);
-            vm.setProp(vm.global, '__tmp_abort', bytesHandle);
-            bytesHandle.dispose();
+            const payloadHandle = serde.deserialize(decrypted);
+            vm.setProp(vm.global, '__tmp_abort', payloadHandle);
+            payloadHandle.dispose();
             vm.evalCode(
               `(function(){` +
-                `var p=globalThis[Symbol.for("workflow-deserialize")](globalThis.__tmp_abort);` +
+                `var p=globalThis.__tmp_abort;` +
                 `delete globalThis.__tmp_abort;` +
                 `globalThis.__abortSignals[${cidJs}]._setAborted(p&&typeof p==="object"?p.reason:undefined);` +
                 `})()`
@@ -1730,11 +1759,11 @@ async function processEvents(
               rawPayload,
               encryptionKey
             );
-            const bytesHandle = vm.newUint8Array(decryptedPayload);
-            vm.setProp(vm.global, '__tmp_result', bytesHandle);
-            bytesHandle.dispose();
+            const payloadHandle = serde.deserialize(decryptedPayload);
+            vm.setProp(vm.global, '__tmp_result', payloadHandle);
+            payloadHandle.dispose();
             vm.evalCode(
-              `globalThis.__resolvers[${cidJs}].resolve(globalThis[Symbol.for("workflow-deserialize")](globalThis.__tmp_result));` +
+              `globalThis.__resolvers[${cidJs}].resolve(globalThis.__tmp_result);` +
                 `delete globalThis.__resolvers[${cidJs}];` +
                 `delete globalThis.__tmp_result;`
             ).dispose();
@@ -1781,17 +1810,16 @@ async function processEvents(
               rawPayload,
               encryptionKey
             );
-            const bytesHandle = vm.newUint8Array(decryptedPayload);
-            vm.setProp(vm.global, '__tmp_result', bytesHandle);
-            bytesHandle.dispose();
+            const payloadHandle = serde.deserialize(decryptedPayload);
+            vm.setProp(vm.global, '__tmp_result', payloadHandle);
+            payloadHandle.dispose();
             // NOTE: replacement is a function so `$`-sequences in the
             // substituted JS never get interpreted as String.replace
             // special replacement patterns.
             vm.evalCode(
               bufferAndTrack.replace(
                 '%PAYLOAD%',
-                () =>
-                  'globalThis[Symbol.for("workflow-deserialize")](globalThis.__tmp_result)'
+                () => 'globalThis.__tmp_result'
               ) + 'delete globalThis.__tmp_result;'
             ).dispose();
           } else {
@@ -1947,8 +1975,93 @@ function markCreated(vm: QuickJS, cidJs: string, opType?: string): void {
  * attributes/hooks/steps/waits) and pending abort recordings are surfaced
  * for the entrypoint to flush.
  */
-function collectDrainOperations(vm: QuickJS): PendingOperation[] {
-  using h = vm.evalCode(`(function(){
+/**
+ * Per-VM cache of serialized pending-op field bytes, keyed
+ * `correlationId:field`. A step's raw input is immutable once pushed, so
+ * its bytes are computed once even though the op is re-collected on every
+ * suspension it stays pending through.
+ */
+const pendingByteCache = new WeakMap<QuickJS, Map<string, Uint8Array>>();
+
+function ensurePendingByteCache(vm: QuickJS): Map<string, Uint8Array> {
+  let cache = pendingByteCache.get(vm);
+  if (!cache) {
+    cache = new Map();
+    pendingByteCache.set(vm, cache);
+  }
+  return cache;
+}
+
+/**
+ * The pending-op fields that hold RAW guest values (the bootstrap no longer
+ * serializes them in the VM). Collection projects them out of the dumped
+ * plain metadata and serializes each through a handle with the host serde.
+ */
+const RAW_PENDING_FIELDS = ['input', 'metadata', 'abortPayload'] as const;
+
+/**
+ * Dump a filtered view of `globalThis.__pending` to host PendingOperation
+ * objects, serializing the raw-value fields host-side. `filterExpr` is a
+ * guest expression that evaluates to the array of ops to collect.
+ */
+function dumpPendingOps(
+  vm: QuickJS,
+  serde: QuickJSSerde,
+  filterExpr: string,
+  byteCache?: Map<string, Uint8Array>
+): PendingOperation[] {
+  using projected = vm.evalCode(`(function(){
+    var ops = ${filterExpr};
+    globalThis.__rawFields = [];
+    return ops.map(function(p){
+      var q = {};
+      for (var k in p) {
+        if (k === 'input' || k === 'metadata' || k === 'abortPayload') continue;
+        q[k] = p[k];
+      }
+      var raw = {};
+      ['input', 'metadata', 'abortPayload'].forEach(function(f){
+        if (p[f] !== undefined) {
+          raw[f] = globalThis.__rawFields.length;
+          globalThis.__rawFields.push(p[f]);
+        }
+      });
+      q.__rawIndices = raw;
+      return q;
+    });
+  })()`);
+  const plainOps = vm.dump(projected) as (PendingOperation & {
+    __rawIndices?: Record<string, number>;
+  })[];
+  using rawFields = vm.evalCode('globalThis.__rawFields');
+  for (const op of plainOps) {
+    const rawIndices = op.__rawIndices ?? {};
+    delete op.__rawIndices;
+    for (const field of RAW_PENDING_FIELDS) {
+      const index = rawIndices[field];
+      if (index === undefined) continue;
+      const cacheKey = `${op.correlationId}:${field}`;
+      let bytes = byteCache?.get(cacheKey);
+      if (!bytes) {
+        using valueHandle = rawFields.getProp(String(index));
+        bytes = serde.serialize(valueHandle);
+        byteCache?.set(cacheKey, bytes);
+      }
+      (op as unknown as Record<string, unknown>)[field] = bytes;
+    }
+  }
+  vm.evalCode('delete globalThis.__rawFields').dispose();
+  return plainOps;
+}
+
+function collectDrainOperations(
+  vm: QuickJS,
+  serde: QuickJSSerde
+): PendingOperation[] {
+  return dumpPendingOps(
+    vm,
+    serde,
+    `(function(){
     var toDispose = [];
     globalThis.__pending.forEach(function(p){
       if (p.type === "hook" && p.isSystem && !p.abortRequested && !p.disposed) {
@@ -1972,20 +2085,24 @@ function collectDrainOperations(vm: QuickJS): PendingOperation[] {
       if (p.type === "hook" && p.disposed) return false;
       return true;
     });
-  })()`);
-  return vm.dump(h) as PendingOperation[];
+  })()`
+  );
 }
 
 function checkWorkflowState(
   vm: QuickJS,
+  serde: QuickJSSerde,
   opts: { keepAliveOnSuspend?: boolean } = {}
 ): QuickJSRuntimeResult {
-  // Check completed — __workflowResult is a format-prefixed Uint8Array
+  // Check completed — __workflowResult holds the RAW return value (with a
+  // separate done flag so `undefined` results are distinguishable); the
+  // host serializes it through a handle.
   {
-    using h = vm.evalCode('globalThis.__workflowResult');
-    if (!h.isUndefined) {
-      const resultBytes = h.toUint8Array();
-      const drainOperations = collectDrainOperations(vm);
+    using done = vm.evalCode('globalThis.__workflowDone === true');
+    if (done.toBoolean()) {
+      using h = vm.evalCode('globalThis.__workflowResult');
+      const resultBytes = serde.serialize(h);
+      const drainOperations = collectDrainOperations(vm, serde);
       vm.dispose();
       return {
         completed: {
@@ -2000,14 +2117,39 @@ function checkWorkflowState(
   {
     using h = vm.evalCode('globalThis.__workflowError');
     if (!h.isUndefined) {
-      const errorObj = vm.dump(h) as
-        | {
-            message: string;
-            stack?: string;
-            name?: string;
-            valueBytes?: Uint8Array;
-          }
-        | string;
+      // The display fields are plain strings; the thrown value itself is
+      // RAW and serialized host-side through a handle.
+      const errorObj = h.isString
+        ? (h.toString() as string)
+        : (() => {
+            using plain = vm.evalCode(
+              '(function(e){return {message: e.message, stack: e.stack, name: e.name};})(globalThis.__workflowError)'
+            );
+            return vm.dump(plain) as {
+              message: string;
+              stack?: string;
+              name?: string;
+            };
+          })();
+      let valueBytes: Uint8Array | undefined;
+      if (!h.isString) {
+        using rawValue = h.getProp('value');
+        try {
+          valueBytes = serde.serialize(rawValue);
+        } catch (serializeErr) {
+          // A thrown value the codec cannot serialize must not mask the
+          // workflow failure itself — fall back to the display fields.
+          runtimeLogger.warn(
+            'QuickJS runtime: failed to serialize thrown workflow error',
+            {
+              message:
+                serializeErr instanceof Error
+                  ? serializeErr.message
+                  : String(serializeErr),
+            }
+          );
+        }
+      }
       const failed =
         typeof errorObj === 'string'
           ? { message: errorObj }
@@ -2015,14 +2157,14 @@ function checkWorkflowState(
               message: errorObj.message,
               stack: errorObj.stack || undefined,
               name: errorObj.name || undefined,
-              valueBytes: errorObj.valueBytes,
+              valueBytes,
             };
       runtimeLogger.error('QuickJS runtime: workflow failed in VM', {
         errorMessage: failed.message,
         errorName: failed.name,
         errorStack: failed.stack,
       });
-      const drainOperations = collectDrainOperations(vm);
+      const drainOperations = collectDrainOperations(vm, serde);
       vm.dispose();
       return {
         failed: {
@@ -2041,13 +2183,15 @@ function checkWorkflowState(
       'Object.keys(globalThis.__resolvers).length > 0 || globalThis.__pending.some(function(p){return!p.hasCreatedEvent;})'
     );
     if (vm.dump(h)) {
-      using pendingH = vm.evalCode(
-        // Ops with an active resolver or without a created event are
-        // pending; abort-requested hooks are also surfaced (even when
-        // already created and unawaited) so the host records the abort.
-        `globalThis.__pending.filter(function(p){return!!globalThis.__resolvers[p.correlationId] || !p.hasCreatedEvent || p.abortRequested;})`
+      // Ops with an active resolver or without a created event are
+      // pending; abort-requested hooks are also surfaced (even when
+      // already created and unawaited) so the host records the abort.
+      const pendingOps = dumpPendingOps(
+        vm,
+        serde,
+        `globalThis.__pending.filter(function(p){return!!globalThis.__resolvers[p.correlationId] || !p.hasCreatedEvent || p.abortRequested;})`,
+        ensurePendingByteCache(vm)
       );
-      const pendingOps = vm.dump(pendingH) as PendingOperation[];
       if (!opts.keepAliveOnSuspend) vm.dispose();
 
       return {
