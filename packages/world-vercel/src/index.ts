@@ -4,7 +4,7 @@ import { createAnalytics } from './analytics.js';
 import { createRunId, describeRun } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { instrumentObject } from './instrumentObject.js';
-import { createQueue } from './queue.js';
+import { createQueue, isSequentialReplaysEnabled } from './queue.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
@@ -42,6 +42,10 @@ export function createWorld(config?: APIConfig): World {
       // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
       // flow topics (see queue.ts and @workflow/builders).
       maxConcurrency: true,
+      // Whether this process actually routes run continuations to those
+      // per-run topics. Read here (not at module load) so the World reflects
+      // the env of the process that created it.
+      serializedRunContinuations: isSequentialReplaysEnabled(),
     },
     // On Vercel the platform fails the function invocation when the
     // process exits non-zero, and VQS redelivers the queue message via a

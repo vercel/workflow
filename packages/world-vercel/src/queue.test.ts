@@ -475,8 +475,21 @@ describe('createQueue', () => {
       expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test_wrun_abc');
     });
 
-    it('does not rewrite the topic when the flag is unset', async () => {
+    it('rewrites the topic by default, with the flag unset', async () => {
       delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
+
+      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test_wrun_abc');
+    });
+
+    it.each([
+      '0',
+      'false',
+      'FALSE',
+    ])('does not rewrite the topic when explicitly disabled with %s', async (value) => {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = value;
 
       const queue = createQueue();
       await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
@@ -565,8 +578,8 @@ describe('createQueue', () => {
       });
     });
 
-    it('does not rewrite health check topics when the flag is unset', async () => {
-      delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+    it('does not rewrite health check topics when explicitly disabled', async () => {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '0';
 
       const queue = createQueue();
       await queue.queue('__wkf_workflow_health_check', {

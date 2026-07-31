@@ -347,6 +347,28 @@ export interface WorldCapabilities {
    * combined with it (and so Worlds document the contract explicitly).
    */
   maxConcurrency?: boolean;
+
+  /**
+   * The World routes every *run continuation* for a given run (a queue
+   * message with a `runId` and no `stepId`: wait continuations, hook
+   * resumes, `wakeUpRun`, re-enqueues) to a single topic consumed with
+   * `maxConcurrency: 1` — the runtime half of
+   * `WORKFLOW_SEQUENTIAL_REPLAYS`. Declaring it tells the runtime that a
+   * wake-up for a run cannot be delivered while another invocation of that
+   * run still holds the queue message unacked, so an invocation must not
+   * block on a step body while the run has any out-of-band wake source
+   * (open wait/hook) that a workflow may be racing the step against.
+   *
+   * Unlike {@link maxConcurrency} (which declares queue *support*), this
+   * declares the World's own live routing decision, so a World that reads
+   * an env var to pick topic names must evaluate it when the World is
+   * created. It is still only half the picture — the deployed flow trigger
+   * must carry `maxConcurrency: 1` for messages to actually serialize — but
+   * the runtime only uses it to give up an optimization, so declaring it on
+   * a deployment whose trigger is unserialized costs latency, never
+   * correctness.
+   */
+  serializedRunContinuations?: boolean;
 }
 
 /**

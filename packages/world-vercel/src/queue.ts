@@ -292,12 +292,20 @@ const FLOW_TOPIC_PATTERN = /^__([a-z][a-z0-9]*_)?wkf_workflow_/;
 let loggedSequentialReplays = false;
 
 /**
- * Whether sequential replays are enabled (`WORKFLOW_SEQUENTIAL_REPLAYS=1`).
- * Mirrors `isSequentialReplaysEnabled` in `@workflow/builders` — world-vercel
- * must not depend on the build-time package, so the check is duplicated.
+ * Whether sequential replays are enabled (on unless
+ * `WORKFLOW_SEQUENTIAL_REPLAYS` is `0`/`false`). Mirrors
+ * `isSequentialReplaysEnabled` in `@workflow/builders` — world-vercel must not
+ * depend on the build-time package, so the check is duplicated.
+ *
+ * Exported so `createWorld` can declare
+ * `capabilities.serializedRunContinuations`: with per-run topics in force, a
+ * run's wake-ups queue behind an in-flight invocation of that run, which the
+ * core runtime must know before it blocks an invocation on a step body.
  */
-function isSequentialReplaysEnabled(): boolean {
-  return process.env.WORKFLOW_SEQUENTIAL_REPLAYS === '1';
+export function isSequentialReplaysEnabled(): boolean {
+  return !['false', '0'].includes(
+    (process.env.WORKFLOW_SEQUENTIAL_REPLAYS || '').toLowerCase()
+  );
 }
 
 function getPhysicalQueueName(

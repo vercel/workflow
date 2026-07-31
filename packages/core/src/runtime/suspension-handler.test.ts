@@ -1,7 +1,10 @@
 import type { WorkflowRun, World } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkflowSuspension } from '../global.js';
-import { handleSuspension } from './suspension-handler.js';
+import {
+  handleSuspension,
+  inlineStepsWouldStallWakeups,
+} from './suspension-handler.js';
 
 vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
 
@@ -257,6 +260,34 @@ describe('handleSuspension', () => {
     expect(result.createdStepCorrelationIds).toContain('s1');
   });
 
+  it('defers no inline steps when the caller passes allowInlineSteps: false', async () => {
+    // The caller opts out when running a step body inline would hold the run's
+    // only queue concurrency slot (world capability
+    // `serializedRunContinuations`) and starve an armed timer or hook wake-up.
+    // Every step must then get its eager step_created so it can be queued.
+    const eventsCreate = vi.fn().mockResolvedValue({
+      event: { eventType: 'step_created' },
+    });
+    const world = createWorld(eventsCreate);
+    const pending = new Map(
+      ['s1', 's2'].map((id) => [
+        id,
+        { type: 'step' as const, correlationId: id, stepName: id, args: [] },
+      ])
+    );
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+      allowInlineSteps: false,
+    });
+
+    expect(result.lazyInlineSteps).toEqual([]);
+    expect(eventsCreate).toHaveBeenCalledTimes(2);
+    expect([...result.createdStepCorrelationIds].sort()).toEqual(['s1', 's2']);
+  });
+
   it('does not immediately continue after creating a hook without a getConflict awaiter', async () => {
     const eventsCreate = vi.fn().mockResolvedValue({
       event: {
@@ -394,6 +425,64 @@ describe('handleSuspension', () => {
       eventsCreate.mock.calls.some(
         ([, event]) => event.eventType === 'hook_disposed'
       )
+    ).toBe(false);
+  });
+});
+
+describe('inlineStepsWouldStallWakeups', () => {
+  const base = {
+    incomingStepId: undefined,
+    serializedRunContinuations: true,
+    waitCount: 0,
+    hookCount: 0,
+    openWait: false,
+    openHook: false,
+  };
+
+  it('does not fire for a pure step chain', () => {
+    // No timer or hook can wake this run out of band, so holding the run's
+    // continuation slot for an inline body starves nothing.
+    expect(inlineStepsWouldStallWakeups(base)).toBe(false);
+  });
+
+  it.each([
+    ['a wait armed by this suspension', { waitCount: 1 }],
+    ['a hook armed by this suspension', { hookCount: 1 }],
+    ['a wait still open in the log', { openWait: true }],
+    ['a hook still open in the log', { openHook: true }],
+  ])('fires with %s', (_label, overrides) => {
+    expect(inlineStepsWouldStallWakeups({ ...base, ...overrides })).toBe(true);
+  });
+
+  it('does not fire when the World does not serialize run continuations', () => {
+    // Wake-ups land on a parallel invocation, which is what makes
+    // `Promise.race(step, sleep)` resolvable while a body runs inline.
+    expect(
+      inlineStepsWouldStallWakeups({
+        ...base,
+        serializedRunContinuations: undefined,
+        waitCount: 1,
+      })
+    ).toBe(false);
+    expect(
+      inlineStepsWouldStallWakeups({
+        ...base,
+        serializedRunContinuations: false,
+        waitCount: 1,
+      })
+    ).toBe(false);
+  });
+
+  it('does not fire for a delivery that arrived on a per-step topic', () => {
+    // A background step delivery holds its own per-step topic's slot, not the
+    // run's continuation slot, so it may keep executing inline.
+    expect(
+      inlineStepsWouldStallWakeups({
+        ...base,
+        incomingStepId: 'step_abc',
+        waitCount: 1,
+        openHook: true,
+      })
     ).toBe(false);
   });
 });

@@ -206,7 +206,7 @@ Your integration can expose physical files, virtual modules, or framework-native
 
 ## Vercel queue configuration
 
-On Vercel, configure the flow function as the sole queue consumer. `getWorkflowQueueTrigger()` handles the optional queue namespace and `WORKFLOW_SEQUENTIAL_REPLAYS=1` behavior.
+On Vercel, configure the flow function as the sole queue consumer. `getWorkflowQueueTrigger()` handles the optional queue namespace and the sequential-replay behavior (`WORKFLOW_SEQUENTIAL_REPLAYS`, on by default).
 
 ```typescript
 import { getWorkflowQueueTrigger } from "@workflow/builders";

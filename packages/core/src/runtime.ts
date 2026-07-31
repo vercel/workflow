@@ -79,7 +79,10 @@ import {
   stepLeaseRemainingSeconds,
 } from './runtime/step-ownership.js';
 import { runStepSingleFlight } from './runtime/step-single-flight.js';
-import { handleSuspension } from './runtime/suspension-handler.js';
+import {
+  handleSuspension,
+  inlineStepsWouldStallWakeups,
+} from './runtime/suspension-handler.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import {
   getWorld,
@@ -1633,6 +1636,24 @@ export function workflowEntrypoint(
                           events: cachedEvents,
                           cursor: eventsCursor,
                         };
+                        // Under a World that serializes this run's
+                        // continuations onto one `maxConcurrency: 1` topic, an
+                        // inline step body holds the run's only queue slot for
+                        // its whole duration, so an armed timer or hook resume
+                        // cannot be delivered until it finishes. Give up inline
+                        // execution (one queue hop per step) for exactly those
+                        // runs. See `inlineStepsWouldStallWakeups`.
+                        const preSuspensionOpenState =
+                          openHookAndWaitState(cachedEvents);
+                        const skipInlineSteps = inlineStepsWouldStallWakeups({
+                          incomingStepId,
+                          serializedRunContinuations:
+                            world.capabilities?.serializedRunContinuations,
+                          waitCount: err.waitCount,
+                          hookCount: err.hookCount,
+                          openWait: preSuspensionOpenState.openWait,
+                          openHook: preSuspensionOpenState.openHook,
+                        });
                         let suspensionResult: Awaited<
                           ReturnType<typeof handleSuspension>
                         >;
@@ -1645,6 +1666,7 @@ export function workflowEntrypoint(
                             requestId,
                             eventLog: suspensionLog,
                             runReadyBarrier,
+                            allowInlineSteps: !skipInlineSteps,
                           });
                         } catch (suspensionError) {
                           // A suspension create whose stale (412) rejection
