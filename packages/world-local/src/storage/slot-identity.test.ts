@@ -158,9 +158,11 @@ describe('numbering', () => {
     expect(maxSlotOf(data)).toBe(data.length);
   });
 
-  it('leaves no hole behind a rejected write', async () => {
-    // The rejected op's slot sits below its concurrent sibling's, and a hole
-    // below a published event can never be filled.
+  it('leaves a rejected write’s position unused instead of recycling it', async () => {
+    // The rejected op's position sits below its concurrent sibling's, so handing
+    // it to the next writer would order that writer's event below one that
+    // already published. The hole costs a reader the density proof; the
+    // inversion would cost the run.
     const runId = await newSlotRun();
     const [rejected, accepted] = await Promise.allSettled([
       storage.events.create(runId, {
@@ -175,7 +177,13 @@ describe('numbering', () => {
     expect(accepted.status).toBe('fulfilled');
     await createStep(runId, 'step_b');
     const slots = await slotsOf(runId);
-    expect([...slots].sort((a, b) => a - b)).toEqual([1, 2, 3]);
+    expect(slots).toHaveLength(3);
+    expect(slots[0]).toBe(FIRST_SLOT);
+    // Both concurrent writers took a position, one abandoned its own, and the
+    // third write went above them both.
+    expect(slots[2]).toBe(FIRST_SLOT + 3);
+    expect(slots[1]).toBeGreaterThan(slots[0]);
+    expect(slots[1]).toBeLessThan(slots[2]);
   });
 });
 
