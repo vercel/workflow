@@ -733,6 +733,11 @@ export function createEventsStorage(
        * would reject that retry as a duplicate of a write that never landed.
        */
       const abandonedClaims: Array<() => Promise<unknown>> = [];
+      /**
+       * Whether any event of this create became reader-visible. Once one has,
+       * nothing the create claimed may be undone: the entity an event describes
+       * has to keep existing even if a later step of the same call fails.
+       */
       let eventCommitted = false;
       /**
        * Hands the slots of a create that never published back to the allocator,
@@ -1742,6 +1747,7 @@ export function createEventsStorage(
                 `Step "${data.correlationId}" already created`
               );
             } else {
+              abandonedClaims.push(() => fs.unlink(stepCreatedLockPath));
               const createdStep: Step = {
                 runId: effectiveRunId,
                 stepId: data.correlationId,
@@ -1757,15 +1763,14 @@ export function createEventsStorage(
                 updatedAt: now,
                 specVersion: effectiveSpecVersion,
               };
-              await writeJSON(
-                taggedPath(
-                  basedir,
-                  'steps',
-                  `${effectiveRunId}-${data.correlationId}`,
-                  tag
-                ),
-                createdStep
+              const lazyStepEntityPath = taggedPath(
+                basedir,
+                'steps',
+                `${effectiveRunId}-${data.correlationId}`,
+                tag
               );
+              await writeJSON(lazyStepEntityPath, createdStep);
+              abandonedClaims.push(() => deleteJSON(lazyStepEntityPath));
               // Write the synthetic step_created event so replay observes it
               // (the client step consumer sets hasCreatedEvent only on a
               // step_created event). Its eventId is a second slot, or a fresh
@@ -1799,15 +1804,38 @@ export function createEventsStorage(
                   input: lazyData.input,
                 },
               };
-              await writeJSON(
-                taggedPath(
-                  basedir,
-                  'events',
-                  `${effectiveRunId}-${stepCreatedEventId}`,
-                  tag
-                ),
-                stepCreatedEvent
+              const stepCreatedEventPath = taggedPath(
+                basedir,
+                'events',
+                `${effectiveRunId}-${stepCreatedEventId}`,
+                tag
               );
+              if (slotMode) {
+                // The position decides this event as much as it decides the
+                // start it rides with, so it is published the same way: whoever
+                // links the file first owns the slot. A loss here is the
+                // caller's to resolve — it named this position — and the undo
+                // list above takes the step entity and its claim back out, so
+                // the re-proposal one position higher starts the step lazily
+                // again instead of tripping its own leftovers.
+                const published = await writeExclusive(
+                  stepCreatedEventPath,
+                  JSON.stringify(stepCreatedEvent, jsonReplacer, 2)
+                );
+                if (!published) {
+                  throw await slotConflict(
+                    effectiveRunId,
+                    stepCreatedEventId,
+                    params
+                  );
+                }
+              } else {
+                await writeJSON(stepCreatedEventPath, stepCreatedEvent);
+              }
+              // Readers can see this event from here on, so the step entity it
+              // describes has to keep existing even if the start it rides with
+              // goes on to lose its own position.
+              eventCommitted = true;
               slots.observe(effectiveRunId, stepCreatedEventId);
               validatedStep = createdStep;
               stepCreatedLazily = true;

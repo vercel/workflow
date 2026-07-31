@@ -393,6 +393,29 @@ describe('conflict', () => {
     await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3, 4]);
   });
 
+  it('lets a lazy start lose the position of the event it defers', async () => {
+    // The deferred `step_created` is published on the same terms as the start
+    // itself, so it is the pair's first position that can be lost. The retry has
+    // to be able to start the step lazily all over again — its own claim file
+    // and step entity would otherwise answer for a write that never landed.
+    const runId = await newSlotRun();
+    await createStep(runId, 'step_seed');
+    const other = createStorage(testDir);
+    await other.events.create(runId, {
+      eventType: 'step_created',
+      specVersion: SPEC_VERSION_SLOT_IDENTITY,
+      correlationId: 'step_out_of_band',
+      eventData: { stepName: 'b-step', input: new Uint8Array() },
+    });
+
+    await expect(
+      startStepLazily(runId, 'step_a', slotEventId(4))
+    ).rejects.toThrow(SlotConflictError);
+    const eventId = await startStepLazily(runId, 'step_a', slotEventId(5));
+    expect(eventId).toBe(slotEventId(5));
+    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3, 4, 5]);
+  });
+
   it('reallocates around another instance holding the slot it picked', async () => {
     // Neither writer holds a log, so neither has anything to reconcile: the
     // loser takes the next free position instead of surfacing a conflict its
