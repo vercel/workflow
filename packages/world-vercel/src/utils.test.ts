@@ -8,6 +8,7 @@ import {
   getHttpUrl,
   MAX_BODY_PARSE_RETRIES,
   makeRequest,
+  resolveClientEnvironment,
   WORKFLOW_SERVER_URL_OVERRIDE,
 } from './utils.js';
 
@@ -150,6 +151,107 @@ describe('getHeaders', () => {
     expect(headers.get('x-vercel-project-id')).toBe('prj_123');
     expect(headers.get('x-vercel-team-id')).toBe('team_456');
     expect(headers.get('x-vercel-environment')).toBe('preview');
+  });
+});
+
+describe('resolveClientEnvironment', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.VERCEL_ENV;
+    delete process.env.VERCEL_TARGET_ENV;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('uses the projectConfig environment on the proxied path', () => {
+    expect(
+      resolveClientEnvironment({
+        projectConfig: {
+          projectId: 'prj_1',
+          teamId: 'team_1',
+          environment: 'preview',
+        },
+      })
+    ).toBe('preview');
+  });
+
+  it("defaults a projectConfig without an environment to 'production'", () => {
+    expect(
+      resolveClientEnvironment({
+        projectConfig: { projectId: 'prj_1', teamId: 'team_1' },
+      })
+    ).toBe('production');
+  });
+
+  it('reads VERCEL_ENV when there is no projectConfig (in-deployment OIDC path)', () => {
+    process.env.VERCEL_ENV = 'preview';
+    expect(resolveClientEnvironment(undefined)).toBe('preview');
+  });
+
+  it('prefers VERCEL_TARGET_ENV over VERCEL_ENV (custom environments)', () => {
+    // In a Vercel custom environment the OIDC token's `environment` claim is
+    // the custom environment's slug (the platform mints
+    // `customEnvironment?.slug ?? envTarget`), while VERCEL_ENV reports
+    // 'preview'. VERCEL_TARGET_ENV is populated from the same
+    // slug-or-target pair as the claim, so it is the value the backend keys
+    // the tenant on — returning 'preview' here would false-refuse a
+    // legitimate delivery to a custom-environment deployment.
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_TARGET_ENV = 'staging';
+    expect(resolveClientEnvironment(undefined)).toBe('staging');
+  });
+
+  it('agrees with VERCEL_TARGET_ENV in the standard environments too', () => {
+    // For production/preview, VERCEL_TARGET_ENV equals VERCEL_ENV, so
+    // preferring it changes nothing outside custom environments.
+    process.env.VERCEL_ENV = 'production';
+    process.env.VERCEL_TARGET_ENV = 'production';
+    expect(resolveClientEnvironment(undefined)).toBe('production');
+  });
+
+  it('returns undefined when neither source is available', () => {
+    // Guessing 'production' here would fabricate a mismatch against a real
+    // preview deployment, so callers need the honest "unknown".
+    expect(resolveClientEnvironment(undefined)).toBeUndefined();
+    expect(resolveClientEnvironment({})).toBeUndefined();
+  });
+
+  it('ignores VERCEL_ENV when a projectConfig is present', () => {
+    // The proxy attributes the write to the header, not to the local env var —
+    // a CLI run from a preview checkout must not claim the deployment's env.
+    process.env.VERCEL_ENV = 'production';
+    expect(
+      resolveClientEnvironment({
+        projectConfig: {
+          projectId: 'prj_1',
+          teamId: 'team_1',
+          environment: 'preview',
+        },
+      })
+    ).toBe('preview');
+  });
+
+  // The whole point of the shared helper: the value stamped into runInput must
+  // be byte-identical to what the backend attributes this client's writes to.
+  // A drift makes the cross-environment guard either miss a real fork or reject
+  // a legitimate start.
+  it.each([
+    ['explicit preview', 'preview'],
+    ['explicit production', 'production'],
+    ['explicit development', 'development'],
+    ['absent (defaulted)', undefined],
+  ])('agrees with the x-vercel-environment header: %s', (_label, environment) => {
+    const config = {
+      projectConfig: { projectId: 'prj_1', teamId: 'team_1', environment },
+    };
+    const headers = getHeaders(config, { usingProxy: true });
+    expect(resolveClientEnvironment(config)).toBe(
+      headers.get('x-vercel-environment')
+    );
   });
 });
 

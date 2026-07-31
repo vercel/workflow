@@ -111,6 +111,26 @@ export const RunInputSchema = z.object({
    * the original `run_created` attempt.
    */
   allowReservedAttributes: z.literal(true).optional(),
+  /**
+   * The environment the creating client's writes are attributed to, as
+   * reported by {@link World.getEnvironment} at `start()` time (on Vercel:
+   * `'production' | 'preview' | 'development'`).
+   *
+   * This exists so the resilient-start path can be checked for a tenant
+   * mismatch. `start()` writes `run_created` under the caller's own
+   * credentials while pinning the queue message to a deployment, and those
+   * two can disagree: if the message is consumed by a deployment in a
+   * DIFFERENT environment, that consumer's `run_started` re-creates the run
+   * under ITS tenant, so the same client-minted `wrun_` id ends up existing
+   * in two environments — one stuck pending forever, the other executing.
+   * Carrying the creator's environment lets the consumer compare it against
+   * its own and refuse the delivery instead of forking the run.
+   *
+   * Absent for worlds with no environment dimension (local, Postgres), and
+   * for older SDKs — consumers must treat it as advisory and skip the check
+   * when it is missing.
+   */
+  environment: z.string().optional(),
 });
 export type RunInput = z.infer<typeof RunInputSchema>;
 
@@ -154,6 +174,14 @@ export const WorkflowInvokePayloadSchema = z.object({
       count: z.number().int().positive(),
     })
     .optional(),
+  /**
+   * Re-invocations so far in this chain of stale-snapshot (precondition)
+   * rejections. Counted on the message because the in-process restart budget
+   * lives in the invocation closure and the queue's delivery count resets on
+   * every fresh enqueue, so without this a permanently fenced run would cycle
+   * forever instead of failing.
+   */
+  preconditionReinvocations: z.number().int().positive().optional(),
   /** Number of times this message has been re-enqueued due to server errors (5xx) */
   serverErrorRetryCount: z.number().int().optional(),
   /** Step ID for inline step execution in combined handler. If provided, the flow execution
