@@ -2291,7 +2291,18 @@ export function workflowEntrypoint(
                             // it is assigned in has to be replay-stable.
                             const eventCreateFence = eventCreateFenceFor(
                               inlineClaimLog,
-                              workflowRun.specVersion
+                              workflowRun.specVersion,
+                              {
+                                // A lazy start publishes two events: the World
+                                // writes the step's deferred `step_created`
+                                // alongside the claim, so the batch has to
+                                // reserve a slot for that one too — otherwise
+                                // it lands on the slot the next start in the
+                                // batch is holding and costs that start its
+                                // claim.
+                                extraEvents:
+                                  s.lazyStepInput !== undefined ? 1 : 0,
+                              }
                             );
                             const run = () =>
                               executeStep({

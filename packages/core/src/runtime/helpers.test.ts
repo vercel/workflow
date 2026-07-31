@@ -593,6 +593,33 @@ describe('slot bookkeeping', () => {
     });
   });
 
+  it('reserves a slot per extra event and names the top one', () => {
+    // A lazy inline `step_started` publishes two events: the World also writes
+    // the `step_created` it deferred, which takes the slot below the claim.
+    // Reserving it here is what keeps it off the slot the next write of the
+    // same batch will claim.
+    const log = toMutableEventLog([slotEvent(1)], null);
+    expect(
+      eventCreateFenceFor(log, SPEC_VERSION_SLOT_IDENTITY, { extraEvents: 1 })
+    ).toEqual({ eventId: slotEventId(3), maxSlot: 1 });
+    expect(
+      eventCreateFenceFor(log, SPEC_VERSION_SLOT_IDENTITY, { extraEvents: 1 })
+    ).toEqual({ eventId: slotEventId(5), maxSlot: 1 });
+    // A single-event write in the same batch still gets the next free slot.
+    expect(eventCreateFenceFor(log, SPEC_VERSION_SLOT_IDENTITY)).toEqual({
+      eventId: slotEventId(6),
+      maxSlot: 1,
+    });
+  });
+
+  it('burns no slot on an extra event of a ULID-numbered run', () => {
+    const log = toMutableEventLog([], null);
+    eventCreateFenceFor(log, SPEC_VERSION_SLOT_IDENTITY - 1, {
+      extraEvents: 1,
+    });
+    expect(log.reserved).toBe(0);
+  });
+
   it('proposes no event id for a ULID-numbered run', () => {
     // A run whose ids the backend mints must not burn slots either.
     const log = toMutableEventLog([], null);

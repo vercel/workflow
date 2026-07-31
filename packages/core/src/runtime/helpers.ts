@@ -852,13 +852,33 @@ export interface EventCreateFence {
  * distinct slot per create. `undefined` when the run is fenced neither way,
  * leaving the create exactly as unfenced as it was before either mechanism
  * existed.
+ *
+ * `extraEvents` is how many events *besides* the one being created this write
+ * publishes: a lazy inline `step_started` also materializes the `step_created`
+ * it deferred. Those events take the slots immediately below the claim, so this
+ * reserves them too and names the top one — a World that writes a pair
+ * derives the lower id from the one it was given.
+ *
+ * The reservation has to happen here rather than at the World or its backend.
+ * Slots are handed out for a whole concurrent batch synchronously, before any of
+ * it lands, so a second event numbered off the log as the backend sees it would
+ * take the slot already promised to the next write in the batch — and every
+ * write after the first in a fan-out would lose its claim.
  */
 export function eventCreateFenceFor(
   log: MutableEventLog,
-  specVersion: number | undefined
+  specVersion: number | undefined,
+  options?: { extraEvents?: number }
 ): EventCreateFence | undefined {
   if (usesSlotIdentity(specVersion)) {
-    return { eventId: slotEventId(reserveSlot(log)), maxSlot: log.maxSlot };
+    const maxSlot = log.maxSlot;
+    // The extra events sit below the one being created, matching the order a
+    // reader expects (a step is created before it starts) — so their slots are
+    // reserved first and the claim names the last of the run.
+    for (let i = 0; i < (options?.extraEvents ?? 0); i++) {
+      reserveSlot(log);
+    }
+    return { eventId: slotEventId(reserveSlot(log)), maxSlot };
   }
   const stateUpdatedAt = stateUpdatedAtForCreate(log.events, specVersion);
   return stateUpdatedAt !== undefined ? { stateUpdatedAt } : undefined;
