@@ -801,3 +801,91 @@ describe('hook payload buffering', () => {
     expect(unwrapResult(r2.completed!.result)).toEqual(trickyPayload);
   });
 });
+
+describe('sealed (encp) hook payloads', () => {
+  it('opens a payload sealed to the run public key, as cross-deployment resumeHook writes it', async () => {
+    // Regression: on Vercel, `resumeHook()` seals hook payloads to the
+    // target run's published X25519 public key (`encp`) instead of
+    // symmetric `encr`. The QuickJS engine resolved only the bare
+    // symmetric key, so the first sealed payload failed to open and the
+    // run wedged right after hook_received (every hook e2e timed out).
+    // The engine must resolve the run's FULL capability, like the
+    // node:vm engine's memoizeEncryptionKey does.
+    const { dehydrateStepReturnValue, sealTo } = await import(
+      '../serialization.js'
+    );
+    const { deriveRunKeyPair } = await import('../sealed-box.js');
+    const { deriveRunPayloadKeys } = await import(
+      '../serialization/encryption.js'
+    );
+
+    const code = `
+      async function workflow() {
+        var hook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")]({ token: "tok" });
+        var payload = await hook;
+        return payload;
+      }
+      workflow.workflowId = "workflow//test//workflow";
+      globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+    `;
+    const run = makeRun();
+
+    // First invocation: workflow suspends awaiting the hook.
+    const r1 = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [],
+    });
+    const hookCid = r1.suspended!.pendingOperations.find(
+      (o) => o.type === 'hook'
+    )!.correlationId;
+
+    // Seal the payload exactly as a cross-deployment resumeHook does:
+    // dehydrate with a SealTarget built from the run's public key.
+    const material = new Uint8Array(32).fill(7);
+    const { publicKey } = await deriveRunKeyPair(material);
+    const payload = { approved: true, note: 'sealed round-trip' };
+    const sealedPayload = await dehydrateStepReturnValue(
+      payload,
+      run.runId,
+      sealTo(publicKey),
+      [],
+      globalThis,
+      false
+    );
+    expect(sealedPayload).toBeInstanceOf(Uint8Array);
+
+    // Replay with the hook_received carrying the sealed payload. The
+    // runtime holds the run's full capability derived from the same key
+    // material — it must open the sealed envelope.
+    const r2 = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      encryptionKey: await deriveRunPayloadKeys(material),
+      events: [
+        runCreatedEvent(run),
+        {
+          eventId: 'evnt_001',
+          runId: run.runId,
+          eventType: 'hook_created',
+          correlationId: hookCid,
+          eventData: { token: 'tok', isWebhook: false },
+          createdAt: new Date('2025-01-01T00:00:01Z'),
+        },
+        {
+          eventId: 'evnt_002',
+          runId: run.runId,
+          eventType: 'hook_received',
+          correlationId: hookCid,
+          eventData: { payload: sealedPayload },
+          createdAt: new Date('2025-01-01T00:00:02Z'),
+        },
+      ],
+    });
+
+    expect(r2.completed).toBeDefined();
+    expect(unwrapResult(r2.completed!.result)).toEqual(payload);
+  });
+});

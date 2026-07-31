@@ -31,9 +31,9 @@ import type { Event, RunInput, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { JSException, QuickJS, type WasiOptions } from 'quickjs-wasi';
 import seedrandom from 'seedrandom';
-import type { CryptoKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import { decompress } from '../serialization/compression.js';
+import type { DecryptionKey } from '../serialization/encryption.js';
 import { decrypt } from '../serialization/encryption.js';
 import { quickjsExtensions, quickjsWasm } from './quickjs-assets.generated.js';
 import { runIdCreatedAt } from './run-id-time.js';
@@ -45,14 +45,17 @@ import { VM_SERDE_BUNDLE } from './vm-serde-bundle.generated.js';
  * Prepare persisted payload bytes for consumption inside the VM: decrypt
  * (when an encryption key is configured) and decompress (specVersion >= 5
  * payloads may be gzip/zstd-compressed). The VM only understands plain
- * format-prefixed 'devl' bytes — it has neither the CryptoKey nor zlib.
+ * format-prefixed 'devl' bytes — it has neither the key material nor zlib.
+ * The key is the run's full DecryptionKey capability (symmetric AES key +
+ * X25519 keypair) so sealed `encp` hook payloads from cross-deployment
+ * resumeHook() calls open here too, not just symmetric `encr` ones.
  * Both stages are format-prefix dispatched, so plaintext/uncompressed
  * data passes through unchanged. Mirrors `prepareReplayPayload` in
  * serialization.ts (the node:vm engine's equivalent host-side stage).
  */
 async function prepareBytesForVM(
   data: Uint8Array,
-  key?: CryptoKey
+  key?: DecryptionKey
 ): Promise<Uint8Array> {
   return (await decompress(await decrypt(data, key))) as Uint8Array;
 }
@@ -187,7 +190,7 @@ export interface QuickJSRuntimeOptions {
    */
   events: Event[];
   /** Encryption key for decrypting event payloads (undefined if unencrypted) */
-  encryptionKey?: CryptoKey;
+  encryptionKey?: DecryptionKey;
   /**
    * The local port the workflow server is listening on, used to populate
    * `workflowMetadata.url`. Resolved at call time on the host side so the
@@ -1057,7 +1060,7 @@ async function processEvents(
   vm: QuickJS,
   events: Event[],
   advanceClock: (ms: number) => void,
-  encryptionKey?: CryptoKey
+  encryptionKey?: DecryptionKey
 ): Promise<boolean> {
   let resolved = false;
   for (const event of events) {
