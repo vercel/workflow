@@ -43,7 +43,7 @@ jobs:
 
       - name: Waiting for the Tarballs Vercel deployment
         id: waitForTarballsDeployment
-        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
+        uses: vercel/wait-for-deployment-action@080c5868620fc8ed3f98ccc9417d69d79a3f6207 # matching deployment status
         with:
           project-slug: workflow-tarballs
           timeout: 1000
