@@ -1,5 +1,18 @@
 # @workflow/web
 
+## 5.0.0-beta.38
+
+### Minor Changes
+
+- [#2548](https://github.com/vercel/workflow/pull/2548) [`25715d4`](https://github.com/vercel/workflow/commit/25715d4521164836d7f2eb2493b73d13ec595b10) Thanks [@pranaygp](https://github.com/pranaygp)! - Add a framework-agnostic `@workflow/web/handler` export (`createWorkflowWebHandler`) that serves the observability UI as a single Web `Request`→`Response` handler under a configurable base path, plus a `@workflow/web/registry` for embedded-dashboard discovery.
+
+### Patch Changes
+
+- [#3197](https://github.com/vercel/workflow/pull/3197) [`e181f64`](https://github.com/vercel/workflow/commit/e181f64b72a52ed1ff2f7fd2fdc352dacbb576d2) Thanks [@mitul-s](https://github.com/mitul-s)! - Tighten stream list, chunk viewer, and shared loading skeleton styling to match the trace view.
+
+- Updated dependencies [[`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804)]:
+  - @workflow/world-local@5.0.0-beta.32
+
 ## 5.0.0-beta.37
 
 ### Patch Changes

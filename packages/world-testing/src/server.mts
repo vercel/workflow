@@ -118,7 +118,7 @@ const app = new Hono()
     const runId = ctx.req.param('runId');
     const world = await getWorld();
     const allEvents: { eventType: string; correlationId?: string }[] = [];
-    let cursor: string | undefined = undefined;
+    let cursor: string | undefined;
     while (true) {
       const page = await world.events.list({
         runId,

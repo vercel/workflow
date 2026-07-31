@@ -1,12 +1,6 @@
 'use client';
 
 import { useControllableState } from '@radix-ui/react-use-controllable-state';
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
-import { cn } from '@/lib/utils';
 import { BrainIcon, ChevronDownIcon } from 'lucide-react';
 import type { ComponentProps, ReactNode } from 'react';
 import {
@@ -20,6 +14,12 @@ import {
   useState,
 } from 'react';
 import { Streamdown } from 'streamdown';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
+import { cn } from '@/lib/utils';
 
 import { Shimmer } from './shimmer';
 

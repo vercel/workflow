@@ -38,6 +38,7 @@ import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
+import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import {
   getMaxEventsOverride,
   getMaxQueueDeliveries,
@@ -48,6 +49,7 @@ import {
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
   appendUniqueEvents,
+  type EventCreator,
   eventCreateFenceFor,
   getQueueOverhead,
   getWorkflowQueueName,
@@ -66,6 +68,7 @@ import {
   handleReplayBudgetExhausted,
   ReplayBudget,
 } from './runtime/replay-budget.js';
+import { ReplayRecoveryReporter } from './runtime/replay-recovery-reporter.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
@@ -518,6 +521,13 @@ export function workflowEntrypoint(
 
                   const invocationStartTime = Date.now();
                   let loopIteration = 0;
+                  const replayRecoveryReporter = replayDivergence
+                    ? new ReplayRecoveryReporter(replayDivergence.count)
+                    : ReplayRecoveryReporter.inert();
+                  const createEvent: EventCreator = (data, params) =>
+                    replayRecoveryReporter.withEventCreate(params, (p) =>
+                      world.events.create(runId, data, p)
+                    );
 
                   // Event cache: keep loaded events in memory across loop iterations.
                   // On the first iteration we do a full load; on subsequent iterations
@@ -998,8 +1008,7 @@ export function workflowEntrypoint(
                       // handler, optimistic step_started, terminal run writes) so
                       // nothing is written before the run exists.
                       recordRunStartedCreateStart(true);
-                      const startedPromise = world.events.create(
-                        runId,
+                      const startedPromise = createEvent(
                         runStartedEvent,
                         // We background this purely as a write barrier and
                         // never read its preloaded events (preloadedEvents is
@@ -1076,11 +1085,9 @@ export function workflowEntrypoint(
                     } else {
                       try {
                         recordRunStartedCreateStart(false);
-                        const result = await world.events.create(
-                          runId,
-                          runStartedEvent,
-                          { requestId }
-                        );
+                        const result = await createEvent(runStartedEvent, {
+                          requestId,
+                        });
                         if (!result.run) {
                           throw new WorkflowRuntimeError(
                             `Event creation for 'run_started' did not return the run entity for run "${runId}"`
@@ -1375,7 +1382,7 @@ export function workflowEntrypoint(
                             waitLog,
                             workflowRun.specVersion,
                             (fence) =>
-                              world.events.create(runId, waitEvent, {
+                              createEvent(waitEvent, {
                                 requestId,
                                 ...fence,
                               })
@@ -1524,6 +1531,7 @@ export function workflowEntrypoint(
                         loopIteration,
                         replayMs: Date.now() - replayStart,
                       });
+                      replayRecoveryReporter.activate();
 
                       // Workflow completed. Send the snapshot but do NOT
                       // reload-and-retry the create in place: `result` was
@@ -1537,8 +1545,7 @@ export function workflowEntrypoint(
                         // here before the backgrounded run_started; order the
                         // terminal write after it so the run exists.
                         await awaitRunReady();
-                        await world.events.create(
-                          runId,
+                        await createEvent(
                           {
                             eventType: 'run_completed',
                             specVersion: SPEC_VERSION_CURRENT,
@@ -1572,6 +1579,7 @@ export function workflowEntrypoint(
                       return;
                     } catch (err) {
                       if (WorkflowSuspension.is(err)) {
+                        replayRecoveryReporter.activate();
                         // Synchronous `runWorkflow` duration for THIS
                         // suspension only — anchors the `finalSchedulingReplay`
                         // telemetry field below (see
@@ -1651,6 +1659,7 @@ export function workflowEntrypoint(
                             requestId,
                             eventLog: suspensionLog,
                             runReadyBarrier,
+                            replayRecoveryReporter,
                           });
                         } catch (suspensionError) {
                           // A suspension create whose stale (412) rejection
@@ -1693,8 +1702,7 @@ export function workflowEntrypoint(
                             // Turbo: order the terminal write after the
                             // backgrounded run_started so the run exists.
                             await awaitRunReady();
-                            await world.events.create(
-                              runId,
+                            await createEvent(
                               {
                                 eventType: 'run_failed',
                                 specVersion: SPEC_VERSION_CURRENT,
@@ -2387,6 +2395,7 @@ export function workflowEntrypoint(
                                         preInlineWriteCursor,
                                     }
                                   : {}),
+                                replayRecoveryReporter,
                               });
                             // Invariant bookkeeping: this invocation owns
                             // these bodies until they settle — see
@@ -2670,6 +2679,7 @@ export function workflowEntrypoint(
                         }
 
                         let terminalError = err;
+                        let replayDivergenceCountForFailure: number | undefined;
                         if (ReplayDivergenceError.is(err)) {
                           const divergenceCount =
                             (replayDivergence?.count ?? 0) + 1;
@@ -2706,10 +2716,13 @@ export function workflowEntrypoint(
                             return;
                           }
 
+                          replayDivergenceCountForFailure = divergenceCount;
                           terminalError = new CorruptedEventLogError(
                             `Workflow replay diverged ${divergenceCount} times after ${maxRecoveryReplays} recovery replays; latest divergent event was ${err.eventId}. Last divergence: ${err.message}`,
                             { cause: err }
                           );
+                        } else if (replayStart > 0) {
+                          replayRecoveryReporter.activate();
                         }
 
                         // User code errors and terminal runtime errors fail the run.
@@ -2779,8 +2792,7 @@ export function workflowEntrypoint(
                           // Turbo: order the terminal write after the
                           // backgrounded run_started so the run exists.
                           await awaitRunReady();
-                          await world.events.create(
-                            runId,
+                          await createEvent(
                             {
                               eventType: 'run_failed',
                               specVersion: SPEC_VERSION_CURRENT,
@@ -2796,7 +2808,15 @@ export function workflowEntrypoint(
                                 errorCode,
                               },
                             },
-                            { requestId }
+                            {
+                              requestId,
+                              ...(replayDivergenceCountForFailure !== undefined
+                                ? {
+                                    replayDivergenceCount:
+                                      replayDivergenceCountForFailure,
+                                  }
+                                : {}),
+                            }
                           );
                         } catch (failErr) {
                           if (
@@ -2867,6 +2887,7 @@ export function workflowEntrypoint(
         kind: spanKind,
         attributes: {
           ...Attribute.WorkflowRouteType('flow'),
+          ...Attribute.FaasInstance(COMPUTE_INSTANCE_ID),
           ...Attribute.WorkflowRouteHandlerCached(handlerCached),
           ...Attribute.WorkflowRouteInvocationCount(invocationCount),
           ...Attribute.WorkflowRouteEntrypointAgeMs(

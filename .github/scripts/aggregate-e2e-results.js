@@ -42,7 +42,7 @@ function findJsonFiles(dir, prefix, excludePrefixes = []) {
         files.push(fullPath);
       }
     }
-  } catch (e) {
+  } catch (_e) {
     // Directory doesn't exist or can't be read
   }
   return files;
@@ -74,7 +74,7 @@ function findMetadataFiles(dir) {
         files.push(fullPath);
       }
     }
-  } catch (e) {
+  } catch (_e) {
     // Directory doesn't exist or can't be read
   }
   return files;
@@ -95,7 +95,7 @@ function loadMetadata(dir) {
         const appName = match[1];
         metadata.set(appName, content);
       }
-    } catch (e) {
+    } catch (_e) {
       // Skip invalid metadata files
     }
   }
@@ -117,7 +117,7 @@ function loadDiagnostics(dir) {
           diagnostics.set(entry.testName, entry);
         }
       }
-    } catch (e) {
+    } catch (_e) {
       // Skip invalid files
     }
   }
@@ -139,7 +139,7 @@ function loadFailures(dir) {
           failures.set(entry.testName, entry);
         }
       }
-    } catch (e) {
+    } catch (_e) {
       // Skip invalid files
     }
   }
