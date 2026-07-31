@@ -15,7 +15,6 @@ import {
 import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from './private.js';
-import { getWorkflowMetadata } from './step/get-workflow-metadata.js';
 import { REPLAY_DIVERGENCE_MAX_RETRIES } from './runtime/constants.js';
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
@@ -23,6 +22,7 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from './serialization.js';
+import { getWorkflowMetadata } from './step/get-workflow-metadata.js';
 
 // Capture every promise handed to `waitUntil` so tests can assert that
 // progress-critical sends are never registered on a detached, unconsumed
