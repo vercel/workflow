@@ -1269,6 +1269,47 @@ describe('Storage (Postgres integration)', () => {
         expect(page2.data).toHaveLength(2);
         expect(page2.data[0].eventId).not.toBe(page1.data[0].eventId);
       });
+
+      it('returns all remaining events when requested', async () => {
+        await events.create(testRunId, {
+          eventType: 'run_started',
+        });
+
+        const result = await events.list({
+          runId: testRunId,
+          returnAll: true,
+          pagination: { limit: 1, sortOrder: 'asc' },
+        });
+
+        expect(result.data).toHaveLength(2);
+        expect(result.hasMore).toBe(false);
+      });
+
+      it('returns a continuation at the configured event ceiling', async () => {
+        await events.create(testRunId, {
+          eventType: 'run_started',
+        });
+        vi.stubEnv('WORKFLOW_MAX_EVENTS', '1');
+
+        try {
+          const first = await events.list({
+            runId: testRunId,
+            returnAll: true,
+          });
+          expect(first.data).toHaveLength(1);
+          expect(first.hasMore).toBe(true);
+
+          const second = await events.list({
+            runId: testRunId,
+            returnAll: true,
+            pagination: { cursor: first.cursor ?? undefined },
+          });
+          expect(second.data).toHaveLength(1);
+          expect(second.hasMore).toBe(false);
+        } finally {
+          vi.unstubAllEnvs();
+        }
+      });
     });
 
     describe('listByCorrelationId', () => {

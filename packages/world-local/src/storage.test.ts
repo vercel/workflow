@@ -1659,6 +1659,21 @@ describe('Storage', () => {
         expect(page2.data).toHaveLength(2);
         expect(page2.data[0].eventId).not.toBe(page1.data[0].eventId);
       });
+
+      it('returns all remaining events when requested', async () => {
+        await storage.events.create(testRunId, {
+          eventType: 'run_started',
+        });
+
+        const result = await storage.events.list({
+          runId: testRunId,
+          returnAll: true,
+          pagination: { limit: 1, sortOrder: 'asc' },
+        });
+
+        expect(result.data).toHaveLength(2);
+        expect(result.hasMore).toBe(false);
+      });
     });
 
     describe('listByCorrelationId', () => {

@@ -11,7 +11,7 @@
  *   the server stores without ever decoding it.
  * - **GET single event**: response body is one frame.
  * - **LIST events**: response body is a stream of frames terminated by a
- *   sentinel frame (meta = `{_end: 1, next?: cursor, hasMore?: boolean}`).
+ *   sentinel frame (meta = `{_end: 1, next?: cursor, hasMore: boolean}`).
  *
  * Requests carry special HTTP response headers (eventId / runId / createdAt)
  * for client convenience, to allow metadata access without decoding the body.
@@ -249,13 +249,7 @@ interface CreateEventV4ResultBase {
   };
 }
 
-type RequiredEventPageV4Result = Omit<
-  ListEventsV4Result,
-  'next' | 'hasMore'
-> & {
-  next: string;
-  hasMore: boolean;
-};
+type RequiredEventPageV4Result = ListEventsV4Result & { next: string };
 
 export type CreateEventV4Result =
   | (CreateEventV4ResultBase & { type: 'event' })
@@ -417,7 +411,9 @@ export async function createWorkflowRunEventV4(
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   headers.set('Content-Type', 'application/octet-stream');
-  if (input.eventType === 'run_started' && !input.skipPreload) {
+  const expectsEventPage =
+    input.eventType === 'run_started' && !input.skipPreload;
+  if (expectsEventPage) {
     headers.set('Accept', V4_FRAME_CONTENT_TYPE);
   }
 
@@ -445,13 +441,7 @@ export async function createWorkflowRunEventV4(
     throw new Error('v4 createEvent: response missing required x-wf-* headers');
   }
 
-  const contentType = response.headers.get('content-type');
-  if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
-    if (input.eventType !== 'run_started') {
-      throw new Error(
-        'v4 createEvent: received an event page for a non-run_started event'
-      );
-    }
+  if (expectsEventPage) {
     const stream = await consumeEventFrameStream(response, 'createEvent');
     switch (stream.type) {
       case 'events':
@@ -472,6 +462,11 @@ export async function createWorkflowRunEventV4(
         throw new Error(`v4 createEvent: unknown stream type ${exhaustive}`);
       }
     }
+  }
+
+  const contentType = response.headers.get('content-type');
+  if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
+    throw new Error('v4 createEvent: unexpected event page');
   }
 
   // Decode the materialized-entity bag from the CBOR response body.
@@ -577,7 +572,7 @@ export interface ListEventsV4Params {
 
 export interface ListWorkflowRunEventsV4Params extends ListEventsV4Params {
   /** Drain server-side storage pages into one framed HTTP response. */
-  streamAll?: true;
+  returnAll?: true;
 }
 
 /**
@@ -601,12 +596,8 @@ export interface ListEventsV4Result {
    * pages" signal on its own. Use `hasMore` for that.
    */
   next?: string;
-  /**
-   * Explicit "another page of results exists" flag from the sentinel.
-   * `undefined` against older servers that don't emit it, in which case
-   * the caller falls back to `Boolean(next)`.
-   */
-  hasMore?: boolean;
+  /** Explicit "another page of results exists" flag from the sentinel. */
+  hasMore: boolean;
 }
 
 type EventFrameStreamResult =
@@ -631,19 +622,22 @@ function finishEventFrameStream(
   opName: string
 ): EventFrameStreamResult {
   const next = typeof meta.next === 'string' ? meta.next : undefined;
-  const hasMore = typeof meta.hasMore === 'boolean' ? meta.hasMore : undefined;
+  if (typeof meta.hasMore !== 'boolean') {
+    throw new Error(`v4 ${opName}: end frame missing hasMore`);
+  }
+  const page = { events: state.events, next, hasMore: meta.hasMore };
 
   switch (state.type) {
     case 'events':
-      return { type: 'events', page: { events: state.events, next, hasMore } };
+      return { type: 'events', page };
     case 'event-page':
-      if (next === undefined || hasMore === undefined) {
-        throw new Error(`v4 ${opName}: event page missing pagination state`);
+      if (next === undefined) {
+        throw new Error(`v4 ${opName}: event page missing cursor`);
       }
       return {
         type: 'event-page',
         body: state.body,
-        page: { events: state.events, next, hasMore },
+        page: { ...page, next },
       };
     default: {
       const exhaustive: never = state;
@@ -745,7 +739,7 @@ function appendListParams(sp: URLSearchParams, params: ListEventsV4Params) {
 function paginationToQuery(params: ListWorkflowRunEventsV4Params): string {
   const sp = new URLSearchParams();
   appendListParams(sp, params);
-  if (params.streamAll) sp.set('streamAll', 'true');
+  if (params.returnAll) sp.set('returnAll', 'true');
   const qs = sp.toString();
   return qs ? `?${qs}` : '';
 }

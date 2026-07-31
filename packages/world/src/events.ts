@@ -868,7 +868,7 @@ export interface ListEventsParams {
    * retaining the final cursor for later incremental loads. Advisory: Worlds
    * that ignore this remain correct because the runtime follows `hasMore`.
    */
-  streamAll?: true;
+  returnAll?: true;
 }
 
 export interface ListEventsByCorrelationIdParams {

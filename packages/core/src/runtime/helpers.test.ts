@@ -308,7 +308,7 @@ describe('loadWorkflowRunEvents', () => {
     expect(eventsListMock).toHaveBeenCalledTimes(1);
     expect(eventsListMock).toHaveBeenCalledWith({
       runId: 'wrun_test',
-      streamAll: true,
+      returnAll: true,
       pagination: { sortOrder: 'asc', cursor: undefined },
     });
   });
@@ -436,12 +436,12 @@ describe('loadWorkflowRunEvents', () => {
     ]);
     expect(eventsListMock).toHaveBeenNthCalledWith(1, {
       runId: 'wrun_test',
-      streamAll: true,
+      returnAll: true,
       pagination: { sortOrder: 'asc', cursor: 'opaque-cursor' },
     });
     expect(eventsListMock).toHaveBeenNthCalledWith(2, {
       runId: 'wrun_test',
-      streamAll: true,
+      returnAll: true,
       pagination: { sortOrder: 'asc', cursor: undefined },
     });
   });

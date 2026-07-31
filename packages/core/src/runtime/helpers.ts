@@ -562,7 +562,7 @@ export async function loadWorkflowRunEvents(
         try {
           response = await world.events.list({
             runId,
-            streamAll: true,
+            returnAll: true,
             pagination: {
               sortOrder: 'asc',
               cursor: requestedCursor ?? undefined,

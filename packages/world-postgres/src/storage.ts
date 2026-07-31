@@ -32,6 +32,7 @@ import {
   ATTRIBUTE_MAX_PER_RUN,
   AttributeValidationError,
   EventSchema,
+  getMaxEventsPerRun,
   HookSchema,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
@@ -1882,12 +1883,13 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     },
     async list(params: ListEventsParams): Promise<PaginatedResponse<Event>> {
       const limit = params?.pagination?.limit ?? 100;
+      const resultLimit = params.returnAll ? getMaxEventsPerRun() : limit;
       const sortOrder = params.pagination?.sortOrder || 'asc';
       const order =
         sortOrder === 'desc'
           ? { by: desc(events.eventId), compare: lt }
           : { by: events.eventId, compare: gt };
-      const all = await drizzle
+      const query = drizzle
         .select()
         .from(events)
         .where(
@@ -1898,10 +1900,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             )
           )
         )
-        .orderBy(order.by)
-        .limit(limit + 1);
+        .orderBy(order.by);
+      const all = await query.limit(resultLimit + 1);
 
-      const values = all.slice(0, limit);
+      const values = all.slice(0, resultLimit);
 
       const resolveData = params?.resolveData ?? 'all';
       return {
@@ -1911,7 +1913,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           return stripEventDataRefs(parsed, resolveData);
         }),
         cursor: values.at(-1)?.eventId ?? null,
-        hasMore: all.length > limit,
+        hasMore: all.length > resultLimit,
       };
     },
     async listByCorrelationId(params) {

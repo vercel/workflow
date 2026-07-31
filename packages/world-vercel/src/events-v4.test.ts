@@ -135,7 +135,10 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         },
         body
       ),
-      encodeFrame({ _end: 1, next: 'cursor-2' }, new Uint8Array(0)),
+      encodeFrame(
+        { _end: 1, next: 'cursor-2', hasMore: false },
+        new Uint8Array(0)
+      ),
     ]);
 
     agent
@@ -200,7 +203,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     expect(result.hasMore).toBe(false);
   });
 
-  it('leaves hasMore undefined for a legacy sentinel without the flag', async () => {
+  it('rejects an end frame without hasMore', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -218,14 +221,16 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });
 
-    const result = await getWorkflowRunEventsV4(
-      'wrun_1',
-      {},
-      { token: 'test-token', dispatcher: agent }
-    );
-
-    expect(result.next).toBe('cursor-2');
-    expect(result.hasMore).toBeUndefined();
+    await expect(
+      getWorkflowRunEventsV4(
+        'wrun_1',
+        {},
+        {
+          token: 'test-token',
+          dispatcher: agent,
+        }
+      )
+    ).rejects.toThrow('v4 listEvents: end frame missing hasMore');
   });
 
   it('throws when the stream ends without the end sentinel (truncated response)', async () => {
@@ -332,7 +337,7 @@ describe('v4 transport uses global fetch (observability)', () => {
     agent
       .get(origin)
       .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
-      .reply(200, encodeFrame({ _end: 1 }, new Uint8Array(0)), {
+      .reply(200, encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)), {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });
 
@@ -476,6 +481,43 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     expect(result.page.events[0].body).toEqual(input);
     expect(result.page.next).toBe('eid:evnt_2');
     expect(result.page.hasMore).toBe(false);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('requires the event-page response requested by run_started', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+        headers: { accept: V4_FRAME_CONTENT_TYPE },
+      })
+      .reply(200, encode({ run: { runId: 'wrun_1', status: 'running' } }), {
+        headers: {
+          'content-type': 'application/cbor',
+          'x-wf-event-id': 'evnt_2',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+        },
+      });
+
+    await expect(
+      createWorkflowRunEventV4(
+        {
+          runId: 'wrun_1',
+          eventType: 'run_started',
+          specVersion: 5,
+        },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow(
+      `v4 createEvent: expected ${V4_FRAME_CONTENT_TYPE}, got application/cbor`
+    );
     agent.assertNoPendingInterceptors();
   });
 
@@ -682,10 +724,39 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
         200,
         (opts: { body?: unknown }) => {
           captured = decodeFrameMeta(opts.body);
-          return encode({});
+          if (data.eventType !== 'run_started') return encode({});
+          return Buffer.concat([
+            encodeFrame(
+              {
+                _result: 1,
+                run: {
+                  runId: 'wrun_1',
+                  status: 'running',
+                  startedAt: new Date('2026-06-10T00:00:00.000Z'),
+                },
+              },
+              new Uint8Array()
+            ),
+            encodeFrame(
+              {
+                eventId: 'evnt_0',
+                runId: 'wrun_1',
+                eventType: 'run_created',
+                eventData: {},
+              },
+              new Uint8Array()
+            ),
+            encodeFrame(
+              { _end: 1, next: 'eid:evnt_1', hasMore: false },
+              new Uint8Array()
+            ),
+          ]);
         },
         {
           headers: {
+            ...(data.eventType === 'run_started'
+              ? { 'content-type': V4_FRAME_CONTENT_TYPE }
+              : {}),
             'x-wf-event-id': 'evnt_1',
             'x-wf-run-id': 'wrun_1',
             'x-wf-created-at': '2026-06-10T00:00:00.000Z',

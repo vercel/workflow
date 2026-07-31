@@ -27,6 +27,7 @@ export {
   _resetEnvWarnCacheForTests,
   type EnvNumberOptions,
   envNumber,
+  getMaxEventsPerRun,
 } from './env-config.js';
 export type * from './events.js';
 export {

@@ -24,6 +24,7 @@ import type {
 import {
   applyAttributeChanges,
   EventSchema,
+  getMaxEventsPerRun,
   HookSchema,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
@@ -87,19 +88,6 @@ import {
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
-
-/**
- * Per-run event ceiling the Local World reports on run responses (mirrors the
- * Vercel World). Overridable via `WORKFLOW_MAX_EVENTS`; defaults to 25,000.
- */
-const DEFAULT_MAX_EVENTS_PER_RUN = 25_000;
-function getMaxEventsPerRun(): number {
-  const raw = process.env.WORKFLOW_MAX_EVENTS;
-  const parsed = raw !== undefined ? Number(raw) : Number.NaN;
-  return Number.isInteger(parsed) && parsed > 0
-    ? parsed
-    : DEFAULT_MAX_EVENTS_PER_RUN;
-}
 
 /**
  * Per-step in-process async mutex. Serializes concurrent `events.create` calls
@@ -2531,7 +2519,9 @@ export function createEventsStorage(
         // Events in chronological order (oldest first) by default,
         // different from the default for other list calls.
         sortOrder: params.pagination?.sortOrder ?? 'asc',
-        limit: params.pagination?.limit,
+        limit: params.returnAll
+          ? getMaxEventsPerRun()
+          : params.pagination?.limit,
         cursor: params.pagination?.cursor,
         getCreatedAt: getObjectCreatedAt('evnt'),
         getId: (event) => event.eventId,
