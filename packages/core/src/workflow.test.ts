@@ -2079,14 +2079,21 @@ describe('runWorkflow', () => {
       ).toEqual(['First payload', 'Second payload']);
     });
 
-    it('should deliver "hook_received" events sharing a resumeId only once (resilient-resume dedup)', async () => {
+    it('should deliver "hook_received" events sharing a resumeId only once, across top-level and legacy nested forms', async () => {
       // `hook_received` has no storage-level uniqueness constraint, so the
-      // resilient-resume path can commit the same resume attempt twice when
-      // the same queue message is redelivered concurrently (both deliveries
-      // pass the runtime's snapshot dedup check before either write lands).
-      // Both rows carry the resume attempt's client-minted `resumeId`;
-      // replay must deliver the payload exactly once. Events without a
-      // `resumeId` are never deduped (distinct resume attempts).
+      // lazy-resume path can commit the same resume attempt twice when the
+      // same queue message is redelivered concurrently (both deliveries pass
+      // the runtime's snapshot dedup check before either write lands). Both
+      // rows carry the resume attempt's client-minted `resumeId`; replay must
+      // deliver the payload exactly once. Events without a `resumeId` are
+      // never deduped (distinct resume attempts).
+      //
+      // The backend hoists `resumeId` to a top-level event column; older rows
+      // carry it nested under `eventData`. Replay must key its dedup set off
+      // BOTH forms so a top-level write and a legacy nested write of the same
+      // attempt collapse together. Below: event-0 uses the top-level form,
+      // event-1 the legacy nested form with the SAME id (must dedup against
+      // event-0), and event-2 a distinct top-level id (must deliver).
       const ops: Promise<any>[] = [];
       const workflowRun: WorkflowRun = {
         runId: 'test-run-123',
@@ -2112,20 +2119,24 @@ describe('runWorkflow', () => {
       );
       const events: Event[] = [
         {
+          // New top-level form: the backend hoists `resumeId` to a first-class
+          // event column. Delivers "First payload".
           eventId: 'event-0',
           runId: workflowRun.runId,
           eventType: 'hook_received',
           correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
+          resumeId: '01JXAMPLE0000000000000RSMA',
           eventData: {
             token: 'test-token',
             payload: firstPayload,
-            resumeId: '01JXAMPLE0000000000000RSMA',
           },
           createdAt: new Date(),
         },
         {
-          // Duplicate materialization of the SAME resume attempt — identical
-          // resumeId and payload bytes. Must be skipped by replay.
+          // Duplicate materialization of the SAME resume attempt in the LEGACY
+          // nested form (resumeId under eventData). Same id as event-0, so it
+          // must be skipped by replay — proving the dedup set keys off both the
+          // top-level and legacy nested locations.
           eventId: 'event-1',
           runId: workflowRun.runId,
           eventType: 'hook_received',
@@ -2138,11 +2149,13 @@ describe('runWorkflow', () => {
           createdAt: new Date(),
         },
         {
-          // A distinct resume attempt (different resumeId) — must deliver.
+          // A distinct resume attempt (different resumeId, top-level form) —
+          // must deliver "Second payload".
           eventId: 'event-2',
           runId: workflowRun.runId,
           eventType: 'hook_received',
           correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
+          resumeId: '01JXAMPLE0000000000000RSMB',
           eventData: {
             token: 'test-token',
             payload: await dehydrateStepReturnValue(
@@ -2151,7 +2164,6 @@ describe('runWorkflow', () => {
               noEncryptionKey,
               ops
             ),
-            resumeId: '01JXAMPLE0000000000000RSMB',
           },
           createdAt: new Date(),
         },

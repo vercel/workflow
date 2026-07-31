@@ -606,6 +606,18 @@ async function resumeHookImpl<T = any>(
             // In both cases the run WAS re-triggered via the queue and the
             // consumer idempotently ensures the hook_received before replay, so
             // swallow rather than failing the caller.
+            //
+            // Producer telemetry: record that the direct write did not land but
+            // the resume is still guaranteed via queue-delivered `hookInput`.
+            // This is the operational signal that the recovery path fired —
+            // surfaced on the span rather than as a public return flag, since
+            // the resume outcome is identical to the happy path from the
+            // caller's perspective (a resolved `Hook`).
+            span?.setAttributes({
+              'workflow.hook.resume_event_write_recovered': true,
+              'workflow.hook.resume_event_write_error':
+                err instanceof Error ? err.name : 'unknown',
+            });
             runtimeLogger.warn(
               'Hook resume event write failed, but the run was re-triggered via ' +
                 'the queue. The hook_received event will be ensured by the ' +

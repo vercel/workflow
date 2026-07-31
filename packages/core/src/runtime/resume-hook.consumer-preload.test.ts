@@ -12,6 +12,7 @@
  * hook correlation id matches what replay computes — modeled on
  * precondition-guard-replay.test.ts.
  */
+import { EntityConflictError, HookNotFoundError } from '@workflow/errors';
 import {
   type CreateEventRequest,
   type Event,
@@ -59,6 +60,12 @@ async function runResumeConsumerScenario(options: {
    * re-ensure + splice.
    */
   preloadHasHookReceived: boolean;
+  /**
+   * When set, the consumer's `hook_received` re-ensure `events.create` rejects
+   * with this error, exercising the consumer's terminal-vs-transient error
+   * classification (consume the message vs rethrow for redelivery).
+   */
+  reEnsureRejection?: Error;
 }) {
   const runId = 'wrun_resume_consumer_preload';
   const workflowName = 'workflow';
@@ -167,6 +174,15 @@ async function runResumeConsumerScenario(options: {
           hasMore: false,
         };
       }
+      // Simulate the re-ensure failing (terminal or transient) so the
+      // consumer's error classification runs. Recorded in `createdEvents`
+      // above, so the attempt is still observable to assertions.
+      if (
+        request.eventType === 'hook_received' &&
+        options.reEnsureRejection !== undefined
+      ) {
+        throw options.reEnsureRejection;
+      }
       const created = event(request);
       durableEvents.push(created);
       return { event: created };
@@ -194,24 +210,31 @@ async function runResumeConsumerScenario(options: {
   expect(capturedHandler).toBeDefined();
 
   // A continuation delivery carrying the resume's hookInput (no runInput, so
-  // turbo is off and the hookInput re-ensure branch runs).
-  await capturedHandler?.(
-    {
-      runId,
-      hookInput: {
-        hookId: hookCorrelationId,
-        resumeId,
-        token: hookToken,
-        payload: payloadBytes,
-        payloadDigest,
+  // turbo is off and the hookInput re-ensure branch runs). Capture whether the
+  // handler rethrew: on the transient re-ensure failure it must reject so the
+  // queue redelivers; on a terminal one it resolves (consumes the message).
+  let handlerError: unknown;
+  try {
+    await capturedHandler?.(
+      {
+        runId,
+        hookInput: {
+          hookId: hookCorrelationId,
+          resumeId,
+          token: hookToken,
+          payload: payloadBytes,
+          payloadDigest,
+        },
       },
-    },
-    {
-      queueName: `__wkf_workflow_${workflowName}`,
-      messageId: 'msg_workflow',
-      attempt: 1,
-    }
-  );
+      {
+        queueName: `__wkf_workflow_${workflowName}`,
+        messageId: 'msg_workflow',
+        attempt: 1,
+      }
+    );
+  } catch (err) {
+    handlerError = err;
+  }
 
   const hookReceivedCreates = createdEvents.filter(
     (e) => e.eventType === 'hook_received'
@@ -225,6 +248,7 @@ async function runResumeConsumerScenario(options: {
     runCompletedCreates,
     listEvents,
     createEvent,
+    handlerError,
   };
 }
 
@@ -259,5 +283,44 @@ describe('lazy hook resume consumer preload (Perf Option A)', () => {
     // The canonical event was spliced into the preloaded log in-order, so no
     // fresh events.list round trip was needed to observe it.
     expect(listEvents).not.toHaveBeenCalled();
+  });
+
+  it('consumes the message (no rethrow, no replay) when the re-ensure hits a terminal run', async () => {
+    // The run went terminal between the producer's dispatch and this delivery,
+    // so the re-ensure rejects with HookNotFoundError. There is nothing left to
+    // resume: the consumer must consume the message (resolve) and NOT replay —
+    // acking a terminal delivery is safe because the run is already ended.
+    const { hookReceivedCreates, runCompletedCreates, handlerError } =
+      await runResumeConsumerScenario({
+        preloadHasHookReceived: false,
+        reEnsureRejection: new HookNotFoundError('resume-consumer-token'),
+      });
+
+    // The re-ensure was attempted...
+    expect(hookReceivedCreates).toHaveLength(1);
+    // ...it rejected terminally, so the handler resolved without rethrowing...
+    expect(handlerError).toBeUndefined();
+    // ...and replay never proceeded to complete the run.
+    expect(runCompletedCreates).toHaveLength(0);
+  });
+
+  it('rethrows for queue redelivery when the re-ensure hits a transient conflict', async () => {
+    // The (runId, resumeId) constraint exists but the matching event is not yet
+    // observable — the producer's parallel write is still in flight, or a
+    // redrive raced the claim. This is transient: the consumer must rethrow so
+    // the queue redelivers and a later attempt converges on the committed event
+    // instead of replaying (and acking) without the payload.
+    const { hookReceivedCreates, runCompletedCreates, handlerError } =
+      await runResumeConsumerScenario({
+        preloadHasHookReceived: false,
+        reEnsureRejection: new EntityConflictError('resumeId claim in flight'),
+      });
+
+    // The re-ensure was attempted...
+    expect(hookReceivedCreates).toHaveLength(1);
+    // ...and rethrew so VQS redelivers the message.
+    expect(handlerError).toBeInstanceOf(EntityConflictError);
+    // Replay never proceeded to complete the run on this failed delivery.
+    expect(runCompletedCreates).toHaveLength(0);
   });
 });

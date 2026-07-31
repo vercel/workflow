@@ -284,7 +284,15 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // Drop duplicate deliveries of the same resume attempt (same
         // `resumeId` — see `seenResumeIds` above). Events without a
         // `resumeId` (older SDKs, legacy spec versions) are never deduped.
-        const resumeId = (event.eventData as { resumeId?: unknown }).resumeId;
+        //
+        // Prefer the top-level `resumeId` the backend now hoists onto the
+        // event as a first-class column; fall back to the legacy nested
+        // `eventData.resumeId` for events persisted before the hoist. The
+        // nested form is retained only for backward-compatible parsing and is
+        // deprecated — new writes populate the top-level field.
+        const resumeId =
+          event.resumeId ??
+          (event.eventData as { resumeId?: unknown }).resumeId;
         if (typeof resumeId === 'string') {
           if (seenResumeIds.has(resumeId)) {
             return EventConsumerResult.Consumed;
