@@ -111,6 +111,26 @@ export const RunInputSchema = z.object({
    * the original `run_created` attempt.
    */
   allowReservedAttributes: z.literal(true).optional(),
+  /**
+   * The environment the creating client's writes are attributed to, as
+   * reported by {@link World.getEnvironment} at `start()` time (on Vercel:
+   * `'production' | 'preview' | 'development'`).
+   *
+   * This exists so the resilient-start path can be checked for a tenant
+   * mismatch. `start()` writes `run_created` under the caller's own
+   * credentials while pinning the queue message to a deployment, and those
+   * two can disagree: if the message is consumed by a deployment in a
+   * DIFFERENT environment, that consumer's `run_started` re-creates the run
+   * under ITS tenant, so the same client-minted `wrun_` id ends up existing
+   * in two environments — one stuck pending forever, the other executing.
+   * Carrying the creator's environment lets the consumer compare it against
+   * its own and refuse the delivery instead of forking the run.
+   *
+   * Absent for worlds with no environment dimension (local, Postgres), and
+   * for older SDKs — consumers must treat it as advisory and skip the check
+   * when it is missing.
+   */
+  environment: z.string().optional(),
 });
 export type RunInput = z.infer<typeof RunInputSchema>;
 
