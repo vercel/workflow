@@ -11,6 +11,7 @@
 
 import { runInContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
+import { dehydrateStepArguments } from '../serialization.js';
 import { createContext } from '../vm/index.js';
 import { devalueCodec } from './codec-devalue.js';
 import type { GuestCodeStats } from './hardened.js';
@@ -184,28 +185,49 @@ describe('hardened serialization: patched prototypes are never executed', () => 
 
   it('serializes URL/URLSearchParams without consulting patched accessors', () => {
     const vm = makeVm();
-    vm.run(`
-      globalThis.sideEffects = 0;
-      Object.defineProperty(URL.prototype, 'href', {
-        configurable: true,
-        get() { globalThis.sideEffects++; return 'https://hacked.example/'; },
-      });
-      URLSearchParams.prototype.toString = function () {
-        globalThis.sideEffects++;
-        return 'hacked=1';
-      };
-    `);
+    // `URL`/`URLSearchParams` are host classes injected into the sandbox, so
+    // patching their prototypes from inside the VM mutates the *host*
+    // prototype for the rest of this worker process. Restore both, or every
+    // later test in the file inherits the patch.
+    const originalHref = Object.getOwnPropertyDescriptor(
+      URL.prototype,
+      'href'
+    ) as PropertyDescriptor;
+    const originalParamsToString = URLSearchParams.prototype.toString;
+    try {
+      vm.run(`
+        globalThis.sideEffects = 0;
+        Object.defineProperty(URL.prototype, 'href', {
+          configurable: true,
+          get() { globalThis.sideEffects++; return 'https://hacked.example/'; },
+        });
+        URLSearchParams.prototype.toString = function () {
+          globalThis.sideEffects++;
+          return 'hacked=1';
+        };
+      `);
 
-    const value = vm.evaluate(
-      '({ url: new URL("https://example.com/x?y=1"), params: new URLSearchParams("a=1") })'
-    );
-    const { wire, stats } = vm.serialize(value);
+      const value = vm.evaluate(
+        '({ url: new URL("https://example.com/x?y=1"), params: new URLSearchParams("a=1") })'
+      );
+      const { wire, stats } = vm.serialize(value);
 
-    expect(wire).toContain('https://example.com/x?y=1');
-    expect(wire).toContain('a=1');
-    expect(wire).not.toContain('hacked');
-    expect(vm.evaluate('globalThis.sideEffects')).toBe(0);
-    expect(stats.executions).toEqual([]);
+      expect(wire).toContain('https://example.com/x?y=1');
+      expect(wire).toContain('a=1');
+      expect(wire).not.toContain('hacked');
+      expect(vm.evaluate('globalThis.sideEffects')).toBe(0);
+      expect(stats.executions).toEqual([]);
+
+      // Only now confirm the patch really did reach the host prototype —
+      // reading `.href` here invokes it, so it has to come after the
+      // side-effect assertion above.
+      expect(new URL('https://example.com/').href).toBe(
+        'https://hacked.example/'
+      );
+    } finally {
+      Object.defineProperty(URL.prototype, 'href', originalHref);
+      URLSearchParams.prototype.toString = originalParamsToString;
+    }
   });
 
   it('serializes errors without consulting patched Error.prototype accessors', () => {
@@ -374,6 +396,43 @@ describe('hardened serialization: wire-format parity', () => {
     ['NaN', 'NaN', NaN],
     ['Infinity', 'Infinity', Infinity],
     ['undefined', 'undefined', undefined],
+    // DataView — exercises the three dataView* intrinsic captures
+    [
+      'dataview',
+      'new DataView(new Uint8Array([1,2,3,4,5,6,7,8]).buffer, 1, 4)',
+      new DataView(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]).buffer, 1, 4),
+    ],
+    [
+      'dataview whole buffer',
+      'new DataView(new Uint8Array([1,2,3,4]).buffer)',
+      new DataView(new Uint8Array([1, 2, 3, 4]).buffer),
+    ],
+    // boxed primitives — exercises unbox()'s three valueOf captures
+    ['boxed number', 'new Number(42)', new Number(42)],
+    ['boxed string', 'new String("boxed")', new String('boxed')],
+    ['boxed boolean', 'new Boolean(true)', new Boolean(true)],
+    // null-prototype objects, with and without data
+    [
+      'null-proto object',
+      'Object.assign(Object.create(null), { x: 1, y: "two" })',
+      Object.assign(Object.create(null), { x: 1, y: 'two' }),
+    ],
+    ['empty null-proto object', 'Object.create(null)', Object.create(null)],
+    // a setter-only property reads as undefined (the `return undefined`
+    // branch in readProperty), same as an unhardened `thing[key]`
+    [
+      'setter-only property',
+      '(() => { const o = { a: 1 }; Object.defineProperty(o, "writeOnly", { set() {}, enumerable: true, configurable: true }); return o; })()',
+      (() => {
+        const o: Record<string, unknown> = { a: 1 };
+        Object.defineProperty(o, 'writeOnly', {
+          set() {},
+          enumerable: true,
+          configurable: true,
+        });
+        return o;
+      })(),
+    ],
   ];
 
   it.each(
@@ -406,6 +465,144 @@ describe('hardened serialization: wire-format parity', () => {
     expect(revived.get('x-a')).toBe('1');
   });
 
+  // Error payloads carry realm-specific stack text (devalue stores the frames
+  // as separate string elements), so these assert a structural round trip
+  // rather than byte parity.
+  it('round-trips a DOMException built in the VM', () => {
+    const vm = makeVm();
+    vm.vmGlobalThis.DOMException = globalThis.DOMException;
+    const { wire, stats } = vm.serialize(
+      vm.evaluate('new DOMException("nope", "AbortError")')
+    );
+
+    expect(wire).toContain('DOMException');
+    expect(stats.executions).toEqual([]);
+
+    const revived = devalueCodec.deserialize(
+      new TextEncoder().encode(wire),
+      'step',
+      { global: vm.vmGlobalThis }
+    ) as DOMException;
+    expect(revived.name).toBe('AbortError');
+    expect(revived.message).toBe('nope');
+  });
+
+  it('round-trips an AggregateError built in the VM', () => {
+    const vm = makeVm();
+    const { wire, stats } = vm.serialize(
+      vm.evaluate(
+        'new AggregateError([new Error("a"), new Error("b")], "many")'
+      )
+    );
+
+    expect(wire).toContain('AggregateError');
+    expect(stats.executions).toEqual([]);
+
+    const revived = devalueCodec.deserialize(
+      new TextEncoder().encode(wire),
+      'step',
+      { global: vm.vmGlobalThis }
+    ) as AggregateError;
+    expect(revived.message).toBe('many');
+    expect(revived.errors.map((e: Error) => e.message)).toEqual(['a', 'b']);
+  });
+
+  it('round-trips a class instance through WORKFLOW_SERIALIZE, and reports it', async () => {
+    const { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } = await import(
+      '@workflow/serde'
+    );
+    const { registerSerializationClass } = await import(
+      '../class-serialization.js'
+    );
+
+    class Point {
+      static classId = 'test/hardened-Point';
+      static [WORKFLOW_SERIALIZE](p: Point) {
+        return { x: p.x, y: p.y };
+      }
+      static [WORKFLOW_DESERIALIZE](data: { x: number; y: number }) {
+        return new Point(data.x, data.y);
+      }
+      constructor(
+        public x: number,
+        public y: number
+      ) {}
+    }
+    registerSerializationClass('test/hardened-Point', Point);
+
+    const stats: GuestCodeStats = { executions: [] };
+    const bytes = devalueCodec.serialize(new Point(1, 2), 'step', {
+      guestCodeStats: stats,
+    });
+    const wire = new TextDecoder().decode(bytes);
+
+    // The custom serializer is workflow code by definition, so it is reported
+    expect(stats.executions).toEqual([
+      { kind: 'method', detail: '[WORKFLOW_SERIALIZE] (test/hardened-Point)' },
+    ]);
+
+    const revived = devalueCodec.deserialize(bytes, 'step') as Point;
+    expect(revived).toBeInstanceOf(Point);
+    expect([revived.x, revived.y]).toEqual([1, 2]);
+    expect(wire).toContain('test/hardened-Point');
+  });
+
+  it('reports the RetryableError duck-typed retryAfter path', async () => {
+    const vm = makeVm();
+    // A date-like object with a `getTime()` method — invoking it is workflow
+    // code, and the reducer says so.
+    const error = vm.evaluate(`(() => {
+      const e = new Error('later');
+      e.name = 'RetryableError';
+      e.retryAfter = { getTime: () => 1700000000000 };
+      return e;
+    })()`);
+
+    const { wire, stats } = vm.serialize(error);
+
+    expect(wire).toContain('RetryableError');
+    expect(wire).toContain('1700000000000');
+    expect(stats.executions).toEqual([{ kind: 'method', detail: 'getTime' }]);
+  });
+
+  it('reads a real Date retryAfter without reporting anything', () => {
+    const vm = makeVm();
+    const error = vm.evaluate(`(() => {
+      const e = new Error('later');
+      e.name = 'RetryableError';
+      e.retryAfter = new Date(1700000000000);
+      return e;
+    })()`);
+
+    const { wire, stats } = vm.serialize(error);
+
+    expect(wire).toContain('1700000000000');
+    expect(stats.executions).toEqual([]);
+  });
+
+  it('reports an accessor-valued Symbol.toStringTag', () => {
+    const vm = makeVm();
+    const value = vm.evaluate(`(() => {
+      globalThis.tagReads = 0;
+      const o = { a: 1 };
+      Object.defineProperty(o, Symbol.toStringTag, {
+        configurable: true,
+        get() { globalThis.tagReads++; return 'CustomTag'; },
+      });
+      return o;
+    })()`);
+
+    const { wire, stats } = vm.serialize(value);
+
+    // The tag is not brand-decided, so it is honoured — and reading it
+    // through the accessor is reported.
+    expect(vm.evaluate('globalThis.tagReads')).toBe(1);
+    expect(stats.executions).toEqual([
+      { kind: 'getter', detail: 'Symbol(Symbol.toStringTag)' },
+    ]);
+    expect(wire).toContain('"a"');
+  });
+
   it('preserves shared references and cycles', () => {
     const vm = makeVm();
     const cyclic = vm.evaluate(
@@ -422,6 +619,92 @@ describe('hardened serialization: wire-format parity', () => {
     ) as any;
     expect(revived.first).toBe(revived.second);
     expect(revived.first.self).toBe(revived.first);
+  });
+});
+
+describe('hardened serialization: the real step-argument reducer set', () => {
+  // `serialize()` above mirrors `dehydrateStepArguments` minus its
+  // `extraReducers` — which is where the stream/request/abort guards live.
+  // Those guards run on every value the earlier reducers do not claim, so
+  // report completeness has to hold with them installed.
+  // The real dehydrate path, including its stream/request/abort reducers,
+  // with the report collected through the new out-param.
+  async function serializeLikeDehydrate(
+    vm: ReturnType<typeof makeVm>,
+    value: unknown
+  ) {
+    const stats: GuestCodeStats = { executions: [] };
+    const bytes = (await dehydrateStepArguments(
+      value,
+      'wrun_hardened',
+      undefined,
+      vm.vmGlobalThis,
+      false,
+      false,
+      stats
+    )) as Uint8Array;
+    return { wire: new TextDecoder().decode(bytes), stats };
+  }
+
+  it('does not consult Symbol.hasInstance on the sandbox stream classes', async () => {
+    const vm = makeVm();
+    vm.run(`
+      globalThis.hasInstanceRuns = 0;
+      for (const ctor of [ReadableStream, WritableStream, Request, Response]) {
+        Object.defineProperty(ctor, Symbol.hasInstance, {
+          configurable: true,
+          value() { globalThis.hasInstanceRuns++; return false; },
+        });
+      }
+    `);
+
+    const { wire } = await serializeLikeDehydrate(
+      vm,
+      vm.evaluate('({ a: 1, nested: { b: [2, 3] }, when: new Date(0) })')
+    );
+
+    expect(wire).toContain('nested');
+    expect(vm.evaluate('globalThis.hasInstanceRuns')).toBe(0);
+  });
+
+  it('reports a non-enumerable `signal` getter instead of running it silently', async () => {
+    const vm = makeVm();
+    // `Object.keys` never reaches a non-enumerable property, so the plain
+    // object walk does not read it — only the AbortController guard does.
+    const value = vm.evaluate(`(() => {
+      globalThis.signalReads = 0;
+      const o = { plain: 1 };
+      Object.defineProperty(o, 'signal', {
+        enumerable: false,
+        configurable: true,
+        get() { globalThis.signalReads++; return undefined; },
+      });
+      return o;
+    })()`);
+
+    const { stats } = await serializeLikeDehydrate(vm, value);
+
+    const reads = vm.evaluate('globalThis.signalReads') as number;
+    // Either the guard never touched it, or it did and said so — the thing
+    // that must not happen is an invocation with an empty report.
+    expect(reads === 0 || stats.executions.length > 0).toBe(true);
+    if (reads > 0) {
+      expect(stats.executions).toContainEqual({
+        kind: 'getter',
+        detail: 'signal',
+      });
+    }
+  });
+
+  it('still reports nothing for an ordinary payload', async () => {
+    const vm = makeVm();
+    const { stats } = await serializeLikeDehydrate(
+      vm,
+      vm.evaluate(
+        '({ list: [1, 2], when: new Date(1700000000000), map: new Map([["k","v"]]) })'
+      )
+    );
+    expect(stats.executions).toEqual([]);
   });
 });
 

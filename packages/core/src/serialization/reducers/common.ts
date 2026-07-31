@@ -18,6 +18,9 @@ import {
 } from '@workflow/errors';
 import {
   arrayBufferByteLength,
+  canReadHeaders,
+  canReadUrl,
+  canReadUrlSearchParams,
   dateGetDate,
   dateGetTime,
   dateToISOString,
@@ -360,6 +363,7 @@ export function getCommonReducers(
     // prototype is reachable from workflow code — iterate through the
     // boot-captured iterator instead of a live Symbol.iterator lookup.
     Headers: (value) =>
+      canReadHeaders &&
       isInstanceOfPrototype(value, Headers.prototype) &&
       headersToEntries(value as Headers),
     Int8Array: (value) => types.isInt8Array(value) && viewToBase64(value),
@@ -380,7 +384,9 @@ export function getCommonReducers(
     // to deserialize as plain objects.
     Set: (value) => types.isSet(value) && setToValues(value as Set<unknown>),
     URL: (value) =>
-      isInstanceOfPrototype(value, URL.prototype) && urlHref(value),
+      canReadUrl &&
+      isInstanceOfPrototype(value, URL.prototype) &&
+      urlHref(value),
     WorkflowFunction: (value) => {
       // Only match function references with a workflowId property (set by
       // the SWC compiler on workflow functions). Plain { workflowId } objects
@@ -392,7 +398,10 @@ export function getCommonReducers(
       return { workflowId };
     },
     URLSearchParams: (value) => {
-      if (!isInstanceOfPrototype(value, URLSearchParams.prototype)) {
+      if (
+        !canReadUrlSearchParams ||
+        !isInstanceOfPrototype(value, URLSearchParams.prototype)
+      ) {
         return false;
       }
       if (urlSearchParamsSize(value) === 0) return '.';

@@ -62,7 +62,11 @@ import {
   isEncrypted,
   peekFormatPrefix,
 } from './serialization/format.js';
-import type { GuestCodeStats } from './serialization/hardened.js';
+import {
+  type GuestCodeStats,
+  isInstanceOfPrototype,
+  readProperty,
+} from './serialization/hardened.js';
 import {
   getClassReducers,
   getClassRevivers,
@@ -1597,15 +1601,23 @@ function getAllBaseReducers(
     // Request and Response reducers are mode-specific and added by
     // getExternalReducers / getWorkflowReducers / getStepReducers below.
     Request: (value) => {
-      if (!(value instanceof global.Request)) return false;
+      // Chain walk rather than `instanceof global.Request`: see the
+      // ReadableStream reducer in getWorkflowReducers for why. Reads go
+      // through descriptors so a getter cannot run unreported.
+      if (
+        !isInstanceOfPrototype(value, getHostClassPrototype(global, 'Request'))
+      )
+        return false;
       const data: SerializableSpecial['Request'] = {
-        method: value.method,
-        url: value.url,
-        headers: value.headers,
-        body: value.body,
-        duplex: value.duplex,
+        method: readProperty(value, 'method') as string,
+        url: readProperty(value, 'url') as string,
+        headers: readProperty(value, 'headers') as Headers,
+        body: readProperty(value, 'body') as ReadableStream | null,
+        duplex: readProperty(value, 'duplex') as 'half',
       };
-      const responseWritable = value[WEBHOOK_RESPONSE_WRITABLE];
+      const responseWritable = readProperty(value, WEBHOOK_RESPONSE_WRITABLE) as
+        | WritableStream<Response>
+        | undefined;
       if (responseWritable) {
         data.responseWritable = responseWritable;
       }
@@ -1618,25 +1630,30 @@ function getAllBaseReducers(
       // Plain non-aborted native signals are intentionally dropped (would
       // mint stream infra for every Request, including the auto-generated
       // signal on `new Request(url)`).
+      const signal = readProperty(value, 'signal');
       if (
-        value.signal &&
-        (value.signal.aborted ||
-          (value.signal as AbortInternals)[ABORT_STREAM_NAME])
+        signal &&
+        (readProperty(signal, 'aborted') ||
+          readProperty(signal, ABORT_STREAM_NAME))
       ) {
-        data.signal = value.signal;
+        data.signal = signal as AbortSignal;
       }
       return data;
     },
     Response: (value) => {
-      if (!(value instanceof global.Response)) return false;
+      // See the Request reducer above.
+      if (
+        !isInstanceOfPrototype(value, getHostClassPrototype(global, 'Response'))
+      )
+        return false;
       return {
-        type: value.type,
-        url: value.url,
-        status: value.status,
-        statusText: value.statusText,
-        headers: value.headers,
-        body: value.body,
-        redirected: value.redirected,
+        type: readProperty(value, 'type') as Response['type'],
+        url: readProperty(value, 'url') as string,
+        status: readProperty(value, 'status') as number,
+        statusText: readProperty(value, 'statusText') as string,
+        headers: readProperty(value, 'headers') as Headers,
+        body: readProperty(value, 'body') as ReadableStream | null,
+        redirected: readProperty(value, 'redirected') as boolean,
       };
     },
   };
@@ -1966,6 +1983,51 @@ export function getExternalReducers(
  * @param global
  * @returns
  */
+/**
+ * Prototypes used for brand-style identification in the reducers below.
+ *
+ * The stream and abort classes are host classes injected into the sandbox, so
+ * instances carry the host prototype in their chain and a chain walk
+ * identifies them without consulting `Symbol.hasInstance` on the sandbox
+ * class. `undefined` when the runtime lacks the class, in which case
+ * identification falls back to the infrastructure symbols alone.
+ */
+function getStreamPrototype(
+  global: Record<string, any>,
+  kind: 'Readable' | 'Writable'
+): object | undefined {
+  return getHostClassPrototype(global, `${kind}Stream`);
+}
+
+/**
+ * The prototype of a host class that may also be injected into the sandbox.
+ * Prefers the sandbox binding (the same host class object in practice) and
+ * falls back to the host's own, so a chain walk identifies instances from
+ * either realm without consulting `Symbol.hasInstance`.
+ */
+function getHostClassPrototype(
+  global: Record<string, any>,
+  name: string
+): object | undefined {
+  const ctor =
+    global[name] ?? (globalThis as Record<string, any>)[name] ?? undefined;
+  return typeof ctor === 'function' ? ctor.prototype : undefined;
+}
+
+function getAbortControllerPrototype(
+  global: Record<string, any>
+): object | undefined {
+  const ctor = global.AbortController ?? globalThis.AbortController;
+  return typeof ctor === 'function' ? ctor.prototype : undefined;
+}
+
+function getAbortSignalPrototype(
+  global: Record<string, any>
+): object | undefined {
+  const ctor = global.AbortSignal ?? globalThis.AbortSignal;
+  return typeof ctor === 'function' ? ctor.prototype : undefined;
+}
+
 export function getWorkflowReducers(
   global: Record<string, any> = globalThis
 ): Partial<Reducers> {
@@ -1975,31 +2037,48 @@ export function getWorkflowReducers(
     // Readable/Writable streams from within the workflow execution environment
     // are simply "handles" that can be passed around to other steps.
     ReadableStream: (value) => {
-      if (!(value instanceof global.ReadableStream)) return false;
+      // Walk the prototype chain instead of `instanceof global.ReadableStream`:
+      // the class is host-provided (injected into the sandbox), so its
+      // prototype is in the chain of both real streams and the
+      // `Object.create(ReadableStream.prototype)` handles used for request
+      // bodies — but a chain walk never consults `Symbol.hasInstance`, which
+      // the sandbox can define and which ran for every value the earlier
+      // reducers did not claim. Reads below go through descriptors so a
+      // getter on a step argument cannot run unreported.
+      if (!isInstanceOfPrototype(value, getStreamPrototype(global, 'Readable')))
+        return false;
 
       // Check if this is a fake stream storing BodyInit from Request/Response constructor
-      const bodyInit = value[BODY_INIT_SYMBOL];
+      const bodyInit = readProperty(value, BODY_INIT_SYMBOL);
       if (bodyInit !== undefined) {
         // This is a fake stream - serialize the BodyInit directly
         // devalue will handle serializing strings, Uint8Array, etc.
         return { bodyInit };
       }
 
-      const name = value[STREAM_NAME_SYMBOL];
+      const name = readProperty(value, STREAM_NAME_SYMBOL) as string;
       if (!name) {
         throw new WorkflowRuntimeError('ReadableStream `name` is not set');
       }
-      const s: SerializableSpecial['ReadableStream'] = { name };
-      const type = value[STREAM_TYPE_SYMBOL];
+      const s: Extract<
+        SerializableSpecial['ReadableStream'],
+        { name: string }
+      > = { name };
+      const type = readProperty(value, STREAM_TYPE_SYMBOL) as
+        | 'bytes'
+        | undefined;
       if (type) s.type = type;
-      const framing: ByteStreamFraming | undefined =
-        value[STREAM_FRAMING_SYMBOL];
+      const framing = readProperty(value, STREAM_FRAMING_SYMBOL) as
+        | ByteStreamFraming
+        | undefined;
       if (framing) s.framing = framing;
       return s;
     },
     WritableStream: (value) => {
-      if (!(value instanceof global.WritableStream)) return false;
-      const name = value[STREAM_NAME_SYMBOL];
+      // See the ReadableStream reducer above for why this walks the chain.
+      if (!isInstanceOfPrototype(value, getStreamPrototype(global, 'Writable')))
+        return false;
+      const name = readProperty(value, STREAM_NAME_SYMBOL) as string;
       if (!name) {
         throw new WorkflowRuntimeError('WritableStream `name` is not set');
       }
@@ -2007,13 +2086,19 @@ export function getWorkflowReducers(
       // When the handle was forwarded from another run (parent → child
       // via `start()`), preserve the foreign runId so the step-side
       // reviver opens the writable against the original stream.
-      const foreignRunId = value[STREAM_SERVER_RUN_ID_SYMBOL];
+      const foreignRunId = readProperty(value, STREAM_SERVER_RUN_ID_SYMBOL);
       if (typeof foreignRunId === 'string') s.runId = foreignRunId;
-      const foreignDeploymentId = value[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL];
+      const foreignDeploymentId = readProperty(
+        value,
+        STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
+      );
       if (typeof foreignDeploymentId === 'string') {
         s.deploymentId = foreignDeploymentId;
       }
-      const foreignPublicKey = value[STREAM_SERVER_PUBLIC_KEY_SYMBOL];
+      const foreignPublicKey = readProperty(
+        value,
+        STREAM_SERVER_PUBLIC_KEY_SYMBOL
+      );
       if (typeof foreignPublicKey === 'string') {
         s.encryptionPublicKey = foreignPublicKey;
       }
@@ -2025,26 +2110,42 @@ export function getWorkflowReducers(
     // is a plain object (not a class), so instanceof checks won't work for signals.
     // Detect instances by the presence of the ABORT_STREAM_NAME symbol instead.
     AbortController: (value) => {
-      if (!value || !value.signal) return false;
+      // `value.signal` was a bare read, so a `signal` getter on any object
+      // reaching this reducer executed unreported. Read through descriptors
+      // and gate on the infrastructure symbol / prototype first.
+      if (value === null || typeof value !== 'object') return false;
       const holder = value as AbortController & AbortHolder;
-      const hasAbortSymbol =
-        holder[ABORT_STREAM_NAME] ?? holder.signal?.[ABORT_STREAM_NAME];
-      const isNativeAbortController =
-        global.AbortController &&
-        typeof global.AbortController === 'function' &&
-        value instanceof global.AbortController;
-      if (!hasAbortSymbol && !isNativeAbortController) return false;
-      return reduceAbortBySymbol(value.signal, holder);
+      const ownSymbol = readProperty(value, ABORT_STREAM_NAME);
+      const isNativeAbortController = isInstanceOfPrototype(
+        value,
+        getAbortControllerPrototype(global)
+      );
+      if (ownSymbol === undefined && !isNativeAbortController) {
+        // Not ours and not a native controller — but a foreign controller
+        // may still carry the symbol on its signal.
+        const maybeSignal = readProperty(value, 'signal');
+        if (
+          maybeSignal === null ||
+          typeof maybeSignal !== 'object' ||
+          readProperty(maybeSignal, ABORT_STREAM_NAME) === undefined
+        ) {
+          return false;
+        }
+      }
+      const signal = readProperty(value, 'signal');
+      if (!signal) return false;
+      return reduceAbortBySymbol(signal as AbortSignal, holder);
     },
     AbortSignal: (value) => {
-      const signal = value as (AbortSignal & AbortInternals) | undefined;
-      const hasAbortSymbol = signal?.[ABORT_STREAM_NAME];
-      const isNativeAbortSignal =
-        global.AbortSignal &&
-        typeof global.AbortSignal === 'function' &&
-        value instanceof global.AbortSignal;
+      if (value === null || typeof value !== 'object') return false;
+      const hasAbortSymbol =
+        readProperty(value, ABORT_STREAM_NAME) !== undefined;
+      const isNativeAbortSignal = isInstanceOfPrototype(
+        value,
+        getAbortSignalPrototype(global)
+      );
       if (!hasAbortSymbol && !isNativeAbortSignal) return false;
-      return reduceAbortBySymbol(value, value as AbortHolder);
+      return reduceAbortBySymbol(value as AbortSignal, value as AbortHolder);
     },
   };
 }
@@ -3449,7 +3550,14 @@ export async function dehydrateWorkflowReturnValue(
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false,
-  compression = false
+  compression = false,
+  /**
+   * Optional sink receiving every workflow-code execution serialization could
+   * not avoid. Callers that keep the VM alive across steps can inspect it to
+   * decide whether the VM may have been perturbed; the value is always also
+   * emitted as span attributes.
+   */
+  guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(value, getWorkflowReducers(global));
@@ -3457,7 +3565,9 @@ export async function dehydrateWorkflowReturnValue(
   }
   try {
     const compressionStats: CompressionStats = {};
-    const guestCodeStats: GuestCodeStats = { executions: [] };
+    const guestCodeStats: GuestCodeStats = guestCodeStatsOut ?? {
+      executions: [],
+    };
     const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
@@ -3515,7 +3625,9 @@ export async function dehydrateStepArguments(
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false,
-  compression = false
+  compression = false,
+  /** See `dehydrateWorkflowReturnValue`. */
+  guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(value, getWorkflowReducers(global));
@@ -3523,7 +3635,9 @@ export async function dehydrateStepArguments(
   }
   try {
     const compressionStats: CompressionStats = {};
-    const guestCodeStats: GuestCodeStats = { executions: [] };
+    const guestCodeStats: GuestCodeStats = guestCodeStatsOut ?? {
+      executions: [],
+    };
     const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
