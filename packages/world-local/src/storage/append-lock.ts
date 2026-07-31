@@ -37,8 +37,12 @@ import {
 /** How long a held append lock is presumed live. A single append holds the
  *  lock for one `createImpl` — entity reads/writes plus one or two event
  *  publishes, milliseconds in practice — so a lock this old belongs to a
- *  crashed process and is broken (with a log rescan, see above). */
-const APPEND_LOCK_STALE_MS = 30_000;
+ *  crashed process and is broken (with a log rescan, see above). The cost
+ *  asymmetry is extreme: breaking a healthy-but-slow holder mints a
+ *  duplicate position (corruption), while breaking late merely stalls the
+ *  run's writers after a process crash — so this errs far to the late
+ *  side. */
+const APPEND_LOCK_STALE_MS = 120_000;
 
 /** Poll cadence while another process holds the run's append lock. */
 const APPEND_LOCK_POLL_MS = 8;
