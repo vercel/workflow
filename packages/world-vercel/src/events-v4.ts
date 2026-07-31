@@ -209,6 +209,8 @@ export interface CreateEventV4Input {
    * without a loaded event log; older servers ignore it entirely.
    */
   stateUpdatedAt?: number;
+  /** Number of consecutive replay divergences resolved by this write. */
+  replayDivergenceCount?: number;
 }
 
 export interface CreateEventV4Result {
@@ -308,6 +310,9 @@ function buildPostFrameMeta(
   if (input.skipPreload !== undefined) meta.skipPreload = input.skipPreload;
   if (input.stateUpdatedAt !== undefined) {
     meta.stateUpdatedAt = input.stateUpdatedAt;
+  }
+  if (input.replayDivergenceCount !== undefined) {
+    meta.replayDivergenceCount = input.replayDivergenceCount;
   }
   return meta;
 }
