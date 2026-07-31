@@ -15,6 +15,7 @@ import {
   getWorkflowQueueName,
   handleHealthCheckMessage,
   healthCheck,
+  insertEventByEventId,
   latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
@@ -50,6 +51,53 @@ const makeEvent = (eventId: string): Event =>
     correlationId: 'step_mock',
     createdAt: new Date(),
   }) as unknown as Event;
+
+describe('insertEventByEventId', () => {
+  it('keeps ascending eventId order when splicing a late-committing earlier event', () => {
+    // The lazy-resume consumer may splice a hook_received whose eventId sorts
+    // BEFORE events already in the ascending-loaded preload. A plain push would
+    // corrupt replay order; insertEventByEventId must place it correctly.
+    const events = [makeEvent('evnt_a'), makeEvent('evnt_c')];
+    insertEventByEventId(events, makeEvent('evnt_b'));
+    expect(events.map((e) => e.eventId)).toEqual([
+      'evnt_a',
+      'evnt_b',
+      'evnt_c',
+    ]);
+  });
+
+  it('appends an event that sorts at the tail (the common case)', () => {
+    const events = [makeEvent('evnt_a'), makeEvent('evnt_b')];
+    insertEventByEventId(events, makeEvent('evnt_c'));
+    expect(events.map((e) => e.eventId)).toEqual([
+      'evnt_a',
+      'evnt_b',
+      'evnt_c',
+    ]);
+  });
+
+  it('inserts at the head when the event sorts before everything', () => {
+    const events = [makeEvent('evnt_b'), makeEvent('evnt_c')];
+    insertEventByEventId(events, makeEvent('evnt_a'));
+    expect(events.map((e) => e.eventId)).toEqual([
+      'evnt_a',
+      'evnt_b',
+      'evnt_c',
+    ]);
+  });
+
+  it('is idempotent when the eventId is already present', () => {
+    const events = [makeEvent('evnt_a'), makeEvent('evnt_b')];
+    insertEventByEventId(events, makeEvent('evnt_b'));
+    expect(events.map((e) => e.eventId)).toEqual(['evnt_a', 'evnt_b']);
+  });
+
+  it('inserts into an empty log', () => {
+    const events: Event[] = [];
+    insertEventByEventId(events, makeEvent('evnt_a'));
+    expect(events.map((e) => e.eventId)).toEqual(['evnt_a']);
+  });
+});
 
 describe('getWorkflowQueueName', () => {
   it('should return a valid queue name for a simple workflow name', () => {
@@ -222,6 +270,66 @@ describe('healthCheck response parsing', () => {
 
     expect(result.healthy).toBe(true);
     expect(result.workflowCoreVersion).toBeUndefined();
+  });
+
+  it('surfaces hookResumeInputVersion from the target so the caller stamps the consumer value', async () => {
+    // Blocker 1: the marker must reflect the TARGET deployment (the queue
+    // consumer that re-ensures the event), not the caller. The responder
+    // stamps its own `HOOK_RESUME_INPUT_VERSION`; the parser passes it through
+    // so a cross-deployment start records the consumer's real capability.
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        hookResumeInputVersion: 1,
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.hookResumeInputVersion).toBe(1);
+  });
+
+  it('omits hookResumeInputVersion for an older target that does not attest it', async () => {
+    // An older target deployment predates the marker in the health response.
+    // The field is absent, and the caller must fail closed (stamp nothing) so
+    // the cross-deployment resume stays sequential.
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        // No hookResumeInputVersion field
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.hookResumeInputVersion).toBeUndefined();
+  });
+
+  it('omits hookResumeInputVersion when the field is the wrong type', async () => {
+    // Defensive: only a number is accepted; anything else is dropped rather
+    // than surfaced as a bogus capability.
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        hookResumeInputVersion: 'yes',
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.hookResumeInputVersion).toBeUndefined();
   });
 
   it('returns healthy with no fields for non-JSON plain-text responses', async () => {

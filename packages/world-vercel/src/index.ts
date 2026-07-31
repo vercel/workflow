@@ -42,6 +42,14 @@ export function createWorld(config?: APIConfig): World {
       // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
       // flow topics (see queue.ts and @workflow/builders).
       maxConcurrency: true,
+      // NOTE: the backend half of resumeHook()'s parallel fast path — that
+      // workflow-server enforces the `(runId, resumeId)` dedup constraint — is
+      // NO LONGER a static world capability here. It is attested per-lookup by
+      // the server via `Hook.resumeCapabilities.hookResumeDedupVersion`
+      // (response-only, recomputed every by-token read). This lets a server
+      // rollback or kill switch drop new resumes to the sequential path
+      // immediately, without a redeploy of this adapter. See
+      // vercel/workflow-server#685.
     },
     // On Vercel the platform fails the function invocation when the
     // process exits non-zero, and VQS redelivers the queue message via a

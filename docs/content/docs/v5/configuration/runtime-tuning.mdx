@@ -38,6 +38,12 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Default: `3`
 - Recovery replays before replay divergence is recorded as corruption.
 
+### `WORKFLOW_DISABLE_LAZY_HOOK_RESUME`
+
+- Default: enabled (lazy hook resume on)
+- Resuming a hook persists the `hook_received` event and publishes the workflow invocation concurrently, cutting a round trip off resume latency. The runtime falls back to the sequential path automatically when the consumer or backend does not attest dedup support, so a lost event write still resumes the run.
+- Set `1` to force the sequential path as a kill switch. The chosen strategy is reported on the resume span as `workflow.hook.resume_strategy`.
+
 ### `WORKFLOW_PRECONDITION_GUARD`
 
 - Default: enabled

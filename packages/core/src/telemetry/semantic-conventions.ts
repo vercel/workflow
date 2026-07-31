@@ -335,25 +335,6 @@ export const HookId = SemanticConvention<string>('workflow.hook.id');
 /** Whether a hook was found by its token */
 export const HookFound = SemanticConvention<boolean>('workflow.hook.found');
 
-/**
- * Set to `true` on the `hook.resume` span when `resumeHook()`'s direct
- * `hook_received` event write failed with a retryable error (429/5xx) but
- * the queue dispatch succeeded — the resume will still land via the
- * runtime's queue-payload fallback path.
- */
-export const HookResilientResume = SemanticConvention<boolean>(
-  'workflow.hook.resilient_resume'
-);
-
-/**
- * Set to `true` on the workflow execution span when the runtime materialized
- * a missing `hook_received` event from the queue-payload fallback carried on
- * the queue message (resilient resume).
- */
-export const HookResilientResumeMaterialized = SemanticConvention<boolean>(
-  'workflow.hook.resilient_resume_materialized'
-);
-
 // Webhook attributes
 
 /** Number of webhook handlers triggered */
