@@ -564,19 +564,26 @@ export interface DeliveryBarrier {
  * To guarantee a later delivery gated on this one can never hang when this
  * delivery is abandoned (the workflow took a different branch or is
  * suspending and never observes it), the barrier is retired by the safety net
- * in {@link scheduleBarrierRetirement}: at idle if it is UNARMED, and on a
- * deadline either way.
+ * in {@link scheduleBarrierRetirement} — but ONLY while it is UNARMED, by
+ * either of that net's two conditions. Neither of them applies to an armed
+ * barrier: `check()` returns early on `entry.armed` before it looks at
+ * hydration or at the tick budget. An armed barrier therefore leaves the
+ * registry from its own delivery chain and from nothing else, which is the
+ * property the rest of this design rests on.
  *
  * INVARIANT required of every call site: a barrier that is ever `armed` must
  * be paired with a delivery chain that runs unconditionally — attached when
  * the event is consumed (waits, step results, waiting-consumer hook payloads,
  * aborts), or by the `claim()` whose invocation is what arms it (buffered
- * hook payloads). Idle never retires an armed barrier, and the idle check
- * ({@link scheduleWhenIdle}) refuses to observe idle while an armed,
- * self-resolving barrier is undelivered — so an armed barrier with no
- * unconditional chain stalls every idle check in the run, its own retirement
- * included, until the deadlines fire. The deadlines bound that damage; they
- * do not make it acceptable.
+ * hook payloads).
+ *
+ * Violating it is unrecoverable, not merely slow. There is no deadline that
+ * retires an armed barrier, so the entry leaks for the rest of the run and
+ * every later delivery gated on it waits on a promise that will never settle.
+ * {@link IDLE_POLL_DEADLINE_ROUNDS} does not bound this: it releases the idle
+ * CALLBACKS, letting suspensions fire again, while the barrier and the
+ * deliveries behind it stay stuck. What the run loses is every delivery
+ * ordered after the leaked one, permanently.
  */
 export function registerDeliveryBarrier(
   ctx: WorkflowOrchestratorContext,
@@ -738,6 +745,15 @@ function isAwaitingBoundedRetirement(
  * Record a just-retired delivery as still quiescing for one macrotask, so
  * deliveries consumed in that window are still ordered behind the branch it
  * woke. See {@link WorkflowOrchestratorContext.recentlyDeliveredBarriers}.
+ *
+ * Called for safety-net retirements as well as real hand-overs, so a payload
+ * that never reached the workflow still parks an entry that later deliveries
+ * gate one macrotask on. That is deliberate: retiring the root of a chain
+ * releases every member behind it, and those members do need their quiesce
+ * window. Applying the rule uniformly is also what keeps `finish()` a single
+ * path — the alternative is a special case that has to be right about which
+ * retirements woke a branch, and getting it wrong reintroduces the overtake
+ * that {@link WorkflowOrchestratorContext.recentlyDeliveredBarriers} removes.
  */
 function beginQuiescing(
   ctx: WorkflowOrchestratorContext,
@@ -788,6 +804,16 @@ function beginQuiescing(
  * cannot — continuous delivery traffic keeps hydration busy indefinitely, so
  * the idle condition never holds and an unclaimed payload blocks everything
  * queued behind it for as long as the traffic lasts.
+ *
+ * "Quiet" here is `pendingDeliveries === 0` and deliberately NOT the full idle
+ * predicate {@link scheduleWhenIdle} uses: it does not consult
+ * {@link WorkflowOrchestratorContext.pendingOrderedDeliveries}. The asymmetry
+ * is required, not an omission. A chain of committed deliveries parked on this
+ * very payload holds that counter above zero for as long as it waits, so
+ * counting it as busy would mean the payload could never retire by the idle
+ * route while anything was gated on it — every parked chain would ride the
+ * full deadline instead. Checking only hydration is what lets the root retire
+ * the moment the system quiets and release the chain in log order.
  *
  * Neither condition is evaluated before `abandonableAfter` settles. Retiring
  * an unarmed barrier infers abandonment from the absence of a claim, and that
