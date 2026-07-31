@@ -120,6 +120,17 @@ describe('numbering', () => {
     await expect(slotsOf(runId)).resolves.toEqual([1, 2]);
   });
 
+  it('lists the log in slot order, not in the order writes started', async () => {
+    // A writer that loses its slot re-proposes above the winner while keeping
+    // the wall-clock stamp it started with, so `createdAt` order and slot order
+    // disagree. Replay consumes the log in list order, so list order has to be
+    // slot order — what the sort key gives the other backends for free.
+    const runId = await newSlotRun();
+    await createStep(runId, 'step_late', slotEventId(3));
+    await createStep(runId, 'step_early', slotEventId(2));
+    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
+  });
+
   it('keeps a burst of concurrent writers dense', async () => {
     // The suspension flush issues every op at once. Density is what lets a
     // reader prove its log is complete, so a burst must not leave holes.
