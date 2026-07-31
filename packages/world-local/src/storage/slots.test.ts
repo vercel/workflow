@@ -203,6 +203,39 @@ describe('isWritten', () => {
   });
 });
 
+describe('claim', () => {
+  it('holds a slot claimed before anything allocated for the run', async () => {
+    // A claim is synchronous and the first allocation's log scan is not, so a
+    // claim that only registered against an existing book would be invisible to
+    // the very allocation it races — and a single-process app would hand the
+    // caller's own position away.
+    await writeEvents(1);
+    const book = createSlotBook(basedir);
+    book.claim(RUN_ID, 2);
+    await expect(book.reserve(RUN_ID)).resolves.toBe(3);
+  });
+
+  it('frees the slot again once the claim resolves', async () => {
+    await writeEvents(1);
+    const book = createSlotBook(basedir);
+    book.claim(RUN_ID, 2);
+    book.release(RUN_ID, 2);
+    // Nothing is allocating for the run yet, so the book the next caller seeds
+    // has to start from the log alone.
+    await expect(book.reserve(RUN_ID)).resolves.toBe(2);
+  });
+
+  it('keeps holding a claim across a forget', async () => {
+    // `forget` follows a lost publish: the book is behind another writer, but
+    // the claims other writes in this instance still hold are not.
+    await writeEvents(1);
+    const book = createSlotBook(basedir);
+    book.claim(RUN_ID, 2);
+    book.forget(RUN_ID);
+    await expect(book.reserve(RUN_ID)).resolves.toBe(3);
+  });
+});
+
 describe('observe', () => {
   it('never hands out a slot claimed by the client', async () => {
     const book = createSlotBook(basedir);

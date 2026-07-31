@@ -466,6 +466,11 @@ export async function deleteJSON(filePath: string): Promise<void> {
     await withWindowsRetry(() => fs.unlink(filePath));
   } catch (error) {
     if ((error as any).code !== 'ENOENT') throw error;
+  } finally {
+    // The cache stands in for an `fs.access` on the write path, so a path that
+    // no longer exists may not stay in it: a later create-if-absent write of the
+    // same path would be rejected as a duplicate of a file that is gone.
+    createdFilesCache.delete(filePath);
   }
 }
 

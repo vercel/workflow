@@ -726,6 +726,15 @@ export function createEventsStorage(
       const reserved = new Set<number>();
       let reservedRunId: string | undefined;
       /**
+       * Undo actions for the duplicate-suppression claims a create takes before
+       * its event exists, newest last. Run only when the create ends without
+       * publishing anything: the answer to a lost position is to propose the
+       * same operation one position higher, and a claim left behind is what
+       * would reject that retry as a duplicate of a write that never landed.
+       */
+      const abandonedClaims: Array<() => Promise<unknown>> = [];
+      let eventCommitted = false;
+      /**
        * Hands the slots of a create that never published back to the allocator,
        * so an abandoned reservation below a sibling's published slot does not
        * become a hole the run can never fill.
@@ -739,6 +748,14 @@ export function createEventsStorage(
           if (reservedRunId !== undefined) {
             for (const slot of reserved) {
               slots.release(reservedRunId, slot);
+            }
+          }
+          if (!eventCommitted) {
+            for (const undo of abandonedClaims.reverse()) {
+              // Best effort: the throw the caller sees is the one that matters,
+              // and a claim that outlives its create is a duplicate suppressed
+              // for a write that is not coming back.
+              await undo().catch(() => {});
             }
           }
           throw error;
@@ -1657,6 +1674,7 @@ export function createEventsStorage(
               `Step "${data.correlationId}" already created`
             );
           }
+          abandonedClaims.push(() => fs.unlink(stepCreatedLockPath));
           const stepData = data.eventData as {
             stepName: string;
             input: any;
@@ -1678,10 +1696,14 @@ export function createEventsStorage(
             specVersion: effectiveSpecVersion,
           };
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-          await writeJSON(
-            taggedPath(basedir, 'steps', stepCompositeKey, tag),
-            step
+          const stepEntityPath = taggedPath(
+            basedir,
+            'steps',
+            stepCompositeKey,
+            tag
           );
+          await writeJSON(stepEntityPath, step);
+          abandonedClaims.push(() => deleteJSON(stepEntityPath));
         } else if (data.eventType === 'step_started') {
           // step_started: Increments attempt, sets status to 'running'
           // Sets startedAt only on the first start (not updated on retries)
@@ -2391,6 +2413,7 @@ export function createEventsStorage(
               `Wait "${data.correlationId}" already exists`
             );
           }
+          abandonedClaims.push(() => fs.unlink(waitCreatedLockPath));
           const waitData = data.eventData as {
             resumeAt?: Date;
           };
@@ -2404,10 +2427,14 @@ export function createEventsStorage(
             updatedAt: now,
             specVersion: effectiveSpecVersion,
           };
-          await writeJSON(
-            taggedPath(basedir, 'waits', waitCompositeKey, tag),
-            wait
+          const waitEntityPath = taggedPath(
+            basedir,
+            'waits',
+            waitCompositeKey,
+            tag
           );
+          await writeJSON(waitEntityPath, wait);
+          abandonedClaims.push(() => deleteJSON(waitEntityPath));
         } else if (data.eventType === 'wait_completed') {
           // wait_completed: Transitions wait to 'completed', rejects duplicates.
           // Uses writeExclusive on a lock file to atomically prevent concurrent
@@ -2713,7 +2740,11 @@ export function createEventsStorage(
         }
 
         // The event is now committed; cache it so an immediate sequential
-        // replay can serve it without rereading from disk.
+        // replay can serve it without rereading from disk. Nothing this create
+        // claimed may be undone from here on: readers can see the event, so the
+        // entity it describes has to keep existing even if a later step of this
+        // call fails.
+        eventCommitted = true;
         rememberStoredEvent(event, eventPath, serializedEvent);
         slots.observe(effectiveRunId, eventId);
         if (companionSlot !== undefined) {
