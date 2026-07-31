@@ -783,7 +783,7 @@ describe('createUseStep', () => {
     const add = useStep('add');
 
     // Start the step - it will process the event asynchronously
-    const stepPromise = add(1, 2);
+    const _stepPromise = add(1, 2);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
@@ -827,8 +827,8 @@ describe('AbortController hook integration', () => {
       const ctx = setupWorkflowContext([]);
       const WorkflowAbortController = createCreateAbortController(ctx);
 
-      const ctrl1 = new WorkflowAbortController();
-      const ctrl2 = new WorkflowAbortController();
+      const _ctrl1 = new WorkflowAbortController();
+      const _ctrl2 = new WorkflowAbortController();
 
       expect(ctx.invocationsQueue.size).toBe(2);
 

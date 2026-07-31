@@ -267,6 +267,9 @@ describe('workflowEntrypoint trace modes', () => {
     expect(routeSpan?.attributes['workflow.route.type']).toBe('flow');
     expect(routeSpan?.attributes['workflow.route.handler_cached']).toBe(false);
     expect(routeSpan?.attributes['workflow.route.invocation_count']).toBe(1);
+    expect(routeSpan?.attributes['faas.instance']).toMatch(
+      /^cinst_[0-9A-HJKMNP-TV-Z]{26}$/
+    );
     const moduleBodyInitMs =
       routeSpan?.attributes['workflow.route.module_body_init_ms'];
     expect(typeof moduleBodyInitMs).toBe('number');
@@ -432,6 +435,11 @@ describe('workflowEntrypoint trace modes', () => {
     expect(routeSpans[1]?.attributes['workflow.route.invocation_count']).toBe(
       2
     );
+    // Minted once at module load, so it identifies the compute instance rather
+    // than the invocation: both invocations report the same id.
+    const instanceId = routeSpans[0]?.attributes['faas.instance'];
+    expect(instanceId).toMatch(/^cinst_[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(routeSpans[1]?.attributes['faas.instance']).toBe(instanceId);
   });
 
   it('continuous: preserves the legacy shape — parented to the run-origin context with a delivery link', async () => {

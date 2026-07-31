@@ -674,6 +674,9 @@ async function createWorkflowRunEventInner(
       specVersion: data.specVersion ?? 2,
       ...(data.correlationId ? { correlationId: data.correlationId } : {}),
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      ...(params?.computeInstanceId
+        ? { computeInstanceId: params.computeInstanceId }
+        : {}),
       // Precondition snapshot. The three fields describe one snapshot and the
       // runtime always sends them together (or not at all); each is spread
       // independently only so an older server that knows one but not the

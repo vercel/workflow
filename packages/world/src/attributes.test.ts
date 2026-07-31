@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  applyAttributeChanges,
   ATTRIBUTE_KEY_MAX_LENGTH,
   ATTRIBUTE_MAX_PER_RUN,
   AttributeValidationError,
+  applyAttributeChanges,
   validateAttributeChanges,
   validateAttributeKey,
   validateAttributeValue,

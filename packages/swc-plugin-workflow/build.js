@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,

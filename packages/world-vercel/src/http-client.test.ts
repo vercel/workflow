@@ -116,6 +116,29 @@ describe('agent transport', () => {
     expect(STREAM_AGENT_OPTIONS.pipelining).toBe(1);
     expect(DEFAULT_AGENT_OPTIONS.pipelining).toBe(1);
   });
+
+  // Both receive windows have to clear undici's defaults (256 KiB stream,
+  // 512 KiB connection), and the connection window has to leave room for more
+  // than one stream's worth. Whichever is left at its default becomes the
+  // binding constraint by itself: a single read stalls on the stream window,
+  // concurrent reads stall on the shared connection window. See
+  // EVENTS_AGENT_OPTIONS.
+  it('raises both H2 receive windows on the events agent', () => {
+    // undici's own defaults, not HTTP/2's 65535 — see undici
+    // lib/dispatcher/client.js, kHTTP2InitialWindowSize / kHTTP2ConnectionWindowSize.
+    const UNDICI_DEFAULT_STREAM_WINDOW = 262_144;
+    const UNDICI_DEFAULT_CONNECTION_WINDOW = 524_288;
+
+    expect(EVENTS_AGENT_OPTIONS.initialWindowSize).toBeGreaterThan(
+      UNDICI_DEFAULT_STREAM_WINDOW
+    );
+    expect(EVENTS_AGENT_OPTIONS.connectionWindowSize).toBeGreaterThan(
+      UNDICI_DEFAULT_CONNECTION_WINDOW
+    );
+    expect(EVENTS_AGENT_OPTIONS.connectionWindowSize).toBeGreaterThan(
+      EVENTS_AGENT_OPTIONS.initialWindowSize
+    );
+  });
 });
 
 // Self-signed cert for localhost, valid 100 years. Generated with:
