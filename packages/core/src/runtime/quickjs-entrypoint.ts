@@ -152,6 +152,13 @@ async function dispatchPendingOps(params: {
   workflowRun: WorkflowRun;
   encryptionKey: RunPayloadKeys | undefined;
   pendingOperations: PendingOperation[];
+  /**
+   * Step cids whose `step_created` must NOT be written here: the inline
+   * loop claims these atomically via a lazy `step_started` (carrying the
+   * input), so a concurrent claimant loses with EntityConflictError
+   * instead of both invocations bare-starting the same step.
+   */
+  skipStepCreation?: Set<string>;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<{
   createdAttributeEvent: boolean;
@@ -159,6 +166,7 @@ async function dispatchPendingOps(params: {
 }> {
   const { world, runId, workflowRun, encryptionKey, pendingOperations } =
     params;
+  const skipStepCreation = params.skipStepCreation;
   const wfdiag = params.wfdiag;
   // Set when a hook with a parked getConflict() awaiter had its
   // hook_created written this invocation. The workflow must be re-invoked
@@ -360,7 +368,11 @@ async function dispatchPendingOps(params: {
   }
 
   for (const op of pendingOperations) {
-    if (op.type === 'step' && !op.hasCreatedEvent) {
+    if (
+      op.type === 'step' &&
+      !op.hasCreatedEvent &&
+      !skipStepCreation?.has(op.correlationId)
+    ) {
       const step = op as PendingStep;
       opsPromises.push(
         (async () => {
@@ -510,6 +522,12 @@ export async function runWorkflowWithQuickJS(params: {
    * an earlier crashed invocation may have orphaned mid-inline-execution.
    */
   deliveryAttempt?: number;
+  /**
+   * Queue message ID of the delivery driving this invocation, stamped as
+   * `ownerMessageId` on inline lazy step claims so wake replays defer to
+   * the in-flight body instead of requeueing the step.
+   */
+  ownerMessageId?: string;
 }): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
@@ -521,6 +539,7 @@ export async function runWorkflowWithQuickJS(params: {
     maxEventsLimit,
     hookInput,
     deliveryAttempt,
+    ownerMessageId,
   } = params;
   const world = await getWorld();
   const runId = workflowRun.runId;
@@ -858,10 +877,6 @@ export async function runWorkflowWithQuickJS(params: {
   for (const e of events) {
     if (e.eventId) seenEventIds.add(e.eventId);
   }
-  // Step cids whose step_created THIS invocation wrote — these are safe
-  // inline candidates (no other invocation can own them; a concurrent
-  // creator would have lost the events.create race).
-  const stepsCreatedByUs = new Set<string>();
   // Step cids already executed inline by this invocation.
   const executedStepIds = new Set<string>();
   // Steps for which THIS invocation already sent a queue message.
@@ -884,6 +899,14 @@ export async function runWorkflowWithQuickJS(params: {
     ] ?? runId;
   let inlineStepsExecuted = 0;
   let runGone = false;
+  // Set when this invocation wrote an event the workflow must consume to
+  // make progress (attr_set, getConflict-awaited hook_created) and the
+  // loop has not yet read it back — eventually-consistent listings can
+  // return 0 new events right after a write. If it is still set when the
+  // loop exits suspended, the entrypoint requeues immediately instead of
+  // exiting awaiting_external with the unblocking event already written
+  // and nothing scheduled to read it.
+  let pendingRequeueSignal = false;
 
   /** Fetch all events not yet processed by the live VM (log order). */
   const fetchUnseenEvents = async (): Promise<Event[]> => {
@@ -914,15 +937,40 @@ export async function runWorkflowWithQuickJS(params: {
     let iteration = 0;
     while (result.suspended && !runGone && !budget.isExhausted()) {
       iteration++;
+      // Re-check the event ceiling every turn: the loop appends events on
+      // each continueWithEvents, so a single invocation can otherwise grow
+      // the log arbitrarily far past the operator's limit (the node engine
+      // re-checks per replay for the same reason). `seenEventIds` counts
+      // every event this invocation has observed — initial log + all
+      // feeds.
+      if (maxEventsLimit !== undefined && seenEventIds.size >= maxEventsLimit) {
+        throw new MaxEventsExceededError(seenEventIds.size, maxEventsLimit);
+      }
       const pendingOperations = result.suspended.pendingOperations;
 
-      // 1. Durable side effects for this suspension's pending ops. Record
-      // which steps we created (before dispatch marks are fed back).
-      for (const op of pendingOperations) {
-        if (op.type === 'step' && !op.hasCreatedEvent) {
-          stepsCreatedByUs.add(op.correlationId);
-        }
-      }
+      // Select this turn's inline candidates BEFORE dispatch: fresh steps
+      // (no step_created yet) that this invocation hasn't already handled.
+      // Their step_created is deliberately NOT written by dispatch — the
+      // inline claim below is a lazy step_started carrying the input,
+      // which the world applies as an atomic create-claim. A concurrent
+      // invocation racing on the same fresh step loses that claim with
+      // EntityConflictError and skips, so step bodies cannot double-run
+      // (previously both invocations bare-started the step after one lost
+      // the swallowed step_created race).
+      const freshSteps = pendingOperations.filter(
+        (op): op is PendingStep =>
+          op.type === 'step' &&
+          !op.hasCreatedEvent &&
+          !executedStepIds.has(op.correlationId) &&
+          !queuedStepIds.has(op.correlationId)
+      );
+      const inlineCandidates =
+        maxInlineSteps <= 0 ? [] : freshSteps.slice(0, maxInlineSteps);
+      const inlineClaimCids = new Set(
+        inlineCandidates.map((step) => step.correlationId)
+      );
+
+      // 1. Durable side effects for this suspension's pending ops.
       const opsToDispatch = pendingOperations.map((op) =>
         op.type === 'hook' &&
         (op as PendingHook).abortRequested &&
@@ -935,14 +983,21 @@ export async function runWorkflowWithQuickJS(params: {
           recordedAbortIds.add(op.correlationId);
         }
       }
-      await dispatchPendingOps({
+      const dispatched = await dispatchPendingOps({
         world,
         runId,
         workflowRun,
         encryptionKey,
         pendingOperations: opsToDispatch,
+        skipStepCreation: inlineClaimCids,
         wfdiag,
       });
+      if (
+        dispatched.createdAttributeEvent ||
+        dispatched.createdGetConflictHook
+      ) {
+        pendingRequeueSignal = true;
+      }
 
       // Complete elapsed waits so their wait_completed events are picked
       // up by the feed below (instead of a queue re-invocation).
@@ -977,6 +1032,10 @@ export async function runWorkflowWithQuickJS(params: {
       {
         const newEvents = await fetchUnseenEvents();
         if (newEvents.length > 0) {
+          // The listing caught up with this invocation's writes — any
+          // attr_set / getConflict hook_created has been (or is being)
+          // consumed by the live VM, so no external requeue is needed.
+          pendingRequeueSignal = false;
           result = await session.continueWithEvents(newEvents);
           wfdiag('inline_iteration', {
             iteration,
@@ -996,32 +1055,29 @@ export async function runWorkflowWithQuickJS(params: {
       const stepOps = pendingOperations.filter(
         (op): op is PendingStep => op.type === 'step'
       );
-      const ourSteps = stepOps.filter(
-        (op) =>
-          stepsCreatedByUs.has(op.correlationId) &&
-          !executedStepIds.has(op.correlationId) &&
-          !queuedStepIds.has(op.correlationId)
-      );
-      // Steps created by an EARLIER invocation that are still pending.
-      // On a redelivery (attempt > 1) the original invocation may have
-      // crashed mid-inline-execution, orphaning the step (no queue
-      // message exists on the inline path) — send a backstop message.
-      // The queue's idempotency key dedups repeats and executeStep
-      // resolves already-completed steps as 'skipped'. First deliveries
-      // skip this: the step is most likely executing in a live
-      // invocation, and a backstop would routinely double-run bodies.
+      // Steps created by an EARLIER invocation that are still pending
+      // (their step_created came back through the event feed). On a
+      // redelivery (attempt > 1) the original invocation may have crashed
+      // mid-inline-execution, orphaning the step (no queue message exists
+      // on the inline path) — send a backstop message. The queue's
+      // idempotency key dedups repeats and executeStep resolves
+      // already-completed steps as 'skipped'. First deliveries skip this:
+      // the step is most likely executing in a live invocation, and a
+      // backstop would routinely double-run bodies.
       if ((deliveryAttempt ?? 1) > 1) {
         for (const step of stepOps) {
-          if (stepsCreatedByUs.has(step.correlationId)) continue;
+          if (!step.hasCreatedEvent) continue;
+          if (executedStepIds.has(step.correlationId)) continue;
           if (queuedStepIds.has(step.correlationId)) continue;
           queuedStepIds.add(step.correlationId);
           await queueStepMessage({ world, runId, workflowRun, step, wfdiag });
         }
       }
 
-      const inlineCandidates =
-        maxInlineSteps <= 0 ? [] : ourSteps.slice(0, maxInlineSteps);
-      const overflowSteps = ourSteps.slice(inlineCandidates.length);
+      // Steps beyond the inline cap: their step_created was written by
+      // dispatch above (they are not in the lazy-claim set), so hand them
+      // to the queue.
+      const overflowSteps = freshSteps.slice(inlineCandidates.length);
       for (const step of overflowSteps) {
         queuedStepIds.add(step.correlationId);
         await queueStepMessage({ world, runId, workflowRun, step, wfdiag });
@@ -1073,25 +1129,49 @@ export async function runWorkflowWithQuickJS(params: {
 
       // Execute the inline batch in parallel. The replay budget is
       // paused while step bodies run — step duration is bounded by the
-      // platform function duration, not the replay timeout.
+      // platform function duration, not the replay timeout. NOTE (by
+      // design): with the budget parked per batch, the only bound on how
+      // many inline steps one invocation can chain is the platform's
+      // function timeout — the SDK deliberately imposes no cap of its
+      // own, matching the node:vm engine, where a long sequential
+      // workflow likewise runs step-by-step until the platform reclaims
+      // the invocation and a redelivery resumes from the log.
       budget.pause();
       let outcomes: StepExecutionResult[];
       try {
         outcomes = await Promise.all(
           inlineCandidates.map((step) =>
             runStepSingleFlight(runId, step.correlationId, () =>
-              executeStep({
-                world,
-                workflowRunId: runId,
-                workflowDeploymentId: workflowRun.deploymentId,
-                workflowName: workflowRun.workflowName,
-                workflowStartedAt,
-                rootRunId,
-                stepId: step.correlationId,
-                stepName: step.stepId,
-                encryptionKey,
-                runSpecVersion: workflowRun.specVersion,
-              })
+              (async () =>
+                executeStep({
+                  world,
+                  workflowRunId: runId,
+                  workflowDeploymentId: workflowRun.deploymentId,
+                  workflowName: workflowRun.workflowName,
+                  workflowStartedAt,
+                  rootRunId,
+                  stepId: step.correlationId,
+                  stepName: step.stepId,
+                  encryptionKey,
+                  runSpecVersion: workflowRun.specVersion,
+                  // Lazy inline claim: step_created is deferred (dispatch
+                  // skipped it) and this step_started carries the input,
+                  // so the world creates the step atomically —
+                  // exactly-one-owner. A concurrent claimant gets
+                  // EntityConflictError → { type: 'skipped' } and never
+                  // runs the body. Mirrors the node engine's inline path.
+                  lazyStepInput: await encryptSerializedData(
+                    step.input,
+                    encryptionKey
+                  ),
+                  // Ownership stamp: wake replays see the body as in
+                  // flight in this invocation and arm a delayed backstop
+                  // instead of immediately requeueing the step.
+                  ownerMessageId,
+                  // A lazy step is brand-new by construction — first
+                  // attempt.
+                  authoritativeAttempt: 1,
+                }))()
             )
           )
         );
@@ -1119,6 +1199,10 @@ export async function runWorkflowWithQuickJS(params: {
         } else if (outcome.type === 'gone') {
           runGone = true;
         }
+        // 'skipped': a concurrent invocation won the lazy create-claim and
+        // owns the body. Marked executed above so this invocation never
+        // re-claims it; the winner's terminal events arrive via the feed
+        // (or drive a separate invocation).
       }
       wfdiag('inline_steps_executed', {
         iteration,
@@ -1282,6 +1366,23 @@ export async function runWorkflowWithQuickJS(params: {
     if (hasElapsedWait) {
       wfdiag('exit_suspended', {
         action: 'wait_elapsed_requeue',
+        timeoutSeconds: 0,
+      });
+      return { timeoutSeconds: 0 };
+    }
+
+    if (pendingRequeueSignal) {
+      // This invocation wrote an event the workflow needs to consume
+      // (attr_set / getConflict-awaited hook_created) but the
+      // eventually-consistent listing never returned it before the loop
+      // exited. Without a requeue the run would park awaiting_external
+      // with its unblocking event already durably written and no future
+      // invocation coming — requeue immediately so a fresh read picks it
+      // up. In the common case the loop's own feed observes the write and
+      // clears this flag, so this only fires when the read actually
+      // lagged.
+      wfdiag('exit_suspended', {
+        action: 'unread_self_write_requeue',
         timeoutSeconds: 0,
       });
       return { timeoutSeconds: 0 };

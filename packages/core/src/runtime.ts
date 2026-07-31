@@ -1635,20 +1635,49 @@ export function workflowEntrypoint(
                     const { runWorkflowWithQuickJS } = await import(
                       './runtime/quickjs-entrypoint.js'
                     );
-                    const quickjsResult = await runWorkflowWithQuickJS({
-                      workflowCode,
-                      workflowName,
-                      workflowRun,
-                      preloadedEvents,
-                      runInput,
-                      parentSpan: span,
-                      maxEventsLimit,
-                      deliveryAttempt: metadata.attempt,
-                      // Resilient resume (see the node block below): the
-                      // QuickJS entrypoint materializes the missing
-                      // hook_received from this payload itself.
-                      hookInput,
-                    });
+                    let quickjsResult: Awaited<
+                      ReturnType<typeof runWorkflowWithQuickJS>
+                    >;
+                    try {
+                      quickjsResult = await runWorkflowWithQuickJS({
+                        workflowCode,
+                        workflowName,
+                        workflowRun,
+                        preloadedEvents,
+                        runInput,
+                        parentSpan: span,
+                        maxEventsLimit,
+                        deliveryAttempt: metadata.attempt,
+                        ownerMessageId: metadata.messageId,
+                        // Resilient resume (see the node block below): the
+                        // QuickJS entrypoint materializes the missing
+                        // hook_received from this payload itself.
+                        hookInput,
+                      });
+                    } catch (err) {
+                      // The event-ceiling guard (initial and per-loop-turn)
+                      // throws MaxEventsExceededError — terminal by
+                      // definition: redelivering would re-read the same
+                      // oversized log and throw again forever, leaving the
+                      // run parked in `running`. Record run_failed /
+                      // MAX_EVENTS_EXCEEDED and consume the message. All
+                      // other errors keep propagating so the queue's
+                      // redelivery semantics drive the retry.
+                      if (MaxEventsExceededError.is(err)) {
+                        await recordFatalRunError({
+                          world,
+                          workflowRun,
+                          runId,
+                          requestId,
+                          err,
+                          errorCode: RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED,
+                          logMessage:
+                            'Workflow run exceeded the configured max events limit',
+                        });
+                        return;
+                      }
+                      throw err;
+                    }
                     if (quickjsResult?.timeoutSeconds !== undefined) {
                       // Use `reinvoke` rather than returning
                       // `{ timeoutSeconds }` directly: under turbo the
