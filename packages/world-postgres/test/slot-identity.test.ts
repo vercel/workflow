@@ -423,4 +423,69 @@ describe('Slot identity (Postgres integration)', () => {
       expect(rows.map((row) => row.step_id)).toEqual(['step_out_of_band']);
     });
   });
+
+  describe('correlation ids are unique per run, not globally', () => {
+    /** The id every slot-numbered run gives its own first step. */
+    const firstStep = `step_${String(FIRST_SLOT).padStart(26, '0')}`;
+
+    async function twoRunsSharingFirstStep(): Promise<[string, string]> {
+      const runIds: string[] = [];
+      for (const _ of [0, 1]) {
+        const runId = await newSlotRun();
+        await createStep(runId, firstStep);
+        runIds.push(runId);
+      }
+      return [runIds[0] as string, runIds[1] as string];
+    }
+
+    test('matches every run that numbered a step the same when unscoped', async () => {
+      // Not a bug to fix in the query — it is what a per-run counter means, and
+      // it is why a caller that knows the run has to say so.
+      const runIds = await twoRunsSharingFirstStep();
+      const { data } = await events.listByCorrelationId({
+        correlationId: firstStep,
+        pagination: { limit: 10 },
+      });
+      expect(new Set(data.map((event) => event.runId))).toEqual(
+        new Set(runIds)
+      );
+    });
+
+    test('returns one run when the caller names it', async () => {
+      const [runId] = await twoRunsSharingFirstStep();
+      const { data } = await events.listByCorrelationId({
+        correlationId: firstStep,
+        runId,
+        pagination: { limit: 10 },
+      });
+      expect(data.map((event) => event.runId)).toEqual([runId]);
+    });
+
+    test('pages a scoped query whose event ids repeat across runs', async () => {
+      // Both runs hold the same correlation id at the same slots, so the two
+      // logs are indistinguishable by event id alone: unscoped, a cursor at one
+      // run's id silently skips the other's. The run scope is what makes the
+      // cursor a key again.
+      const [runId] = await twoRunsSharingFirstStep();
+      await events.create(runId, {
+        eventType: 'step_completed',
+        specVersion: SPEC_VERSION_SLOT_IDENTITY,
+        correlationId: firstStep,
+        eventData: { output: new Uint8Array() },
+      });
+
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await events.listByCorrelationId({
+          correlationId: firstStep,
+          runId,
+          pagination: { limit: 1, cursor },
+        });
+        seen.push(...page.data.map((event) => event.eventType));
+        cursor = page.hasMore ? (page.cursor ?? undefined) : undefined;
+      } while (cursor);
+      expect(seen).toEqual(['step_created', 'step_completed']);
+    });
+  });
 });

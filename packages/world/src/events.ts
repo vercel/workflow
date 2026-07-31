@@ -944,6 +944,15 @@ export interface ListEventsParams {
 
 export interface ListEventsByCorrelationIdParams {
   correlationId: string;
+  /**
+   * Restricts the query to one run. A correlation id is unique per run, not
+   * globally: a slot-numbered run counts its own steps and waits, so
+   * `step_…001` names the first step of *every* such run. Pass the run when
+   * the caller knows it — both to keep foreign runs out of the page and
+   * because `(runId, eventId)` is what makes the pagination cursor
+   * unambiguous, where an event id alone is not.
+   */
+  runId?: string;
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
 }

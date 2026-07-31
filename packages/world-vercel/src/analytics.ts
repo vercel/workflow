@@ -138,8 +138,17 @@ export function createAnalytics(config?: APIConfig): Analytics {
         searchParams.set('correlationId', params.correlationId);
         appendPagination(searchParams, params.pagination);
 
+        // A correlation id is unique per run, not globally — a slot-numbered
+        // run numbers its own steps, so `step_…001` names the first step of
+        // every such run. When the caller named a run, the run-scoped endpoint
+        // takes the same correlation-id filter and answers exactly.
+        const endpoint =
+          params.runId === undefined
+            ? `/v2/analytics/events${createQueryString(searchParams)}`
+            : `/v2/analytics/runs/${encodeURIComponent(params.runId)}/events${createQueryString(searchParams)}`;
+
         return makeRequest({
-          endpoint: `/v2/analytics/events${createQueryString(searchParams)}`,
+          endpoint,
           config,
           schema: PaginatedResponseSchema(AnalyticsEventSchema),
         });

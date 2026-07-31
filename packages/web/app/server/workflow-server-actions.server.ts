@@ -896,9 +896,22 @@ export async function fetchEventsByCorrelationId(
     sortOrder?: 'asc' | 'desc';
     limit?: number;
     withData?: boolean;
+    /**
+     * Restricts the search to one run. A correlation id is unique per run, not
+     * globally — a slot-numbered run numbers its own steps — so a search made
+     * from a run's page passes it.
+     */
+    runId?: string;
   }
 ): Promise<ServerActionResult<PaginatedResult<Event>>> {
-  const { cursor, sortOrder = 'asc', limit = 100, withData = false } = params;
+  const {
+    cursor,
+    sortOrder = 'asc',
+    limit = 100,
+    withData = false,
+    runId,
+  } = params;
+  const runScope = runId === undefined ? {} : { runId };
   try {
     const world = await getWorldFromEnv(worldEnv);
     // Prefer the metadata-only analytics read path when the backend provides one
@@ -908,6 +921,7 @@ export async function fetchEventsByCorrelationId(
     if (world.analytics && !withData) {
       const result = await world.analytics.events.listByCorrelationId({
         correlationId,
+        ...runScope,
         pagination: { cursor, limit, sortOrder },
       });
       return createResponse({
@@ -919,6 +933,7 @@ export async function fetchEventsByCorrelationId(
     }
     const result = await world.events.listByCorrelationId({
       correlationId,
+      ...runScope,
       pagination: { cursor, limit, sortOrder },
       resolveData: withData ? 'all' : 'none',
     });

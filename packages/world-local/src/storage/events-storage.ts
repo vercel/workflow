@@ -2984,12 +2984,21 @@ export function createEventsStorage(
     async listByCorrelationId(params) {
       const correlationId = params.correlationId;
       assertSafeEntityId('correlationId', correlationId);
+      if (params.runId !== undefined) {
+        assertSafeEntityId('runId', params.runId);
+      }
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'events'),
         schema: EventSchema,
         cachedItems: eventCache,
-        // No filePrefix - search all events
+        // Scoped to one run's files when the caller named a run, since a
+        // correlation id identifies a step or wait only within its own run.
+        // Without a run it searches every event, and a slot-numbered
+        // `step_…001` legitimately matches one event per run.
+        ...(params.runId === undefined
+          ? {}
+          : { filePrefix: `${params.runId}-` }),
         filter: (event) => event.correlationId === correlationId,
         // Events in chronological order (oldest first) by default,
         // different from the default for other list calls.

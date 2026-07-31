@@ -482,3 +482,39 @@ describe('conflict', () => {
     await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
   });
 });
+
+describe('correlation ids are unique per run, not globally', () => {
+  /** The id every slot-numbered run gives its own first step. */
+  const firstStep = `step_${String(FIRST_SLOT).padStart(26, '0')}`;
+
+  async function twoRunsSharingFirstStep(): Promise<[string, string]> {
+    const runIds: string[] = [];
+    for (const _ of [0, 1]) {
+      const runId = await newSlotRun();
+      await createStep(runId, firstStep);
+      runIds.push(runId);
+    }
+    return [runIds[0] as string, runIds[1] as string];
+  }
+
+  it('matches every run that numbered a step the same when unscoped', async () => {
+    // Not a bug to fix in the query — it is what a per-run counter means, and
+    // it is why a caller that knows the run has to say so.
+    const runIds = await twoRunsSharingFirstStep();
+    const { data } = await storage.events.listByCorrelationId({
+      correlationId: firstStep,
+      pagination: { limit: 10 },
+    });
+    expect(new Set(data.map((event) => event.runId))).toEqual(new Set(runIds));
+  });
+
+  it('returns one run when the caller names it', async () => {
+    const [runId] = await twoRunsSharingFirstStep();
+    const { data } = await storage.events.listByCorrelationId({
+      correlationId: firstStep,
+      runId,
+      pagination: { limit: 10 },
+    });
+    expect(data.map((event) => event.runId)).toEqual([runId]);
+  });
+});

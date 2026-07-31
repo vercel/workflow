@@ -136,6 +136,7 @@ export async function fetchEventsByCorrelationId(
     sortOrder?: 'asc' | 'desc';
     limit?: number;
     withData?: boolean;
+    runId?: string;
   }
 ): Promise<ServerActionResult<PaginatedResult<Event>>> {
   return rpc('fetchEventsByCorrelationId', {

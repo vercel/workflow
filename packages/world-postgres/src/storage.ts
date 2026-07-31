@@ -2169,6 +2169,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         .where(
           and(
             eq(events.correlationId, params.correlationId),
+            // A correlation id names a step or wait within its run, so without
+            // a run scope this matches one event per run that allocated the
+            // same id — and the cursor, an event id, cannot tell two such rows
+            // apart. Scoped, `(run_id, id)` is the primary key, so it can.
+            map(params.runId, (runId) => eq(events.runId, runId)),
             map(params.pagination?.cursor, (c) =>
               order.compare(events.eventId, c)
             )

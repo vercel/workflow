@@ -189,6 +189,8 @@ export interface AnalyticsListEventsParams
 
 export interface AnalyticsListEventsByCorrelationIdParams {
   correlationId: string;
+  /** Restricts the query to one run; see `ListEventsByCorrelationIdParams`. */
+  runId?: string;
   pagination?: PaginationOptions;
 }
 
