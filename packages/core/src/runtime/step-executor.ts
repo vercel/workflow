@@ -16,6 +16,7 @@ import {
 import type {
   CreateEventParams,
   Event,
+  EventResult,
   SerializedData,
   Step,
   World,
@@ -51,9 +52,11 @@ import {
 import { getPortLazy } from './get-port-lazy.js';
 import {
   type EventCreateFence,
+  type EventCreator,
   type FencedCreate,
   memoizeEncryptionKey,
 } from './helpers.js';
+import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import {
   computeStepLatencyEventData,
   type StepLatencyEventData,
@@ -209,6 +212,8 @@ export interface StepExecutorParams {
    *   (`metadata.attempt`), which increments on every redelivery.
    */
   authoritativeAttempt?: number;
+  /** One-shot recovery telemetry activated by the orchestrator replay. */
+  replayRecoveryReporter?: ReplayRecoveryReporter;
 }
 
 /**
@@ -274,6 +279,12 @@ export async function executeStep(
   // Gate payload compression on the run's specVersion.
   const compression =
     (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
+  const replayRecoveryReporter =
+    params.replayRecoveryReporter ?? ReplayRecoveryReporter.inert();
+  const createEvent: EventCreator = (data, eventParams) =>
+    replayRecoveryReporter.withEventCreate(eventParams, (p) =>
+      world.events.create(workflowRunId, data, p)
+    );
 
   const spanName = `step.execute ${stepDisplayName(stepName)}`;
   return trace(spanName, {}, async (span) => {
@@ -321,8 +332,7 @@ export async function executeStep(
           if (params.runReadyBarrier) {
             await params.runReadyBarrier.catch(() => {});
           }
-          await world.events.create(
-            workflowRunId,
+          await createEvent(
             {
               eventType: 'step_started',
               specVersion: SPEC_VERSION_CURRENT,
@@ -352,7 +362,7 @@ export async function executeStep(
         }
       }
       try {
-        await world.events.create(workflowRunId, {
+        await createEvent({
           eventType: 'step_failed',
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
@@ -408,7 +418,7 @@ export async function executeStep(
         maxRetries,
       });
       try {
-        await world.events.create(workflowRunId, {
+        await createEvent({
           eventType: 'step_failed',
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
@@ -578,8 +588,7 @@ export async function executeStep(
           // non-translatable error: the body result is discarded and the
           // rejection propagates to the caller.
           return runClaim((fence) =>
-            world.events.create(
-              workflowRunId,
+            createEvent(
               {
                 eventType: 'step_started',
                 specVersion: SPEC_VERSION_CURRENT,
@@ -641,8 +650,7 @@ export async function executeStep(
         // startErrorToResult below, so it propagates to the caller for a fresh
         // replay.
         const startResult = await runClaim((fence) =>
-          world.events.create(
-            workflowRunId,
+          createEvent(
             {
               eventType: 'step_started',
               specVersion: SPEC_VERSION_CURRENT,
@@ -718,7 +726,7 @@ export async function executeStep(
         }
       }
       try {
-        await world.events.create(workflowRunId, {
+        await createEvent({
           eventType: 'step_failed',
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
@@ -1100,7 +1108,7 @@ export async function executeStep(
           (effectiveErr as Error).stack = normalizedStack;
         }
         try {
-          await world.events.create(workflowRunId, {
+          await createEvent({
             eventType: 'step_failed',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
@@ -1169,7 +1177,7 @@ export async function executeStep(
         (wrappedError as Error).cause = err;
         if (normalizedStack) wrappedError.stack = normalizedStack;
         try {
-          await world.events.create(workflowRunId, {
+          await createEvent({
             eventType: 'step_failed',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
@@ -1232,7 +1240,7 @@ export async function executeStep(
         (err as Error).stack = normalizedStack;
       }
       try {
-        await world.events.create(workflowRunId, {
+        await createEvent({
           eventType: 'step_retrying',
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
@@ -1283,10 +1291,9 @@ export async function executeStep(
     // Create step_completed event outside the step execution failure path:
     // persistence failures are infrastructure errors and should redeliver the
     // queue message, not become user step_retrying/step_failed events.
-    let completedResult: Awaited<ReturnType<typeof world.events.create>>;
+    let completedResult: EventResult;
     try {
-      completedResult = await world.events.create(
-        workflowRunId,
+      completedResult = await createEvent(
         {
           eventType: 'step_completed',
           specVersion: SPEC_VERSION_CURRENT,

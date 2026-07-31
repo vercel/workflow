@@ -99,7 +99,7 @@ export const NonWorkflowExample = ({
   };
 
   return (
-    <div className="relative isolate max-w-3xl mx-auto">
+    <div className="relative isolate w-full">
       <div className="bg-background border rounded-md overflow-x-auto pb-[52px]">
         <div className="relative">
           <div className="flex absolute z-10 flex-col left-[18px] top-[69px] pointer-events-none select-none">

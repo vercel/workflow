@@ -15,7 +15,7 @@ export function WorldInstructions({ id, world }: WorldInstructionsProps) {
   return (
     <section className="py-8 sm:py-12 border-t" id="installation">
       <div className="space-y-6">
-        <h2 className="font-semibold text-2xl tracking-tight sm:text-3xl">
+        <h2 className="text-heading-24 sm:text-heading-32">
           Installation & Usage
         </h2>
         <p className="text-muted-foreground">

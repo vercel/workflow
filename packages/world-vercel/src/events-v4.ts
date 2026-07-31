@@ -246,6 +246,8 @@ export interface CreateEventV4Input {
    * than one past this is a permanent hole in the log. Ignored by older servers.
    */
   maxSlot?: number;
+  /** Number of consecutive replay divergences resolved by this write. */
+  replayDivergenceCount?: number;
 }
 
 export interface CreateEventV4Result {
@@ -348,6 +350,9 @@ function buildPostFrameMeta(
   }
   if (input.eventId !== undefined) meta.eventId = input.eventId;
   if (input.maxSlot !== undefined) meta.maxSlot = input.maxSlot;
+  if (input.replayDivergenceCount !== undefined) {
+    meta.replayDivergenceCount = input.replayDivergenceCount;
+  }
   return meta;
 }
 
