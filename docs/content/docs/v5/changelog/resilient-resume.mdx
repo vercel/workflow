@@ -13,6 +13,7 @@ When event storage is degraded but the queue is up, `resumeHook()` previously fa
 
 - `resumeHook()` writes the `hook_received` event first, then dispatches to the workflow queue. The order is deliberately sequential: dispatching in parallel could let the workflow runtime process the message and materialize a duplicate `hook_received` before the direct write commits.
 - If the event write fails with a retryable error (429/5xx), the queue dispatch carries a `hookInput` payload — the dehydrated hook payload plus a client-minted `resumeId` idempotency key and the hook token. The workflow runtime materializes the missing `hook_received` event from `hookInput` during replay, deduplicating by `resumeId` in case the direct write actually committed or the queue message is redelivered.
+- Replay itself also deduplicates: `hook_received` events sharing a `resumeId` belong to the same resume attempt, and only the first in the event log is delivered to workflow code. Even if concurrent queue redeliveries materialize the event twice, the payload reaches the workflow exactly once.
 - If the event write fails with any other error, or the queue dispatch fails, `resumeHook()` throws as before.
 - `resumeHook()` now returns `ResumedHook` (exported from `workflow/api`), which extends `Hook` with an optional `resilientResume` flag. The flag is `true` when the fallback path was taken — the resume is accepted and will be delivered through the queue.
 

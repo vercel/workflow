@@ -4,7 +4,7 @@ import {
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { version as ownWorkflowCoreVersion } from '../version.js';
+import { QUEUE_HOOK_INPUT_MIN_VERSION } from '../capabilities.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { resumeHook } from './resume-hook.js';
 
@@ -49,8 +49,11 @@ interface MockWorldOptions {
   runSpecVersion?: number;
   /**
    * `@workflow/core` version recorded on the mock run's executionContext.
-   * Defaults to this build's own version, which the real getRunCapabilities
-   * treats as supporting queue hookInput (same-build-line rule).
+   * Defaults to the release cutoff, i.e. a run whose recorded runtime is
+   * known-capable of parsing `hookInput` on the queue payload. There is
+   * deliberately no own-version special case in getRunCapabilities (a
+   * published build can share a version string with an unpublished one),
+   * so tests must simulate a capable target explicitly.
    */
   workflowCoreVersion?: string;
   eventsCreate?: ReturnType<typeof vi.fn>;
@@ -60,7 +63,7 @@ interface MockWorldOptions {
 function makeMockWorld(opts: MockWorldOptions = {}) {
   const {
     runSpecVersion = SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
-    workflowCoreVersion = ownWorkflowCoreVersion,
+    workflowCoreVersion = QUEUE_HOOK_INPUT_MIN_VERSION,
     eventsCreate = vi.fn().mockResolvedValue({}),
     queue = vi.fn().mockResolvedValue({ messageId: null }),
   } = opts;
@@ -140,6 +143,27 @@ describe('resumeHook', () => {
       const [, queuePayload] = queue.mock.calls[0];
       expect(queuePayload.hookInput).toBeUndefined();
     });
+
+    it('cross-version compat contract: the direct write is resumeId-only (no digest or negotiation fields)', async () => {
+      // Once released, clients emit `resumeId` on ordinary direct writes
+      // without a payload digest and without any explicit server capability
+      // negotiation. Later server-side idempotency work must keep accepting
+      // this exact request shape — the presence of `resumeId` alone cannot
+      // be taken as proof that the caller supports a newer contract. This
+      // test pins the shape so a future change that widens it (e.g. adds a
+      // digest) shows up as a deliberate contract change, not an accident.
+      const { world, eventsCreate } = makeMockWorld();
+      vi.mocked(getWorldLazy).mockResolvedValue(world as any);
+
+      await resumeHook('tok_test', { hello: 'world' });
+
+      const [, eventReq] = eventsCreate.mock.calls[0];
+      expect(Object.keys(eventReq.eventData).sort()).toEqual([
+        'payload',
+        'resumeId',
+        'token',
+      ]);
+    });
   });
 
   describe('resilient resume (events.create failure)', () => {
@@ -178,7 +202,14 @@ describe('resumeHook', () => {
       expect(queuePayload.hookInput.token).toBe('tok_test');
     });
 
-    it('fails fast (no resilient path) when the run was created by an SDK that predates queue hookInput', async () => {
+    it.each([
+      // Far below the cutoff.
+      '5.0.0-beta.7',
+      // The published boundary: the latest published beta at the time the
+      // cutoff was last verified, which does NOT contain hookInput support.
+      // This is the exact skew case the capability gate exists for.
+      '5.0.0-beta.38',
+    ])('fails fast (no resilient path) when the run was recorded by a pre-hookInput SDK (%s)', async (workflowCoreVersion) => {
       // Skew protection keeps runs on the deployment they were created on.
       // A run recorded by an older @workflow/core parses queue messages
       // with a schema that silently strips `hookInput` — taking the
@@ -192,7 +223,7 @@ describe('resumeHook', () => {
       );
       const { world, queue } = makeMockWorld({
         eventsCreate,
-        workflowCoreVersion: '5.0.0-beta.7',
+        workflowCoreVersion,
       });
       vi.mocked(getWorldLazy).mockResolvedValue(world as any);
 

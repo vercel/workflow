@@ -145,6 +145,17 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // repeated awaits observe the same instance deterministically.
     let conflictRunRef: Run<unknown> | null = null;
 
+    // Resilient-resume dedup: `resumeHook()` mints a `resumeId` per resume
+    // attempt and stamps it on the `hook_received` event. When the direct
+    // event write fails transiently, the runtime materializes the event from
+    // the queue payload instead — and because `hook_received` has no
+    // storage-level uniqueness constraint, concurrent redelivery of the same
+    // queue message can commit that materialization twice. Two rows for ONE
+    // resume attempt then share a `resumeId` (distinct resume attempts never
+    // do), so replay delivers only the first-in-log occurrence. This is a
+    // pure function of the persisted event log, keeping replay deterministic.
+    const seenResumeIds = new Set<string>();
+
     webhookLogger.debug('Hook consumer setup', { correlationId, token });
     ctx.eventsConsumer.subscribe((event) => {
       // If there are no events and there are promises waiting,
@@ -260,6 +271,17 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       if (event.eventType === 'hook_received') {
+        // Drop duplicate deliveries of the same resume attempt (same
+        // `resumeId` — see `seenResumeIds` above). Events without a
+        // `resumeId` (older SDKs, legacy spec versions) are never deduped.
+        const resumeId = (event.eventData as { resumeId?: unknown }).resumeId;
+        if (typeof resumeId === 'string') {
+          if (seenResumeIds.has(resumeId)) {
+            return EventConsumerResult.Consumed;
+          }
+          seenResumeIds.add(resumeId);
+        }
+
         // Register a 'hook' delivery barrier at this event's log index so a
         // later-in-log `wait_completed` or step result is delivered only after
         // this hook, and so this hook is delivered only after every

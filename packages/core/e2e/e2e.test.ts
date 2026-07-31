@@ -22,6 +22,7 @@ import {
   test,
 } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
+import { QUEUE_HOOK_INPUT_MIN_VERSION } from '../src/capabilities';
 import type { Run } from '../src/runtime';
 import {
   getHookByToken,
@@ -4026,6 +4027,16 @@ describe('e2e', () => {
       // Wait for the hook to be registered
       await sleep(5_000);
 
+      // The resilient path is gated on the target run's recorded
+      // `@workflow/core` version understanding `hookInput` on the queue
+      // payload (see QUEUE_HOOK_INPUT_MIN_VERSION in capabilities.ts).
+      // This build's own not-yet-bumped version sits below that published
+      // cutoff — deliberately, there is no own-version escape hatch — so
+      // simulate a run recorded by a capable release. The target deployment
+      // here genuinely understands `hookInput` (it is built from this same
+      // source), so the simulation is honest.
+      const capableVersion = QUEUE_HOOK_INPUT_MIN_VERSION;
+
       // Build a stubbed world whose events.create throws a 500 on the
       // hook_received write, but passes all other events through. The queue
       // dispatch should still succeed, and the workflow runtime should
@@ -4046,17 +4057,37 @@ describe('e2e', () => {
             return realWorld.events.create(...args);
           }) as World['events']['create'],
         },
+        runs: {
+          ...realWorld.runs,
+          // Fallback path (hooks without a stored resumeContext): rewrite
+          // the run's recorded core version to the capable release.
+          get: (async (...args: Parameters<World['runs']['get']>) => {
+            const run = await realWorld.runs.get(...args);
+            return {
+              ...run,
+              executionContext: {
+                ...run.executionContext,
+                workflowCoreVersion: capableVersion,
+              },
+            };
+          }) as World['runs']['get'],
+        },
       };
 
       const hook = await getHookByToken(token);
       expect(hook.runId).toBe(run.runId);
+      // Fast path (hooks with a stored resumeContext): rewrite the recorded
+      // core version on the hook object we pass to resumeHook().
+      if (hook.resumeContext) {
+        hook.resumeContext.workflowCoreVersion = capableVersion;
+      }
 
       // Swap in the stubbed world for the duration of the resumeHook() call.
       // `resumeHook` uses `getWorld()` internally (no `world` option), so we
       // use `setWorld()` to replace the cached instance and restore the real
       // one afterwards.
       setWorld(stubbedWorld);
-      let resumedHook;
+      let resumedHook: Awaited<ReturnType<typeof resumeHook>>;
       try {
         resumedHook = await resumeHook(hook, {
           message: 'via-resilient-resume',

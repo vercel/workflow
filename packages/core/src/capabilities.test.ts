@@ -1,7 +1,10 @@
+import semver from 'semver';
 import { describe, expect, it } from 'vitest';
-import { getRunCapabilities } from './capabilities.js';
+import {
+  getRunCapabilities,
+  QUEUE_HOOK_INPUT_MIN_VERSION,
+} from './capabilities.js';
 import { SerializationFormat } from './serialization.js';
-import { version as ownVersion } from './version.js';
 
 describe('getRunCapabilities', () => {
   describe('undefined version (very old runs)', () => {
@@ -67,29 +70,48 @@ describe('getRunCapabilities', () => {
     it.each([
       undefined,
       'dev',
+      'not-a-version',
+    ])('is not supported for unknown/invalid versions (%s)', (version) => {
+      expect(getRunCapabilities(version).supportsQueueHookInput).toBe(false);
+    });
+
+    // Published runtimes predating the feature parse the queue payload with
+    // a schema that silently strips `hookInput`, so the resilient path must
+    // be disabled for runs they recorded — otherwise the resume payload is
+    // silently lost while `resumeHook()` reports success. This list pins
+    // known published versions that DO NOT contain the feature; each case
+    // also self-checks that it sits below the cutoff so the list can never
+    // silently disagree with the constant.
+    it.each([
       '4.3.1',
       '5.0.0-beta.7',
       '5.0.0-beta.37',
-    ])('is not supported for runs recorded by older/unknown versions (%s)', (version) => {
-      // Published runtimes predating the feature parse the queue payload
-      // with a schema that strips `hookInput`; the resilient path must be
-      // disabled for runs they created. Note: the own-version exact match
-      // below makes the current dev version supported, so this case list
-      // must not contain `ownVersion` — guard against that.
-      if (version === ownVersion) return;
-      const { supportsQueueHookInput } = getRunCapabilities(version);
-      expect(supportsQueueHookInput).toBe(false);
+      // Latest published beta at the time the cutoff was last verified —
+      // the boundary case the cutoff exists to gate off.
+      '5.0.0-beta.38',
+    ])('is not supported for published pre-feature version %s', (version) => {
+      expect(semver.lt(version, QUEUE_HOOK_INPUT_MIN_VERSION)).toBe(true);
+      expect(getRunCapabilities(version).supportsQueueHookInput).toBe(false);
     });
 
-    it('is supported for runs created by the same build line (own version)', () => {
-      const { supportsQueueHookInput } = getRunCapabilities(ownVersion);
-      expect(supportsQueueHookInput).toBe(true);
+    it('is not supported just below the release cutoff', () => {
+      // Derive the immediate predecessor from the constant itself so this
+      // keeps testing the actual boundary if the cutoff is bumped.
+      const prerelease = semver.prerelease(QUEUE_HOOK_INPUT_MIN_VERSION);
+      if (prerelease && typeof prerelease[1] === 'number') {
+        const below = `${semver.major(QUEUE_HOOK_INPUT_MIN_VERSION)}.${semver.minor(
+          QUEUE_HOOK_INPUT_MIN_VERSION
+        )}.${semver.patch(QUEUE_HOOK_INPUT_MIN_VERSION)}-${prerelease[0]}.${
+          prerelease[1] - 1
+        }`;
+        expect(getRunCapabilities(below).supportsQueueHookInput).toBe(false);
+      }
     });
 
-    it('is supported for versions at/above the release cutoff', () => {
-      expect(getRunCapabilities('5.0.0-beta.38').supportsQueueHookInput).toBe(
-        true
-      );
+    it('is supported at the release cutoff and later', () => {
+      expect(
+        getRunCapabilities(QUEUE_HOOK_INPUT_MIN_VERSION).supportsQueueHookInput
+      ).toBe(true);
       expect(getRunCapabilities('5.0.0').supportsQueueHookInput).toBe(true);
       expect(getRunCapabilities('5.1.2').supportsQueueHookInput).toBe(true);
     });

@@ -459,6 +459,14 @@ export async function resumeHook<T = any>(
         // Re-trigger the workflow. Attach `hookInput` only when the direct
         // event write failed — otherwise the runtime's fallback path has
         // nothing to materialize and we avoid the dedup race.
+        //
+        // NOTE: on the resilient path the dehydrated payload rides the queue
+        // message, so resume payload size then affects queue message size.
+        // If the payload is large enough that the queue POST itself is
+        // rejected (e.g. a platform request-body limit — the same limit the
+        // failed event POST was subject to), `world.queue` throws and
+        // `resumeHook()` propagates the error: the failure mode is a loud
+        // throw the caller can retry, never a silent drop.
         await world.queue(
           getWorkflowQueueName(resumeContext.workflowName),
           {

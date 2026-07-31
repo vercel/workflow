@@ -29,6 +29,7 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
+import { decodeTime } from 'ulid';
 import {
   classifyRunError,
   isRetryableWorldError,
@@ -1471,9 +1472,23 @@ export function workflowEntrypoint(
                       // dehydrated payload plus a client-minted idempotency
                       // key (`resumeId`). If no existing `hook_received` event
                       // already carries that `resumeId`, we materialize one
-                      // here so replay can see the payload while avoiding
-                      // duplicate materialization. Mirrors `start()`'s
+                      // here so replay can see the payload. Mirrors `start()`'s
                       // resilient path for run_created → run_started.
+                      //
+                      // NOTE: this snapshot check is a non-atomic
+                      // check-then-act — it suppresses the common sequential
+                      // redelivery case, but two CONCURRENT deliveries of the
+                      // same queue message can both pass it and commit two
+                      // rows (no World currently enforces uniqueness on
+                      // hook_received). Exactly-once delivery to workflow
+                      // code is instead guaranteed at the consumer: replay
+                      // dedups `hook_received` events sharing a `resumeId`
+                      // (see `workflow/hook.ts`), which is deterministic
+                      // because it is a pure function of the persisted log.
+                      // A storage-level (runId, resumeId) constraint that
+                      // would also suppress the duplicate row is planned
+                      // server-side (the successor parallel-resume work
+                      // builds on it).
                       if (hookInput) {
                         const alreadyMaterialized = events.some(
                           (e) =>
@@ -1483,6 +1498,23 @@ export function workflowEntrypoint(
                               ?.resumeId === hookInput.resumeId
                         );
                         if (!alreadyMaterialized) {
+                          // The resumeId is a ULID minted in resumeHook() at
+                          // resume time, so its embedded timestamp dates the
+                          // materialized event to when the resume actually
+                          // happened rather than after the queue round-trip —
+                          // keeping latency attribution honest on the one
+                          // path (backend errors + retries) where it matters
+                          // most. Guarded: hookInput.resumeId is typed as an
+                          // opaque string, so a non-ULID value simply omits
+                          // occurredAt.
+                          let occurredAt: Date | undefined;
+                          try {
+                            occurredAt = new Date(
+                              decodeTime(hookInput.resumeId)
+                            );
+                          } catch {
+                            occurredAt = undefined;
+                          }
                           try {
                             const result = await world.events.create(
                               runId,
@@ -1500,7 +1532,7 @@ export function workflowEntrypoint(
                                   resumeId: hookInput.resumeId,
                                 },
                               },
-                              { requestId }
+                              { requestId, occurredAt }
                             );
                             if (result.event) {
                               // The server returns a "lazy" response for
@@ -1540,8 +1572,17 @@ export function workflowEntrypoint(
                             });
                           } catch (err) {
                             if (EntityConflictError.is(err)) {
-                              // Another queue delivery already materialized
-                              // this hook_received event — safe to ignore.
+                              // No current World enforces uniqueness on
+                              // hook_received (a duplicate insert succeeds
+                              // rather than conflicting), so today this
+                              // branch is defensive only — the duplicate-row
+                              // case is instead neutralized by the replay-
+                              // side resumeId dedup (see the NOTE above).
+                              // Once a storage-level (runId, resumeId)
+                              // constraint lands server-side, a concurrent
+                              // materialization surfaces here as the real
+                              // already-exists signal and must be treated
+                              // as success.
                               runtimeLogger.info(
                                 'Hook resilient-resume materialization skipped (already exists)',
                                 {
