@@ -1427,6 +1427,44 @@ async function processEvents(
           break;
         }
 
+        // Resilient-resume dedup (parity with the node engine's
+        // EventsConsumer in workflow/hook.ts): two hook_received rows for
+        // ONE resume attempt share a client-minted `resumeId` (a duplicate
+        // can be committed when the materialization fallback races a
+        // delayed direct write — hook_received has no storage uniqueness
+        // constraint). Deliver only the first-in-log occurrence. The seen
+        // set lives in the VM heap so it is deterministic per replay and
+        // survives event re-scans within the invocation. Events without a
+        // resumeId (older SDKs) are never deduped.
+        {
+          const resumeId = (eventData as { resumeId?: unknown } | undefined)
+            ?.resumeId;
+          if (typeof resumeId === 'string') {
+            const resumeIdJs = JSON.stringify(resumeId);
+            const duplicate = vm.dump(
+              vm.evalCode(
+                `(globalThis.__hookSeenResumeIds = globalThis.__hookSeenResumeIds || {})[${resumeIdJs}] === true`
+              )
+            );
+            if (duplicate) {
+              runtimeLogger.debug(
+                'QuickJS runtime: duplicate hook_received for the same resume attempt, dropping',
+                { correlationId: cid, eventId: event.eventId, resumeId }
+              );
+              if (event.eventId) {
+                vm.evalCode(
+                  `(globalThis.__hookPayloadBuffer.__processedEventIds = globalThis.__hookPayloadBuffer.__processedEventIds || {})[${JSON.stringify(event.eventId)}] = true;`
+                ).dispose();
+              }
+              markCreated(vm, cidJs);
+              break;
+            }
+            vm.evalCode(
+              `globalThis.__hookSeenResumeIds[${resumeIdJs}] = true;`
+            ).dispose();
+          }
+        }
+
         // Abort delivery: hook_received for an AbortController's system
         // hook flips the registered signal instead of resolving a promise.
         // The payload is the dehydrated `{ aborted: true, reason }` object.

@@ -1643,6 +1643,10 @@ export function workflowEntrypoint(
                       runInput,
                       parentSpan: span,
                       maxEventsLimit,
+                      // Resilient resume (see the node block below): the
+                      // QuickJS entrypoint materializes the missing
+                      // hook_received from this payload itself.
+                      hookInput,
                     });
                     if (quickjsResult?.timeoutSeconds !== undefined) {
                       // Use `reinvoke` rather than returning
