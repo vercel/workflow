@@ -119,8 +119,36 @@ export function extractHistory(body) {
   return [];
 }
 
+/**
+ * Drops the per-metric raw sample arrays before embedding an entry in the
+ * comment's data block. The sequential-steps scenario records ~1000 STSO
+ * samples per run (plus the baseline's), which would blow past GitHub's
+ * comment size limit within a couple of history entries; the percentiles and
+ * baseline annotations — everything the history tables render — are kept.
+ *
+ * This does not affect the histogram diff against `main`: that reads its
+ * baseline from the artifacts the workflow downloads into --baseline-dir,
+ * which keep their raw samples. What it costs is the collapsed "Previous
+ * results" entries, re-rendered from this block on a later commit of the same
+ * PR — they show their tables but not their histograms.
+ */
+function stripRawSamples(entries) {
+  return entries.map((entry) => ({
+    ...entry,
+    results: (entry.results ?? []).map((result) => ({
+      ...result,
+      metrics: (result.metrics ?? []).map(
+        ({ raw, baselineRaw, ...row }) => row
+      ),
+    })),
+  }));
+}
+
 export function encodeHistory(entries) {
-  const json = JSON.stringify({ version: 1, entries });
+  const json = JSON.stringify({
+    version: 1,
+    entries: stripRawSamples(entries),
+  });
   return `<!-- ${DATA_MARKER}${Buffer.from(json, 'utf8').toString('base64')} -->`;
 }
 
@@ -203,12 +231,253 @@ export function annotateWithBaseline(results, baseline) {
       const value = from(base);
       if (typeof value === 'number') annotated[annotation] = value;
     }
+    // Raw samples (when the baseline run recorded them) drive the STSO
+    // histogram diff below the table — kept separate from BASELINE_FIELDS
+    // since it's an array, not a numeric percentile.
+    if (Array.isArray(base.raw)) annotated.baselineRaw = base.raw;
     return annotated;
   };
   return results.map((result) => ({
     ...result,
     metrics: (result.metrics ?? []).map((row) => annotate(result, row)),
   }));
+}
+
+// ============================================================================
+// STSO distribution diff (histogram + cumulative time, vs main)
+// ============================================================================
+
+const sum = (values) => values.reduce((total, v) => total + v, 0);
+
+const maxOf = (values) => values.reduce((m, v) => (v > m ? v : m), 0);
+
+/** Buckets samples into fixed-width ms bins. Anything past `binWidth *
+ * maxBins` is folded into a single overflow bucket, so a handful of outliers
+ * don't blow up the table width. Negative samples get their own bucket rather
+ * than joining that overflow: step timestamps come from two different step
+ * bodies, so a gap can come out slightly negative under clock skew, and
+ * lumping those in with the slowest samples would invert what the tail
+ * bucket means. */
+function buildHistogram(samples, binWidth, maxBins) {
+  const counts = new Array(maxBins).fill(0);
+  let overflow = 0;
+  let underflow = 0;
+  for (const v of samples) {
+    const idx = Math.floor(v / binWidth);
+    if (idx >= 0 && idx < maxBins) counts[idx]++;
+    else if (idx < 0) underflow++;
+    else overflow++;
+  }
+  return { counts, overflow, underflow };
+}
+
+// Target bin count for the STSO histogram diff — the actual bin *width* is
+// derived per-row from the observed sample range (see chooseBinWidth), since
+// a fixed width picked for one scenario's typical latency (e.g. sub-100ms)
+// silently dumps every sample into a single overflow bucket for another
+// (e.g. a colder run at 200-500ms/step).
+const STSO_HISTOGRAM_TARGET_BINS = 12;
+
+// "Inline" steps (same warm process as the step before them) cluster tightly,
+// and the adaptive width above is coarse enough (~500ms bins on a run whose
+// samples top out in the seconds) to hide structure inside that cluster —
+// e.g. a bimodal split between a fast ~150-250ms mode and a slower ~350ms+
+// one. Hardcode a finer width for those rows; queue-hop steps (dispatch +
+// cold reinit, much larger and far sparser) keep the adaptive width.
+const STSO_INLINE_BIN_WIDTH_MS = 50;
+
+/** Rounds a raw bin width up to a "nice" 1/2/5 * 10^n step, so bucket
+ * boundaries read cleanly (e.g. 20ms, 50ms) instead of arbitrary fractions. */
+function chooseBinWidth(maxValue, targetBins) {
+  if (!Number.isFinite(maxValue) || maxValue <= 0) return 1;
+  const raw = maxValue / targetBins;
+  const magnitude = 10 ** Math.floor(Math.log10(raw));
+  const normalized = raw / magnitude;
+  const niceNormalized =
+    normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return niceNormalized * magnitude;
+}
+
+function formatDeltaValue(delta, unit = '') {
+  return `${delta >= 0 ? '+' : ''}${Math.round(delta)}${unit}`;
+}
+
+/** Non-empty (bucket label, main count, this-run count) triples for a
+ * histogram, including the overflow bucket (labeled `${max}+`) when either
+ * side has samples there. Shared by the bar chart and the table so both
+ * render from the exact same bucketing. */
+function nonEmptyBuckets(current, baseline, binWidth, binCount) {
+  const buckets = [];
+  if (current.underflow > 0 || baseline.underflow > 0) {
+    buckets.push({
+      label: '<0 (skew)',
+      base: baseline.underflow,
+      cur: current.underflow,
+    });
+  }
+  for (let i = 0; i < binCount; i++) {
+    if (current.counts[i] === 0 && baseline.counts[i] === 0) continue;
+    buckets.push({
+      label: `${i * binWidth}-${(i + 1) * binWidth}`,
+      base: baseline.counts[i],
+      cur: current.counts[i],
+    });
+  }
+  if (current.overflow > 0 || baseline.overflow > 0) {
+    buckets.push({
+      label: `${binCount * binWidth}+`,
+      base: baseline.overflow,
+      cur: current.overflow,
+    });
+  }
+  return buckets;
+}
+
+// Bar width (characters) for the ASCII histogram overlay.
+const BAR_CHART_WIDTH = 24;
+
+/**
+ * Renders one bucket as a single overlay bar: a solid `█` run for the
+ * baseline's (main's) count, a `┃` notch marking exactly where this run's
+ * count lands, and — only when this run exceeds the baseline — a lighter `░`
+ * run bridging the gap between them so the extension past the base bar is
+ * visually distinct from the base itself. One glance shows both the
+ * baseline's magnitude (bar length) and this run's relative position (the
+ * notch) without needing two separate bars.
+ */
+function renderOverlayBar(base, cur, maxCount) {
+  if (maxCount <= 0) return '';
+  const scale = (count) =>
+    count <= 0
+      ? 0
+      : Math.max(1, Math.round((count / maxCount) * BAR_CHART_WIDTH));
+  const baseWidth = scale(base);
+  const notchPos = scale(cur);
+  if (notchPos <= baseWidth) {
+    // Notch sits inside (or right at the end of) the solid base bar.
+    const notchIndex = Math.max(0, notchPos - 1);
+    return (
+      '█'.repeat(notchIndex) +
+      '┃' +
+      '█'.repeat(Math.max(0, baseWidth - notchIndex - 1))
+    );
+  }
+  // This run exceeds the baseline: extend past the base in a lighter shade,
+  // capped by the notch marking this run's exact value.
+  return `${'█'.repeat(baseWidth)}${'░'.repeat(notchPos - baseWidth - 1)}┃`;
+}
+
+/** Renders main vs this run as one overlay bar per bucket, with both counts
+ * and their delta on the same line (a fenced code block keeps everything
+ * aligned in a monospace font). This is the whole histogram diff — the shape
+ * of the two distributions and the per-bucket numbers behind it, without a
+ * second table restating them. */
+function renderStsoBarChart(buckets, { selfDiff } = {}) {
+  const maxCount = Math.max(1, ...buckets.map((b) => Math.max(b.base, b.cur)));
+  const labelWidth = Math.max(...buckets.map((b) => b.label.length));
+  const countWidth = Math.max(
+    ...buckets.map((b) => String(Math.max(b.base, b.cur)).length)
+  );
+  const lines = ['```'];
+  for (const { label, base, cur } of buckets) {
+    // Without a baseline the two counts are the same series; render one solid
+    // bar rather than an overlay of a run against itself.
+    const bar = (
+      selfDiff
+        ? '█'.repeat(
+            Math.max(1, Math.round((cur / maxCount) * BAR_CHART_WIDTH))
+          )
+        : renderOverlayBar(base, cur, maxCount)
+    ).padEnd(BAR_CHART_WIDTH);
+    const counts = selfDiff
+      ? `steps ${String(cur).padStart(countWidth)}`
+      : `main ${String(base).padStart(countWidth)}  this ${String(cur).padStart(countWidth)}  ${formatDeltaValue(cur - base).padStart(countWidth + 1)}`;
+    lines.push(`${label.padStart(labelWidth)} ms  ${bar}  ${counts}`);
+  }
+  lines.push('```');
+  return lines.join('\n');
+}
+
+/** Renders one STSO row's cumulative-time line and its histogram diff (this
+ * run vs main). Bin width is chosen from this row's own sample range, so every
+ * scenario gets a histogram that actually spreads across multiple buckets
+ * rather than overflowing into one — except "inline" rows, which use a
+ * hardcoded finer width (see STSO_INLINE_BIN_WIDTH_MS). */
+function renderStsoRowDiff(row) {
+  // Until this lands on `main`, no baseline run has raw samples to diff
+  // against. The shape of this run's distribution is still worth showing, so
+  // fall back to rendering it as a single series rather than diffing it
+  // against itself (which would label this run's own numbers as `main`).
+  const selfDiff = !Array.isArray(row.baselineRaw);
+  const baselineRaw = selfDiff ? row.raw : row.baselineRaw;
+
+  const maxValue = Math.max(maxOf(row.raw), maxOf(baselineRaw));
+  const binWidth = row.scenario.includes('(inline)')
+    ? STSO_INLINE_BIN_WIDTH_MS
+    : chooseBinWidth(maxValue, STSO_HISTOGRAM_TARGET_BINS);
+  // +1 bin of headroom so the max sample lands inside the range rather than
+  // exactly on (and thus overflowing) the last edge.
+  const binCount = Math.ceil(maxValue / binWidth) + 1;
+
+  const current = buildHistogram(row.raw, binWidth, binCount);
+  const baseline = buildHistogram(baselineRaw, binWidth, binCount);
+  const currentTotal = sum(row.raw);
+  const baselineTotal = sum(baselineRaw);
+  const totalDelta = currentTotal - baselineTotal;
+  const totalPct =
+    baselineTotal > 0 ? (totalDelta / baselineTotal) * 100 : undefined;
+  const pctSuffix =
+    totalPct === undefined ? '' : `, ${formatDeltaValue(totalPct)}%`;
+
+  const buckets = nonEmptyBuckets(current, baseline, binWidth, binCount);
+
+  const lines = ['', `_${row.scenario}_`, ''];
+  if (selfDiff) {
+    lines.push(
+      `Cumulative STSO time: ${Math.round(currentTotal)}ms over ${row.samples} samples`,
+      '',
+      "<sub>No `main` baseline with raw samples yet — showing this run's distribution on its own; the diff appears once a run on `main` has recorded them.</sub>",
+      ''
+    );
+  } else {
+    lines.push(
+      `Cumulative STSO time: main ${Math.round(baselineTotal)}ms → this run ${Math.round(currentTotal)}ms (Δ ${formatDeltaValue(totalDelta, 'ms')}${pctSuffix})`,
+      ''
+    );
+  }
+  if (buckets.length > 0) {
+    lines.push(renderStsoBarChart(buckets, { selfDiff }));
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Renders a per-scenario histogram diff (bucketed step counts) and a
+ * cumulative-time diff (sum of all STSO samples) against `main`, for every
+ * STSO row that recorded raw samples — i.e. one for inline steps and one for
+ * queue-hop steps. This is a complement to the Best/P75/P90/P99 table:
+ * percentiles hide *how many* samples moved and by how much in aggregate,
+ * which is exactly where this benchmark's run-to-run variance shows up.
+ *
+ * Collapsed by default, like the methodology footer — it is a drill-down for
+ * when the table shows something worth explaining, not the headline. The
+ * blank line after <summary> lets GitHub render the markdown inside.
+ */
+function renderStsoDiffSection(result) {
+  const rows = (result.metrics ?? []).filter(
+    (row) => row.metric === 'stso' && Array.isArray(row.raw)
+  );
+  if (rows.length === 0) return '';
+  const anyBaseline = rows.some((row) => Array.isArray(row.baselineRaw));
+  return [
+    '',
+    '<details>',
+    `<summary>📈 STSO distribution${anyBaseline ? ' vs main' : ''} (inline / queue-hop histograms)</summary>`,
+    '',
+    ...rows.map(renderStsoRowDiff),
+    '',
+    '</details>',
+  ].join('\n');
 }
 
 // Deltas beyond ±this vs main get a directional marker: 🔻 for a regression,
@@ -300,6 +569,12 @@ function renderEntry(entry, { heading }) {
       lines.push(`Backend: \`${result.backend}\` · app: \`${result.app}\``, '');
     }
     lines.push(renderResultTable(result), '');
+    // Only the latest entry carries raw samples (they are stripped before
+    // being embedded in the comment's data block, see stripRawSamples), so
+    // this renders for the current run and is silently skipped for the
+    // collapsed history entries.
+    const stsoDiff = renderStsoDiffSection(result);
+    if (stsoDiff) lines.push(stsoDiff, '');
   }
   return lines.join('\n');
 }
@@ -352,7 +627,19 @@ function renderFooter(entries) {
     )
   );
 
+  const hasStsoDistribution = results.some((result) =>
+    (result.metrics ?? []).some(
+      (row) => row.metric === 'stso' && Array.isArray(row.raw)
+    )
+  );
+
   const smallprint = [
+    ...(hasStsoDistribution
+      ? [
+          '<sub>The collapsed **STSO distribution** section above buckets every step gap of the sequential-steps run (not a sampled window), split by whether the step ending the gap ran **inline** — in the same warm process as the step before it, so the gap is pure framework overhead — or after a **queue-hop** — the first step of a fresh process, which pays queue dispatch, client reinit and event-log replay. Bars overlay the two runs: `█` is `main`, `┃` marks where this run lands, `░` bridges the gap when this run has more samples in a bucket.</sub>',
+          '',
+        ]
+      : []),
     ...(hasBaseline
       ? [
           '<sub>Best/P75/P90/P99 deltas compare against the most recent benchmark run on `main` at the time of this run. 🔻 flags a delta worse than +15%, 💚 one better than −15%.</sub>',

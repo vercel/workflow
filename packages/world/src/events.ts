@@ -715,6 +715,13 @@ export interface CreateEventParams {
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
   /**
+   * Compute instance whose handler is writing this event (`COMPUTE_INSTANCE_ID`
+   * in @workflow/core). Ambient per-event identity like {@link requestId},
+   * which distinguishes invocations *within* an instance. Read back via
+   * `AnalyticsEventSchema` / `AnalyticsStepSchema`.
+   */
+  computeInstanceId?: string;
+  /**
    * Epoch ms (the ULID time of the latest event the runtime has loaded during
    * replay). Sent by replay-context creates so the backend can reject the event
    * when a newer out-of-band event was recorded after this snapshot, enabling

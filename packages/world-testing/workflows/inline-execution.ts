@@ -1,5 +1,4 @@
-import { sleep, getWritable } from 'workflow';
-import { defineHook } from 'workflow';
+import { defineHook, getWritable, sleep } from 'workflow';
 
 // --- Simple step ---
 

@@ -458,7 +458,12 @@ export async function readFirstByte(
 
 export async function deleteJSON(filePath: string): Promise<void> {
   try {
-    await fs.unlink(filePath);
+    // On Windows, a concurrent reader briefly holding the file open makes
+    // unlink fail with EPERM (share violation), so retry like the other
+    // mutation paths in this module. A reader's window is milliseconds;
+    // without the retry a transient EPERM surfaces as a failed operation
+    // (e.g. run cancellation via deleteAllHooksForRun).
+    await withWindowsRetry(() => fs.unlink(filePath));
   } catch (error) {
     if ((error as any).code !== 'ENOENT') throw error;
   }
