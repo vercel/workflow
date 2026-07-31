@@ -173,9 +173,10 @@ describe('Slot identity (Postgres integration)', () => {
       ).toEqual(['1 run_created', '2 step_started', '3 step_created']);
     });
 
-    test('allocates the deferred step_created above a claimed slot', async () => {
-      // A caller that defers a step_created cannot know it will be synthesized,
-      // so it never claims a slot for it — and the slot it did claim is its own.
+    test('numbers the deferred step_created below a claimed slot', async () => {
+      // A claim names the top of the pair: the caller reserved both positions
+      // before either landed, which is what keeps the second event off the slot
+      // the next write of the same batch claimed.
       const runId = await newSlotRun();
       const started = await events.create(
         runId,
@@ -185,10 +186,60 @@ describe('Slot identity (Postgres integration)', () => {
           correlationId: 'step_a',
           eventData: { stepName: 'a-step', input: new Uint8Array() },
         },
-        { eventId: slotEventId(2) }
+        { eventId: slotEventId(3) }
       );
-      expect(started.event?.eventId).toBe(slotEventId(2));
-      expect(ascending(await slotsOf(runId))).toEqual(denseFrom(3));
+      expect(started.event?.eventId).toBe(slotEventId(3));
+      const { data } = await eventsOf(runId);
+      expect(
+        data.map((event) => `${slotFromId(event.eventId)} ${event.eventType}`)
+      ).toEqual(['1 run_created', '2 step_created', '3 step_started']);
+    });
+
+    test('keeps every claim in a burst of lazy starts', async () => {
+      // The suspension flush issues its lazy starts at once, each having
+      // reserved two positions. A second event numbered off the log as this
+      // world sees it would take the slot the next start in the batch claimed,
+      // costing every start after the first its claim.
+      const runId = await newSlotRun();
+      const claims = Array.from({ length: 10 }, (_, index) =>
+        slotEventId(FIRST_SLOT + 2 * (index + 1))
+      );
+      const started = await Promise.all(
+        claims.map((eventId, index) =>
+          events.create(
+            runId,
+            {
+              eventType: 'step_started',
+              specVersion: SPEC_VERSION_SLOT_IDENTITY,
+              correlationId: `step_${index}`,
+              eventData: { stepName: 'a-step', input: new Uint8Array() },
+            },
+            { eventId }
+          )
+        )
+      );
+      expect(started.map((result) => result.event?.eventId)).toEqual(claims);
+      expect(ascending(await slotsOf(runId))).toEqual(
+        denseFrom(2 * claims.length + 1)
+      );
+    });
+
+    test('rejects a claim that leaves no room for the second event', async () => {
+      // The run's own run_created holds the first slot, so a claim of the second
+      // means the caller reserved one position for a write that publishes two.
+      const runId = await newSlotRun();
+      await expect(
+        events.create(
+          runId,
+          {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_SLOT_IDENTITY,
+            correlationId: 'step_a',
+            eventData: { stepName: 'a-step', input: new Uint8Array() },
+          },
+          { eventId: slotEventId(FIRST_SLOT + 1) }
+        )
+      ).rejects.toThrow(/leaves no slot below it/);
     });
 
     test('numbers events of runs it never created', async () => {
