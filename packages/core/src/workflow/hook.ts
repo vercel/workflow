@@ -145,7 +145,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // repeated awaits observe the same instance deterministically.
     let conflictRunRef: Run<unknown> | null = null;
 
-    // Resilient-resume dedup: `resumeHook()` mints a `resumeId` per resume
+    // Lazy-resume dedup: `resumeHook()` mints a `resumeId` per resume
     // attempt and stamps it on the `hook_received` event. When the direct
     // event write fails transiently, the runtime materializes the event from
     // the queue payload instead — and because `hook_received` has no
