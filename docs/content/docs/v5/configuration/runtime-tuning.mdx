@@ -50,12 +50,12 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 ### `WORKFLOW_SLOT_IDENTITY`
 
-- Default: disabled
+- Default: enabled
 - Numbers a new run's events by position instead of by ULID: `evnt_…001` is the run's first event, `evnt_…002` its second, with no gaps. A reader can then prove its copy of the log is complete, because the highest number is the event count.
 - Contention becomes explicit rather than silent. Two writers proposing the same position cannot both win: the loser gets a 409 ([`SlotConflictError`](/docs/api-reference/workflow-errors/slot-conflict-error)) carrying the events it was missing, and the runtime merges them, replays, and re-proposes at the next free position.
-- Applies only to runs created while it is set. A run keeps the identity scheme it was created with for life, so turning the flag on or off never affects runs already in flight.
+- Applies only to runs created while it is enabled. A run keeps the identity scheme it was created with for life, so turning the flag on or off never affects runs already in flight.
 - Requires a World that supports it. A World that does not rejects the run outright rather than mis-numbering its events.
-- Set `1` or `true` to enable.
+- Set `0` or `false` to disable, which numbers new runs by ULID as before.
 
 ## Inline execution
 
