@@ -354,76 +354,148 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       ): Promise<ReadableStream<Uint8Array>> {
         const cleanups: (() => void)[] = [];
 
+        // Page the historical read instead of materializing the entire
+        // stream in one unbounded query: the first page positions itself
+        // with a count-bounded OFFSET, and subsequent pages keyset-paginate
+        // on chunk_id (mirroring getChunks above). Live NOTIFY buffering,
+        // ULID-order dedup, offset skipping, and EOF close semantics are
+        // unchanged.
+        const PAGE_SIZE = 64;
+
+        // an empty string is always < than any string,
+        // so `'' < ulid()` and `ulid() < ulid()` (maintaining order)
+        let lastChunkId = '';
+        let offset = startIndex ?? 0;
+        let buffer = [] as StreamChunkEvent[] | null;
+        let historyDone = false;
+        let negativeResolved = offset >= 0;
+        let sqlCursor: `chnk_${string}` | null = null;
+        let cancelled = false;
+        let streamController: ReadableStreamDefaultController<Uint8Array>;
+
+        function enqueue(msg: { id: string; data: Uint8Array; eof: boolean }) {
+          if (cancelled) {
+            return;
+          }
+
+          if (lastChunkId >= msg.id) {
+            // already sent or out of order
+            return;
+          }
+
+          if (offset > 0) {
+            offset--;
+            return;
+          }
+
+          if (msg.data.byteLength) {
+            streamController.enqueue(new Uint8Array(msg.data));
+          }
+          if (msg.eof) {
+            streamController.close();
+          }
+          lastChunkId = msg.id;
+        }
+
+        function onData(data: StreamChunkEvent) {
+          if (buffer) {
+            buffer.push(data);
+            return;
+          }
+          enqueue(data);
+        }
+
         return new ReadableStream<Uint8Array>({
-          async start(controller) {
-            // an empty string is always < than any string,
-            // so `'' < ulid()` and `ulid() < ulid()` (maintaining order)
-            let lastChunkId = '';
-            let offset = startIndex ?? 0;
-            let buffer = [] as StreamChunkEvent[] | null;
-
-            function enqueue(msg: {
-              id: string;
-              data: Uint8Array;
-              eof: boolean;
-            }) {
-              if (lastChunkId >= msg.id) {
-                // already sent or out of order
-                return;
-              }
-
-              if (offset > 0) {
-                offset--;
-                return;
-              }
-
-              if (msg.data.byteLength) {
-                controller.enqueue(new Uint8Array(msg.data));
-              }
-              if (msg.eof) {
-                controller.close();
-              }
-              lastChunkId = msg.id;
-            }
-
-            function onData(data: StreamChunkEvent) {
-              if (buffer) {
-                buffer.push(data);
-                return;
-              }
-              enqueue(data);
-            }
+          start(controller) {
+            streamController = controller;
             events.on(`strm:${name}`, onData);
             cleanups.push(() => {
               events.off(`strm:${name}`, onData);
             });
+          },
 
-            const chunks = await drizzle
-              .select({
-                id: streams.chunkId,
-                eof: streams.eof,
-                data: streams.chunkData,
-              })
-              .from(streams)
-              .where(and(eq(streams.streamId, name)))
-              .orderBy(streams.chunkId);
+          async pull(controller) {
+            streamController = controller;
+            if (historyDone || cancelled) {
+              return;
+            }
 
             // Resolve negative offset relative to the data chunk count
-            // (excluding the trailing EOF marker, if present)
-            if (typeof offset === 'number' && offset < 0) {
-              const dataCount =
-                chunks.length > 0 && chunks[chunks.length - 1].eof
-                  ? chunks.length - 1
-                  : chunks.length;
-              offset = Math.max(0, dataCount + offset);
+            // (excluding the trailing EOF marker, which close() writes
+            // after every data chunk in ULID order)
+            if (!negativeResolved) {
+              const [countResult] = await drizzle
+                .select({ count: sql<number>`count(*)` })
+                .from(streams)
+                .where(and(eq(streams.streamId, name), eq(streams.eof, false)));
+              offset = Math.max(0, Number(countResult?.count ?? 0) + offset);
+              negativeResolved = true;
             }
 
-            for (const chunk of [...chunks, ...(buffer ?? [])]) {
-              enqueue(chunk);
+            let rows: StreamChunkEvent[];
+            if (sqlCursor === null) {
+              // First page: skip in SQL only rows that already exist; any
+              // remainder stays in the JS offset so a start index past the
+              // current tail keeps skipping live-buffered rows.
+              let skip = 0;
+              if (offset > 0) {
+                const [totalResult] = await drizzle
+                  .select({ count: sql<number>`count(*)` })
+                  .from(streams)
+                  .where(eq(streams.streamId, name));
+                skip = Math.min(offset, Number(totalResult?.count ?? 0));
+                offset -= skip;
+              }
+              rows = await drizzle
+                .select({
+                  id: streams.chunkId,
+                  eof: streams.eof,
+                  data: streams.chunkData,
+                })
+                .from(streams)
+                .where(and(eq(streams.streamId, name)))
+                .orderBy(asc(streams.chunkId))
+                .limit(PAGE_SIZE)
+                .offset(skip);
+            } else {
+              rows = await drizzle
+                .select({
+                  id: streams.chunkId,
+                  eof: streams.eof,
+                  data: streams.chunkData,
+                })
+                .from(streams)
+                .where(
+                  and(
+                    eq(streams.streamId, name),
+                    gt(streams.chunkId, sqlCursor)
+                  )
+                )
+                .orderBy(asc(streams.chunkId))
+                .limit(PAGE_SIZE);
             }
-            buffer = null;
+            if (cancelled) {
+              return;
+            }
+
+            for (const row of rows) {
+              enqueue(row);
+              sqlCursor = row.id;
+            }
+
+            // A short page means history is exhausted: flush the events
+            // buffered while reading and hand off to live delivery.
+            if (rows.length < PAGE_SIZE) {
+              historyDone = true;
+              for (const msg of buffer ?? []) {
+                enqueue(msg);
+              }
+              buffer = null;
+            }
           },
+
           cancel() {
+            cancelled = true;
             cleanups.forEach((fn) => void fn());
           },
         });
