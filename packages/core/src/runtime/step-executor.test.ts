@@ -7,6 +7,7 @@ import { createWorld } from '@workflow/world-local';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../private.js';
 import { dehydrateStepArguments } from '../serialization.js';
+import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { executeStep } from './step-executor.js';
 
 // The retry ceiling (`authoritativeAttempt`) is what bounds a step that keeps
@@ -165,12 +166,12 @@ describe('executeStep — retry ceiling (authoritativeAttempt)', () => {
   });
 });
 
-describe('executeStep — claim fence plumbing', () => {
+describe('executeStep — compute instance stamping', () => {
   afterEach(() => {
     counter += 1;
   });
 
-  it("runs the step_started claim under the caller's fence", async () => {
+  it('stamps computeInstanceId on step_started without displacing the claim fence', async () => {
     const world = makeWorld();
     const stepName = uniqueStepName();
     const { runId, stepId } = await setupRunningStep({
@@ -179,7 +180,7 @@ describe('executeStep — claim fence plumbing', () => {
       onBody: () => {},
     });
 
-    // The fence rides in CreateEventParams, which world-local does not
+    // computeInstanceId rides in CreateEventParams, which world-local does not
     // persist — so observe the call itself rather than the stored event.
     const createSpy = vi.spyOn(world.events, 'create');
 
@@ -197,6 +198,8 @@ describe('executeStep — claim fence plumbing', () => {
       ([, data]) => data.eventType === 'step_started'
     );
     expect(started).toHaveLength(1);
+    expect(started[0]?.[2]?.computeInstanceId).toBe(COMPUTE_INSTANCE_ID);
+    // Both ride the same params object — neither may clobber the other.
     expect(started[0]?.[2]?.stateUpdatedAt).toBe(1_700_000_000_000);
   });
 });

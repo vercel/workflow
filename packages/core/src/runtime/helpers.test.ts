@@ -27,6 +27,7 @@ import {
   healthCheck,
   latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
+  type MutableEventLog,
   memoizeEncryptionKey,
   mergeLoadedEvents,
   PRECONDITION_MAX_RELOAD_RETRIES,

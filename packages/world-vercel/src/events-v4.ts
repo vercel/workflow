@@ -130,6 +130,8 @@ export interface CreateEventV4Input {
   specVersion: number;
   correlationId?: string;
   vercelId?: string;
+  /** Compute instance that wrote this event; rides the frame meta by `vercelId`. */
+  computeInstanceId?: string;
   /** Client-side time at which the event occurred. */
   occurredAt?: Date;
   remoteRefBehavior?: 'resolve' | 'lazy';
@@ -244,6 +246,8 @@ export interface CreateEventV4Input {
    * than one past this is a permanent hole in the log. Ignored by older servers.
    */
   maxSlot?: number;
+  /** Number of consecutive replay divergences resolved by this write. */
+  replayDivergenceCount?: number;
 }
 
 export interface CreateEventV4Result {
@@ -292,6 +296,8 @@ function buildPostFrameMeta(
   if (input.correlationId !== undefined)
     meta.correlationId = input.correlationId;
   if (input.vercelId !== undefined) meta.vercelId = input.vercelId;
+  if (input.computeInstanceId !== undefined)
+    meta.computeInstanceId = input.computeInstanceId;
   if (input.occurredAt !== undefined) meta.occurredAt = input.occurredAt;
   if (input.remoteRefBehavior !== undefined) {
     meta.remoteRefBehavior = input.remoteRefBehavior;
@@ -344,6 +350,9 @@ function buildPostFrameMeta(
   }
   if (input.eventId !== undefined) meta.eventId = input.eventId;
   if (input.maxSlot !== undefined) meta.maxSlot = input.maxSlot;
+  if (input.replayDivergenceCount !== undefined) {
+    meta.replayDivergenceCount = input.replayDivergenceCount;
+  }
   return meta;
 }
 

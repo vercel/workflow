@@ -1,5 +1,16 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.34
+
+### Patch Changes
+
+- [#3190](https://github.com/vercel/workflow/pull/3190) [`34975f6`](https://github.com/vercel/workflow/commit/34975f6b7dd8e0dad874e852eac04c9652f5971d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Event-log requests now multiplex over a single HTTP/2 connection instead of opening one connection per in-flight request
+
+- [#3142](https://github.com/vercel/workflow/pull/3142) [`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Revert the static workflow world target injection: the world package is again resolved at runtime from `WORKFLOW_TARGET_WORLD` instead of being aliased into host bundles at build time.
+
+- Updated dependencies []:
+  - @workflow/errors@5.0.0-beta.14
+
 ## 5.0.0-beta.33
 
 ### Major Changes

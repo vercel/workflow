@@ -740,8 +740,14 @@ async function createWorkflowRunEventInner(
       specVersion: data.specVersion ?? 2,
       ...(data.correlationId ? { correlationId: data.correlationId } : {}),
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      ...(params?.computeInstanceId
+        ? { computeInstanceId: params.computeInstanceId }
+        : {}),
       ...(params?.stateUpdatedAt !== undefined
         ? { stateUpdatedAt: params.stateUpdatedAt }
+        : {}),
+      ...(params?.replayDivergenceCount !== undefined
+        ? { replayDivergenceCount: params.replayDivergenceCount }
         : {}),
       occurredAt: params?.occurredAt ?? new Date(),
       // Opt-in inline-delta: forward the cursor the runtime held before

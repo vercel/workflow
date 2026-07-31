@@ -1,6 +1,7 @@
 import type { WorkflowRun, World } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkflowSuspension } from '../global.js';
+import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import { handleSuspension } from './suspension-handler.js';
 
 vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
@@ -30,6 +31,41 @@ function createWorld(eventsCreate: ReturnType<typeof vi.fn>): World {
 }
 
 describe('handleSuspension', () => {
+  it('stamps recovery telemetry on a suspension write', async () => {
+    // Covers the wiring, not the claim mechanics (see
+    // replay-recovery-reporter.test.ts): an activated reporter reaching
+    // handleSuspension must actually reach its event writes.
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const world = createWorld(eventsCreate);
+    const reporter = new ReplayRecoveryReporter(2);
+    reporter.activate();
+    const pending = new Map([
+      [
+        'hook_recovered',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_recovered',
+          token: 'order:123',
+        },
+      ],
+    ]);
+
+    await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+      replayRecoveryReporter: reporter,
+    });
+
+    expect(eventsCreate).toHaveBeenCalledWith(
+      run.runId,
+      expect.objectContaining({ eventType: 'hook_created' }),
+      expect.objectContaining({ replayDivergenceCount: 2 })
+    );
+  });
+
   it('persists the token retention deadline on hook_created', async () => {
     const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
       event,

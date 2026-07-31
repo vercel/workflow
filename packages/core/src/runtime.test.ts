@@ -57,6 +57,7 @@ async function runWorkflowHandlerWithEvents(
   options: {
     attempt?: number;
     createdEvents?: unknown[];
+    createdEventParams?: unknown[];
     queuedMessages?: unknown[];
     replayDivergence?: { eventId: string; count: number };
     /**
@@ -70,27 +71,30 @@ async function runWorkflowHandlerWithEvents(
   } = {}
 ) {
   const createdEvents = options.createdEvents ?? [];
-  const eventsCreate = vi.fn(async (_runId: string, data: any) => {
-    createdEvents.push(data);
+  const eventsCreate = vi.fn(
+    async (_runId: string, data: any, params?: any) => {
+      createdEvents.push(data);
+      options.createdEventParams?.push(params);
 
-    if (data.eventType === 'run_started') {
-      return {
-        run: workflowRun,
-        events,
+      if (data.eventType === 'run_started') {
+        return {
+          run: workflowRun,
+          events,
+        };
+      }
+
+      const event = {
+        eventId: `event-${createdEvents.length}`,
+        runId: workflowRun.runId,
+        createdAt: new Date(),
+        ...data,
       };
+      if (options.dynamicEventLog) {
+        events.push(event as Event);
+      }
+      return { event };
     }
-
-    const event = {
-      eventId: `event-${createdEvents.length}`,
-      runId: workflowRun.runId,
-      createdAt: new Date(),
-      ...data,
-    };
-    if (options.dynamicEventLog) {
-      events.push(event as Event);
-    }
-    return { event };
-  });
+  );
 
   setWorld({
     specVersion: SPEC_VERSION_CURRENT,
@@ -618,7 +622,9 @@ describe('workflowEntrypoint replay guards', () => {
       })
     );
 
-    const terminalAttemptEvents = await runWorkflowHandlerWithEvents(
+    const terminalAttemptEvents: unknown[] = [];
+    const terminalAttemptParams: unknown[] = [];
+    await runWorkflowHandlerWithEvents(
       `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
       async function workflow() {
         await sleep('5s');
@@ -627,6 +633,8 @@ describe('workflowEntrypoint replay guards', () => {
       workflowRun,
       events,
       {
+        createdEvents: terminalAttemptEvents,
+        createdEventParams: terminalAttemptParams,
         replayDivergence: {
           eventId: 'different-event',
           count: REPLAY_DIVERGENCE_MAX_RETRIES,
@@ -634,12 +642,67 @@ describe('workflowEntrypoint replay guards', () => {
       }
     );
 
-    expect(terminalAttemptEvents).toContainEqual(
+    const failedIndex = terminalAttemptEvents.findIndex(
+      (event) => (event as { eventType?: string }).eventType === 'run_failed'
+    );
+    expect(failedIndex).toBeGreaterThanOrEqual(0);
+    expect(terminalAttemptEvents[failedIndex]).toEqual(
       expect.objectContaining({
         eventType: 'run_failed',
         eventData: expect.objectContaining({
           errorCode: RUN_ERROR_CODES.CORRUPTED_EVENT_LOG,
         }),
+      })
+    );
+    expect(terminalAttemptParams[failedIndex]).toEqual(
+      expect.objectContaining({
+        replayDivergenceCount: REPLAY_DIVERGENCE_MAX_RETRIES + 1,
+      })
+    );
+  });
+
+  it('reports a recovered divergence episode on the next natural event write', async () => {
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_runtime_replay_recovered',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_runtime_replay_recovered',
+        undefined,
+        []
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    const createdEvents: any[] = [];
+    const createdEventParams: any[] = [];
+
+    await runWorkflowHandlerWithEvents(
+      `async function workflow() {
+        return 'recovered';
+      }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      [],
+      {
+        createdEvents,
+        createdEventParams,
+        replayDivergence: {
+          eventId: 'event-diverged',
+          count: 2,
+        },
+      }
+    );
+
+    const completedIndex = createdEvents.findIndex(
+      (event) => event.eventType === 'run_completed'
+    );
+    expect(completedIndex).toBeGreaterThanOrEqual(0);
+    expect(createdEventParams[completedIndex]).toEqual(
+      expect.objectContaining({
+        replayDivergenceCount: 2,
       })
     );
   });
