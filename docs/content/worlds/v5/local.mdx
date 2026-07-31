@@ -62,6 +62,14 @@ Maximum number of concurrent queue message handlers. Default: `1000`
 
 Maximum number of seconds a local queue message can stay hidden before the handler rechecks the run. Default: unlimited.
 
+### `WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS`
+
+Maximum time in milliseconds to wait for a local queue handler to begin responding before redelivering the durable message. Default: `30000`. Set to `0` to disable.
+
+### `WORKFLOW_LOCAL_BODY_TIMEOUT_MS`
+
+Maximum gap in milliseconds between response body chunks from a local queue handler before redelivering the durable message. Default: `30000`. Set to `0` to disable.
+
 ### `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
 
 Whether pending and running runs found in the data directory are re-enqueued when the world starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`

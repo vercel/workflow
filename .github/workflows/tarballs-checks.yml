@@ -17,6 +17,13 @@ jobs:
   tarballs-preview-smoke:
     name: Tarballs Preview Smoke Checks
     runs-on: ubuntu-latest
+    # `changeset-release/*` PRs are not deployed (every project's vercel.json
+    # sets `git.deploymentEnabled` false for that branch, because the branch is
+    # force-pushed to main's HEAD SHA and a same-SHA preview deployment
+    # clobbers the per-SHA Vercel commit status), so there is no preview to
+    # smoke-test. The version-bumped tarballs get this same check on the push
+    # to main that follows the version PR merge.
+    if: ${{ !startsWith(github.head_ref, 'changeset-release/') }}
     timeout-minutes: 10
     permissions:
       contents: read
