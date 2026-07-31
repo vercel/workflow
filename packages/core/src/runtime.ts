@@ -71,7 +71,6 @@ import {
   queueMessage,
   withHealthCheck,
 } from './runtime/helpers.js';
-import { runWorkflowWithQuickJS } from './runtime/quickjs-entrypoint.js';
 import {
   handleReplayBudgetExhausted,
   ReplayBudget,
@@ -1777,6 +1776,14 @@ export function workflowEntrypoint(
                     // first — it does not thread the turbo runReadyBarrier
                     // the way handleSuspension does.
                     await awaitRunReady();
+                    // Lazy import: the QuickJS entrypoint's import chain
+                    // embeds the base64 WASM binary + extensions (~1.3 MB
+                    // decoded at module scope). Loading it here keeps that
+                    // out of node-engine deployments entirely — only the
+                    // opt-in path pays, on first dispatch.
+                    const { runWorkflowWithQuickJS } = await import(
+                      './runtime/quickjs-entrypoint.js'
+                    );
                     const quickjsResult = await runWorkflowWithQuickJS({
                       workflowCode,
                       workflowName,

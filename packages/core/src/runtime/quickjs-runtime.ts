@@ -264,6 +264,113 @@ globalThis.exports = {};
 globalThis.module = { exports: globalThis.exports };
 // NOTE: TextEncoder/TextDecoder are provided by the native encoding extension.
 
+// ---- Deterministic \`crypto\` (parity with the node:vm engine) ----
+// getRandomValues / randomUUID draw from Math.random, which the host
+// replaces with the run's seeded PRNG before any user code runs — so the
+// values replay deterministically and match the node engine, whose
+// implementations draw from the same seeded sequence (see vm/index.ts).
+// Every crypto.subtle method throws with the same guidance as the node
+// engine's non-replayable methods; unlike node, \`digest\` is also
+// unavailable here (no native hash in the VM yet).
+(function() {
+  function getRandomValues(array) {
+    for (var i = 0; i < array.length; i++) {
+      array[i] = Math.floor(Math.random() * 256);
+    }
+    return array;
+  }
+  // Mirrors vm/uuid.ts createRandomUUID: identical draw pattern from the
+  // seeded PRNG, so both engines produce the same UUID at the same point
+  // in a replay.
+  function randomUUID() {
+    var chars = "0123456789abcdef";
+    var uuid = "";
+    for (var i = 0; i < 36; i++) {
+      if (i === 8 || i === 13 || i === 18 || i === 23) {
+        uuid += "-";
+      } else if (i === 14) {
+        uuid += "4";
+      } else if (i === 19) {
+        uuid += chars[Math.floor(Math.random() * 4) + 8];
+      } else {
+        uuid += chars[Math.floor(Math.random() * 16)];
+      }
+    }
+    return uuid;
+  }
+  function subtleThrow(name) {
+    return function() {
+      var err = new Error("\`crypto.subtle." + name + "()\` is not available inside a workflow function. Move it to a step function where full Node.js crypto is available.");
+      err.name = "WorkflowRuntimeError";
+      throw err;
+    };
+  }
+  var subtle = {};
+  ["encrypt","decrypt","sign","verify","digest","generateKey","deriveKey","deriveBits","importKey","exportKey","wrapKey","unwrapKey"].forEach(function(m) {
+    subtle[m] = subtleThrow(m);
+  });
+  globalThis.crypto = {
+    getRandomValues: getRandomValues,
+    randomUUID: randomUUID,
+    subtle: subtle,
+  };
+})();
+
+// ---- Loud Intl / locale guards ----
+// QuickJS has no ICU: \`Intl\` is absent and toLocaleString-family methods
+// silently ignore their locale argument. Silent divergence from the node
+// engine would write different values into a durable event log with no
+// error anywhere — so make the gap loud instead: Intl constructors throw,
+// and toLocale* methods throw ONLY when called with an explicit locale
+// (the no-argument forms keep QuickJS's default behavior).
+(function() {
+  function intlThrow(name) {
+    return function() {
+      var err = new Error("\`Intl." + name + "\` is not available in the QuickJS workflow engine (no ICU). Perform locale-sensitive formatting in a step function, or use WORKFLOW_VM=node.");
+      err.name = "WorkflowRuntimeError";
+      throw err;
+    };
+  }
+  if (typeof Intl === "undefined") {
+    var intl = {};
+    ["Collator","DateTimeFormat","DisplayNames","DurationFormat","ListFormat","Locale","NumberFormat","PluralRules","RelativeTimeFormat","Segmenter"].forEach(function(n) {
+      intl[n] = intlThrow(n);
+    });
+    intl.getCanonicalLocales = intlThrow("getCanonicalLocales");
+    globalThis.Intl = intl;
+  }
+  function guardLocale(proto, method) {
+    var original = proto[method];
+    if (typeof original !== "function") return;
+    proto[method] = function(locales) {
+      if (locales !== undefined) {
+        var err = new Error("\`" + method + "(locales, ...)\` with an explicit locale is not supported in the QuickJS workflow engine (no ICU) — it would silently ignore the locale. Format in a step function, or call without arguments for the engine default.");
+        err.name = "WorkflowRuntimeError";
+        throw err;
+      }
+      return original.call(this);
+    };
+  }
+  guardLocale(Number.prototype, "toLocaleString");
+  guardLocale(Date.prototype, "toLocaleString");
+  guardLocale(Date.prototype, "toLocaleDateString");
+  guardLocale(Date.prototype, "toLocaleTimeString");
+  guardLocale(String.prototype, "toLocaleLowerCase");
+  guardLocale(String.prototype, "toLocaleUpperCase");
+  // localeCompare's locales argument is the SECOND parameter.
+  (function() {
+    var original = String.prototype.localeCompare;
+    String.prototype.localeCompare = function(that, locales) {
+      if (locales !== undefined) {
+        var err = new Error("\`localeCompare(that, locales, ...)\` with an explicit locale is not supported in the QuickJS workflow engine (no ICU). Compare in a step function, or call without a locale.");
+        err.name = "WorkflowRuntimeError";
+        throw err;
+      }
+      return original.call(this, that);
+    };
+  })();
+})();
+
 globalThis[Symbol.for("WORKFLOW_USE_STEP")] = function(stepId, closureVarsFn) {
   var fn = function() {
     var args = Array.prototype.slice.call(arguments);
@@ -882,120 +989,152 @@ export async function runQuickJSWorkflow(
   // ---- Phase 1: static initialization ----
   const vm = await initWorkflowVM(() => vmNowMs);
 
-  // ---- Phase 2: per-run initialization ----
-
-  // Seeded Math.random
-  {
-    using randomFn = vm.newFunction('random', () => vm.newNumber(rng()));
-    using math = vm.global.getProp('Math');
-    math.setProp('random', randomFn);
-  }
-
-  // Seeded nanoid generator
-  {
-    using nanoidFn = vm.newFunction('__generateNanoid', () =>
-      vm.newString(generateNanoid())
-    );
-    vm.setProp(vm.global, '__generateNanoid', nanoidFn);
-  }
-
-  // Inject a deterministic timestamp for the VM's ULID factory. ULIDs
-  // produced inside the VM use this as their time prefix instead of
-  // Date.now(), so two concurrent workflow invocations of the same run
-  // produce IDENTICAL correlationIds (the random portion also matches
-  // because the PRNG is seeded the same way) and the world's
-  // EntityConflictError on `events.create` dedups one of each pair.
-  // Derived from the runId's embedded ULID (stable across invocations by
-  // construction — unlike `startedAt`, which differs between turbo's
-  // synthesized run object and the durably stored run).
-  vm.evalCode(
-    `globalThis.__ulidTimestamp = ${runIdCreatedAt(workflowRun.runId) ?? (+workflowRun.createdAt || startedAt)};`
-  ).dispose();
-
-  // Execute the workflow bundle — use the workflowId as the eval filename
-  // so QuickJS stack traces reference the workflow name, enabling source map
-  // remapping by remapErrorStack (which matches frames by filename).
-  // Evaluated in the per-run phase (after Math.random seeding) so that
-  // module-scope user code draws from the seeded PRNG, matching the
-  // node:vm engine's replay determinism.
+  // Any throw between here and the terminal paths (which dispose the VM
+  // inside checkWorkflowState / extractError before RETURNING) would leak
+  // a live QuickJS instance and its WASM linear memory for the lifetime
+  // of the compute instance — which is reused. Dispose on the way out of
+  // an exceptional exit and rethrow.
   try {
-    vm.evalCode(workflowCode, workflowId || 'workflow.js').dispose();
+    return await runWorkflowInVM();
   } catch (err) {
-    return extractError(vm, err, 'Workflow evaluation failed');
+    try {
+      vm.dispose();
+    } catch {
+      // Already disposed by a terminal path — ignore.
+    }
+    throw err;
   }
 
-  // Extract workflow arguments. Prefer the run_created event; fall back
-  // to the queue message's runInput if the event log is incomplete
-  // (eventually-consistent read after start()). Failing to find input
-  // for a first invocation is fatal — running the workflow function
-  // with no args would silently turn typed arguments into `undefined`
-  // and, for recursive workflows, produce exponential fan-out.
-  const runCreatedEvent = events.find((e) => e.eventType === 'run_created');
-  const runCreatedInput =
-    runCreatedEvent && 'eventData' in runCreatedEvent
-      ? (runCreatedEvent.eventData as Record<string, unknown>)?.input
-      : undefined;
-  const runInput: unknown =
-    runCreatedInput ?? (options.runInput?.input as unknown);
+  // ---- Phase 2: per-run initialization ----
+  async function runWorkflowInVM(): Promise<QuickJSRuntimeResult> {
+    // Seeded Math.random
+    {
+      using randomFn = vm.newFunction('random', () => vm.newNumber(rng()));
+      using math = vm.global.getProp('Math');
+      math.setProp('random', randomFn);
+    }
 
-  if (runInput instanceof Uint8Array) {
-    const decryptedInput = await prepareBytesForVM(
-      runInput,
-      options.encryptionKey
-    );
-    runtimeLogger.debug('QuickJS runtime: run input format', {
-      prefix: new TextDecoder().decode(decryptedInput.subarray(0, 4)),
-      byteLength: decryptedInput.byteLength,
-      source: runCreatedInput ? 'run_created' : 'queueMessage.runInput',
-    });
-    const inputHandle = vm.newUint8Array(decryptedInput);
-    vm.setProp(vm.global, '__wdk_input', inputHandle);
-    inputHandle.dispose();
-  } else if (runInput === undefined && events.length > 0) {
-    // The event log is non-empty (we got run_started or similar) but
-    // no run_created event was found and no queue-provided runInput is
-    // available. This is the race condition observed during the fib
-    // incident — silently dropping arguments would turn `n` into
-    // `undefined` and, for recursive workflows, cause exponential
-    // fan-out. Fail loud so the run goes to `run_failed` and the queue
-    // can retry. Empty `events` is allowed because tests that bootstrap
-    // a workflow with no arguments rely on the old permissive behavior.
-    throw new Error(
-      `Cannot start workflow run "${workflowRun.runId}": no run_created event found and no runInput in the queue payload, but other events are present (likely a read-after-write race during start()).`
-    );
-  }
+    // Seeded nanoid generator
+    {
+      using nanoidFn = vm.newFunction('__generateNanoid', () =>
+        vm.newString(generateNanoid())
+      );
+      vm.setProp(vm.global, '__generateNanoid', nanoidFn);
+    }
 
-  // Set workflow context metadata (for getWorkflowMetadata()).
-  // Must match the shape that the node:vm engine produces (see
-  // packages/core/src/workflow.ts: runWorkflow → ctx) so user code
-  // that compares `getWorkflowMetadata()` values between a step
-  // (server-side) and the workflow (VM-side) sees identical objects.
-  {
-    const metadata = {
-      workflowName: workflowRun.workflowName,
-      workflowRunId: workflowRun.runId,
-      workflowStartedAt: workflowRun.startedAt
-        ? new Date(+workflowRun.startedAt)
-        : new Date(),
-      url: process.env.VERCEL_URL
-        ? `https://${process.env.VERCEL_URL}`
-        : `http://localhost:${options.port ?? 3000}`,
-      features: { encryption: !!options.encryptionKey },
-    };
+    // Inject a deterministic timestamp for the VM's ULID factory. ULIDs
+    // produced inside the VM use this as their time prefix instead of
+    // Date.now(), so two concurrent workflow invocations of the same run
+    // produce IDENTICAL correlationIds (the random portion also matches
+    // because the PRNG is seeded the same way) and the world's
+    // EntityConflictError on `events.create` dedups one of each pair.
+    // Derived from the runId's embedded ULID (stable across invocations by
+    // construction — unlike `startedAt`, which differs between turbo's
+    // synthesized run object and the durably stored run).
     vm.evalCode(
-      `globalThis[Symbol.for("WORKFLOW_CONTEXT")] = ${JSON.stringify(metadata)};` +
-        `globalThis[Symbol.for("WORKFLOW_CONTEXT")].workflowStartedAt = new Date(${JSON.stringify(metadata.workflowStartedAt.toISOString())});`
+      `globalThis.__ulidTimestamp = ${runIdCreatedAt(workflowRun.runId) ?? (+workflowRun.createdAt || startedAt)};`
     ).dispose();
-  }
 
-  // Start the workflow function. If the workflow isn't registered,
-  // throw an error tagged with `name = "WorkflowNotRegisteredError"`
-  // so the host-side entrypoint can reconstruct a real
-  // WorkflowNotRegisteredError (a WorkflowRuntimeError subclass that
-  // classifies as RUNTIME_ERROR) rather than a generic user error.
-  // See quickjs-entrypoint.ts's run_failed branch.
-  try {
-    vm.evalCode(`
+    // `process.env` — parity with the node:vm engine, which exposes a frozen
+    // copy of the host env (vm/index.ts). Injected per run so the snapshot of
+    // the env is taken at invocation time, same as node.
+    {
+      const envHandle = vm.newString(JSON.stringify(process.env));
+      vm.setProp(vm.global, '__wdk_env', envHandle);
+      envHandle.dispose();
+      vm.evalCode(
+        'globalThis.process = { env: Object.freeze(JSON.parse(globalThis.__wdk_env)) };' +
+          'delete globalThis.__wdk_env;'
+      ).dispose();
+    }
+
+    // Execute the workflow bundle — use the workflowId as the eval filename
+    // so QuickJS stack traces reference the workflow name, enabling source map
+    // remapping by remapErrorStack (which matches frames by filename).
+    // Evaluated in the per-run phase (after Math.random seeding) so that
+    // module-scope user code draws from the seeded PRNG, matching the
+    // node:vm engine's replay determinism.
+    try {
+      vm.evalCode(workflowCode, workflowId || 'workflow.js').dispose();
+    } catch (err) {
+      return extractError(vm, err, 'Workflow evaluation failed');
+    }
+
+    // Extract workflow arguments. Prefer the run_created event; fall back
+    // to the queue message's runInput if the event log is incomplete
+    // (eventually-consistent read after start()). Failing to find input
+    // for a first invocation is fatal — running the workflow function
+    // with no args would silently turn typed arguments into `undefined`
+    // and, for recursive workflows, produce exponential fan-out.
+    const runCreatedEvent = events.find((e) => e.eventType === 'run_created');
+    const runCreatedInput =
+      runCreatedEvent && 'eventData' in runCreatedEvent
+        ? (runCreatedEvent.eventData as Record<string, unknown>)?.input
+        : undefined;
+    const runInput: unknown =
+      runCreatedInput ?? (options.runInput?.input as unknown);
+
+    if (runInput instanceof Uint8Array) {
+      const decryptedInput = await prepareBytesForVM(
+        runInput,
+        options.encryptionKey
+      );
+      runtimeLogger.debug('QuickJS runtime: run input format', {
+        prefix: new TextDecoder().decode(decryptedInput.subarray(0, 4)),
+        byteLength: decryptedInput.byteLength,
+        source: runCreatedInput ? 'run_created' : 'queueMessage.runInput',
+      });
+      const inputHandle = vm.newUint8Array(decryptedInput);
+      vm.setProp(vm.global, '__wdk_input', inputHandle);
+      inputHandle.dispose();
+    } else if (runInput === undefined && events.length > 0) {
+      // The event log is non-empty (we got run_started or similar) but
+      // no run_created event was found and no queue-provided runInput is
+      // available. This is the race condition observed during the fib
+      // incident — silently dropping arguments would turn `n` into
+      // `undefined` and, for recursive workflows, cause exponential
+      // fan-out. Fail loud: the throw propagates to the entrypoint's
+      // catch, which records run_failed. A visible terminal failure is
+      // preferred over silently executing with undefined arguments — the
+      // queue-provided runInput fallback above makes this path rare.
+      // Empty `events` is allowed because tests that bootstrap a workflow
+      // with no arguments rely on the old permissive behavior.
+      throw new Error(
+        `Cannot start workflow run "${workflowRun.runId}": no run_created event found and no runInput in the queue payload, but other events are present (likely a read-after-write race during start()).`
+      );
+    }
+
+    // Set workflow context metadata (for getWorkflowMetadata()).
+    // Must match the shape that the node:vm engine produces (see
+    // packages/core/src/workflow.ts: runWorkflow → ctx) so user code
+    // that compares `getWorkflowMetadata()` values between a step
+    // (server-side) and the workflow (VM-side) sees identical objects.
+    {
+      const metadata = {
+        workflowName: workflowRun.workflowName,
+        workflowRunId: workflowRun.runId,
+        workflowStartedAt: workflowRun.startedAt
+          ? new Date(+workflowRun.startedAt)
+          : new Date(),
+        url: process.env.VERCEL_URL
+          ? `https://${process.env.VERCEL_URL}`
+          : `http://localhost:${options.port ?? 3000}`,
+        features: { encryption: !!options.encryptionKey },
+      };
+      vm.evalCode(
+        `globalThis[Symbol.for("WORKFLOW_CONTEXT")] = ${JSON.stringify(metadata)};` +
+          `globalThis[Symbol.for("WORKFLOW_CONTEXT")].workflowStartedAt = new Date(${JSON.stringify(metadata.workflowStartedAt.toISOString())});`
+      ).dispose();
+    }
+
+    // Start the workflow function. If the workflow isn't registered,
+    // throw an error tagged with `name = "WorkflowNotRegisteredError"`
+    // so the host-side entrypoint can reconstruct a real
+    // WorkflowNotRegisteredError (a WorkflowRuntimeError subclass that
+    // classifies as RUNTIME_ERROR) rather than a generic user error.
+    // See quickjs-entrypoint.ts's run_failed branch.
+    try {
+      vm.evalCode(`
       var __wfn = globalThis.__private_workflows.get(${JSON.stringify(workflowId)});
       if (!__wfn) {
         var __wfnErr = new Error("Workflow \\"" + ${JSON.stringify(workflowId)} + "\\" is not registered in the current deployment.");
@@ -1024,34 +1163,48 @@ export async function runQuickJSWorkflow(
         }
       );
     `).dispose();
-  } catch (err) {
-    return extractError(vm, err, 'Failed to start workflow');
-  }
+    } catch (err) {
+      return extractError(vm, err, 'Failed to start workflow');
+    }
 
-  // Process events and drain jobs in a loop. Events may resolve promises
-  // that unblock workflow code, which then creates NEW resolvers for
-  // subsequent events. Re-processing events matches these new resolvers
-  // against events that were already delivered.
-  {
-    let maxIterations = 100;
-    let madeProgress: boolean;
-    do {
-      madeProgress = await processEvents(
-        vm,
-        events,
-        advanceClock,
-        options.encryptionKey
-      );
-      let batch: number;
+    // Process events and drain jobs in a loop. Events may resolve promises
+    // that unblock workflow code, which then creates NEW resolvers for
+    // subsequent events. Re-processing events matches these new resolvers
+    // against events that were already delivered.
+    {
+      let maxIterations = 100;
+      let madeProgress: boolean;
       do {
-        batch = vm.executePendingJobs();
-        if (batch > 0) madeProgress = true;
-      } while (batch > 0);
-    } while (madeProgress && --maxIterations > 0);
-  }
+        madeProgress = await processEvents(
+          vm,
+          events,
+          advanceClock,
+          options.encryptionKey
+        );
+        let batch: number;
+        do {
+          batch = vm.executePendingJobs();
+          if (batch > 0) madeProgress = true;
+        } while (batch > 0);
+      } while (madeProgress && --maxIterations > 0);
+      if (madeProgress && maxIterations === 0) {
+        // The drain loop hit its bound while still making progress —
+        // proceeding as if it converged would present as a mysterious
+        // suspension or replay divergence. Make the giving-up visible so
+        // a wedge is attributable to this bound rather than a mystery.
+        runtimeLogger.warn(
+          'QuickJS runtime: event drain loop hit its iteration bound before reaching a fixed point',
+          {
+            workflowRunId: workflowRun.runId,
+            eventCount: events.length,
+          }
+        );
+      }
+    }
 
-  // ---- Check result ----
-  return checkWorkflowState(vm);
+    // ---- Check result ----
+    return checkWorkflowState(vm);
+  }
 }
 
 // ---- Event Processing ----
@@ -1074,7 +1227,10 @@ async function processEvents(
     const cid = event.correlationId;
     if (!cid) continue;
 
-    const escapedCid = cid.replace(/"/g, '\\"');
+    // JSON.stringify handles quotes, backslashes and control characters;
+    // correlation ids are host-generated ULIDs today, but the eval-string
+    // safety shouldn't depend on that invariant being asserted nowhere.
+    const cidJs = JSON.stringify(cid);
     const eventData =
       'eventData' in event
         ? (event.eventData as Record<string, unknown>)
@@ -1084,14 +1240,14 @@ async function processEvents(
     switch (event.eventType) {
       case 'step_completed': {
         const hasResolver = vm.dump(
-          vm.evalCode(`!!globalThis.__resolvers["${escapedCid}"]`)
+          vm.evalCode(`!!globalThis.__resolvers[${cidJs}]`)
         );
         const rawOutput = eventData?.result ?? eventData?.output;
         if (hasResolver) {
           if (rawOutput instanceof Uint8Array) {
             // Decrypt if encrypted — the VM only understands 'devl' format
             runtimeLogger.debug('QuickJS runtime: step result raw', {
-              correlationId: escapedCid,
+              correlationId: cid,
               rawPrefix: new TextDecoder().decode(rawOutput.subarray(0, 4)),
               rawByteLength: rawOutput.byteLength,
               isBuffer: Buffer.isBuffer(rawOutput),
@@ -1101,7 +1257,7 @@ async function processEvents(
               encryptionKey
             );
             runtimeLogger.debug('QuickJS runtime: step result decrypted', {
-              correlationId: escapedCid,
+              correlationId: cid,
               prefix: new TextDecoder().decode(decryptedOutput.subarray(0, 4)),
               byteLength: decryptedOutput.byteLength,
             });
@@ -1109,13 +1265,13 @@ async function processEvents(
             vm.setProp(vm.global, '__tmp_result', bytesHandle);
             bytesHandle.dispose();
             vm.evalCode(
-              `globalThis.__resolvers["${escapedCid}"].resolve(globalThis[Symbol.for("workflow-deserialize")](globalThis.__tmp_result));` +
-                `delete globalThis.__resolvers["${escapedCid}"];` +
+              `globalThis.__resolvers[${cidJs}].resolve(globalThis[Symbol.for("workflow-deserialize")](globalThis.__tmp_result));` +
+                `delete globalThis.__resolvers[${cidJs}];` +
                 `delete globalThis.__tmp_result;`
             ).dispose();
           } else {
             runtimeLogger.debug('QuickJS runtime: step result non-binary', {
-              correlationId: escapedCid,
+              correlationId: cid,
               type: typeof rawOutput,
               isNull: rawOutput === null,
               isUndefined: rawOutput === undefined,
@@ -1124,8 +1280,8 @@ async function processEvents(
             const serialized =
               rawOutput !== undefined ? JSON.stringify(rawOutput) : 'undefined';
             vm.evalCode(
-              `globalThis.__resolvers["${escapedCid}"].resolve(${serialized});` +
-                `delete globalThis.__resolvers["${escapedCid}"];`
+              `globalThis.__resolvers[${cidJs}].resolve(${serialized});` +
+                `delete globalThis.__resolvers[${cidJs}];`
             ).dispose();
           }
           // Drain ALL microtasks after resolve
@@ -1137,12 +1293,12 @@ async function processEvents(
             } while (b > 0);
           }
         }
-        markCreated(vm, escapedCid);
+        markCreated(vm, cidJs);
         break;
       }
       case 'step_failed': {
         const hasResolver = vm.dump(
-          vm.evalCode(`!!globalThis.__resolvers["${escapedCid}"]`)
+          vm.evalCode(`!!globalThis.__resolvers[${cidJs}]`)
         );
         if (hasResolver) {
           const errorData = eventData?.error;
@@ -1160,8 +1316,8 @@ async function processEvents(
             vm.evalCode(
               `(function(){` +
                 `var e=globalThis[Symbol.for("workflow-deserialize")](globalThis.__tmp_error);` +
-                `globalThis.__resolvers["${escapedCid}"].reject(e);` +
-                `delete globalThis.__resolvers["${escapedCid}"];` +
+                `globalThis.__resolvers[${cidJs}].reject(e);` +
+                `delete globalThis.__resolvers[${cidJs}];` +
                 `delete globalThis.__tmp_error;` +
                 `})()`
             ).dispose();
@@ -1187,8 +1343,8 @@ async function processEvents(
               : '';
             vm.evalCode(
               `(function(){var e=new Error(${JSON.stringify(msg)});e.name="FatalError";e.fatal=true;${stackAssignment}` +
-                `globalThis.__resolvers["${escapedCid}"].reject(e);` +
-                `delete globalThis.__resolvers["${escapedCid}"];})()`
+                `globalThis.__resolvers[${cidJs}].reject(e);` +
+                `delete globalThis.__resolvers[${cidJs}];})()`
             ).dispose();
           }
           {
@@ -1199,17 +1355,17 @@ async function processEvents(
             } while (b > 0);
           }
         }
-        markCreated(vm, escapedCid);
+        markCreated(vm, cidJs);
         break;
       }
       case 'wait_completed': {
         const hasResolver = vm.dump(
-          vm.evalCode(`!!globalThis.__resolvers["${escapedCid}"]`)
+          vm.evalCode(`!!globalThis.__resolvers[${cidJs}]`)
         );
         if (hasResolver) {
           vm.evalCode(
-            `globalThis.__resolvers["${escapedCid}"].resolve();` +
-              `delete globalThis.__resolvers["${escapedCid}"];`
+            `globalThis.__resolvers[${cidJs}].resolve();` +
+              `delete globalThis.__resolvers[${cidJs}];`
           ).dispose();
           {
             resolved = true;
@@ -1219,7 +1375,7 @@ async function processEvents(
             } while (b > 0);
           }
         }
-        markCreated(vm, escapedCid);
+        markCreated(vm, cidJs);
         break;
       }
       case 'attr_set': {
@@ -1230,12 +1386,12 @@ async function processEvents(
           ?.type;
         if (writer !== 'workflow') break;
         const hasResolver = vm.dump(
-          vm.evalCode(`!!globalThis.__resolvers["${escapedCid}"]`)
+          vm.evalCode(`!!globalThis.__resolvers[${cidJs}]`)
         );
         if (hasResolver) {
           vm.evalCode(
-            `globalThis.__resolvers["${escapedCid}"].resolve();` +
-              `delete globalThis.__resolvers["${escapedCid}"];`
+            `globalThis.__resolvers[${cidJs}].resolve();` +
+              `delete globalThis.__resolvers[${cidJs}];`
           ).dispose();
           {
             resolved = true;
@@ -1245,7 +1401,7 @@ async function processEvents(
             } while (b > 0);
           }
         }
-        markCreated(vm, escapedCid);
+        markCreated(vm, cidJs);
         break;
       }
       case 'hook_received': {
@@ -1267,7 +1423,7 @@ async function processEvents(
               eventId: event.eventId,
             }
           );
-          markCreated(vm, escapedCid);
+          markCreated(vm, cidJs);
           break;
         }
 
@@ -1276,7 +1432,7 @@ async function processEvents(
         // The payload is the dehydrated `{ aborted: true, reason }` object.
         const isAbortHook = vm.dump(
           vm.evalCode(
-            `!!(globalThis.__abortSignals && globalThis.__abortSignals["${escapedCid}"])`
+            `!!(globalThis.__abortSignals && globalThis.__abortSignals[${cidJs}])`
           )
         );
         if (isAbortHook) {
@@ -1293,12 +1449,12 @@ async function processEvents(
               `(function(){` +
                 `var p=globalThis[Symbol.for("workflow-deserialize")](globalThis.__tmp_abort);` +
                 `delete globalThis.__tmp_abort;` +
-                `globalThis.__abortSignals["${escapedCid}"]._setAborted(p&&typeof p==="object"?p.reason:undefined);` +
+                `globalThis.__abortSignals[${cidJs}]._setAborted(p&&typeof p==="object"?p.reason:undefined);` +
                 `})()`
             ).dispose();
           } else {
             vm.evalCode(
-              `globalThis.__abortSignals["${escapedCid}"]._setAborted(undefined);`
+              `globalThis.__abortSignals[${cidJs}]._setAborted(undefined);`
             ).dispose();
           }
           if (event.eventId) {
@@ -1313,12 +1469,12 @@ async function processEvents(
               b = vm.executePendingJobs();
             } while (b > 0);
           }
-          markCreated(vm, escapedCid);
+          markCreated(vm, cidJs);
           break;
         }
 
         const hasResolver = vm.dump(
-          vm.evalCode(`!!globalThis.__resolvers["${escapedCid}"]`)
+          vm.evalCode(`!!globalThis.__resolvers[${cidJs}]`)
         );
         const rawPayload = eventData?.payload ?? eventData?.result;
         runtimeLogger.debug('QuickJS runtime: processing hook_received', {
@@ -1343,8 +1499,8 @@ async function processEvents(
             vm.setProp(vm.global, '__tmp_result', bytesHandle);
             bytesHandle.dispose();
             vm.evalCode(
-              `globalThis.__resolvers["${escapedCid}"].resolve(globalThis[Symbol.for("workflow-deserialize")](globalThis.__tmp_result));` +
-                `delete globalThis.__resolvers["${escapedCid}"];` +
+              `globalThis.__resolvers[${cidJs}].resolve(globalThis[Symbol.for("workflow-deserialize")](globalThis.__tmp_result));` +
+                `delete globalThis.__resolvers[${cidJs}];` +
                 `delete globalThis.__tmp_result;`
             ).dispose();
           } else {
@@ -1353,8 +1509,8 @@ async function processEvents(
                 ? JSON.stringify(rawPayload)
                 : 'undefined';
             vm.evalCode(
-              `globalThis.__resolvers["${escapedCid}"].resolve(${serialized});` +
-                `delete globalThis.__resolvers["${escapedCid}"];`
+              `globalThis.__resolvers[${cidJs}].resolve(${serialized});` +
+                `delete globalThis.__resolvers[${cidJs}];`
             ).dispose();
           }
           // Mark this event as processed in the VM heap to prevent
@@ -1379,7 +1535,7 @@ async function processEvents(
             ? JSON.stringify(event.eventId)
             : 'null';
           const bufferAndTrack =
-            `(globalThis.__hookPayloadBuffer["${escapedCid}"] = globalThis.__hookPayloadBuffer["${escapedCid}"] || [])` +
+            `(globalThis.__hookPayloadBuffer[${cidJs}] = globalThis.__hookPayloadBuffer[${cidJs}] || [])` +
             `.push(%PAYLOAD%);` +
             (event.eventId
               ? `(globalThis.__hookPayloadBuffer.__processedEventIds = globalThis.__hookPayloadBuffer.__processedEventIds || {})[${eventIdJs}] = true;`
@@ -1416,7 +1572,7 @@ async function processEvents(
             ).dispose();
           }
         }
-        markCreated(vm, escapedCid);
+        markCreated(vm, cidJs);
         break;
       }
       case 'hook_conflict': {
@@ -1482,14 +1638,14 @@ async function processEvents(
             b = vm.executePendingJobs();
           } while (b > 0);
         }
-        markCreated(vm, escapedCid);
+        markCreated(vm, cidJs);
         break;
       }
       case 'step_created':
       case 'step_started':
       case 'step_retrying':
       case 'wait_created': {
-        markCreated(vm, escapedCid);
+        markCreated(vm, cidJs);
         break;
       }
       case 'hook_created': {
@@ -1515,13 +1671,13 @@ async function processEvents(
             b = vm.executePendingJobs();
           } while (b > 0);
         }
-        markCreated(vm, escapedCid);
+        markCreated(vm, cidJs);
         break;
       }
       case 'hook_disposed': {
         // Disambiguate from the `hook` pending op with the same
         // correlationId — we want to mark the `hook_dispose` entry.
-        markCreated(vm, escapedCid, 'hook_dispose');
+        markCreated(vm, cidJs, 'hook_dispose');
         break;
       }
     }
@@ -1529,15 +1685,16 @@ async function processEvents(
   return resolved;
 }
 
-function markCreated(vm: QuickJS, escapedCid: string, opType?: string): void {
+function markCreated(vm: QuickJS, cidJs: string, opType?: string): void {
+  // `cidJs` is the JSON.stringify-quoted correlation id (see processEvents).
   // `hook` and `hook_dispose` pending ops share the same correlationId,
   // so when processing `hook_disposed` events we must disambiguate by
   // type — otherwise `.find()` returns the original `hook` op and the
   // `hook_dispose` op is never marked, causing the entrypoint to keep
   // retrying a hook_disposed for an already-deleted entity.
   const predicate = opType
-    ? `function(p){return p.correlationId==="${escapedCid}"&&p.type==="${opType}";}`
-    : `function(p){return p.correlationId==="${escapedCid}";}`;
+    ? `function(p){return p.correlationId===${cidJs}&&p.type===${JSON.stringify(opType)};}`
+    : `function(p){return p.correlationId===${cidJs};}`;
   vm.evalCode(
     `var __p=globalThis.__pending.find(${predicate});` +
       `if(__p)__p.hasCreatedEvent=true;`

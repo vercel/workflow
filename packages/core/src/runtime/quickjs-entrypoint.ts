@@ -436,6 +436,16 @@ async function dispatchPendingOps(params: {
  *
  * This replaces the `node:vm` replay path (runWorkflow + EventsConsumer)
  * with a QuickJS VM invocation that performs the same full event replay.
+ *
+ * KNOWN GAP — precondition guard: unlike the node:vm path, no event write
+ * in this file participates in the optimistic-concurrency precondition
+ * guard (`withPreconditionRetry` + `stateUpdatedAtForCreate`), which
+ * protects a writer holding a stale event-log snapshot from clobbering a
+ * concurrent one. The engine currently relies on per-(runId,
+ * correlationId) event uniqueness (EntityConflictError dedup) alone. This
+ * is a deliberate simplification while the engine is experimental — wiring
+ * the guard is tracked follow-up work; anyone adding new write paths here
+ * should not assume parity with the node engine on this axis.
  */
 export async function runWorkflowWithQuickJS(params: {
   workflowCode: string;
