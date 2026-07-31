@@ -50,7 +50,7 @@ showSections={["parameters"]}
 
 ### Returns
 
-Returns a `Promise<Hook>`. Resolving means the resume was accepted and the workflow will continue — whether the `hook_received` event was written directly or, on the parallel fast path, delivered through the workflow queue for the runtime to materialize (see the [lazy hook resume changelog](/docs/changelog/resilient-resume)). The resolved `Hook`:
+Returns a `Promise<ResumedHook>` — a `Hook` extended with an optional `resilientResume` flag. Resolving means the resume was accepted and the workflow will continue, whether the `hook_received` event was written directly or, on the parallel fast path, delivered through the workflow queue for the runtime to materialize (see the [lazy hook resume changelog](/docs/changelog/resilient-resume)). `resilientResume` is `true` only when the direct event write failed transiently and the resume was recovered through the queue; on the happy path it is absent. The resolved hook:
 
 <TSDoc
 definition={`

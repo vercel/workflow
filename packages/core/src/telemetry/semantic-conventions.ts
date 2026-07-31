@@ -335,6 +335,26 @@ export const HookId = SemanticConvention<string>('workflow.hook.id');
 /** Whether a hook was found by its token */
 export const HookFound = SemanticConvention<boolean>('workflow.hook.found');
 
+/**
+ * Producer-side signal (on the `hook.resume` span) that the direct
+ * `hook_received` write failed transiently but the queue dispatch succeeded, so
+ * the resume is recovered via the consumer's re-ensure. Corresponds to
+ * `ResumedHook.resilientResume === true`.
+ */
+export const HookResilientResume = SemanticConvention<boolean>(
+  'workflow.hook.resilient_resume'
+);
+
+/**
+ * Consumer-side signal (on the workflow execution span) that this replay
+ * materialized the `hook_received` event from the queue message's `hookInput`
+ * because the producer's direct write had not landed — the completion of the
+ * recovery path {@link HookResilientResume} began.
+ */
+export const HookResilientResumeMaterialized = SemanticConvention<boolean>(
+  'workflow.hook.resilient_resume_materialized'
+);
+
 // Webhook attributes
 
 /** Number of webhook handlers triggered */

@@ -200,6 +200,25 @@ export async function getHookByToken(token: string): Promise<Hook> {
 }
 
 /**
+ * The result of {@link resumeHook}: a {@link Hook} augmented with an optional
+ * resilience signal.
+ *
+ * On the parallel fast path, `resumeHook()` writes the `hook_received` event and
+ * dispatches the workflow queue message concurrently. When the direct event
+ * write fails *transiently* — a 429/5xx, a transport error, or an expected
+ * `(runId, resumeId)` conflict with its own re-ensuring consumer — but the queue
+ * dispatch succeeds, the resume is still guaranteed: the queue consumer
+ * idempotently materializes the `hook_received` event from the payload carried
+ * on the message before replay. In that recovered case the returned hook carries
+ * `resilientResume: true`.
+ *
+ * On the happy path (the direct write landed) and on the sequential fallback
+ * path, the flag is absent (`undefined`). Callers that don't care about the
+ * distinction can treat the result as a plain {@link Hook}.
+ */
+export type ResumedHook = Hook & { resilientResume?: boolean };
+
+/**
  * Resumes a workflow run by sending a payload to a hook identified by its token.
  *
  * This function is called externally (e.g., from an API route or server action)
@@ -207,7 +226,7 @@ export async function getHookByToken(token: string): Promise<Hook> {
  *
  * @param tokenOrHook - The unique token identifying the hook, or the hook object itself
  * @param payload - The data payload to send to the hook
- * @returns Promise resolving to the hook
+ * @returns Promise resolving to the {@link ResumedHook}
  * @throws {HookNotFoundError} If the Hook does not exist or its run has ended
  *
  * @example
@@ -232,7 +251,7 @@ export async function resumeHook<T = any>(
   tokenOrHook: string | Hook,
   payload: T,
   encryptionKeyOverride?: PayloadKey
-): Promise<Hook> {
+): Promise<ResumedHook> {
   // Public entry point. It never attests hook freshness, so a Hook object
   // supplied here — which may carry a `resumeCapabilities` cached before a
   // server rollback or kill switch — is ignored by the dynamic-dedup gate and
@@ -259,7 +278,7 @@ async function resumeHookImpl<T = any>(
   payload: T,
   encryptionKeyOverride: PayloadKey | undefined,
   hookFreshlyLookedUp: boolean
-): Promise<Hook> {
+): Promise<ResumedHook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
       const world = await getWorldLazy();
@@ -586,6 +605,10 @@ async function resumeHookImpl<T = any>(
           throw queueResult.reason;
         }
 
+        // Set when the direct write did not land but the queue dispatch did, so
+        // the consumer materializes the event before replay. Surfaced to the
+        // caller as `ResumedHook.resilientResume` and on the span.
+        let resilientResume = false;
         if (eventResult.status === 'rejected') {
           const err = eventResult.reason;
           if (HookNotFoundError.is(err) || RunExpiredError.is(err)) {
@@ -609,11 +632,13 @@ async function resumeHookImpl<T = any>(
             //
             // Producer telemetry: record that the direct write did not land but
             // the resume is still guaranteed via queue-delivered `hookInput`.
-            // This is the operational signal that the recovery path fired —
-            // surfaced on the span rather than as a public return flag, since
-            // the resume outcome is identical to the happy path from the
-            // caller's perspective (a resolved `Hook`).
+            // This is the operational signal that the recovery path fired,
+            // surfaced both on the span and as the public `resilientResume`
+            // flag on the returned hook (the resume outcome is otherwise
+            // identical to the happy path from the caller's perspective).
+            resilientResume = true;
             span?.setAttributes({
+              ...Attribute.HookResilientResume(true),
               'workflow.hook.resume_event_write_recovered': true,
               'workflow.hook.resume_event_write_error':
                 err instanceof Error ? err.name : 'unknown',
@@ -634,7 +659,9 @@ async function resumeHookImpl<T = any>(
           }
         }
 
-        return hook;
+        return (
+          resilientResume ? { ...hook, resilientResume: true } : hook
+        ) satisfies ResumedHook;
       } catch (err) {
         span?.setAttributes({
           ...Attribute.HookToken(

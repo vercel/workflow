@@ -86,7 +86,9 @@ describe('resumeHook (parallel fast path)', () => {
     const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
     const { createEvent, queue } = makeWorld(hook);
 
-    await resumeHook(hook.token, { foo: 'bar' });
+    const result = await resumeHook(hook.token, { foo: 'bar' });
+    // Happy path (direct write landed): no resilience flag on the ResumedHook.
+    expect(result.resilientResume).toBeUndefined();
 
     expect(createEvent).toHaveBeenCalledTimes(1);
     const [runIdArg, eventArg, optsArg] = createEvent.mock.calls[0];
@@ -135,11 +137,22 @@ describe('resumeHook (parallel fast path)', () => {
     const queue = vi.fn().mockResolvedValue({ messageId: 'm_1' });
     makeWorld(hook, { createEvent, queue });
 
-    await expect(resumeHook(hook.token, { foo: 'bar' })).resolves.toMatchObject(
-      { hookId: hook.hookId }
-    );
+    const result = await resumeHook(hook.token, { foo: 'bar' });
+    // Recovered via the queue: the ResumedHook carries resilientResume=true so
+    // callers/telemetry can distinguish the fallback from the happy path.
+    expect(result).toMatchObject({
+      hookId: hook.hookId,
+      resilientResume: true,
+    });
     expect(createEvent).toHaveBeenCalledTimes(1);
     expect(queue).toHaveBeenCalledTimes(1);
+    // The payload rode the queue message so the consumer can materialize it.
+    const [, payloadArg] = queue.mock.calls[0];
+    expect(payloadArg.hookInput).toMatchObject({
+      hookId: hook.hookId,
+      token: hook.token,
+      payload: PAYLOAD_BYTES,
+    });
   });
 
   it('re-keys a terminal-run rejection from the event write to HookNotFoundError(token)', async () => {
@@ -168,6 +181,42 @@ describe('resumeHook (parallel fast path)', () => {
     }
   });
 
+  it('rethrows a non-retryable, non-terminal event-write failure (e.g. a 400) even though the queue publish succeeded', async () => {
+    // Not every event-write rejection is recoverable: a genuine client error
+    // (400 / validation) is neither a terminal "hook gone" (re-keyed to
+    // HookNotFoundError) nor a transient failure (swallowed). It falls through
+    // to the default branch and surfaces to the caller unchanged — the queue
+    // message went out, but the caller must see the real error.
+    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
+    const badRequest = new Error('invalid event payload');
+    const createEvent = vi.fn().mockRejectedValue(badRequest);
+    const queue = vi.fn().mockResolvedValue({ messageId: 'm_1' });
+    makeWorld(hook, { createEvent, queue });
+
+    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toBe(
+      badRequest
+    );
+    expect(createEvent).toHaveBeenCalledTimes(1);
+    expect(queue).toHaveBeenCalledTimes(1);
+  });
+
+  it('prioritizes the queue error when both the event write and the queue publish fail', async () => {
+    // Queue failure is always fatal (no consumer will re-ensure), and it is
+    // checked before the event-write result — so even a recoverable-looking
+    // event error is superseded by the queue rejection the caller must see.
+    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
+    const queueErr = new Error('queue unavailable');
+    const createEvent = vi
+      .fn()
+      .mockRejectedValue(new ThrottleError('slow down'));
+    const queue = vi.fn().mockRejectedValue(queueErr);
+    makeWorld(hook, { createEvent, queue });
+
+    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toBe(queueErr);
+    expect(createEvent).toHaveBeenCalledTimes(1);
+    expect(queue).toHaveBeenCalledTimes(1);
+  });
+
   it('swallows an EntityConflict (409) from the event write on the parallel path', async () => {
     // Unlike the sequential path, a 409 here is NOT "hook gone": the parallel
     // write raced its own re-ensuring queue consumer (or a redrive) on the
@@ -181,9 +230,13 @@ describe('resumeHook (parallel fast path)', () => {
     const queue = vi.fn().mockResolvedValue({ messageId: 'm_1' });
     makeWorld(hook, { createEvent, queue });
 
-    await expect(resumeHook(hook.token, { foo: 'bar' })).resolves.toMatchObject(
-      { hookId: hook.hookId }
-    );
+    const result = await resumeHook(hook.token, { foo: 'bar' });
+    // A 409 here is expected concurrency, recovered via the queue consumer, so
+    // it is surfaced as a resilient resume rather than an error.
+    expect(result).toMatchObject({
+      hookId: hook.hookId,
+      resilientResume: true,
+    });
     expect(createEvent).toHaveBeenCalledTimes(1);
     expect(queue).toHaveBeenCalledTimes(1);
   });

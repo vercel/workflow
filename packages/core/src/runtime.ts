@@ -30,6 +30,7 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
+import { decodeTime } from 'ulid';
 import {
   classifyRunError,
   isRetryableWorldError,
@@ -120,6 +121,7 @@ export {
 } from './runtime/helpers.js';
 export {
   getHookByToken,
+  type ResumedHook,
   resumeHook,
   resumeWebhook,
 } from './runtime/resume-hook.js';
@@ -1473,6 +1475,22 @@ export function workflowEntrypoint(
                       // Event already visible in the preloaded log — nothing to
                       // ensure or splice.
                     } else {
+                      // Date the materialized event to when the resume actually
+                      // occurred, not when this queue delivery ran. `resumeId`
+                      // is the ULID minted by `resumeHook()` at resume time, so
+                      // its embedded timestamp is the honest `occurredAt` and
+                      // keeps latency attribution off the queue round trip. A
+                      // non-ULID resumeId (legacy / test) simply leaves it
+                      // undefined, so the World falls back to `createdAt`.
+                      let occurredAt: Date | undefined;
+                      try {
+                        occurredAt =
+                          hookInput.resumeId !== undefined
+                            ? new Date(decodeTime(hookInput.resumeId))
+                            : undefined;
+                      } catch {
+                        occurredAt = undefined;
+                      }
                       let ensuredEvent: Event | undefined;
                       try {
                         const ensured = await world.events.create(
@@ -1488,9 +1506,16 @@ export function workflowEntrypoint(
                           },
                           {
                             requestId,
+                            occurredAt,
                             resumeId: hookInput.resumeId,
                             resumePayloadDigest: hookInput.payloadDigest,
                           }
+                        );
+                        // Consumer-side completion of the recovery path: this
+                        // replay materialized the event because the producer's
+                        // direct write had not landed in the preload.
+                        span?.setAttributes(
+                          Attribute.HookResilientResumeMaterialized(true)
                         );
                         // The canonical event — whether this call committed it or
                         // converged on the producer's concurrent write — so we can
