@@ -684,39 +684,8 @@ export function createEventsStorage(
       // read-page responses (run_started preload, step-terminal inline
       // delta) are attached after the lock is released — see
       // `attachReadPages`.
-      const runLockedCreate = async () => {
-        // Temporary storm diagnostics (WORKFLOW_LOCAL_APPEND_DEBUG=1).
-        if (process.env.WORKFLOW_LOCAL_APPEND_DEBUG) {
-          const t0 = Date.now();
-          const corr =
-            'correlationId' in data && typeof data.correlationId === 'string'
-              ? data.correlationId.slice(-4)
-              : '-';
-          const dbg = (outcome: string, detail?: string) => {
-            require('node:fs').appendFileSync(
-              '/tmp/append-debug.log',
-              `${new Date().toISOString()} pid=${process.pid} ${effectiveRunId.slice(-6)} ${data.eventType} ${corr} ${outcome} ${Date.now() - t0}ms${detail ? ` ${detail}` : ''}\n`
-            );
-          };
-          try {
-            const result = await withRunAppendLock(
-              basedir,
-              effectiveRunId,
-              tag,
-              fence,
-              (session) => createImpl(session)
-            );
-            dbg('ok', `seq=${result.event?.seq}`);
-            return attachReadPages(result);
-          } catch (error) {
-            dbg(
-              'threw',
-              `${(error as Error).name}:${(error as Error).message.slice(0, 90)}`
-            );
-            throw error;
-          }
-        }
-        return attachReadPages(
+      const runLockedCreate = async () =>
+        attachReadPages(
           await withRunAppendLock(
             basedir,
             effectiveRunId,
@@ -725,7 +694,6 @@ export function createEventsStorage(
             (session) => createImpl(session)
           )
         );
-      };
 
       /**
        * Post-append read responses, computed OUTSIDE the append lock. Both
@@ -1629,12 +1597,6 @@ export function createEventsStorage(
             taggedPath(basedir, 'steps', stepCompositeKey, tag),
             step
           );
-          if (process.env.WORKFLOW_LOCAL_APPEND_DEBUG) {
-            require('node:fs').appendFileSync(
-              '/tmp/append-debug.log',
-              `${new Date().toISOString()} pid=${process.pid} ${effectiveRunId.slice(-6)} step_created ${data.correlationId.slice(-4)} ENTITY_WRITTEN\n`
-            );
-          }
         } else if (data.eventType === 'step_started') {
           // step_started: Increments attempt, sets status to 'running'
           // Sets startedAt only on the first start (not updated on retries)
