@@ -249,12 +249,31 @@ describe('conflict', () => {
     ).toEqual([slotEventId(3)]);
   });
 
-  it('conflicts across two storage instances sharing a directory', async () => {
+  it('conflicts when another instance takes a claimed slot', async () => {
     // Two instances keep independent books, so the exclusive write — not the
-    // book — is what decides who owns a slot.
+    // book — is what decides who owns a slot. A claim asserts a complete log,
+    // so its loser has to reload rather than move over.
     const runId = await newSlotRun();
     const other = createStorage(testDir);
-    const [first, second] = await Promise.allSettled([
+    await other.events.create(runId, {
+      eventType: 'step_created',
+      specVersion: SPEC_VERSION_SLOT_IDENTITY,
+      correlationId: 'step_b',
+      eventData: { stepName: 'b-step', input: new Uint8Array() },
+    });
+    await expect(createStep(runId, 'step_a', slotEventId(2))).rejects.toThrow(
+      SlotConflictError
+    );
+    await expect(slotsOf(runId)).resolves.toEqual([1, 2]);
+  });
+
+  it('reallocates around another instance holding the slot it picked', async () => {
+    // Neither writer holds a log, so neither has anything to reconcile: the
+    // loser takes the next free position instead of surfacing a conflict its
+    // caller could not act on.
+    const runId = await newSlotRun();
+    const other = createStorage(testDir);
+    const outcomes = await Promise.allSettled([
       storage.events.create(runId, {
         eventType: 'step_created',
         specVersion: SPEC_VERSION_SLOT_IDENTITY,
@@ -268,14 +287,10 @@ describe('conflict', () => {
         eventData: { stepName: 'b-step', input: new Uint8Array() },
       }),
     ]);
-    const outcomes = [first, second];
-    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
-    const rejection = outcomes.find((o) => o.status === 'rejected');
-    expect(
-      SlotConflictError.is(
-        (rejection as PromiseRejectedResult | undefined)?.reason
-      )
-    ).toBe(true);
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2]);
+    expect(outcomes.map((outcome) => outcome.status)).toEqual([
+      'fulfilled',
+      'fulfilled',
+    ]);
+    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
   });
 });

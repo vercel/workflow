@@ -106,9 +106,13 @@ export {
   isSlotId,
   maxSlotOf,
   SLOT_ID_WIDTH,
+  SLOT_RETRY_BASE_MS,
+  SLOT_RETRY_BUDGET_MS,
+  SLOT_RETRY_MAX_DELAY_MS,
   slotEventId,
   slotFromId,
   slotIdBody,
+  slotRetryDelay,
 } from './slot-identity.js';
 export type { SpecVersion } from './spec-version.js';
 export {

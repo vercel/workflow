@@ -37,9 +37,11 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_MAX_SUPPORTED,
+  SLOT_RETRY_BUDGET_MS,
   StepSchema,
   slotEventId,
   slotFromId,
+  slotRetryDelay,
   ulidToDate,
   usesSlotIdentity,
   validateAttributeChanges,
@@ -1009,6 +1011,13 @@ export function createEventsStorage(
         // ============================================================
         // EVENT ID: the caller's slot claim, an allocated slot, or a ULID
         // ============================================================
+        // A run's own `run_created` owns the first slot — provably, since
+        // nothing precedes it — so every other event allocates above it, even
+        // when that event is the first to arrive here.
+        const allocationFloor =
+          data.eventType === 'run_created'
+            ? RUN_CREATED_SLOT
+            : RUN_CREATED_SLOT + 1;
         // A slot-numbered run's ids name positions in its log, so an id is
         // either claimed by a caller that holds the log (and is therefore
         // asserting the log is complete up to that position) or allocated here
@@ -1042,15 +1051,7 @@ export function createEventsStorage(
           }
         } else if (slotMode) {
           reservedRunId = effectiveRunId;
-          // A run's own `run_created` owns the first slot — provably, since
-          // nothing precedes it — so every other event allocates above it, even
-          // when that event is the first to arrive here.
-          const slot = await slots.reserve(
-            effectiveRunId,
-            data.eventType === 'run_created'
-              ? RUN_CREATED_SLOT
-              : RUN_CREATED_SLOT + 1
-          );
+          const slot = await slots.reserve(effectiveRunId, allocationFloor);
           reserved.add(slot);
           eventId = slotEventId(slot);
         }
@@ -2457,120 +2458,172 @@ export function createEventsStorage(
           throw new HookNotFoundError(data.correlationId);
         }
 
-        const compositeKey = `${effectiveRunId}-${eventId}`;
-        const eventPath = taggedPath(basedir, 'events', compositeKey, tag);
-        // Capture the serialized payload before the write's `await` so the
-        // cached snapshot can't observe a later mutation (see
-        // rememberStoredEvent).
-        const serializedEvent = JSON.stringify(event, jsonReplacer, 2);
-
-        // Cross-process terminal-run guard for `hook_received`. A terminal
-        // transition (run_completed / run_failed / run_cancelled) in ANY
-        // process (1) publishes a durable `runTerminalMarkerPath` marker and
-        // (2) reaps the run's staged hook_received events, both BEFORE it
-        // writes the terminal run state or appends its terminal event (see
-        // the terminal-transition block earlier in this function). In-memory
-        // locks cannot close the shared-filesystem race this backend
-        // explicitly supports, and a published event file is immediately
-        // visible to `events.list()` in other processes — so it can never be
-        // "rolled back" after the fact. Instead, the event stays INVISIBLE
-        // to readers until a single atomic filesystem operation decides its
-        // fate:
-        //
-        //   1. (fast path) reject if the run is already terminal — by
-        //      marker, or by run state for runs that predate the marker —
-        //      so the common case never creates a file.
-        //   2. STAGE the event at a non-reader-visible path under `.locks`.
-        //   3. re-CHECK the terminal marker; reject if present.
-        //   4. PROMOTE the staged file into `events/` with an atomic hard
-        //      link; reject if the staged file was reaped (`'missing'`).
-        //
-        // Correctness: the reap's `unlink` and step 4's `link` target the
-        // same staged file, so the filesystem serializes them — exactly one
-        // wins. If the link wins, the event was reader-visible before the
-        // reap completed, and therefore before the terminal state and
-        // terminal event were written: acceptance happened-before the
-        // termination and legitimately precedes it. If the unlink wins,
-        // promotion fails and the event is never visible to any reader —
-        // there is nothing to roll back. A resume that stages after the
-        // reap has passed necessarily stages after the marker was
-        // committed, so step 3 rejects it. Rejections before step 4 unlink
-        // a file no reader can see.
-        let eventPublished: boolean;
-        if (data.eventType === 'hook_received') {
-          // Step 1: fast path. The marker is the authoritative durable
-          // signal; the run-state read additionally rejects runs whose
-          // terminal state was written without a marker (e.g. runs that
-          // terminated on an older storage version).
-          const terminalByMarker = await isRunTerminalCommitted(
-            basedir,
-            effectiveRunId,
-            tag
-          );
-          const runNow = terminalByMarker
-            ? null
-            : await readJSONWithFallback(
-                basedir,
-                'runs',
-                effectiveRunId,
-                WorkflowRunSchema,
-                tag
-              );
-          if (
-            terminalByMarker ||
-            (runNow && isTerminalWorkflowRunStatus(runNow.status))
-          ) {
-            throw new RunExpiredError(
-              `Workflow run "${effectiveRunId}" is already in a terminal state`
+        /**
+         * One attempt at publishing the event at the position `eventId`
+         * currently names: `true` when this call made it reader-visible,
+         * `false` when the position was already taken. What a loss means is the
+         * loop's decision — a position this world allocated is simply retried
+         * one higher, a position the caller claimed is a conflict it has to
+         * resolve.
+         */
+        async function publishOnce(): Promise<boolean> {
+          // Cross-process terminal-run guard for `hook_received`. A terminal
+          // transition (run_completed / run_failed / run_cancelled) in ANY
+          // process (1) publishes a durable `runTerminalMarkerPath` marker and
+          // (2) reaps the run's staged hook_received events, both BEFORE it
+          // writes the terminal run state or appends its terminal event (see
+          // the terminal-transition block earlier in this function). In-memory
+          // locks cannot close the shared-filesystem race this backend
+          // explicitly supports, and a published event file is immediately
+          // visible to `events.list()` in other processes — so it can never be
+          // "rolled back" after the fact. Instead, the event stays INVISIBLE
+          // to readers until a single atomic filesystem operation decides its
+          // fate:
+          //
+          //   1. (fast path) reject if the run is already terminal — by
+          //      marker, or by run state for runs that predate the marker —
+          //      so the common case never creates a file.
+          //   2. STAGE the event at a non-reader-visible path under `.locks`.
+          //   3. re-CHECK the terminal marker; reject if present.
+          //   4. PROMOTE the staged file into `events/` with an atomic hard
+          //      link; reject if the staged file was reaped (`'missing'`).
+          //
+          // Correctness: the reap's `unlink` and step 4's `link` target the
+          // same staged file, so the filesystem serializes them — exactly one
+          // wins. If the link wins, the event was reader-visible before the
+          // reap completed, and therefore before the terminal state and
+          // terminal event were written: acceptance happened-before the
+          // termination and legitimately precedes it. If the unlink wins,
+          // promotion fails and the event is never visible to any reader —
+          // there is nothing to roll back. A resume that stages after the
+          // reap has passed necessarily stages after the marker was
+          // committed, so step 3 rejects it. Rejections before step 4 unlink
+          // a file no reader can see.
+          if (data.eventType === 'hook_received') {
+            // Step 1: fast path. The marker is the authoritative durable
+            // signal; the run-state read additionally rejects runs whose
+            // terminal state was written without a marker (e.g. runs that
+            // terminated on an older storage version).
+            const terminalByMarker = await isRunTerminalCommitted(
+              basedir,
+              effectiveRunId,
+              tag
             );
-          }
-
-          const stagedPath = pendingHookEventPath(
-            basedir,
-            effectiveRunId,
-            eventId,
-            tag
-          );
-          const staged = await writeExclusive(stagedPath, serializedEvent);
-          if (!staged) {
-            // For a ULID-numbered run the eventId is freshly generated, so
-            // its staging path can only be occupied by a previous crashed
-            // attempt of this very event, which never promoted. A
-            // slot-numbered run can also collide here with another instance
-            // that allocated the same slot from its own book. Either way the
-            // event is not reader-visible, so there is no delta to hand back
-            // and nothing for the caller to merge: surface the same conflict
-            // shape as a visible-path collision, and let the allocator
-            // re-probe on the retry.
-            throw new EntityConflictError(
-              `Event "${eventId}" already exists for run "${effectiveRunId}"`
-            );
-          }
-          try {
-            if (await isRunTerminalCommitted(basedir, effectiveRunId, tag)) {
+            const runNow = terminalByMarker
+              ? null
+              : await readJSONWithFallback(
+                  basedir,
+                  'runs',
+                  effectiveRunId,
+                  WorkflowRunSchema,
+                  tag
+                );
+            if (
+              terminalByMarker ||
+              (runNow && isTerminalWorkflowRunStatus(runNow.status))
+            ) {
               throw new RunExpiredError(
                 `Workflow run "${effectiveRunId}" is already in a terminal state`
               );
             }
-            const promoted = await promoteExclusive(stagedPath, eventPath);
-            if (promoted === 'missing') {
-              // A terminal transition reaped the staged file between the
-              // check and the link — the atomic loss of the arbitration.
-              throw new RunExpiredError(
-                `Workflow run "${effectiveRunId}" is already in a terminal state`
+
+            const stagedPath = pendingHookEventPath(
+              basedir,
+              effectiveRunId,
+              eventId,
+              tag
+            );
+            const staged = await writeExclusive(stagedPath, serializedEvent);
+            if (!staged) {
+              // For a ULID-numbered run the eventId is freshly generated, so
+              // its staging path can only be occupied by a previous crashed
+              // attempt of this very event, which never promoted. A
+              // slot-numbered run can also collide here with another instance
+              // that allocated the same slot from its own book. Either way the
+              // event is not reader-visible, so there is no delta to hand back
+              // and nothing for the caller to merge: surface the same conflict
+              // shape as a visible-path collision — or, when this world
+              // allocated the position itself, let the loop below re-probe and
+              // take the next one.
+              if (reallocatesSlot) {
+                return false;
+              }
+              throw new EntityConflictError(
+                `Event "${eventId}" already exists for run "${effectiveRunId}"`
               );
             }
-            eventPublished = promoted === 'linked';
-          } finally {
-            // The staged path is not reader-visible; removing it is pure
-            // cleanup on every outcome (already gone when reaped).
-            await deleteJSON(stagedPath).catch(() => {});
+            try {
+              if (await isRunTerminalCommitted(basedir, effectiveRunId, tag)) {
+                throw new RunExpiredError(
+                  `Workflow run "${effectiveRunId}" is already in a terminal state`
+                );
+              }
+              const promoted = await promoteExclusive(stagedPath, eventPath);
+              if (promoted === 'missing') {
+                // A terminal transition reaped the staged file between the
+                // check and the link — the atomic loss of the arbitration.
+                throw new RunExpiredError(
+                  `Workflow run "${effectiveRunId}" is already in a terminal state`
+                );
+              }
+              return promoted === 'linked';
+            } finally {
+              // The staged path is not reader-visible; removing it is pure
+              // cleanup on every outcome (already gone when reaped).
+              await deleteJSON(stagedPath).catch(() => {});
+            }
           }
-        } else {
-          eventPublished = await writeExclusive(eventPath, serializedEvent);
+          return await writeExclusive(eventPath, serializedEvent);
         }
 
-        if (!eventPublished) {
+        // A write that allocated its own position may take the next free one
+        // when it loses: nothing outside this world named the slot, so which
+        // position the event lands on is this world's business, and the caller
+        // — a step reporting its completion, a hook being received — has no log
+        // to reconcile. A write whose position the *caller* claimed may not:
+        // the claim asserts a log complete up to that position, so losing it
+        // means that log is stale and only the caller can resolve it.
+        const reallocatesSlot = slotMode && params?.eventId === undefined;
+        const slotDeadline = Date.now() + SLOT_RETRY_BUDGET_MS;
+        let compositeKey = '';
+        let eventPath = '';
+        let serializedEvent = '';
+        let eventPublished = false;
+
+        for (let round = 0; ; round++) {
+          compositeKey = `${effectiveRunId}-${eventId}`;
+          eventPath = taggedPath(basedir, 'events', compositeKey, tag);
+          // Capture the serialized payload before the write's `await` so the
+          // cached snapshot can't observe a later mutation (see
+          // rememberStoredEvent).
+          serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+          eventPublished = await publishOnce();
+          if (eventPublished) {
+            break;
+          }
+          if (reallocatesSlot && Date.now() < slotDeadline) {
+            // The position is someone else's — either published there or
+            // staged for it. Record that, top the book up from disk, and try
+            // again one position higher rather than surfacing a conflict the
+            // caller cannot act on. Re-reading rather than incrementing keeps
+            // the log dense: every round at least one writer wins, so the
+            // search never runs away from the log it is filling.
+            const lost = slotFromId(eventId);
+            if (lost !== undefined) {
+              reserved.delete(lost);
+            }
+            slots.observe(effectiveRunId, eventId);
+            await slots.refresh(effectiveRunId);
+            await new Promise((resolve) =>
+              setTimeout(resolve, slotRetryDelay(round))
+            );
+            const slot = await slots.reserve(effectiveRunId, allocationFloor);
+            reservedRunId = effectiveRunId;
+            reserved.add(slot);
+            eventId = slotEventId(slot);
+            event = { ...event, eventId };
+            continue;
+          }
           // For `hook_created`, losing the event publish means the
           // event was already committed at this exact (canonical)
           // path. The original publisher may have crashed between
@@ -2591,13 +2644,23 @@ export function createEventsStorage(
               tag
             );
           }
+          if (reallocatesSlot) {
+            // Out of budget: every position this writer tried was taken by
+            // someone else. Surfacing it as a 503 puts the whole operation
+            // back on the queue rather than stalling the run here.
+            throw new WorkflowWorldError(
+              `Could not place an event in run "${effectiveRunId}" within ${SLOT_RETRY_BUDGET_MS}ms of contention`,
+              { status: 503 }
+            );
+          }
           if (slotMode) {
-            // Losing a slot means someone else's event occupies this position,
-            // so the log this event was derived from is missing at least that
-            // event — the whole proposed event is stale, not just its id. Hand
-            // back what the caller is missing so it can merge, replay and
-            // re-propose, and forget the run's book so the next allocation
-            // re-reads the log this instance evidently does not have.
+            // Losing a claimed slot means someone else's event occupies this
+            // position, so the log this event was derived from is missing at
+            // least that event — the whole proposed event is stale, not just
+            // its id. Hand back what the caller is missing so it can merge,
+            // replay and re-propose, and forget the run's book so the next
+            // allocation re-reads the log this instance evidently does not
+            // have.
             //
             // Reaching here means the slot was taken *after* the pre-check at
             // the claim site, so the entity this event was going to describe

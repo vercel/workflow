@@ -67,6 +67,31 @@ export function slotEventId(slot: number): string {
   return `evnt_${slotIdBody(slot)}`;
 }
 
+/** First backoff after losing a position; doubled each round. */
+export const SLOT_RETRY_BASE_MS = 5;
+
+/** Ceiling for a single backoff, so a contended run keeps making attempts. */
+export const SLOT_RETRY_MAX_DELAY_MS = 250;
+
+/**
+ * How long a writer that allocates its own position keeps looking for a free
+ * one before giving up. Exhausting it is a retryable failure for the caller —
+ * in practice a queue delivery — rather than something the run stalls on.
+ */
+export const SLOT_RETRY_BUDGET_MS = 30_000;
+
+/**
+ * Full jitter over an exponentially growing, capped window. Shared by every
+ * world that allocates positions, so contention behaves the same wherever a run
+ * is stored.
+ */
+export function slotRetryDelay(round: number): number {
+  return (
+    Math.random() *
+    Math.min(SLOT_RETRY_BASE_MS * 2 ** round, SLOT_RETRY_MAX_DELAY_MS)
+  );
+}
+
 /**
  * The highest slot named by any of `events`, or 0 when none is slot-numbered.
  *

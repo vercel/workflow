@@ -96,6 +96,16 @@ export interface SlotBook {
   release(runId: string, slot: number): void;
   /** Records a published event id, so it is never handed out again. */
   observe(runId: string, eventId: string): void;
+  /**
+   * Merges the run's published positions from disk into the book kept for it,
+   * leaving the reservations other writers in this instance still hold.
+   *
+   * A writer whose publish lost its position calls this before trying again:
+   * the book is demonstrably behind another instance's writes, and dropping it
+   * wholesale ({@link SlotBook.forget}) would hand a sibling's outstanding
+   * position to the next caller and cost that sibling its own publish.
+   */
+  refresh(runId: string): Promise<void>;
   /** Drops what is cached for `runId`, so the next reservation re-reads disk. */
   forget(runId: string): void;
   /** Drops everything cached (the data directory was cleared out from under us). */
@@ -225,6 +235,24 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
       }
       book.written.add(slot);
       book.outstanding.delete(slot);
+    },
+
+    async refresh(runId) {
+      const book = books.get(runId);
+      if (!book) {
+        // Nothing cached to correct; the next reservation seeds from disk.
+        return;
+      }
+      for (const eventId of await listRunEventIds(basedir, runId, tag)) {
+        const slot = slotFromId(eventId);
+        if (slot !== undefined) {
+          book.written.add(slot);
+          book.outstanding.delete(slot);
+        }
+      }
+      // Positions released while this scan ran may sit below where the search
+      // had reached, and they are free again.
+      book.searchFrom = FIRST_SLOT;
     },
 
     forget(runId) {
