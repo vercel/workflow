@@ -38,6 +38,7 @@ import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
+import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import {
   getMaxEventsOverride,
   getMaxQueueDeliveries,
@@ -2829,6 +2830,7 @@ export function workflowEntrypoint(
         kind: spanKind,
         attributes: {
           ...Attribute.WorkflowRouteType('flow'),
+          ...Attribute.FaasInstance(COMPUTE_INSTANCE_ID),
           ...Attribute.WorkflowRouteHandlerCached(handlerCached),
           ...Attribute.WorkflowRouteInvocationCount(invocationCount),
           ...Attribute.WorkflowRouteEntrypointAgeMs(

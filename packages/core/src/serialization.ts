@@ -6,7 +6,6 @@ import {
 import { envNumber } from '@workflow/world';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
-import { bytesToBase64, decodeRunPublicKey } from './sealed-box.js';
 import { importKey } from './encryption.js';
 import {
   createFlushableState,
@@ -21,12 +20,17 @@ import {
 import { getStepFunction } from './private.js';
 // V2: use getWorldLazy in step-side code paths so Turbopack can statically
 // resolve the world bridge from the step bundle without dragging the full
-// host world module into the flow route.
+// world.ts module (and its dynamic-import behaviour) into the flow route.
 // See `packages/core/src/runtime/get-world-lazy.ts` and the
 // "Turbopack NFT Tracing Errors in V2 Combined Flow Route" section of
 // `docs/content/docs/changelog/eager-processing.mdx`.
 import { getWorldLazy } from './runtime/get-world-lazy.js';
-import { createOpenSession, createSealSession } from './sealed-box.js';
+import {
+  bytesToBase64,
+  createOpenSession,
+  createSealSession,
+  decodeRunPublicKey,
+} from './sealed-box.js';
 import * as clientModule from './serialization/client.js';
 import {
   type CompressionStats,
@@ -42,8 +46,8 @@ import {
   isRunPayloadKeys,
   isSealTarget,
   type PayloadKey,
-  resolveEncryptionKey,
   type RunPayloadKeys,
+  resolveEncryptionKey,
   runPayloadKeys,
   type SealTarget,
   sealTo,
@@ -1202,7 +1206,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     // costs nothing: no request can leave before `sendGroup`'s own world
     // await either.
     let resolvedFlushIntervalMs = getEnvStreamFlushIntervalMs();
-    let flushIntervalResolution: Promise<void> | null = null;
+    let _flushIntervalResolution: Promise<void> | null = null;
     // Per-request wire limits (server caps) and the buffer bound. The bound
     // uses the same knobs the coalescing pipe used, so producer backpressure
     // behavior is unchanged: once a request-worth of chunks (or the byte
@@ -1385,7 +1389,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // Promise.resolve: everywhere else the world is only ever awaited,
         // which tolerates a synchronous value (tests stub getWorldLazy that
         // way); .then() must be given a real promise.
-        flushIntervalResolution ??= Promise.resolve(worldPromise)
+        _flushIntervalResolution ??= Promise.resolve(worldPromise)
           .then(
             (world) => {
               resolvedFlushIntervalMs =

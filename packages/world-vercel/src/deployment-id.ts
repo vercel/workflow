@@ -5,12 +5,10 @@
  * deployed function, so a process using this world without one is not running
  * inside a deployment.
  *
- * That is almost always a build/runtime mismatch rather than a variable someone
- * forgot to set — the target world is resolved when the app is built and
- * compiled into the server bundles, so a build whose environment looked like
- * Vercel (`VERCEL=1`, which `vercel env pull` also writes into `.env.local`)
- * keeps the Vercel world wherever its output is later served. The fix is to
- * rebuild with the local world, not to invent a deployment ID.
+ * Reaching this world without one means it was selected explicitly, since the
+ * automatic choice keys off the same variable: `WORKFLOW_TARGET_WORLD` names the
+ * Vercel world in an environment that is not a deployment. The fix is to change
+ * that variable, not to invent a deployment ID.
  *
  * @param operation - What could not be done, as a sentence subject
  *   ("Starting a workflow run").
@@ -18,10 +16,9 @@
 export function missingDeploymentIdMessage(operation: string): string {
   return (
     `${operation} requires VERCEL_DEPLOYMENT_ID, which Vercel sets in every deployment, ` +
-    'so this process is not running inside one. The Vercel world was selected when the app was built ' +
-    '(and compiled into the server bundles), which happens whenever the build environment looks like ' +
-    'Vercel — including a production server started locally or in CI with an env file from ' +
-    '`vercel env pull`. To run that build against the local filesystem world instead, ' +
-    'set WORKFLOW_TARGET_WORLD=local and rebuild.'
+    'so this process is not running inside one. The Vercel world is only selected automatically when ' +
+    'that variable is set, so it was requested explicitly here — most often by WORKFLOW_TARGET_WORLD=vercel ' +
+    'in a process that is not a deployment, such as a production server started locally or in CI. ' +
+    'To use the local filesystem world instead, set WORKFLOW_TARGET_WORLD=local or unset it.'
   );
 }

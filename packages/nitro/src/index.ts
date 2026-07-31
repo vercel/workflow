@@ -1,14 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import {
-  ensureWorkflowTargetWorldEnv,
-  resolveWorkflowCoreRuntimeAlias,
-  WORKFLOW_NODE_COMPAT_BANNER,
-  WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
-  WORKFLOW_QUEUE_TRIGGER,
-  WORKFLOW_WORLD_TARGET_MODULE,
-} from '@workflow/builders';
+import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
@@ -54,7 +47,8 @@ function isNitroV2(nitro: Nitro): boolean {
  * support.
  */
 function addNodeRequireBanner(config: RollupConfig): void {
-  const banner = WORKFLOW_NODE_COMPAT_BANNER;
+  const banner =
+    "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
   const output = config.output;
   if (output == null) {
     config.output = { banner };
@@ -72,119 +66,12 @@ function addNodeRequireBanner(config: RollupConfig): void {
   }
 }
 
-const WORKFLOW_INLINE_PACKAGES = new Set([
-  'workflow',
-  'core',
-  'serde',
-  'errors',
-  'utils',
-  'builders',
-  'rollup',
-  'ai',
-  'world',
-]);
-
-function getWorkflowPackageName(source: string): string | null {
-  const packageSpecifier = source.match(/^@workflow\/([^/]+)/);
-  if (packageSpecifier) {
-    return packageSpecifier[1] ?? null;
-  }
-  if (source === 'workflow' || source.startsWith('workflow/')) {
-    return 'workflow';
-  }
-  const packagePath = source.match(/[\\/]packages[\\/]([^\\/]+)/);
-  return packagePath?.[1] ?? null;
-}
-
-function createWorkflowForceInlinePlugin(
-  workflowTargetWorld: string,
-  workflowTargetWorldAlias: string
-) {
-  const targetWorldPackage = getWorkflowPackageName(workflowTargetWorld);
-  return {
-    name: 'workflow:force-inline',
-    // `order: 'pre'` is required: Nitro's `nitro:externals` plugin
-    // uses `order: 'pre'` for its resolveId hook and spreads our
-    // resolution result while forcing `external: true`. Without
-    // `pre` here, our `external: false` decision gets overwritten
-    // and `@workflow/*` imports end up externalized in the bundle.
-    resolveId: {
-      order: 'pre' as const,
-      async handler(
-        this: {
-          resolve: (
-            source: string,
-            importer: string | undefined,
-            options: { skipSelf?: boolean }
-          ) => Promise<{ id: string } | null>;
-        },
-        source: string,
-        importer: string | undefined,
-        options: { skipSelf?: boolean }
-      ) {
-        if (source === WORKFLOW_WORLD_TARGET_MODULE) {
-          return { id: workflowTargetWorldAlias, external: false };
-        }
-        if (!importer) return null;
-        // Match workflow package specifiers OR direct paths into
-        // packages/<name>/. Bail out early on non-workflow imports
-        // so we don't intercept the rest of the resolution chain.
-        const packageName = getWorkflowPackageName(source);
-        const isWorkflowPkg =
-          packageName != null &&
-          (WORKFLOW_INLINE_PACKAGES.has(packageName) ||
-            packageName === targetWorldPackage);
-        if (!isWorkflowPkg) return null;
-        // Resolve via other resolvers, skipping ourselves so we
-        // get a path. We don't gate on `resolved.external` because
-        // `nitro:externals` spreads our result and overrides
-        // `external: true` regardless of what we return — we want
-        // to win that race by returning first under `order: 'pre'`.
-        const resolved = await this.resolve(source, importer, {
-          ...options,
-          skipSelf: true,
-        });
-        if (!resolved) return null;
-        let resolvedId = resolved.id;
-        // Strip file:// protocol if present — Rollup needs a plain
-        // filesystem path to load the module. `fileURLToPath`
-        // correctly handles Windows paths (e.g., file:///C:/...
-        // -> C:\...) and percent-decoding.
-        if (resolvedId.startsWith('file://')) {
-          resolvedId = fileURLToPath(resolvedId);
-        }
-        return { id: resolvedId, external: false };
-      },
-    },
-  };
-}
-
-function createResolverRequire(nitro: Nitro) {
-  return createRequire(join(nitro.options.rootDir, 'package.json'));
-}
-
-function resolveWorkflowTargetWorldAlias(
-  nitro: Nitro,
-  targetWorld: string
-): string {
-  try {
-    return createResolverRequire(nitro).resolve(targetWorld);
-  } catch {
-    return targetWorld;
-  }
-}
-
 export default {
   name: 'workflow/nitro',
   async setup(nitro: Nitro) {
     const isVercelDeploy =
       !nitro.options.dev && nitro.options.preset === 'vercel';
-    const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
     const nitroBuildDir = `${nitro.options.buildDir.replace(/[\\/]+$/, '')}/`;
-
-    nitro.options.alias[WORKFLOW_WORLD_TARGET_MODULE] =
-      resolveWorkflowTargetWorldAlias(nitro, workflowTargetWorld);
-    nitro.options.alias['pg-native'] ??= WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS;
 
     // Add transform plugin at the BEGINNING to run before other transforms
     // (especially before class property transforms that rename classes like _ClassName)
@@ -235,29 +122,78 @@ export default {
       }
     }
 
-    // Force workflow SDK packages to be bundled by Nitro's Rollup rather than
-    // externalized. This lets the static world-target alias resolve inside the
-    // host server bundle instead of falling through to the unaliased core stub.
-    // It also ensures the SWC transform plugin processes files containing
-    // workflow patterns (like @workflow/core/dist/runtime/run.js) and adds the
-    // classId registration IIFEs needed for serialization. Without this, serde
-    // classes from npm packages (like `Run`) would be externalized, the SWC
-    // transform would never fire on them, and serialization would fail with
-    // "must have a static classId property".
+    // In dev mode, force workflow SDK packages to be bundled by Nitro's
+    // Rollup rather than externalized. This ensures the SWC transform
+    // plugin processes files containing workflow patterns (like
+    // @workflow/core/dist/runtime/run.js) and adds the classId
+    // registration IIFEs needed for serialization. Without this, serde
+    // classes from npm packages (like `Run`) would be externalized, the
+    // SWC transform would never fire on them, and serialization would
+    // fail with "must have a static classId property".
     //
     // We use a Rollup resolveId hook (added BEFORE the externalization
     // plugin) that intercepts workflow package imports and marks them
     // as non-external. This is more targeted than `noExternals = true`
     // which would bundle ALL dependencies and cause TDZ errors from
     // circular imports in packages like vue-bundle-renderer/h3.
-    nitro.hooks.hook('rollup:before', (_nitro: Nitro, config: RollupConfig) => {
-      (config.plugins as Array<unknown>).unshift(
-        createWorkflowForceInlinePlugin(
-          workflowTargetWorld,
-          nitro.options.alias[WORKFLOW_WORLD_TARGET_MODULE]
-        )
+    if (nitro.options.dev) {
+      nitro.hooks.hook(
+        'rollup:before',
+        (_nitro: Nitro, config: RollupConfig) => {
+          (config.plugins as Array<unknown>).unshift({
+            name: 'workflow:force-inline',
+            // `order: 'pre'` is required: Nitro's `nitro:externals` plugin
+            // uses `order: 'pre'` for its resolveId hook and spreads our
+            // resolution result while forcing `external: true`. Without
+            // `pre` here, our `external: false` decision gets overwritten
+            // and `@workflow/*` imports end up externalized in the dev
+            // bundle — which means the SWC-injected `static classId` IIFE
+            // in (e.g.) `@workflow/core/dist/runtime/run.js` is never
+            // applied, and step return values that include `Run`
+            // instances fail to serialize at runtime.
+            resolveId: {
+              order: 'pre',
+              async handler(
+                this: { resolve: Function },
+                source: string,
+                importer: string | undefined,
+                options: { skipSelf?: boolean }
+              ) {
+                if (!importer) return null;
+                // Match workflow package specifiers OR direct paths into
+                // packages/<name>/. Bail out early on non-workflow imports
+                // so we don't intercept the rest of the resolution chain.
+                const isWorkflowPkg =
+                  /^@?workflow(\/|$)/.test(source) ||
+                  /[\\/]packages[\\/](workflow|core|serde|errors|utils|builders|rollup|ai|world|world-local|world-vercel|world-postgres|world-testing|cli|next|nitro|nuxt|vite|vitest|astro|sveltekit|nest)[\\/]/.test(
+                    source
+                  );
+                if (!isWorkflowPkg) return null;
+                // Resolve via other resolvers, skipping ourselves so we
+                // get a path. We don't gate on `resolved.external` because
+                // `nitro:externals` spreads our result and overrides
+                // `external: true` regardless of what we return — we want
+                // to win that race by returning first under `order: 'pre'`.
+                const resolved = await this.resolve(source, importer, {
+                  ...options,
+                  skipSelf: true,
+                });
+                if (!resolved) return null;
+                let resolvedId = resolved.id;
+                // Strip file:// protocol if present — Rollup needs a plain
+                // filesystem path to load the module. `fileURLToPath`
+                // correctly handles Windows paths (e.g., file:///C:/...
+                // -> C:\...) and percent-decoding.
+                if (resolvedId.startsWith('file://')) {
+                  resolvedId = fileURLToPath(resolvedId);
+                }
+                return { id: resolvedId, external: false };
+              },
+            },
+          });
+        }
       );
-    });
+    }
 
     // Add tsConfig plugin
     if (nitro.options.workflow?.typescriptPlugin) {
@@ -324,8 +260,22 @@ export default {
         });
       }
 
-      if (nitro.options.dev) {
-        addDashboardHandler(nitro);
+      // Embedded observability dashboard. Defaults to on in dev / off in prod
+      // builds; when disabled nothing is registered, so prod bundles never
+      // import @workflow/web. Excluded on Vercel deploys (the on-disk build/
+      // and node_modules import don't survive a serverless bundle — users use
+      // the hosted Vercel dashboard there).
+      const dashboardOption = nitro.options.workflow?.dashboard;
+      const dashboardEnabled =
+        typeof dashboardOption === 'object'
+          ? (dashboardOption.enabled ?? nitro.options.dev)
+          : (dashboardOption ?? nitro.options.dev);
+      const dashboardPath = normalizeDashboardPath(
+        (typeof dashboardOption === 'object' && dashboardOption.path) ||
+          DEFAULT_DASHBOARD_PATH
+      );
+      if (dashboardEnabled && !isVercelDeploy) {
+        addDashboardHandler(nitro, dashboardPath);
       }
 
       addVirtualHandler(
@@ -406,122 +356,106 @@ export default {
 } satisfies NitroModule;
 
 const DASHBOARD_VIRTUAL_ID = '#workflow/dashboard-handler';
+const DEFAULT_DASHBOARD_PATH = '/_workflow';
 
-function addDashboardHandler(nitro: Nitro) {
-  const route = '/_workflow';
-  nitro.options.handlers.push({ route, handler: DASHBOARD_VIRTUAL_ID });
+/**
+ * Normalize the dashboard mount path so the Nitro route registration and the
+ * embedded handler's own basename normalization can't disagree.
+ *
+ * `dashboardPath` feeds two consumers: the Nitro route registration
+ * (`[path, path + '/**']`) and the handler's `basename` (which re-normalizes
+ * internally via `normalizeBasename`). Normalizing once, here, keeps them in
+ * sync. We force a single leading slash, strip trailing slashes, and reject
+ * the root mount (whose `/**` catch-all would swallow the host app), falling
+ * back to the default.
+ */
+function normalizeDashboardPath(path: string): string {
+  const normalized = `/${path.trim().replace(/^\/+/, '').replace(/\/+$/, '')}`;
+  return normalized === '/' ? DEFAULT_DASHBOARD_PATH : normalized;
+}
 
-  // Resolve `@workflow/web/server` relative to this module so consumers don't
-  // need a direct dependency on `@workflow/web`. The path is inlined into the
-  // virtual handler as a file:// URL so Node can `import()` it at runtime
-  // regardless of where the generated Nitro bundle ends up.
+/**
+ * Mount the observability dashboard in-process at `basename` (e.g. `/_workflow`).
+ *
+ * The entire `@workflow/web` UI (SSR + static client assets + RPC) is served by
+ * a single Web-standard fetch handler running inside this Nitro process — no
+ * second server, no separate port, no redirect. The handler is framework-
+ * neutral; this is just its first consumer.
+ */
+function addDashboardHandler(nitro: Nitro, basename: string) {
+  // Resolve `@workflow/web/handler` relative to this module so consumers don't
+  // need a direct dependency on `@workflow/web`. Inlined into the virtual
+  // handler as a file:// URL and imported with @vite-ignore/webpackIgnore so
+  // Node `import()`s it from node_modules at runtime — keeping @workflow/web's
+  // (large, React) dependency graph out of the Nitro server bundle.
   const require_ = createRequire(import.meta.url);
-  let webServerUrl: string;
+  let webHandlerUrl: string;
   try {
-    webServerUrl = pathToFileURL(require_.resolve('@workflow/web/server')).href;
+    webHandlerUrl = pathToFileURL(
+      require_.resolve('@workflow/web/handler')
+    ).href;
   } catch {
-    webServerUrl = '@workflow/web/server';
+    webHandlerUrl = '@workflow/web/handler';
   }
 
   const handlerSource = /* js */ `
-    const __workflowWebServerUrl = ${JSON.stringify(webServerUrl)};
-    let serverPromise = null;
-    async function getDashboardUrl() {
-      if (!serverPromise) {
-        serverPromise = (async () => {
-          const { startServer } = await import(/* @vite-ignore */ /* webpackIgnore: true */ __workflowWebServerUrl);
-          const server = await startServer(0);
-          const address = server.address();
-          const port = typeof address === 'object' && address ? address.port : 3456;
-          return 'http://localhost:' + port;
+    const __workflowWebHandlerUrl = ${JSON.stringify(webHandlerUrl)};
+    const __workflowDashboardBasename = ${JSON.stringify(basename)};
+    let handlerPromise = null;
+    async function getDashboardHandler() {
+      if (!handlerPromise) {
+        handlerPromise = (async () => {
+          const mod = await import(/* @vite-ignore */ /* webpackIgnore: true */ __workflowWebHandlerUrl);
+          return mod.createWorkflowWebHandler({ basename: __workflowDashboardBasename });
         })().catch((error) => {
-          serverPromise = null;
+          handlerPromise = null;
           throw error;
         });
       }
-      return serverPromise;
+      return handlerPromise;
     }
   `;
 
-  if (!nitro.routing) {
+  if (isNitroV2(nitro)) {
+    // Nitro v2 (legacy h3)
     nitro.options.virtual[DASHBOARD_VIRTUAL_ID] = /* js */ `
       import { fromWebHandler } from "h3";
       ${handlerSource}
-      export default fromWebHandler(async () => {
+      export default fromWebHandler(async (request) => {
         try {
-          const url = await getDashboardUrl();
-          return Response.redirect(url, 302);
+          const handler = await getDashboardHandler();
+          return await handler(request);
         } catch (error) {
-          console.error('Failed to start workflow dashboard:', error);
-          return new Response('Failed to start workflow dashboard: ' + error.message, { status: 500 });
+          console.error('Failed to render workflow dashboard:', error);
+          return new Response('Failed to render workflow dashboard: ' + (error && error.message || error), { status: 500 });
         }
       });
     `;
   } else {
+    // Nitro v3+ (native web handlers)
     nitro.options.virtual[DASHBOARD_VIRTUAL_ID] = /* js */ `
       ${handlerSource}
-      export default async () => {
+      export default async ({ req }) => {
         try {
-          const url = await getDashboardUrl();
-          return Response.redirect(url, 302);
+          const handler = await getDashboardHandler();
+          return await handler(req);
         } catch (error) {
-          console.error('Failed to start workflow dashboard:', error);
-          return new Response('Failed to start workflow dashboard: ' + error.message, { status: 500 });
+          console.error('Failed to render workflow dashboard:', error);
+          return new Response('Failed to render workflow dashboard: ' + (error && error.message || error), { status: 500 });
         }
       };
     `;
   }
+
+  // Register the exact mount path and a catch-all beneath it so the index,
+  // client routes, API routes (RPC/stream), and static assets all route to the
+  // embedded handler, which resolves them against `basename` internally.
+  for (const route of [basename, `${basename}/**`]) {
+    nitro.options.handlers.push({ route, handler: DASHBOARD_VIRTUAL_ID });
+  }
 }
 
 type VirtualHandlerPath = 'workflow/webhook.mjs' | 'workflow/workflows.mjs';
-
-function getStaticImportSpecifier(id: string): string {
-  if (id.startsWith('file://')) {
-    return id;
-  }
-  if (id.startsWith('/') || /^[A-Za-z]:[\\/]/.test(id)) {
-    return pathToFileURL(id).href;
-  }
-  return id;
-}
-
-function createDevWorldTargetSource(nitro: Nitro): string {
-  const workflowTargetWorldAlias =
-    nitro.options.alias[WORKFLOW_WORLD_TARGET_MODULE];
-  if (typeof workflowTargetWorldAlias !== 'string') {
-    throw new Error(
-      `Missing ${WORKFLOW_WORLD_TARGET_MODULE} alias for Nitro dev workflow handler`
-    );
-  }
-
-  const workflowTargetWorldImport = JSON.stringify(
-    getStaticImportSpecifier(workflowTargetWorldAlias)
-  );
-  const workflowCoreRuntimeImport = JSON.stringify(
-    getStaticImportSpecifier(
-      resolveWorkflowCoreRuntimeAlias({ workingDir: nitro.options.rootDir })
-    )
-  );
-
-  return /* js */ `
-      import {
-        createWorldFromModule as __workflowCreateWorldFromModule,
-        setWorld as __workflowSetWorld,
-      } from ${workflowCoreRuntimeImport};
-      import * as __workflowTargetWorld from ${workflowTargetWorldImport};
-
-      let __workflowWorldPromise = null;
-
-      async function ensureWorkflowWorld() {
-        if (!__workflowWorldPromise) {
-          __workflowWorldPromise = Promise.resolve(
-            __workflowCreateWorldFromModule(__workflowTargetWorld)
-          ).then(__workflowSetWorld);
-        }
-        await __workflowWorldPromise;
-      }
-  `;
-}
 
 function addVirtualHandler(
   nitro: Nitro,
@@ -544,24 +478,21 @@ function addVirtualHandler(
   };
 
   if (nitro.options.dev) {
-    const devWorldTargetSource = createDevWorldTargetSource(nitro);
     // Dev mode: load generated workflow bundles from disk at request time.
     // This keeps `.nitro/workflow/*.mjs` out of Nitro's own bundle graph,
     // which avoids rebuild loops and stale dependency graphs during HMR.
     // Cache-bust by file mtime so each successful rebuild loads fresh code.
-    if (!nitro.routing) {
+    if (isNitroV2(nitro)) {
       nitro.options.virtual[`#${buildPath}`] = /* js */ `
       import { fromWebHandler } from "h3";
       import { statSync } from "node:fs";
       import { pathToFileURL } from "node:url";
-      ${devWorldTargetSource}
 
       const handlerPath = ${handlerImportPath};
       let currentVersion = "";
       let currentImportPath = "";
 
       async function loadPOST() {
-        await ensureWorkflowWorld();
         const version = String(statSync(handlerPath).mtimeMs);
         if (version !== currentVersion) {
           currentVersion = version;
@@ -580,14 +511,12 @@ function addVirtualHandler(
       nitro.options.virtual[`#${buildPath}`] = /* js */ `
       import { statSync } from "node:fs";
       import { pathToFileURL } from "node:url";
-      ${devWorldTargetSource}
 
       const handlerPath = ${handlerImportPath};
       let currentVersion = "";
       let currentImportPath = "";
 
       async function loadPOST() {
-        await ensureWorkflowWorld();
         const version = String(statSync(handlerPath).mtimeMs);
         if (version !== currentVersion) {
           currentVersion = version;
@@ -616,7 +545,7 @@ function addVirtualHandler(
   // step bundle's top-level registrations, so the handler loaded but steps
   // were missing at runtime.
 
-  if (!nitro.routing) {
+  if (isNitroV2(nitro)) {
     // Nitro v2 (legacy)
     nitro.options.virtual[`#${buildPath}`] = /* js */ `
     import ${handlerImportPath};
@@ -655,7 +584,7 @@ function addManifestHandler(nitro: Nitro) {
     // Dev mode: use a virtual handler that reads the manifest from disk at
     // request time. The absolute path is valid because we're on the build machine.
     nitro.options.handlers.push({ route, handler: MANIFEST_VIRTUAL_ID });
-    nitro.options.virtual[MANIFEST_VIRTUAL_ID] = !nitro.routing
+    nitro.options.virtual[MANIFEST_VIRTUAL_ID] = isNitroV2(nitro)
       ? /* js */ `
       import { fromWebHandler } from "h3";
       import { readFileSync } from "node:fs";
@@ -710,7 +639,7 @@ function writeManifestHandler(nitro: Nitro) {
     const manifestContent = readFileSync(manifestPath, 'utf-8');
     JSON.parse(manifestContent); // validate
 
-    const handlerCode = !nitro.routing
+    const handlerCode = isNitroV2(nitro)
       ? `import { fromWebHandler } from "h3";
 const manifest = ${JSON.stringify(manifestContent)};
 export default fromWebHandler(() => new Response(manifest, {
@@ -725,7 +654,7 @@ export default async () => new Response(manifest, {
     writeFileSync(handlerPath, handlerCode);
   } catch {
     // Write a 404 fallback handler
-    const fallback = !nitro.routing
+    const fallback = isNitroV2(nitro)
       ? `import { fromWebHandler } from "h3";
 export default fromWebHandler(() => new Response("Manifest not found", { status: 404 }));
 `

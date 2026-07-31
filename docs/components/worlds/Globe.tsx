@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
 import createGlobe, { type COBEOptions } from 'cobe';
 import { useTheme } from 'next-themes';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface GlobeProps {
   className?: string;

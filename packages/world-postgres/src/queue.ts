@@ -350,16 +350,13 @@ export function createQueue(
     if (!baseUrl) {
       throw new Error('Unable to resolve base URL for workflow queue.');
     }
-    const response = await fetch(
-      createWorkflowUrl(baseUrl, { type: 'flow' }),
-      {
-        method: 'POST',
-        duplex: 'half',
-        headers,
-        body,
-        signal: abortSignal,
-      } as any
-    );
+    const response = await fetch(createWorkflowUrl(baseUrl, { type: 'flow' }), {
+      method: 'POST',
+      duplex: 'half',
+      headers,
+      body,
+      signal: abortSignal,
+    } as any);
     const text = await response.text();
 
     if (!response.ok) {

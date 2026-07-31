@@ -1,5 +1,74 @@
 # @workflow/core
 
+## 5.0.0-beta.38
+
+### Patch Changes
+
+- [#3198](https://github.com/vercel/workflow/pull/3198) [`b92c23c`](https://github.com/vercel/workflow/commit/b92c23ccb46d27066025acd8742da357603c79d8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Don't observe idle — and raise a `WorkflowSuspension` — while a delivery that is committed to reaching the workflow is still parked between its serial queue slot and its detached `resolve()`. A run with an outstanding `sleep()` replaying a batch of parallel step results could suspend inside that gap with none of the batch's follow-up work queued, going dormant until an unrelated timer fired.
+
+- [#3142](https://github.com/vercel/workflow/pull/3142) [`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Revert the static workflow world target injection: the world package is again resolved at runtime from `WORKFLOW_TARGET_WORLD` instead of being aliased into host bundles at build time.
+
+- Updated dependencies [[`34975f6`](https://github.com/vercel/workflow/commit/34975f6b7dd8e0dad874e852eac04c9652f5971d), [`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804)]:
+  - @workflow/world-vercel@5.0.0-beta.34
+  - @workflow/utils@5.0.0-beta.8
+  - @workflow/world-local@5.0.0-beta.32
+  - @workflow/errors@5.0.0-beta.14
+
+## 5.0.0-beta.37
+
+### Major Changes
+
+- [#3128](https://github.com/vercel/workflow/pull/3128) [`7959acc`](https://github.com/vercel/workflow/commit/7959acc8cfadfafc8082086f3063a48448139573) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - **BREAKING CHANGE**: Remove the deprecated `experimental_setAttributes` and `ExperimentalSetAttributesOptions` aliases; use `setAttributes` and `SetAttributesOptions` instead.
+
+- [#3112](https://github.com/vercel/workflow/pull/3112) [`4ada27d`](https://github.com/vercel/workflow/commit/4ada27d35af197d66196288919581d839f87c9a3) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Remove deprecated world-specific factory aliases in favor of `createWorld`.
+
+- [#3061](https://github.com/vercel/workflow/pull/3061) [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Remove the retired step route runtime and make queue health checks target the combined flow handler.
+
+- [#3045](https://github.com/vercel/workflow/pull/3045) [`d813fb8`](https://github.com/vercel/workflow/commit/d813fb8ee835c378db4428e1a9a7edb64cb0b494) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Deterministic sandbox hardening: `crypto.subtle.digest` in workflow functions now computes synchronously via `node:crypto` (byte-identical values, deterministic timing under replay); `Atomics.waitAsync`, async `WebAssembly` compilation, `WeakRef`, and `FinalizationRegistry` are no longer exposed (wall-clock timing and GC observation cannot be replayed).
+
+### Minor Changes
+
+- [#3098](https://github.com/vercel/workflow/pull/3098) [`8a95d36`](https://github.com/vercel/workflow/commit/8a95d36c9a166351829f3c6382cddb68335b54d2) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Carry the owning run's public key in forwarded `WritableStream` descriptors, so a run writing into another run's stream seals frames with no run fetch and no key-API round trip.
+
+- [#3146](https://github.com/vercel/workflow/pull/3146) [`e8bc7d6`](https://github.com/vercel/workflow/commit/e8bc7d6aadcdb5f89de1be71cfcafe5e9085ed25) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Let observability tooling decrypt sealed (`encp`) payloads: key resolution now yields the run's full key capability, and `hydrateDataWithKey` dispatches on the envelope format.
+
+- [#3094](https://github.com/vercel/workflow/pull/3094) [`7a65030`](https://github.com/vercel/workflow/commit/7a6503048acb72bd53e71197339de5cba312f834) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Teach the serialization layer to read and write `encp` sealed envelopes via a `PayloadKey` union, so a cross-run writer can encrypt with only a public key. Existing symmetric call sites are unaffected.
+
+- [#3096](https://github.com/vercel/workflow/pull/3096) [`0b1ca15`](https://github.com/vercel/workflow/commit/0b1ca15dec3a4f56c32d33c5cf5add3ea208c54c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - `resumeHook()` now seals its payload to the target run's published public key when one is present, removing the cross-deployment `run-key` API round trip from hook resumption. Readers resolve the full key capability so they can open sealed payloads.
+
+- [#3095](https://github.com/vercel/workflow/pull/3095) [`b4ba79e`](https://github.com/vercel/workflow/commit/b4ba79ebc501248408474efdd6e353f1753d83e3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Derive each run's X25519 public key at `start()` and stamp it on the run, so cross-run writers can seal payloads to the run without fetching its symmetric key.
+
+- [#3093](https://github.com/vercel/workflow/pull/3093) [`4ba223a`](https://github.com/vercel/workflow/commit/4ba223a01c56126aec5c982d3583f779ed96e8ca) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add the `encp` sealed-box encryption primitive: X25519 keypairs derived from the existing per-run key material, letting cross-run writers encrypt with only a public key. Not yet wired into any write path.
+
+- [#3099](https://github.com/vercel/workflow/pull/3099) [`a86035f`](https://github.com/vercel/workflow/commit/a86035f71f60e22170cae231cc6fb07e39928cc6) Thanks [@TooTallNate](https://github.com/TooTallNate)! - The cross-deployment capability probe now returns the target run's public key, letting `start()` seal workflow arguments without a separate key-lookup request.
+
+### Patch Changes
+
+- [#3111](https://github.com/vercel/workflow/pull/3111) [`8c12358`](https://github.com/vercel/workflow/commit/8c12358075897ef1fdcc4ce3847579df63c8ca7a) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Clarify runtime invariants and compression behavior.
+
+- [#3155](https://github.com/vercel/workflow/pull/3155) [`b8bcded`](https://github.com/vercel/workflow/commit/b8bcded9d9e325f48a386ac70bad5eefee9d1664) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Seal forwarded writes to streams taken with `getWritable()` in a workflow body, which previously fell back to fetching the owner's symmetric key because the workflow VM has no key material to publish on the handle.
+
+- [#3125](https://github.com/vercel/workflow/pull/3125) [`d24c91c`](https://github.com/vercel/workflow/commit/d24c91cfde678e9a4935ee94b9597b5696d6792b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Hooks can carry an optional `resumeContext`; when present, `resumeHook`/`resumeWebhook` resume from it directly instead of fetching the full run, saving a round trip per resume. When the context also carries the run's `encryptionPublicKey`, the resume seals its payload (`encp`) directly to that key, so a default webhook resume needs neither a run read nor a run-key lookup. These two optimizations fall back independently: it fetches the full run when the context is absent, and uses symmetric encryption when no usable public key is available.
+
+- [#3069](https://github.com/vercel/workflow/pull/3069) [`fd05393`](https://github.com/vercel/workflow/commit/fd05393d2b47d1a2f347538dd3b6062d808548d2) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix a false "exceeded max retries" run failure: the retry-ceiling guard counted duplicate `step_started` events written by invocations racing on the same pending batch as real attempts. The owned-recovery ceiling now counts only the owning message's own starts, and the background-step ceiling counts only bare (queue-delivered) starts.
+
+- [#3088](https://github.com/vercel/workflow/pull/3088) [`fc81f45`](https://github.com/vercel/workflow/commit/fc81f4502fa6d8d9a7a5c48b44394dc39c141a86) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Stream writes dispatch the first chunk of an idle stream immediately (flush window default 0 instead of 10ms). Fast producers keep full batching via in-flight accumulation; set `streamFlushIntervalMs` (World option) or `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` (env, takes precedence) above 0 to opt into a windowed leading edge.
+
+- [#3131](https://github.com/vercel/workflow/pull/3131) [`d7553c4`](https://github.com/vercel/workflow/commit/d7553c4517b98c0eef37e5701fdfd316a7d5c008) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Avoid rescanning already prewarmed replay payloads during inline replays.
+
+- [#3110](https://github.com/vercel/workflow/pull/3110) [`5d17c60`](https://github.com/vercel/workflow/commit/5d17c609b109e77c055b70b7654dfa869e2ad0f1) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Consolidate runtime event merging logic.
+
+- [#3139](https://github.com/vercel/workflow/pull/3139) [`2941b1c`](https://github.com/vercel/workflow/commit/2941b1c36048701b8aa8ae870482e54f1053ed33) Thanks [@pranaygp](https://github.com/pranaygp)! - Deliver step results, wait completions, hook payloads and aborts in strict event-log order relative to one another, preventing replay divergence (`CORRUPTED_EVENT_LOG`) when a step completion is adjacent in the log to a `wait_completed`, `hook_received` or abort that a concurrent branch is awaiting.
+
+- [#3078](https://github.com/vercel/workflow/pull/3078) [`b610c46`](https://github.com/vercel/workflow/commit/b610c46f8143afe3c862fb9957f5b4b48e754b42) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Stream write batching now lives in the server writable itself (group commit), so raw `ReadableStream`s piped across workflow/step boundaries batch the same as `getWritable()` instead of sending one request per chunk.
+
+- Updated dependencies [[`8c12358`](https://github.com/vercel/workflow/commit/8c12358075897ef1fdcc4ce3847579df63c8ca7a), [`b4ba79e`](https://github.com/vercel/workflow/commit/b4ba79ebc501248408474efdd6e353f1753d83e3), [`a86035f`](https://github.com/vercel/workflow/commit/a86035f71f60e22170cae231cc6fb07e39928cc6), [`d24c91c`](https://github.com/vercel/workflow/commit/d24c91cfde678e9a4935ee94b9597b5696d6792b), [`313a074`](https://github.com/vercel/workflow/commit/313a074ad17f8acbc82e04e6eea77c63439a1df8), [`fc81f45`](https://github.com/vercel/workflow/commit/fc81f4502fa6d8d9a7a5c48b44394dc39c141a86), [`49276f2`](https://github.com/vercel/workflow/commit/49276f2d0b11d7552ac4504936cbca51df4ce98d), [`49276f2`](https://github.com/vercel/workflow/commit/49276f2d0b11d7552ac4504936cbca51df4ce98d), [`4ada27d`](https://github.com/vercel/workflow/commit/4ada27d35af197d66196288919581d839f87c9a3), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91), [`49276f2`](https://github.com/vercel/workflow/commit/49276f2d0b11d7552ac4504936cbca51df4ce98d)]:
+  - @workflow/world@5.0.0-beta.23
+  - @workflow/world-vercel@5.0.0-beta.33
+  - @workflow/world-local@5.0.0-beta.31
+  - @workflow/utils@5.0.0-beta.7
+  - @workflow/errors@5.0.0-beta.13
+
 ## 5.0.0-beta.36
 
 ### Minor Changes
