@@ -1480,15 +1480,18 @@ export function workflowEntrypoint(
                       // redelivery case, but two CONCURRENT deliveries of the
                       // same queue message can both pass it and commit two
                       // rows (no World currently enforces uniqueness on
-                      // hook_received). Exactly-once delivery to workflow
-                      // code is instead guaranteed at the consumer: replay
-                      // dedups `hook_received` events sharing a `resumeId`
-                      // (see `workflow/hook.ts`), which is deterministic
-                      // because it is a pure function of the persisted log.
-                      // A storage-level (runId, resumeId) constraint that
-                      // would also suppress the duplicate row is planned
-                      // server-side (the successor parallel-resume work
-                      // builds on it).
+                      // hook_received). Replay dedups `hook_received` events
+                      // sharing a `resumeId` (see `workflow/hook.ts`) as
+                      // defense-in-depth: every replay whose loaded log
+                      // contains both rows delivers once, deterministically.
+                      // That is still not a cross-invocation exactly-once
+                      // guarantee — concurrent invocations each replaying a
+                      // pre-duplicate snapshot see only their own row. The
+                      // correctness boundary that closes the concurrent
+                      // window is the storage-level (runId, resumeId)
+                      // constraint arriving with the successor
+                      // parallel-resume work, which builds on the resumeId
+                      // protocol introduced here.
                       if (hookInput) {
                         const alreadyMaterialized = events.some(
                           (e) =>
@@ -1578,11 +1581,24 @@ export function workflowEntrypoint(
                               // branch is defensive only — the duplicate-row
                               // case is instead neutralized by the replay-
                               // side resumeId dedup (see the NOTE above).
-                              // Once a storage-level (runId, resumeId)
-                              // constraint lands server-side, a concurrent
-                              // materialization surfaces here as the real
-                              // already-exists signal and must be treated
-                              // as success.
+                              //
+                              // Known gap while defensive: swallowing the
+                              // conflict leaves this invocation's local
+                              // `events` without the payload, so this replay
+                              // proceeds as if the resume hadn't happened
+                              // (the workflow re-suspends) and forward
+                              // progress relies on the conflicting writer's
+                              // own queue delivery or a later redelivery.
+                              //
+                              // Rebase contract for the parallel-resume
+                              // successor (which adds the storage-level
+                              // (runId, resumeId) constraint that makes this
+                              // branch live): a conflict whose canonical
+                              // event matches this resumeId must be treated
+                              // as success AND the canonical event appended
+                              // to the local log so THIS replay delivers the
+                              // payload; a real conflict (different claim)
+                              // must rethrow so the queue redelivers.
                               runtimeLogger.info(
                                 'Hook resilient-resume materialization skipped (already exists)',
                                 {

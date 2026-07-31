@@ -145,13 +145,18 @@ describe('resumeHook', () => {
     });
 
     it('cross-version compat contract: the direct write is resumeId-only (no digest or negotiation fields)', async () => {
-      // Once released, clients emit `resumeId` on ordinary direct writes
-      // without a payload digest and without any explicit server capability
-      // negotiation. Later server-side idempotency work must keep accepting
-      // this exact request shape — the presence of `resumeId` alone cannot
-      // be taken as proof that the caller supports a newer contract. This
-      // test pins the shape so a future change that widens it (e.g. adds a
-      // digest) shows up as a deliberate contract change, not an accident.
+      // This pins the wire shape as a TRIPWIRE, not a permanent freeze: a
+      // change that widens it (e.g. adds a payload digest) must show up as
+      // a deliberate edit to this test, never an accident. The parallel-
+      // resume successor work is expected to make exactly that deliberate
+      // change (one ID/digest pair shared by the direct writer and the
+      // consumer re-ensure, gated on backend attestation) — and because no
+      // SDK is released from this branch alone (release gate: the successor
+      // must land first), this resumeId-only shape never ships as a
+      // published contract that later servers must accept. Should that
+      // release plan ever change, the shape below becomes load-bearing:
+      // `resumeId` alone cannot be taken as proof the caller supports a
+      // newer contract.
       const { world, eventsCreate } = makeMockWorld();
       vi.mocked(getWorldLazy).mockResolvedValue(world as any);
 

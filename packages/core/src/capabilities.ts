@@ -117,10 +117,18 @@ const FORMAT_VERSION_TABLE: ReadonlyArray<{
  * was last verified is `5.0.0-beta.38`, which does NOT contain this feature —
  * so the next release, `5.0.0-beta.39`, is the earliest possible carrier. If
  * a "Version Packages (beta)" PR merges before this change, bump to the next
- * beta. This MUST be re-verified at merge time, not authoring time: a too-low
- * cutoff silently loses resume payloads on older deployments (their
- * queue-payload schema strips `hookInput`); too-high only disables the
+ * beta. A too-low cutoff silently loses resume payloads on older deployments
+ * (their queue-payload schema strips `hookInput`); too-high only disables the
  * resilient path (fail-fast, today's behavior), which is safe.
+ *
+ * This MUST be re-verified at the actual combined SDK RELEASE, not at
+ * source-merge time: this PR (#1834) merges source-only, and per the agreed
+ * release gate no SDK is published from it alone — the successor
+ * parallel-resume work (#3230) must first be rebased onto this, reviewed,
+ * and merged, with its server-side atomic dedup support deployed. Every
+ * "Version Packages (beta)" merge between now and that release moves the
+ * earliest possible carrier, so the release that finally ships the feature
+ * must confirm this constant names its own version (or bump it).
  *
  * Exported for tests so the boundary is defined in exactly one place.
  */

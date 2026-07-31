@@ -154,6 +154,16 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // resume attempt then share a `resumeId` (distinct resume attempts never
     // do), so replay delivers only the first-in-log occurrence. This is a
     // pure function of the persisted event log, keeping replay deterministic.
+    //
+    // Scope: this is defense-in-depth over the persisted log, not a
+    // cross-invocation exactly-once guarantee — an invocation replaying a
+    // snapshot taken before the duplicate row committed only sees one row,
+    // so two CONCURRENT invocations can each deliver from their own
+    // snapshot. Every replay from a log containing both rows (i.e. all
+    // subsequent deliveries) dedups. The correctness boundary that closes
+    // the concurrent window is the storage-level (runId, resumeId)
+    // constraint arriving with the parallel-resume successor work; this set
+    // stays useful after that lands, for logs written before it deployed.
     const seenResumeIds = new Set<string>();
 
     webhookLogger.debug('Hook consumer setup', { correlationId, token });
