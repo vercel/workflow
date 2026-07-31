@@ -62,6 +62,7 @@ import {
   isEncrypted,
   peekFormatPrefix,
 } from './serialization/format.js';
+import type { GuestCodeStats } from './serialization/hardened.js';
 import {
   getClassReducers,
   getClassRevivers,
@@ -227,6 +228,34 @@ async function recordCompression(
             1 - storedBytes / uncompressedBytes
           )
         : {}),
+    });
+  } catch {
+    // ignore telemetry failures
+  }
+}
+
+/**
+ * Emits OTel span attributes for workflow (guest) code executions that the
+ * hardened serializer could not avoid (getters, proxies, custom
+ * serializers). No-ops when serialization was fully side-effect free —
+ * the common case. Same never-break-the-data-path contract as
+ * `recordCompression` above.
+ */
+async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
+  if (stats.executions.length === 0) return;
+  try {
+    const span = await getActiveSpan();
+    if (!span) return;
+    const details = [
+      ...new Set(
+        stats.executions.map((e) =>
+          e.detail ? `${e.kind} (${e.detail})` : e.kind
+        )
+      ),
+    ];
+    span.setAttributes({
+      ...Attr.SerializationGuestCodeExecutions(stats.executions.length),
+      ...Attr.SerializationGuestCodeDetails(details),
     });
   } catch {
     // ignore telemetry failures
@@ -3428,13 +3457,16 @@ export async function dehydrateWorkflowReturnValue(
   }
   try {
     const compressionStats: CompressionStats = {};
+    const guestCodeStats: GuestCodeStats = { executions: [] };
     const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
       compression,
       compressionStats,
+      guestCodeStats,
     });
     await recordCompression(compressionStats, 'serialize');
+    await recordGuestCodeExecutions(guestCodeStats);
     return result;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
@@ -3491,13 +3523,16 @@ export async function dehydrateStepArguments(
   }
   try {
     const compressionStats: CompressionStats = {};
+    const guestCodeStats: GuestCodeStats = { executions: [] };
     const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
       compression,
       compressionStats,
+      guestCodeStats,
     });
     await recordCompression(compressionStats, 'serialize');
+    await recordGuestCodeExecutions(guestCodeStats);
     return result;
   } catch (error) {
     const cause = unwrapSerializationCause(error);

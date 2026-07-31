@@ -453,6 +453,22 @@ export const SerializationCompressionRatio = SemanticConvention<number>(
   'workflow.serialization.compression_ratio'
 );
 
+/**
+ * Number of workflow (guest) code executions serialization could not avoid
+ * (getters, proxies, custom serializers); set only when non-zero.
+ */
+export const SerializationGuestCodeExecutions = SemanticConvention<number>(
+  'workflow.serialization.guest_code_executions'
+);
+
+/**
+ * Deduplicated `kind (detail)` descriptions of the guest-code executions;
+ * set only when non-zero.
+ */
+export const SerializationGuestCodeDetails = SemanticConvention<string[]>(
+  'workflow.serialization.guest_code_details'
+);
+
 // RPC/Peer Service attributes - For service maps and dependency tracking
 // See: https://opentelemetry.io/docs/specs/semconv/rpc/rpc-spans/
 

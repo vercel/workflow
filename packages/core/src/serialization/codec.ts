@@ -15,6 +15,7 @@
  */
 
 import type { CompressionStats } from './compression.js';
+import type { GuestCodeStats } from './hardened.js';
 import type { FormatPrefix } from './types.js';
 
 /**
@@ -74,6 +75,18 @@ export interface CodecOptions {
    * Used by the dehydrate/hydrate wrappers to emit OTel span attributes.
    */
   compressionStats?: CompressionStats;
+
+  /**
+   * Optional sink populated by the hardened serializer with every
+   * workflow (guest) code execution that serialization could not avoid —
+   * getters, proxies, and custom `[WORKFLOW_SERIALIZE]` methods. Callers
+   * that keep a workflow VM alive across steps can treat a non-empty
+   * `executions` array as a signal that serialization may have perturbed
+   * VM state (serialization runs exactly once per payload and is never
+   * replayed, so any side effect it triggers diverges from replay).
+   * Serialize side only.
+   */
+  guestCodeStats?: GuestCodeStats;
 }
 
 export interface Codec {
