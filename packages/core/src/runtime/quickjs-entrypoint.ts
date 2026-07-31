@@ -29,9 +29,12 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { classifyRunError } from '../classify-error.js';
-import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
-import { encrypt as encryptSerializedData } from '../serialization/encryption.js';
+import {
+  deriveRunPayloadKeys,
+  encrypt as encryptSerializedData,
+  type RunPayloadKeys,
+} from '../serialization/encryption.js';
 import {
   dehydrateRunError,
   hydrateRunError,
@@ -103,7 +106,7 @@ async function dispatchPendingOps(params: {
   world: Awaited<ReturnType<typeof getWorld>>;
   runId: string;
   workflowRun: WorkflowRun;
-  encryptionKey: Awaited<ReturnType<typeof importKey>> | undefined;
+  encryptionKey: RunPayloadKeys | undefined;
   pendingOperations: PendingOperation[];
   queueSteps: boolean;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
@@ -521,8 +524,16 @@ export async function runWorkflowWithQuickJS(params: {
 
   // Resolve the encryption key up front — needed to decrypt event
   // payloads inside the VM and to encrypt event payloads written below.
+  // Resolve the FULL capability (symmetric AES key + X25519 keypair), not
+  // just `importKey(rawKey)`: a run reading its own event log can encounter
+  // sealed (`encp`) hook payloads that a cross-deployment `resumeHook()`
+  // wrote to it (sealing is presence-gated on the run's published
+  // encryptionPublicKey, which the shared start() path stamps regardless of
+  // engine). A bare symmetric key cannot open those and would wedge the run
+  // right after hook_received — the node:vm engine resolves the same full
+  // capability via memoizeEncryptionKey.
   const rawKey = await world.getEncryptionKeyForRun?.(workflowRun);
-  const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+  const encryptionKey = rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
 
   // Load the FULL event log for the run. On first invocation the
   // preloaded events from the run_started response are the complete log
