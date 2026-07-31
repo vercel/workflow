@@ -18,17 +18,27 @@ mkdir -p "$RESULTS_DIR"
 
 echo "=== Storm: $LABEL (world=$WORLD, step=$STEP_ATTEMPTS, hook=$HOOK_ATTEMPTS) ==="
 
+# 0. Sweep zombie drivers/servers from any earlier storm: a half-killed
+# vitest keeps launching runs against whatever server is on :3000 and keeps
+# rewriting the shared results checkpoint, silently contaminating this run.
+pkill -f "event-log-race-repro.test" 2>/dev/null
+pkill -f "next-server" 2>/dev/null
+sleep 2
+pkill -9 -f "event-log-race-repro.test" 2>/dev/null
+pkill -9 -f "next-server" 2>/dev/null
+
 # 1. Clean state. NOTE: `next start` serves the PREBUILT .next bundle, which
 # embeds the workflow packages — rebuild the workbench after ANY package
 # change or the storm measures stale code.
 rm -rf "$WB/.next/workflow-data"
-SERVER_ENV=(WORKFLOW_PUBLIC_MANIFEST=1 PORT=$PORT WORKFLOW_LOCAL_APPEND_DEBUG=1)
+SERVER_ENV=(WORKFLOW_PUBLIC_MANIFEST=1 PORT=$PORT)
 TEST_ENV=()
 if [ "$WORLD" = "postgres" ]; then
+  # Dedicated container on 5434 — the durabench compose stack owns host 5432.
   DB="storm_$(echo "$LABEL" | tr -c 'a-z0-9' '_')"
-  docker exec workflow-postgres psql -U world -d postgres -c "DROP DATABASE IF EXISTS $DB" >/dev/null
-  docker exec workflow-postgres psql -U world -d postgres -c "CREATE DATABASE $DB" >/dev/null
-  PG_URL="postgres://world:world@localhost:5432/$DB"
+  docker exec workflow-postgres-5434 psql -U world -d postgres -c "DROP DATABASE IF EXISTS $DB" >/dev/null
+  docker exec workflow-postgres-5434 psql -U world -d postgres -c "CREATE DATABASE $DB" >/dev/null
+  PG_URL="postgres://world:world@localhost:5434/$DB"
   (cd "$REPO_DIR" && WORKFLOW_POSTGRES_URL="$PG_URL" ./packages/world-postgres/bin/setup.js) >/dev/null 2>&1
   SERVER_ENV+=(WORKFLOW_TARGET_WORLD=@workflow/world-postgres WORKFLOW_POSTGRES_URL="$PG_URL")
   TEST_ENV+=(WORKFLOW_TARGET_WORLD=@workflow/world-postgres WORKFLOW_POSTGRES_URL="$PG_URL")
@@ -60,7 +70,7 @@ rm -f "$REPO_DIR/event-log-race-repro-results.json"
   EVENT_LOG_RACE_REPRO_ATTEMPTS=0 \
   EVENT_LOG_RACE_REPRO_CONCURRENCY=6 \
   EVENT_LOG_RACE_REPRO_BUDGET_MS=2700000 \
-  pnpm vitest run packages/core/e2e/event-log-race-repro.test.ts --reporter=default \
+  pnpm vitest run --dir packages/core/e2e event-log-race-repro.test.ts --reporter=default \
   > "/tmp/storm-test-$LABEL.log" 2>&1)
 STATUS=$?
 

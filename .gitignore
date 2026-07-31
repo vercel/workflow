@@ -42,3 +42,4 @@ packages/swc-plugin-workflow/build-hash.json
 workbench/nextjs-*/public/.well-known/workflow
 workbench/sveltekit/static/.well-known/workflow
 
+event-log-race-repro-results.json
