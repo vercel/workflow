@@ -662,11 +662,11 @@ export interface MutableEventLog {
    */
   maxSlot: number;
   /**
-   * Slots handed out by `reserveSlot` past `maxSlot` whose events have not been
-   * merged back yet. Reset whenever the log is merged into, because the merged
-   * events are the authority on which slots are taken.
+   * Next slot `reserveSlot` will hand out. Absolute, and it only ever moves
+   * forward: a merge can raise it past the events it brought in, but must never
+   * lower it onto a slot already handed to a writer that is still in flight.
    */
-  reserved: number;
+  nextSlot: number;
 }
 
 /**
@@ -683,17 +683,18 @@ export function toMutableEventLog(
   cursor: string | null,
   slotFloor = 0
 ): MutableEventLog {
+  const maxSlot = Math.max(maxSlotOf(events), slotFloor);
   return {
     events,
     cursor,
-    maxSlot: Math.max(maxSlotOf(events), slotFloor),
-    reserved: 0,
+    maxSlot,
+    nextSlot: maxSlot + 1,
   };
 }
 
 /**
  * Merges loaded events into `log` in place, keeping `maxSlot` current and
- * dropping outstanding reservations (the merged events supersede them).
+ * advancing the reservation pointer past the events merged in.
  */
 export function mergeLoadedEvents(
   log: MutableEventLog,
@@ -701,7 +702,7 @@ export function mergeLoadedEvents(
 ): void {
   appendUniqueEvents(log.events, events);
   log.maxSlot = Math.max(log.maxSlot, maxSlotOf(events));
-  log.reserved = 0;
+  log.nextSlot = Math.max(log.nextSlot, log.maxSlot + 1);
 }
 
 /**
@@ -713,10 +714,16 @@ export function mergeLoadedEvents(
  * in the flush would propose the same slot and all but one would conflict, on
  * every single flush. Operations are built in deterministic replay order, so
  * the slot each one draws is replay-stable too.
+ *
+ * The pointer is never rewound by a merge, only pushed forward. A writer that
+ * loses its slot merges the delta and reserves again while its siblings still
+ * hold theirs; rewinding to `maxSlot + 1` would hand it a sibling's slot and
+ * turn one conflict into a chain of them.
  */
 export function reserveSlot(log: MutableEventLog): number {
-  log.reserved += 1;
-  return log.maxSlot + log.reserved;
+  const slot = log.nextSlot;
+  log.nextSlot = slot + 1;
+  return slot;
 }
 
 /**
@@ -859,7 +866,7 @@ export interface EventCreateFence {
 /**
  * The fence for a create that is deliberately **not** retried in place, because
  * a rejection means the committed decision itself is stale and only a fresh
- * replay can revise it (`run_completed`, an inline `step_started` claim).
+ * replay can revise it (`run_completed`).
  *
  * Claims a slot off `log` for a slot-numbered run — which counts as a
  * reservation, so a caller that fences several creates from one log gets a
@@ -885,17 +892,78 @@ export function eventCreateFenceFor(
   options?: { extraEvents?: number }
 ): EventCreateFence | undefined {
   if (usesSlotIdentity(specVersion)) {
-    const maxSlot = log.maxSlot;
-    // The extra events sit below the one being created, matching the order a
-    // reader expects (a step is created before it starts) — so their slots are
-    // reserved first and the claim names the last of the run.
-    for (let i = 0; i < (options?.extraEvents ?? 0); i++) {
-      reserveSlot(log);
-    }
-    return { eventId: slotEventId(reserveSlot(log)), maxSlot };
+    return reserveSlotFence(log, options?.extraEvents ?? 0);
   }
   const stateUpdatedAt = stateUpdatedAtForCreate(log.events, specVersion);
   return stateUpdatedAt !== undefined ? { stateUpdatedAt } : undefined;
+}
+
+/**
+ * Reserves this write's slots off `log` and names the one the event itself
+ * takes.
+ *
+ * `extraEvents` sit below the one being created, matching the order a reader
+ * expects (a step is created before it starts), so their slots are reserved
+ * first and the claim names the last of the run — a World that writes a pair
+ * derives the lower id from the one it was given.
+ */
+function reserveSlotFence(
+  log: MutableEventLog,
+  extraEvents: number
+): EventCreateFence {
+  const maxSlot = log.maxSlot;
+  for (let i = 0; i < extraEvents; i++) {
+    reserveSlot(log);
+  }
+  return { eventId: slotEventId(reserveSlot(log)), maxSlot };
+}
+
+/**
+ * Runs one event create under whichever fence its run uses, handling a lost
+ * claim however that run's scheme requires.
+ */
+export type FencedCreate = <T>(
+  op: (fence: EventCreateFence | undefined) => Promise<T>
+) => Promise<T>;
+
+/**
+ * The fence for an inline step's `step_started` claim.
+ *
+ * A slot-numbered run retries a lost claim in place; a watermark-guarded run
+ * does not, and lets the rejection abandon the batch for a fresh replay. The
+ * asymmetry is in what a rejection proves, and it is the difference between a
+ * batch that stays contiguous and one that splits:
+ *
+ * - A 412 compares the *time* of the newest outside event, so every claim in a
+ *   batch carries the same fence value and a stale view fails all of them. The
+ *   batch is abandoned as a unit, nothing is written, and the fresh replay
+ *   reschedules from a complete view.
+ * - A 409 only proves another writer took this write's *number*. That happens
+ *   routinely without any staleness: the server allocates outside events from
+ *   the same next-free pointer the client reserves from, so any outside event
+ *   landing mid-batch takes the slot the batch's next claim is holding. Fencing
+ *   the batch on it splits it — the loser writes nothing while its siblings
+ *   commit, and the loser's events land far later in the log (or never), leaving
+ *   an order no single replay can consume. Taking another number instead keeps
+ *   the batch's events adjacent and its slots dense.
+ */
+export function stepClaimFence(
+  runId: string,
+  log: MutableEventLog,
+  specVersion: number | undefined,
+  options?: { extraEvents?: number }
+): FencedCreate {
+  if (usesSlotIdentity(specVersion)) {
+    // Reserved here, synchronously, rather than when the claim fires: a batch's
+    // claims have to be numbered in replay order, and they only start racing
+    // each other afterwards. Retries re-reserve at that point by necessity —
+    // the merged delta has moved the log — but by then this write is the only
+    // one of the batch still choosing a slot.
+    const initialFence = reserveSlotFence(log, options?.extraEvents ?? 0);
+    return (op) => withSlotRetry(runId, log, op, { ...options, initialFence });
+  }
+  const fence = eventCreateFenceFor(log, specVersion, options);
+  return (op) => op(fence);
 }
 
 /**
@@ -917,15 +985,20 @@ export function eventCreateFenceFor(
 export async function withSlotRetry<T>(
   runId: string,
   log: MutableEventLog,
-  op: (fence: EventCreateFence) => Promise<T>
+  op: (fence: EventCreateFence) => Promise<T>,
+  options?: { extraEvents?: number; initialFence?: EventCreateFence }
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     // Claimed per attempt, not once up front: a merged delta moves the log's
-    // high-water mark, so the previous claim is stale by definition.
-    const maxSlot = log.maxSlot;
-    const eventId = slotEventId(reserveSlot(log));
+    // high-water mark, so the previous claim is stale by definition. The first
+    // attempt can carry a slot the caller reserved earlier, for a caller whose
+    // numbering has to be assigned in a particular order (see stepClaimFence).
+    const fence =
+      (attempt === 0 ? options?.initialFence : undefined) ??
+      reserveSlotFence(log, options?.extraEvents ?? 0);
+    const eventId = fence.eventId;
     try {
-      return await op({ eventId, maxSlot });
+      return await op(fence);
     } catch (error) {
       if (
         !SlotConflictError.is(error) ||

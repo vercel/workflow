@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { Event, World } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../private.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import { executeStep } from './step-executor.js';
@@ -162,5 +162,41 @@ describe('executeStep — retry ceiling (authoritativeAttempt)', () => {
       'step_failed'
     );
     expect(ceilingFailures).toHaveLength(0);
+  });
+});
+
+describe('executeStep — claim fence plumbing', () => {
+  afterEach(() => {
+    counter += 1;
+  });
+
+  it("runs the step_started claim under the caller's fence", async () => {
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+    });
+
+    // The fence rides in CreateEventParams, which world-local does not
+    // persist — so observe the call itself rather than the stored event.
+    const createSpy = vi.spyOn(world.events, 'create');
+
+    await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      claimFence: (op) => op({ stateUpdatedAt: 1_700_000_000_000 }),
+    });
+
+    const started = createSpy.mock.calls.filter(
+      ([, data]) => data.eventType === 'step_started'
+    );
+    expect(started).toHaveLength(1);
+    expect(started[0]?.[2]?.stateUpdatedAt).toBe(1_700_000_000_000);
   });
 });

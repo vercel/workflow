@@ -51,6 +51,7 @@ import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
   appendUniqueEvents,
   eventCreateFenceFor,
+  stepClaimFence,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -2187,10 +2188,14 @@ export function workflowEntrypoint(
                         //    (retried over the reloaded log, or exhausted into
                         //    a queue re-invocation), AND the lazy step_started
                         //    claim of its next inline step, which is fenced too
-                        //    (threaded below via
-                        //    `eventCreateFence`; on rejection the batch is
-                        //    abandoned and re-invoked for a fresh replay, so a
-                        //    stale view can never commit a step). Hooks created
+                        //    (threaded below via `stepClaimFence`; on rejection
+                        //    the batch is abandoned and re-invoked for a fresh
+                        //    replay, so a stale view can never commit a step).
+                        //    A slot-numbered run gets there differently — the
+                        //    claim merges the missed events and retries in
+                        //    place, so the same events are observed without
+                        //    discarding the batch. See stepClaimFence.
+                        //    Hooks created
                         //    by THIS suspension are inside the delta (their
                         //    `hook_created` lands before the step-terminal
                         //    write), so only their `hook_received` responses
@@ -2337,8 +2342,8 @@ export function workflowEntrypoint(
                         // could claim — and commit — a step scheduled off a view
                         // that misses an out-of-band event. One log for the
                         // whole batch so each claim draws its own event slot;
-                        // `eventCreateFenceFor` yields undefined for a run
-                        // fenced neither way, leaving those claims as they were.
+                        // `stepClaimFence` leaves the claims of a run fenced
+                        // neither way exactly as they were.
                         //
                         // The suspension's own log, not a second one over the
                         // same snapshot: its reservations are what the hook and
@@ -2359,7 +2364,8 @@ export function workflowEntrypoint(
                             // positional, so it has to be assigned before these
                             // executions start racing each other, and the order
                             // it is assigned in has to be replay-stable.
-                            const eventCreateFence = eventCreateFenceFor(
+                            const claimFence = stepClaimFence(
+                              runId,
                               inlineClaimLog,
                               workflowRun.specVersion,
                               {
@@ -2445,7 +2451,7 @@ export function workflowEntrypoint(
                                 // see suppressOptimisticStart above.
                                 suppressOptimisticStart,
                                 runReadyBarrier,
-                                eventCreateFence,
+                                claimFence,
                                 ...(stepIndex === 0 &&
                                 s.lazyStepInput !== undefined &&
                                 latencyTracking
@@ -2487,12 +2493,15 @@ export function workflowEntrypoint(
                           );
                         } catch (stepErr) {
                           // An incomplete-view rejection of an inline
-                          // step_started claim (412 stale watermark, or 409
-                          // taken slot): the loaded view this batch was
+                          // step_started claim: the loaded view this batch was
                           // scheduled from is behind an out-of-band event (e.g.
-                          // a received hook), so the claim was fenced by the
-                          // guard and no step events were written. Abandon the
-                          // batch — any optimistic body result is discarded by
+                          // a received hook), so the claim was fenced and no
+                          // step events were written. Under the watermark that
+                          // is every 412; under slot identity `stepClaimFence`
+                          // first merges the missed events and re-claims in
+                          // place, so a 409 only arrives here once those
+                          // retries are exhausted. Abandon the batch — any
+                          // optimistic body result is discarded by
                           // executeStep's reconciliation — and re-invoke for a
                           // fresh replay that observes the new event. Wait for
                           // the sibling executions to settle first so no owned
