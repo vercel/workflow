@@ -77,6 +77,27 @@ async function createStep(
   return result.event.eventId;
 }
 
+async function createWait(
+  runId: string,
+  waitId: string,
+  eventId?: string
+): Promise<string> {
+  const result = await storage.events.create(
+    runId,
+    {
+      eventType: 'wait_created',
+      specVersion: SPEC_VERSION_SLOT_IDENTITY,
+      correlationId: waitId,
+      eventData: { resumeAt: new Date('2030-01-01T00:00:00.000Z') },
+    },
+    eventId === undefined ? undefined : { eventId }
+  );
+  if (!result.event) {
+    throw new Error('Expected an event');
+  }
+  return result.event.eventId;
+}
+
 describe('numbering', () => {
   it('puts run_created in the first slot', async () => {
     const runId = await newSlotRun();
@@ -343,6 +364,33 @@ describe('conflict', () => {
       SlotConflictError
     );
     await expect(slotsOf(runId)).resolves.toEqual([1, 2]);
+  });
+
+  it('lets a lost claim re-propose an entity it had already materialized', async () => {
+    // A claim only reaches its exclusive write after the entity it describes
+    // exists, so a claim that loses leaves that entity behind. The caller's
+    // whole answer to a conflict is to merge, replay and propose the same
+    // operation one position higher — which it cannot do if its own leftover
+    // entity is what rejects the retry.
+    const runId = await newSlotRun();
+    // Seed this instance's book, then let another instance take the position
+    // the book will hand out next. The claim below passes the book's
+    // "is it written?" check because the book has not seen that write.
+    await createStep(runId, 'step_seed');
+    const other = createStorage(testDir);
+    await other.events.create(runId, {
+      eventType: 'step_created',
+      specVersion: SPEC_VERSION_SLOT_IDENTITY,
+      correlationId: 'step_out_of_band',
+      eventData: { stepName: 'b-step', input: new Uint8Array() },
+    });
+
+    await expect(createWait(runId, 'wait_a', slotEventId(3))).rejects.toThrow(
+      SlotConflictError
+    );
+    const eventId = await createWait(runId, 'wait_a', slotEventId(4));
+    expect(eventId).toBe(slotEventId(4));
+    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3, 4]);
   });
 
   it('reallocates around another instance holding the slot it picked', async () => {

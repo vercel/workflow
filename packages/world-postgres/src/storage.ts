@@ -456,7 +456,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
   // hook row left behind by a process / database interruption between
   // the hook INSERT and the events INSERT below (see the recovery
   // logic in the hook_created branch).
-  const getHookCreatedEvent = drizzle
+  const getCorrelatedEvent = drizzle
     .select({ eventId: events.eventId })
     .from(events)
     .where(
@@ -467,7 +467,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       )
     )
     .limit(1)
-    .prepare('events_get_hook_created_for_run_correlation');
+    .prepare('events_get_correlated_event');
 
   const getWaitForValidation = drizzle
     .select({
@@ -1691,7 +1691,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             existingHook.runId === effectiveRunId &&
             existingHook.hookId === data.correlationId
           ) {
-            const [existingEvent] = await getHookCreatedEvent.execute({
+            const [existingEvent] = await getCorrelatedEvent.execute({
               runId: effectiveRunId,
               correlationId: data.correlationId,
               eventType: 'hook_created',
@@ -1892,9 +1892,43 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             specVersion: waitValue.specVersion ?? undefined,
           };
         } else {
-          throw new EntityConflictError(
-            `Wait "${data.correlationId}" already exists`
-          );
+          // The wait row exists but this call did not write it. Which of the two
+          // reasons it is decides everything, and only the event log knows:
+          //   - the `wait_created` event exists → a real duplicate, so throw and
+          //     let the runtime's concurrent-replay catch path swallow it.
+          //   - it does not → an orphaned row from an attempt that materialized
+          //     the wait and then lost its event write (a crash, or a slot
+          //     claimed by someone else). The caller re-proposing the same
+          //     operation one position higher is exactly what has to succeed
+          //     here, so adopt the row and complete the partial write. Mirrors
+          //     hook_created's handling of the same window.
+          const [existingEvent] = await getCorrelatedEvent.execute({
+            runId: effectiveRunId,
+            correlationId: data.correlationId,
+            eventType: 'wait_created',
+          });
+          if (existingEvent) {
+            throw new EntityConflictError(
+              `Wait "${data.correlationId}" already exists`
+            );
+          }
+          const [orphan] = await drizzle
+            .select()
+            .from(Schema.waits)
+            .where(eq(Schema.waits.waitId, waitId))
+            .limit(1);
+          if (orphan) {
+            wait = {
+              waitId: orphan.waitId,
+              runId: orphan.runId,
+              status: orphan.status,
+              resumeAt: orphan.resumeAt ?? undefined,
+              completedAt: orphan.completedAt ?? undefined,
+              createdAt: orphan.createdAt,
+              updatedAt: orphan.updatedAt,
+              specVersion: orphan.specVersion ?? undefined,
+            };
+          }
         }
       }
 

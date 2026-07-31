@@ -118,6 +118,14 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
   const books = new Map<string, RunSlots>();
   /** runId → in-flight seed scan, so concurrent first callers share one scan. */
   const seeds = new Map<string, Promise<RunSlots>>();
+  /**
+   * runId → slots claimed while the run had no book yet, so the book the next
+   * allocation seeds starts out holding them. A claim is synchronous and a seed
+   * scan is not: without this, the first allocation of a run would read the log
+   * from disk and hand out a position a caller in this very instance had already
+   * claimed — the case that makes a claim lose in a single-process app.
+   */
+  const claims = new Map<string, Set<number>>();
 
   async function readMode(runId: string): Promise<boolean> {
     const run = await readJSONWithFallback<WorkflowRun>(
@@ -141,7 +149,7 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
     }
     const book: RunSlots = {
       written,
-      outstanding: new Set(),
+      outstanding: new Set(claims.get(runId)),
       searchFrom: FIRST_SLOT,
     };
     books.set(runId, book);
@@ -160,6 +168,21 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
       seeds.set(runId, pending);
     }
     return pending;
+  }
+
+  /**
+   * Drops a claim once its publish resolved, either way: a claim left behind
+   * would be handed to no one and become a hole in a log seeded later.
+   */
+  function forgetClaim(runId: string, slot: number): void {
+    const claimed = claims.get(runId);
+    if (!claimed) {
+      return;
+    }
+    claimed.delete(slot);
+    if (claimed.size === 0) {
+      claims.delete(runId);
+    }
   }
 
   function take(book: RunSlots, minSlot: number): number {
@@ -201,8 +224,12 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
     },
 
     claim(runId, slot) {
-      // No book means nothing is allocating for this run in this instance yet,
-      // and the seed scan that starts one reads the claim off disk if it landed.
+      const claimed = claims.get(runId);
+      if (claimed) {
+        claimed.add(slot);
+      } else {
+        claims.set(runId, new Set([slot]));
+      }
       books.get(runId)?.outstanding.add(slot);
     },
 
@@ -212,6 +239,7 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
     },
 
     release(runId, slot) {
+      forgetClaim(runId, slot);
       const book = books.get(runId);
       if (!book) {
         return;
@@ -223,14 +251,15 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
     },
 
     observe(runId, eventId) {
+      const slot = slotFromId(eventId);
+      if (slot === undefined) {
+        return;
+      }
+      forgetClaim(runId, slot);
       const book = books.get(runId);
       if (!book) {
         // Nothing to keep consistent: the slot is on disk by the time this is
         // called, so the eventual seed scan picks it up.
-        return;
-      }
-      const slot = slotFromId(eventId);
-      if (slot === undefined) {
         return;
       }
       book.written.add(slot);
@@ -258,11 +287,14 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
     forget(runId) {
       modes.delete(runId);
       books.delete(runId);
+      // Claims outlive the book on purpose: they belong to writes still in
+      // flight, and the book a later allocation seeds has to hold them back.
     },
 
     clear() {
       modes.clear();
       books.clear();
+      claims.clear();
     },
   };
 }
