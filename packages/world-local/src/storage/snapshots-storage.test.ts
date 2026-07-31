@@ -70,4 +70,25 @@ describe('snapshots storage (world-local)', () => {
     // Deleting again is a no-op.
     await snapshots.delete('wrun_c');
   });
+
+  it('rejects path-traversal runIds on every operation', async () => {
+    const hostile = [
+      '../escape',
+      '..',
+      'a/b',
+      'a\\b',
+      'nul\0byte',
+      '.hidden',
+      'dotted.name',
+      '',
+    ];
+    const metadata = { eventsCursor: null, createdAt: new Date() };
+    for (const runId of hostile) {
+      await expect(
+        snapshots.save(runId, new Uint8Array([1]), metadata)
+      ).rejects.toThrow(/unsafe|invalid/i);
+      await expect(snapshots.load(runId)).rejects.toThrow(/unsafe|invalid/i);
+      await expect(snapshots.delete(runId)).rejects.toThrow(/unsafe|invalid/i);
+    }
+  });
 });

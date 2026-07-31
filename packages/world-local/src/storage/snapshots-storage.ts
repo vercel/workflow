@@ -2,7 +2,15 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { SnapshotMetadata } from '@workflow/world';
 import { SnapshotMetadataSchema } from '@workflow/world';
-import { ensureDir, readBuffer, readJSON, write, writeJSON } from '../fs.js';
+import {
+  assertSafeEntityId,
+  ensureDir,
+  readBuffer,
+  readJSON,
+  resolveWithinBase,
+  write,
+  writeJSON,
+} from '../fs.js';
 
 /**
  * Create the snapshots sub-storage for a local World implementation.
@@ -18,11 +26,17 @@ import { ensureDir, readBuffer, readJSON, write, writeJSON } from '../fs.js';
 export function createSnapshotsStorage(basedir: string) {
   const snapshotsDir = path.join(basedir, 'snapshots');
 
+  // `runId` arrives from the request body: validate it before it touches a
+  // filesystem path (primary defense — rejects `../`, `/`, `\`, NUL, `.`),
+  // and contain the join under the snapshots dir (defense in depth), the
+  // same two-layer scheme the other world-local storages use.
   function dataPath(runId: string): string {
-    return path.join(snapshotsDir, `${runId}.bin`);
+    assertSafeEntityId('runId', runId);
+    return resolveWithinBase(snapshotsDir, `${runId}.bin`);
   }
   function metadataPath(runId: string): string {
-    return path.join(snapshotsDir, `${runId}.json`);
+    assertSafeEntityId('runId', runId);
+    return resolveWithinBase(snapshotsDir, `${runId}.json`);
   }
 
   return {
