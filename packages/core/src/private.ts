@@ -3,7 +3,7 @@
  */
 
 import { withResolvers } from '@workflow/utils';
-import type { WorldCapabilities } from '@workflow/world';
+import { envNumber, type WorldCapabilities } from '@workflow/world';
 import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import type { ReplayPayloadCache } from './replay-payload-cache.js';
@@ -315,8 +315,27 @@ interface QuiescingDeliveryEntry {
  * its time, short enough to bound the stall. Whatever it is, it is a strict
  * improvement on retiring at the first idle tick, which is what a barrier used
  * to do while its own delivery was still in flight.
+ *
+ * Exported so tests can size their budgets against the real number instead of
+ * restating it, and so a regression is caught by the test that guards it rather
+ * than passing vacuously once the constant moves.
  */
-const BARRIER_ABANDON_DEADLINE_TICKS = 32;
+export const BARRIER_ABANDON_DEADLINE_TICKS = 32;
+
+/**
+ * Effective abandon deadline. Override: `WORKFLOW_BARRIER_ABANDON_DEADLINE_TICKS`.
+ *
+ * Read once per barrier, at registration, so one barrier's deadline cannot
+ * change underneath it. Floored at 1: a deadline of 0 would retire every
+ * unclaimed payload on its first tick, which is the collapse behavior this net
+ * replaced.
+ */
+const getBarrierAbandonDeadlineTicks = (): number =>
+  envNumber(
+    'WORKFLOW_BARRIER_ABANDON_DEADLINE_TICKS',
+    BARRIER_ABANDON_DEADLINE_TICKS,
+    { integer: true, min: 1 }
+  );
 
 /**
  * How many poll rounds {@link scheduleWhenIdle} waits for the system to go idle
@@ -328,8 +347,29 @@ const BARRIER_ABANDON_DEADLINE_TICKS = 32;
  * flight — a genuine storm, not one slow decrypt. That distinction matters
  * because this function also schedules workflow suspensions, where firing early
  * preempts data delivery.
+ *
+ * Exported for the same reason as {@link BARRIER_ABANDON_DEADLINE_TICKS}.
  */
-const IDLE_POLL_DEADLINE_ROUNDS = 16;
+export const IDLE_POLL_DEADLINE_ROUNDS = 16;
+
+/**
+ * Effective idle-poll budget. Override: `WORKFLOW_IDLE_POLL_DEADLINE_ROUNDS`.
+ *
+ * Read once per {@link scheduleWhenIdle} call so a single poll's budget is
+ * fixed for its lifetime. Floored at 1 so an override cannot turn the poll into
+ * an unconditional fire, which would preempt every in-flight delivery.
+ *
+ * These two deadlines are the only knobs in this file, and they are here rather
+ * than compiled in because their INTERACTION is what decides whether a run
+ * drops a committed delivery, and skew protection means a code-only correction
+ * never reaches the runs already in the bad state: a run stays on the
+ * deployment it started on.
+ */
+const getIdlePollDeadlineRounds = (): number =>
+  envNumber('WORKFLOW_IDLE_POLL_DEADLINE_ROUNDS', IDLE_POLL_DEADLINE_ROUNDS, {
+    integer: true,
+    min: 1,
+  });
 
 /**
  * Which earlier kinds each delivery kind defers behind. Chosen so that no kind
@@ -836,16 +876,14 @@ function scheduleBarrierRetirement(
   abandonableAfter?: Promise<unknown>
 ): void {
   let ticks = 0;
+  const deadlineTicks = getBarrierAbandonDeadlineTicks();
   const check = () => {
     if (isRetired() || entry.armed) {
       // Armed: a delivery chain owns this barrier's retirement from here on.
       // Stop polling rather than racing it.
       return;
     }
-    if (
-      ctx.pendingDeliveries === 0 ||
-      ++ticks >= BARRIER_ABANDON_DEADLINE_TICKS
-    ) {
+    if (ctx.pendingDeliveries === 0 || ++ticks >= deadlineTicks) {
       finish();
       return;
     }
@@ -922,6 +960,7 @@ export function scheduleWhenIdle(
 ): void {
   let rounds = 0;
   let seenProgress = ctx.deliveryProgress ?? 0;
+  const deadlineRounds = getIdlePollDeadlineRounds();
   const check = () => {
     const busy =
       ctx.pendingDeliveries > 0 ||
@@ -939,7 +978,7 @@ export function scheduleWhenIdle(
       // this, not the budget.
       rounds = 0;
     }
-    if (busy && ++rounds < IDLE_POLL_DEADLINE_ROUNDS) {
+    if (busy && ++rounds < deadlineRounds) {
       // A delivery is still hydrating, or is committed but parked behind its
       // deferral (whose resolve runs on a detached timer, not this queue).
       // Either way: let the queue drain, then re-check a timer tick later.

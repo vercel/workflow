@@ -81,10 +81,37 @@ import { withResolvers } from '@workflow/utils';
 import { describe, expect, it } from 'vitest';
 import {
   awaitEarlierDeliveries,
+  BARRIER_ABANDON_DEADLINE_TICKS,
+  IDLE_POLL_DEADLINE_ROUNDS,
   registerDeliveryBarrier,
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from './private.js';
+
+/**
+ * Every budget below is derived from the engine's own constants rather than
+ * restated as a literal, because a suite about deadlines is the one place a
+ * restated constant fails silently: raise `IDLE_POLL_DEADLINE_ROUNDS` and a
+ * hard-coded 40-wide batch stops being able to overrun it, so the test that
+ * exists to catch a flat-counted budget passes for the wrong reason.
+ *
+ * A poll round costs at most two ticks (a `setTimeout(0)` plus a
+ * `promiseQueue` drain), so the round budget is bounded above by twice its
+ * rounds, in the same ticks the abandon deadline counts.
+ */
+const IDLE_BUDGET_TICKS = 2 * IDLE_POLL_DEADLINE_ROUNDS;
+/** Long enough that BOTH deadlines have certainly fired. */
+const PAST_BOTH_DEADLINES =
+  2 * Math.max(BARRIER_ABANDON_DEADLINE_TICKS, IDLE_BUDGET_TICKS);
+/** Short enough that the abandon deadline is certainly still running. */
+const BEFORE_ABANDON_DEADLINE = Math.floor(BARRIER_ABANDON_DEADLINE_TICKS / 2);
+/**
+ * A handful of ticks: enough for the idle route, and short enough that no
+ * deadline can have fired — so a pass here is the idle condition doing it.
+ */
+const IDLE_ROUTE_TICKS = Math.floor(
+  Math.min(BARRIER_ABANDON_DEADLINE_TICKS, IDLE_BUDGET_TICKS) / 4
+);
 
 function makeCtx(): WorkflowOrchestratorContext {
   const promiseQueueHolder = { current: Promise.resolve() };
@@ -236,7 +263,7 @@ describe('delivery-barrier safety net vs. unrelated delivery traffic', () => {
 
       const resolved = await Promise.race([
         gated.promise.then(() => true),
-        macrotasks(60).then(() => false),
+        macrotasks(PAST_BOTH_DEADLINES).then(() => false),
       ]);
 
       // Fails on `main`: the poll re-arms on every tick, so the unclaimed
@@ -263,7 +290,7 @@ describe('delivery-barrier safety net vs. unrelated delivery traffic', () => {
     expect(
       await Promise.race([
         gated.promise.then(() => true),
-        macrotasks(20).then(() => false),
+        macrotasks(BEFORE_ABANDON_DEADLINE).then(() => false),
       ])
     ).toBe(false);
     expect(storm.lowWaterMark()).toBeGreaterThan(0);
@@ -275,7 +302,7 @@ describe('delivery-barrier safety net vs. unrelated delivery traffic', () => {
     expect(
       await Promise.race([
         gated.promise.then(() => true),
-        macrotasks(8).then(() => false),
+        macrotasks(IDLE_ROUTE_TICKS).then(() => false),
       ])
     ).toBe(true);
     // And the storm drained itself: no leaked increment was holding the
@@ -292,7 +319,7 @@ describe('delivery-barrier safety net vs. unrelated delivery traffic', () => {
         fired = true;
       });
 
-      await macrotasks(60);
+      await macrotasks(PAST_BOTH_DEADLINES);
 
       // Fails on `main`: there is no deadline on the poll, so a caller that
       // needs the callback for liveness — a `WorkflowSuspension`, in the
@@ -324,9 +351,10 @@ describe('delivery-barrier safety net vs. unrelated delivery traffic', () => {
     const delivered: number[] = [];
     let firedAfter: number | null = null;
 
-    // Comfortably wider than the round budget, and narrower than the bursts
-    // the hook-storm scenario produces.
-    const batch = 40;
+    // Twice the round budget, so on a flat count the callback would fire at
+    // the batch's halfway mark — and still narrower than the bursts the
+    // hook-storm scenario produces.
+    const batch = 2 * IDLE_POLL_DEADLINE_ROUNDS;
     const all = Array.from({ length: batch }, (_, index) =>
       deliverStepResult(ctx, index, () => {
         delivered.push(index);
@@ -342,7 +370,7 @@ describe('delivery-barrier safety net vs. unrelated delivery traffic', () => {
     // Once the batch is done nothing is in flight, so the poll reaches idle on
     // its next round rather than waiting the budget out; the margin here is
     // for a loaded CI host, not for the deadline.
-    await macrotasks(8);
+    await macrotasks(IDLE_ROUTE_TICKS);
 
     expect(delivered.length).toBe(batch);
     // The suspension may fire once the batch is done. It may not fire during.
@@ -360,7 +388,7 @@ describe('delivery-barrier safety net vs. unrelated delivery traffic', () => {
     try {
       // Long enough that the budget is reset many times over: on a flat count
       // this batch alone would exhaust it twice.
-      const batch = 32;
+      const batch = 2 * IDLE_POLL_DEADLINE_ROUNDS;
       const all = Array.from({ length: batch }, (_, index) =>
         deliverStepResult(ctx, index, () => {})
       );
@@ -377,7 +405,7 @@ describe('delivery-barrier safety net vs. unrelated delivery traffic', () => {
       // Now nothing delivers again, but the storm keeps `pendingDeliveries`
       // above zero, so the idle condition can never be met and only the budget
       // can end this.
-      await macrotasks(40);
+      await macrotasks(PAST_BOTH_DEADLINES);
       expect(fired).toBe(true);
       expect(storm.lowWaterMark()).toBeGreaterThan(0);
     } finally {
@@ -418,7 +446,10 @@ describe('delivery-barrier safety net vs. unrelated delivery traffic', () => {
         firedAt ??= ticks;
       });
 
-      while (ticks < 256 && (deliveredAt === null || firedAt === null)) {
+      // Room for the abandon deadline, then a full fresh round budget after
+      // the exemption lapses, then slack.
+      const limit = 4 * PAST_BOTH_DEADLINES;
+      while (ticks < limit && (deliveredAt === null || firedAt === null)) {
         ticks++;
         await macrotask();
       }
@@ -461,7 +492,7 @@ describe('delivery-barrier safety net vs. unrelated delivery traffic', () => {
     expect(
       await Promise.race([
         gated.promise.then(() => true),
-        macrotasks(8).then(() => false),
+        macrotasks(IDLE_ROUTE_TICKS).then(() => false),
       ])
     ).toBe(true);
     expect(ctx.pendingDeliveryBarriers?.size).toBe(0);
