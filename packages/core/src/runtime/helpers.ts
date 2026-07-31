@@ -4,7 +4,10 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  CreateEventParams,
+  CreateEventRequest,
   Event,
+  EventResult,
   HealthCheckPayload,
   ValidQueueName,
   WorkflowRun,
@@ -846,6 +849,12 @@ export function preconditionEventDelta(
     cursor: typeof cursor === 'string' ? cursor : null,
   };
 }
+
+/** Creates one event on a bound run, carrying replay-recovery telemetry. */
+export type EventCreator = (
+  data: CreateEventRequest,
+  params?: CreateEventParams
+) => Promise<EventResult>;
 
 /**
  * The comparison a rejecting World says it rejected on: how many events it had
