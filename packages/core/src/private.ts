@@ -683,6 +683,58 @@ function hasParkedCommittedDelivery(ctx: WorkflowOrchestratorContext): boolean {
 }
 
 /**
+ * Whether a committed delivery is parked behind a barrier whose retirement is
+ * already running on a clock of its own.
+ *
+ * This is the one state in which the idle poll's round budget measures the
+ * wrong thing. The budget separates a system that is BUSY from one that is
+ * STUCK by watching {@link WorkflowOrchestratorContext.deliveryProgress}, but a
+ * delivery parked on an unclaimed payload is neither: nothing reaches workflow
+ * code until the payload's abandon deadline fires, so progress cannot advance,
+ * and the budget — counted flat against a clock that only starts once the
+ * payload is CLAIMABLE — runs out first. The suspension then preempts the
+ * delivery that {@link WorkflowOrchestratorContext.pendingOrderedDeliveries}
+ * exists to protect, which is the failure the round budget was added to
+ * prevent, arriving by the other route.
+ *
+ * Both conjuncts are load-bearing.
+ *
+ * `pendingOrderedDeliveries > 0` is what keeps the escape hatch. In the storm
+ * this budget exists for — a stream of pokes to a hook nobody reads — a hook
+ * defers behind earlier WAITS and STEPS only (see {@link DEFER_BEHIND}), so a
+ * run of pure pokes parks nothing and this predicate stays false however many
+ * unclaimed payloads pile up. Without the conjunct, "an unarmed barrier
+ * exists" is true forever under that storm and the budget would never expire.
+ *
+ * An unarmed barrier being registered is what makes the wait BOUNDED, and is
+ * why extending the budget here cannot become an indefinite extension. The
+ * blocking set of a parked delivery is fixed when it parks, every edge in it
+ * points to a strictly earlier index, and an unarmed entry is retired within
+ * {@link BARRIER_ABANDON_DEADLINE_TICKS} raw ticks by a timer no traffic can
+ * starve. Once the unarmed entries are gone the predicate goes false and the
+ * budget counts again — so a call site that breaks the INVARIANT on
+ * {@link registerDeliveryBarrier} and leaks an ARMED barrier still reaches the
+ * callback on the budget, exactly as it did before.
+ */
+function isAwaitingBoundedRetirement(
+  ctx: WorkflowOrchestratorContext
+): boolean {
+  if ((ctx.pendingOrderedDeliveries ?? 0) === 0) {
+    return false;
+  }
+  const barriers = ctx.pendingDeliveryBarriers;
+  if (!barriers) {
+    return false;
+  }
+  for (const entry of barriers.values()) {
+    if (!entry.armed) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Record a just-retired delivery as still quiescing for one macrotask, so
  * deliveries consumed in that window are still ordered behind the branch it
  * woke. See {@link WorkflowOrchestratorContext.recentlyDeliveredBarriers}.
@@ -813,6 +865,19 @@ function scheduleBarrierRetirement(
  * it. Resetting on progress keeps the escape hatch — a poke storm retires
  * barriers without ever delivering, so the budget runs out as intended.
  *
+ * It also resets while a committed delivery is parked behind an unclaimed
+ * payload ({@link isAwaitingBoundedRetirement}). Progress cannot advance in
+ * that state by construction: the delivery is waiting on
+ * {@link BARRIER_ABANDON_DEADLINE_TICKS}, and a round costs only 1-2 ticks, so
+ * at the default budgets this one expires first by a wide margin — the two
+ * deadlines race and the round budget wins, dropping the very delivery
+ * {@link WorkflowOrchestratorContext.pendingOrderedDeliveries} was added to
+ * protect. Resetting here removes the race rather than re-tuning it, which no
+ * pair of literals could do reliably: the abandon clock does not start until
+ * the payload is claimable, so no fixed head start is enough. The state is
+ * bounded and does not extend the budget indefinitely; see that predicate for
+ * why both of its conjuncts are required.
+ *
  * The initial `setTimeout(0)` macrotask is load-bearing and must NOT be
  * downgraded to a microtask (`queueMicrotask`/`Promise.resolve().then`).
  * `pendingDeliveries` only guards the host-side hydration window; between a
@@ -841,6 +906,11 @@ export function scheduleWhenIdle(
       // Something reached workflow code since the last round, so the budget
       // is measuring a wide batch rather than a stall. Start it over.
       seenProgress = progress;
+      rounds = 0;
+    } else if (isAwaitingBoundedRetirement(ctx)) {
+      // Nothing could have reached workflow code: a committed delivery is
+      // waiting out an unclaimed payload's abandon deadline. That clock ends
+      // this, not the budget.
       rounds = 0;
     }
     if (busy && ++rounds < IDLE_POLL_DEADLINE_ROUNDS) {

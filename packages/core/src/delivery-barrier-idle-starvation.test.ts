@@ -52,10 +52,24 @@
  * That qualifier is the whole of the second defect this PR fixed. Rounds
  * counted flat bound batch width rather than starvation, because delivering a
  * drain window in log order legitimately costs a round per event; the budget
- * has to measure rounds in which nothing reached workflow code. The three
- * tests at the end of this suite pin the resulting semantics from both sides:
- * it fires on a stall, it does not fire on progress, and progress does not buy
+ * has to measure rounds in which nothing reached workflow code. The tests at
+ * the end of this suite pin the resulting semantics from every side: it fires
+ * on a stall, it does not fire on progress, and progress does not buy
  * permanent immunity — once progress stops the budget starts again.
+ *
+ * The last of them covers the third defect, which is the two deadlines run
+ * against each other rather than either one alone. A committed delivery parked
+ * on an unclaimed payload cannot make progress by construction — it is waiting
+ * for that payload's abandon deadline — so the round budget, counted flat
+ * against a tick clock that only starts once the payload is CLAIMABLE, expires
+ * first and fires a suspension into the delivery it was supposed to protect.
+ * Progress-reset alone does not cover it precisely because there is no
+ * progress to reset on. The budget therefore also resets while that wait is
+ * outstanding, which is bounded: the payload retires on a timer no traffic can
+ * starve, and once it does the exemption lapses and the budget counts again.
+ * The test asserts both — the delivery lands first, AND the callback still
+ * fires — because a fix that simply stopped firing would order them perfectly
+ * and reintroduce the starvation this suite opens on.
  *
  * The deadline deliberately does NOT apply to an ARMED barrier. Those are
  * committed deliveries with unconditional chains, and force-retiring one on a
@@ -75,7 +89,12 @@ import {
 function makeCtx(): WorkflowOrchestratorContext {
   const promiseQueueHolder = { current: Promise.resolve() };
   return {
+    // Initialized exactly as `workflow.ts` does, so a test cannot pass by
+    // taking a degraded path that no real run takes.
     pendingDeliveryBarriers: new Map(),
+    recentlyDeliveredBarriers: new Map(),
+    pendingOrderedDeliveries: 0,
+    deliveryProgress: 0,
     pendingDeliveries: 0,
     get promiseQueue() {
       return promiseQueueHolder.current;
@@ -167,6 +186,29 @@ function deliverStepResult(
     });
   });
   return { delivered: done.promise };
+}
+
+/**
+ * A committed wait completion, shaped like `sleep.ts`: barrier and deferral
+ * captured while consuming the event, then a DETACHED chain anchored to the
+ * queue tail that hands over once everything earlier in the log has. Unlike a
+ * step result this one gates on an earlier UNCLAIMED payload — `DEFER_BEHIND`
+ * gives `wait` an edge to `hook`, and the unarmed skip in
+ * `awaitEarlierDeliveries` is on the step path only.
+ */
+function deliverWaitResult(
+  ctx: WorkflowOrchestratorContext,
+  eventIndex: number,
+  onDelivered: () => void
+): void {
+  const barrier = registerDeliveryBarrier(ctx, eventIndex, 'wait');
+  const earlierDelivered = awaitEarlierDeliveries(ctx, eventIndex, 'wait');
+  void ctx.promiseQueue
+    .then(() => earlierDelivered)
+    .then(() => {
+      barrier.markDelivered();
+      onDelivered();
+    });
 }
 
 /** A buffered hook payload nobody has claimed: the abandonable delivery. */
@@ -338,6 +380,62 @@ describe('delivery-barrier safety net vs. unrelated delivery traffic', () => {
       await macrotasks(40);
       expect(fired).toBe(true);
       expect(storm.lowWaterMark()).toBeGreaterThan(0);
+    } finally {
+      storm.stop();
+    }
+  });
+
+  it('does not let the round budget preempt a delivery waiting on the abandon deadline', async () => {
+    // The two deadlines against each other, which is the only state where
+    // either one decides anything: the idle poll's round budget bounds a
+    // STALL, and the abandon deadline is what ends this one, so the poll must
+    // not give up while that clock is still running.
+    //
+    // Reachability needs all four of these at once, which is why neither of
+    // the tests above catches it: an unclaimed payload, a committed delivery
+    // gated on it, sustained traffic so the idle route cannot retire the
+    // payload, and some OTHER pending consumer arming the poll (the consumer
+    // that took the wait returns `Finished`, so it is not that one — a loop
+    // over `Promise.race([hook, sleep])` supplies it).
+    //
+    // Nothing calls `markDelivered()` while the wait is parked, so
+    // `deliveryProgress` never advances and the budget is never reset. Counted
+    // flat against an abandon clock that only starts once the payload is
+    // claimable, the budget runs out first and the suspension preempts the
+    // very delivery `pendingOrderedDeliveries` was added to protect.
+    const ctx = makeCtx();
+    const storm = startPokeStorm(ctx);
+    try {
+      registerUnclaimedPayload(ctx, 0);
+
+      let ticks = 0;
+      let deliveredAt: number | null = null;
+      let firedAt: number | null = null;
+      deliverWaitResult(ctx, 1, () => {
+        deliveredAt = ticks;
+      });
+      scheduleWhenIdle(ctx, () => {
+        firedAt ??= ticks;
+      });
+
+      while (ticks < 256 && (deliveredAt === null || firedAt === null)) {
+        ticks++;
+        await macrotask();
+      }
+
+      expect(storm.lowWaterMark()).toBeGreaterThan(0);
+      // Both liveness directions, asserted before the ordering claim so that
+      // neither can make it vacuous. A fix that held the callback back
+      // indefinitely would order these two perfectly and strand every caller
+      // that needs it — the starvation this suite opens on. A fix that never
+      // released the wait would do the same to the delivery.
+      expect(deliveredAt).not.toBeNull();
+      expect(firedAt).not.toBeNull();
+      // Ordering: the suspension may fire after the delivery it was racing.
+      // It may not fire before it.
+      expect(deliveredAt as unknown as number).toBeLessThanOrEqual(
+        firedAt as unknown as number
+      );
     } finally {
       storm.stop();
     }
