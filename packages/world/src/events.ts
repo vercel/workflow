@@ -793,6 +793,14 @@ export interface CreateEventParams {
    */
   occurredAt?: Date;
   /**
+   * Number of consecutive replay divergences resolved by this event write.
+   *
+   * This is request telemetry, not workflow state. Worlds may use it for
+   * metrics and diagnostics, but must not require it for event
+   * materialization or persist it into the event log.
+   */
+  replayDivergenceCount?: number;
+  /**
    * Inline-delta optimization (opt-in). When set, the World MAY return,
    * on the resulting {@link EventResult}, the first page of events written
    * strictly after this cursor (via `events`/`cursor`/`hasMore`) — the

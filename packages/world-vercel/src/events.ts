@@ -688,6 +688,9 @@ async function createWorkflowRunEventInner(
         ? { stateEventCount: params.stateEventCount }
         : {}),
       ...(params?.stateCursor ? { stateCursor: params.stateCursor } : {}),
+      ...(params?.replayDivergenceCount !== undefined
+        ? { replayDivergenceCount: params.replayDivergenceCount }
+        : {}),
       occurredAt: params?.occurredAt ?? new Date(),
       // Opt-in inline-delta: forward the cursor the runtime held before
       // this write so the server can return the authoritative event-log

@@ -225,6 +225,8 @@ export interface CreateEventV4Input {
    * on for the *accepted* path.
    */
   stateCursor?: string;
+  /** Number of consecutive replay divergences resolved by this write. */
+  replayDivergenceCount?: number;
 }
 
 /**
@@ -343,6 +345,9 @@ function buildPostFrameMeta(
     meta.stateEventCount = input.stateEventCount;
   }
   if (input.stateCursor !== undefined) meta.stateCursor = input.stateCursor;
+  if (input.replayDivergenceCount !== undefined) {
+    meta.replayDivergenceCount = input.replayDivergenceCount;
+  }
   return meta;
 }
 
