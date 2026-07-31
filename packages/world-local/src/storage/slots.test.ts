@@ -2,7 +2,6 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  FIRST_SLOT,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SLOT_IDENTITY,
   slotEventId,
@@ -89,9 +88,11 @@ describe('usesSlots', () => {
 });
 
 describe('reserve', () => {
-  it('starts at the first slot for a run with no events', async () => {
+  it('starts above the slot the run’s own creation event owns', async () => {
+    // `run_created` takes the first slot outright — nothing can precede it — so
+    // an allocation never hands that position out.
     await expect(createSlotBook(basedir).reserve(RUN_ID)).resolves.toBe(
-      FIRST_SLOT
+      RUN_CREATED_SLOT + 1
     );
   });
 
@@ -100,24 +101,36 @@ describe('reserve', () => {
     await expect(createSlotBook(basedir).reserve(RUN_ID)).resolves.toBe(4);
   });
 
-  it('fills a hole left in the persisted log', async () => {
-    // Density is the whole point of the scheme, so a gap that somehow exists is
-    // reclaimed rather than skipped over forever.
+  it('leaves a hole in the persisted log unfilled', async () => {
+    // Allocation is append-only: the free position sits below a published event,
+    // and an event placed there would order before one that already happened.
     await writeEvents(1, 3);
     const book = createSlotBook(basedir);
-    await expect(book.reserve(RUN_ID)).resolves.toBe(2);
     await expect(book.reserve(RUN_ID)).resolves.toBe(4);
+    await expect(book.reserve(RUN_ID)).resolves.toBe(5);
+  });
+
+  it('stays above published events when a lower position comes free', async () => {
+    // The corruption this rules out: a step completion allocating late, dropping
+    // into a hole, and landing below the step_started it reports on. Replay reads
+    // the log in slot order and cannot consume that.
+    const book = createSlotBook(basedir);
+    const abandoned = await book.reserve(RUN_ID);
+    const published = await book.reserve(RUN_ID);
+    book.observe(RUN_ID, slotEventId(published));
+    book.release(RUN_ID, abandoned);
+    await expect(book.reserve(RUN_ID)).resolves.toBeGreaterThan(published);
   });
 
   it('hands a synchronous burst distinct consecutive slots', async () => {
-    // The suspension flush issues every op concurrently; with a plain
-    // "max + 1" they would all pick the same slot and all but one would fail.
+    // The suspension flush issues every op concurrently; a book that only moved
+    // on publish would give them all the same position and fail all but one.
     const book = createSlotBook(basedir);
     const slots = await Promise.all(
       Array.from({ length: 20 }, () => book.reserve(RUN_ID))
     );
     expect([...slots].sort((a, b) => a - b)).toEqual(
-      Array.from({ length: 20 }, (_, index) => FIRST_SLOT + index)
+      Array.from({ length: 20 }, (_, index) => RUN_CREATED_SLOT + 1 + index)
     );
   });
 
@@ -131,26 +144,13 @@ describe('reserve', () => {
     expect([...slots].sort((a, b) => a - b)).toEqual([2, 3]);
   });
 
-  it('honours a floor, so a concurrent event cannot take run_created’s slot', async () => {
-    // start() publishes the run entity before its `run_created` event and
-    // issues the queue send in parallel, so the delivery's `run_started` can
-    // allocate while slot 1 is still in flight.
+  it('honours a floor above where the book has reached', async () => {
+    // start() publishes the run entity before its `run_created` event and issues
+    // the queue send in parallel, so the delivery's `run_started` can allocate
+    // while slot 1 is still in flight.
     const book = createSlotBook(basedir);
-    await expect(book.reserve(RUN_ID, RUN_CREATED_SLOT + 1)).resolves.toBe(
-      RUN_CREATED_SLOT + 1
-    );
-  });
-
-  it('leaves slots below the floor allocatable', async () => {
-    // A floored search skips that range without looking at it, so it proves
-    // nothing about it — `run_created` must still find its own slot free.
-    const book = createSlotBook(basedir);
-    await expect(book.reserve(RUN_ID, RUN_CREATED_SLOT + 1)).resolves.toBe(
-      RUN_CREATED_SLOT + 1
-    );
-    await expect(book.reserve(RUN_ID, RUN_CREATED_SLOT)).resolves.toBe(
-      RUN_CREATED_SLOT
-    );
+    await expect(book.reserve(RUN_ID, 5)).resolves.toBe(5);
+    await expect(book.reserve(RUN_ID)).resolves.toBe(6);
   });
 
   it('keeps runs independent', async () => {
@@ -158,22 +158,22 @@ describe('reserve', () => {
     const book = createSlotBook(basedir);
     await expect(book.reserve(RUN_ID)).resolves.toBe(3);
     await expect(book.reserve('wrun_01K0000000000000000000OTHR')).resolves.toBe(
-      FIRST_SLOT
+      RUN_CREATED_SLOT + 1
     );
   });
 });
 
 describe('release', () => {
-  it('gives an abandoned interior slot to the next caller', async () => {
-    // A rejected op must not strand the slot below its concurrent siblings':
-    // that hole can never be filled once a later slot is published.
+  it('does not recycle an abandoned interior slot', async () => {
+    // The position may already sit below a sibling that published, and no
+    // caller can tell from here. A hole costs a reader its completeness proof;
+    // an inversion costs the run.
     const book = createSlotBook(basedir);
     const [first, second] = await Promise.all([
       book.reserve(RUN_ID),
       book.reserve(RUN_ID),
     ]);
     book.release(RUN_ID, first);
-    await expect(book.reserve(RUN_ID)).resolves.toBe(first);
     await expect(book.reserve(RUN_ID)).resolves.toBe(second + 1);
   });
 
@@ -215,13 +215,15 @@ describe('claim', () => {
     await expect(book.reserve(RUN_ID)).resolves.toBe(3);
   });
 
-  it('frees the slot again once the claim resolves', async () => {
+  it('stops holding back a claim that resolved', async () => {
+    // Released before anything allocated for the run, so no position in this
+    // instance was ever handed out above it and the log — which is the authority
+    // on what published — reaches only slot 1. Nothing can be inverted by
+    // seeding the book from disk alone.
     await writeEvents(1);
     const book = createSlotBook(basedir);
     book.claim(RUN_ID, 2);
     book.release(RUN_ID, 2);
-    // Nothing is allocating for the run yet, so the book the next caller seeds
-    // has to start from the log alone.
     await expect(book.reserve(RUN_ID)).resolves.toBe(2);
   });
 
@@ -237,27 +239,25 @@ describe('claim', () => {
 });
 
 describe('observe', () => {
-  it('never hands out a slot claimed by the client', async () => {
+  it('moves allocation above a position the client claimed', async () => {
     const book = createSlotBook(basedir);
     await book.reserve(RUN_ID);
     book.observe(RUN_ID, slotEventId(5));
-    const next = await book.reserve(RUN_ID);
-    expect(next).not.toBe(5);
-    expect(next).toBe(2);
+    await expect(book.reserve(RUN_ID)).resolves.toBe(6);
   });
 
   it('ignores ULID event ids', async () => {
     const book = createSlotBook(basedir);
-    await book.reserve(RUN_ID);
+    const slot = await book.reserve(RUN_ID);
     book.observe(RUN_ID, 'evnt_01K5Z0000000000000000000AA');
-    await expect(book.reserve(RUN_ID)).resolves.toBe(2);
+    await expect(book.reserve(RUN_ID)).resolves.toBe(slot + 1);
   });
 });
 
 describe('forget', () => {
   it("re-reads the log, picking up another writer's events", async () => {
     const book = createSlotBook(basedir);
-    await expect(book.reserve(RUN_ID)).resolves.toBe(FIRST_SLOT);
+    await expect(book.reserve(RUN_ID)).resolves.toBe(RUN_CREATED_SLOT + 1);
     await writeEvents(1, 2, 3);
     book.forget(RUN_ID);
     await expect(book.reserve(RUN_ID)).resolves.toBe(4);

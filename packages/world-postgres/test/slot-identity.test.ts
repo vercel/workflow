@@ -259,8 +259,8 @@ describe('Slot identity (Postgres integration)', () => {
 
   describe('contention', () => {
     // The primary key is the authority, and a writer that loses a position is
-    // retried at one that is still free. Nothing here may leave a hole: density
-    // is what lets a reader prove its copy of a log is complete.
+    // retried at one that is still free rather than abandoning the one it lost,
+    // so a burst of concurrent writers still numbers itself densely.
     for (const writers of [2, 8, 50]) {
       test(`keeps ${writers} concurrent writers dense`, async () => {
         const runId = await newSlotRun();
@@ -274,7 +274,7 @@ describe('Slot identity (Postgres integration)', () => {
       }, 60_000);
     }
 
-    test('proves completeness: the highest slot is the event count', async () => {
+    test('numbers a burst so the highest slot is the event count', async () => {
       const runId = await newSlotRun();
       await Promise.all(
         Array.from({ length: 5 }, (_, index) =>

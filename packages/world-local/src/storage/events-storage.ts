@@ -1061,12 +1061,13 @@ export function createEventsStorage(
         // EVENT ID: the caller's slot claim, an allocated slot, or a ULID
         // ============================================================
         // A run's own `run_created` owns the first slot — provably, since
-        // nothing precedes it — so every other event allocates above it, even
-        // when that event is the first to arrive here.
-        const allocationFloor =
-          data.eventType === 'run_created'
-            ? RUN_CREATED_SLOT
-            : RUN_CREATED_SLOT + 1;
+        // nothing precedes it — so it takes that position outright instead of
+        // allocating one, and every other event allocates above it even when it
+        // is the first to arrive here. Allocation is append-only (see SlotBook),
+        // so `run_created` cannot get the first position by asking for the lowest
+        // free one: a `run_started` racing it (start() issues the creation and
+        // the queue send in parallel) may already have moved the book past it.
+        const ownsFirstSlot = data.eventType === 'run_created';
         // A slot-numbered run's ids name positions in its log, so an id is
         // either claimed by a caller that holds the log (and is therefore
         // asserting the log is complete up to that position) or allocated here
@@ -1130,7 +1131,13 @@ export function createEventsStorage(
           }
         } else if (slotMode) {
           reservedRunId = effectiveRunId;
-          const slot = await slots.reserve(effectiveRunId, allocationFloor);
+          let slot: number;
+          if (ownsFirstSlot) {
+            slot = RUN_CREATED_SLOT;
+            slots.claim(effectiveRunId, slot);
+          } else {
+            slot = await slots.reserve(effectiveRunId);
+          }
           reserved.add(slot);
           eventId = slotEventId(slot);
         }
@@ -2691,7 +2698,12 @@ export function createEventsStorage(
         // to reconcile. A write whose position the *caller* claimed may not:
         // the claim asserts a log complete up to that position, so losing it
         // means that log is stale and only the caller can resolve it.
-        const reallocatesSlot = slotMode && params?.eventId === undefined;
+        // `run_created` is excluded even though it named its own position: the
+        // first slot is the only position it can ever occupy, so losing it means
+        // the run already has a creation event, and appending a second one above
+        // it would be worse than the duplicate the publish is reporting.
+        const reallocatesSlot =
+          slotMode && params?.eventId === undefined && !ownsFirstSlot;
         const slotDeadline = Date.now() + SLOT_RETRY_BUDGET_MS;
         let compositeKey = '';
         let eventPath = '';
@@ -2712,10 +2724,11 @@ export function createEventsStorage(
           if (reallocatesSlot && Date.now() < slotDeadline) {
             // The position is someone else's — either published there or
             // staged for it. Record that, top the book up from disk, and try
-            // again one position higher rather than surfacing a conflict the
-            // caller cannot act on. Re-reading rather than incrementing keeps
-            // the log dense: every round at least one writer wins, so the
-            // search never runs away from the log it is filling.
+            // again above whatever the log has reached rather than surfacing a
+            // conflict the caller cannot act on. Re-reading rather than
+            // incrementing bounds the search: every round at least one writer
+            // wins, so the top of the log is never further than the number of
+            // writers still contending for it.
             const lost = slotFromId(eventId);
             if (lost !== undefined) {
               reserved.delete(lost);
@@ -2725,7 +2738,7 @@ export function createEventsStorage(
             await new Promise((resolve) =>
               setTimeout(resolve, slotRetryDelay(round))
             );
-            const slot = await slots.reserve(effectiveRunId, allocationFloor);
+            const slot = await slots.reserve(effectiveRunId);
             reservedRunId = effectiveRunId;
             reserved.add(slot);
             eventId = slotEventId(slot);

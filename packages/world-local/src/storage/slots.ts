@@ -2,21 +2,29 @@
  * Slot allocation for the Local World.
  *
  * A slot-numbered run names its events by position: `evnt_…001` is the first
- * event of the run, `evnt_…002` the second, with no gaps. Density is the point
- * — it is what lets a reader prove its loaded log is complete — so an allocator
- * must never leave a slot permanently unwritten.
+ * event of the run, `evnt_…002` the second. A replay reads the log in slot
+ * order, so the order slots are handed out in has to be an order some execution
+ * could have produced — which makes allocation strictly *append-only*: a slot is
+ * only ever handed out above every position this book has seen.
+ *
+ * Filling a hole is what that rules out, and it is worth naming why, because the
+ * alternative looks appealing (it keeps the log dense). A position left unwritten
+ * by an abandoned reservation sits below events that are already published. Hand
+ * it to the next caller and a `step_completed` lands below its own
+ * `step_started`; the replay reaches a completion for a step it has not started
+ * and diverges, and every later replay diverges the same way. A hole costs a
+ * reader the ability to prove its copy of the log is complete. An inversion
+ * costs the run.
  *
  * Three properties do the work:
  *
  *   - Handing out a slot is a *synchronous* set operation, so concurrent
  *     callers in one process get distinct slots with no lock. The only await is
  *     seeding from disk, which is memoized per run.
- *   - An allocation always picks the lowest slot that is neither written nor
- *     outstanding, so a reservation that is abandoned (its create threw a
- *     validation error) is handed to the next caller instead of leaving an
- *     interior hole. This matters under fan-out: N concurrent step_completed
- *     writes reserve N consecutive slots, and one rejected op must not strand
- *     the slot below its siblings'.
+ *   - An allocation picks the position above the highest one the book knows of,
+ *     written or outstanding, and that ceiling never descends. A reservation that
+ *     is abandoned (its create threw a validation error) leaves its position
+ *     unused rather than being recycled below a sibling that already published.
  *   - The event publish is `writeExclusive`, which is the authority. The book is
  *     a hint: when it turns out to be stale (another process wrote the slot),
  *     the publish fails and the caller is told so, rather than a duplicate being
@@ -43,8 +51,12 @@ interface RunSlots {
   written: Set<number>;
   /** Slots handed out whose publish has not resolved yet. */
   outstanding: Set<number>;
-  /** Lowest slot that might still be free; never decreases except on release. */
-  searchFrom: number;
+  /**
+   * The highest position this book has ever seen written, claimed or handed out.
+   * Allocation goes above it and it never descends, which is what keeps a
+   * released position from being recycled below events already published.
+   */
+  ceiling: number;
 }
 
 export interface SlotBook {
@@ -58,16 +70,15 @@ export interface SlotBook {
    */
   usesSlots(runId: string): Promise<boolean>;
   /**
-   * Reserves the lowest free slot of `runId`, at or above `minSlot`. Distinct
-   * for every concurrent caller; the publish still has to prove the slot was
-   * actually free.
+   * Reserves the position above every one this book knows of for `runId`, and at
+   * or above `minSlot`. Distinct for every concurrent caller; the publish still
+   * has to prove the position was actually free.
    *
-   * `minSlot` is how the run's first slot is kept for its own `run_created`:
-   * that event's slot needs no allocation, and it may not be on disk yet when a
-   * concurrent `run_started` allocates (start() issues the creation and the
-   * queue send in parallel, and the run entity is published before its event).
-   * Slots below `minSlot` stay allocatable for a later caller, so holding one
-   * back leaves the log dense.
+   * `minSlot` defaults to the position above the run's first slot, which is
+   * reserved for its own `run_created`: that event needs no allocation, and it
+   * may not be on disk yet when a concurrent `run_started` allocates (start()
+   * issues the creation and the queue send in parallel, and the run entity is
+   * published before its event).
    */
   reserve(runId: string, minSlot?: number): Promise<number>;
   /**
@@ -90,8 +101,10 @@ export interface SlotBook {
    */
   isWritten(runId: string, slot: number): Promise<boolean>;
   /**
-   * Returns a reserved or claimed slot that was never published, so the next
-   * caller takes it instead of it becoming a hole.
+   * Forgets a reserved or claimed slot whose publish is never going to happen,
+   * so nothing waits on it. The position itself is not handed out again: it may
+   * already sit below a sibling that published, and recycling it there would put
+   * a later event below an earlier one.
    */
   release(runId: string, slot: number): void;
   /** Records a published event id, so it is never handed out again. */
@@ -147,10 +160,11 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
         written.add(slot);
       }
     }
+    const outstanding = new Set(claims.get(runId));
     const book: RunSlots = {
       written,
-      outstanding: new Set(claims.get(runId)),
-      searchFrom: FIRST_SLOT,
+      outstanding,
+      ceiling: Math.max(FIRST_SLOT - 1, ...written, ...outstanding),
     };
     books.set(runId, book);
     return book;
@@ -186,17 +200,9 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
   }
 
   function take(book: RunSlots, minSlot: number): number {
-    let slot = Math.max(book.searchFrom, minSlot);
-    while (book.written.has(slot) || book.outstanding.has(slot)) {
-      slot += 1;
-    }
+    const slot = Math.max(book.ceiling + 1, minSlot);
     book.outstanding.add(slot);
-    if (minSlot <= book.searchFrom) {
-      // Only an unfloored search proves everything below the slot it landed on
-      // is taken. A floored one skipped that range without looking, and those
-      // slots are still free for a caller that may take them.
-      book.searchFrom = slot;
-    }
+    book.ceiling = slot;
     return slot;
   }
 
@@ -216,7 +222,7 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
       return mode;
     },
 
-    async reserve(runId, minSlot = FIRST_SLOT) {
+    async reserve(runId, minSlot = RUN_CREATED_SLOT + 1) {
       const opened = open(runId);
       // Awaiting a book that is already in hand would yield to the microtask
       // queue and let a concurrent caller take the same slot.
@@ -230,7 +236,11 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
       } else {
         claims.set(runId, new Set([slot]));
       }
-      books.get(runId)?.outstanding.add(slot);
+      const book = books.get(runId);
+      if (book) {
+        book.outstanding.add(slot);
+        book.ceiling = Math.max(book.ceiling, slot);
+      }
     },
 
     async isWritten(runId, slot) {
@@ -244,10 +254,10 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
       if (!book) {
         return;
       }
+      // The ceiling stays where it is: this position may already sit below one a
+      // sibling published, and handing it out again would order a later event
+      // before an earlier one.
       book.outstanding.delete(slot);
-      if (slot < book.searchFrom) {
-        book.searchFrom = slot;
-      }
     },
 
     observe(runId, eventId) {
@@ -264,6 +274,7 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
       }
       book.written.add(slot);
       book.outstanding.delete(slot);
+      book.ceiling = Math.max(book.ceiling, slot);
     },
 
     async refresh(runId) {
@@ -277,11 +288,9 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
         if (slot !== undefined) {
           book.written.add(slot);
           book.outstanding.delete(slot);
+          book.ceiling = Math.max(book.ceiling, slot);
         }
       }
-      // Positions released while this scan ran may sit below where the search
-      // had reached, and they are free again.
-      book.searchFrom = FIRST_SLOT;
     },
 
     forget(runId) {

@@ -7,11 +7,17 @@
  * cursor that accepted a ULID keeps accepting a slot — and because the width is
  * fixed, lexicographic order is numeric order.
  *
- * Slots are dense and start at 1. Density is the whole point of the scheme: it
- * makes `events.length === maxSlot` a proof that a loaded log has no holes,
- * which is something a server-minted ULID log can never offer. Zero is left
- * unused because the inclusive lower fence for range queries over a run's
- * events is the all-zero id.
+ * Slots start at 1 and are allocated contiguously, which is what makes
+ * contention explicit: two writers proposing one position cannot both win, and
+ * the loser is told which events it was missing. Zero is left unused because
+ * the inclusive lower fence for range queries over a run's events is the
+ * all-zero id.
+ *
+ * Allocation being contiguous does not make a published log gap-free, so
+ * `events.length === maxSlot` is not a completeness proof. A slot claimed by an
+ * operation that then fails for a reason of its own is never filled, and if a
+ * later slot has already been published the gap is permanent. Nothing may treat
+ * a missing slot as an event still on its way.
  *
  * A slot body decodes as a ULID *timestamp* of epoch 0 without erroring, so
  * nothing may read a time out of one. Use the event's own `createdAt` /
