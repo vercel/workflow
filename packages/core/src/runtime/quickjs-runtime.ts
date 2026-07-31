@@ -1071,9 +1071,11 @@ export interface QuickJSWorkflowSession {
    * Capture and serialize the live VM's memory. Only valid while the
    * last result was `suspended`. The returned bytes restore via
    * `existingSnapshot` on a later invocation (pair them with the events
-   * cursor at capture time).
+   * cursor at capture time). `rngDraws` is the seeded PRNG's draw count
+   * at capture — persisted in the snapshot metadata so a restore
+   * fast-forwards the base seed to the same position.
    */
-  snapshot(): Uint8Array;
+  snapshot(): { data: Uint8Array; rngDraws: number };
   /** Dispose the VM if it is still alive. Safe to call multiple times. */
   dispose(): void;
 }
@@ -1116,23 +1118,32 @@ export async function startQuickJSWorkflow(
   // stored ones that later invocations load. Matches the node:vm
   // engine's seed (workflow.ts).
   //
-  // When restoring from a snapshot, the snapshot's events cursor is
-  // mixed into the seed: the restored heap already consumed some number
-  // of PRNG draws, so re-seeding from the base would replay the first-N
-  // draws and collide with correlationIds recorded before the snapshot.
-  // The cursor is stable for every resumption from the SAME snapshot
-  // (concurrent resumes still produce identical ids, preserving the
-  // world's dedup) but advances when a newer snapshot is taken.
-  const seedParts = [
+  // When restoring from a snapshot, the restored heap already consumed
+  // some number of PRNG draws. The seed stays the BASE seed and the
+  // runtime fast-forwards the recorded draw count (metadata.rngDraws)
+  // instead of mixing the snapshot cursor into the seed: a cursor-mixed
+  // seed made ids depend on WHICH snapshot generation an invocation
+  // restored from, so two overlapping invocations straddling a snapshot
+  // save (queue redelivery of an in-flight invocation) generated
+  // DIFFERENT ids for the same logical step and both step_created writes
+  // landed — the exact double-execution the seeding exists to prevent.
+  // Position-based fast-forward keeps ids identical across snapshot
+  // generations and identical to a no-snapshot run.
+  const seed = [
     workflowRun.runId,
     workflowRun.workflowName,
     workflowRun.deploymentId,
-  ];
-  if (options.existingSnapshot?.metadata.eventsCursor) {
-    seedParts.push(options.existingSnapshot.metadata.eventsCursor);
-  }
-  const seed = seedParts.join(':');
-  const rng = seedrandom(seed);
+  ].join(':');
+  const baseRng = seedrandom(seed);
+  const restoredDraws = options.existingSnapshot?.metadata.rngDraws ?? 0;
+  for (let i = 0; i < restoredDraws; i++) baseRng();
+  // Every consumer (Math.random, nanoid, the VM ULID factory via
+  // Math.random) draws through this counter so the total is exact.
+  let rngDraws = restoredDraws;
+  const rng = () => {
+    rngDraws++;
+    return baseRng();
+  };
 
   // Seeded nanoid generator — uses the same nanoid package and seeded PRNG
   // as the node:vm engine for consistent token generation.
@@ -1154,6 +1165,39 @@ export async function startQuickJSWorkflow(
 
   const interruptBudget: InterruptBudget = { start: Date.now() };
 
+  // ---- Host callbacks ----
+  // ONE list drives both the fresh-boot path (newFunction + install) and
+  // the snapshot-restore path (registerHostCallback): host functions are
+  // referenced from the WASM heap by name and the host-side registry is
+  // empty in a fresh process, so a callback added to the boot path but
+  // not re-registered on restore resolves to nothing after a restore.
+  // Add new host callbacks HERE, never inline at either site.
+  const hostCallbacks: {
+    name: string;
+    fn: (vm: QuickJS) => () => ReturnType<QuickJS['newNumber']>;
+    /** How the fresh-boot path exposes the function to guest code. */
+    install: (
+      vm: QuickJS,
+      fnHandle: ReturnType<QuickJS['newFunction']>
+    ) => void;
+  }[] = [
+    {
+      name: 'random',
+      fn: (vm) => () => vm.newNumber(rng()),
+      install: (vm, fnHandle) => {
+        using math = vm.global.getProp('Math');
+        math.setProp('random', fnHandle);
+      },
+    },
+    {
+      name: '__generateNanoid',
+      fn: (vm) => () => vm.newString(generateNanoid()) as never,
+      install: (vm, fnHandle) => {
+        vm.setProp(vm.global, '__generateNanoid', fnHandle);
+      },
+    },
+  ];
+
   if (options.existingSnapshot) {
     // ---- RESTORE from a persisted VM snapshot ----
     const vm = await restoreWorkflowVM(
@@ -1162,16 +1206,12 @@ export async function startQuickJSWorkflow(
       interruptBudget
     );
 
-    // Re-register host callbacks after restore. Host functions are
-    // referenced from the WASM heap by name; the host-side registry is
-    // empty in a fresh process, so each callback must be re-registered
-    // under the same name used during newFunction() on the fresh-boot
-    // path. (The in-VM serde functions survive in the heap — no
-    // re-registration needed for them.)
-    vm.registerHostCallback('random', () => vm.newNumber(rng()));
-    vm.registerHostCallback('__generateNanoid', () =>
-      vm.newString(generateNanoid())
-    );
+    // Re-register every host callback from the shared list. (The in-VM
+    // serde functions survive in the heap — no re-registration needed
+    // for them.)
+    for (const callback of hostCallbacks) {
+      vm.registerHostCallback(callback.name, callback.fn(vm));
+    }
 
     // Process the delta events and drain jobs.
     {
@@ -1196,6 +1236,7 @@ export async function startQuickJSWorkflow(
       vm,
       interruptBudget,
       advanceClock,
+      () => rngDraws,
       options.encryptionKey
     );
   }
@@ -1221,19 +1262,12 @@ export async function startQuickJSWorkflow(
 
   // ---- Phase 2: per-run initialization ----
   async function runWorkflowInVM(): Promise<QuickJSWorkflowSession> {
-    // Seeded Math.random
-    {
-      using randomFn = vm.newFunction('random', () => vm.newNumber(rng()));
-      using math = vm.global.getProp('Math');
-      math.setProp('random', randomFn);
-    }
-
-    // Seeded nanoid generator
-    {
-      using nanoidFn = vm.newFunction('__generateNanoid', () =>
-        vm.newString(generateNanoid())
-      );
-      vm.setProp(vm.global, '__generateNanoid', nanoidFn);
+    // Install every host callback from the shared list (see
+    // hostCallbacks above — the restore path re-registers from the same
+    // list, so the two can't drift).
+    for (const callback of hostCallbacks) {
+      using fnHandle = vm.newFunction(callback.name, callback.fn(vm));
+      callback.install(vm, fnHandle);
     }
 
     // Inject a deterministic timestamp for the VM's ULID factory. ULIDs
@@ -1425,6 +1459,7 @@ export async function startQuickJSWorkflow(
       vm,
       interruptBudget,
       advanceClock,
+      () => rngDraws,
       options.encryptionKey
     );
   }
@@ -1459,6 +1494,7 @@ function makeLiveSession(
   vm: QuickJS,
   interruptBudget: InterruptBudget,
   advanceClock: (ms: number) => void,
+  getRngDraws: () => number,
   encryptionKey?: DecryptionKey
 ): QuickJSWorkflowSession {
   const result = checkWorkflowState(vm, { keepAliveOnSuspend: true });
@@ -1499,14 +1535,14 @@ function makeLiveSession(
       session.result = next;
       return next;
     },
-    snapshot(): Uint8Array {
+    snapshot(): { data: Uint8Array; rngDraws: number } {
       if (!alive) {
         throw new Error(
           'QuickJS workflow session is not alive — snapshot is only valid while suspended'
         );
       }
       const snap = vm.snapshot();
-      return QuickJS.serializeSnapshot(snap);
+      return { data: QuickJS.serializeSnapshot(snap), rngDraws: getRngDraws() };
     },
     dispose(): void {
       if (alive) {

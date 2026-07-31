@@ -1036,10 +1036,11 @@ describe('VM snapshot/restore', () => {
     const run = makeRun();
     const s1 = await suspendFresh(run);
     const step1Cid = s1.result.suspended!.pendingOperations[0].correlationId;
-    const snapshotBytes = s1.snapshot();
+    const captured = s1.snapshot();
     s1.dispose();
-    expect(snapshotBytes).toBeInstanceOf(Uint8Array);
-    expect(snapshotBytes.byteLength).toBeGreaterThan(1000);
+    expect(captured.data).toBeInstanceOf(Uint8Array);
+    expect(captured.data.byteLength).toBeGreaterThan(1000);
+    expect(captured.rngDraws).toBeGreaterThan(0);
 
     // Restore in a "fresh process": only the delta events are supplied.
     const s2 = await startQuickJSWorkflow({
@@ -1048,8 +1049,12 @@ describe('VM snapshot/restore', () => {
       workflowRun: run,
       events: stepEvents(run, step1Cid, 17, 'evnt_s1'),
       existingSnapshot: {
-        data: snapshotBytes,
-        metadata: { eventsCursor: 'cursor_1', createdAt: new Date() },
+        data: captured.data,
+        metadata: {
+          eventsCursor: 'cursor_1',
+          createdAt: new Date(),
+          rngDraws: captured.rngDraws,
+        },
       },
     });
     expect(s2.result.suspended).toBeDefined();
@@ -1070,25 +1075,29 @@ describe('VM snapshot/restore', () => {
     const run = makeRun();
     const s1 = await suspendFresh(run);
     const step1Cid = s1.result.suspended!.pendingOperations[0].correlationId;
-    const snapshotBytes = s1.snapshot();
+    const captured = s1.snapshot();
     s1.dispose();
 
     const delta = stepEvents(run, step1Cid, 17, 'evnt_s1');
-    const meta = { eventsCursor: 'cursor_1', createdAt: new Date() };
+    const meta = {
+      eventsCursor: 'cursor_1',
+      createdAt: new Date(),
+      rngDraws: captured.rngDraws,
+    };
     const [ra, rb] = await Promise.all([
       startQuickJSWorkflow({
         workflowCode: twoStepCode,
         workflowId: 'workflow//test//workflow',
         workflowRun: run,
         events: delta,
-        existingSnapshot: { data: snapshotBytes, metadata: meta },
+        existingSnapshot: { data: captured.data, metadata: meta },
       }),
       startQuickJSWorkflow({
         workflowCode: twoStepCode,
         workflowId: 'workflow//test//workflow',
         workflowRun: run,
         events: delta,
-        existingSnapshot: { data: snapshotBytes, metadata: meta },
+        existingSnapshot: { data: captured.data, metadata: meta },
       }),
     ]);
     expect(ra.result.suspended!.pendingOperations[0].correlationId).toBe(
@@ -1098,6 +1107,53 @@ describe('VM snapshot/restore', () => {
     rb.dispose();
   });
 
+  it('post-restore correlationIds equal the no-snapshot run (position-based fast-forward)', async () => {
+    // The definitive dedup property: an invocation restored from a
+    // snapshot and an invocation that full-replayed from scratch must
+    // generate the SAME id for the same logical step — otherwise a queue
+    // redelivery straddling a snapshot save double-executes the step.
+    const { startQuickJSWorkflow } = await import('./quickjs-runtime.js');
+    const run = makeRun();
+
+    // No-snapshot reference: full replay past step 1.
+    const s1 = await suspendFresh(run);
+    const step1Cid = s1.result.suspended!.pendingOperations[0].correlationId;
+    const captured = s1.snapshot();
+    s1.dispose();
+    const reference = await startQuickJSWorkflow({
+      workflowCode: twoStepCode,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [
+        runCreatedEvent(run),
+        ...stepEvents(run, step1Cid, 17, 'evnt_s1'),
+      ],
+    });
+    const referenceStep2Cid =
+      reference.result.suspended!.pendingOperations[0].correlationId;
+    reference.dispose();
+
+    // Snapshot-restored invocation reaching the same logical step.
+    const restored = await startQuickJSWorkflow({
+      workflowCode: twoStepCode,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: stepEvents(run, step1Cid, 17, 'evnt_s1'),
+      existingSnapshot: {
+        data: captured.data,
+        metadata: {
+          eventsCursor: 'cursor_1',
+          createdAt: new Date(),
+          rngDraws: captured.rngDraws,
+        },
+      },
+    });
+    expect(restored.result.suspended!.pendingOperations[0].correlationId).toBe(
+      referenceStep2Cid
+    );
+    restored.dispose();
+  });
+
   it('supports restore from an OLDER snapshot with multi-suspension partial replay (threshold model)', async () => {
     const { startQuickJSWorkflow } = await import('./quickjs-runtime.js');
     const run = makeRun();
@@ -1105,8 +1161,13 @@ describe('VM snapshot/restore', () => {
     // Take a snapshot at suspension 1 only.
     const s1 = await suspendFresh(run);
     const step1Cid = s1.result.suspended!.pendingOperations[0].correlationId;
-    const snapshotBytes = s1.snapshot();
+    const captured = s1.snapshot();
     s1.dispose();
+    const meta = {
+      eventsCursor: 'cursor_1',
+      createdAt: new Date(),
+      rngDraws: captured.rngDraws,
+    };
 
     // Simulate a later invocation that resumed from that snapshot WITHOUT
     // saving a newer one: it consumed step 1's results and recorded step 2.
@@ -1115,10 +1176,7 @@ describe('VM snapshot/restore', () => {
       workflowId: 'workflow//test//workflow',
       workflowRun: run,
       events: stepEvents(run, step1Cid, 17, 'evnt_s1'),
-      existingSnapshot: {
-        data: snapshotBytes,
-        metadata: { eventsCursor: 'cursor_1', createdAt: new Date() },
-      },
+      existingSnapshot: { data: captured.data, metadata: meta },
     });
     const step2Cid = mid.result.suspended!.pendingOperations[0].correlationId;
     mid.dispose();
@@ -1134,10 +1192,7 @@ describe('VM snapshot/restore', () => {
         ...stepEvents(run, step1Cid, 17, 'evnt_s1'),
         ...stepEvents(run, step2Cid, 25, 'evnt_s2'),
       ],
-      existingSnapshot: {
-        data: snapshotBytes,
-        metadata: { eventsCursor: 'cursor_1', createdAt: new Date() },
-      },
+      existingSnapshot: { data: captured.data, metadata: meta },
     });
     expect(late.result.completed).toBeDefined();
     expect(unwrapResult(late.result.completed!.result)).toBe(25);
