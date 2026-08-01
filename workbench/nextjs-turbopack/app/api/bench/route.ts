@@ -1,3 +1,4 @@
+import { trace } from '@opentelemetry/api';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { start } from 'workflow/api';
@@ -57,7 +58,13 @@ export async function POST(request: NextRequest) {
     const clientStart = Date.now();
     // @ts-expect-error - arbitrary call to a dynamically resolved workflow
     const run = await start(fn, args);
-    return NextResponse.json({ runId: run.runId, clientStart });
+    // Surface this request's trace id so the runner can link a benchmark run
+    // back to its Datadog trace from the PR comment, instead of anyone having
+    // to hunt for it by deployment id / time window. The span is the one
+    // @vercel/otel opened for this route invocation (see instrumentation.ts),
+    // and it propagates into the workflow's own spans.
+    const traceId = trace.getActiveSpan()?.spanContext().traceId;
+    return NextResponse.json({ runId: run.runId, clientStart, traceId });
   } catch (error) {
     return NextResponse.json(
       {

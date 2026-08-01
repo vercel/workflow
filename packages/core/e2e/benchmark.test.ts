@@ -193,6 +193,9 @@ interface StreamIterationResult {
 
 interface SequentialIterationResult {
   runId: string;
+  /** Datadog trace id for the `/api/bench` request that started this run, when
+   * the deployment's route reports one (older deployments won't). */
+  traceId?: string;
   /** STSO gaps preceding an 'inline' step (same warm process as the step
    * before it) — the framework's pure step-to-step overhead. */
   stsoInlineMs: number[];
@@ -221,6 +224,8 @@ interface BenchTriggerResponse {
   runId: string;
   /** Date.now() stamped in the route immediately before start(). */
   clientStart: number;
+  /** Datadog trace id for this request, when the route reports one. */
+  traceId?: string;
 }
 
 function withTimeout<T>(
@@ -272,7 +277,13 @@ async function triggerBenchRun(
       `bench trigger for ${workflowFn} returned malformed body: ${JSON.stringify(data)?.slice(0, 200)}`
     );
   }
-  return { runId: data.runId, clientStart: data.clientStart };
+  return {
+    runId: data.runId,
+    clientStart: data.clientStart,
+    // Optional: a deployment built before the route reported it simply omits
+    // the trace link from the rendered comment.
+    traceId: typeof data.traceId === 'string' ? data.traceId : undefined,
+  };
 }
 
 /** Poll a run's return value to completion (the handle polls internally). */
@@ -340,7 +351,7 @@ async function runStreamIteration(
 async function runSequentialIteration(
   stepCount: number
 ): Promise<SequentialIterationResult> {
-  const { runId, clientStart } = await triggerBenchRun(
+  const { runId, clientStart, traceId } = await triggerBenchRun(
     'benchSequentialStepsWorkflow',
     [stepCount]
   );
@@ -366,6 +377,7 @@ async function runSequentialIteration(
 
     return {
       runId,
+      traceId,
       stsoInlineMs,
       stsoQueueHopMs,
       woMs: workflowOverheadMs(clientStart, steps),
@@ -560,6 +572,17 @@ interface MetricRow extends MetricStats {
 }
 
 const metricRows: MetricRow[] = [];
+
+/** Identity of one sequential-steps iteration. */
+interface SequentialRunRef {
+  runId: string;
+  traceId?: string;
+}
+
+/** The runs behind the STSO histograms, recorded so the PR comment can link
+ * straight to each run and its Datadog trace — which is where a
+ * suspicious-looking distribution has to be investigated. */
+const sequentialRuns: SequentialRunRef[] = [];
 
 function recordMetric(
   metric: string,
@@ -777,6 +800,9 @@ describe('workflow benchmarks', () => {
         extraAttempts: Math.max(2, Math.ceil(SEQUENTIAL_ITERATIONS * 0.5)),
       }
     );
+    sequentialRuns.push(
+      ...results.map((r) => ({ runId: r.runId, traceId: r.traceId }))
+    );
     // Report STSO split by whether the step that ends the gap was 'inline'
     // (same warm process as the step before it — pure framework overhead) or
     // a 'queue-hop' (first step of a fresh process — dispatch + reinit cost).
@@ -838,6 +864,10 @@ describe('workflow benchmarks', () => {
       },
       scenarios: SCENARIO_DESCRIPTIONS,
       metrics: metricRows,
+      // Only present when the sequential-steps scenario ran; omitted entirely
+      // (rather than `[]`) so a result file from another scenario selection
+      // doesn't grow a meaningless empty field.
+      ...(sequentialRuns.length > 0 ? { sequentialRuns } : {}),
     };
     fs.writeFileSync(outputPath, JSON.stringify(results, null, 2));
     console.log(`[bench] Results written to ${outputPath}`);

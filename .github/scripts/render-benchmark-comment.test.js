@@ -461,7 +461,7 @@ test('CLI fails when completed with no results', async () => {
 
 /** A sequential-steps result whose STSO rows carry raw samples, as the
  * benchmark runner now records them (every gap, not a sampled window). */
-function sequentialResult({ inline, queueHop }) {
+function sequentialResult({ inline, queueHop, sequentialRuns }) {
   const stsoRow = (scenario, raw) => ({
     metric: 'stso',
     scenario,
@@ -482,6 +482,7 @@ function sequentialResult({ inline, queueHop }) {
       stsoRow('1020 steps (inline)', inline),
       stsoRow('1020 steps (queue-hop)', queueHop),
     ],
+    ...(sequentialRuns ? { sequentialRuns } : {}),
   });
 }
 
@@ -597,6 +598,84 @@ test('strips raw samples from the embedded history data block', async () => {
   });
   assert.match(rerendered, /1020 steps \(inline\)/);
   assert.doesNotMatch(rerendered, /STSO distribution/);
+});
+
+test('links the run id and Datadog trace under the histograms', async () => {
+  const { renderComment } = await loadModule();
+  const body = renderComment({
+    status: 'completed',
+    results: [
+      sequentialResult({
+        inline: [160, 360],
+        queueHop: [2100],
+        sequentialRuns: [{ runId: 'run_this', traceId: 'abc123' }],
+      }),
+    ],
+    baseline: [
+      sequentialResult({
+        inline: [160, 360],
+        queueHop: [2100],
+        sequentialRuns: [{ runId: 'run_main', traceId: 'def456' }],
+      }),
+    ],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+
+  // One line for the whole section — both histograms come from the same run.
+  assert.match(
+    body,
+    /<sub>Runs behind these histograms — this run: `run_this` \(\[trace\]\(https:\/\/app\.datadoghq\.com\/apm\/trace\/abc123\)\) · `main`: `run_main` \(\[trace\]\(https:\/\/app\.datadoghq\.com\/apm\/trace\/def456\)\)<\/sub>/
+  );
+  // ...and it sits inside the collapsed distribution section, below the charts.
+  const section = body.slice(
+    body.indexOf('📈 STSO distribution'),
+    body.indexOf('</details>', body.indexOf('📈 STSO distribution'))
+  );
+  assert.ok(
+    section.indexOf('Runs behind these histograms') >
+      section.lastIndexOf('```'),
+    'run links should render after the last bar chart'
+  );
+});
+
+test('degrades to bare run ids when no trace or baseline runs exist', async () => {
+  const { renderComment } = await loadModule();
+  const body = renderComment({
+    status: 'completed',
+    results: [
+      sequentialResult({
+        inline: [160, 360],
+        queueHop: [2100],
+        // A deployment built before /api/bench reported a trace id.
+        sequentialRuns: [{ runId: 'run_this' }],
+      }),
+    ],
+    // A `main` baseline from before the runner recorded run identities.
+    baseline: [sequentialResult({ inline: [160, 360], queueHop: [2100] })],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+
+  assert.match(
+    body,
+    /<sub>Runs behind these histograms — this run: `run_this`<\/sub>/
+  );
+  assert.doesNotMatch(body, /datadoghq/);
+});
+
+test('omits the run links entirely when no run identities were recorded', async () => {
+  const { renderComment } = await loadModule();
+  const body = renderComment({
+    status: 'completed',
+    results: [sequentialResult({ inline: [160, 360], queueHop: [2100] })],
+    baseline: [sequentialResult({ inline: [160, 360], queueHop: [2100] })],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+
+  assert.match(body, /<summary>📈 STSO distribution vs main/);
+  assert.doesNotMatch(body, /Runs behind these histograms/);
 });
 
 test('buckets negative STSO gaps separately from the slow tail', async () => {
