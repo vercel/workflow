@@ -527,8 +527,9 @@ describe('slot bookkeeping', () => {
   const slotEvent = (slot: number) => makeEvent(slotEventId(slot));
 
   it('reads maxSlot from the highest slot present, not the last element', () => {
-    // `appendUniqueEvents` appends without sorting, so a merged log's last
-    // element is not necessarily its newest event.
+    // Nothing forces a caller's array into slot order — a World is free to
+    // hand back a page in whatever order its index produced — so the highest
+    // slot is a scan, not a peek at the last element.
     const log = toMutableEventLog([slotEvent(3), slotEvent(1)], 'c0');
     expect(log.maxSlot).toBe(3);
     expect(log.nextSlot).toBe(4);
@@ -602,6 +603,33 @@ describe('slot bookkeeping', () => {
       slotEventId(1),
       slotEventId(2),
     ]);
+  });
+
+  it('restores slot order when a merge brings in a lower slot', () => {
+    // Arrival order is not log order: a slot is reserved when its event is
+    // issued and written when the issue resolves, so a lower slot can be
+    // learned after a higher one. The replay consumes this array positionally,
+    // so an event left sitting ahead of the one it followed decides races the
+    // wrong way.
+    const log = toMutableEventLog([slotEvent(1), slotEvent(4)], 'c0');
+    mergeLoadedEvents(log, [slotEvent(3), slotEvent(2)]);
+    expect(log.events.map((e) => e.eventId)).toEqual([
+      slotEventId(1),
+      slotEventId(2),
+      slotEventId(3),
+      slotEventId(4),
+    ]);
+  });
+
+  it('leaves a ULID log in the order the World returned it', () => {
+    // ULID ids are minted at write time, so arrival order *is* log order and
+    // the World's ordering is the authority.
+    const events = [makeUlidEvent(1_700_000_000_000)];
+    const later = makeUlidEvent(1_700_000_001_000);
+    const earlier = makeUlidEvent(1_699_999_999_000);
+    const log = toMutableEventLog(events, 'c0');
+    mergeLoadedEvents(log, [later, earlier]);
+    expect(log.events).toEqual([events[0], later, earlier]);
   });
 
   it('hands out contiguous distinct slots for a synchronous burst', () => {
@@ -704,105 +732,189 @@ describe('withSlotRetry', () => {
     expect(eventsListMock).not.toHaveBeenCalled();
   });
 
-  it('merges the conflict delta and reclaims past it, without reloading', async () => {
-    // The inline delta is the whole point of the 409 body: the client learns
-    // which events it was missing without a follow-up round-trip.
+  it('takes each claim only once the create ahead of it has committed', async () => {
+    // A claim fences out a concurrent writer only while it names the slot right
+    // after the tail the writer saw, so a second create cannot be numbered
+    // until the first has landed.
     const log = toMutableEventLog([slotEvent(1)], 'c0');
-    const claimed: string[] = [];
+    const claimed: (string | undefined)[] = [];
+    let releaseFirst!: () => void;
+    const firstLanded = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    const first = withSlotRetry('wrun_test', log, async (fence) => {
+      claimed.push(fence.eventId);
+      await firstLanded;
+      return 'first';
+    });
+    const second = withSlotRetry('wrun_test', log, async (fence) => {
+      claimed.push(fence.eventId);
+      return 'second';
+    });
+
+    await Promise.resolve();
+    expect(claimed).toEqual([slotEventId(2)]);
+
+    releaseFirst();
+    await expect(first).resolves.toBe('first');
+    await expect(second).resolves.toBe('second');
+    expect(claimed).toEqual([slotEventId(2), slotEventId(3)]);
+  });
+
+  it('rejects a lost claim rather than re-addressing the write', async () => {
+    // A 409 says this replay decided from a log missing an event. Moving the
+    // same write to a free slot would commit that decision anyway, so the
+    // rejection propagates and the run replays.
+    const log = toMutableEventLog([slotEvent(1)], 'c0');
     const op = vi.fn(async ({ eventId }: { eventId?: string }) => {
-      claimed.push(eventId as string);
-      if (claimed.length === 1) {
-        throw new SlotConflictError('taken', {
-          eventId: eventId as string,
-          events: [slotEvent(2), slotEvent(3)],
-          cursor: 'c1',
-        });
-      }
-      return 'done';
-    });
-
-    await expect(withSlotRetry('wrun_test', log, op)).resolves.toBe('done');
-    expect(claimed).toEqual([slotEventId(2), slotEventId(4)]);
-    expect(log.events).toHaveLength(3);
-    expect(log.cursor).toBe('c1');
-    expect(eventsListMock).not.toHaveBeenCalled();
-  });
-
-  it('tops the delta up from the backend when it was truncated', async () => {
-    const log = toMutableEventLog([slotEvent(1)], 'c0');
-    eventsListMock.mockResolvedValueOnce({
-      data: [slotEvent(3)],
-      cursor: 'c2',
-      hasMore: false,
-    });
-    let attempts = 0;
-    const op = vi.fn(async () => {
-      attempts++;
-      if (attempts === 1) {
-        throw new SlotConflictError('taken', {
-          eventId: slotEventId(2),
-          events: [slotEvent(2)],
-          cursor: 'c1',
-          hasMore: true,
-        });
-      }
-      return 'done';
-    });
-
-    await expect(withSlotRetry('wrun_test', log, op)).resolves.toBe('done');
-    expect(eventsListMock).toHaveBeenCalledTimes(1);
-    expect(log.maxSlot).toBe(3);
-    expect(op).toHaveBeenLastCalledWith({
-      eventId: slotEventId(4),
-      maxSlot: 3,
-    });
-  });
-
-  it('falls back to a full incremental load when the rejection carried no delta', async () => {
-    const log = toMutableEventLog([slotEvent(1)], 'c0');
-    eventsListMock.mockResolvedValueOnce({
-      data: [slotEvent(2)],
-      cursor: 'c1',
-      hasMore: false,
-    });
-    let attempts = 0;
-    const op = vi.fn(async () => {
-      attempts++;
-      if (attempts === 1) {
-        throw new SlotConflictError('taken', { eventId: slotEventId(2) });
-      }
-      return 'done';
-    });
-
-    await expect(withSlotRetry('wrun_test', log, op)).resolves.toBe('done');
-    expect(eventsListMock).toHaveBeenCalledTimes(1);
-    expect(op).toHaveBeenLastCalledWith({
-      eventId: slotEventId(3),
-      maxSlot: 2,
-    });
-  });
-
-  it('rethrows the conflict once the reclaim budget is spent', async () => {
-    // Escaping to a fresh replay is the correct fallback, not a failure mode:
-    // the merged events can change what the workflow body decides, and only a
-    // replay from the top can act on that.
-    const log = toMutableEventLog([slotEvent(1)], 'c0');
-    eventsListMock.mockResolvedValue({
-      data: [],
-      cursor: 'c1',
-      hasMore: false,
-    });
-    const op = vi.fn(async ({ eventId }: { eventId?: string }) => {
-      throw new SlotConflictError('taken', { eventId: eventId as string });
+      throw new SlotConflictError('taken', {
+        eventId: eventId as string,
+        events: [slotEvent(2)],
+        cursor: 'c1',
+      });
     });
 
     await expect(withSlotRetry('wrun_test', log, op)).rejects.toBeInstanceOf(
       SlotConflictError
     );
-    expect(op).toHaveBeenCalledTimes(PRECONDITION_MAX_RELOAD_RETRIES + 1);
-    expect(eventsListMock).toHaveBeenCalledTimes(
-      PRECONDITION_MAX_RELOAD_RETRIES
+    expect(op).toHaveBeenCalledTimes(1);
+    expect(eventsListMock).not.toHaveBeenCalled();
+  });
+
+  it('leaves the rest of the batch claiming into the occupied range', async () => {
+    // The tail stops advancing for this log while the backend's moves on, so
+    // the siblings behind a rejected claim propose slots the backend has
+    // already filled and are rejected with it.
+    const log = toMutableEventLog([slotEvent(1)], 'c0');
+    const loser = withSlotRetry('wrun_test', log, async ({ eventId }) => {
+      throw new SlotConflictError('taken', { eventId: eventId as string });
+    });
+    await expect(loser).rejects.toBeInstanceOf(SlotConflictError);
+
+    const sibling = await withSlotRetry(
+      'wrun_test',
+      log,
+      async (fence) => fence.eventId
     );
+    expect(sibling).toBe(slotEventId(2));
+  });
+
+  describe('under a reclaim budget', () => {
+    // `WORKFLOW_SLOT_RETRY_BUDGET` takes the other side of the default trade:
+    // it keeps a batch contiguous by re-issuing the write past what it was
+    // missing, at the cost of committing a decision taken without it.
+    beforeEach(() => {
+      vi.stubEnv(
+        'WORKFLOW_SLOT_RETRY_BUDGET',
+        String(PRECONDITION_MAX_RELOAD_RETRIES)
+      );
+    });
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('merges the conflict delta and reclaims past it, without reloading', async () => {
+      // The inline delta is the whole point of the 409 body: the client learns
+      // which events it was missing without a follow-up round-trip.
+      const log = toMutableEventLog([slotEvent(1)], 'c0');
+      const claimed: string[] = [];
+      const op = vi.fn(async ({ eventId }: { eventId?: string }) => {
+        claimed.push(eventId as string);
+        if (claimed.length === 1) {
+          throw new SlotConflictError('taken', {
+            eventId: eventId as string,
+            events: [slotEvent(2), slotEvent(3)],
+            cursor: 'c1',
+          });
+        }
+        return 'done';
+      });
+
+      await expect(withSlotRetry('wrun_test', log, op)).resolves.toBe('done');
+      expect(claimed).toEqual([slotEventId(2), slotEventId(4)]);
+      expect(log.events).toHaveLength(3);
+      expect(log.cursor).toBe('c1');
+      expect(eventsListMock).not.toHaveBeenCalled();
+    });
+
+    it('tops the delta up from the backend when it was truncated', async () => {
+      const log = toMutableEventLog([slotEvent(1)], 'c0');
+      eventsListMock.mockResolvedValueOnce({
+        data: [slotEvent(3)],
+        cursor: 'c2',
+        hasMore: false,
+      });
+      let attempts = 0;
+      const op = vi.fn(async () => {
+        attempts++;
+        if (attempts === 1) {
+          throw new SlotConflictError('taken', {
+            eventId: slotEventId(2),
+            events: [slotEvent(2)],
+            cursor: 'c1',
+            hasMore: true,
+          });
+        }
+        return 'done';
+      });
+
+      await expect(withSlotRetry('wrun_test', log, op)).resolves.toBe('done');
+      expect(eventsListMock).toHaveBeenCalledTimes(1);
+      // The reclaim saw slot 3 as the tail and then became it.
+      expect(log.maxSlot).toBe(4);
+      expect(op).toHaveBeenLastCalledWith({
+        eventId: slotEventId(4),
+        maxSlot: 3,
+      });
+    });
+
+    it('falls back to a full incremental load when the rejection carried no delta', async () => {
+      const log = toMutableEventLog([slotEvent(1)], 'c0');
+      eventsListMock.mockResolvedValueOnce({
+        data: [slotEvent(2)],
+        cursor: 'c1',
+        hasMore: false,
+      });
+      let attempts = 0;
+      const op = vi.fn(async () => {
+        attempts++;
+        if (attempts === 1) {
+          throw new SlotConflictError('taken', { eventId: slotEventId(2) });
+        }
+        return 'done';
+      });
+
+      await expect(withSlotRetry('wrun_test', log, op)).resolves.toBe('done');
+      expect(eventsListMock).toHaveBeenCalledTimes(1);
+      expect(op).toHaveBeenLastCalledWith({
+        eventId: slotEventId(3),
+        maxSlot: 2,
+      });
+    });
+
+    it('rethrows the conflict once the reclaim budget is spent', async () => {
+      // Escaping to a fresh replay is the correct fallback, not a failure mode:
+      // the merged events can change what the workflow body decides, and only a
+      // replay from the top can act on that.
+      const log = toMutableEventLog([slotEvent(1)], 'c0');
+      eventsListMock.mockResolvedValue({
+        data: [],
+        cursor: 'c1',
+        hasMore: false,
+      });
+      const op = vi.fn(async ({ eventId }: { eventId?: string }) => {
+        throw new SlotConflictError('taken', { eventId: eventId as string });
+      });
+
+      await expect(withSlotRetry('wrun_test', log, op)).rejects.toBeInstanceOf(
+        SlotConflictError
+      );
+      expect(op).toHaveBeenCalledTimes(PRECONDITION_MAX_RELOAD_RETRIES + 1);
+      expect(eventsListMock).toHaveBeenCalledTimes(
+        PRECONDITION_MAX_RELOAD_RETRIES
+      );
+    });
   });
 
   it('rethrows a non-conflict error immediately, without merging', async () => {
@@ -824,28 +936,20 @@ describe('withEventCreateFence', () => {
     eventsListMock.mockReset();
   });
 
-  it('fences a slot-numbered run by event id and retries its 409s', async () => {
+  it('fences a slot-numbered run by event id and escapes its 409s', async () => {
     const log = toMutableEventLog([makeEvent(slotEventId(1))], 'c0');
-    let attempts = 0;
     const op = vi.fn(async ({ eventId }: { eventId?: string }) => {
-      attempts++;
-      if (attempts === 1) {
-        throw new SlotConflictError('taken', {
-          eventId: eventId as string,
-          events: [makeEvent(slotEventId(2))],
-          cursor: 'c1',
-        });
-      }
-      return 'done';
+      throw new SlotConflictError('taken', {
+        eventId: eventId as string,
+        events: [makeEvent(slotEventId(2))],
+        cursor: 'c1',
+      });
     });
 
     await expect(
       withEventCreateFence('wrun_test', log, SPEC_VERSION_SLOT_IDENTITY, op)
-    ).resolves.toBe('done');
-    expect(op).toHaveBeenLastCalledWith({
-      eventId: slotEventId(3),
-      maxSlot: 2,
-    });
+    ).rejects.toBeInstanceOf(SlotConflictError);
+    expect(op).toHaveBeenCalledWith({ eventId: slotEventId(2), maxSlot: 1 });
   });
 
   it('fences a ULID-numbered run by watermark and retries its 412s', async () => {
@@ -880,10 +984,10 @@ describe('stepClaimFence', () => {
     eventsListMock.mockReset();
   });
 
-  it('numbers a batch in the order its claims were built, not the order they fire', async () => {
-    // The batch is built during replay and only starts racing afterwards, so
-    // the slot of each member has to be fixed at build time for the numbering
-    // to be replay-stable.
+  it('numbers a batch in the order its claims fire, each one above the last', async () => {
+    // Slots go out one at a time so every claim names the tail its writer saw.
+    // A step that publishes the `step_created` it deferred takes the two slots
+    // below its claim, and the next claim starts above both.
     const log = toMutableEventLog([slotEvent(1)], 'c0');
     const first = stepClaimFence('wrun_test', log, SPEC_VERSION_SLOT_IDENTITY, {
       extraEvents: 1,
@@ -895,19 +999,16 @@ describe('stepClaimFence', () => {
       claimed.push(fence?.eventId);
       return Promise.resolve('ok');
     };
-    // Fired in reverse: the numbering must not depend on it.
-    await second(record);
     await first(record);
+    await second(record);
 
-    expect(claimed).toEqual([slotEventId(4), slotEventId(3)]);
+    expect(claimed).toEqual([slotEventId(3), slotEventId(4)]);
   });
 
-  it('reclaims a lost slot in place, keeping the batch adjacent', async () => {
-    // The server allocates an outside event from the same next-free pointer
-    // the client reserves from, so losing a claim is routine. Abandoning the
-    // batch on it would leave this step's events far later in the log than its
-    // siblings' — an order no single replay can consume — and leave the lost
-    // slot permanently empty.
+  it('abandons the batch when a claim is lost', async () => {
+    // The lost claim proves the batch was decided from a log missing an event,
+    // so the sibling behind it re-proposes the slot the backend has already
+    // filled instead of stepping over it.
     const log = toMutableEventLog([slotEvent(1)], 'c0');
     const claim = stepClaimFence('wrun_test', log, SPEC_VERSION_SLOT_IDENTITY);
     const sibling = stepClaimFence(
@@ -919,23 +1020,19 @@ describe('stepClaimFence', () => {
     const claimed: string[] = [];
     const op = vi.fn(async (fence?: { eventId?: string }) => {
       claimed.push(fence?.eventId as string);
-      if (claimed.length === 1) {
-        // An out-of-band hook took slot 2 while the batch was being built.
-        throw new SlotConflictError('taken', {
-          eventId: fence?.eventId as string,
-          events: [slotEvent(2)],
-          cursor: 'c1',
-        });
-      }
-      return 'done';
+      // An out-of-band hook took slot 2 while the batch was being built.
+      throw new SlotConflictError('taken', {
+        eventId: fence?.eventId as string,
+        events: [slotEvent(2)],
+        cursor: 'c1',
+      });
     });
 
-    await expect(claim(op)).resolves.toBe('done');
+    await expect(claim(op)).rejects.toBeInstanceOf(SlotConflictError);
     await expect(sibling(async (f) => f?.eventId)).resolves.toBe(
-      slotEventId(3)
+      slotEventId(2)
     );
-    // Reclaimed above the merged event rather than propagating the conflict.
-    expect(claimed).toEqual([slotEventId(2), slotEventId(4)]);
+    expect(claimed).toEqual([slotEventId(2)]);
   });
 
   it('leaves a ULID-numbered batch on one shared watermark, unretried', async () => {

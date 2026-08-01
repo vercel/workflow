@@ -17,6 +17,7 @@ import type {
 import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
+  isSlotId,
   maxSlotOf,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
@@ -465,7 +466,22 @@ function recordRequestedEventCursor(
 }
 
 /**
- * Appends events whose IDs are not already present in `target`.
+ * Appends events whose IDs are not already present in `target`, keeping a
+ * slot-numbered log in slot order.
+ *
+ * Arrival order is not log order under slot identity. A slot is reserved when
+ * its event is issued and written when that issue resolves, so a lower slot can
+ * be committed after a higher one, and a merge that only appends leaves the
+ * array in the order the events were *learned*, not the order they occupy.
+ * That difference decides races: the replay consumes this array positionally
+ * — the delivery barriers in `pendingDeliveryBarriers` are keyed on the index —
+ * so a `step_completed` sitting ahead of a `wait_completed` it actually
+ * follows makes the replay take the branch the log does not record, and the
+ * next event it reads belongs to a step it never started.
+ *
+ * Sorting by event id *is* sorting by slot: ids are zero-padded to a fixed
+ * width, and a slot-numbered run's log carries no ULID ids to interleave with
+ * them.
  *
  * Pass the IDs currently present in `target` when appending repeatedly to the
  * same array. The set is updated alongside `target`.
@@ -480,11 +496,17 @@ export function appendUniqueEvents(
   }
 
   const ids = targetIds ?? new Set(target.map((event) => event.eventId));
+  let outOfOrder = false;
   for (const event of events) {
     if (!ids.has(event.eventId)) {
       ids.add(event.eventId);
+      outOfOrder ||=
+        target.length > 0 && event.eventId < target[target.length - 1].eventId;
       target.push(event);
     }
+  }
+  if (outOfOrder && isSlotId(target[0].eventId)) {
+    target.sort((a, b) => (a.eventId < b.eventId ? -1 : 1));
   }
 }
 
@@ -665,11 +687,23 @@ export interface MutableEventLog {
    */
   maxSlot: number;
   /**
-   * Next slot `reserveSlot` will hand out. Absolute, and it only ever moves
-   * forward: a merge can raise it past the events it brought in, but must never
-   * lower it onto a slot already handed to a writer that is still in flight.
+   * Next slot `reserveSlot` will hand out. Only a writer holding the log's
+   * write chain may draw from it, and it is rewound to `maxSlot + 1` when a
+   * claim is rejected so the rest of the batch claims into the occupied range
+   * and is rejected with it.
    */
   nextSlot: number;
+  /**
+   * Tail of the chain of creates numbered off this log, or `undefined` when
+   * none is in flight.
+   *
+   * Slot claims are taken one at a time. A claim only fences out a concurrent
+   * writer if it names the slot right after the log's committed tail: numbering
+   * a whole concurrent batch up front hands its later writes slots far enough
+   * above the tail that a foreign event landing in between clears every fence
+   * they carry, and the batch commits decisions taken without it.
+   */
+  writeChain?: Promise<void>;
 }
 
 /**
@@ -709,19 +743,11 @@ export function mergeLoadedEvents(
 }
 
 /**
- * Claims the next free slot in `log`, synchronously at the moment an event is
- * issued.
+ * Claims the next free slot in `log`.
  *
- * Reservations are contiguous rather than all-`maxSlot + 1` because a
- * suspension flushes its operations concurrently: without them every operation
- * in the flush would propose the same slot and all but one would conflict, on
- * every single flush. Operations are built in deterministic replay order, so
- * the slot each one draws is replay-stable too.
- *
- * The pointer is never rewound by a merge, only pushed forward. A writer that
- * loses its slot merges the delta and reserves again while its siblings still
- * hold theirs; rewinding to `maxSlot + 1` would hand it a sibling's slot and
- * turn one conflict into a chain of them.
+ * Only call this while holding the log's write chain: the claim is the fence,
+ * and it only fences anything while it names the slot immediately after the
+ * tail this writer has seen.
  */
 export function reserveSlot(log: MutableEventLog): number {
   const slot = log.nextSlot;
@@ -928,6 +954,57 @@ function reserveSlotFence(
 }
 
 /**
+ * Runs one slot-numbered create with the log's claim to itself, taking its slot
+ * only once every create ahead of it on the log has settled.
+ *
+ * A slot claim is an assertion about the tail: "nothing has been published
+ * since the view I decided from". Claims handed out up front to a concurrent
+ * batch can only assert that about the first of them — the rest sit above slots
+ * their own siblings have yet to fill, so a foreign event landing in that space
+ * satisfies their fences too and they commit on a view that is already missing
+ * it. Taking claims one at a time keeps every write's fence tight against the
+ * tail the writer actually saw.
+ *
+ * A rejection therefore stops the whole batch rather than only its own write:
+ * the log's tail stops advancing while the backend's moves on, so the claims
+ * behind it fall inside the occupied range and are rejected in turn. That is
+ * the intent — the batch was decided from a log missing an event, so none of it
+ * should land.
+ */
+async function withSerializedClaim<T>(
+  log: MutableEventLog,
+  extraEvents: number,
+  op: (fence: EventCreateFence) => Promise<T>
+): Promise<T> {
+  const ahead = log.writeChain;
+  let done!: () => void;
+  log.writeChain = new Promise<void>((resolve) => {
+    done = resolve;
+  });
+  if (ahead) {
+    await ahead;
+  }
+  try {
+    const fence = reserveSlotFence(log, extraEvents);
+    const result = await op(fence);
+    log.maxSlot = Math.max(
+      log.maxSlot,
+      maxSlotOf([{ eventId: fence.eventId ?? '' }])
+    );
+    log.nextSlot = Math.max(log.nextSlot, log.maxSlot + 1);
+    return result;
+  } catch (error) {
+    // The slots this attempt drew are not the writer's, and the tail is at
+    // least as high as the claim that lost. Rewinding onto the occupied range
+    // is what makes the rest of the batch fail with it.
+    log.nextSlot = log.maxSlot + 1;
+    throw error;
+  } finally {
+    done();
+  }
+}
+
+/**
  * Runs one event create under whichever fence its run uses, handling a lost
  * claim however that run's scheme requires.
  */
@@ -938,23 +1015,22 @@ export type FencedCreate = <T>(
 /**
  * The fence for an inline step's `step_started` claim.
  *
- * A slot-numbered run retries a lost claim in place; a watermark-guarded run
- * does not, and lets the rejection abandon the batch for a fresh replay. The
- * asymmetry is in what a rejection proves, and it is the difference between a
- * batch that stays contiguous and one that splits:
+ * Both numbering schemes abandon the batch when the claim is rejected, and for
+ * the same reason: a rejection says this replay decided from a log it had not
+ * fully seen, and a decision made that way is not one to re-address to a free
+ * number. A 412 says the newest outside event is younger than the snapshot; a
+ * 409 says the number this replay counted to belongs to someone else. Either
+ * way the missing event can be the one that would have sent the workflow down
+ * another branch, and because correlation IDs are counted in branch order,
+ * every ID after that branch moves with it — so the re-issued write lands under
+ * an identity that now names a different step.
  *
- * - A 412 compares the *time* of the newest outside event, so every claim in a
- *   batch carries the same fence value and a stale view fails all of them. The
- *   batch is abandoned as a unit, nothing is written, and the fresh replay
- *   reschedules from a complete view.
- * - A 409 only proves another writer took this write's *number*. That happens
- *   routinely without any staleness: the server allocates outside events from
- *   the same next-free pointer the client reserves from, so any outside event
- *   landing mid-batch takes the slot the batch's next claim is holding. Fencing
- *   the batch on it splits it — the loser writes nothing while its siblings
- *   commit, and the loser's events land far later in the log (or never), leaving
- *   an order no single replay can consume. Taking another number instead keeps
- *   the batch's events adjacent and its slots dense.
+ * The cost is a batch that splits rather than staying contiguous: the loser
+ * writes nothing while its siblings commit. That is the intended trade. The
+ * fresh replay reschedules the whole batch from a complete view, and slots are
+ * allowed to have holes, so a split costs a round-trip rather than a
+ * correctness property. `WORKFLOW_SLOT_RETRY_BUDGET` reinstates the in-place
+ * retry for a run that would rather have the contiguity.
  */
 export function stepClaimFence(
   runId: string,
@@ -963,16 +1039,29 @@ export function stepClaimFence(
   options?: { extraEvents?: number }
 ): FencedCreate {
   if (usesSlotIdentity(specVersion)) {
-    // Reserved here, synchronously, rather than when the claim fires: a batch's
-    // claims have to be numbered in replay order, and they only start racing
-    // each other afterwards. Retries re-reserve at that point by necessity —
-    // the merged delta has moved the log — but by then this write is the only
-    // one of the batch still choosing a slot.
-    const initialFence = reserveSlotFence(log, options?.extraEvents ?? 0);
-    return (op) => withSlotRetry(runId, log, op, { ...options, initialFence });
+    return (op) => withSlotRetry(runId, log, op, options);
   }
   const fence = eventCreateFenceFor(log, specVersion, options);
   return (op) => op(fence);
+}
+
+/**
+ * How many times a lost claim may be re-issued in place before the rejection
+ * propagates and the run replays.
+ *
+ * Zero — the default — means never. A 409 proves this replay decided from a log
+ * missing at least one event, and re-sending the same write only moves a
+ * decision that may already be wrong to a free number: the merged event can be
+ * the very one that would have sent the workflow down another branch, and
+ * because correlation IDs are counted in branch order, every ID after that
+ * branch renumbers with it. Retrying in place keeps a batch contiguous at the
+ * cost of committing that stale decision, so the default trades contiguity for
+ * a fresh replay. `WORKFLOW_SLOT_RETRY_BUDGET` takes the other side.
+ */
+function slotRetryBudget(): number {
+  const raw = process.env.WORKFLOW_SLOT_RETRY_BUDGET;
+  const parsed = raw === undefined ? Number.NaN : Number(raw);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
 /**
@@ -980,37 +1069,39 @@ export function stepClaimFence(
  *
  * The claim is the fence: the backend inserts the proposed `eventId`
  * conditionally, so a `SlotConflictError` (409) proves another writer got there
- * first and that this replay therefore ran against an event log missing at least
- * one event. Re-sending the same write is pointless — it would lose the same
- * slot again — so each attempt merges the events it was missing (inline off the
- * rejection, topped up from the backend when the delta was truncated) and claims
- * a fresh slot past them.
+ * first and that this replay therefore ran against an event log missing at
+ * least one event. By default the rejection propagates immediately and the run
+ * is re-invoked from the queue for a fresh replay, because merged events can
+ * change what the workflow body decides and only a replay from the top can act
+ * on them.
  *
- * Bounded by `PRECONDITION_MAX_RELOAD_RETRIES`, after which the error
- * propagates and the run is re-invoked from the queue for a fresh replay. That
- * fallback is not merely a giving-up path: merged events can change what the
- * workflow body decides, and only a replay from the top can act on them.
+ * Under a non-zero {@link slotRetryBudget} the write is instead re-issued in
+ * place, merging what it was missing (inline off the rejection, topped up from
+ * the backend when the delta was truncated) and claiming a fresh slot past it.
  */
 export async function withSlotRetry<T>(
   runId: string,
   log: MutableEventLog,
   op: (fence: EventCreateFence) => Promise<T>,
-  options?: { extraEvents?: number; initialFence?: EventCreateFence }
+  options?: { extraEvents?: number }
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
-    // Claimed per attempt, not once up front: a merged delta moves the log's
-    // high-water mark, so the previous claim is stale by definition. The first
-    // attempt can carry a slot the caller reserved earlier, for a caller whose
-    // numbering has to be assigned in a particular order (see stepClaimFence).
-    const fence =
-      (attempt === 0 ? options?.initialFence : undefined) ??
-      reserveSlotFence(log, options?.extraEvents ?? 0);
-    const eventId = fence.eventId;
+    let eventId = '';
     try {
-      return await op(fence);
+      // Claimed per attempt, not once up front: a merged delta moves the log's
+      // high-water mark, so the previous claim is stale by definition.
+      return await withSerializedClaim(
+        log,
+        options?.extraEvents ?? 0,
+        (fence) => {
+          eventId = fence.eventId ?? '';
+          return op(fence);
+        }
+      );
     } catch (error) {
       if (
         !SlotConflictError.is(error) ||
+        attempt >= slotRetryBudget() ||
         attempt >= PRECONDITION_MAX_RELOAD_RETRIES
       ) {
         throw error;

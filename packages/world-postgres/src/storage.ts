@@ -71,8 +71,8 @@ import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
 import {
   type EventIds,
-  eventExists,
   highestEventId,
+  highestSlotOf,
   placeEvent,
   RUN_CREATED_SLOT,
 } from './slots.js';
@@ -787,11 +787,25 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           );
         }
         eventId = params.eventId;
-        if (await eventExists(drizzle, effectiveRunId, eventId)) {
-          // Reject a doomed claim before the materialization below creates the
-          // step, hook or wait this event will now never accompany. A caller
-          // that re-proposes at the next slot would otherwise collide with its
-          // own orphan and read that as "my write already landed".
+        // A claim has to clear the log's tail, not merely be free. A position
+        // claimed by a write that then failed is never filled, so a log can
+        // carry holes below its tail; a caller numbering from a snapshot that
+        // predates the events above such a hole aims straight at it, and a
+        // free-position check would accept the write. The event then lands
+        // *below* events another replay has already consumed — the log stays
+        // internally consistent while its order silently changes, which is
+        // enough to flip a race between a step and a sleep from one replay to
+        // the next.
+        //
+        // Checked here, before the materialization below creates the step, hook
+        // or wait this event would now never accompany: a caller that
+        // re-proposes at the next position would otherwise collide with its own
+        // orphan and read that as "my write already landed".
+        seedHighestEventId =
+          seedHighestEventId ??
+          (await highestEventId(drizzle, effectiveRunId)) ??
+          undefined;
+        if (claimedSlot <= highestSlotOf(seedHighestEventId)) {
           throw await slotConflict(effectiveRunId, eventId, params);
         }
       }

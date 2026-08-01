@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  FIRST_SLOT,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SLOT_IDENTITY,
   slotEventId,
@@ -186,20 +187,33 @@ describe('release', () => {
   });
 });
 
-describe('isWritten', () => {
+describe('highestWritten', () => {
   it('reads the log to answer for a run it has never seen', async () => {
     await writeEvents(1, 2);
     const book = createSlotBook(basedir);
-    await expect(book.isWritten(RUN_ID, 2)).resolves.toBe(true);
-    await expect(book.isWritten(RUN_ID, 3)).resolves.toBe(false);
+    await expect(book.highestWritten(RUN_ID)).resolves.toBe(2);
   });
 
-  it('is false for a slot that is only reserved', async () => {
+  it('reports the tail of a log with a hole below it', async () => {
+    // The case the tail exists to catch: slot 3 was claimed by a write that
+    // never published, so it is free — but a claim on it would land below the
+    // event at 4 that a replay may already have consumed.
+    await writeEvents(1, 2, 4);
+    const book = createSlotBook(basedir);
+    await expect(book.highestWritten(RUN_ID)).resolves.toBe(4);
+  });
+
+  it('is below the first slot for a run with no events', async () => {
+    const book = createSlotBook(basedir);
+    await expect(book.highestWritten(RUN_ID)).resolves.toBe(FIRST_SLOT - 1);
+  });
+
+  it('ignores a slot that is only reserved', async () => {
     // A reservation is not a publish, so a caller claiming the slot has to be
     // allowed through to the write that actually decides it.
     const book = createSlotBook(basedir);
-    const slot = await book.reserve(RUN_ID);
-    await expect(book.isWritten(RUN_ID, slot)).resolves.toBe(false);
+    await book.reserve(RUN_ID);
+    await expect(book.highestWritten(RUN_ID)).resolves.toBe(FIRST_SLOT - 1);
   });
 });
 

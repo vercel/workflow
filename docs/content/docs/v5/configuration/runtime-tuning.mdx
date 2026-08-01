@@ -52,10 +52,17 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: enabled
 - Numbers a new run's events by position instead of by ULID: `evnt_…001` is the run's first event, `evnt_…002` its second. Positions are allocated in order, so the log reads in the order it was written regardless of clock skew between writers.
-- Contention becomes explicit rather than silent. Two writers proposing the same position cannot both win: the loser gets a 409 ([`SlotConflictError`](/docs/api-reference/workflow-errors/slot-conflict-error)) carrying the events it was missing, and the runtime merges them, replays, and re-proposes at the next free position.
+- Contention becomes explicit rather than silent. Two writers proposing the same position cannot both win: the loser gets a 409 ([`SlotConflictError`](/docs/api-reference/workflow-errors/slot-conflict-error)) carrying the events it was missing, and the run replays from the top against a log that now includes them.
 - Applies only to runs created while it is enabled. A run keeps the identity scheme it was created with for life, so turning the flag on or off never affects runs already in flight.
 - Requires a World that supports it. A World that does not rejects the run outright rather than mis-numbering its events.
 - Set `0` or `false` to disable, which numbers new runs by ULID as before.
+
+### `WORKFLOW_SLOT_RETRY_BUDGET`
+
+- Default: `0`
+- How many times a run numbered by `WORKFLOW_SLOT_IDENTITY` may re-send an event creation that lost its position, before the rejection propagates and the run replays.
+- Zero means never. A rejected position proves the replay decided from an event log missing at least one event, and re-sending the same write to a free position commits that decision anyway — the missing event may be the one that would have taken the workflow down another branch.
+- Raise it for a run that would rather keep a batch of writes contiguous than replay, accepting that a write may land under a decision the replay would have revised.
 
 ## Inline execution
 

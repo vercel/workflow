@@ -120,15 +120,35 @@ describe('numbering', () => {
     await expect(slotsOf(runId)).resolves.toEqual([1, 2]);
   });
 
-  it('lists the log in slot order, not in the order writes started', async () => {
-    // A writer that loses its slot re-proposes above the winner while keeping
-    // the wall-clock stamp it started with, so `createdAt` order and slot order
-    // disagree. Replay consumes the log in list order, so list order has to be
-    // slot order — what the sort key gives the other backends for free.
+  it('rejects a claim on a free position below the log’s tail', async () => {
+    // The undercut that a "is the position free?" check cannot catch. A
+    // position claimed by a write that then failed is never filled, so a log
+    // carries holes below its tail — and a caller numbering from a snapshot
+    // that predates the events above one of those holes aims straight at it.
+    // Let it land and the event sits below events another replay has already
+    // consumed: the log stays internally consistent while its order silently
+    // changes, which is enough to flip a race between a step and a sleep from
+    // one replay to the next. A claim asserts a complete log, so a claim that
+    // does not clear the tail is a conflict, exactly as a taken one is.
     const runId = await newSlotRun();
     await createStep(runId, 'step_late', slotEventId(3));
-    await createStep(runId, 'step_early', slotEventId(2));
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
+    await expect(
+      createStep(runId, 'step_early', slotEventId(2))
+    ).rejects.toThrow(SlotConflictError);
+    // The hole stays a hole, and the log stays in slot order.
+    await expect(slotsOf(runId)).resolves.toEqual([1, 3]);
+  });
+
+  it('accepts the claim immediately above a tail with a hole below it', async () => {
+    // The fence rejects at-or-below, so the first position above the tail has
+    // to stay writable — otherwise every write following a hole would conflict
+    // forever and the run could never make progress again.
+    const runId = await newSlotRun();
+    await createStep(runId, 'step_late', slotEventId(3));
+    expect(await createStep(runId, 'step_next', slotEventId(4))).toBe(
+      slotEventId(4)
+    );
+    await expect(slotsOf(runId)).resolves.toEqual([1, 3, 4]);
   });
 
   it('keeps a burst of concurrent writers dense', async () => {

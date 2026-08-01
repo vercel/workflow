@@ -88,18 +88,29 @@ export interface SlotBook {
    */
   claim(runId: string, slot: number): void;
   /**
-   * Whether `slot` is already occupied by a published event, seeding from disk
-   * if this run has not been read yet.
+   * The highest position this run has published, seeding from disk if the run
+   * has not been read yet, or `FIRST_SLOT - 1` for a log with no events.
    *
-   * Lets a doomed claim be rejected *before* the create materializes its step,
-   * hook or wait: the entity mutation runs ahead of the event publish, so a
-   * claim that only fails at the publish leaves an entity behind with no event,
-   * and the caller's re-proposal at the next slot then collides with its own
-   * orphan. A `false` here is not a promise — the publish is still the
-   * authority — but it turns the case that actually happens (a caller numbering
-   * from a stale log) into a clean conflict.
+   * This is the tail a claim has to clear. "Free" is not the property a claim
+   * needs: allocation is append-only, so a position left unwritten by an
+   * abandoned reservation stays empty for good, and a caller numbering from a
+   * snapshot that predates the events above such a hole aims straight at it. Let
+   * that write land and the event sits *below* events another replay already
+   * consumed — the log stays internally consistent while its order silently
+   * changes, which is enough to flip a race between a step and a sleep from one
+   * replay to the next.
+   *
+   * Reading the tail before the write also lets a doomed claim be rejected
+   * *before* the create materializes its step, hook or wait: the entity mutation
+   * runs ahead of the event publish, so a claim that only fails at the publish
+   * leaves an entity behind with no event, and the caller's re-proposal at the
+   * next slot then collides with its own orphan. A tail read here is not a
+   * promise — the publish is still the authority, and another instance sharing
+   * the data directory may have written above it — but it turns the case that
+   * actually happens (a caller numbering from a stale log) into a clean
+   * conflict.
    */
-  isWritten(runId: string, slot: number): Promise<boolean>;
+  highestWritten(runId: string): Promise<number>;
   /**
    * Forgets a reserved or claimed slot whose publish is never going to happen,
    * so nothing waits on it. The position itself is not handed out again: it may
@@ -243,9 +254,9 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
       }
     },
 
-    async isWritten(runId, slot) {
+    async highestWritten(runId) {
       const book = await open(runId);
-      return book.written.has(slot);
+      return Math.max(FIRST_SLOT - 1, ...book.written);
     },
 
     release(runId, slot) {

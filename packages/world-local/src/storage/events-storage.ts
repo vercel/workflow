@@ -1114,15 +1114,18 @@ export function createEventsStorage(
             reserved.add(companionSlot);
             slots.claim(effectiveRunId, companionSlot);
           }
-          // Reject a doomed claim before the materialization below creates
-          // the step, hook or wait this event will now never accompany. A
-          // caller that re-proposes at the next slot would otherwise
-          // collide with its own orphan and read that as "my write already
-          // landed". See SlotBook.isWritten.
+          // A claim has to clear the log's tail, not merely be free: a
+          // position left unwritten by an abandoned reservation stays empty
+          // for good, and a caller numbering from a stale snapshot aims
+          // straight at it, landing an event below events another replay
+          // already consumed. Rejected before the materialization below
+          // creates the step, hook or wait this event will now never
+          // accompany. See SlotBook.highestWritten.
+          const tail = await slots.highestWritten(effectiveRunId);
           for (const slot of companionSlot === undefined
             ? [claimedSlot]
             : [companionSlot, claimedSlot]) {
-            if (await slots.isWritten(effectiveRunId, slot)) {
+            if (slot <= tail) {
               throw await slotConflict(
                 effectiveRunId,
                 slotEventId(slot),
