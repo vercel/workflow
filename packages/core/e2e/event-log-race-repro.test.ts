@@ -25,14 +25,23 @@ import { getWorkflowMetadata, setupWorld, trackRun } from './utils';
  *
  * The `step-storm` and `hook-storm` scenarios supply all three by construction
  * (see `workflows/103_event_log_corruption_repro.ts`). `hook-sleep` is retained
- * as a low-attempt calibration control: it is the shape that has historically
- * produced a nonzero — but very low, ~0.1% — corruption rate, so its rate is the
- * yardstick the storms are meant to beat.
+ * as a calibration control: it is the shape that has historically produced a
+ * nonzero — but very low, ~0.1% — corruption rate, so its rate is the yardstick
+ * the storms are meant to beat.
  *
- * This job is a *measurement*, not a pass/fail gate on the SDK's happy path:
- * every non-`completed`, non-`infra` outcome is reported and fails the test, so
- * a corruption shows up loudly and the sticky PR comment can be diffed between a
+ * Every non-`completed`, non-`infra` outcome is reported and fails the test, so a
+ * corruption shows up loudly and the sticky PR comment can be diffed between a
  * baseline run and a fix run.
+ *
+ * At its default scale this is a *regression check*, not a rate measurement: a
+ * few tens of runs cannot resolve a per-run corruption rate, so a clean run means
+ * "the storms did not trip it", not "the rate is below X". Measuring a rate — or
+ * comparing one against the `hook-sleep` baseline — needs the soak scale, which
+ * is what the `workflow_dispatch` inputs on `event-log-race-repro.yml` exist for.
+ * The default is deliberately small because the storms are per-run amplifiers:
+ * each run's own `rounds` x `width` fan-out supplies the concurrency, so a
+ * regression that the shape can catch at all usually shows up in a handful of
+ * runs, and the attempt count buys resolution rather than sensitivity.
  */
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
@@ -145,15 +154,25 @@ function envBoolean(name: string, fallback: boolean) {
   return fallback;
 }
 
+// These are the only copy of the harness' scale. The CI workflow passes its
+// `workflow_dispatch` inputs straight through and `envNumber` treats an unset or
+// empty variable as absent, so a blank input lands on the value below rather
+// than on a second default maintained in YAML.
 const config: ReproConfig = {
-  stepStormAttempts: envNumber('EVENT_LOG_RACE_REPRO_STEP_STORM_ATTEMPTS', 600),
-  hookStormAttempts: envNumber('EVENT_LOG_RACE_REPRO_HOOK_STORM_ATTEMPTS', 600),
-  hookSleepAttempts: envNumber('EVENT_LOG_RACE_REPRO_ATTEMPTS', 200),
-  concurrency: envNumber('EVENT_LOG_RACE_REPRO_CONCURRENCY', 40),
-  // 75 min leaves ~20 min of the job's 120-min cap for checkout, build, the
-  // deployment wait, and rendering the summary, even at the worst case of one
-  // in-flight attempt draining its full `runTimeoutMs` after the budget ends.
-  budgetMs: envNumber('EVENT_LOG_RACE_REPRO_BUDGET_MS', 75 * 60_000),
+  stepStormAttempts: envNumber('EVENT_LOG_RACE_REPRO_STEP_STORM_ATTEMPTS', 6),
+  hookStormAttempts: envNumber('EVENT_LOG_RACE_REPRO_HOOK_STORM_ATTEMPTS', 6),
+  hookSleepAttempts: envNumber('EVENT_LOG_RACE_REPRO_ATTEMPTS', 2),
+  // Cross-run concurrency is throughput only — the race being reproduced is
+  // between concurrent replays *within* one run, driven by `rounds`/`width` and
+  // the watchdog timings. So this is set to clear the default attempt count in a
+  // couple of waves, not to maximize pressure.
+  concurrency: envNumber('EVENT_LOG_RACE_REPRO_CONCURRENCY', 8),
+  // Headroom, not a target: the default attempt count needs a few minutes, and a
+  // budget that fires before the job's `timeout-minutes` is what lets the
+  // summary be rendered at all. It has to stay far enough below that cap to
+  // absorb the worst case of one in-flight attempt draining its full
+  // `runTimeoutMs` after the budget ends (see `testTimeoutMs` below).
+  budgetMs: envNumber('EVENT_LOG_RACE_REPRO_BUDGET_MS', 12 * 60_000),
   runTimeoutMs: envNumber('EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS', 240_000),
   hookTimeoutMs: envNumber('EVENT_LOG_RACE_REPRO_HOOK_TIMEOUT_MS', 60_000),
   rounds: envNumber('EVENT_LOG_RACE_REPRO_ROUNDS', 6),
