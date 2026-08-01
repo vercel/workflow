@@ -1,9 +1,16 @@
 import type { AnalyticsEvent, Hook } from '@workflow/world';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   analyticsEventToEvent,
+  getPublicServerConfig,
   hookToListItem,
 } from './workflow-server-actions.server';
+
+const originalEnv = { ...process.env };
+
+afterEach(() => {
+  process.env = { ...originalEnv };
+});
 
 const makeAnalyticsEvent = (
   overrides: Partial<AnalyticsEvent>
@@ -98,5 +105,18 @@ describe('hookToListItem', () => {
       specVersion: 2,
     });
     expect('token' in listItem).toBe(false);
+  });
+});
+
+describe('getPublicServerConfig', () => {
+  it('shows the workflow-server override for the Vercel backend', async () => {
+    process.env.WORKFLOW_TARGET_WORLD = 'vercel';
+    process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://e2e.vercel-workflow.com';
+
+    await expect(getPublicServerConfig()).resolves.toMatchObject({
+      publicEnv: {
+        VERCEL_WORKFLOW_SERVER_URL: 'https://e2e.vercel-workflow.com',
+      },
+    });
   });
 });
