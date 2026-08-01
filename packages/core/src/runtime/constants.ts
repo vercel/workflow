@@ -397,14 +397,32 @@ export function getReplayDivergenceMaxRetries(): number {
 // run-level budget below then applies.
 export const PRECONDITION_MAX_INPROCESS_RESTARTS = 3;
 
+// A run that numbers its events by slot recovers by topping its log up from
+// its cursor, so a restart costs one incremental page instead of a full
+// reload. The tight bound above is priced for the reload; spending it here
+// buys a re-invocation — a queue hop plus `PRECONDITION_REINVOKE_DELAY_SECONDS`
+// — in place of restarts that are orders of magnitude cheaper than the thing
+// the bound was protecting against. Measured on the step-storm repro against
+// world-postgres at 6-way concurrency, raising this to 12 took the six runs
+// from 196–241s (two of them exceeding the harness timeout) to 119–148s with
+// none timing out.
+export const PRECONDITION_MAX_INPROCESS_RESTARTS_INCREMENTAL = 12;
+
 /**
  * Effective in-process replay-restart budget for stale-snapshot rejections.
  * Override via `WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS`.
+ *
+ * @param incremental Whether a restart heals from the log's cursor rather than
+ * reloading it whole, which holds for runs on slot identity.
  */
-export function getPreconditionMaxInProcessRestarts(): number {
+export function getPreconditionMaxInProcessRestarts(
+  incremental = false
+): number {
   return envNumber(
     'WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS',
-    PRECONDITION_MAX_INPROCESS_RESTARTS,
+    incremental
+      ? PRECONDITION_MAX_INPROCESS_RESTARTS_INCREMENTAL
+      : PRECONDITION_MAX_INPROCESS_RESTARTS,
     { integer: true }
   );
 }

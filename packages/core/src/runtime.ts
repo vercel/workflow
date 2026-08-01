@@ -1019,7 +1019,9 @@ export function workflowEntrypoint(
                   ): boolean => {
                     if (
                       preconditionRestarts >=
-                      getPreconditionMaxInProcessRestarts()
+                      getPreconditionMaxInProcessRestarts(
+                        usesSlotIdentity(workflowRun?.specVersion)
+                      )
                     ) {
                       return false;
                     }
@@ -1159,7 +1161,7 @@ export function workflowEntrypoint(
                       return {
                         reinvoked: false,
                         error: new WorkflowRuntimeError(
-                          `Event creation was rejected as stale after ${maxReinvocations} re-invocations of ${getPreconditionMaxInProcessRestarts()} in-process replay restarts each: this run cannot observe its own event log completely enough to make progress. Last rejection (${reason}): ${error instanceof Error ? error.message : String(error)}`,
+                          `Event creation was rejected as stale after ${maxReinvocations} re-invocations of ${getPreconditionMaxInProcessRestarts(usesSlotIdentity(workflowRun?.specVersion))} in-process replay restarts each: this run cannot observe its own event log completely enough to make progress. Last rejection (${reason}): ${error instanceof Error ? error.message : String(error)}`,
                           { cause: error }
                         ),
                       };

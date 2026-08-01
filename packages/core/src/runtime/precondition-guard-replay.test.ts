@@ -53,6 +53,7 @@ import {
   getPreconditionMaxInProcessRestarts,
   getPreconditionMaxReinvocations,
   getPreconditionReinvokeDelaySeconds,
+  PRECONDITION_MAX_INPROCESS_RESTARTS,
 } from './constants.js';
 import { setWorld } from './world.js';
 
@@ -1216,6 +1217,26 @@ describe('precondition guard through the real replay loop', () => {
         }),
       ])
     );
+  });
+
+  it('spends a larger in-process restart budget when restarts heal from the cursor', async () => {
+    // One more rejection than a reloading run is allowed to absorb. That run
+    // would be out of budget and re-invoked; this one keeps recovering in
+    // process, because each of its restarts costs one incremental page rather
+    // than a full reload and so is not worth a queue hop to avoid.
+    const rejections = PRECONDITION_MAX_INPROCESS_RESTARTS + 1;
+    const result = await runPreconditionScenario({
+      slotIdentity: true,
+      rejectWaitCompletedTimes: rejections,
+    });
+
+    await expect(result.handlerInvocation).resolves.toBeUndefined();
+    expect(result.waitCompletedRejectionCount()).toBe(rejections);
+    expect(
+      result.createParams.filter((c) => c.eventType === 'wait_completed')
+    ).toHaveLength(rejections + 1);
+    // Every one of them healed from the cursor.
+    expect(cursorlessLoads(result.listEvents)).toBe(0);
   });
 
   it('falls back to the full reload when the 412 payload does not narrow to events', async () => {
