@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
 import { dehydrateStepArguments } from '../serialization.js';
 import { createContext } from '../vm/index.js';
 import { devalueCodec } from './codec-devalue.js';
-import type { GuestCodeStats } from './hardened.js';
+import { type GuestCodeStats, markUseStepClosureFn } from './hardened.js';
 
 const seed = 'hardened-serialization';
 const fixedTimestamp = 1714857600000;
@@ -332,6 +332,56 @@ describe('hardened serialization: unavoidable guest code is recorded', () => {
     expect(wire).toContain('"a"');
     const proxyReports = stats.executions.filter((e) => e.kind === 'proxy');
     expect(proxyReports).toHaveLength(1);
+  });
+
+  // Both sides of the `__closureVarsFn` provenance check. The mark proves
+  // the function came through `useStep`, nothing stronger — see
+  // `markUseStepClosureFn`.
+  it('reports a __closureVarsFn the step proxy did not bring', () => {
+    let calls = 0;
+    const stepLike = Object.assign(() => {}, {
+      stepId: 'step//a.ts//fake',
+      __closureVarsFn: () => {
+        calls += 1;
+        return { captured: 1 };
+      },
+    });
+
+    const stats: GuestCodeStats = { executions: [] };
+    const wire = new TextDecoder().decode(
+      devalueCodec.serialize(stepLike, 'workflow', { guestCodeStats: stats })
+    );
+
+    // it still runs (the closure vars are the data), and it is reported
+    expect(calls).toBe(1);
+    expect(wire).toContain('captured');
+    expect(stats.executions).toEqual([
+      { kind: 'method', detail: '__closureVarsFn' },
+    ]);
+  });
+
+  it('does not report a __closureVarsFn that came through useStep', () => {
+    let calls = 0;
+    const closureVarsFn = () => {
+      calls += 1;
+      return { captured: 1 };
+    };
+    // what step.ts does when it builds the proxy
+    markUseStepClosureFn(closureVarsFn);
+
+    const stepLike = Object.assign(() => {}, {
+      stepId: 'step//a.ts//real',
+      __closureVarsFn: closureVarsFn,
+    });
+
+    const stats: GuestCodeStats = { executions: [] };
+    const wire = new TextDecoder().decode(
+      devalueCodec.serialize(stepLike, 'workflow', { guestCodeStats: stats })
+    );
+
+    expect(calls).toBe(1);
+    expect(wire).toContain('captured');
+    expect(stats.executions).toEqual([]);
   });
 
   it('records custom WORKFLOW_SERIALIZE invocations', async () => {

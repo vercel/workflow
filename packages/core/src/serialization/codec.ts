@@ -79,11 +79,16 @@ export interface CodecOptions {
   /**
    * Optional sink populated by the hardened serializer with every
    * workflow (guest) code execution that serialization could not avoid —
-   * getters, proxies, and custom `[WORKFLOW_SERIALIZE]` methods. Callers
-   * that keep a workflow VM alive across steps can treat a non-empty
-   * `executions` array as a signal that serialization may have perturbed
-   * VM state (serialization runs exactly once per payload and is never
-   * replayed, so any side effect it triggers diverges from replay).
+   * getters, proxies, and custom `[WORKFLOW_SERIALIZE]` methods. A non-empty
+   * `executions` array means serialization may have perturbed VM state
+   * (it runs exactly once per payload and is never replayed, so any side
+   * effect it triggers diverges from replay).
+   *
+   * Every dehydrate path already reports this as span attributes. Passing a
+   * sink is for callers that need the executions *programmatically* — a
+   * retained-VM gate deciding whether the VM is still reusable. No caller
+   * does that yet, so nothing in the runtime currently passes one.
+   *
    * Serialize side only.
    */
   guestCodeStats?: GuestCodeStats;

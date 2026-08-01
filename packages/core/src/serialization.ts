@@ -3553,9 +3553,10 @@ export async function dehydrateWorkflowReturnValue(
   compression = false,
   /**
    * Optional sink receiving every workflow-code execution serialization could
-   * not avoid. Callers that keep the VM alive across steps can inspect it to
-   * decide whether the VM may have been perturbed; the value is always also
-   * emitted as span attributes.
+   * not avoid, for callers that need them programmatically (e.g. a
+   * retained-VM gate deciding whether the VM is still reusable). The
+   * executions are emitted as span attributes either way, so omitting this
+   * loses nothing observability-wise. No runtime caller passes one yet.
    */
   guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {

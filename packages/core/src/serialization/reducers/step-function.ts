@@ -20,7 +20,7 @@
 
 import {
   hasProperty,
-  isTrustedFunction,
+  isUseStepClosureFn,
   readProperty,
   recordGuestCode,
 } from '../hardened.js';
@@ -41,12 +41,13 @@ export function getStepFunctionReducer(): Partial<Reducers> {
       // reads and cannot perturb observable VM state, so reporting it would
       // flag every step that captures a variable — but the property is
       // reachable from workflow code, which can replace it with anything.
-      // `step.ts` registers the generated function as trusted when it builds
-      // the proxy, so provenance is checked here rather than assumed; an
-      // unrecognized function is reported like any other guest code.
+      // `step.ts` marks the function that came through `useStep` when it
+      // builds the proxy, so this is checked rather than assumed; anything
+      // unrecognized is reported like other guest code. See
+      // `markUseStepClosureFn` for what the mark does and does not prove.
       let closureVars: Record<string, unknown> | undefined;
       if (typeof closureVarsFn === 'function') {
-        if (!isTrustedFunction(closureVarsFn)) {
+        if (!isUseStepClosureFn(closureVarsFn)) {
           recordGuestCode('method', '__closureVarsFn');
         }
         closureVars = (closureVarsFn as () => Record<string, unknown>)();

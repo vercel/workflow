@@ -10,7 +10,7 @@ import {
   type WorkflowOrchestratorContext,
 } from './private.js';
 import type { Serializable } from './schemas.js';
-import { registerTrustedFunction } from './serialization/hardened.js';
+import { markUseStepClosureFn } from './serialization/hardened.js';
 import { hydrateStepError, hydrateStepReturnValue } from './serialization.js';
 
 export function createUseStep(ctx: WorkflowOrchestratorContext) {
@@ -364,13 +364,14 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
       configurable: false,
     });
 
-    // Store the closure variables function for serialization. Register it as
-    // trusted so the step-function reducer can tell this compiler-generated
-    // function (a sequence of lexical reads) apart from one workflow code
-    // assigned over it — the reducer has to invoke whatever is there, and
-    // only the latter is worth reporting as executed workflow code.
+    // Store the closure variables function for serialization. Mark it so the
+    // step-function reducer can tell a function that came through `useStep`
+    // apart from one workflow code assigned over the property afterwards —
+    // the reducer has to invoke whatever is there, and only the latter is
+    // worth reporting. See `markUseStepClosureFn` for the limits of what
+    // this proves.
     if (closureVarsFn) {
-      registerTrustedFunction(closureVarsFn);
+      markUseStepClosureFn(closureVarsFn);
       Object.defineProperty(stepFunction, '__closureVarsFn', {
         value: closureVarsFn,
         writable: false,
