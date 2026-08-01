@@ -4,6 +4,7 @@ import {
   FatalError,
   RetryableError,
   RunExpiredError,
+  SlotConflictError,
   ThrottleError,
   TooEarlyError,
   WorkflowRuntimeError,
@@ -85,6 +86,73 @@ function extractInlineDelta(
     cursor: result.cursor,
     hasMore: result.hasMore ?? false,
   };
+}
+
+/**
+ * Byte-equality for two dehydrated step inputs, used to decide whether a
+ * conflicting `step_started` describes the same call as ours. Only inline
+ * bytes can answer that: a `SerializedData` that came back as a remote ref
+ * carries no payload, and two refs being unequal says nothing about the
+ * values behind them, so anything that is not a pair of `Uint8Array`s is
+ * reported as "cannot tell".
+ */
+function sameSerializedInput(
+  a: SerializedData | undefined,
+  b: SerializedData | undefined
+): boolean {
+  if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array)) return false;
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Decide whether a slot rejection carrying a delta is a *benign duplicate*:
+ * the events we lost the slot to already contain a `step_started` for this
+ * exact step, so a concurrent handler is running (or has run) the very call
+ * we were about to claim. The step is then someone else's to finish and we
+ * can skip, exactly as we do on the `EntityConflictError` the unfenced path
+ * would have raised instead.
+ *
+ * The identity test is deliberately strict. Correlation ids are positional
+ * under slot identity, so a replay that diverged — a `Promise.race` between
+ * a hook and a step resolving the other way, say — can arrive at the same
+ * `step_N` naming a different call. Matching on the correlation id alone
+ * would let such a replay adopt a foreign step's completion as its own. So
+ * the step name must match, and on the lazy path (where we hold the input)
+ * the inputs must be byte-identical. Anything we cannot prove identical
+ * returns false and takes the replay restart, which is always correct and
+ * merely slower.
+ */
+function isBenignDuplicateStart(
+  events: unknown[],
+  stepId: string,
+  stepName: string,
+  lazyStepInput: SerializedData | undefined
+): boolean {
+  for (const candidate of events) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const event = candidate as {
+      eventType?: unknown;
+      correlationId?: unknown;
+      eventData?: { stepName?: unknown; input?: unknown } | null;
+    };
+    if (event.eventType !== 'step_started') continue;
+    if (event.correlationId !== stepId) continue;
+    if (event.eventData?.stepName !== stepName) continue;
+    if (lazyStepInput === undefined) return true;
+    if (
+      sameSerializedInput(
+        lazyStepInput,
+        event.eventData?.input as SerializedData
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export interface StepExecutorParams {
@@ -500,6 +568,37 @@ export async function executeStep(
         });
         return { type: 'skipped' };
       }
+      if (
+        SlotConflictError.is(err) &&
+        isBenignDuplicateStart(
+          err.events,
+          stepId,
+          stepName,
+          params.lazyStepInput
+        )
+      ) {
+        // We lost the slot to a writer that had already started this same
+        // step, so this is the ordinary "another handler owns it" outcome
+        // wearing a slot rejection — the same thing an unfenced write reports
+        // as EntityConflictError. Skip rather than restart the replay: the
+        // restart would re-derive this identical claim and lose again.
+        //
+        // The delta on the error is deliberately NOT merged into the log.
+        // Adopting events this VM never replayed would let the next claim
+        // fence itself against a tail it cannot account for, which is the
+        // one thing the fence exists to prevent. Siblings in the batch fail
+        // with their own rejection and the handler defers as usual.
+        runtimeLogger.debug('Step already started by a concurrent writer', {
+          stepName,
+          stepId,
+          workflowRunId,
+        });
+        span?.setAttributes({
+          ...Attribute.StepSkipped(true),
+          ...Attribute.StepSkipReason('completed'),
+        });
+        return { type: 'skipped' };
+      }
       if (TooEarlyError.is(err)) {
         const timeoutSeconds = Math.max(1, err.retryAfter ?? 1);
         runtimeLogger.debug('Step retryAfter timestamp not yet reached', {
@@ -590,9 +689,10 @@ export async function executeStep(
           // wait IS part of that stretch under turbo.
           stepStartPostSentAtMs = Date.now();
           // Fence the claim — see StepExecutorParams.claimFence. A rejection
-          // the fence does not retry surfaces via reconcileOptimisticStart as a
-          // non-translatable error: the body result is discarded and the
-          // rejection propagates to the caller.
+          // the fence does not retry surfaces via reconcileOptimisticStart:
+          // the body result is discarded, and unless the rejection proves
+          // another writer already started this same step (a benign
+          // duplicate, skipped) it propagates to the caller.
           return runClaim((fence) =>
             createEvent(
               {
@@ -652,9 +752,9 @@ export async function executeStep(
             : {};
         stepStartPostSentAtMs = Date.now();
         // Fence the claim — see StepExecutorParams.claimFence. A rejection the
-        // fence does not retry is intentionally NOT translated by
-        // startErrorToResult below, so it propagates to the caller for a fresh
-        // replay.
+        // fence does not retry propagates to the caller for a fresh replay,
+        // except where startErrorToResult below can read the rejection's delta
+        // as "another writer already started this exact step" and skip.
         const startResult = await runClaim((fence) =>
           createEvent(
             {
