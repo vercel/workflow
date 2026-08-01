@@ -407,17 +407,18 @@ export function isInstanceOfPrototype(
 ): boolean {
   if (!prototype) return false;
   if (value === null || typeof value !== 'object') return false;
-  if (isProxy(value)) {
-    recordProxy(value);
-    return false;
-  }
+  // Proxies are walked rather than rejected. `instanceof` forwards through a
+  // proxy's `getPrototypeOf` trap, and real values rely on that: Next.js
+  // hands the runtime a proxied `NextRequest`, whose reducer reads ordinary
+  // properties and serializes fine through the traps. Answering "not a
+  // Request" for it would silently break webhooks. The traps are
+  // guest-observable, so the proxy is reported — but the answer stays
+  // correct.
+  if (isProxy(value)) recordProxy(value);
   let current: object | null = Reflect.getPrototypeOf(value);
   while (current !== null) {
     if (current === prototype) return true;
-    if (isProxy(current)) {
-      recordProxy(current);
-      return false;
-    }
+    if (isProxy(current)) recordProxy(current);
     current = Reflect.getPrototypeOf(current);
   }
   return false;
@@ -448,21 +449,51 @@ export const canReadUrlSearchParams =
   call.urlSearchParamsToString !== undefined;
 export const canReadHeaders = call.headersIterator !== undefined;
 
+/**
+ * Intrinsics read internal slots, which a Proxy does not have — invoking one
+ * with a proxy receiver throws, where the pre-existing dynamic read forwarded
+ * through the trap. For the (rare) proxy case, fall back to the dynamic read
+ * so behavior is unchanged, and record that the traps ran.
+ */
+function readProxyAware<T>(
+  value: unknown,
+  viaIntrinsic: (v: unknown) => T,
+  viaTrap: (v: unknown) => T
+): T {
+  if (isProxy(value)) {
+    recordProxy(value as object);
+    return viaTrap(value);
+  }
+  return viaIntrinsic(value);
+}
+
 /** `URL.prototype.href` getter. Guard with {@link canReadUrl}. */
 export const urlHref = (value: unknown): string =>
-  (get.urlHref as (v: unknown) => string)(value);
+  readProxyAware(
+    value,
+    get.urlHref as (v: unknown) => string,
+    (v) => (v as URL).href
+  );
 /**
  * `URLSearchParams.prototype.size` getter. Guard with
  * {@link canReadUrlSearchParams}.
  */
 export const urlSearchParamsSize = (value: unknown): number =>
-  (get.urlSearchParamsSize as (v: unknown) => number)(value);
+  readProxyAware(
+    value,
+    get.urlSearchParamsSize as (v: unknown) => number,
+    (v) => (v as URLSearchParams).size
+  );
 /**
  * `URLSearchParams.prototype.toString`. Guard with
  * {@link canReadUrlSearchParams}.
  */
 export const urlSearchParamsToString = (value: unknown): string =>
-  (call.urlSearchParamsToString as (v: unknown) => string)(value);
+  readProxyAware(
+    value,
+    call.urlSearchParamsToString as (v: unknown) => string,
+    (v) => String(v)
+  );
 
 /**
  * Iterates a genuine Map's entries entirely through host intrinsics: the
@@ -487,10 +518,17 @@ export function setToValues(value: Set<unknown>): unknown[] {
  * boot-time capture (rather than a live lookup) load-bearing.
  */
 export function headersToEntries(value: Headers): [string, string][] {
-  const iterator = (
-    call.headersIterator as (v: Headers) => IterableIterator<[string, string]>
-  )(value);
-  return [...iterator];
+  return readProxyAware(
+    value,
+    (v) => [
+      ...(
+        call.headersIterator as (
+          h: Headers
+        ) => IterableIterator<[string, string]>
+      )(v as Headers),
+    ],
+    (v) => Array.from(v as Headers)
+  );
 }
 
 /**

@@ -270,6 +270,46 @@ describe('hardened serialization: unavoidable guest code is recorded', () => {
     expect(stats.executions).toEqual([{ kind: 'getter', detail: 'computed' }]);
   });
 
+  it('still identifies a proxied host class, and reports the traps', async () => {
+    // Next.js hands the runtime a proxied `NextRequest`. `instanceof`
+    // forwards through the `getPrototypeOf` trap, and the Request reducer
+    // reads ordinary properties, so such values serialized fine before
+    // hardening — answering "not a Request" for one silently broke every
+    // webhook. Identification has to stay correct; the traps get reported.
+    // No body: a request body is a ReadableStream, which the workflow-context
+    // reducers expect to be a named handle. The proxy identification is what
+    // this test is about; the full webhook path is covered end to end.
+    const target = new Request('https://example.com/hook', { method: 'POST' });
+    // Mirror how Next.js proxies a Request: the `get` trap forwards with the
+    // *target* as receiver, so the built-in's private-slot reads still work.
+    // (A bare `new Proxy(request, {})` throws on those reads — before this
+    // change as well as after.)
+    const proxied = new Proxy(target, {
+      get(t, key) {
+        const v = Reflect.get(t, key, t);
+        return typeof v === 'function' ? v.bind(t) : v;
+      },
+    });
+
+    const stats: GuestCodeStats = { executions: [] };
+    const bytes = (await dehydrateStepArguments(
+      proxied,
+      'wrun_proxy',
+      undefined,
+      globalThis,
+      false,
+      false,
+      stats
+    )) as Uint8Array;
+    const wire = new TextDecoder().decode(bytes);
+
+    // serialized as a Request, not rejected as an arbitrary non-POJO
+    expect(wire).toContain('Request');
+    expect(wire).toContain('https://example.com/hook');
+    // ...and the traps that ran are on the record
+    expect(stats.executions.some((e) => e.kind === 'proxy')).toBe(true);
+  });
+
   it('records a proxy once, not once per trap', () => {
     const vm = makeVm();
     const value = vm.evaluate(`(() => {
