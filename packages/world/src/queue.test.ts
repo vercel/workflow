@@ -4,6 +4,7 @@ import {
   parseQueueName,
   QueuePayloadSchema,
   QueuePrefix,
+  RunInputSchema,
   ValidQueueName,
 } from './queue.js';
 
@@ -159,5 +160,57 @@ describe('QueuePayloadSchema', () => {
     expect(
       QueuePayloadSchema.parse({ runId: 'wrun_01ABC', stepId: 'step_1' })
     ).toEqual({ runId: 'wrun_01ABC', stepId: 'step_1' });
+  });
+});
+
+describe('RunInputSchema environment', () => {
+  const baseRunInput = {
+    input: { foo: 'bar' },
+    deploymentId: 'dpl_123',
+    workflowName: 'myWorkflow',
+    specVersion: 5,
+  };
+
+  it('round-trips the creator environment when present', () => {
+    expect(
+      RunInputSchema.parse({ ...baseRunInput, environment: 'preview' })
+    ).toEqual({ ...baseRunInput, environment: 'preview' });
+  });
+
+  it('parses without an environment, leaving the field absent', () => {
+    const parsed = RunInputSchema.parse(baseRunInput);
+    expect(parsed).toEqual(baseRunInput);
+    expect('environment' in parsed).toBe(false);
+  });
+
+  it('rejects a non-string environment rather than coercing it', () => {
+    expect(
+      RunInputSchema.safeParse({ ...baseRunInput, environment: 1 }).success
+    ).toBe(false);
+  });
+
+  // Wire compatibility in the OTHER direction: an SDK older than this field
+  // must be able to consume a message minted by a newer one. `z.object` strips
+  // unknown keys rather than rejecting, so the old consumer drops `environment`
+  // and processes the message normally. If this ever becomes `.strict()`, every
+  // in-flight message from a newer client starts failing validation on older
+  // deployments.
+  it('tolerates unknown keys by stripping them, so old consumers keep working', () => {
+    const parsed = RunInputSchema.parse({
+      ...baseRunInput,
+      someFutureField: 'ignored',
+    });
+    expect(parsed).toEqual(baseRunInput);
+  });
+
+  it('carries the environment through a full invoke payload', () => {
+    const parsed = QueuePayloadSchema.parse({
+      runId: 'wrun_01ABC',
+      runInput: { ...baseRunInput, environment: 'production' },
+    });
+    expect(parsed).toMatchObject({
+      runId: 'wrun_01ABC',
+      runInput: { environment: 'production' },
+    });
   });
 });
