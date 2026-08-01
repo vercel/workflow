@@ -893,9 +893,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             .where(eq(Schema.runs.runId, effectiveRunId))
             .limit(1);
           if (fullRun) {
-            return {
-              run: deserializeRunError(compact(fullRun)),
-            };
+            return { run: deserializeRunError(compact(fullRun)) };
           }
         }
 

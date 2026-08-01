@@ -1518,32 +1518,13 @@ export function workflowEntrypoint(
                         runStartedReceivedAtMs = Date.now();
 
                         if (result.events?.length) {
-                          const events = [...result.events];
-                          if (result.hasMore && result.cursor) {
-                            eventLog = {
-                              type: 'loadAfter',
-                              log: {
-                                events,
-                                cursor: result.cursor,
-                              },
-                            };
-                          } else if (result.hasMore) {
-                            eventLog = { type: 'loadAll' };
-                          } else {
-                            eventLog = {
-                              type: 'ready',
-                              log: {
-                                events,
-                                cursor: result.cursor ?? null,
-                              },
-                            };
-                          }
-                        }
-
-                        if (!result.run.startedAt) {
-                          throw new WorkflowRuntimeError(
-                            `Workflow run "${runId}" has no "startedAt" timestamp`
-                          );
+                          const log = {
+                            events: [...result.events],
+                            cursor: result.cursor ?? null,
+                          };
+                          eventLog = result.hasMore
+                            ? nextEventLogLoad(log)
+                            : { type: 'ready', log };
                         }
                         workflowStartedAt = +result.run.startedAt;
                         span?.setAttributes({
