@@ -1880,14 +1880,14 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       return stripEventDataRefs(parsed, resolveData);
     },
     async list(params: ListEventsParams): Promise<PaginatedResponse<Event>> {
-      const limit = params?.pagination?.limit ?? 100;
+      const limit = params.pagination?.limit ?? 100;
       const resultLimit = params.returnAll ? getMaxEventsPerRun() : limit;
-      const sortOrder = params.pagination?.sortOrder || 'asc';
+      const sortOrder = params.pagination?.sortOrder ?? 'asc';
       const order =
         sortOrder === 'desc'
           ? { by: desc(events.eventId), compare: lt }
           : { by: events.eventId, compare: gt };
-      const query = drizzle
+      const all = await drizzle
         .select()
         .from(events)
         .where(
@@ -1898,12 +1898,12 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             )
           )
         )
-        .orderBy(order.by);
-      const all = await query.limit(resultLimit + 1);
+        .orderBy(order.by)
+        .limit(resultLimit + 1);
 
       const values = all.slice(0, resultLimit);
 
-      const resolveData = params?.resolveData ?? 'all';
+      const resolveData = params.resolveData ?? 'all';
       return {
         data: values.map((v) => {
           v.eventData ||= v.eventDataJson;

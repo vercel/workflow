@@ -8,6 +8,7 @@ import { Pool } from 'pg';
 import { decodeTime, ulid } from 'ulid';
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -169,6 +170,8 @@ describe('Storage (Postgres integration)', () => {
   beforeEach(async () => {
     await truncateTables();
   });
+
+  afterEach(() => vi.unstubAllEnvs());
 
   afterAll(async () => {
     await pool.end();
@@ -1291,24 +1294,20 @@ describe('Storage (Postgres integration)', () => {
         });
         vi.stubEnv('WORKFLOW_MAX_EVENTS', '1');
 
-        try {
-          const first = await events.list({
-            runId: testRunId,
-            returnAll: true,
-          });
-          expect(first.data).toHaveLength(1);
-          expect(first.hasMore).toBe(true);
+        const first = await events.list({
+          runId: testRunId,
+          returnAll: true,
+        });
+        expect(first.data).toHaveLength(1);
+        expect(first.hasMore).toBe(true);
 
-          const second = await events.list({
-            runId: testRunId,
-            returnAll: true,
-            pagination: { cursor: first.cursor ?? undefined },
-          });
-          expect(second.data).toHaveLength(1);
-          expect(second.hasMore).toBe(false);
-        } finally {
-          vi.unstubAllEnvs();
-        }
+        const second = await events.list({
+          runId: testRunId,
+          returnAll: true,
+          pagination: { cursor: first.cursor ?? undefined },
+        });
+        expect(second.data).toHaveLength(1);
+        expect(second.hasMore).toBe(false);
       });
     });
 

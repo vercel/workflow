@@ -21,7 +21,11 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
-import { type Event, getEventDataPayloadField } from '@workflow/world';
+import {
+  type Event,
+  getEventDataPayloadField,
+  type ListEventsParams,
+} from '@workflow/world';
 import { decode } from 'cbor-x';
 import { coerceEventDates } from './event-coerce.js';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
@@ -681,10 +685,8 @@ export interface ListEventsV4Params {
   remoteRefBehavior?: 'resolve' | 'lazy';
 }
 
-export interface ListWorkflowRunEventsV4Params extends ListEventsV4Params {
-  /** Drain server-side storage pages into one framed HTTP response. */
-  returnAll?: true;
-}
+type ListWorkflowRunEventsV4Params = ListEventsV4Params &
+  Pick<ListEventsParams, 'returnAll'>;
 
 /**
  * A single event extracted from a v4 LIST frame. Mirrors `DecodedV4Event`

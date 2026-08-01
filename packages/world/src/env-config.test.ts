@@ -1,30 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  _resetEnvWarnCacheForTests,
-  envNumber,
-  getMaxEventsPerRun,
-} from './env-config.js';
+import { _resetEnvWarnCacheForTests, envNumber } from './env-config.js';
 
 const NAME = 'WORKFLOW_TEST_ENV_CONFIG_FIXTURE';
-const MAX_EVENTS_NAME = 'WORKFLOW_MAX_EVENTS';
 const DEFAULT = 100;
 
 beforeEach(() => {
   delete process.env[NAME];
-  delete process.env[MAX_EVENTS_NAME];
   _resetEnvWarnCacheForTests();
 });
 
 afterEach(() => {
   delete process.env[NAME];
-  delete process.env[MAX_EVENTS_NAME];
-});
-
-describe('getMaxEventsPerRun', () => {
-  it.each(['0', '-1'])('ignores a non-positive override of %s', (value) => {
-    process.env[MAX_EVENTS_NAME] = value;
-    expect(getMaxEventsPerRun()).toBe(25_000);
-  });
 });
 
 describe('envNumber', () => {
