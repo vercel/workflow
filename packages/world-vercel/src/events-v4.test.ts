@@ -9,7 +9,7 @@ import {
 } from '@workflow/errors';
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 import { splitEventDataForV4 } from './events.js';
 import {
   createWorkflowRunEventV4,
@@ -473,8 +473,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
       { token: 'test-token', dispatcher: agent }
     );
 
-    expect(result.type).toBe('event-page');
-    if (result.type !== 'event-page') throw new Error('expected event page');
+    assert(result.page);
     expect(result.body.run).toMatchObject({ status: 'running' });
     expect(result.page.events).toHaveLength(2);
     expect(result.page.events[0].body).toEqual(input);
@@ -569,7 +568,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     );
 
     expect(capturedMeta?.skipPreload).toBe(true);
-    expect(result.type).toBe('event');
+    expect(result.page).toBeUndefined();
     expect(result.body.run).toMatchObject({ status: 'running' });
     agent.assertNoPendingInterceptors();
   });

@@ -800,48 +800,40 @@ async function createWorkflowRunEventInner(
       : {}),
   };
 
-  switch (result.type) {
-    case 'event':
-      return {
-        ...baseResult,
-        run: body.run
-          ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
-          : undefined,
-        events: body.events
-          ? (body.events as Record<string, unknown>[]).map(coerceEventDates)
-          : undefined,
-        cursor: body.cursor,
-        hasMore: body.hasMore,
-      };
-    case 'event-page': {
-      const replayEvents = result.page.events.map(({ event, body }) =>
-        buildEventFromV4(event, body, 'replay')
-      );
-      const runCreated = replayEvents[0];
-      if (runCreated?.eventType !== 'run_created') {
-        throw new Error(
-          'v4 createEvent: run_started page must begin with run_created'
-        );
-      }
-      if (!body.run) {
-        throw new Error('v4 createEvent: run_started result missing run');
-      }
-      const { inputRef: _inputRef, ...run } = deserializeError<
-        WorkflowRun & { inputRef?: unknown }
-      >(body.run as Record<string, unknown>);
-      return {
-        ...baseResult,
-        run: { ...run, input: runCreated.eventData.input },
-        events: replayEvents.map((event) =>
-          stripEventDataRefs(event, resolveData)
-        ),
-        cursor: result.page.next,
-        hasMore: result.page.hasMore,
-      };
-    }
-    default: {
-      const exhaustive: never = result;
-      throw new Error(`v4 createEvent: unknown result type ${exhaustive}`);
-    }
+  if (!result.page) {
+    return {
+      ...baseResult,
+      run: body.run
+        ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
+        : undefined,
+      events: body.events
+        ? (body.events as Record<string, unknown>[]).map(coerceEventDates)
+        : undefined,
+      cursor: body.cursor,
+      hasMore: body.hasMore,
+    };
   }
+
+  const replayEvents = result.page.events.map(({ event, body }) =>
+    buildEventFromV4(event, body, 'replay')
+  );
+  const runCreated = replayEvents[0];
+  if (runCreated?.eventType !== 'run_created') {
+    throw new Error(
+      'v4 createEvent: run_started page must begin with run_created'
+    );
+  }
+  if (!body.run) {
+    throw new Error('v4 createEvent: run_started result missing run');
+  }
+  const { inputRef: _inputRef, ...run } = deserializeError<
+    WorkflowRun & { inputRef?: unknown }
+  >(body.run as Record<string, unknown>);
+  return {
+    ...baseResult,
+    run: { ...run, input: runCreated.eventData.input },
+    events: replayEvents.map((event) => stripEventDataRefs(event, resolveData)),
+    cursor: result.page.next,
+    hasMore: result.page.hasMore,
+  };
 }

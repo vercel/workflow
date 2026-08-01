@@ -248,7 +248,7 @@ export interface PreconditionFailureDetails {
   cursor?: string;
 }
 
-interface CreateEventV4ResultBase {
+export interface CreateEventV4Result {
   eventId: string;
   runId: string;
   createdAt: string;
@@ -277,16 +277,10 @@ interface CreateEventV4ResultBase {
      */
     maxEvents?: number;
   };
+  page?: RequiredEventPageV4Result;
 }
 
 type RequiredEventPageV4Result = ListEventsV4Result & { next: string };
-
-export type CreateEventV4Result =
-  | (CreateEventV4ResultBase & { type: 'event' })
-  | (CreateEventV4ResultBase & {
-      type: 'event-page';
-      page: RequiredEventPageV4Result;
-    });
 
 /** Build the CBOR meta map for a v4 POST frame. Drops undefined entries
  *  so the wire shape matches what the server expects to see. */
@@ -561,7 +555,6 @@ export async function createWorkflowRunEventV4(
         );
       case 'event-page':
         return {
-          type: 'event-page',
           eventId,
           runId,
           createdAt,
@@ -587,7 +580,7 @@ export async function createWorkflowRunEventV4(
       ? (decode(bodyBytes) as CreateEventV4Result['body'])
       : {};
 
-  return { type: 'event', eventId, runId, createdAt, body };
+  return { eventId, runId, createdAt, body };
 }
 
 /**
@@ -710,7 +703,7 @@ type EventFrameStreamResult =
   | { type: 'events'; page: ListEventsV4Result }
   | {
       type: 'event-page';
-      body: CreateEventV4ResultBase['body'];
+      body: CreateEventV4Result['body'];
       page: RequiredEventPageV4Result;
     };
 
@@ -718,7 +711,7 @@ type EventFrameStreamState =
   | { type: 'events'; events: ListedEventV4[] }
   | {
       type: 'event-page';
-      body: CreateEventV4ResultBase['body'];
+      body: CreateEventV4Result['body'];
       events: ListedEventV4[];
     };
 
