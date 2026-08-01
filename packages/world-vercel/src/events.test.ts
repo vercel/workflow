@@ -255,7 +255,7 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({
+          return runStartedResponse({
             run: {
               runId: 'wrun_1',
               status: 'running',
@@ -265,6 +265,7 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         },
         {
           headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
             'x-wf-event-id': 'evnt_1',
             'x-wf-run-id': 'wrun_1',
             'x-wf-created-at': '2026-06-10T00:00:00.000Z',
@@ -302,7 +303,7 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({
+          return runStartedResponse({
             run: {
               runId: 'wrun_1',
               status: 'running',
@@ -312,6 +313,7 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         },
         {
           headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
             'x-wf-event-id': 'evnt_1',
             'x-wf-run-id': 'wrun_1',
             'x-wf-created-at': '2026-06-10T00:00:00.000Z',
