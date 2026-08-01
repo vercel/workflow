@@ -11,7 +11,7 @@
  *   the server stores without ever decoding it.
  * - **GET single event**: response body is one frame.
  * - **LIST events**: response body is a stream of frames terminated by a
- *   sentinel frame (meta = `{_end: 1, next?: cursor, hasMore?: boolean}`).
+ *   sentinel frame (meta = `{_end: 1, next?: cursor, hasMore: boolean}`).
  *
  * Requests carry special HTTP response headers (eventId / runId / createdAt)
  * for client convenience, to allow metadata access without decoding the body.
@@ -279,13 +279,7 @@ interface CreateEventV4ResultBase {
   };
 }
 
-type RequiredEventPageV4Result = Omit<
-  ListEventsV4Result,
-  'next' | 'hasMore'
-> & {
-  next: string;
-  hasMore: boolean;
-};
+type RequiredEventPageV4Result = ListEventsV4Result & { next: string };
 
 export type CreateEventV4Result =
   | (CreateEventV4ResultBase & { type: 'event' })
@@ -708,12 +702,8 @@ export interface ListEventsV4Result {
    * pages" signal on its own. Use `hasMore` for that.
    */
   next?: string;
-  /**
-   * Explicit "another page of results exists" flag from the sentinel.
-   * `undefined` against older servers that don't emit it, in which case
-   * the caller falls back to `Boolean(next)`.
-   */
-  hasMore?: boolean;
+  /** Explicit "another page of results exists" flag from the sentinel. */
+  hasMore: boolean;
 }
 
 type EventFrameStreamResult =
@@ -731,33 +721,6 @@ type EventFrameStreamState =
       body: CreateEventV4ResultBase['body'];
       events: ListedEventV4[];
     };
-
-function finishEventFrameStream(
-  state: EventFrameStreamState,
-  meta: Record<string, unknown>,
-  opName: string
-): EventFrameStreamResult {
-  const next = typeof meta.next === 'string' ? meta.next : undefined;
-  const hasMore = typeof meta.hasMore === 'boolean' ? meta.hasMore : undefined;
-
-  switch (state.type) {
-    case 'events':
-      return { type: 'events', page: { events: state.events, next, hasMore } };
-    case 'event-page':
-      if (next === undefined || hasMore === undefined) {
-        throw new Error(`v4 ${opName}: event page missing pagination state`);
-      }
-      return {
-        type: 'event-page',
-        body: state.body,
-        page: { events: state.events, next, hasMore },
-      };
-    default: {
-      const exhaustive: never = state;
-      throw new Error(`v4 ${opName}: unknown stream state ${exhaustive}`);
-    }
-  }
-}
 
 async function consumeEventFrameStream(
   response: Response,
@@ -787,7 +750,33 @@ async function consumeEventFrameStream(
       continue;
     }
     if (frame.meta._end === 1) {
-      return finishEventFrameStream(state, frame.meta, opName);
+      if (typeof frame.meta.hasMore !== 'boolean') {
+        throw new Error(`v4 ${opName}: end frame missing hasMore`);
+      }
+      const next =
+        typeof frame.meta.next === 'string' ? frame.meta.next : undefined;
+      const page = {
+        events: state.events,
+        next,
+        hasMore: frame.meta.hasMore,
+      };
+      switch (state.type) {
+        case 'events':
+          return { type: 'events', page };
+        case 'event-page':
+          if (next === undefined) {
+            throw new Error(`v4 ${opName}: event page missing cursor`);
+          }
+          return {
+            type: 'event-page',
+            body: state.body,
+            page: { ...page, next },
+          };
+        default: {
+          const exhaustive: never = state;
+          throw new Error(`v4 ${opName}: unknown stream state ${exhaustive}`);
+        }
+      }
     }
     state.events.push({
       event: frame.meta as unknown as DecodedV4Event,

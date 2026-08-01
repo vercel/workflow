@@ -21,7 +21,7 @@
  *   - GET single event returns one v4 frame: the event entity in the
  *     frame meta, the user payload bytes in the frame body.
  *   - LIST events returns a stream of v4 frames terminated by a sentinel
- *     frame whose meta carries `{_end: 1, next?: cursor, hasMore?: boolean}`.
+ *     frame whose meta carries `{_end: 1, next?: cursor, hasMore: boolean}`.
  *     The old
  *     per-event `/refs` round-trip is eliminated.
  *
@@ -593,15 +593,10 @@ export async function getWorkflowRunEvents(
 
   return {
     data: events,
-    // `next` is present even on the final page (it's the incremental-load
-    // resume cursor), so prefer the server's explicit `hasMore`. The
-    // `Boolean(next)` fallback covers older servers that don't emit it —
-    // at the cost of one extra empty-page request per load.
+    // `next` is present even on the final page because it is also the
+    // incremental-load resume cursor. `hasMore` is the page-completion signal.
     cursor: result.next ?? null,
-    hasMore:
-      typeof result.hasMore === 'boolean'
-        ? result.hasMore
-        : Boolean(result.next),
+    hasMore: result.hasMore,
   } as PaginatedResponse<Event>;
 }
 

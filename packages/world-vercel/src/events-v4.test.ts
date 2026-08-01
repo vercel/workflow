@@ -136,7 +136,10 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         },
         body
       ),
-      encodeFrame({ _end: 1, next: 'cursor-2' }, new Uint8Array(0)),
+      encodeFrame(
+        { _end: 1, next: 'cursor-2', hasMore: false },
+        new Uint8Array(0)
+      ),
     ]);
 
     agent
@@ -201,7 +204,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     expect(result.hasMore).toBe(false);
   });
 
-  it('leaves hasMore undefined for a legacy sentinel without the flag', async () => {
+  it('rejects an end frame without hasMore', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -219,14 +222,13 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });
 
-    const result = await getWorkflowRunEventsV4(
-      'wrun_1',
-      {},
-      { token: 'test-token', dispatcher: agent }
-    );
-
-    expect(result.next).toBe('cursor-2');
-    expect(result.hasMore).toBeUndefined();
+    await expect(
+      getWorkflowRunEventsV4(
+        'wrun_1',
+        {},
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow('v4 listEvents: end frame missing hasMore');
   });
 
   it('throws when the stream ends without the end sentinel (truncated response)', async () => {
@@ -334,7 +336,7 @@ describe('v4 transport uses global fetch (observability)', () => {
     agent
       .get(origin)
       .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
-      .reply(200, encodeFrame({ _end: 1 }, new Uint8Array(0)), {
+      .reply(200, encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)), {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });
 

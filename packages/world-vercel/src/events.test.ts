@@ -1240,7 +1240,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
         },
         body
       ),
-      encodeFrame({ _end: 1 }, new Uint8Array(0)),
+      encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)),
     ]);
   }
 
@@ -1325,7 +1325,7 @@ describe('getWorkflowRunEvents legacy structured-error compatibility', () => {
         },
         body
       ),
-      encodeFrame({ _end: 1 }, new Uint8Array(0)),
+      encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)),
     ]);
   }
 
@@ -1446,16 +1446,15 @@ describe('getWorkflowRunEvents hasMore mapping', () => {
     expect(result.cursor).toBe('cursor-2');
   });
 
-  it('falls back to Boolean(next) against a legacy server without the flag', async () => {
+  it('rejects a response without hasMore', async () => {
     const agent = mockAgent();
     mockListResponse(agent, { _end: 1, next: 'cursor-2' });
 
-    const result = await getWorkflowRunEvents(
-      { runId: 'wrun_1' },
-      { token: 'test-token', dispatcher: agent }
-    );
-
-    expect(result.hasMore).toBe(true);
-    expect(result.cursor).toBe('cursor-2');
+    await expect(
+      getWorkflowRunEvents(
+        { runId: 'wrun_1' },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow('v4 listEvents: end frame missing hasMore');
   });
 });
