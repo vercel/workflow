@@ -111,8 +111,57 @@ export const RunInputSchema = z.object({
    * the original `run_created` attempt.
    */
   allowReservedAttributes: z.literal(true).optional(),
+  /**
+   * The environment the creating client's writes are attributed to, as
+   * reported by {@link World.getEnvironment} at `start()` time (on Vercel:
+   * `'production' | 'preview' | 'development'`).
+   *
+   * This exists so the resilient-start path can be checked for a tenant
+   * mismatch. `start()` writes `run_created` under the caller's own
+   * credentials while pinning the queue message to a deployment, and those
+   * two can disagree: if the message is consumed by a deployment in a
+   * DIFFERENT environment, that consumer's `run_started` re-creates the run
+   * under ITS tenant, so the same client-minted `wrun_` id ends up existing
+   * in two environments — one stuck pending forever, the other executing.
+   * Carrying the creator's environment lets the consumer compare it against
+   * its own and refuse the delivery instead of forking the run.
+   *
+   * Absent for worlds with no environment dimension (local, Postgres), and
+   * for older SDKs — consumers must treat it as advisory and skip the check
+   * when it is missing.
+   */
+  environment: z.string().optional(),
 });
 export type RunInput = z.infer<typeof RunInputSchema>;
+
+/**
+ * Hook resume data carried through the queue for resilient resumeHook().
+ * Only present on the queue delivery triggered by resumeHook() — re-enqueues
+ * omit this. When the runtime processes the message and detects that the
+ * corresponding hook_received event is missing (e.g., because events.create()
+ * failed with a transient 429/5xx while queue() succeeded), it materializes
+ * the hook_received event from this payload.
+ *
+ * `resumeId` is a client-minted ULID used as an idempotency key: both the
+ * direct hook_received write (from resumeHook) and the runtime fallback write
+ * include it in `eventData.resumeId`, so the runtime can dedup by checking
+ * whether any existing hook_received event already carries the same resumeId.
+ */
+export const HookInputSchema = z.object({
+  /** correlationId of the target hook (hookId) */
+  hookId: z.string(),
+  /** Client-minted ULID; idempotency key shared across both write paths */
+  resumeId: z.string(),
+  /**
+   * The hook's token, written into the materialized event's
+   * `eventData.token` so it gets the same replay-divergence guard as a
+   * directly written hook_received event. Optional for wire compatibility.
+   */
+  token: z.string().optional(),
+  /** Dehydrated payload to deliver to the hook */
+  payload: z.unknown(),
+});
+export type HookInput = z.infer<typeof HookInputSchema>;
 
 export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
@@ -125,6 +174,14 @@ export const WorkflowInvokePayloadSchema = z.object({
       count: z.number().int().positive(),
     })
     .optional(),
+  /**
+   * Re-invocations so far in this chain of stale-snapshot (precondition)
+   * rejections. Counted on the message because the in-process restart budget
+   * lives in the invocation closure and the queue's delivery count resets on
+   * every fresh enqueue, so without this a permanently fenced run would cycle
+   * forever instead of failing.
+   */
+  preconditionReinvocations: z.number().int().positive().optional(),
   /** Number of times this message has been re-enqueued due to server errors (5xx) */
   serverErrorRetryCount: z.number().int().optional(),
   /** Step ID for inline step execution in combined handler. If provided, the flow execution
@@ -134,6 +191,8 @@ export const WorkflowInvokePayloadSchema = z.object({
   stepName: z.string().optional(),
   /** Run creation data, only present on the first queue delivery from start() */
   runInput: RunInputSchema.optional(),
+  /** Hook resume data, only present on the queue delivery from resumeHook() */
+  hookInput: HookInputSchema.optional(),
 });
 
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;
@@ -146,11 +205,39 @@ export type HealthCheckPayload = z.infer<typeof HealthCheckPayloadSchema>;
 export const HealthCheckPayloadSchema = z.object({
   __healthCheck: z.literal(true),
   correlationId: z.string(),
+  /**
+   * The run id the caller is about to create, when the probe is being used to
+   * prepare a cross-deployment `start()`.
+   *
+   * The responder runs inside the target deployment, so it can derive that
+   * run's public key locally from its own key material and return it in the
+   * probe response. That lets the caller seal the workflow arguments without
+   * a separate key lookup. Absent for probes issued for other reasons (CLI
+   * health command, dashboard), in which case no key is returned.
+   */
+  runId: z.string().optional(),
 });
 
+/**
+ * Health check MUST come first.
+ *
+ * Zod unions return the first matching member's output, and `z.object` strips
+ * keys the matching member doesn't declare. `HealthCheckPayloadSchema` carries
+ * an optional `runId`, so a probe payload also satisfies
+ * `WorkflowInvokePayloadSchema` (whose only required field is `runId`). With
+ * the invoke member first, parsing a runId-bearing probe silently dropped
+ * `__healthCheck` and `correlationId`, and the runtime — which dispatches on
+ * `__healthCheck` before falling through to the invoke schema — reinterpreted
+ * the probe as "replay this run". That made the queue handler POST
+ * `run_started` for a run that doesn't exist yet (404), fail, and retry
+ * forever, so the probe never answered and `start()` timed out.
+ *
+ * Ordering health check first is safe in the other direction: it requires
+ * `__healthCheck: true`, which an invoke payload never carries.
+ */
 export const QueuePayloadSchema = z.union([
-  WorkflowInvokePayloadSchema,
   HealthCheckPayloadSchema,
+  WorkflowInvokePayloadSchema,
 ]);
 export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
 

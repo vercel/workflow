@@ -711,6 +711,37 @@ describe('encrypted data handling', () => {
       expect(result).toEqual(original);
     });
 
+    it('rejects a write-only seal target at the type level', async () => {
+      // A seal target holds only a public key, so it can open neither scheme.
+      // Accepting it here would compile into a guaranteed runtime failure, so
+      // the signature takes a read capability instead.
+      const { sealTo, deriveRunPayloadKeys } = await import(
+        './serialization/encryption.js'
+      );
+      const target = sealTo(new Uint8Array(32).fill(1));
+
+      // @ts-expect-error - SealTarget is write-only and must not be accepted
+      void hydrateDataWithKey(
+        makeSealedPayload(),
+        observabilityRevivers,
+        target
+      );
+
+      // Both read capabilities remain accepted: the run's full key bundle...
+      const keys = await deriveRunPayloadKeys(testKeyRaw);
+      await expect(
+        hydrateDataWithKey(makeSealedPayload(), observabilityRevivers, keys)
+      ).rejects.toThrow(); // fake ciphertext, but it type-checks and is attempted
+      // ...and a bare symmetric key (which simply cannot open sealed data).
+      await expect(
+        hydrateDataWithKey(
+          makeSealedPayload(),
+          observabilityRevivers,
+          await getTestKey()
+        )
+      ).resolves.toBeInstanceOf(Uint8Array);
+    });
+
     it('should pass sealed payloads through untouched even when a key is present', async () => {
       // A sealed payload is encrypted to the run's X25519 public key, so the
       // symmetric key this function receives cannot open it. Attempting an
@@ -726,6 +757,44 @@ describe('encrypted data handling', () => {
       );
       expect(result).toBe(sealed);
       expect(isEncryptedData(result)).toBe(true);
+    });
+
+    it('should open a real sealed payload when given the run keypair', async () => {
+      // The o11y decrypt path must handle payloads that other runs sealed to
+      // this one — a cross-deployment hook resumption, say. Without this the
+      // dashboard and CLI would show a lock icon on data the user is entitled
+      // to read and has supplied the key for.
+      const { deriveRunKeyPair, seal } = await import('./sealed-box.js');
+      const { deriveRunPayloadKeys } = await import(
+        './serialization/encryption.js'
+      );
+
+      const original = { approved: true, note: 'sealed by another run' };
+      const keyPair = await deriveRunKeyPair(testKeyRaw);
+      const sealed = encodeWithFormatPrefix(
+        SerializationFormat.SEALED,
+        await seal(keyPair.publicKey, makeDevlPayload(original))
+      ) as Uint8Array;
+
+      const keys = await deriveRunPayloadKeys(testKeyRaw);
+      await expect(
+        hydrateDataWithKey(sealed, observabilityRevivers, keys)
+      ).resolves.toEqual(original);
+    });
+
+    it('should still open symmetric payloads when given the run keypair', async () => {
+      // The same resolved key must serve both schemes — a run's event log
+      // mixes its own 'encr' payloads with 'encp' payloads written to it.
+      const { deriveRunPayloadKeys } = await import(
+        './serialization/encryption.js'
+      );
+      const original = { message: 'own payload' };
+      const encrypted = await encryptPayload(original);
+      const keys = await deriveRunPayloadKeys(testKeyRaw);
+
+      await expect(
+        hydrateDataWithKey(encrypted, observabilityRevivers, keys)
+      ).resolves.toEqual(original);
     });
 
     it('should not throw "Unsupported serialization format" for sealed payloads', async () => {

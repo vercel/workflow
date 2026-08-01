@@ -10,7 +10,6 @@ import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
-import type { CryptoKey } from './encryption.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
@@ -21,6 +20,7 @@ import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
+import type { PayloadKey } from './serialization/encryption.js';
 import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
@@ -116,7 +116,7 @@ export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
   events: Event[],
-  encryptionKey: CryptoKey | undefined,
+  encryptionKey: PayloadKey | undefined,
   /**
    * Optional per-run cache for replay payload preparation and immutable final
    * values. Owned by the inline replay loop so it survives fresh VM contexts
@@ -159,7 +159,11 @@ export async function runWorkflow(
     const fixedTimestamp =
       runIdCreatedAt(workflowRun.runId) ?? +workflowRun.createdAt;
 
-    const isVercel = process.env.VERCEL_URL !== undefined;
+    // Truthiness, not presence: `vercel env pull` writes `VERCEL_URL=""` into
+    // `.env.local`, and a framework that loads that file locally would otherwise
+    // put us on the Vercel branch with nothing to build a host from, making
+    // `https://` the base URL of every run.
+    const isVercel = Boolean(process.env.VERCEL_URL);
     // Load getPort lazily to prevent Turbopack from tracing get-port's
     // fs ops (readdir, readFile) into the flow route bundle. The resolved
     // port is cached per process (see get-port-lazy.ts), so this is cheap

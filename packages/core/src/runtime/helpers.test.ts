@@ -2,13 +2,24 @@ import { PreconditionFailedError, WorkflowWorldError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { bytesToBase64, deriveRunKeyPair, seal } from '../sealed-box.js';
 import {
+  decrypt,
+  encodeWithFormatPrefix,
+  encrypt,
+  peekFormatPrefix,
+  SerializationFormat,
+} from '../serialization.js';
+import {
+  appendUniqueEvents,
   getWorkflowQueueName,
+  handleHealthCheckMessage,
   healthCheck,
   latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
-  type MutableEventLog,
-  withPreconditionRetry,
+  memoizeEncryptionKey,
+  preconditionEventDelta,
+  preconditionSnapshotParams,
 } from './helpers.js';
 
 // Mock the logger to suppress output during tests
@@ -475,7 +486,7 @@ describe('latestEventStateUpdatedAt', () => {
     expect(latestEventStateUpdatedAt([])).toBeUndefined();
   });
 
-  it('decodes the ULID time of the last (newest) event, stripping the prefix', () => {
+  it('decodes the ULID time of the newest event, stripping the prefix', () => {
     const time = 1_700_000_000_000;
     // ULID time resolution is whole milliseconds.
     expect(
@@ -486,18 +497,31 @@ describe('latestEventStateUpdatedAt', () => {
     ).toBe(time);
   });
 
-  it('returns undefined when the latest event id is not a decodable ULID', () => {
+  it('reports the maximum, not the tail, when the log is not id-ordered', () => {
+    // A World's canonical order need not be event-id order (world-local orders
+    // by `(createdAt, eventId)`), so the watermark cannot be read off the tail.
+    const time = 1_700_000_002_000;
+
+    expect(
+      latestEventStateUpdatedAt([
+        makeUlidEvent(time),
+        makeUlidEvent(1_700_000_000_000),
+        makeUlidEvent(1_700_000_001_000),
+      ])
+    ).toBe(time);
+  });
+
+  it('returns undefined when the newest event id is not a decodable ULID', () => {
     expect(
       latestEventStateUpdatedAt([makeEvent('evnt_not-a-ulid')])
     ).toBeUndefined();
   });
 });
 
-describe('withPreconditionRetry', () => {
+describe('preconditionSnapshotParams', () => {
   let originalGuard: string | undefined;
 
   beforeEach(() => {
-    eventsListMock.mockReset();
     originalGuard = process.env.WORKFLOW_PRECONDITION_GUARD;
     process.env.WORKFLOW_PRECONDITION_GUARD = '1';
   });
@@ -510,131 +534,350 @@ describe('withPreconditionRetry', () => {
     }
   });
 
-  it('passes no snapshot to op when the guard is explicitly disabled', async () => {
-    process.env.WORKFLOW_PRECONDITION_GUARD = '0';
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
-    const op = vi.fn(async (stateUpdatedAt?: number) => {
-      expect(stateUpdatedAt).toBeUndefined();
-      return 'ok';
-    });
+  it('sends the watermark, the count and the cursor together', () => {
+    const time = 1_700_000_000_000;
+    const events = [makeUlidEvent(time - 1000), makeUlidEvent(time)];
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
-      'ok'
-    );
-    expect(op).toHaveBeenCalledTimes(1);
-    expect(eventsListMock).not.toHaveBeenCalled();
+    expect(preconditionSnapshotParams(events, 'eid:abc')).toEqual({
+      stateUpdatedAt: time,
+      stateEventCount: events.length,
+      stateCursor: 'eid:abc',
+    });
   });
 
-  it('sends a snapshot by default when the guard variable is unset (on by default)', async () => {
+  it('sends the count without a cursor when the caller has none', () => {
+    const time = 1_700_000_000_000;
+
+    expect(preconditionSnapshotParams([makeUlidEvent(time)], null)).toEqual({
+      stateUpdatedAt: time,
+      stateEventCount: 1,
+    });
+  });
+
+  it('sends the snapshot by default (guard is on unless disabled)', () => {
     delete process.env.WORKFLOW_PRECONDITION_GUARD;
     const time = 1_700_000_000_000;
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(time)],
-      cursor: 'c0',
-    };
-    const op = vi.fn(async (stateUpdatedAt?: number) => {
-      expect(stateUpdatedAt).toBe(time);
-      return 'ok';
-    });
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
-      'ok'
-    );
-    expect(op).toHaveBeenCalledTimes(1);
+    expect(
+      preconditionSnapshotParams([makeUlidEvent(time)], 'eid:abc')
+    ).toEqual({
+      stateUpdatedAt: time,
+      stateEventCount: 1,
+      stateCursor: 'eid:abc',
+    });
   });
 
-  it('passes the latest snapshot time to op and returns its result without reloading', async () => {
+  it('omits every field when the guard is disabled', () => {
+    process.env.WORKFLOW_PRECONDITION_GUARD = '0';
+
+    expect(
+      preconditionSnapshotParams([makeUlidEvent(1_700_000_000_000)], 'eid:abc')
+    ).toEqual({});
+  });
+
+  it('omits every field on an empty log', () => {
+    expect(preconditionSnapshotParams([], 'eid:abc')).toEqual({});
+  });
+
+  it('omits every field when the latest event id is not a decodable ULID', () => {
+    // A count without a watermark would be meaningless to the backend, so the
+    // three fields have to fail open together.
+    expect(
+      preconditionSnapshotParams([makeEvent('evnt_not-a-ulid')], 'eid:abc')
+    ).toEqual({});
+  });
+});
+
+describe('appendUniqueEvents', () => {
+  it('appends in receipt order', () => {
+    const first = makeUlidEvent(1_700_000_000_000);
+    const second = makeUlidEvent(1_700_000_001_000);
+    const third = makeUlidEvent(1_700_000_002_000);
+    const target = [first];
+
+    appendUniqueEvents(target, [second, third]);
+
+    expect(target.map((e) => e.eventId)).toEqual([
+      first.eventId,
+      second.eventId,
+      third.eventId,
+    ]);
+  });
+
+  it('preserves the order the World returned, never re-sorting by event id', () => {
+    // A World's canonical order is its own: world-local orders by
+    // `(createdAt, eventId)` and re-mints keys so the two diverge, so an
+    // id-ordered re-sort here would produce an order no load would return.
+    const older = makeUlidEvent(1_700_000_000_000);
+    const newer = makeUlidEvent(1_700_000_002_000);
+    const middle = makeUlidEvent(1_700_000_001_000);
+    const target = [older, newer];
+
+    appendUniqueEvents(target, [middle]);
+
+    expect(target.map((e) => e.eventId)).toEqual([
+      older.eventId,
+      newer.eventId,
+      middle.eventId,
+    ]);
+  });
+
+  it('deduplicates by event id', () => {
+    const first = makeUlidEvent(1_700_000_000_000);
+    const second = makeUlidEvent(1_700_000_001_000);
+    const target = [first];
+
+    appendUniqueEvents(target, [first, second, second]);
+
+    expect(target.map((e) => e.eventId)).toEqual([
+      first.eventId,
+      second.eventId,
+    ]);
+  });
+
+  it('keeps a same-millisecond pair in receipt order', () => {
     const time = 1_700_000_000_000;
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(time)],
-      cursor: 'c0',
-    };
-    const op = vi.fn(async (stateUpdatedAt?: number) => {
-      expect(stateUpdatedAt).toBe(time);
-      return 'ok';
-    });
+    const a = makeEvent(`evnt_${ulid(time).slice(0, 10)}AAAAAAAAAAAAAAAA`);
+    const b = makeEvent(`evnt_${ulid(time).slice(0, 10)}ZZZZZZZZZZZZZZZZ`);
+    const target = [b];
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
-      'ok'
-    );
-    expect(op).toHaveBeenCalledTimes(1);
-    expect(eventsListMock).not.toHaveBeenCalled();
+    appendUniqueEvents(target, [a]);
+
+    expect(target.map((e) => e.eventId)).toEqual([b.eventId, a.eventId]);
   });
 
-  it('reloads the event log and retries on a stale (412) rejection, then succeeds', async () => {
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
-    // Each reload returns one newer event and advances the cursor.
-    eventsListMock.mockResolvedValueOnce({
-      data: [makeUlidEvent(1_700_000_001_000)],
-      cursor: 'c1',
-      hasMore: false,
-    });
-    eventsListMock.mockResolvedValueOnce({
-      data: [makeUlidEvent(1_700_000_002_000)],
-      cursor: 'c2',
-      hasMore: false,
-    });
+  it('leaves the watermark correct even when the merge is not id-ordered', () => {
+    // Why the merge needs no sort: the snapshot reads the maximum ULID time
+    // across the log rather than the tail, so an out-of-order tail costs nothing
+    // and every loaded event stays at or below the watermark.
+    const time = 1_700_000_002_000;
+    const target = [makeUlidEvent(1_700_000_000_000), makeUlidEvent(time)];
 
-    let calls = 0;
-    const op = vi.fn(async () => {
-      calls++;
-      if (calls <= 2) {
-        throw new PreconditionFailedError('stale');
-      }
-      return 'done';
-    });
+    appendUniqueEvents(target, [makeUlidEvent(1_700_000_001_000)]);
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
-      'done'
+    expect(latestEventStateUpdatedAt(target)).toBe(time);
+    expect(preconditionSnapshotParams(target, 'eid:abc')).toEqual({
+      stateUpdatedAt: time,
+      stateEventCount: 3,
+      stateCursor: 'eid:abc',
+    });
+  });
+});
+
+describe('preconditionEventDelta', () => {
+  // The run every `makeUlidEvent` belongs to.
+  const RUN_ID = 'wrun_mockidnumber0001';
+  const delta = (details: unknown) =>
+    preconditionEventDelta(
+      new PreconditionFailedError('stale', { details }),
+      RUN_ID
     );
-    expect(op).toHaveBeenCalledTimes(3);
-    // Two reloads merged their events into the shared log and advanced cursor.
-    expect(log.events).toHaveLength(3);
-    expect(log.cursor).toBe('c2');
+
+  it('returns the decoded events and cursor a World attached to the 412', () => {
+    const event = makeUlidEvent(1_700_000_000_000);
+
+    expect(delta({ events: [event], cursor: 'eid:next' })).toEqual({
+      events: [event],
+      cursor: 'eid:next',
+    });
   });
 
-  it('rethrows the precondition error after exhausting reload retries', async () => {
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
-    eventsListMock.mockResolvedValue({
-      data: [],
-      cursor: 'c1',
-      hasMore: false,
-    });
+  it('returns a null cursor when the World sent events without one', () => {
+    const event = makeUlidEvent(1_700_000_000_000);
 
-    const op = vi.fn(async () => {
-      throw new PreconditionFailedError('always stale');
+    expect(delta({ events: [event] })).toEqual({
+      events: [event],
+      cursor: null,
     });
-
-    await expect(
-      withPreconditionRetry('wrun_test', log, op)
-    ).rejects.toBeInstanceOf(PreconditionFailedError);
-    // attempts 0,1,2 — two reloads between them, then rethrow on the third.
-    expect(op).toHaveBeenCalledTimes(3);
-    expect(eventsListMock).toHaveBeenCalledTimes(2);
   });
 
-  it('rethrows non-precondition errors immediately without reloading', async () => {
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
-    const op = vi.fn(async () => {
-      throw new Error('boom');
-    });
+  it('returns null when the World attached no details at all', () => {
+    expect(
+      preconditionEventDelta(new PreconditionFailedError('stale'), RUN_ID)
+    ).toBe(null);
+  });
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).rejects.toThrow(
-      'boom'
+  it('returns null for a non-precondition error', () => {
+    expect(preconditionEventDelta(new Error('boom'), RUN_ID)).toBe(null);
+  });
+
+  it('returns null when any event belongs to another run', () => {
+    // The delta is merged straight into the replay's log, so a foreign event
+    // there produces a corrupt log rather than a corrected one: the replay
+    // consumes a correlation id for an event this run does not have.
+    const mine = makeUlidEvent(1_700_000_000_000);
+    const theirs = {
+      ...makeUlidEvent(1_700_000_001_000),
+      runId: 'wrun_someotherrun001',
+    } as Event;
+
+    expect(delta({ events: [theirs] })).toBe(null);
+    expect(delta({ events: [mine, theirs] })).toBe(null);
+    expect(delta({ events: [mine] })).not.toBe(null);
+  });
+
+  it('returns null for an empty or malformed events payload', () => {
+    // Nothing here is repaired: a full reload is always correct, so anything
+    // that does not narrow cleanly falls back to it.
+    expect(delta({ events: [] })).toBe(null);
+    expect(delta({ events: 'not-an-array' })).toBe(null);
+    expect(delta({ events: [{ noEventId: true }] })).toBe(null);
+    expect(delta({ events: [null] })).toBe(null);
+    expect(delta('not-an-object')).toBe(null);
+  });
+});
+
+describe('memoizeEncryptionKey', () => {
+  const MATERIAL = new Uint8Array(32).fill(0x6b);
+
+  function worldWithKey(getEncryptionKeyForRun: unknown): World {
+    return { getEncryptionKeyForRun } as unknown as World;
+  }
+
+  it('resolves a key that can open payloads sealed to the run', async () => {
+    // A run reading its own event log may find sealed ('encp') payloads that
+    // another run wrote to it — a cross-deployment hook resumption, say. If
+    // this resolved only the symmetric key, those payloads would fail to open
+    // and wedge the run, so the sealed capability must be part of what every
+    // reader gets by default.
+    const getKey = memoizeEncryptionKey(
+      worldWithKey(vi.fn().mockResolvedValue(MATERIAL)),
+      'wrun_1'
     );
-    expect(op).toHaveBeenCalledTimes(1);
-    expect(eventsListMock).not.toHaveBeenCalled();
+    const resolved = await getKey();
+    expect(resolved).toBeDefined();
+
+    const { publicKey } = await deriveRunKeyPair(MATERIAL);
+    const sealed = await seal(publicKey, new TextEncoder().encode('"hi"'));
+    const prefixed = encodeWithFormatPrefix(
+      SerializationFormat.SEALED,
+      sealed
+    ) as Uint8Array;
+
+    await expect(decrypt(prefixed, resolved)).resolves.toEqual(
+      new TextEncoder().encode('"hi"')
+    );
+  });
+
+  it("resolves a key that still opens the run's own symmetric payloads", async () => {
+    const getKey = memoizeEncryptionKey(
+      worldWithKey(vi.fn().mockResolvedValue(MATERIAL)),
+      'wrun_1'
+    );
+    const resolved = await getKey();
+
+    const encrypted = await encrypt(new TextEncoder().encode('"hi"'), resolved);
+    expect(peekFormatPrefix(encrypted)).toBe(SerializationFormat.ENCRYPTED);
+    await expect(decrypt(encrypted, resolved)).resolves.toEqual(
+      new TextEncoder().encode('"hi"')
+    );
+  });
+
+  it('memoizes so the key is derived once per run', async () => {
+    // Derivation now costs several Web Crypto round trips (HKDF + a PKCS#8
+    // import + a JWK export), so re-deriving per payload would be wasteful.
+    const spy = vi.fn().mockResolvedValue(MATERIAL);
+    const getKey = memoizeEncryptionKey(worldWithKey(spy), 'wrun_1');
+
+    const [a, b] = await Promise.all([getKey(), getKey()]);
+    expect(a).toBe(b);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves undefined when encryption is not configured', async () => {
+    const getKey = memoizeEncryptionKey(worldWithKey(undefined), 'wrun_1');
+    await expect(getKey()).resolves.toBeUndefined();
+  });
+});
+
+describe('health check run public key', () => {
+  const MATERIAL = new Uint8Array(32).fill(0x5e);
+
+  /** Capture what the responder writes to the probe response stream. */
+  function responderWorld(getEncryptionKeyForRun?: unknown) {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const world = {
+      streams: { write, close: vi.fn().mockResolvedValue(undefined) },
+      getEncryptionKeyForRun,
+    } as unknown as World;
+    return { world, write };
+  }
+
+  function writtenResponse(write: ReturnType<typeof vi.fn>) {
+    return JSON.parse(write.mock.calls[0][2] as string);
+  }
+
+  it('returns the run public key when the probe names a run', async () => {
+    // The responder executes inside the target deployment, so it can derive
+    // the key locally — that is what lets a cross-deployment start() skip the
+    // key-lookup API request entirely.
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(
+      vi.fn().mockResolvedValue(MATERIAL)
+    );
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_1', runId: 'wrun_1' },
+      'workflow'
+    );
+
+    const { publicKey } = await deriveRunKeyPair(MATERIAL);
+    expect(writtenResponse(write).encryptionPublicKey).toBe(
+      bytesToBase64(publicKey)
+    );
+  });
+
+  it('omits the key when the probe names no run', async () => {
+    // Probes issued by the CLI health command or the dashboard carry no
+    // runId; they must not trigger key derivation at all.
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const getEncryptionKeyForRun = vi.fn().mockResolvedValue(MATERIAL);
+    const { world, write } = responderWorld(getEncryptionKeyForRun);
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_2' },
+      'workflow'
+    );
+
+    expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+    expect(writtenResponse(write).encryptionPublicKey).toBeUndefined();
+    expect(writtenResponse(write).healthy).toBe(true);
+  });
+
+  it('omits the key when encryption is not configured', async () => {
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(undefined);
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_3', runId: 'wrun_1' },
+      'workflow'
+    );
+
+    expect(writtenResponse(write).encryptionPublicKey).toBeUndefined();
+    expect(writtenResponse(write).healthy).toBe(true);
+  });
+
+  it('still reports healthy when key derivation fails', async () => {
+    // The probe doubles as plain capability detection, so a key problem must
+    // degrade to "no key" (caller falls back to a lookup) rather than fail
+    // the health check and lose the capability information too.
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(
+      vi.fn().mockRejectedValue(new Error('key service down'))
+    );
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_4', runId: 'wrun_1' },
+      'workflow'
+    );
+
+    const response = writtenResponse(write);
+    expect(response.healthy).toBe(true);
+    expect(response.encryptionPublicKey).toBeUndefined();
+    expect(response.workflowCoreVersion).toBeDefined();
   });
 });

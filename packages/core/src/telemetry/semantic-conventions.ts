@@ -175,6 +175,14 @@ export const WorkflowRouteModuleBodyInitMs = SemanticConvention<number>(
   'workflow.route.module_body_init_ms'
 );
 
+/**
+ * Compute instance handling this route — the synthesized `COMPUTE_INSTANCE_ID`.
+ * Uses OTEL `faas.instance` (execution-environment id, reused across
+ * invocations to the same function):
+ * https://opentelemetry.io/docs/specs/semconv/attributes-registry/faas/
+ */
+export const FaasInstance = SemanticConvention<string>('faas.instance');
+
 // Step attributes
 
 /** Name of the step function being executed */
@@ -327,6 +335,25 @@ export const HookId = SemanticConvention<string>('workflow.hook.id');
 /** Whether a hook was found by its token */
 export const HookFound = SemanticConvention<boolean>('workflow.hook.found');
 
+/**
+ * Set to `true` on the `hook.resume` span when `resumeHook()`'s direct
+ * `hook_received` event write failed with a retryable error (429/5xx) but
+ * the queue dispatch succeeded — the resume will still land via the
+ * runtime's queue-payload fallback path.
+ */
+export const HookResilientResume = SemanticConvention<boolean>(
+  'workflow.hook.resilient_resume'
+);
+
+/**
+ * Set to `true` on the workflow execution span when the runtime materialized
+ * a missing `hook_received` event from the queue-payload fallback carried on
+ * the queue message (resilient resume).
+ */
+export const HookResilientResumeMaterialized = SemanticConvention<boolean>(
+  'workflow.hook.resilient_resume_materialized'
+);
+
 // Webhook attributes
 
 /** Number of webhook handlers triggered */
@@ -443,6 +470,22 @@ export const SerializationStoredBytes = SemanticConvention<number>(
 /** Fraction of bytes saved by compression (0..1); set only when compressed. */
 export const SerializationCompressionRatio = SemanticConvention<number>(
   'workflow.serialization.compression_ratio'
+);
+
+/**
+ * Number of workflow (guest) code executions serialization could not avoid
+ * (getters, proxies, custom serializers); set only when non-zero.
+ */
+export const SerializationGuestCodeExecutions = SemanticConvention<number>(
+  'workflow.serialization.guest_code_executions'
+);
+
+/**
+ * Deduplicated `kind (detail)` descriptions of the guest-code executions;
+ * set only when non-zero.
+ */
+export const SerializationGuestCodeDetails = SemanticConvention<string[]>(
+  'workflow.serialization.guest_code_details'
 );
 
 // RPC/Peer Service attributes - For service maps and dependency tracking

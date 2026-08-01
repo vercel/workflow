@@ -4,7 +4,10 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  CreateEventParams,
+  CreateEventRequest,
   Event,
+  EventResult,
   HealthCheckPayload,
   ValidQueueName,
   WorkflowRun,
@@ -19,9 +22,12 @@ import {
   ulidToDate,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-
-import { type CryptoKey, importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
+import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
+import {
+  deriveRunPayloadKeys,
+  type PayloadKey,
+} from '../serialization/encryption.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
@@ -86,6 +92,15 @@ export interface HealthCheckResult {
    * or a non-JSON plain-text health response.
    */
   workflowCoreVersion?: string;
+  /**
+   * The target run's X25519 public key (base64), returned only when the probe
+   * carried a `runId` and the responding deployment has encryption enabled.
+   *
+   * Lets a cross-deployment `start()` seal the workflow arguments using a
+   * response it was already waiting on, instead of making a separate
+   * key-lookup request.
+   */
+  encryptionPublicKey?: string;
 }
 
 /**
@@ -124,11 +139,43 @@ export async function handleHealthCheckMessage(
 ): Promise<void> {
   const world = await getWorldLazy();
   const streamName = getHealthCheckStreamName(healthCheck.correlationId);
+
+  // When the probe names a run the caller is about to create, publish that
+  // run's public key. We are executing inside the target deployment, so its
+  // key material is available locally (no API call), and the caller can then
+  // seal the workflow arguments straight from this response rather than
+  // making a separate key-lookup request.
+  //
+  // Only a *public* key may travel this way: the probe response stream is
+  // deliberately unauthenticated, so anything secret would be exposed.
+  // Best-effort — a failure here must not fail the health check itself, which
+  // callers also rely on for plain capability detection.
+  let encryptionPublicKey: string | undefined;
+  if (healthCheck.runId) {
+    try {
+      const rawKey = await world.getEncryptionKeyForRun?.(healthCheck.runId);
+      if (rawKey) {
+        encryptionPublicKey = bytesToBase64(
+          (await deriveRunKeyPair(rawKey)).publicKey
+        );
+      }
+    } catch (err) {
+      runtimeLogger.warn(
+        'Health check could not derive a run public key; the caller will fall back to a key lookup',
+        {
+          correlationId: healthCheck.correlationId,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      );
+    }
+  }
+
   const response = JSON.stringify({
     healthy: true,
     correlationId: healthCheck.correlationId,
     specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
     workflowCoreVersion,
+    ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
     timestamp: Date.now(),
   });
   // Use a deterministic fake runId derived from the correlationId so that
@@ -143,6 +190,13 @@ export interface HealthCheckOptions {
   timeout?: number;
   /** Deployment ID to send the health check to. Falls back to process.env.VERCEL_DEPLOYMENT_ID. */
   deploymentId?: string;
+  /**
+   * The run id the caller is about to create. When set, the responding
+   * deployment derives that run's public key locally and returns it as
+   * `encryptionPublicKey`, letting a cross-deployment `start()` seal the
+   * workflow arguments without a separate key lookup.
+   */
+  runId?: string;
   /**
    * Queue namespace of the target deployment (e.g. `'eve'` for topics like
    * `__eve_wkf_workflow_*`). Falls back to `WORKFLOW_QUEUE_NAMESPACE` in the
@@ -232,6 +286,7 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
   healthy: boolean;
   specVersion?: number;
   workflowCoreVersion?: string;
+  encryptionPublicKey?: string;
 } | null {
   if (chunks.length === 0) return null;
 
@@ -271,6 +326,7 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
     healthy: boolean;
     specVersion?: number;
     workflowCoreVersion?: string;
+    encryptionPublicKey?: string;
   } = {
     healthy: r.healthy as boolean,
   };
@@ -279,6 +335,9 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
   }
   if (typeof r.workflowCoreVersion === 'string') {
     parsed.workflowCoreVersion = r.workflowCoreVersion;
+  }
+  if (typeof r.encryptionPublicKey === 'string') {
+    parsed.encryptionPublicKey = r.encryptionPublicKey;
   }
   return parsed;
 }
@@ -307,7 +366,11 @@ export async function healthCheck(
   try {
     await world.queue(
       queueName,
-      { __healthCheck: true, correlationId },
+      {
+        __healthCheck: true,
+        correlationId,
+        ...(options?.runId ? { runId: options.runId } : {}),
+      },
       {
         // Use JSON transport so the health check works against both
         // old (JSON-only) and new (dual) deployments.
@@ -397,16 +460,37 @@ function recordRequestedEventCursor(
   requestedCursors.add(cursor);
 }
 
-function appendUniqueEvents(
+/**
+ * Appends events whose IDs are not already present in `target`.
+ *
+ * Pass the IDs currently present in `target` when appending repeatedly to the
+ * same array. The set is updated alongside `target`.
+ *
+ * Events are appended in the order the World returned them, and are not
+ * re-sorted: a World's canonical order is its own, and the runtime cannot
+ * reproduce it from event ids alone. `world-vercel` orders by event id, while
+ * `world-local` orders by `(createdAt, eventId)` and deliberately re-mints keys
+ * so that the two diverge. Every append source is already in canonical order
+ * relative to the tail (a cursor-delimited page, or a write-response delta), so
+ * receipt order is the order to keep. Nothing downstream may assume the tail is
+ * the newest event — see {@link latestEventStateUpdatedAt}.
+ */
+export function appendUniqueEvents(
   target: Event[],
-  targetIds: Set<string>,
-  events: Event[]
+  events: readonly Event[],
+  targetIds?: Set<string>
 ): void {
+  if (events.length === 0) {
+    return;
+  }
+
+  const ids = targetIds ?? new Set(target.map((event) => event.eventId));
   for (const event of events) {
-    if (!targetIds.has(event.eventId)) {
-      targetIds.add(event.eventId);
-      target.push(event);
+    if (ids.has(event.eventId)) {
+      continue;
     }
+    ids.add(event.eventId);
+    target.push(event);
   }
 }
 
@@ -515,7 +599,7 @@ export async function loadWorkflowRunEvents(
           throw error;
         }
 
-        appendUniqueEvents(loadedEvents, loadedEventIds, response.data);
+        appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
         hasMore = response.hasMore;
         assertEventPaginationProgress(
           runId,
@@ -564,19 +648,11 @@ export async function loadWorkflowRunEvents(
 }
 
 /**
- * Maximum number of times a replay-context event creation will reload the
- * event log and retry after the backend rejects it as stale (412). After this
- * many failed reloads the precondition error propagates so the run is
- * re-invoked from the queue with a fresh replay.
+ * The runtime's loaded event-log snapshot: the events replayed so far and the
+ * cursor positioned after them. Handed to helpers that derive the precondition
+ * snapshot from it; they do not mutate it.
  */
-export const PRECONDITION_MAX_RELOAD_RETRIES = 2;
-
-/**
- * A mutable view of the runtime's in-memory event log. `withPreconditionRetry`
- * appends freshly-loaded events to `events` (in place) and advances `cursor`
- * when it reloads, so the caller's loaded snapshot stays current.
- */
-export interface MutableEventLog {
+export interface LoadedEventLog {
   events: Event[];
   cursor: string | null;
 }
@@ -595,24 +671,41 @@ export function isPreconditionGuardEnabled(): boolean {
 
 /**
  * The `stateUpdatedAt` value to send with a replay-context event creation: the
- * ULID time (epoch ms) of the latest event the runtime has loaded. Events are
- * stored in ascending order, so the last one is the newest. Returns `undefined`
- * when there are no events or the latest id is not a decodable ULID.
+ * *maximum* ULID time (epoch ms) over the events the runtime has loaded. Returns
+ * `undefined` when there are no events or that id is not a decodable ULID.
+ *
+ * It is the maximum rather than the tail's because the loaded log is in the
+ * World's canonical order, which is not necessarily event-id order (see
+ * {@link appendUniqueEvents}). The maximum is what lets the count sent alongside
+ * it be read as "events at or below this watermark": every loaded event is at or
+ * below it, so the count is exactly `events.length`. Reading the tail instead
+ * would understate the watermark on a World whose order is not id-ordered, which
+ * is safe (it can only weaken detection) but needlessly imprecise.
+ *
+ * The maximum is found by lexicographic id comparison, decoding only once: the
+ * 26-character Crockford ULID encodes its timestamp in the leading 10
+ * characters, so the greatest id also carries the greatest time.
  *
  * Granularity: snapshots are epoch-milliseconds, and the backend allows an
  * equal-timestamp snapshot (an up-to-date client must not be rejected). Two
  * out-of-band events landing in the same millisecond where only the first was
- * loaded therefore pass the guard undetected — the guard is best-effort by
- * design, and fails open rather than livelocking.
+ * loaded therefore pass this half of the guard undetected — that is exactly
+ * the hole `stateEventCount` closes, since the count of events at or below the
+ * watermark differs even when the watermarks are equal.
  */
 export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
-  const last = events[events.length - 1];
-  if (!last) {
+  let latest: string | undefined;
+  for (const event of events) {
+    if (latest === undefined || event.eventId > latest) {
+      latest = event.eventId;
+    }
+  }
+  if (latest === undefined) {
     return undefined;
   }
   // Event IDs are prefixed ULIDs (e.g. `evnt_01ARYZ...`); ulidToDate only
   // decodes the bare 26-char ULID, so strip the prefix first.
-  const eventId = last.eventId;
+  const eventId = latest;
   const underscore = eventId.lastIndexOf('_');
   const rawUlid = underscore === -1 ? eventId : eventId.slice(underscore + 1);
   const time = ulidToDate(rawUlid)?.getTime();
@@ -629,71 +722,106 @@ export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
 }
 
 /**
- * The `stateUpdatedAt` to attach to a replay-context event creation:
- * the loaded snapshot's ULID time when the precondition guard is enabled,
- * `undefined` (no guard, backend behaves as before) otherwise.
+ * The precondition snapshot a replay-context event creation sends, describing
+ * the event log the replay derived the event from.
+ *
+ * The three fields are one indivisible unit: the backend reads the count only
+ * relative to the watermark, and returns its inline delta only relative to the
+ * cursor. Passing them as a single object is what keeps them from drifting
+ * apart at a call site.
  */
-export function stateUpdatedAtForCreate(events: Event[]): number | undefined {
-  return isPreconditionGuardEnabled()
-    ? latestEventStateUpdatedAt(events)
-    : undefined;
+export interface PreconditionSnapshotParams {
+  stateUpdatedAt?: number;
+  stateEventCount?: number;
+  stateCursor?: string;
 }
 
 /**
- * Runs a replay-context event creation with the optimistic-concurrency guard.
+ * Build the precondition snapshot to attach to a replay-context event creation.
  *
- * `op` receives the current `stateUpdatedAt` (the ULID time of the latest
- * loaded event) to pass to `world.events.create`. If the backend rejects the
- * creation as stale (`PreconditionFailedError` / 412), the event log is
- * reloaded to completion from the last cursor, merged into `log` in place, and
- * `op` is retried with the now-newer snapshot — up to
- * `PRECONDITION_MAX_RELOAD_RETRIES` times. If it still fails, the error is
- * rethrown so the run falls back to a queue re-invocation. Non-precondition
- * errors are rethrown immediately.
+ * Returns an empty object — no guard, backend behaves as before — when the
+ * guard is disabled or the watermark is not derivable. All three fields fail
+ * open together: a count without a watermark is meaningless to the backend, and
+ * a cursor without either would invite a delta nobody asked for.
+ *
+ * `stateEventCount` is `events.length` because the watermark is the log's
+ * *maximum* ULID time, so every loaded event is at or below it regardless of the
+ * order the World returned them in.
+ *
+ * Both fields are therefore invariant under permutation of the log: a maximum is
+ * order-independent, and the length is set cardinality once `appendUniqueEvents`
+ * has deduped by event id. Two replays that consume the same events in different
+ * orders send an identical snapshot, so this guard detects that a log is missing
+ * an event and can never detect that a replay consumed one in a different order.
  */
-export async function withPreconditionRetry<T>(
-  runId: string,
-  log: MutableEventLog,
-  op: (stateUpdatedAt: number | undefined) => Promise<T>
-): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await op(stateUpdatedAtForCreate(log.events));
-    } catch (error) {
-      if (
-        !PreconditionFailedError.is(error) ||
-        attempt >= PRECONDITION_MAX_RELOAD_RETRIES
-      ) {
-        throw error;
-      }
-      runtimeLogger.info(
-        'Event creation rejected as stale; reloading event log and retrying',
-        {
-          workflowRunId: runId,
-          attempt: attempt + 1,
-          maxRetries: PRECONDITION_MAX_RELOAD_RETRIES,
-        }
-      );
-      const loaded = await loadWorkflowRunEvents(
-        runId,
-        log.cursor ?? undefined
-      );
-      appendUniqueEvents(
-        log.events,
-        new Set(log.events.map((e) => e.eventId)),
-        loaded.events
-      );
-      // When several creates share one `log` (e.g. hook creations under
-      // `Promise.all` in `handleSuspension`), concurrent 412s can reload
-      // concurrently. The event merge above is safe — `appendUniqueEvents`
-      // builds its dedup set synchronously right before appending — but this
-      // cursor write is last-write-wins, so an interleaved older reload can
-      // briefly regress the cursor. The only consequence is refetching a few
-      // already-deduped events on a later load; correctness is unaffected.
-      log.cursor = loaded.cursor ?? log.cursor;
+export function preconditionSnapshotParams(
+  events: Event[],
+  cursor?: string | null
+): PreconditionSnapshotParams {
+  if (!isPreconditionGuardEnabled()) {
+    return {};
+  }
+  const stateUpdatedAt = latestEventStateUpdatedAt(events);
+  if (stateUpdatedAt === undefined) {
+    return {};
+  }
+  return {
+    stateUpdatedAt,
+    stateEventCount: events.length,
+    ...(cursor ? { stateCursor: cursor } : {}),
+  };
+}
+
+/**
+ * The events a rejecting World attached to a `PreconditionFailedError`, when it
+ * returned the ones the client's snapshot was missing inline.
+ *
+ * Returns `null` for anything else — no details, a World that did not implement
+ * this, or a payload that does not narrow cleanly. Callers fall back to
+ * reloading the event log, which is always correct; this is untrusted-shaped
+ * data on a failure path, so nothing here is repaired.
+ *
+ * `runId` is the caller's run. Every event must belong to it: the delta is
+ * merged straight into the replay's log, and one foreign event there is a
+ * corrupt log rather than a corrected one — the replay would consume a
+ * correlation id for an event that does not exist on this run.
+ */
+export function preconditionEventDelta(
+  error: unknown,
+  runId: string
+): { events: Event[]; cursor: string | null } | null {
+  if (!PreconditionFailedError.is(error)) {
+    return null;
+  }
+  const details = error.details;
+  if (typeof details !== 'object' || details === null) {
+    return null;
+  }
+  const { events, cursor } = details as { events?: unknown; cursor?: unknown };
+  if (!Array.isArray(events) || events.length === 0) {
+    return null;
+  }
+  for (const event of events) {
+    if (
+      typeof event !== 'object' ||
+      event === null ||
+      typeof (event as { eventId?: unknown }).eventId !== 'string' ||
+      (event as { runId?: unknown }).runId !== runId
+    ) {
+      return null;
     }
   }
+  return {
+    events: events as Event[],
+    cursor: typeof cursor === 'string' ? cursor : null,
+  };
 }
+
+/** Creates one event on a bound run, carrying replay-recovery telemetry. */
+export type EventCreator = (
+  data: CreateEventRequest,
+  params?: CreateEventParams
+) => Promise<EventResult>;
 
 /**
  * CORS headers for health check responses.
@@ -792,13 +920,21 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
 }
 
 /**
- * Returns a memoized accessor for the per-run AES-256 encryption key.
+ * Returns a memoized accessor for a run's full encryption capability.
  *
- * The first call resolves the key via `world.getEncryptionKeyForRun` (which
- * may do HKDF derivation locally on Vercel, or a network fetch from
- * external contexts) and imports it as a `CryptoKey`; subsequent calls
- * await the same cached promise. If the world doesn't support encryption
- * or the run has no key configured, the cached value is `undefined`.
+ * The first call resolves the run's key material via
+ * `world.getEncryptionKeyForRun` (which may do HKDF derivation locally on
+ * Vercel, or a network fetch from external contexts) and derives a
+ * {@link PayloadKey} from it; subsequent calls await the same cached promise.
+ * If the world doesn't support encryption or the run has no key configured,
+ * the cached value is `undefined`.
+ *
+ * The resolved value is deliberately the *full* capability — the symmetric AES
+ * key plus the run's X25519 keypair — not just a `CryptoKey`. A run reading
+ * its own event log can encounter sealed (`encp`) payloads that another run
+ * wrote to it (a cross-deployment hook resumption, say), and opening those
+ * needs the keypair. Resolving only the symmetric key would leave those
+ * payloads unopenable and wedge the run.
  *
  * Used by step / workflow handlers to defer the (potentially expensive)
  * key fetch until the first code path that actually needs it — typically
@@ -816,8 +952,8 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
 export function memoizeEncryptionKey(
   world: World,
   runOrId: WorkflowRun | string
-): () => Promise<CryptoKey | undefined> {
-  let cached: Promise<CryptoKey | undefined> | undefined;
+): () => Promise<PayloadKey | undefined> {
+  let cached: Promise<PayloadKey | undefined> | undefined;
   return () => {
     if (!cached) {
       cached = (async () => {
@@ -828,7 +964,11 @@ export function memoizeEncryptionKey(
           typeof runOrId === 'string'
             ? await world.getEncryptionKeyForRun?.(runOrId)
             : await world.getEncryptionKeyForRun?.(runOrId);
-        return rawKey ? await importKey(rawKey) : undefined;
+        // Resolve the *full* capability, not just the symmetric key: a run
+        // reading its own event log may encounter sealed (`encp`) payloads
+        // that another run wrote to it, and opening those needs the run's
+        // X25519 scalar as well.
+        return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
       })();
     }
     return cached;

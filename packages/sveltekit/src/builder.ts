@@ -171,13 +171,16 @@ export const POST = async ({request}) => {
       ''
     );
 
-    // Replace all HTTP method exports with SvelteKit-compatible handlers
+    // Replace all HTTP method exports with SvelteKit-compatible handlers.
+    // The `request` from SvelteKit is already a standard `Request`, so it is
+    // handed to the webhook handler as-is. Notably it must NOT be copied via
+    // a normalizer that buffers the body: this is a public route where the
+    // token is checked inside `handler`, so the body must stay unread until
+    // the token has been accepted.
     webhookRouteContent = webhookRouteContent.replace(
       /export const GET = handler;\nexport const POST = handler;\nexport const PUT = handler;\nexport const PATCH = handler;\nexport const DELETE = handler;\nexport const HEAD = handler;\nexport const OPTIONS = handler;/,
-      `${NORMALIZE_REQUEST_CODE}
-const createSvelteKitHandler = (method) => async ({ request, params, platform }) => {
-  const normalRequest = await normalizeRequest(request);
-  const response = await handler(normalRequest, params.token);
+      `const createSvelteKitHandler = (method) => async ({ request, params, platform }) => {
+  const response = await handler(request, params.token);
   return response;
 };
 

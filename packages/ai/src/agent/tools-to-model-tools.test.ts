@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { tool } from 'ai';
+import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 

@@ -5,7 +5,7 @@ import {
   SPEC_VERSION_LEGACY,
   type World,
 } from '@workflow/world';
-import { importKey } from '../encryption.js';
+import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import { hydrateWorkflowArguments } from '../serialization.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { start } from './start.js';
@@ -85,7 +85,9 @@ export async function recreateRunFromExisting(
   try {
     const run = await world.runs.get(runId, { resolveData: 'all' });
     const rawKey = await world.getEncryptionKeyForRun?.(run);
-    const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+    const encryptionKey = rawKey
+      ? await deriveRunPayloadKeys(rawKey)
+      : undefined;
     const workflowArgs = normalizeWorkflowArgs(
       await hydrateWorkflowArguments(
         run.input,

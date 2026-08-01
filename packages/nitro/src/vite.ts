@@ -1,10 +1,4 @@
-import {
-  createBuildQueue,
-  ensureWorkflowTargetWorldEnv,
-  resolveWorkflowTargetWorldAlias,
-  WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
-  WORKFLOW_WORLD_TARGET_MODULE,
-} from '@workflow/builders';
+import { createBuildQueue } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Nitro } from 'nitro/types';
@@ -24,36 +18,6 @@ export function workflow(options?: ModuleOptions): Plugin[] {
   // The exclusion path is set during nitro setup, so we need to defer plugin creation
   const lazyTransformPlugin: Plugin = {
     name: 'workflow:transform',
-    config() {
-      const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
-      const workflowTargetWorldAlias = resolveWorkflowTargetWorldAlias({
-        workingDir: process.cwd(),
-        targetWorld: workflowTargetWorld,
-      });
-      return {
-        define: {
-          'process.env.WORKFLOW_TARGET_WORLD':
-            JSON.stringify(workflowTargetWorld),
-        },
-        resolve: {
-          alias: {
-            [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldAlias,
-            'pg-native': WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
-          },
-        },
-      };
-    },
-    async resolveId(source, importer, options) {
-      if (source !== WORKFLOW_WORLD_TARGET_MODULE) {
-        return null;
-      }
-      const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
-      const resolved = await this.resolve(workflowTargetWorld, importer, {
-        ...options,
-        skipSelf: true,
-      });
-      return resolved ?? { id: workflowTargetWorld, external: true };
-    },
     transform(code, id, options) {
       // Delegate to the actual transform plugin with exclusion
       // nitroBuildDir is set during nitro setup before transforms run

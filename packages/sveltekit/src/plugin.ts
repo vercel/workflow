@@ -1,15 +1,4 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import {
-  createBuildQueue,
-  ensureWorkflowTargetWorldEnv,
-  resolveWorkflowTargetWorldAlias,
-  WORKFLOW_NODE_COMPAT_BANNER,
-  WORKFLOW_NODE_FILENAME_BANNER,
-  WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
-  WORKFLOW_OPTIONAL_TYPESCRIPT_ALIAS,
-  WORKFLOW_WORLD_TARGET_MODULE,
-} from '@workflow/builders';
+import { createBuildQueue } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Plugin } from 'vite';
@@ -33,27 +22,6 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
     workflowTransformPlugin() as Plugin,
     {
       name: 'workflow:sveltekit',
-      enforce: 'post',
-      config() {
-        const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
-        const workflowTargetWorldAlias = resolveWorkflowTargetWorldAlias({
-          workingDir: process.cwd(),
-          targetWorld: workflowTargetWorld,
-        });
-        return {
-          define: {
-            'process.env.WORKFLOW_TARGET_WORLD':
-              JSON.stringify(workflowTargetWorld),
-          },
-          resolve: {
-            alias: {
-              [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldAlias,
-              'pg-native': WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS,
-              typescript: WORKFLOW_OPTIONAL_TYPESCRIPT_ALIAS,
-            },
-          },
-        };
-      },
       // SvelteKit bundles the server (including undici, via the world adapter)
       // into ESM output. undici loads most node: builtins as ESM imports, but
       // pulls in `node:http2` lazily via a bare `require('node:http2')` inside a
@@ -92,7 +60,8 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
           return;
         }
 
-        const banner = WORKFLOW_NODE_COMPAT_BANNER;
+        const banner =
+          "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
         const rollupOptions = config.build.rollupOptions;
         rollupOptions.output ??= {};
         const output = rollupOptions.output;
@@ -109,62 +78,10 @@ export function workflowPlugin(options: WorkflowPluginOptions = {}): Plugin[] {
               : `${banner}\n${existing}`;
         }
       },
-      closeBundle() {
-        patchAdapterNodeServerChunks(process.cwd());
-      },
     },
     workflowHotUpdatePlugin({
       builder: () => builder,
       enqueue,
     }),
   ];
-}
-
-function patchAdapterNodeServerChunks(cwd: string): void {
-  const serverDir = join(cwd, 'build/server');
-  if (!existsSync(serverDir)) {
-    return;
-  }
-
-  const banner = WORKFLOW_NODE_FILENAME_BANNER;
-
-  const visit = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const file = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        visit(file);
-        continue;
-      }
-      if (!entry.isFile() || !entry.name.endsWith('.js')) {
-        continue;
-      }
-
-      const source = readFileSync(file, 'utf-8');
-      // Only patch chunks that reference __filename/__dirname without
-      // declaring their own binding. Prepending the banner onto a chunk
-      // that already declares either identifier (const/let/var, e.g. a
-      // CJS-interop shim) would produce a duplicate top-level declaration
-      // and crash the server with a SyntaxError at startup.
-      //
-      // The `(?![\w$])` lookaheads matter: when adapter-node re-bundles the
-      // intermediate output, rollup renames colliding declarations to e.g.
-      // `__filename$1`. A bare `\b` boundary matches those ($ is not a word
-      // character), which made this skip chunks that declare only a RENAMED
-      // binding while still referencing the bare `__filename` (observed with
-      // the bundled `typescript` compiler pulled in via cosmiconfig — the
-      // server crashed at boot with "__filename is not defined").
-      const referencesFilename = /(?<![\w$])__(?:file|dir)name(?![\w$])/.test(
-        source
-      );
-      const declaresOwnBinding =
-        /\b(?:const|let|var)\s+__(?:file|dir)name(?![\w$])/.test(source);
-      if (!referencesFilename || declaresOwnBinding) {
-        continue;
-      }
-
-      writeFileSync(file, `${banner}\n${source}`);
-    }
-  };
-
-  visit(serverDir);
 }
