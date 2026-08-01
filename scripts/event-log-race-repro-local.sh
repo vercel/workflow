@@ -45,6 +45,18 @@ KEEP_QUEUE="0"
 # enough to exceed Node's default old-space limit (~4 GB) and take the server
 # down mid-run with an OOM, which then shows up as unrelated `stuck` outcomes.
 SERVER_HEAP_MB="8192"
+# world-postgres runs an embedded Graphile Worker in every process that loads it,
+# so the app and the harness each get this many slots. The package default is 50,
+# i.e. ~100 replays in flight against one Next.js process. Measured on a 12-core
+# laptop at the default: next-server pegged at ~120% CPU and 6.4 GB RSS against
+# an 8 GB old space while Postgres sat idle (1 active connection), all 100 slots
+# stayed locked, and every one of the 14 attempts came back `stuck` — GC
+# saturation, not a database or a queue limit. Bounded, the same 14 attempts run
+# to completion with no `stuck` at all. 10 is also world-postgres's pool size, so
+# Graphile Worker stops warning that concurrency outruns maxPoolSize. Bounding
+# replays per process does not weaken the repro: the race is between a handful of
+# concurrent replays of one run, not a throughput effect.
+LOCAL_WORKER_CONCURRENCY="10"
 
 COMPOSE_FILE="packages/world-postgres/docker-compose.yaml"
 # Matches the compose file and the `e2e-local-postgres` job in tests.yml.
@@ -99,9 +111,11 @@ This script deliberately sets none of them. Their defaults — and the full list
 live in packages/core/e2e/event-log-race-repro.test.ts, which is the single
 source of truth the CI workflow also defers to.
 
-WORKFLOW_POSTGRES_WORKER_CONCURRENCY (default 50) caps how many replays the app
-and the harness each run at once. Lowering it lowers the pressure the storms
-apply, so prefer --heap-mb for memory problems and treat this as a last resort.
+The one knob this script does set is WORKFLOW_POSTGRES_WORKER_CONCURRENCY, which
+caps how many replays the app and the harness each run at once. world-postgres
+defaults it to 50, i.e. ~100 replays sharing one Next.js process, which on a
+12-core laptop saturates GC and reports all 14 attempts as `stuck`. It is set to
+10 here instead, matching the pool size. Export your own value to override.
 
 Examples:
   # Default scale (a regression check, a few minutes).
@@ -156,6 +170,7 @@ done
 export WORKFLOW_POSTGRES_URL="${WORKFLOW_POSTGRES_URL:-$DEFAULT_POSTGRES_URL}"
 export WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
 export WORKFLOW_PUBLIC_MANIFEST="1"
+export WORKFLOW_POSTGRES_WORKER_CONCURRENCY="${WORKFLOW_POSTGRES_WORKER_CONCURRENCY:-$LOCAL_WORKER_CONCURRENCY}"
 export PORT="$PORT"
 DEPLOYMENT_URL="http://localhost:$PORT"
 MANIFEST_URL="$DEPLOYMENT_URL/.well-known/workflow/v1/manifest.json"
@@ -182,9 +197,23 @@ cleanup() {
     # the port — a process-group kill is not portable here (macOS has no setsid).
     pkill -P "$SERVER_PID" >/dev/null 2>&1
     kill "$SERVER_PID" >/dev/null 2>&1
-    local pids
-    pids="$(port_pids)"
-    [ -n "$pids" ] && echo "$pids" | xargs kill >/dev/null 2>&1
+    # Then wait for the port to actually come free rather than just asking. The
+    # listener takes a moment to unbind, and the next run's up-front port check
+    # runs long before that — back-to-back runs otherwise die on "port in use".
+    local pids i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      pids="$(port_pids)"
+      [ -n "$pids" ] || break
+      # SIGTERM first, SIGKILL from the third try on.
+      if [ "$i" -lt 3 ]; then
+        echo "$pids" | xargs kill >/dev/null 2>&1
+      else
+        echo "$pids" | xargs kill -9 >/dev/null 2>&1
+      fi
+      sleep 1
+    done
+    [ -z "$(port_pids)" ] ||
+      log "Port $PORT is still held by $(port_pids | tr '\n' ' ')— the next run needs --port or a manual kill."
   fi
   if [ "$TEARDOWN" = "1" ] && [ "$USE_DOCKER" = "1" ]; then
     log "Removing the Postgres container"

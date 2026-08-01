@@ -168,6 +168,24 @@ EVENT_LOG_RACE_REPRO_BUDGET_MS=4500000 \
   pnpm run test:e2e:event-log-race-repro:local --skip-build --skip-db-setup
 ```
 
+Against world-postgres the storms bite much harder than the CI job's Vercel
+preview does: on `main`, three 14-run passes failed 8 of their 18 `step-storm`
+attempts with `CORRUPTED_EVENT_LOG` while `hook-storm` and `hook-sleep` stayed
+clean, so the script exits non-zero. That is the harness working, not a broken
+setup, and it is why the local runner is the fast signal while a fix is in
+flight — at 14 runs a green CI job means "the storms did not trip it", nowhere
+near "the rate is below X".
+
+One thing about a local run is unlike CI and is worth knowing before you read a
+result: in CI each replay gets its own Fluid invocation, while here every replay
+of every run shares one Next.js process. world-postgres gives that process (and
+the harness process) 50 embedded Graphile Worker slots each, and ~100 replays in
+one heap saturates GC — measured on a 12-core laptop, all 14 attempts came back
+`stuck` with the server at 6.4 GB RSS and Postgres idle. The script therefore
+sets `WORKFLOW_POSTGRES_WORKER_CONCURRENCY=10` (override by exporting it) and
+raises the app's old-space limit (`--heap-mb`). If a local run reports `stuck`
+rather than `CORRUPTED_EVENT_LOG`, suspect the machine before the SDK.
+
 In CI the same harness runs from `.github/workflows/event-log-race-repro.yml`,
 triggered by adding the `event-log-race-repro` label to a PR (or by
 `workflow_dispatch`, whose inputs are the soak dial — raise `timeout-minutes` in
