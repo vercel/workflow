@@ -15,6 +15,7 @@ import type {
   Event,
   EventResult,
   Hook,
+  PaginationOptions,
   SerializedData,
   Step,
   Storage,
@@ -606,14 +607,15 @@ export function createEventsStorage(
     rememberStoredEvent(event, eventPath, serializedEvent);
   }
 
-  const preloadRunEvents = (runId: string) =>
+  const queryRunEvents = (runId: string, pagination: PaginationOptions) =>
     paginatedFileSystemQuery({
       directory: path.join(basedir, 'events'),
       schema: EventSchema,
       cachedItems: eventCache,
       filePrefix: `${runId}-`,
-      sortOrder: 'asc',
-      limit: 1000,
+      sortOrder: pagination.sortOrder ?? 'asc',
+      limit: pagination.limit,
+      cursor: pagination.cursor,
       getCreatedAt: getObjectCreatedAt('evnt'),
       getId: (event) => event.eventId,
     });
@@ -854,17 +856,12 @@ export function createEventsStorage(
           }
         }
 
-        // run_failed on a non-existent run is rejected to match the
-        // postgres and vercel worlds, which both surface this as a
-        // WorkflowRunNotFoundError rather than silently persisting an
-        // event for a run that was never created.
-        if (data.eventType === 'run_failed' && !currentRun) {
-          throw new WorkflowRunNotFoundError(effectiveRunId);
-        }
-        if (data.eventType === 'attr_set' && !currentRun) {
-          throw new WorkflowRunNotFoundError(effectiveRunId);
-        }
-        if (data.eventType === 'run_started' && !currentRun) {
+        if (
+          !currentRun &&
+          (data.eventType === 'run_failed' ||
+            data.eventType === 'attr_set' ||
+            data.eventType === 'run_started')
+        ) {
           throw new WorkflowRunNotFoundError(effectiveRunId);
         }
 
@@ -1217,7 +1214,15 @@ export function createEventsStorage(
             // duplicate event. This makes run_started idempotent for
             // concurrent invocations.
             if (currentRun.status === 'running') {
-              const preloaded = await preloadRunEvents(effectiveRunId);
+              if (params?.skipPreload) {
+                return {
+                  run: currentRun,
+                  maxEvents: getMaxEventsPerRun(),
+                };
+              }
+              const preloaded = await queryRunEvents(effectiveRunId, {
+                limit: 1000,
+              });
               return {
                 run: currentRun,
                 events: preloaded.data,
@@ -2426,8 +2431,10 @@ export function createEventsStorage(
         let events: Event[] | undefined;
         let cursor: string | null | undefined;
         let hasMore: boolean | undefined;
-        if (data.eventType === 'run_started' && run) {
-          const preloaded = await preloadRunEvents(effectiveRunId);
+        if (data.eventType === 'run_started' && run && !params?.skipPreload) {
+          const preloaded = await queryRunEvents(effectiveRunId, {
+            limit: 1000,
+          });
           events = preloaded.data;
           cursor = preloaded.cursor;
           hasMore = preloaded.hasMore;
@@ -2523,19 +2530,7 @@ export function createEventsStorage(
       const { runId } = params;
       assertSafeEntityId('runId', runId);
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-      const result = await paginatedFileSystemQuery({
-        directory: path.join(basedir, 'events'),
-        schema: EventSchema,
-        cachedItems: eventCache,
-        filePrefix: `${runId}-`,
-        // Events in chronological order (oldest first) by default,
-        // different from the default for other list calls.
-        sortOrder: params.pagination?.sortOrder ?? 'asc',
-        limit: params.pagination?.limit,
-        cursor: params.pagination?.cursor,
-        getCreatedAt: getObjectCreatedAt('evnt'),
-        getId: (event) => event.eventId,
-      });
+      const result = await queryRunEvents(runId, params.pagination ?? {});
 
       // If resolveData is "none", remove eventData from events
       if (resolveData === 'none') {
