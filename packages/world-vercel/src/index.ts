@@ -8,7 +8,7 @@ import { createQueue } from './queue.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
-import type { APIConfig } from './utils.js';
+import { type APIConfig, resolveClientEnvironment } from './utils.js';
 
 export { createAnalytics } from './analytics.js';
 export { createRunId, describeRun, regionForRunId } from './create-run-id.js';
@@ -65,6 +65,10 @@ export function createWorld(config?: APIConfig): World {
     ...instrumentObject('world.streams', createStreamer(config)),
     createRunId,
     describeRun,
+    // Reports the environment this client's writes land in, so `start()` can
+    // stamp it into the queue message and the consuming deployment can detect
+    // that it was handed a run created against a different environment.
+    getEnvironment: () => resolveClientEnvironment(config),
     getEncryptionKeyForRun: createGetEncryptionKeyForRun(
       projectId,
       config?.projectConfig?.teamId,

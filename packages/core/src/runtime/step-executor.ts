@@ -155,7 +155,7 @@ export interface StepExecutorParams {
    * `PreconditionFailedError` (412).
    *
    * Whether a rejection is retried in place is the caller's decision, made per
-   * scheme — see `stepClaimFence`. Either way executeStep does NOT translate a
+   * scheme — see `claimFenceFor`. Either way executeStep does NOT translate a
    * rejection that reaches it, so an unretried one propagates for the caller to
    * abandon the batch and force a fresh replay.
    *
@@ -546,6 +546,8 @@ export async function executeStep(
       fence: EventCreateFence | undefined
     ): CreateEventParams => ({
       computeInstanceId: COMPUTE_INSTANCE_ID,
+      // Spread as a unit: the fence's fields describe one fence and must
+      // travel together — see StepExecutorParams.claimFence.
       ...fence,
     });
     // `Date.now()` taken immediately before the `step_started` create is

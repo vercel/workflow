@@ -21,24 +21,21 @@ import {
   SerializationFormat,
 } from '../serialization.js';
 import {
+  appendUniqueEvents,
   eventCreateFenceFor,
   getWorkflowQueueName,
   handleHealthCheckMessage,
   healthCheck,
+  isStaleWriteRejection,
   latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
-  type MutableEventLog,
   memoizeEncryptionKey,
   mergeLoadedEvents,
-  PRECONDITION_MAX_RELOAD_RETRIES,
-  requiresFreshReplay,
+  claimFenceFor,
+  preconditionEventDelta,
+  preconditionSnapshotParams,
   reserveSlot,
-  stateUpdatedAtForCreate,
-  stepClaimFence,
   toMutableEventLog,
-  withEventCreateFence,
-  withPreconditionRetry,
-  withSlotRetry,
 } from './helpers.js';
 
 // Mock the logger to suppress output during tests
@@ -505,7 +502,7 @@ describe('latestEventStateUpdatedAt', () => {
     expect(latestEventStateUpdatedAt([])).toBeUndefined();
   });
 
-  it('decodes the ULID time of the last (newest) event, stripping the prefix', () => {
+  it('decodes the ULID time of the newest event, stripping the prefix', () => {
     const time = 1_700_000_000_000;
     // ULID time resolution is whole milliseconds.
     expect(
@@ -516,7 +513,21 @@ describe('latestEventStateUpdatedAt', () => {
     ).toBe(time);
   });
 
-  it('returns undefined when the latest event id is not a decodable ULID', () => {
+  it('reports the maximum, not the tail, when the log is not id-ordered', () => {
+    // A World's canonical order need not be event-id order (world-local orders
+    // by `(createdAt, eventId)`), so the watermark cannot be read off the tail.
+    const time = 1_700_000_002_000;
+
+    expect(
+      latestEventStateUpdatedAt([
+        makeUlidEvent(time),
+        makeUlidEvent(1_700_000_000_000),
+        makeUlidEvent(1_700_000_001_000),
+      ])
+    ).toBe(time);
+  });
+
+  it('returns undefined when the newest event id is not a decodable ULID', () => {
     expect(
       latestEventStateUpdatedAt([makeEvent('evnt_not-a-ulid')])
     ).toBeUndefined();
@@ -693,30 +704,7 @@ describe('slot bookkeeping', () => {
   });
 });
 
-describe('stateUpdatedAtForCreate', () => {
-  it('sends no watermark for a slot-numbered run even with the guard on', () => {
-    // The event id is the fence for these runs. Inference would be worse than
-    // useless here: a padded slot body is valid Crockford base32, so decoding
-    // it yields epoch 0 rather than failing, and the client would claim a
-    // snapshot older than every event in the log.
-    const events = [makeEvent(slotEventId(1))];
-    expect(
-      stateUpdatedAtForCreate(events, SPEC_VERSION_SLOT_IDENTITY)
-    ).toBeUndefined();
-  });
-
-  it('sends the snapshot watermark for a ULID-numbered run', () => {
-    const time = 1_700_000_000_000;
-    expect(
-      stateUpdatedAtForCreate(
-        [makeUlidEvent(time)],
-        SPEC_VERSION_SLOT_IDENTITY - 1
-      )
-    ).toBe(time);
-  });
-});
-
-describe('withSlotRetry', () => {
+describe('claimFenceFor', () => {
   const slotEvent = (slot: number) => makeEvent(slotEventId(slot));
 
   beforeEach(() => {
@@ -725,9 +713,10 @@ describe('withSlotRetry', () => {
 
   it('claims the next free slot and passes the observed maxSlot alongside it', async () => {
     const log = toMutableEventLog([slotEvent(1), slotEvent(2)], 'c0');
+    const claim = claimFenceFor(log, SPEC_VERSION_SLOT_IDENTITY);
     const op = vi.fn(async () => 'ok');
 
-    await expect(withSlotRetry('wrun_test', log, op)).resolves.toBe('ok');
+    await expect(claim(op)).resolves.toBe('ok');
     expect(op).toHaveBeenCalledWith({ eventId: slotEventId(3), maxSlot: 2 });
     expect(eventsListMock).not.toHaveBeenCalled();
   });
@@ -737,19 +726,20 @@ describe('withSlotRetry', () => {
     // after the tail the writer saw, so a second create cannot be numbered
     // until the first has landed.
     const log = toMutableEventLog([slotEvent(1)], 'c0');
+    const claim = claimFenceFor(log, SPEC_VERSION_SLOT_IDENTITY);
     const claimed: (string | undefined)[] = [];
     let releaseFirst!: () => void;
     const firstLanded = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
 
-    const first = withSlotRetry('wrun_test', log, async (fence) => {
-      claimed.push(fence.eventId);
+    const first = claim(async (fence) => {
+      claimed.push(fence?.eventId);
       await firstLanded;
       return 'first';
     });
-    const second = withSlotRetry('wrun_test', log, async (fence) => {
-      claimed.push(fence.eventId);
+    const second = claim(async (fence) => {
+      claimed.push(fence?.eventId);
       return 'second';
     });
 
@@ -767,17 +757,16 @@ describe('withSlotRetry', () => {
     // same write to a free slot would commit that decision anyway, so the
     // rejection propagates and the run replays.
     const log = toMutableEventLog([slotEvent(1)], 'c0');
-    const op = vi.fn(async ({ eventId }: { eventId?: string }) => {
+    const claim = claimFenceFor(log, SPEC_VERSION_SLOT_IDENTITY);
+    const op = vi.fn(async (fence?: { eventId?: string }) => {
       throw new SlotConflictError('taken', {
-        eventId: eventId as string,
+        eventId: fence?.eventId as string,
         events: [slotEvent(2)],
         cursor: 'c1',
       });
     });
 
-    await expect(withSlotRetry('wrun_test', log, op)).rejects.toBeInstanceOf(
-      SlotConflictError
-    );
+    await expect(claim(op)).rejects.toBeInstanceOf(SlotConflictError);
     expect(op).toHaveBeenCalledTimes(1);
     expect(eventsListMock).not.toHaveBeenCalled();
   });
@@ -787,302 +776,75 @@ describe('withSlotRetry', () => {
     // the siblings behind a rejected claim propose slots the backend has
     // already filled and are rejected with it.
     const log = toMutableEventLog([slotEvent(1)], 'c0');
-    const loser = withSlotRetry('wrun_test', log, async ({ eventId }) => {
-      throw new SlotConflictError('taken', { eventId: eventId as string });
+    const claim = claimFenceFor(log, SPEC_VERSION_SLOT_IDENTITY);
+    const loser = claim(async (fence) => {
+      throw new SlotConflictError('taken', {
+        eventId: fence?.eventId as string,
+      });
     });
     await expect(loser).rejects.toBeInstanceOf(SlotConflictError);
 
-    const sibling = await withSlotRetry(
-      'wrun_test',
-      log,
-      async (fence) => fence.eventId
+    await expect(claim(async (fence) => fence?.eventId)).resolves.toBe(
+      slotEventId(2)
     );
-    expect(sibling).toBe(slotEventId(2));
-  });
-
-  describe('under a reclaim budget', () => {
-    // `WORKFLOW_SLOT_RETRY_BUDGET` takes the other side of the default trade:
-    // it keeps a batch contiguous by re-issuing the write past what it was
-    // missing, at the cost of committing a decision taken without it.
-    beforeEach(() => {
-      vi.stubEnv(
-        'WORKFLOW_SLOT_RETRY_BUDGET',
-        String(PRECONDITION_MAX_RELOAD_RETRIES)
-      );
-    });
-    afterEach(() => {
-      vi.unstubAllEnvs();
-    });
-
-    it('merges the conflict delta and reclaims past it, without reloading', async () => {
-      // The inline delta is the whole point of the 409 body: the client learns
-      // which events it was missing without a follow-up round-trip.
-      const log = toMutableEventLog([slotEvent(1)], 'c0');
-      const claimed: string[] = [];
-      const op = vi.fn(async ({ eventId }: { eventId?: string }) => {
-        claimed.push(eventId as string);
-        if (claimed.length === 1) {
-          throw new SlotConflictError('taken', {
-            eventId: eventId as string,
-            events: [slotEvent(2), slotEvent(3)],
-            cursor: 'c1',
-          });
-        }
-        return 'done';
-      });
-
-      await expect(withSlotRetry('wrun_test', log, op)).resolves.toBe('done');
-      expect(claimed).toEqual([slotEventId(2), slotEventId(4)]);
-      expect(log.events).toHaveLength(3);
-      expect(log.cursor).toBe('c1');
-      expect(eventsListMock).not.toHaveBeenCalled();
-    });
-
-    it('tops the delta up from the backend when it was truncated', async () => {
-      const log = toMutableEventLog([slotEvent(1)], 'c0');
-      eventsListMock.mockResolvedValueOnce({
-        data: [slotEvent(3)],
-        cursor: 'c2',
-        hasMore: false,
-      });
-      let attempts = 0;
-      const op = vi.fn(async () => {
-        attempts++;
-        if (attempts === 1) {
-          throw new SlotConflictError('taken', {
-            eventId: slotEventId(2),
-            events: [slotEvent(2)],
-            cursor: 'c1',
-            hasMore: true,
-          });
-        }
-        return 'done';
-      });
-
-      await expect(withSlotRetry('wrun_test', log, op)).resolves.toBe('done');
-      expect(eventsListMock).toHaveBeenCalledTimes(1);
-      // The reclaim saw slot 3 as the tail and then became it.
-      expect(log.maxSlot).toBe(4);
-      expect(op).toHaveBeenLastCalledWith({
-        eventId: slotEventId(4),
-        maxSlot: 3,
-      });
-    });
-
-    it('falls back to a full incremental load when the rejection carried no delta', async () => {
-      const log = toMutableEventLog([slotEvent(1)], 'c0');
-      eventsListMock.mockResolvedValueOnce({
-        data: [slotEvent(2)],
-        cursor: 'c1',
-        hasMore: false,
-      });
-      let attempts = 0;
-      const op = vi.fn(async () => {
-        attempts++;
-        if (attempts === 1) {
-          throw new SlotConflictError('taken', { eventId: slotEventId(2) });
-        }
-        return 'done';
-      });
-
-      await expect(withSlotRetry('wrun_test', log, op)).resolves.toBe('done');
-      expect(eventsListMock).toHaveBeenCalledTimes(1);
-      expect(op).toHaveBeenLastCalledWith({
-        eventId: slotEventId(3),
-        maxSlot: 2,
-      });
-    });
-
-    it('rethrows the conflict once the reclaim budget is spent', async () => {
-      // Escaping to a fresh replay is the correct fallback, not a failure mode:
-      // the merged events can change what the workflow body decides, and only a
-      // replay from the top can act on that.
-      const log = toMutableEventLog([slotEvent(1)], 'c0');
-      eventsListMock.mockResolvedValue({
-        data: [],
-        cursor: 'c1',
-        hasMore: false,
-      });
-      const op = vi.fn(async ({ eventId }: { eventId?: string }) => {
-        throw new SlotConflictError('taken', { eventId: eventId as string });
-      });
-
-      await expect(withSlotRetry('wrun_test', log, op)).rejects.toBeInstanceOf(
-        SlotConflictError
-      );
-      expect(op).toHaveBeenCalledTimes(PRECONDITION_MAX_RELOAD_RETRIES + 1);
-      expect(eventsListMock).toHaveBeenCalledTimes(
-        PRECONDITION_MAX_RELOAD_RETRIES
-      );
-    });
-  });
-
-  it('rethrows a non-conflict error immediately, without merging', async () => {
-    const log = toMutableEventLog([slotEvent(1)], 'c0');
-    const op = vi.fn(async () => {
-      throw new PreconditionFailedError('stale');
-    });
-
-    await expect(withSlotRetry('wrun_test', log, op)).rejects.toBeInstanceOf(
-      PreconditionFailedError
-    );
-    expect(op).toHaveBeenCalledTimes(1);
-    expect(eventsListMock).not.toHaveBeenCalled();
-  });
-});
-
-describe('withEventCreateFence', () => {
-  beforeEach(() => {
-    eventsListMock.mockReset();
-  });
-
-  it('fences a slot-numbered run by event id and escapes its 409s', async () => {
-    const log = toMutableEventLog([makeEvent(slotEventId(1))], 'c0');
-    const op = vi.fn(async ({ eventId }: { eventId?: string }) => {
-      throw new SlotConflictError('taken', {
-        eventId: eventId as string,
-        events: [makeEvent(slotEventId(2))],
-        cursor: 'c1',
-      });
-    });
-
-    await expect(
-      withEventCreateFence('wrun_test', log, SPEC_VERSION_SLOT_IDENTITY, op)
-    ).rejects.toBeInstanceOf(SlotConflictError);
-    expect(op).toHaveBeenCalledWith({ eventId: slotEventId(2), maxSlot: 1 });
-  });
-
-  it('fences a ULID-numbered run by watermark and retries its 412s', async () => {
-    const time = 1_700_000_000_000;
-    const log = toMutableEventLog([makeUlidEvent(time)], 'c0');
-    eventsListMock.mockResolvedValueOnce({
-      data: [makeUlidEvent(time + 1000)],
-      cursor: 'c1',
-      hasMore: false,
-    });
-    let attempts = 0;
-    const op = vi.fn(async () => {
-      attempts++;
-      if (attempts === 1) {
-        throw new PreconditionFailedError('stale');
-      }
-      return 'done';
-    });
-
-    await expect(
-      withEventCreateFence('wrun_test', log, SPEC_VERSION_SLOT_IDENTITY - 1, op)
-    ).resolves.toBe('done');
-    expect(op).toHaveBeenLastCalledWith({ stateUpdatedAt: time + 1000 });
-    expect(eventsListMock).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('stepClaimFence', () => {
-  const slotEvent = (slot: number) => makeEvent(slotEventId(slot));
-
-  beforeEach(() => {
-    eventsListMock.mockReset();
   });
 
   it('numbers a batch in the order its claims fire, each one above the last', async () => {
-    // Slots go out one at a time so every claim names the tail its writer saw.
     // A step that publishes the `step_created` it deferred takes the two slots
     // below its claim, and the next claim starts above both.
     const log = toMutableEventLog([slotEvent(1)], 'c0');
-    const first = stepClaimFence('wrun_test', log, SPEC_VERSION_SLOT_IDENTITY, {
+    const withCreate = claimFenceFor(log, SPEC_VERSION_SLOT_IDENTITY, {
       extraEvents: 1,
     });
-    const second = stepClaimFence('wrun_test', log, SPEC_VERSION_SLOT_IDENTITY);
+    const plain = claimFenceFor(log, SPEC_VERSION_SLOT_IDENTITY);
 
     const claimed: (string | undefined)[] = [];
     const record = (fence?: { eventId?: string }) => {
       claimed.push(fence?.eventId);
       return Promise.resolve('ok');
     };
-    await first(record);
-    await second(record);
+    await withCreate(record);
+    await plain(record);
 
     expect(claimed).toEqual([slotEventId(3), slotEventId(4)]);
   });
 
-  it('abandons the batch when a claim is lost', async () => {
-    // The lost claim proves the batch was decided from a log missing an event,
-    // so the sibling behind it re-proposes the slot the backend has already
-    // filled instead of stepping over it.
+  it('rethrows a non-conflict error immediately, without merging', async () => {
     const log = toMutableEventLog([slotEvent(1)], 'c0');
-    const claim = stepClaimFence('wrun_test', log, SPEC_VERSION_SLOT_IDENTITY);
-    const sibling = stepClaimFence(
-      'wrun_test',
-      log,
-      SPEC_VERSION_SLOT_IDENTITY
-    );
-
-    const claimed: string[] = [];
-    const op = vi.fn(async (fence?: { eventId?: string }) => {
-      claimed.push(fence?.eventId as string);
-      // An out-of-band hook took slot 2 while the batch was being built.
-      throw new SlotConflictError('taken', {
-        eventId: fence?.eventId as string,
-        events: [slotEvent(2)],
-        cursor: 'c1',
-      });
-    });
-
-    await expect(claim(op)).rejects.toBeInstanceOf(SlotConflictError);
-    await expect(sibling(async (f) => f?.eventId)).resolves.toBe(
-      slotEventId(2)
-    );
-    expect(claimed).toEqual([slotEventId(2)]);
-  });
-
-  it('leaves a ULID-numbered batch on one shared watermark, unretried', async () => {
-    // A 412 compares time, so every member of the batch carries the same fence
-    // value and the batch fails as a unit — which is what the caller's
-    // fresh-replay path expects.
-    const time = 1_700_000_000_000;
-    const log = toMutableEventLog([makeUlidEvent(time)], 'c0');
-    const claim = stepClaimFence(
-      'wrun_test',
-      log,
-      SPEC_VERSION_SLOT_IDENTITY - 1
-    );
+    const claim = claimFenceFor(log, SPEC_VERSION_SLOT_IDENTITY);
     const op = vi.fn(async () => {
       throw new PreconditionFailedError('stale');
     });
 
     await expect(claim(op)).rejects.toBeInstanceOf(PreconditionFailedError);
     expect(op).toHaveBeenCalledTimes(1);
-    expect(op).toHaveBeenCalledWith({ stateUpdatedAt: time });
+    expect(eventsListMock).not.toHaveBeenCalled();
+  });
+
+  it('leaves a ULID-numbered batch on one shared watermark, unserialized', async () => {
+    // A 412 compares time, so every member of the batch carries the same fence
+    // value and the batch fails as a unit — which is what the caller's
+    // fresh-replay path expects.
+    const time = 1_700_000_000_000;
+    const log = toMutableEventLog([makeUlidEvent(time)], 'c0');
+    const claim = claimFenceFor(log, SPEC_VERSION_SLOT_IDENTITY - 1);
+    const op = vi.fn(async () => {
+      throw new PreconditionFailedError('stale');
+    });
+
+    await expect(claim(op)).rejects.toBeInstanceOf(PreconditionFailedError);
+    expect(op).toHaveBeenCalledTimes(1);
+    expect(op).toHaveBeenCalledWith(
+      expect.objectContaining({ stateUpdatedAt: time })
+    );
     expect(eventsListMock).not.toHaveBeenCalled();
   });
 });
 
-describe('requiresFreshReplay', () => {
-  it('covers both fences, so neither numbering fails the run', () => {
-    // Each fence reports an incomplete view in its own dialect. A caller that
-    // recognises only one of them fails runs on the other.
-    expect(requiresFreshReplay(new PreconditionFailedError('stale'))).toBe(
-      true
-    );
-    expect(
-      requiresFreshReplay(
-        new SlotConflictError('taken', { eventId: slotEventId(3) })
-      )
-    ).toBe(true);
-  });
-
-  it('leaves every other rejection to its own handler', () => {
-    expect(requiresFreshReplay(new EntityConflictError('exists'))).toBe(false);
-    expect(requiresFreshReplay(new Error('boom'))).toBe(false);
-    expect(requiresFreshReplay(undefined)).toBe(false);
-  });
-});
-
-describe('withPreconditionRetry', () => {
+describe('preconditionSnapshotParams', () => {
   let originalGuard: string | undefined;
 
   beforeEach(() => {
-    eventsListMock.mockReset();
     originalGuard = process.env.WORKFLOW_PRECONDITION_GUARD;
     process.env.WORKFLOW_PRECONDITION_GUARD = '1';
   });
@@ -1095,114 +857,252 @@ describe('withPreconditionRetry', () => {
     }
   });
 
-  it('passes no snapshot to op when the guard is explicitly disabled', async () => {
-    process.env.WORKFLOW_PRECONDITION_GUARD = '0';
-    const log = toMutableEventLog([makeUlidEvent(1_700_000_000_000)], 'c0');
-    const op = vi.fn(async (stateUpdatedAt?: number) => {
-      expect(stateUpdatedAt).toBeUndefined();
-      return 'ok';
-    });
+  it('sends the watermark, the count and the cursor together', () => {
+    const time = 1_700_000_000_000;
+    const events = [makeUlidEvent(time - 1000), makeUlidEvent(time)];
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
-      'ok'
-    );
-    expect(op).toHaveBeenCalledTimes(1);
-    expect(eventsListMock).not.toHaveBeenCalled();
+    expect(preconditionSnapshotParams(events, 'eid:abc')).toEqual({
+      stateUpdatedAt: time,
+      stateEventCount: events.length,
+      stateCursor: 'eid:abc',
+    });
   });
 
-  it('sends a snapshot by default when the guard variable is unset (on by default)', async () => {
+  it('sends the count without a cursor when the caller has none', () => {
+    const time = 1_700_000_000_000;
+
+    expect(preconditionSnapshotParams([makeUlidEvent(time)], null)).toEqual({
+      stateUpdatedAt: time,
+      stateEventCount: 1,
+    });
+  });
+
+  it('sends the snapshot by default (guard is on unless disabled)', () => {
     delete process.env.WORKFLOW_PRECONDITION_GUARD;
     const time = 1_700_000_000_000;
-    const log = toMutableEventLog([makeUlidEvent(time)], 'c0');
-    const op = vi.fn(async (stateUpdatedAt?: number) => {
-      expect(stateUpdatedAt).toBe(time);
-      return 'ok';
-    });
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
-      'ok'
-    );
-    expect(op).toHaveBeenCalledTimes(1);
+    expect(
+      preconditionSnapshotParams([makeUlidEvent(time)], 'eid:abc')
+    ).toEqual({
+      stateUpdatedAt: time,
+      stateEventCount: 1,
+      stateCursor: 'eid:abc',
+    });
   });
 
-  it('passes the latest snapshot time to op and returns its result without reloading', async () => {
+  it('omits every field when the guard is disabled', () => {
+    process.env.WORKFLOW_PRECONDITION_GUARD = '0';
+
+    expect(
+      preconditionSnapshotParams([makeUlidEvent(1_700_000_000_000)], 'eid:abc')
+    ).toEqual({});
+  });
+
+  it('omits every field on an empty log', () => {
+    expect(preconditionSnapshotParams([], 'eid:abc')).toEqual({});
+  });
+
+  it('omits every field when the latest event id is not a decodable ULID', () => {
+    // A count without a watermark would be meaningless to the backend, so the
+    // three fields have to fail open together.
+    expect(
+      preconditionSnapshotParams([makeEvent('evnt_not-a-ulid')], 'eid:abc')
+    ).toEqual({});
+  });
+});
+
+describe('appendUniqueEvents', () => {
+  it('appends in receipt order', () => {
+    const first = makeUlidEvent(1_700_000_000_000);
+    const second = makeUlidEvent(1_700_000_001_000);
+    const third = makeUlidEvent(1_700_000_002_000);
+    const target = [first];
+
+    appendUniqueEvents(target, [second, third]);
+
+    expect(target.map((e) => e.eventId)).toEqual([
+      first.eventId,
+      second.eventId,
+      third.eventId,
+    ]);
+  });
+
+  it('preserves the order the World returned, never re-sorting by event id', () => {
+    // A World's canonical order is its own: world-local orders by
+    // `(createdAt, eventId)` and re-mints keys so the two diverge, so an
+    // id-ordered re-sort here would produce an order no load would return.
+    const older = makeUlidEvent(1_700_000_000_000);
+    const newer = makeUlidEvent(1_700_000_002_000);
+    const middle = makeUlidEvent(1_700_000_001_000);
+    const target = [older, newer];
+
+    appendUniqueEvents(target, [middle]);
+
+    expect(target.map((e) => e.eventId)).toEqual([
+      older.eventId,
+      newer.eventId,
+      middle.eventId,
+    ]);
+  });
+
+  it('deduplicates by event id', () => {
+    const first = makeUlidEvent(1_700_000_000_000);
+    const second = makeUlidEvent(1_700_000_001_000);
+    const target = [first];
+
+    appendUniqueEvents(target, [first, second, second]);
+
+    expect(target.map((e) => e.eventId)).toEqual([
+      first.eventId,
+      second.eventId,
+    ]);
+  });
+
+  it('keeps a same-millisecond pair in receipt order', () => {
     const time = 1_700_000_000_000;
-    const log = toMutableEventLog([makeUlidEvent(time)], 'c0');
-    const op = vi.fn(async (stateUpdatedAt?: number) => {
-      expect(stateUpdatedAt).toBe(time);
-      return 'ok';
-    });
+    const a = makeEvent(`evnt_${ulid(time).slice(0, 10)}AAAAAAAAAAAAAAAA`);
+    const b = makeEvent(`evnt_${ulid(time).slice(0, 10)}ZZZZZZZZZZZZZZZZ`);
+    const target = [b];
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
-      'ok'
-    );
-    expect(op).toHaveBeenCalledTimes(1);
-    expect(eventsListMock).not.toHaveBeenCalled();
+    appendUniqueEvents(target, [a]);
+
+    expect(target.map((e) => e.eventId)).toEqual([b.eventId, a.eventId]);
   });
 
-  it('reloads the event log and retries on a stale (412) rejection, then succeeds', async () => {
-    const log = toMutableEventLog([makeUlidEvent(1_700_000_000_000)], 'c0');
-    // Each reload returns one newer event and advances the cursor.
-    eventsListMock.mockResolvedValueOnce({
-      data: [makeUlidEvent(1_700_000_001_000)],
-      cursor: 'c1',
-      hasMore: false,
-    });
-    eventsListMock.mockResolvedValueOnce({
-      data: [makeUlidEvent(1_700_000_002_000)],
-      cursor: 'c2',
-      hasMore: false,
-    });
+  it('leaves the watermark correct even when the merge is not id-ordered', () => {
+    // Why the merge needs no sort: the snapshot reads the maximum ULID time
+    // across the log rather than the tail, so an out-of-order tail costs nothing
+    // and every loaded event stays at or below the watermark.
+    const time = 1_700_000_002_000;
+    const target = [makeUlidEvent(1_700_000_000_000), makeUlidEvent(time)];
 
-    let calls = 0;
-    const op = vi.fn(async () => {
-      calls++;
-      if (calls <= 2) {
-        throw new PreconditionFailedError('stale');
-      }
-      return 'done';
-    });
+    appendUniqueEvents(target, [makeUlidEvent(1_700_000_001_000)]);
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
-      'done'
+    expect(latestEventStateUpdatedAt(target)).toBe(time);
+    expect(preconditionSnapshotParams(target, 'eid:abc')).toEqual({
+      stateUpdatedAt: time,
+      stateEventCount: 3,
+      stateCursor: 'eid:abc',
+    });
+  });
+});
+
+describe('preconditionEventDelta', () => {
+  // The run every `makeUlidEvent` belongs to.
+  const RUN_ID = 'wrun_mockidnumber0001';
+  const delta = (details: unknown) =>
+    preconditionEventDelta(
+      new PreconditionFailedError('stale', { details }),
+      RUN_ID
     );
-    expect(op).toHaveBeenCalledTimes(3);
-    // Two reloads merged their events into the shared log and advanced cursor.
-    expect(log.events).toHaveLength(3);
-    expect(log.cursor).toBe('c2');
+
+  it('returns the decoded events and cursor a World attached to the 412', () => {
+    const event = makeUlidEvent(1_700_000_000_000);
+
+    expect(delta({ events: [event], cursor: 'eid:next' })).toEqual({
+      events: [event],
+      cursor: 'eid:next',
+    });
   });
 
-  it('rethrows the precondition error after exhausting reload retries', async () => {
-    const log = toMutableEventLog([makeUlidEvent(1_700_000_000_000)], 'c0');
-    eventsListMock.mockResolvedValue({
-      data: [],
-      cursor: 'c1',
-      hasMore: false,
-    });
+  it('returns a null cursor when the World sent events without one', () => {
+    const event = makeUlidEvent(1_700_000_000_000);
 
-    const op = vi.fn(async () => {
-      throw new PreconditionFailedError('always stale');
+    expect(delta({ events: [event] })).toEqual({
+      events: [event],
+      cursor: null,
     });
-
-    await expect(
-      withPreconditionRetry('wrun_test', log, op)
-    ).rejects.toBeInstanceOf(PreconditionFailedError);
-    // attempts 0,1,2 — two reloads between them, then rethrow on the third.
-    expect(op).toHaveBeenCalledTimes(3);
-    expect(eventsListMock).toHaveBeenCalledTimes(2);
   });
 
-  it('rethrows non-precondition errors immediately without reloading', async () => {
-    const log = toMutableEventLog([makeUlidEvent(1_700_000_000_000)], 'c0');
-    const op = vi.fn(async () => {
-      throw new Error('boom');
-    });
+  it('returns null when the World attached no details at all', () => {
+    expect(
+      preconditionEventDelta(new PreconditionFailedError('stale'), RUN_ID)
+    ).toBe(null);
+  });
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).rejects.toThrow(
-      'boom'
+  it('returns null for a non-precondition error', () => {
+    expect(preconditionEventDelta(new Error('boom'), RUN_ID)).toBe(null);
+  });
+
+  it('returns null when any event belongs to another run', () => {
+    // The delta is merged straight into the replay's log, so a foreign event
+    // there produces a corrupt log rather than a corrected one: the replay
+    // consumes a correlation id for an event this run does not have.
+    const mine = makeUlidEvent(1_700_000_000_000);
+    const theirs = {
+      ...makeUlidEvent(1_700_000_001_000),
+      runId: 'wrun_someotherrun001',
+    } as Event;
+
+    expect(delta({ events: [theirs] })).toBe(null);
+    expect(delta({ events: [mine, theirs] })).toBe(null);
+    expect(delta({ events: [mine] })).not.toBe(null);
+  });
+
+  it('returns null for an empty or malformed events payload', () => {
+    // Nothing here is repaired: a full reload is always correct, so anything
+    // that does not narrow cleanly falls back to it.
+    expect(delta({ events: [] })).toBe(null);
+    expect(delta({ events: 'not-an-array' })).toBe(null);
+    expect(delta({ events: [{ noEventId: true }] })).toBe(null);
+    expect(delta({ events: [null] })).toBe(null);
+    expect(delta('not-an-object')).toBe(null);
+  });
+
+  it('reads the delta a lost slot claim carries as typed fields', () => {
+    const event = makeUlidEvent(1_700_000_000_000);
+
+    expect(
+      preconditionEventDelta(
+        new SlotConflictError('taken', {
+          eventId: slotEventId(4),
+          events: [event],
+          cursor: 'eid:next',
+          hasMore: false,
+        }),
+        RUN_ID
+      )
+    ).toEqual({ events: [event], cursor: 'eid:next' });
+  });
+
+  it('refuses a truncated slot-conflict delta', () => {
+    // A partial delta would restart the replay on a log that is still missing
+    // events; only a full reload can prove it saw all of them.
+    expect(
+      preconditionEventDelta(
+        new SlotConflictError('taken', {
+          eventId: slotEventId(4),
+          events: [makeUlidEvent(1_700_000_000_000)],
+          cursor: 'eid:next',
+          hasMore: true,
+        }),
+        RUN_ID
+      )
+    ).toBe(null);
+  });
+});
+
+describe('isStaleWriteRejection', () => {
+  it('accepts both rejections that prove the replay read an incomplete log', () => {
+    expect(isStaleWriteRejection(new PreconditionFailedError('stale'))).toBe(
+      true
     );
-    expect(op).toHaveBeenCalledTimes(1);
-    expect(eventsListMock).not.toHaveBeenCalled();
+    expect(
+      isStaleWriteRejection(
+        new SlotConflictError('taken', {
+          eventId: slotEventId(4),
+          events: [],
+          cursor: null,
+          hasMore: false,
+        })
+      )
+    ).toBe(true);
+  });
+
+  it('rejects every other failure, which is not recovered by a restart', () => {
+    expect(isStaleWriteRejection(new WorkflowWorldError('boom'))).toBe(false);
+    expect(isStaleWriteRejection(new Error('boom'))).toBe(false);
+    expect(isStaleWriteRejection(undefined)).toBe(false);
   });
 });
 

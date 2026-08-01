@@ -247,6 +247,52 @@ export const getHttpUrl = (
   return { baseUrl, usingProxy };
 };
 
+/**
+ * The environment this client's writes will be attributed to by the backend.
+ *
+ * Two distinct auth paths, two distinct sources — and this must mirror both
+ * exactly, because callers compare it against the environment a *different*
+ * client reported to detect a cross-tenant fork (see `World.getEnvironment`):
+ *
+ * - **With `projectConfig`** (CLI, CI, the observability dashboard — anything
+ *   going through the api.vercel.com proxy with a Vercel auth token): the proxy
+ *   attributes the write to the `x-vercel-environment` header, so the answer is
+ *   whatever {@link getHeaders} puts there. Both read this one function so they
+ *   cannot drift; the `|| 'production'` default is part of that contract, not
+ *   an incidental fallback.
+ *
+ * - **Without `projectConfig`** (inside a Vercel deployment, authenticating
+ *   with the per-request OIDC token): the backend reads the token's
+ *   `environment` claim, which the platform mints as
+ *   `customEnvironment?.slug ?? envTarget` — and `VERCEL_TARGET_ENV` is
+ *   populated from exactly the same pair (`customEnvironmentSlug ||
+ *   envTarget`), so it matches the claim by construction. `VERCEL_ENV` alone
+ *   would be wrong for Vercel *custom* environments: it reports `preview`
+ *   there while the claim (and therefore the tenant) carries the custom
+ *   environment's slug, which would make the cross-environment guard refuse a
+ *   legitimate delivery. `VERCEL_ENV` remains as the fallback for contexts
+ *   where `VERCEL_TARGET_ENV` isn't injected (e.g. `vercel dev`).
+ *
+ * Note for custom environments on the `projectConfig` path: the proxy accepts
+ * a custom environment's slug **or ID** in `x-vercel-environment` but always
+ * attributes the write to the **slug**. Configure the slug (not the ID) so the
+ * value stamped into `runInput` matches what the consuming deployment sees.
+ *
+ * Returns `undefined` when neither source is available (e.g. a bare Node
+ * process with no Vercel env vars). `undefined` is the honest answer there and
+ * callers skip their checks — guessing `'production'` would fabricate a
+ * mismatch against a genuine preview deployment.
+ */
+export const resolveClientEnvironment = (
+  config: APIConfig | undefined
+): string | undefined => {
+  const projectConfig = config?.projectConfig;
+  if (projectConfig) {
+    return projectConfig.environment || 'production';
+  }
+  return process.env.VERCEL_TARGET_ENV || process.env.VERCEL_ENV || undefined;
+};
+
 export const getHeaders = (
   config: APIConfig | undefined,
   options: { usingProxy: boolean }
@@ -262,9 +308,14 @@ export const getHeaders = (
     headers.set(TEST_LIMIT_OVERRIDES_HEADER, testLimitOverrides);
   }
   if (projectConfig) {
+    // Derived from the same helper `getEnvironment` uses so the header and the
+    // value stamped into `runInput` can never disagree — a drift between them
+    // would make the cross-environment guard either miss a real fork or
+    // reject a legitimate start.
     headers.set(
       'x-vercel-environment',
-      projectConfig.environment || 'production'
+      // biome-ignore lint/style/noNonNullAssertion: projectConfig is present, so the helper always returns a string
+      resolveClientEnvironment(config)!
     );
     if (projectConfig.projectId) {
       headers.set('x-vercel-project-id', projectConfig.projectId);

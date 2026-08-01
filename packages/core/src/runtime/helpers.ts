@@ -485,6 +485,15 @@ function recordRequestedEventCursor(
  *
  * Pass the IDs currently present in `target` when appending repeatedly to the
  * same array. The set is updated alongside `target`.
+ *
+ * Events are appended in the order the World returned them, and are not
+ * re-sorted: a World's canonical order is its own, and the runtime cannot
+ * reproduce it from event ids alone. `world-vercel` orders by event id, while
+ * `world-local` orders by `(createdAt, eventId)` and deliberately re-mints keys
+ * so that the two diverge. Every append source is already in canonical order
+ * relative to the tail (a cursor-delimited page, or a write-response delta), so
+ * receipt order is the order to keep. Nothing downstream may assume the tail is
+ * the newest event — see {@link latestEventStateUpdatedAt}.
  */
 export function appendUniqueEvents(
   target: Event[],
@@ -498,12 +507,13 @@ export function appendUniqueEvents(
   const ids = targetIds ?? new Set(target.map((event) => event.eventId));
   let outOfOrder = false;
   for (const event of events) {
-    if (!ids.has(event.eventId)) {
-      ids.add(event.eventId);
-      outOfOrder ||=
-        target.length > 0 && event.eventId < target[target.length - 1].eventId;
-      target.push(event);
+    if (ids.has(event.eventId)) {
+      continue;
     }
+    ids.add(event.eventId);
+    outOfOrder ||=
+      target.length > 0 && event.eventId < target[target.length - 1].eventId;
+    target.push(event);
   }
   if (outOfOrder && isSlotId(target[0].eventId)) {
     target.sort((a, b) => (a.eventId < b.eventId ? -1 : 1));
@@ -664,21 +674,22 @@ export async function loadWorkflowRunEvents(
 }
 
 /**
- * Maximum number of times a replay-context event creation will reload the
- * event log and retry after the backend rejects it as stale (412). After this
- * many failed reloads the precondition error propagates so the run is
- * re-invoked from the queue with a fresh replay.
+ * The runtime's loaded event-log snapshot: the events replayed so far and the
+ * cursor positioned after them. Handed to helpers that derive the precondition
+ * snapshot from it; they do not mutate it.
  */
-export const PRECONDITION_MAX_RELOAD_RETRIES = 2;
-
-/**
- * A mutable view of the runtime's in-memory event log. `withPreconditionRetry`
- * appends freshly-loaded events to `events` (in place) and advances `cursor`
- * when it reloads, so the caller's loaded snapshot stays current.
- */
-export interface MutableEventLog {
+export interface LoadedEventLog {
   events: Event[];
   cursor: string | null;
+}
+
+/**
+ * A loaded snapshot that also tracks the run's event slots, for the numbering
+ * where the event id is itself the concurrency fence. Slot state is per-replay:
+ * it is rebuilt from the events every time the log is loaded, never carried
+ * across a restart.
+ */
+export interface MutableEventLog extends LoadedEventLog {
   /**
    * Highest slot present in `events`, or 0 for a log that is empty or
    * ULID-numbered. Maintained by `mergeLoadedEvents` from the events merged in,
@@ -769,24 +780,41 @@ export function isPreconditionGuardEnabled(): boolean {
 
 /**
  * The `stateUpdatedAt` value to send with a replay-context event creation: the
- * ULID time (epoch ms) of the latest event the runtime has loaded. Events are
- * stored in ascending order, so the last one is the newest. Returns `undefined`
- * when there are no events or the latest id is not a decodable ULID.
+ * *maximum* ULID time (epoch ms) over the events the runtime has loaded. Returns
+ * `undefined` when there are no events or that id is not a decodable ULID.
+ *
+ * It is the maximum rather than the tail's because the loaded log is in the
+ * World's canonical order, which is not necessarily event-id order (see
+ * {@link appendUniqueEvents}). The maximum is what lets the count sent alongside
+ * it be read as "events at or below this watermark": every loaded event is at or
+ * below it, so the count is exactly `events.length`. Reading the tail instead
+ * would understate the watermark on a World whose order is not id-ordered, which
+ * is safe (it can only weaken detection) but needlessly imprecise.
+ *
+ * The maximum is found by lexicographic id comparison, decoding only once: the
+ * 26-character Crockford ULID encodes its timestamp in the leading 10
+ * characters, so the greatest id also carries the greatest time.
  *
  * Granularity: snapshots are epoch-milliseconds, and the backend allows an
  * equal-timestamp snapshot (an up-to-date client must not be rejected). Two
  * out-of-band events landing in the same millisecond where only the first was
- * loaded therefore pass the guard undetected — the guard is best-effort by
- * design, and fails open rather than livelocking.
+ * loaded therefore pass this half of the guard undetected — that is exactly
+ * the hole `stateEventCount` closes, since the count of events at or below the
+ * watermark differs even when the watermarks are equal.
  */
 export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
-  const last = events[events.length - 1];
-  if (!last) {
+  let latest: string | undefined;
+  for (const event of events) {
+    if (latest === undefined || event.eventId > latest) {
+      latest = event.eventId;
+    }
+  }
+  if (latest === undefined) {
     return undefined;
   }
   // Event IDs are prefixed ULIDs (e.g. `evnt_01ARYZ...`); ulidToDate only
   // decodes the bare 26-char ULID, so strip the prefix first.
-  const eventId = last.eventId;
+  const eventId = latest;
   const underscore = eventId.lastIndexOf('_');
   const rawUlid = underscore === -1 ? eventId : eventId.slice(underscore + 1);
   const time = ulidToDate(rawUlid)?.getTime();
@@ -803,81 +831,127 @@ export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
 }
 
 /**
- * The `stateUpdatedAt` to attach to a replay-context event creation:
- * the loaded snapshot's ULID time when the precondition guard is enabled,
- * `undefined` (no guard, backend behaves as before) otherwise.
+ * The precondition snapshot a replay-context event creation sends, describing
+ * the event log the replay derived the event from.
  *
- * Always `undefined` for a run that numbers its events by slot, where the event
- * id is itself the concurrency fence and the watermark is dead weight. The mode
- * is passed in explicitly rather than inferred from the event ids, because
- * inference would silently produce a *wrong* value instead of none: a padded
- * slot body is valid Crockford base32, so `latestEventStateUpdatedAt` decodes it
- * to epoch 0 rather than failing its fail-open check, and the client would send
- * `stateUpdatedAt: 0` — which a backend still running the watermark guard reads
- * as a snapshot older than every event.
+ * The three fields are one indivisible unit: the backend reads the count only
+ * relative to the watermark, and returns its inline delta only relative to the
+ * cursor. Passing them as a single object is what keeps them from drifting
+ * apart at a call site.
  */
-export function stateUpdatedAtForCreate(
-  events: Event[],
-  specVersion?: number
-): number | undefined {
-  if (usesSlotIdentity(specVersion)) {
-    return undefined;
-  }
-  return isPreconditionGuardEnabled()
-    ? latestEventStateUpdatedAt(events)
-    : undefined;
+export interface PreconditionSnapshotParams {
+  stateUpdatedAt?: number;
+  stateEventCount?: number;
+  stateCursor?: string;
 }
 
 /**
- * Runs a replay-context event creation with the optimistic-concurrency guard.
+ * Build the precondition snapshot to attach to a replay-context event creation.
  *
- * `op` receives the current `stateUpdatedAt` (the ULID time of the latest
- * loaded event) to pass to `world.events.create`. If the backend rejects the
- * creation as stale (`PreconditionFailedError` / 412), the event log is
- * reloaded to completion from the last cursor, merged into `log` in place, and
- * `op` is retried with the now-newer snapshot — up to
- * `PRECONDITION_MAX_RELOAD_RETRIES` times. If it still fails, the error is
- * rethrown so the run falls back to a queue re-invocation. Non-precondition
- * errors are rethrown immediately.
+ * Returns an empty object — no guard, backend behaves as before — when the
+ * guard is disabled or the watermark is not derivable. All three fields fail
+ * open together: a count without a watermark is meaningless to the backend, and
+ * a cursor without either would invite a delta nobody asked for.
+ *
+ * `stateEventCount` is `events.length` because the watermark is the log's
+ * *maximum* ULID time, so every loaded event is at or below it regardless of the
+ * order the World returned them in.
+ *
+ * Both fields are therefore invariant under permutation of the log: a maximum is
+ * order-independent, and the length is set cardinality once `appendUniqueEvents`
+ * has deduped by event id. Two replays that consume the same events in different
+ * orders send an identical snapshot, so this guard detects that a log is missing
+ * an event and can never detect that a replay consumed one in a different order.
  */
-export async function withPreconditionRetry<T>(
-  runId: string,
-  log: MutableEventLog,
-  op: (stateUpdatedAt: number | undefined) => Promise<T>
-): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await op(stateUpdatedAtForCreate(log.events));
-    } catch (error) {
-      if (
-        !PreconditionFailedError.is(error) ||
-        attempt >= PRECONDITION_MAX_RELOAD_RETRIES
-      ) {
-        throw error;
-      }
-      runtimeLogger.info(
-        'Event creation rejected as stale; reloading event log and retrying',
-        {
-          workflowRunId: runId,
-          attempt: attempt + 1,
-          maxRetries: PRECONDITION_MAX_RELOAD_RETRIES,
-        }
-      );
-      const loaded = await loadWorkflowRunEvents(
-        runId,
-        log.cursor ?? undefined
-      );
-      mergeLoadedEvents(log, loaded.events);
-      // When several creates share one `log` (e.g. hook creations under
-      // `Promise.all` in `handleSuspension`), concurrent 412s can reload
-      // concurrently. The event merge above is safe — `appendUniqueEvents`
-      // builds its dedup set synchronously right before appending — but this
-      // cursor write is last-write-wins, so an interleaved older reload can
-      // briefly regress the cursor. The only consequence is refetching a few
-      // already-deduped events on a later load; correctness is unaffected.
-      log.cursor = loaded.cursor ?? log.cursor;
+export function preconditionSnapshotParams(
+  events: Event[],
+  cursor?: string | null
+): PreconditionSnapshotParams {
+  if (!isPreconditionGuardEnabled()) {
+    return {};
+  }
+  const stateUpdatedAt = latestEventStateUpdatedAt(events);
+  if (stateUpdatedAt === undefined) {
+    return {};
+  }
+  return {
+    stateUpdatedAt,
+    stateEventCount: events.length,
+    ...(cursor ? { stateCursor: cursor } : {}),
+  };
+}
+
+/**
+ * Whether a World rejected an event creation because the replay that produced it
+ * had not seen the whole event log.
+ *
+ * The two schemes reject differently and stay separately countable — 412 for the
+ * event-log watermark, 409 for a lost slot claim, both live at once while runs on
+ * the older numbering drain — but they prove the same thing and are recovered the
+ * same way, by restarting the replay over the corrected log.
+ */
+export function isStaleWriteRejection(error: unknown): boolean {
+  return PreconditionFailedError.is(error) || SlotConflictError.is(error);
+}
+
+/**
+ * The events a rejecting World attached to its rejection, when it returned the
+ * ones the client's snapshot was missing inline.
+ *
+ * A slot conflict carries them as typed fields; the watermark guard carries them
+ * in `details`. Both are read here so callers recover from either without
+ * branching.
+ *
+ * Returns `null` for anything else — no details, a World that did not implement
+ * this, or a payload that does not narrow cleanly. Callers fall back to
+ * reloading the event log, which is always correct; this is untrusted-shaped
+ * data on a failure path, so nothing here is repaired.
+ *
+ * `runId` is the caller's run. Every event must belong to it: the delta is
+ * merged straight into the replay's log, and one foreign event there is a
+ * corrupt log rather than a corrected one — the replay would consume a
+ * correlation id for an event that does not exist on this run.
+ */
+export function preconditionEventDelta(
+  error: unknown,
+  runId: string
+): { events: Event[]; cursor: string | null } | null {
+  let events: unknown;
+  let cursor: unknown;
+  if (SlotConflictError.is(error)) {
+    // A truncated delta is not a delta: the restart has to see every event it
+    // was missing, and only a full reload can guarantee that.
+    if (error.hasMore) {
+      return null;
+    }
+    events = error.events;
+    cursor = error.cursor;
+  } else if (PreconditionFailedError.is(error)) {
+    const details = error.details;
+    if (typeof details !== 'object' || details === null) {
+      return null;
+    }
+    ({ events, cursor } = details as { events?: unknown; cursor?: unknown });
+  } else {
+    return null;
+  }
+  if (!Array.isArray(events) || events.length === 0) {
+    return null;
+  }
+  for (const event of events) {
+    if (
+      typeof event !== 'object' ||
+      event === null ||
+      typeof (event as { eventId?: unknown }).eventId !== 'string' ||
+      (event as { runId?: unknown }).runId !== runId
+    ) {
+      return null;
     }
   }
+  return {
+    events: events as Event[],
+    cursor: typeof cursor === 'string' ? cursor : null,
+  };
 }
 
 /** Creates one event on a bound run, carrying replay-recovery telemetry. */
@@ -888,26 +962,30 @@ export type EventCreator = (
 
 /**
  * The concurrency fence a replay-context event creation carries. Exactly one of
- * the two schemes is ever populated: `stateUpdatedAt` for a run guarded by the
- * event-log watermark, `eventId`/`maxSlot` for a run that numbers its events by
- * slot.
+ * the two schemes is ever populated: the precondition snapshot for a run guarded
+ * by the event-log watermark, `eventId`/`maxSlot` for a run that numbers its
+ * events by slot.
  */
-export interface EventCreateFence {
-  stateUpdatedAt?: number;
+export interface EventCreateFence extends PreconditionSnapshotParams {
   eventId?: string;
   maxSlot?: number;
 }
 
 /**
- * The fence for a create that is deliberately **not** retried in place, because
- * a rejection means the committed decision itself is stale and only a fresh
- * replay can revise it (`run_completed`).
+ * The fence to attach to a replay-context event creation, under whichever
+ * scheme the run uses.
+ *
+ * Neither scheme is retried in place. A rejection under either one proves the
+ * replay derived this event from a log that was missing another, and correlation
+ * ids are positional ordinals of one sequence — so a replay over the corrected
+ * log mints different ids and re-posting this write would persist an event no
+ * correct replay produces. Recovery is a restarted replay
+ * ({@link isStaleWriteRejection}), never a re-send.
  *
  * Claims a slot off `log` for a slot-numbered run — which counts as a
  * reservation, so a caller that fences several creates from one log gets a
- * distinct slot per create. `undefined` when the run is fenced neither way,
- * leaving the create exactly as unfenced as it was before either mechanism
- * existed.
+ * distinct slot per create. Empty when the run is fenced neither way, leaving
+ * the create exactly as unfenced as it was before either mechanism existed.
  *
  * `extraEvents` is how many events *besides* the one being created this write
  * publishes: a lazy inline `step_started` also materializes the `step_created`
@@ -925,12 +1003,11 @@ export function eventCreateFenceFor(
   log: MutableEventLog,
   specVersion: number | undefined,
   options?: { extraEvents?: number }
-): EventCreateFence | undefined {
+): EventCreateFence {
   if (usesSlotIdentity(specVersion)) {
     return reserveSlotFence(log, options?.extraEvents ?? 0);
   }
-  const stateUpdatedAt = stateUpdatedAtForCreate(log.events, specVersion);
-  return stateUpdatedAt !== undefined ? { stateUpdatedAt } : undefined;
+  return preconditionSnapshotParams(log.events, log.cursor);
 }
 
 /**
@@ -1005,182 +1082,39 @@ async function withSerializedClaim<T>(
 }
 
 /**
- * Runs one event create under whichever fence its run uses, handling a lost
- * claim however that run's scheme requires.
+ * Runs one event create under whichever fence its run uses.
  */
 export type FencedCreate = <T>(
   op: (fence: EventCreateFence | undefined) => Promise<T>
 ) => Promise<T>;
 
 /**
- * The fence for an inline step's `step_started` claim.
+ * The fenced create for a claim issued from a concurrent batch — an inline
+ * step's `step_started`, or a suspension flush's writes.
  *
- * Both numbering schemes abandon the batch when the claim is rejected, and for
- * the same reason: a rejection says this replay decided from a log it had not
- * fully seen, and a decision made that way is not one to re-address to a free
- * number. A 412 says the newest outside event is younger than the snapshot; a
- * 409 says the number this replay counted to belongs to someone else. Either
- * way the missing event can be the one that would have sent the workflow down
- * another branch, and because correlation IDs are counted in branch order,
- * every ID after that branch moves with it — so the re-issued write lands under
- * an identity that now names a different step.
+ * Under slot numbering this serializes the batch's claims so each one is taken
+ * against the tail its writer actually saw ({@link withSerializedClaim}); under
+ * the watermark every claim in the batch legitimately carries the same
+ * snapshot, so they all run concurrently off one fence.
  *
- * The cost is a batch that splits rather than staying contiguous: the loser
- * writes nothing while its siblings commit. That is the intended trade. The
- * fresh replay reschedules the whole batch from a complete view, and slots are
- * allowed to have holes, so a split costs a round-trip rather than a
- * correctness property. `WORKFLOW_SLOT_RETRY_BUDGET` reinstates the in-place
- * retry for a run that would rather have the contiguity.
+ * Neither scheme re-issues a rejected claim at a free number. A rejection says
+ * this replay decided from a log it had not fully seen, and the missing event
+ * can be the one that would have sent the workflow down another branch — with
+ * correlation ids counted in branch order, every id after that branch moves
+ * with it, so the re-issued write would land under an identity that now names a
+ * different step. The rejection propagates and the run replays over the
+ * corrected log ({@link isStaleWriteRejection}).
  */
-export function stepClaimFence(
-  runId: string,
+export function claimFenceFor(
   log: MutableEventLog,
   specVersion: number | undefined,
   options?: { extraEvents?: number }
 ): FencedCreate {
   if (usesSlotIdentity(specVersion)) {
-    return (op) => withSlotRetry(runId, log, op, options);
+    return (op) => withSerializedClaim(log, options?.extraEvents ?? 0, op);
   }
   const fence = eventCreateFenceFor(log, specVersion, options);
   return (op) => op(fence);
-}
-
-/**
- * How many times a lost claim may be re-issued in place before the rejection
- * propagates and the run replays.
- *
- * Zero — the default — means never. A 409 proves this replay decided from a log
- * missing at least one event, and re-sending the same write only moves a
- * decision that may already be wrong to a free number: the merged event can be
- * the very one that would have sent the workflow down another branch, and
- * because correlation IDs are counted in branch order, every ID after that
- * branch renumbers with it. Retrying in place keeps a batch contiguous at the
- * cost of committing that stale decision, so the default trades contiguity for
- * a fresh replay. `WORKFLOW_SLOT_RETRY_BUDGET` takes the other side.
- */
-function slotRetryBudget(): number {
-  const raw = process.env.WORKFLOW_SLOT_RETRY_BUDGET;
-  const parsed = raw === undefined ? Number.NaN : Number(raw);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
-}
-
-/**
- * Runs a replay-context event creation that claims its own event slot.
- *
- * The claim is the fence: the backend inserts the proposed `eventId`
- * conditionally, so a `SlotConflictError` (409) proves another writer got there
- * first and that this replay therefore ran against an event log missing at
- * least one event. By default the rejection propagates immediately and the run
- * is re-invoked from the queue for a fresh replay, because merged events can
- * change what the workflow body decides and only a replay from the top can act
- * on them.
- *
- * Under a non-zero {@link slotRetryBudget} the write is instead re-issued in
- * place, merging what it was missing (inline off the rejection, topped up from
- * the backend when the delta was truncated) and claiming a fresh slot past it.
- */
-export async function withSlotRetry<T>(
-  runId: string,
-  log: MutableEventLog,
-  op: (fence: EventCreateFence) => Promise<T>,
-  options?: { extraEvents?: number }
-): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
-    let eventId = '';
-    try {
-      // Claimed per attempt, not once up front: a merged delta moves the log's
-      // high-water mark, so the previous claim is stale by definition.
-      return await withSerializedClaim(
-        log,
-        options?.extraEvents ?? 0,
-        (fence) => {
-          eventId = fence.eventId ?? '';
-          return op(fence);
-        }
-      );
-    } catch (error) {
-      if (
-        !SlotConflictError.is(error) ||
-        attempt >= slotRetryBudget() ||
-        attempt >= PRECONDITION_MAX_RELOAD_RETRIES
-      ) {
-        throw error;
-      }
-      runtimeLogger.info(
-        'Event creation lost its slot; merging missed events and reclaiming',
-        {
-          workflowRunId: runId,
-          eventId,
-          attempt: attempt + 1,
-          maxRetries: PRECONDITION_MAX_RELOAD_RETRIES,
-        }
-      );
-      await mergeSlotConflictDelta(runId, log, error);
-    }
-  }
-}
-
-/**
- * Merges the event-log delta a slot conflict carries into `log`.
- *
- * The inline delta is an optimization, not a contract: a backend that could not
- * read it sends none, and one that paginated it sets `hasMore`. Either way the
- * fallback is the same full incremental load the runtime would otherwise have
- * done, so the merged log is authoritative in every case.
- */
-async function mergeSlotConflictDelta(
-  runId: string,
-  log: MutableEventLog,
-  conflict: SlotConflictError
-): Promise<void> {
-  const inline = conflict.events as Event[];
-  if (inline.length > 0) {
-    mergeLoadedEvents(log, inline);
-    log.cursor = conflict.cursor ?? log.cursor;
-  }
-  if (inline.length === 0 || conflict.hasMore) {
-    const loaded = await loadWorkflowRunEvents(runId, log.cursor ?? undefined);
-    mergeLoadedEvents(log, loaded.events);
-    log.cursor = loaded.cursor ?? log.cursor;
-  }
-}
-
-/**
- * Runs a replay-context event creation under whichever concurrency fence the
- * run uses: its event slot when it numbers events by slot, the event-log
- * watermark otherwise.
- *
- * The two retry loops stay separate rather than being folded together. They
- * differ in what a rejection proves and in what the client does about it, and
- * both are live at once while runs on the older numbering drain — keeping them
- * apart is what makes a rollout's 409s and 412s separately countable.
- */
-export function withEventCreateFence<T>(
-  runId: string,
-  log: MutableEventLog,
-  specVersion: number | undefined,
-  op: (fence: EventCreateFence) => Promise<T>
-): Promise<T> {
-  if (usesSlotIdentity(specVersion)) {
-    return withSlotRetry(runId, log, op);
-  }
-  return withPreconditionRetry(runId, log, (stateUpdatedAt) =>
-    op({ stateUpdatedAt })
-  );
-}
-
-/**
- * Whether a rejected event create means "this replay's view of the log was
- * incomplete", the one condition whose only remedy is replaying from the top.
- *
- * Both fences report it, one per numbering: a 412 says the snapshot's watermark
- * is behind, a 409 says the slot this replay counted to is already occupied.
- * Neither is a failure of the run — the run's own decisions may simply need
- * revising against the events it did not see — so a caller that gets one
- * re-invokes for a fresh replay rather than failing.
- */
-export function requiresFreshReplay(error: unknown): boolean {
-  return PreconditionFailedError.is(error) || SlotConflictError.is(error);
 }
 
 /**
