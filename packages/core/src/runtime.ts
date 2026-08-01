@@ -55,6 +55,7 @@ import {
   getReplayDivergenceMaxRetries,
   isInlineOwnershipEnabled,
   isTurboEnabled,
+  preconditionRestartBackoffMs,
 } from './runtime/constants.js';
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
@@ -926,6 +927,14 @@ export function workflowEntrypoint(
                   // has thrown away its replay and started over in-process.
                   let preconditionRestarts = 0;
                   /**
+                   * Wait the next loop iteration owes before re-deriving, set
+                   * by `restartReplayInProcess`. Held here rather than awaited
+                   * at the restart's call sites because the restart is decided
+                   * from three of them, in synchronous code, while the loop head
+                   * is the single point every restart passes through.
+                   */
+                  let pendingRestartBackoffMs = 0;
+                  /**
                    * Event ids the discarded replay held, kept until the next
                    * load resolves so a restart can report what its reload
                    * actually found. Without this a 412 only ever tells you that
@@ -1121,6 +1130,8 @@ export function workflowEntrypoint(
                     span?.setAttributes({
                       'workflow.precondition_restarts': preconditionRestarts,
                     });
+                    pendingRestartBackoffMs =
+                      preconditionRestartBackoffMs(preconditionRestarts);
                     return true;
                   };
 
@@ -1718,6 +1729,19 @@ export function workflowEntrypoint(
                   // biome-ignore lint/correctness/noConstantCondition: intentional loop
                   while (true) {
                     loopIteration++;
+
+                    // A restart lost a slot to a concurrent replay of this same
+                    // run. Pause before re-deriving so the winner gets a clear
+                    // window to extend the log: re-deriving immediately puts
+                    // every loser back in contention at once, and none of them
+                    // pulls ahead.
+                    if (pendingRestartBackoffMs > 0) {
+                      const backoffMs = pendingRestartBackoffMs;
+                      pendingRestartBackoffMs = 0;
+                      await new Promise((resolve) =>
+                        setTimeout(resolve, backoffMs)
+                      );
+                    }
 
                     // Replay-budget check: bail out (retry or fail) if
                     // non-step time within this invocation has exceeded

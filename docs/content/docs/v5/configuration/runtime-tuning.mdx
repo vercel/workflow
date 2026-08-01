@@ -70,6 +70,18 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Delay before a re-invocation caused by a rejected event creation.
 - Unlike an in-process restart, which re-reads immediately, a re-invocation only happens once the in-process budget failed to catch up — so the delay gives the other writers a moment to quiesce.
 
+### `WORKFLOW_PRECONDITION_RESTART_BACKOFF_MS`
+
+- Default: `15`
+- Base for the randomized wait before an in-process replay restart re-derives, in milliseconds. The wait doubles with each restart the invocation has spent, up to [`WORKFLOW_PRECONDITION_RESTART_BACKOFF_MAX_MS`](#workflow_precondition_restart_backoff_max_ms), and is drawn uniformly from zero to that bound.
+- The wait exists for runs with several replays in flight at once — a fan-out of steps completing together, or a burst of hooks. A rejected event creation means another replay got there first; if every loser re-derives immediately they all contend again, and none of them pulls far enough ahead to finish. Drawing each wait from the full range spreads the retries apart.
+- Set to `0` to restart without waiting.
+
+### `WORKFLOW_PRECONDITION_RESTART_BACKOFF_MAX_MS`
+
+- Default: `400`
+- Ceiling on the wait described above.
+
 ### `WORKFLOW_SLOT_IDENTITY`
 
 - Default: enabled

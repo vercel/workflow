@@ -18,6 +18,9 @@ import {
   MAX_REPLAY_TIMEOUT_MS,
   MIN_MAX_INLINE_STEPS,
   MIN_REPLAY_TIMEOUT_MS,
+  PRECONDITION_RESTART_BACKOFF_BASE_MS,
+  PRECONDITION_RESTART_BACKOFF_MAX_MS,
+  preconditionRestartBackoffMs,
   REPLAY_TIMEOUT_MS,
 } from './constants.js';
 
@@ -391,5 +394,62 @@ describe('getInlineOwnershipLeaseSeconds', () => {
   it('clamps a non-positive override up to 1', () => {
     process.env[ENV] = '0';
     expect(getInlineOwnershipLeaseSeconds()).toBe(1);
+  });
+});
+
+describe('preconditionRestartBackoffMs', () => {
+  const BASE_ENV = 'WORKFLOW_PRECONDITION_RESTART_BACKOFF_MS';
+  const MAX_ENV = 'WORKFLOW_PRECONDITION_RESTART_BACKOFF_MAX_MS';
+
+  beforeEach(() => {
+    delete process.env[BASE_ENV];
+    delete process.env[MAX_ENV];
+  });
+
+  afterEach(() => {
+    delete process.env[BASE_ENV];
+    delete process.env[MAX_ENV];
+  });
+
+  it('doubles the window on each successive restart', () => {
+    // Draw the top of the window so the window itself is observable.
+    const top = () => 0.999_999;
+    expect(preconditionRestartBackoffMs(1, top)).toBe(
+      PRECONDITION_RESTART_BACKOFF_BASE_MS - 1
+    );
+    expect(preconditionRestartBackoffMs(2, top)).toBe(
+      PRECONDITION_RESTART_BACKOFF_BASE_MS * 2 - 1
+    );
+    expect(preconditionRestartBackoffMs(3, top)).toBe(
+      PRECONDITION_RESTART_BACKOFF_BASE_MS * 4 - 1
+    );
+  });
+
+  it('draws over the whole window, not a fixed delay plus noise', () => {
+    // Full jitter is the property that decorrelates concurrent replays; a
+    // floor would keep them in lockstep however long the wait.
+    expect(preconditionRestartBackoffMs(5, () => 0)).toBe(0);
+    expect(preconditionRestartBackoffMs(5, () => 0.5)).toBeLessThan(
+      preconditionRestartBackoffMs(5, () => 0.999_999)
+    );
+  });
+
+  it('caps the window', () => {
+    expect(preconditionRestartBackoffMs(40, () => 0.999_999)).toBe(
+      PRECONDITION_RESTART_BACKOFF_MAX_MS - 1
+    );
+  });
+
+  it('is disabled by a zero base', () => {
+    process.env[BASE_ENV] = '0';
+    expect(preconditionRestartBackoffMs(1, () => 0.999_999)).toBe(0);
+    expect(preconditionRestartBackoffMs(9, () => 0.999_999)).toBe(0);
+  });
+
+  it('honours overrides of both the base and the cap', () => {
+    process.env[BASE_ENV] = '100';
+    process.env[MAX_ENV] = '150';
+    expect(preconditionRestartBackoffMs(1, () => 0.999_999)).toBe(99);
+    expect(preconditionRestartBackoffMs(2, () => 0.999_999)).toBe(149);
   });
 });

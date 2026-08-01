@@ -465,3 +465,66 @@ export function getPreconditionReinvokeDelaySeconds(): number {
     { integer: true }
   );
 }
+
+// Concurrent replays of one run contend for the same event slots, and a
+// rejected write costs its loser a restart. With no pause the losers re-derive
+// at full speed and collide again immediately, so a run under heavy fan-out can
+// spend its whole invocation budget with no writer ever pulling far enough
+// ahead to finish. A short randomized wait between restarts breaks the lockstep
+// by spreading the retries.
+export const PRECONDITION_RESTART_BACKOFF_BASE_MS = 15;
+
+// Ceiling on that wait. The restart is cheap (one incremental page plus a
+// re-derive), so the backoff must stay well under the cost of the
+// re-invocation it is competing with.
+export const PRECONDITION_RESTART_BACKOFF_MAX_MS = 400;
+
+/**
+ * Effective base for the in-process restart backoff. Override via
+ * `WORKFLOW_PRECONDITION_RESTART_BACKOFF_MS`; `0` disables the wait entirely.
+ */
+export function getPreconditionRestartBackoffBaseMs(): number {
+  return envNumber(
+    'WORKFLOW_PRECONDITION_RESTART_BACKOFF_MS',
+    PRECONDITION_RESTART_BACKOFF_BASE_MS,
+    { integer: true }
+  );
+}
+
+/**
+ * Effective ceiling for the in-process restart backoff. Override via
+ * `WORKFLOW_PRECONDITION_RESTART_BACKOFF_MAX_MS`.
+ */
+export function getPreconditionRestartBackoffMaxMs(): number {
+  return envNumber(
+    'WORKFLOW_PRECONDITION_RESTART_BACKOFF_MAX_MS',
+    PRECONDITION_RESTART_BACKOFF_MAX_MS,
+    { integer: true }
+  );
+}
+
+/**
+ * Full-jitter backoff for the `restarts`-th in-process replay restart, in
+ * milliseconds.
+ *
+ * Full jitter (a uniform draw over the whole window, not a fixed delay plus
+ * noise) is what actually decorrelates the racers: equal-length waits would
+ * keep colliding replays in lockstep no matter how long they were.
+ *
+ * @param restarts 1-based count of restarts spent so far, including this one.
+ * @param random Injectable uniform source; defaults to `Math.random`. The delay
+ * never reaches the event log, so it does not affect replay determinism.
+ */
+export function preconditionRestartBackoffMs(
+  restarts: number,
+  random: () => number = Math.random
+): number {
+  const base = getPreconditionRestartBackoffBaseMs();
+  if (base <= 0) return 0;
+  const exponent = Math.max(0, restarts - 1);
+  const window = Math.min(
+    getPreconditionRestartBackoffMaxMs(),
+    base * 2 ** exponent
+  );
+  return Math.floor(random() * window);
+}
