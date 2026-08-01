@@ -21,7 +21,12 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
-import { type Event, getEventDataPayloadField } from '@workflow/world';
+import {
+  type Event,
+  type EventType,
+  getEventDataPayloadField,
+  type PaginationOptions,
+} from '@workflow/world';
 import { decode } from 'cbor-x';
 import { coerceEventDates } from './event-coerce.js';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
@@ -104,7 +109,7 @@ export const V4_RESPONSE_HEADERS = {
 export interface CreateEventV4Input {
   // runId is required even for run_created, because the payload is keyed under the runId
   runId: string;
-  eventType: string;
+  eventType: EventType;
   /** Opaque payload bytes. Pass undefined for events that don't carry
    *  user data (e.g. step_started). */
   payload?: Uint8Array;
@@ -207,7 +212,7 @@ export interface CreateEventV4Input {
    *  barrier only and never reads the preloaded log, so it asks the server to
    *  skip the list+resolve. Acted on by the server only for run_started;
    *  older servers ignore it and preload as before. */
-  skipPreload?: boolean;
+  skipPreload?: true;
   /**
    * Epoch ms (the ULID time of the latest event the runtime has loaded
    * during replay). Sent by replay-context creates so the backend can
@@ -343,7 +348,7 @@ function buildPostFrameMeta(
     meta.optimizations = input.optimizations;
   }
   if (input.sinceCursor !== undefined) meta.sinceCursor = input.sinceCursor;
-  if (input.skipPreload !== undefined) meta.skipPreload = input.skipPreload;
+  if (input.skipPreload) meta.skipPreload = true;
   if (input.stateUpdatedAt !== undefined) {
     meta.stateUpdatedAt = input.stateUpdatedAt;
   }
@@ -575,10 +580,10 @@ export async function createWorkflowRunEventV4(
 
   // Decode the materialized-entity bag from the CBOR response body.
   const bodyBytes = new Uint8Array(await response.arrayBuffer());
-  const body =
-    bodyBytes.byteLength > 0
-      ? (decode(bodyBytes) as CreateEventV4Result['body'])
-      : {};
+  if (bodyBytes.byteLength === 0) {
+    throw new Error('v4 createEvent: empty response body');
+  }
+  const body = decode(bodyBytes) as CreateEventV4Result['body'];
 
   return { eventId, runId, createdAt, body };
 }
@@ -659,10 +664,7 @@ export async function getEventV4(
   throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
 }
 
-export interface ListEventsV4Params {
-  cursor?: string;
-  limit?: number;
-  sortOrder?: 'asc' | 'desc';
+export interface ListEventsV4Params extends PaginationOptions {
   /**
    * Whether the backend resolves payload bytes into each frame body.
    * `resolve` (default) streams the bytes; `lazy` emits empty-body frames
