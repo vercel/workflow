@@ -1318,6 +1318,28 @@ describe('Storage', () => {
         expect([...preloaded.events, ...suffix.data]).toEqual(all.data);
       }, 120_000);
 
+      it('skips the run_started preload when requested', async () => {
+        const started = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'run_started',
+            specVersion: SPEC_VERSION_CURRENT,
+          },
+          { skipPreload: true }
+        );
+        expect(started.events).toBeUndefined();
+
+        const retried = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'run_started',
+            specVersion: SPEC_VERSION_CURRENT,
+          },
+          { skipPreload: true }
+        );
+        expect(retried.events).toBeUndefined();
+      });
+
       it('should handle run completed events', async () => {
         const eventData = {
           eventType: 'run_completed' as const,
@@ -1440,13 +1462,9 @@ describe('Storage', () => {
       });
 
       it('truncates the delta and surfaces hasMore=true when it exceeds one page, matching events.list', async () => {
-        // Safety property the runtime relies on (see the limit/hasMore/fallback
-        // contract at events-storage.ts and the consume gate in runtime.ts):
-        // the inline-delta query uses paginatedFileSystemQuery's default page
-        // size, so a delta larger than one page is truncated and MUST report
-        // hasMore=true. The runtime refuses to consume a truncated delta and
-        // falls back to the exhaustive events.list loop, so a partial page can
-        // never be mistaken for the complete delta.
+        // The inline-delta query uses paginatedFileSystemQuery's default page
+        // size, so a larger delta is truncated and MUST report hasMore=true.
+        // The runtime consumes this page and continues from its cursor.
         await updateRun(storage, testRunId, 'run_started');
 
         await createHook(storage, testRunId, {

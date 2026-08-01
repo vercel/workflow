@@ -653,10 +653,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           );
         }
       }
-      if (data.eventType === 'attr_set' && !currentRun) {
-        throw new WorkflowRunNotFoundError(effectiveRunId);
-      }
-      if (data.eventType === 'run_started' && !currentRun) {
+      if (
+        !currentRun &&
+        (data.eventType === 'attr_set' || data.eventType === 'run_started')
+      ) {
         throw new WorkflowRunNotFoundError(effectiveRunId);
       }
 
@@ -1831,7 +1831,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       let allEvents: Event[] | undefined;
       let cursor: string | null | undefined;
       let hasMore: boolean | undefined;
-      if (data.eventType === 'run_started' && run) {
+      if (data.eventType === 'run_started' && run && !params?.skipPreload) {
         const eventRows = await drizzle
           .select()
           .from(Schema.events)

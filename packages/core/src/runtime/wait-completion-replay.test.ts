@@ -545,12 +545,13 @@ describe('workflow handler wait completion replay', () => {
     expect(
       result.listedPages
         .flat()
-        .some((listed) =>
+        .filter((listed) =>
           result.preloadedEvents.some(
             (preloaded) => preloaded.eventId === listed.eventId
           )
         )
-    ).toBe(false);
+        .map((event) => event.eventType)
+    ).toEqual([]);
     expectHookBranchQueued(result);
   });
 

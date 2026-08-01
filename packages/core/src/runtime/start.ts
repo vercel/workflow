@@ -643,8 +643,7 @@ export async function start<TArgs extends unknown[], TResult>(
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),
         ...Attribute.DeploymentId(deploymentId),
-        ...(runCreatedResult.status === 'fulfilled' &&
-        runCreatedResult.value.run
+        ...(runCreatedResult.status === 'fulfilled'
           ? Attribute.WorkflowRunStatus(runCreatedResult.value.run.status)
           : {}),
       });

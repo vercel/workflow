@@ -1414,14 +1414,6 @@ export function workflowEntrypoint(
                           }
                         : {}),
                     };
-                    const recordRunStartedCreateStart = (
-                      skipPreload: boolean
-                    ) => {
-                      span?.addEvent('workflow.run_started.create.start', {
-                        'workflow.run_started.skip_preload': skipPreload,
-                      });
-                    };
-
                     if (turbo && runInput) {
                       // Turbo: background `run_started` and synthesize the run
                       // entity locally so replay can begin without waiting for
@@ -1431,7 +1423,9 @@ export function workflowEntrypoint(
                       // barrier is consumed by every downstream write (suspension
                       // handler, optimistic step_started, terminal run writes) so
                       // nothing is written before the run exists.
-                      recordRunStartedCreateStart(true);
+                      span?.addEvent('workflow.run_started.create.start', {
+                        'workflow.run_started.skip_preload': true,
+                      });
                       const startedPromise = createEvent(
                         runStartedEvent,
                         // We background this purely as a write barrier and
@@ -1449,17 +1443,14 @@ export function workflowEntrypoint(
                       // maxEventsLimit every loop iteration, so a value that lands
                       // shortly after start still enforces well before a runaway
                       // log approaches the ceiling.
-                      startedPromise.then(
-                        (r) => {
-                          const limit = clampMaxEvents(r?.maxEvents);
+                      void startedPromise
+                        .then((r) => {
+                          const limit = clampMaxEvents(r.maxEvents);
                           if (limit !== undefined) maxEventsLimit = limit;
-                        },
-                        () => {}
-                      );
-                      // Attach a no-op rejection handler so an early failure
-                      // never surfaces as an unhandledRejection before a consumer
-                      // (await/then) is attached; consumers still observe it.
-                      startedPromise.catch(() => {});
+                        })
+                        // Prevent an early failure from surfacing as an
+                        // unhandledRejection; runReadyBarrier still observes it.
+                        .catch(() => {});
                       // Skip the initial events.list: nothing has been written to
                       // the log yet on a first delivery (run_started is still in
                       // flight). An empty preload routes iteration 1 through
@@ -1508,7 +1499,9 @@ export function workflowEntrypoint(
                       });
                     } else {
                       try {
-                        recordRunStartedCreateStart(false);
+                        span?.addEvent('workflow.run_started.create.start', {
+                          'workflow.run_started.skip_preload': false,
+                        });
                         const result = await createEvent(runStartedEvent, {
                           requestId,
                         });
@@ -3108,20 +3101,15 @@ export function workflowEntrypoint(
                         // (completed/failed/skipped/gone) — loop back to replay
                         // (the workflow observes the terminal events on replay).
                         //
-                        // A complete inline delta is fresh enough for the next
-                        // replay, so consume it without another events.list.
+                        // Reuse any inline delta. If it is partial, continue
+                        // from its cursor instead of reading the page again.
                         if (inlineExecutions.length === 1) {
                           const only = stepResults[0];
-                          if (
-                            only.type === 'completed' &&
-                            only.inlineDelta &&
-                            !only.inlineDelta.hasMore
-                          ) {
+                          if (only.type === 'completed' && only.inlineDelta) {
                             appendEventLog(suspensionLog, only.inlineDelta);
-                            eventLog = {
-                              type: 'ready',
-                              log: suspensionLog,
-                            };
+                            eventLog = only.inlineDelta.hasMore
+                              ? nextEventLogLoad(suspensionLog)
+                              : { type: 'ready', log: suspensionLog };
                           }
                         }
                       } else {
