@@ -58,9 +58,9 @@ export async function POST(request: NextRequest) {
     const clientStart = Date.now();
     // @ts-expect-error - arbitrary call to a dynamically resolved workflow
     const run = await start(fn, args);
-    // Surface this request's trace id so the runner can link a benchmark run
-    // back to its Datadog trace from the PR comment, instead of anyone having
-    // to hunt for it by deployment id / time window. The span is the one
+    // Surface this request's trace id so the runner can log a benchmark run's
+    // Datadog trace next to its run id, instead of anyone having to hunt for it
+    // by deployment id / time window. The span is the one
     // @vercel/otel opened for this route invocation (see instrumentation.ts),
     // and it propagates into the workflow's own spans.
     const traceId = trace.getActiveSpan()?.spanContext().traceId;

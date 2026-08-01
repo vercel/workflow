@@ -217,14 +217,8 @@ export function annotateWithBaseline(results, baseline) {
   const methodology = (result) => result.methodologyVersion ?? 'legacy';
   const keyFor = (result, row) =>
     `${methodology(result)}/${result.backend}/${result.app}/${row.metric}/${row.scenario}`;
-  // Same key minus the metric row — the sequential-run identities annotated
-  // below live on the result, not on an individual metric row.
-  const resultKeyFor = (result) =>
-    `${methodology(result)}/${result.backend}/${result.app}`;
   const baselineRows = new Map();
-  const baselineResults = new Map();
   for (const result of baseline) {
-    baselineResults.set(resultKeyFor(result), result);
     for (const row of result.metrics ?? []) {
       baselineRows.set(keyFor(result, row), row);
     }
@@ -243,18 +237,10 @@ export function annotateWithBaseline(results, baseline) {
     if (Array.isArray(base.raw)) annotated.baselineRaw = base.raw;
     return annotated;
   };
-  return results.map((result) => {
-    // The baseline's sequential runs (when it recorded them) let the histogram
-    // section link both sides of the diff, not just this run's.
-    const baseResult = baselineResults.get(resultKeyFor(result));
-    return {
-      ...result,
-      metrics: (result.metrics ?? []).map((row) => annotate(result, row)),
-      ...(Array.isArray(baseResult?.sequentialRuns)
-        ? { baselineSequentialRuns: baseResult.sequentialRuns }
-        : {}),
-    };
-  });
+  return results.map((result) => ({
+    ...result,
+    metrics: (result.metrics ?? []).map((row) => annotate(result, row)),
+  }));
 }
 
 // ============================================================================
@@ -465,36 +451,6 @@ function renderStsoRowDiff(row) {
   return lines.join('\n');
 }
 
-// Datadog APM permalink for a trace id. The benchmark deployment exports its
-// OTel spans to Datadog, and `/api/bench` returns the trace id of the request
-// that started each run (see packages/core/e2e/benchmark.test.ts).
-const DATADOG_TRACE_URL = 'https://app.datadoghq.com/apm/trace/';
-
-/**
- * Renders the identity of the sequential-steps run(s) behind the histograms
- * above — run id plus a Datadog trace link for each, for this run and for the
- * `main` run it is diffed against. Both histograms (inline and queue-hop) come
- * out of the same iteration, so this is one line for the whole section rather
- * than a repeat under each chart.
- *
- * Everything is optional: a deployment built before `/api/bench` returned a
- * trace id yields a bare run id, and a `main` baseline from before this landed
- * has no runs to name at all, in which case only this run's side is shown.
- */
-function renderSequentialRunLinks(result) {
-  const current = result.sequentialRuns ?? [];
-  const baseline = result.baselineSequentialRuns ?? [];
-  if (current.length === 0 && baseline.length === 0) return [];
-  const formatRun = (run) =>
-    `\`${run.runId}\`${run.traceId ? ` ([trace](${DATADOG_TRACE_URL}${run.traceId}))` : ''}`;
-  const side = (label, runs) =>
-    runs.length > 0 ? `${label}: ${runs.map(formatRun).join(', ')}` : undefined;
-  const sides = [side('this run', current), side('`main`', baseline)].filter(
-    Boolean
-  );
-  return ['', `<sub>Runs behind these histograms — ${sides.join(' · ')}</sub>`];
-}
-
 /**
  * Renders a per-scenario histogram diff (bucketed step counts) and a
  * cumulative-time diff (sum of all STSO samples) against `main`, for every
@@ -519,7 +475,6 @@ function renderStsoDiffSection(result) {
     `<summary>📈 STSO distribution${anyBaseline ? ' vs main' : ''} (inline / queue-hop histograms)</summary>`,
     '',
     ...rows.map(renderStsoRowDiff),
-    ...renderSequentialRunLinks(result),
     '',
     '</details>',
   ].join('\n');

@@ -280,8 +280,8 @@ async function triggerBenchRun(
   return {
     runId: data.runId,
     clientStart: data.clientStart,
-    // Optional: a deployment built before the route reported it simply omits
-    // the trace link from the rendered comment.
+    // Optional: a deployment built before the route reported it simply logs
+    // the run id without a trace link.
     traceId: typeof data.traceId === 'string' ? data.traceId : undefined,
   };
 }
@@ -573,17 +573,6 @@ interface MetricRow extends MetricStats {
 
 const metricRows: MetricRow[] = [];
 
-/** Identity of one sequential-steps iteration. */
-interface SequentialRunRef {
-  runId: string;
-  traceId?: string;
-}
-
-/** The runs behind the STSO histograms, recorded so the PR comment can link
- * straight to each run and its Datadog trace — which is where a
- * suspicious-looking distribution has to be investigated. */
-const sequentialRuns: SequentialRunRef[] = [];
-
 function recordMetric(
   metric: string,
   scenario: string,
@@ -658,6 +647,11 @@ const SCENARIO_DESCRIPTIONS = [
     description: `same workload as ${SCENARIO_STREAM_OVERHEAD_TEXT}, but each delta is an AI-SDK-style structured object ({ type: 'text-delta', id, text }) instead of a raw string, so the SO gap vs the text scenario is the added serialization cost`,
   },
 ];
+
+// Datadog APM permalink for a trace id. The benchmark deployment exports its
+// OTel spans to Datadog, and `/api/bench` returns the trace id of the request
+// that started each run.
+const DATADOG_TRACE_URL = 'https://app.datadoghq.com/apm/trace/';
 
 describe('workflow benchmarks', () => {
   // Preflight: prove the deployment executes workflows (and the trigger route
@@ -800,9 +794,18 @@ describe('workflow benchmarks', () => {
         extraAttempts: Math.max(2, Math.ceil(SEQUENTIAL_ITERATIONS * 0.5)),
       }
     );
-    sequentialRuns.push(
-      ...results.map((r) => ({ runId: r.runId, traceId: r.traceId }))
-    );
+    // Name the runs behind the STSO histograms in this job's own log, right
+    // where they were produced. When a bucket looks wrong the investigation
+    // starts in APM, and this saves the usual hunt by deployment id + time
+    // window. Logged rather than rendered into the PR comment so it is also
+    // there for a local `pnpm bench` and for a run whose comment step never
+    // gets to execute.
+    for (const { runId, traceId } of results) {
+      console.log(
+        `[bench] ${SCENARIO_SEQUENTIAL} run ${runId}` +
+          (traceId ? ` — trace ${DATADOG_TRACE_URL}${traceId}` : '')
+      );
+    }
     // Report STSO split by whether the step that ends the gap was 'inline'
     // (same warm process as the step before it — pure framework overhead) or
     // a 'queue-hop' (first step of a fresh process — dispatch + reinit cost).
@@ -864,10 +867,6 @@ describe('workflow benchmarks', () => {
       },
       scenarios: SCENARIO_DESCRIPTIONS,
       metrics: metricRows,
-      // Only present when the sequential-steps scenario ran; omitted entirely
-      // (rather than `[]`) so a result file from another scenario selection
-      // doesn't grow a meaningless empty field.
-      ...(sequentialRuns.length > 0 ? { sequentialRuns } : {}),
     };
     fs.writeFileSync(outputPath, JSON.stringify(results, null, 2));
     console.log(`[bench] Results written to ${outputPath}`);
