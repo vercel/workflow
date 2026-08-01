@@ -275,6 +275,68 @@ describe('start', () => {
       );
     });
 
+    it("stamps the world's environment into the queued runInput", async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getEnvironment: () => 'preview',
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      });
+
+      await start(validWorkflow, []);
+
+      expect(mockQueue.mock.calls[0]?.[1].runInput.environment).toBe('preview');
+      // The backend already knows which tenant it authenticated for the
+      // run_created write, so stamping it there would be redundant — and it is
+      // only ever needed on the resilient-start path the queue message drives.
+      expect(mockEventsCreate.mock.calls[0]?.[1].eventData).not.toHaveProperty(
+        'environment'
+      );
+    });
+
+    it('omits environment when the world does not report one', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getEnvironment: () => undefined,
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      });
+
+      await start(validWorkflow, []);
+
+      expect(mockQueue.mock.calls[0]?.[1].runInput).not.toHaveProperty(
+        'environment'
+      );
+    });
+
+    it('omits environment for worlds that do not implement getEnvironment', async () => {
+      // Local and Postgres have a single tenant, so they never implement it and
+      // the consumer-side check has nothing to compare.
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      });
+
+      await start(validWorkflow, []);
+
+      expect(mockQueue.mock.calls[0]?.[1].runInput).not.toHaveProperty(
+        'environment'
+      );
+    });
+
     it('rejects initial attributes for pre-v4 runs', async () => {
       const validWorkflow = Object.assign(() => Promise.resolve('result'), {
         workflowId: 'test-workflow',
