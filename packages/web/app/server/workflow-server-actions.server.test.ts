@@ -111,11 +111,11 @@ describe('hookToListItem', () => {
 describe('getPublicServerConfig', () => {
   it('shows the workflow-server override for the Vercel backend', async () => {
     process.env.WORKFLOW_TARGET_WORLD = 'vercel';
-    process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://e2e.vercel-workflow.com';
+    process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://workflow.example.com';
 
     await expect(getPublicServerConfig()).resolves.toMatchObject({
       publicEnv: {
-        VERCEL_WORKFLOW_SERVER_URL: 'https://e2e.vercel-workflow.com',
+        VERCEL_WORKFLOW_SERVER_URL: 'https://workflow.example.com',
       },
     });
   });
