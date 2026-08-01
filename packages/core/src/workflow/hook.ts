@@ -285,14 +285,13 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // `resumeId` — see `seenResumeIds` above). Events without a
         // `resumeId` (older SDKs, legacy spec versions) are never deduped.
         //
-        // Prefer the top-level `resumeId` the backend now hoists onto the
-        // event as a first-class column; fall back to the legacy nested
-        // `eventData.resumeId` for events persisted before the hoist. The
-        // nested form is retained only for backward-compatible parsing and is
-        // deprecated — new writes populate the top-level field.
-        const resumeId =
-          event.resumeId ??
-          (event.eventData as { resumeId?: unknown }).resumeId;
+        // Dedup off the top-level `resumeId` the backend hoists onto the event
+        // as a first-class column. An earlier unreleased build additionally
+        // wrote it nested under `eventData`, but that form never shipped and is
+        // stripped by `EventSchema` parsing (the `hook_received` eventData
+        // schema does not declare it), so there is no persisted nested form to
+        // fall back to.
+        const resumeId = event.resumeId;
         if (typeof resumeId === 'string') {
           if (seenResumeIds.has(resumeId)) {
             return EventConsumerResult.Consumed;

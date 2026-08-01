@@ -2079,7 +2079,7 @@ describe('runWorkflow', () => {
       ).toEqual(['First payload', 'Second payload']);
     });
 
-    it('should deliver "hook_received" events sharing a resumeId only once, across top-level and legacy nested forms', async () => {
+    it('should deliver "hook_received" events sharing a resumeId only once', async () => {
       // `hook_received` has no storage-level uniqueness constraint, so the
       // lazy-resume path can commit the same resume attempt twice when the
       // same queue message is redelivered concurrently (both deliveries pass
@@ -2088,12 +2088,10 @@ describe('runWorkflow', () => {
       // deliver the payload exactly once. Events without a `resumeId` are
       // never deduped (distinct resume attempts).
       //
-      // The backend hoists `resumeId` to a top-level event column; older rows
-      // carry it nested under `eventData`. Replay must key its dedup set off
-      // BOTH forms so a top-level write and a legacy nested write of the same
-      // attempt collapse together. Below: event-0 uses the top-level form,
-      // event-1 the legacy nested form with the SAME id (must dedup against
-      // event-0), and event-2 a distinct top-level id (must deliver).
+      // The backend hoists `resumeId` to a top-level event column, and replay
+      // keys its dedup set off that column. Below: event-0 and event-1 carry
+      // the SAME top-level `resumeId` (event-1 must dedup against event-0), and
+      // event-2 a distinct top-level id (must deliver).
       const ops: Promise<any>[] = [];
       const workflowRun: WorkflowRun = {
         runId: 'test-run-123',
@@ -2133,18 +2131,16 @@ describe('runWorkflow', () => {
           createdAt: new Date(),
         },
         {
-          // Duplicate materialization of the SAME resume attempt in the LEGACY
-          // nested form (resumeId under eventData). Same id as event-0, so it
-          // must be skipped by replay — proving the dedup set keys off both the
-          // top-level and legacy nested locations.
+          // Duplicate materialization of the SAME resume attempt (same
+          // top-level `resumeId` as event-0), so it must be skipped by replay.
           eventId: 'event-1',
           runId: workflowRun.runId,
           eventType: 'hook_received',
           correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
+          resumeId: '01JXAMPLE0000000000000RSMA',
           eventData: {
             token: 'test-token',
             payload: firstPayload,
-            resumeId: '01JXAMPLE0000000000000RSMA',
           },
           createdAt: new Date(),
         },
