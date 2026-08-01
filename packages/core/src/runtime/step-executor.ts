@@ -266,7 +266,11 @@ export async function executeStep(
     stepId,
     stepName,
   } = params;
-  const isVercel = process.env.VERCEL_URL !== undefined;
+  // Truthiness, not presence: `vercel env pull` writes `VERCEL_URL=""` into
+  // `.env.local`, and a framework that loads that file locally would otherwise
+  // put us on the Vercel branch with nothing to build a host from, making
+  // `https://` the base URL of every step.
+  const isVercel = Boolean(process.env.VERCEL_URL);
   // Gate payload compression on the run's specVersion.
   const compression =
     (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
@@ -531,6 +535,8 @@ export async function executeStep(
     // compute-instance stamp plus whichever fence the claim is running under.
     const startEventParams: CreateEventParams = {
       computeInstanceId: COMPUTE_INSTANCE_ID,
+      // Spread as a unit: the fence's fields describe one fence and must
+      // travel together — see StepExecutorParams.eventCreateFence.
       ...params.eventCreateFence,
     };
     // `Date.now()` taken immediately before the `step_started` create is

@@ -3,6 +3,7 @@ import {
   EntityConflictError,
   FatalError,
   HookNotFoundError,
+  PreconditionFailedError,
   RunExpiredError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -30,8 +31,8 @@ import { getAbortStreamIdFromToken } from '../util.js';
 import { getMaxInlineSteps } from './constants.js';
 import {
   type EventCreator,
+  eventCreateFenceFor,
   type MutableEventLog,
-  withEventCreateFence,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 
@@ -42,12 +43,14 @@ export interface SuspensionHandlerParams {
   span?: Span;
   requestId?: string;
   /**
-   * The runtime's loaded event log. Each event creation carries a fence derived
-   * from this snapshot — its own event slot, or the snapshot's `stateUpdatedAt`
-   * for a run on the older numbering — and if the backend rejects the write, the
-   * log is reloaded in place and the create is retried; see
-   * `withEventCreateFence`. Fencing per-create (rather than the whole
-   * suspension) ensures a retry never re-issues an already-created event.
+   * The runtime's loaded event log. Every event creation this suspension makes
+   * carries a fence derived from it — its own event slot, or the snapshot's
+   * watermark for a run on the older numbering — so a backend that has recorded
+   * an event the replay did not see rejects the write (409/412) instead of
+   * accepting a divergent event. The rejection is not retried here: the event's
+   * correlation id was minted by *this* replay's seeded sequence, so
+   * re-committing it against a corrected log would persist an event no correct
+   * replay produces. The caller restarts the replay instead.
    */
   eventLog?: MutableEventLog;
   /**
@@ -230,6 +233,34 @@ export async function handleSuspension({
     }
   };
 
+  /**
+   * Await every operation in a suspension phase before letting a failure
+   * escape, preferring a stale-snapshot (412) rejection when one occurred.
+   *
+   * `Promise.all` rejects as soon as one operation does and leaves its siblings
+   * in flight. That matters for a 412: the caller reacts by reloading the event
+   * log and restarting the replay, so a sibling create that lands after the
+   * rejection escaped commits an event whose correlation id came from the
+   * abandoned replay's seeded sequence — an event the fresh replay never
+   * produces — and it races the restart's reload while doing so. Settling first
+   * makes this phase's write set final before the caller acts on the failure.
+   * It mirrors the runtime's inline step claim, which settles the in-flight
+   * step executions before escalating a 412.
+   *
+   * A 412 is preferred over any other rejection in the same phase because it
+   * has a defined, cheap recovery (replay from a corrected log) while the
+   * others do not. A deterministic failure such as an attribute-validation
+   * `FatalError` recurs on the restart and fails the run then, at the cost of
+   * one extra replay.
+   */
+  const settlePhase = async (ops: Promise<unknown>[]): Promise<void> => {
+    const reasons = (await Promise.allSettled(ops))
+      .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+      .map((r) => r.reason);
+    if (reasons.length === 0) return;
+    throw reasons.find((r) => PreconditionFailedError.is(r)) ?? reasons[0];
+  };
+
   // Every suspension write carries replay-recovery telemetry on the first one
   // that commits after replay recovered. All suspension events are
   // non-run_created events on this run's `runId`.
@@ -238,19 +269,19 @@ export async function handleSuspension({
     reporter.withEventCreate(params, (p) =>
       world.events.create(runId, data, p)
     );
-  // Creates under the run's concurrency fence when the caller supplied a
-  // loaded event log; without one it creates directly (callers with no replay
-  // snapshot, e.g. tests). The fence reloads + retries on a rejection, keeping
-  // `eventLog` current in place. Fencing per-create rather than per-suspension
-  // is what makes a retry safe: it never re-issues an already-created event.
-  // It wraps `createEvent` rather than the reverse so a retried attempt
-  // re-takes the telemetry claim, matching how the wait-completion writes in
-  // `runtime.ts` compose the two.
+  // Fences the create against the run's event log when the caller supplied a
+  // loaded one; without it the create goes out unfenced (callers with no replay
+  // snapshot, e.g. tests). A rejection propagates to the caller, which restarts
+  // the replay from a corrected log — it is not retried here, because the
+  // event's correlation id was minted by *this* replay's seeded sequence, so
+  // re-committing it against a corrected log would persist an event no correct
+  // replay produces.
   const createGuarded: EventCreator = (data, params) =>
     eventLog
-      ? withEventCreateFence(runId, eventLog, run.specVersion, (fence) =>
-          createEvent(data, { ...params, ...fence })
-        )
+      ? createEvent(data, {
+          ...params,
+          ...eventCreateFenceFor(eventLog, run.specVersion),
+        })
       : createEvent(data, params);
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
@@ -355,7 +386,7 @@ export async function handleSuspension({
   if (hookItemsByToken.size > 0) {
     const hookPhaseStart = Date.now();
     await ensureRunReady();
-    await Promise.all(
+    await settlePhase(
       [...hookItemsByToken.values()].map(async (items) => {
         for (const queueItem of items) {
           let creationConflicted = false;
@@ -415,7 +446,7 @@ export async function handleSuspension({
 
   if (hooksNeedingAbort.length > 0) {
     await ensureRunReady();
-    await Promise.all(
+    await settlePhase(
       hooksNeedingAbort.map(async (queueItem) => {
         try {
           // Dehydrate the abort payload for storage
@@ -624,7 +655,13 @@ export async function handleSuspension({
       (async () => {
         try {
           await ensureRunReady();
-          await createEvent(
+          // Guarded like every other suspension write: an attr_set is a
+          // replay-derived event with a correlation id from this replay's
+          // seeded sequence, so it must not land on a log the replay never
+          // saw. Rejecting it is cheap — a run with attribute events already
+          // forces an in-process replay, so the restart costs the replay it
+          // was going to do anyway.
+          await createGuarded(
             {
               eventType: 'attr_set',
               specVersion: SPEC_VERSION_CURRENT,
@@ -680,7 +717,7 @@ export async function handleSuspension({
   // all before ack. If the process crashes before this resolves, the orchestrator
   // message is not acked and VQS redelivers, re-creates the (idempotent)
   // step_created and re-dispatches, and recovers the run instead of orphaning it.
-  await Promise.all(ops);
+  await settlePhase(ops);
 
   // Rebuild the inline batch in deterministic order. `lazyInlineCorrelationIds`
   // is a Set seeded from the ordered first-N slice, so iterating it preserves

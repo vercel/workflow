@@ -184,6 +184,12 @@ describe('executeStep — compute instance stamping', () => {
     // persist — so observe the call itself rather than the stored event.
     const createSpy = vi.spyOn(world.events, 'create');
 
+    const preconditionSnapshot = {
+      stateUpdatedAt: 1_700_000_000_000,
+      stateEventCount: 7,
+      stateCursor: 'eid:evnt_01H0000000000000000000000',
+    };
+
     await executeStep({
       world,
       workflowRunId: runId,
@@ -191,7 +197,7 @@ describe('executeStep — compute instance stamping', () => {
       workflowStartedAt: Date.now(),
       stepId,
       stepName,
-      eventCreateFence: { stateUpdatedAt: 1_700_000_000_000 },
+      eventCreateFence: preconditionSnapshot,
     });
 
     const started = createSpy.mock.calls.filter(
@@ -199,7 +205,8 @@ describe('executeStep — compute instance stamping', () => {
     );
     expect(started).toHaveLength(1);
     expect(started[0]?.[2]?.computeInstanceId).toBe(COMPUTE_INSTANCE_ID);
-    // Both ride the same params object — neither may clobber the other.
-    expect(started[0]?.[2]?.stateUpdatedAt).toBe(1_700_000_000_000);
+    // Both ride the same params object — neither may clobber the other, and the
+    // three snapshot fields must arrive as one unit.
+    expect(started[0]?.[2]).toMatchObject(preconditionSnapshot);
   });
 });
