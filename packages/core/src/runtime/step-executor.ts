@@ -271,7 +271,11 @@ export async function executeStep(
     stepId,
     stepName,
   } = params;
-  const isVercel = process.env.VERCEL_URL !== undefined;
+  // Truthiness, not presence: `vercel env pull` writes `VERCEL_URL=""` into
+  // `.env.local`, and a framework that loads that file locally would otherwise
+  // put us on the Vercel branch with nothing to build a host from, making
+  // `https://` the base URL of every step.
+  const isVercel = Boolean(process.env.VERCEL_URL);
   // Unfenced when the caller passes no fence — every World that fences
   // ignores the field it does not understand, so this is the same create it
   // was before either mechanism existed.
