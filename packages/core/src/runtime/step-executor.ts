@@ -50,7 +50,11 @@ import {
   isOptimisticInlineStartExplicitlyDisabled,
 } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
-import { type EventCreator, memoizeEncryptionKey } from './helpers.js';
+import {
+  type EventCreator,
+  memoizeEncryptionKey,
+  type PreconditionSnapshotParams,
+} from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import {
   computeStepLatencyEventData,
@@ -137,20 +141,20 @@ export interface StepExecutorParams {
    */
   inlineDeltaSinceCursor?: string;
   /**
-   * Precondition-guard snapshot (epoch ms of the latest event the caller's
-   * replay loaded) to attach to this step's `step_started` claim. On the lazy
-   * inline path the claim is the step's FIRST durable write (its
-   * `step_created` is deferred), so without this the claim would bypass the
-   * optimistic-concurrency guard entirely: a replay working from a stale view
-   * could claim — and then commit — a step scheduled without observing an
-   * out-of-band event. A guard-enforcing World rejects a stale claim with
-   * `PreconditionFailedError` (412); executeStep does NOT translate that
-   * rejection (re-claiming in place would still commit the stale schedule),
-   * so it propagates for the caller to abandon the batch and force a fresh
-   * replay. Undefined when the guard is disabled or the caller has no
-   * snapshot; Worlds that don't enforce the guard ignore it.
+   * Precondition-guard snapshot of the event log the caller's replay loaded, to
+   * attach to this step's `step_started` claim. On the lazy inline path the
+   * claim is the step's FIRST durable write (its `step_created` is deferred),
+   * so without this the claim would bypass the optimistic-concurrency guard
+   * entirely: a replay working from a stale view could claim — and then commit
+   * — a step scheduled without observing an event it never loaded. A
+   * guard-enforcing World rejects a stale claim with `PreconditionFailedError`
+   * (412); executeStep does NOT translate that rejection (re-claiming in place
+   * would still commit the stale schedule), so it propagates for the caller to
+   * abandon the batch and restart its replay. Undefined when the guard is
+   * disabled or the caller has no snapshot; Worlds that don't enforce the guard
+   * ignore it.
    */
-  stateUpdatedAt?: number;
+  preconditionSnapshot?: PreconditionSnapshotParams;
   /**
    * Suppress optimistic inline start for this step regardless of
    * `WORKFLOW_OPTIMISTIC_INLINE_START` / `forceOptimisticStart`: take the
@@ -259,7 +263,11 @@ export async function executeStep(
     stepId,
     stepName,
   } = params;
-  const isVercel = process.env.VERCEL_URL !== undefined;
+  // Truthiness, not presence: `vercel env pull` writes `VERCEL_URL=""` into
+  // `.env.local`, and a framework that loads that file locally would otherwise
+  // put us on the Vercel branch with nothing to build a host from, making
+  // `https://` the base URL of every step.
+  const isVercel = Boolean(process.env.VERCEL_URL);
   // Gate payload compression on the run's specVersion.
   const compression =
     (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
@@ -524,9 +532,9 @@ export async function executeStep(
     // compute-instance stamp plus the optimistic-concurrency claim guard.
     const startEventParams: CreateEventParams = {
       computeInstanceId: COMPUTE_INSTANCE_ID,
-      ...(params.stateUpdatedAt !== undefined
-        ? { stateUpdatedAt: params.stateUpdatedAt }
-        : {}),
+      // Spread as a unit: the three snapshot fields describe one snapshot and
+      // must travel together — see StepExecutorParams.preconditionSnapshot.
+      ...params.preconditionSnapshot,
     };
     // `Date.now()` taken immediately before the `step_started` create is
     // issued (either path below) — anchors RSFS's end point. See
@@ -582,8 +590,8 @@ export async function executeStep(
                   : {}),
               },
             },
-            // Guard the claim — see StepExecutorParams.stateUpdatedAt. A stale
-            // (412) rejection surfaces via reconcileOptimisticStart as a
+            // Guard the claim — see StepExecutorParams.preconditionSnapshot. A
+            // stale (412) rejection surfaces via reconcileOptimisticStart as a
             // non-translatable error: the body result is discarded and the
             // rejection propagates to the caller.
             startEventParams
@@ -642,8 +650,8 @@ export async function executeStep(
                   }
                 : { stepName, ...ownershipStamp },
           },
-          // Guard the claim — see StepExecutorParams.stateUpdatedAt. A stale
-          // (412) rejection is intentionally NOT translated by
+          // Guard the claim — see StepExecutorParams.preconditionSnapshot. A
+          // stale (412) rejection is intentionally NOT translated by
           // startErrorToResult below, so it propagates to the caller for a
           // fresh replay.
           startEventParams

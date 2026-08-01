@@ -160,7 +160,11 @@ export async function runWorkflow(
     const fixedTimestamp =
       runIdCreatedAt(workflowRun.runId) ?? +workflowRun.createdAt;
 
-    const isVercel = process.env.VERCEL_URL !== undefined;
+    // Truthiness, not presence: `vercel env pull` writes `VERCEL_URL=""` into
+    // `.env.local`, and a framework that loads that file locally would otherwise
+    // put us on the Vercel branch with nothing to build a host from, making
+    // `https://` the base URL of every run.
+    const isVercel = Boolean(process.env.VERCEL_URL);
     // Load getPort lazily to prevent Turbopack from tracing get-port's
     // fs ops (readdir, readFile) into the flow route bundle. The resolved
     // port is cached per process (see get-port-lazy.ts), so this is cheap
