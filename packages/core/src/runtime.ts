@@ -21,6 +21,7 @@ import {
   FIRST_SLOT,
   getQueueTopicPrefix,
   isLegacySpecVersion,
+  maxSlotOf,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   resolveQueueNamespace,
@@ -718,6 +719,12 @@ export function workflowEntrypoint(
                   let cachedEvents: Event[] | null = null;
                   let eventsCursor: string | null = null;
 
+                  // Set when a restarted replay is recovering by topping its
+                  // cached log up from the cursor rather than reloading it
+                  // whole. The next load verifies the result is dense before
+                  // the replay trusts it; see the consume site below the load.
+                  let slotTopUpPending = false;
+
                   // Inline-delta optimization: when an inline step's terminal
                   // write returns the event-log delta since the pre-write
                   // cursor (a supporting World only), we stash it here so the
@@ -933,7 +940,7 @@ export function workflowEntrypoint(
                     ids: Set<string>;
                     restart: number;
                     reason: string;
-                    source: 'inline-delta' | 'full-reload';
+                    source: 'inline-delta' | 'full-reload' | 'slot-top-up';
                   } | null = null;
                   /**
                    * Report what a stale-snapshot restart's reload found, once
@@ -1032,6 +1039,25 @@ export function workflowEntrypoint(
                     // to merge it into; with no base log the restart has to load
                     // the whole thing anyway.
                     const usedDelta = Boolean(delta && cachedEvents);
+                    // Without a delta, a slot-numbered log still heals from its
+                    // cursor rather than from a full reload. Slot ids sort in
+                    // write order, so every event this replay was missing is
+                    // strictly above the cursor and one incremental page brings
+                    // it in — and density (a dense log from slot 1 holds
+                    // exactly `maxSlot` events) proves afterwards that it did,
+                    // so nothing is being trusted here that is not checked.
+                    // Neither property holds under ULID ids, which is why those
+                    // restarts reload whole.
+                    const topsUpFromCursor =
+                      !usedDelta &&
+                      usesSlotIdentity(workflowRun?.specVersion) &&
+                      cachedEvents !== null &&
+                      eventsCursor !== null;
+                    const restartSource = usedDelta
+                      ? 'inline-delta'
+                      : topsUpFromCursor
+                        ? 'slot-top-up'
+                        : 'full-reload';
                     // Snapshot the set being discarded while it is still in
                     // hand; the comparison happens once the next load resolves.
                     preconditionRestartBaseline = cachedEvents
@@ -1041,7 +1067,7 @@ export function workflowEntrypoint(
                           ),
                           restart: preconditionRestarts,
                           reason,
-                          source: usedDelta ? 'inline-delta' : 'full-reload',
+                          source: restartSource,
                         }
                       : null;
                     if (usedDelta) {
@@ -1049,6 +1075,18 @@ export function workflowEntrypoint(
                       // (`pendingInlineDelta && cachedEvents`) with no
                       // events.list round trip at all.
                       pendingInlineDelta = delta;
+                    } else if (topsUpFromCursor) {
+                      // Keep the cached log and its cursor: the loop's
+                      // incremental branch fetches the page above the cursor
+                      // and appends it, and the density check below the load
+                      // sends the restart to a full reload if that page did not
+                      // close the gap. Appends land above everything already
+                      // scanned for payload prewarming, so no rescan is needed
+                      // unless that fallback fires.
+                      slotTopUpPending = true;
+                      preloadedEvents = undefined;
+                      preloadedEventsCursor = undefined;
+                      pendingInlineDelta = null;
                     } else {
                       // MUST be a full, cursor-less reload. The cursor filters
                       // by lexicographic event id while a hole is defined by
@@ -1075,7 +1113,7 @@ export function workflowEntrypoint(
                         reason,
                         loopIteration,
                         preconditionRestarts,
-                        source: usedDelta ? 'inline-delta' : 'full-reload',
+                        source: restartSource,
                       }
                     );
                     span?.setAttributes({
@@ -1817,6 +1855,26 @@ export function workflowEntrypoint(
                       // a cached array to merge it into. Reassigned again after
                       // the wait pass, which may swap in a freshly loaded array.
                       cachedEvents = events;
+
+                      if (slotTopUpPending) {
+                        slotTopUpPending = false;
+                        // A slot-numbered log is dense from slot 1, so a
+                        // complete one holds exactly `maxSlot` events. A short
+                        // count means the page above the cursor did not bring
+                        // in everything the restart was missing — the only
+                        // other reading, a permanent hole from a write that
+                        // took a slot and then failed, is equally unrecoverable
+                        // from here — so fall back to the authoritative load.
+                        if (maxSlotOf(events) !== events.length) {
+                          const loaded = await loadWorkflowRunEvents(runId);
+                          events = loaded.events;
+                          eventsCursor = loaded.cursor;
+                          cachedEvents = events;
+                          // The reload can insert events below the prefix
+                          // already scanned for payload prewarming.
+                          replayPayloadCache.resetScan();
+                        }
+                      }
 
                       reportPreconditionRestartReload(events);
 
