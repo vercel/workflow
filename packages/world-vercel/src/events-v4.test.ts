@@ -226,10 +226,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
       getWorkflowRunEventsV4(
         'wrun_1',
         {},
-        {
-          token: 'test-token',
-          dispatcher: agent,
-        }
+        { token: 'test-token', dispatcher: agent }
       )
     ).rejects.toThrow('v4 listEvents: end frame missing hasMore');
   });

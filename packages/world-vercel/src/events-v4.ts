@@ -727,36 +727,6 @@ type EventFrameStreamState =
       events: ListedEventV4[];
     };
 
-function finishEventFrameStream(
-  state: EventFrameStreamState,
-  meta: Record<string, unknown>,
-  opName: string
-): EventFrameStreamResult {
-  const next = typeof meta.next === 'string' ? meta.next : undefined;
-  if (typeof meta.hasMore !== 'boolean') {
-    throw new Error(`v4 ${opName}: end frame missing hasMore`);
-  }
-  const page = { events: state.events, next, hasMore: meta.hasMore };
-
-  switch (state.type) {
-    case 'events':
-      return { type: 'events', page };
-    case 'event-page':
-      if (next === undefined) {
-        throw new Error(`v4 ${opName}: event page missing cursor`);
-      }
-      return {
-        type: 'event-page',
-        body: state.body,
-        page: { ...page, next },
-      };
-    default: {
-      const exhaustive: never = state;
-      throw new Error(`v4 ${opName}: unknown stream state ${exhaustive}`);
-    }
-  }
-}
-
 async function consumeEventFrameStream(
   response: Response,
   opName: string
@@ -785,7 +755,33 @@ async function consumeEventFrameStream(
       continue;
     }
     if (frame.meta._end === 1) {
-      return finishEventFrameStream(state, frame.meta, opName);
+      if (typeof frame.meta.hasMore !== 'boolean') {
+        throw new Error(`v4 ${opName}: end frame missing hasMore`);
+      }
+      const next =
+        typeof frame.meta.next === 'string' ? frame.meta.next : undefined;
+      const page = {
+        events: state.events,
+        next,
+        hasMore: frame.meta.hasMore,
+      };
+      switch (state.type) {
+        case 'events':
+          return { type: 'events', page };
+        case 'event-page':
+          if (next === undefined) {
+            throw new Error(`v4 ${opName}: event page missing cursor`);
+          }
+          return {
+            type: 'event-page',
+            body: state.body,
+            page: { ...page, next },
+          };
+        default: {
+          const exhaustive: never = state;
+          throw new Error(`v4 ${opName}: unknown stream state ${exhaustive}`);
+        }
+      }
     }
     state.events.push({
       event: frame.meta as unknown as DecodedV4Event,
