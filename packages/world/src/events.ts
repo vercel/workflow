@@ -823,11 +823,9 @@ export interface CreateEventParams {
    * are everything sorted strictly after `sinceCursor`, `cursor` is the
    * position past the last returned event, and `hasMore` indicates a
    * further page exists. A World MAY return a single page and set
-   * `hasMore: true` rather than paginating to exhaustion — the runtime
-   * does not consume a truncated delta, it falls back to a full
-   * incremental fetch whenever `hasMore` is true. (For that reason a step
-   * body emitting more in-band events than one page silently bypasses this
-   * fast path, which is correct but forgoes the saved round-trip.)
+   * `hasMore: true` rather than paginating to exhaustion. The runtime
+   * consumes that page and continues from its cursor, so it never reads the
+   * returned prefix again.
    * Returning these fields at all is OPTIONAL — a World that omits them is
    * fully supported; the runtime falls back to `events.list`. This
    * preserves the same divergence guarantees as the fetch path because the
@@ -850,7 +848,7 @@ export interface CreateEventParams {
    * option end-to-end (cf. {@link sinceCursor}) so the single name greps
    * across the SDK and the backend.
    */
-  skipPreload?: boolean;
+  skipPreload?: true;
 }
 
 /**

@@ -654,10 +654,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           );
         }
       }
-      if (data.eventType === 'attr_set' && !currentRun) {
-        throw new WorkflowRunNotFoundError(effectiveRunId);
-      }
-      if (data.eventType === 'run_started' && !currentRun) {
+      if (
+        !currentRun &&
+        (data.eventType === 'attr_set' || data.eventType === 'run_started')
+      ) {
         throw new WorkflowRunNotFoundError(effectiveRunId);
       }
 
@@ -1832,7 +1832,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       let allEvents: Event[] | undefined;
       let cursor: string | null | undefined;
       let hasMore: boolean | undefined;
-      if (data.eventType === 'run_started' && run) {
+      if (data.eventType === 'run_started' && run && !params?.skipPreload) {
         const eventRows = await drizzle
           .select()
           .from(Schema.events)
@@ -1880,8 +1880,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       return stripEventDataRefs(parsed, resolveData);
     },
     async list(params: ListEventsParams): Promise<PaginatedResponse<Event>> {
-      const limit = params.pagination?.limit ?? 100;
-      const resultLimit = params.returnAll ? getMaxEventsPerRun() : limit;
+      const limit = params.returnAll
+        ? getMaxEventsPerRun()
+        : (params.pagination?.limit ?? 100);
       const sortOrder = params.pagination?.sortOrder ?? 'asc';
       const order =
         sortOrder === 'desc'
@@ -1899,9 +1900,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           )
         )
         .orderBy(order.by)
-        .limit(resultLimit + 1);
+        .limit(limit + 1);
 
-      const values = all.slice(0, resultLimit);
+      const values = all.slice(0, limit);
 
       const resolveData = params.resolveData ?? 'all';
       return {
@@ -1911,7 +1912,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           return stripEventDataRefs(parsed, resolveData);
         }),
         cursor: values.at(-1)?.eventId ?? null,
-        hasMore: all.length > resultLimit,
+        hasMore: all.length > limit,
       };
     },
     async listByCorrelationId(params) {

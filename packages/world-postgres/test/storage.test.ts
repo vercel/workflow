@@ -1160,6 +1160,16 @@ describe('Storage (Postgres integration)', () => {
         expect(result.event.eventType).toBe('run_completed');
         expect(result.event.correlationId).toBeUndefined();
       });
+
+      it('skips the run_started preload when requested', async () => {
+        const result = await events.create(
+          testRunId,
+          { eventType: 'run_started' },
+          { skipPreload: true }
+        );
+
+        expect(result.events).toBeUndefined();
+      });
     });
 
     describe('list', () => {

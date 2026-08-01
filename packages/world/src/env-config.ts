@@ -75,10 +75,11 @@ export function envNumber(
 const DEFAULT_MAX_EVENTS_PER_RUN = 25_000;
 
 export function getMaxEventsPerRun(): number {
-  const parsed = Number(process.env.WORKFLOW_MAX_EVENTS);
-  return Number.isInteger(parsed) && parsed > 0
-    ? parsed
-    : DEFAULT_MAX_EVENTS_PER_RUN;
+  return (
+    envNumber('WORKFLOW_MAX_EVENTS', DEFAULT_MAX_EVENTS_PER_RUN, {
+      integer: true,
+    }) || DEFAULT_MAX_EVENTS_PER_RUN
+  );
 }
 
 /**

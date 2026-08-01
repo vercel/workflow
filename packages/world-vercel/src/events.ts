@@ -45,6 +45,7 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   type PaginatedResponse,
+  type ResolveData,
   StructuredErrorSchema,
   stripEventDataRefs,
   validateUlidTimestamp,
@@ -481,23 +482,10 @@ function decodeLegacyStructuredError(payload: Uint8Array): unknown {
 function buildEventFromV4(
   decoded: DecodedV4Event,
   payloadBody: Uint8Array,
-  mode: 'none' | 'all' | 'replay'
+  mode: ResolveData | 'replay'
 ): Event {
   const eventData = (decoded.eventData ?? {}) as Record<string, unknown>;
-  let normalizePayload: boolean;
-  switch (mode) {
-    case 'none':
-    case 'all':
-      normalizePayload = true;
-      break;
-    case 'replay':
-      normalizePayload = false;
-      break;
-    default: {
-      const exhaustive: never = mode;
-      throw new Error(`Unsupported v4 event mode: ${exhaustive}`);
-    }
-  }
+  const normalizePayload = mode !== 'replay';
 
   if (payloadBody.byteLength > 0) {
     const payloadField = getEventDataPayloadField(decoded.eventType);
@@ -574,13 +562,13 @@ export async function getWorkflowRunEvents(
   // full bodies regardless; buildEventFromV4 still strips them when
   // resolveData is 'none', so this is purely a bandwidth optimization and is
   // safe against an older backend.
+  const remoteRefBehavior: 'lazy' | 'resolve' =
+    resolveData === 'none' ? 'lazy' : 'resolve';
   const wirePagination = {
-    cursor: pagination?.cursor ?? undefined,
+    cursor: pagination?.cursor,
     limit: pagination?.limit,
     sortOrder: pagination?.sortOrder,
-    remoteRefBehavior: (resolveData === 'none' ? 'lazy' : 'resolve') as
-      | 'lazy'
-      | 'resolve',
+    remoteRefBehavior,
   };
 
   const result = await ('correlationId' in params
@@ -601,7 +589,7 @@ export async function getWorkflowRunEvents(
     // incremental-load resume cursor. `hasMore` is the page-completion signal.
     cursor: result.next ?? null,
     hasMore: result.hasMore,
-  } as PaginatedResponse<Event>;
+  };
 }
 
 export async function createWorkflowRunEvent(
