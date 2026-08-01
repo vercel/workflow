@@ -53,6 +53,7 @@ async function runWorkflowHandlerWithEvents(
   options: {
     attempt?: number;
     createdEvents?: unknown[];
+    createdEventParams?: unknown[];
     queuedMessages?: unknown[];
     replayDivergence?: { eventId: string; count: number };
     /**
@@ -66,27 +67,30 @@ async function runWorkflowHandlerWithEvents(
   } = {}
 ) {
   const createdEvents = options.createdEvents ?? [];
-  const eventsCreate = vi.fn(async (_runId: string, data: any) => {
-    createdEvents.push(data);
+  const eventsCreate = vi.fn(
+    async (_runId: string, data: any, params?: any) => {
+      createdEvents.push(data);
+      options.createdEventParams?.push(params);
 
-    if (data.eventType === 'run_started') {
-      return {
-        run: workflowRun,
-        events,
+      if (data.eventType === 'run_started') {
+        return {
+          run: workflowRun,
+          events,
+        };
+      }
+
+      const event = {
+        eventId: `event-${createdEvents.length}`,
+        runId: workflowRun.runId,
+        createdAt: new Date(),
+        ...data,
       };
+      if (options.dynamicEventLog) {
+        events.push(event as Event);
+      }
+      return { event };
     }
-
-    const event = {
-      eventId: `event-${createdEvents.length}`,
-      runId: workflowRun.runId,
-      createdAt: new Date(),
-      ...data,
-    };
-    if (options.dynamicEventLog) {
-      events.push(event as Event);
-    }
-    return { event };
-  });
+  );
 
   setWorld({
     specVersion: SPEC_VERSION_CURRENT,
@@ -614,7 +618,9 @@ describe('workflowEntrypoint replay guards', () => {
       })
     );
 
-    const terminalAttemptEvents = await runWorkflowHandlerWithEvents(
+    const terminalAttemptEvents: unknown[] = [];
+    const terminalAttemptParams: unknown[] = [];
+    await runWorkflowHandlerWithEvents(
       `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
       async function workflow() {
         await sleep('5s');
@@ -623,6 +629,8 @@ describe('workflowEntrypoint replay guards', () => {
       workflowRun,
       events,
       {
+        createdEvents: terminalAttemptEvents,
+        createdEventParams: terminalAttemptParams,
         replayDivergence: {
           eventId: 'different-event',
           count: REPLAY_DIVERGENCE_MAX_RETRIES,
@@ -630,12 +638,67 @@ describe('workflowEntrypoint replay guards', () => {
       }
     );
 
-    expect(terminalAttemptEvents).toContainEqual(
+    const failedIndex = terminalAttemptEvents.findIndex(
+      (event) => (event as { eventType?: string }).eventType === 'run_failed'
+    );
+    expect(failedIndex).toBeGreaterThanOrEqual(0);
+    expect(terminalAttemptEvents[failedIndex]).toEqual(
       expect.objectContaining({
         eventType: 'run_failed',
         eventData: expect.objectContaining({
           errorCode: RUN_ERROR_CODES.CORRUPTED_EVENT_LOG,
         }),
+      })
+    );
+    expect(terminalAttemptParams[failedIndex]).toEqual(
+      expect.objectContaining({
+        replayDivergenceCount: REPLAY_DIVERGENCE_MAX_RETRIES + 1,
+      })
+    );
+  });
+
+  it('reports a recovered divergence episode on the next natural event write', async () => {
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_runtime_replay_recovered',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_runtime_replay_recovered',
+        undefined,
+        []
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    const createdEvents: any[] = [];
+    const createdEventParams: any[] = [];
+
+    await runWorkflowHandlerWithEvents(
+      `async function workflow() {
+        return 'recovered';
+      }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      [],
+      {
+        createdEvents,
+        createdEventParams,
+        replayDivergence: {
+          eventId: 'event-diverged',
+          count: 2,
+        },
+      }
+    );
+
+    const completedIndex = createdEvents.findIndex(
+      (event) => event.eventType === 'run_completed'
+    );
+    expect(completedIndex).toBeGreaterThanOrEqual(0);
+    expect(createdEventParams[completedIndex]).toEqual(
+      expect.objectContaining({
+        replayDivergenceCount: 2,
       })
     );
   });
@@ -1968,7 +2031,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBeUndefined();
   });
 
-  it('abandons the batch and re-invokes when a stale lazy claim is rejected by the guard (interleaved hook_received)', async () => {
+  it('restarts the replay in-process and still completes the run when a stale lazy claim is rejected by the guard (interleaved hook_received)', async () => {
     process.env.WORKFLOW_PRECONDITION_GUARD = '1';
     // Simulates the interleaving the fence exists for: after step A's
     // terminal write, an out-of-band hook_received bumps the run's marker;
@@ -1987,9 +2050,8 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
         },
       }
     );
-    // The handler responds normally: the rejection is mapped to an abandoned
-    // batch + re-invocation (a `{ timeoutSeconds: 0 }` redelivery outside
-    // turbo), never a run_failed.
+    // The handler responds normally: the rejection restarts the replay inside
+    // this delivery, never a run_failed.
     expect(res.status).toBe(204);
     // Step B's claim was issued from a loaded (non-empty) log, so it carried
     // the guard snapshot — that is what lets the backend fence it. (The very
@@ -2002,9 +2064,10 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
           'deltaGateStepB'
     );
     expect(typeof (rejectedClaim?.[2] as any)?.stateUpdatedAt).toBe('number');
-    // The fenced step never ran its body and never wrote events.
-    expect(deltaGateBodyRuns).toEqual([]);
-    expect(eventsCreate.mock.calls).not.toContainEqual(
+    // The fenced claim's body never ran: step B executes exactly once, on the
+    // restarted replay whose claim the backend accepted.
+    expect(deltaGateBodyRuns).toEqual(['B']);
+    expect(eventsCreate.mock.calls).toContainEqual(
       expect.arrayContaining([
         expect.objectContaining({
           eventType: 'step_completed',
@@ -2012,13 +2075,18 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
         }),
       ])
     );
+    // The restart is in-process, so the run reaches its terminal event inside
+    // this same delivery — no re-invocation, and no run failure.
+    expect(eventsCreate.mock.calls).toContainEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ eventType: 'run_completed' }),
+      ])
+    );
     expect(eventsCreate.mock.calls).not.toContainEqual(
       expect.arrayContaining([
         expect.objectContaining({ eventType: 'run_failed' }),
       ])
     );
-    // Outside turbo the re-invocation is a redelivery of the current message,
-    // not an explicit continuation enqueue.
     expect(queueMock).not.toHaveBeenCalled();
   });
 
@@ -2028,10 +2096,10 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     // Same interleaving as above, but with optimistic start enabled globally.
     // Without suppression, executeStep would begin step B's body immediately
     // (before the claim settles) and only discard the result after the 412 —
-    // the side effects would already have run. With an open hook and the
-    // guard in force, the runtime takes the await-then-run path instead, so
-    // the fence covers user code: the rejected claim means the body never
-    // begins.
+    // the side effects would already have run, and the restarted replay would
+    // run them a second time. With an open hook and the guard in force, the
+    // runtime takes the await-then-run path instead, so the fence covers user
+    // code: the body runs exactly once, after an accepted claim.
     const { res, eventsCreate } = await driveDeltaGate(
       'wrun_delta_gate_stale_claim_optimistic',
       {
@@ -2046,7 +2114,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
       }
     );
     expect(res.status).toBe(204);
-    expect(deltaGateBodyRuns).toEqual([]);
+    expect(deltaGateBodyRuns).toEqual(['B']);
     expect(eventsCreate.mock.calls).not.toContainEqual(
       expect.arrayContaining([
         expect.objectContaining({ eventType: 'run_failed' }),

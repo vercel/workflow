@@ -31,9 +31,9 @@ const ANIMATION_CONFIG = {
   },
 } as const;
 
-const GRID_LINES = Array.from({ length: 15 }, (_, index) => ({
+const GRID_LINES = Array.from({ length: 13 }, (_, index) => ({
   id: `grid-line-${index}`,
-  isVisible: index !== 0 && index !== 14,
+  isVisible: index !== 0 && index !== 12,
 }));
 
 export function O11yVisual(): JSX.Element {
@@ -66,8 +66,8 @@ export function O11yVisual(): JSX.Element {
         ))}
       </div>
 
-      <div className="grid relative grid-cols-[repeat(14,_1fr)] grid-rows-[1fr] gap-0 mb-4 pt-px">
-        <div className="row-start-[1] col-start-[2] row-end-[2] col-end-[14] material-small rounded-md flex justify-between">
+      <div className="grid relative grid-cols-[repeat(12,_1fr)] grid-rows-[1fr] gap-0 mb-4 pt-px">
+        <div className="row-start-[1] col-start-[1] row-end-[2] col-end-[13] material-small rounded-md flex justify-between">
           <div className="flex items-center px-2.5 py-2 gap-4">
             <div className="flex flex-col gap-0.5 min-w-[80px]">
               <span className="text-label-13 text-gray-900">Status</span>
@@ -128,8 +128,8 @@ export function O11yVisual(): JSX.Element {
         </div>
       </div>
 
-      <div className="relative grid grid-rows-6 grid-cols-[repeat(14,_minmax(0,_1fr))] gap-y-1">
-        <div className="row-start-[1] col-start-[2] row-end-[2] col-end-[14]">
+      <div className="relative grid grid-rows-6 grid-cols-[repeat(12,_minmax(0,_1fr))] gap-y-1">
+        <div className="row-start-[1] col-start-[1] row-end-[2] col-end-[13]">
           <AnimatedBar
             delay={0}
             duration={ANIMATION_CONFIG.DURATION}
@@ -143,7 +143,7 @@ export function O11yVisual(): JSX.Element {
             showLine
           />
         </div>
-        <div className="row-start-[2] col-start-[2] row-end-[3] col-end-[6] xl:col-end-[5]">
+        <div className="row-start-[2] col-start-[1] row-end-[3] col-end-[5] xl:col-end-[4]">
           <AnimatedBar
             variant="green"
             left="fetchOrder()"
@@ -160,7 +160,7 @@ export function O11yVisual(): JSX.Element {
             shouldReduceMotion={shouldReduceMotion}
           />
         </div>
-        <div className="row-start-[3] col-start-[5] row-end-[4] col-end-[8] xl:col-end-[7]">
+        <div className="row-start-[3] col-start-[4] row-end-[4] col-end-[7] xl:col-end-[6]">
           <AnimatedBar
             variant="green"
             left="validate()"
@@ -179,7 +179,7 @@ export function O11yVisual(): JSX.Element {
             shouldReduceMotion={shouldReduceMotion}
           />
         </div>
-        <div className="row-start-[4] col-start-[7] row-end-[5] col-end-[11] xl:col-end-[10]">
+        <div className="row-start-[4] col-start-[6] row-end-[5] col-end-[10] xl:col-end-[9]">
           <AnimatedBar
             variant="green"
             left="enrichWithPricing()"
@@ -199,7 +199,7 @@ export function O11yVisual(): JSX.Element {
             shouldReduceMotion={shouldReduceMotion}
           />
         </div>
-        <div className="row-start-[5] col-start-[10] row-end-[6] col-end-[13] xl:col-end-[12]">
+        <div className="row-start-[5] col-start-[9] row-end-[6] col-end-[12] xl:col-end-[11]">
           <AnimatedBar
             variant="green"
             left="saveOrder()"
@@ -219,7 +219,7 @@ export function O11yVisual(): JSX.Element {
             shouldReduceMotion={shouldReduceMotion}
           />
         </div>
-        <div className="row-start-[6] col-start-[11] xl:col-start-[12] row-end-[7] col-end-[14]">
+        <div className="row-start-[6] col-start-[10] xl:col-start-[11] row-end-[7] col-end-[13]">
           <AnimatedBar
             variant="green"
             left="sendEmail()"

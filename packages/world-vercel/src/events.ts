@@ -40,7 +40,6 @@ import {
   type EventDataPayloadField,
   type EventResult,
   EventSchema,
-  EventTypeSchema,
   type GetEventParams,
   getEventDataPayloadField,
   isHookEventRequiringExistence,
@@ -53,6 +52,7 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { decode } from 'cbor-x';
+import { coerceEventDates } from './event-coerce.js';
 import { withEventPostRetry } from './event-retry.js';
 import {
   createWorkflowRunEventV4,
@@ -139,6 +139,16 @@ interface SplitEventData {
     hookTokenRetentionUntil?: Date;
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
+    /**
+     * Resilient-resume idempotency key on hook_received (see
+     * `HookReceivedEventSchema` in @workflow/world). NOTE: current
+     * workflow-server builds persisted eventData from an explicit meta
+     * allowlist that does not yet include this key, so until server support
+     * lands the persisted event won't carry it and the runtime's
+     * resilient-resume dedup is effective only within a single invocation
+     * (its locally pushed copy). Forwarding it now is forward-compatible.
+     */
+    resumeId?: string;
     errorCode?: string;
     cancelReason?: string;
     /** Inline-ownership stamp on step_started (owning queue message ID). */
@@ -198,6 +208,7 @@ type MetaSourceField =
   | 'tokenRetentionUntil'
   | 'isWebhook'
   | 'isSystem'
+  | 'resumeId'
   | 'errorCode'
   | 'cancelReason'
   | 'ownerMessageId'
@@ -309,6 +320,13 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.isSystem === 'boolean') {
     meta.hookIsSystem = eventData.isSystem;
+  }
+  // hook_received's resilient-resume idempotency key. Requires server-side
+  // support to be persisted onto the event row (see the note on
+  // SplitEventData.meta.resumeId); forwarded unconditionally so it starts
+  // working as soon as the server learns the key.
+  if (typeof eventData.resumeId === 'string') {
+    meta.resumeId = eventData.resumeId;
   }
   if (typeof eventData.errorCode === 'string') {
     meta.errorCode = eventData.errorCode;
@@ -428,37 +446,6 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
 
   return { payload, meta };
-}
-
-/**
- * Run an assembled event through EventSchema so per-event-type
- * z.coerce.date() (wait_created.resumeAt, wait_completed.resumeAt,
- * step_retrying.retryAfter) converts the ISO strings the backing store
- * returns back into Date instances — the workflow runtime calls .getTime() on
- * these and would otherwise crash. safeParse: pass the event through
- * unchanged if it doesn't match a known shape (legacy / mid-rollout).
- *
- * Used by every path that hands events to the runtime: GET/LIST frames
- * (via buildEventFromV4) and the POST response's `event` / preloaded
- * `events` bag — all of these can carry events read back from the
- * backing store, where nested eventData dates are stored as ISO strings.
- */
-function coerceEventDates(raw: Record<string, unknown>): Event {
-  const parsed = EventSchema.safeParse(raw);
-  if (parsed.success) return parsed.data as unknown as Event;
-  if (EventTypeSchema.safeParse(raw.eventType).success) {
-    // The raw-event fallback is for unknown/future event types. A parse
-    // failure on a *known* type means a schema/coercion regression that
-    // would otherwise only surface later as a crash deep in the runtime
-    // (e.g. .getTime() on a resumeAt that stayed a string) — leave a
-    // breadcrumb at the actual failure point.
-    console.debug(
-      `[workflow:world-vercel] v4 event ${raw.eventId} failed ` +
-        `EventSchema parse for known eventType '${raw.eventType}'; ` +
-        `passing through unparsed: ${parsed.error.message}`
-    );
-  }
-  return raw as unknown as Event;
 }
 
 function coerceNormalizedEvent(raw: Record<string, unknown>): Event {
@@ -708,8 +695,19 @@ async function createWorkflowRunEventInner(
       ...(params?.computeInstanceId
         ? { computeInstanceId: params.computeInstanceId }
         : {}),
+      // Precondition snapshot. The three fields describe one snapshot and the
+      // runtime always sends them together (or not at all); each is spread
+      // independently only so an older server that knows one but not the
+      // others still gets what it understands.
       ...(params?.stateUpdatedAt !== undefined
         ? { stateUpdatedAt: params.stateUpdatedAt }
+        : {}),
+      ...(params?.stateEventCount !== undefined
+        ? { stateEventCount: params.stateEventCount }
+        : {}),
+      ...(params?.stateCursor ? { stateCursor: params.stateCursor } : {}),
+      ...(params?.replayDivergenceCount !== undefined
+        ? { replayDivergenceCount: params.replayDivergenceCount }
         : {}),
       occurredAt: params?.occurredAt ?? new Date(),
       // Opt-in inline-delta: forward the cursor the runtime held before

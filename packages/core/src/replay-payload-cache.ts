@@ -67,9 +67,13 @@ export class ReplayPayloadCache {
     };
 
     start(this.workflowInputKey(workflowRun.runId), workflowRun.input);
-    // This cache is scoped to one invocation and its append-only event log.
-    // Full snapshot reloads preserve the already-seen prefix, so its length is
-    // enough to locate events appended since the previous replay.
+    // This cache is scoped to one invocation. Incremental loads and write
+    // response deltas only ever append, so the scanned length locates the
+    // events added since the previous replay. A reload that can insert events
+    // BELOW that length — a stale-snapshot restart replacing the log with a
+    // corrected one — must call `resetScan()` first, or the inserted events are
+    // never scanned. Prepared entries stay valid across that: they are keyed by
+    // event id, not by position.
     for (
       let index = this.nextUnscannedEventIndex;
       index < events.length;
@@ -102,6 +106,20 @@ export class ReplayPayloadCache {
     // Prewarming is speculative and must not fail replay before the matching
     // event is consumed. allSettled also attaches rejection handlers eagerly.
     await Promise.allSettled(preparations);
+  }
+
+  /**
+   * Forget how much of the event log has been scanned, so the next
+   * {@link prewarm} walks it from the start again.
+   *
+   * Required before a replay whose event log was reloaded rather than extended:
+   * a corrected log inserts the events the previous load was missing, which
+   * shifts every later position, so a positional resume would skip exactly the
+   * events the reload was for. Already-prepared payloads are kept — they are
+   * keyed by event id, so re-scanning re-observes them for free.
+   */
+  resetScan(): void {
+    this.nextUnscannedEventIndex = 0;
   }
 
   /** Return the workflow input after shared host-side preparation. */
