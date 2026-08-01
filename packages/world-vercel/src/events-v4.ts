@@ -528,7 +528,9 @@ export async function createWorkflowRunEventV4(
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   headers.set('Content-Type', 'application/octet-stream');
-  if (input.eventType === 'run_started' && !input.skipPreload) {
+  const expectsEventPage =
+    input.eventType === 'run_started' && !input.skipPreload;
+  if (expectsEventPage) {
     headers.set('Accept', V4_FRAME_CONTENT_TYPE);
   }
 
@@ -556,13 +558,7 @@ export async function createWorkflowRunEventV4(
     throw new Error('v4 createEvent: response missing required x-wf-* headers');
   }
 
-  const contentType = response.headers.get('content-type');
-  if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
-    if (input.eventType !== 'run_started') {
-      throw new Error(
-        'v4 createEvent: received an event page for a non-run_started event'
-      );
-    }
+  if (expectsEventPage) {
     const stream = await consumeEventFrameStream(response, 'createEvent');
     switch (stream.type) {
       case 'events':
@@ -583,6 +579,11 @@ export async function createWorkflowRunEventV4(
         throw new Error(`v4 createEvent: unknown stream type ${exhaustive}`);
       }
     }
+  }
+
+  const contentType = response.headers.get('content-type');
+  if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
+    throw new Error('v4 createEvent: unexpected event page');
   }
 
   // Decode the materialized-entity bag from the CBOR response body.
