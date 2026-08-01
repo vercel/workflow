@@ -30,8 +30,8 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import { getMaxInlineSteps } from './constants.js';
 import {
-  type EventCreator,
   claimFenceFor,
+  type EventCreator,
   type MutableEventLog,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
@@ -278,9 +278,10 @@ export async function handleSuspension({
   // replay produces.
   const createGuarded: EventCreator = (data, params) =>
     eventLog
-      ? claimFenceFor(eventLog, run.specVersion)((fence) =>
-          createEvent(data, { ...params, ...fence })
-        )
+      ? claimFenceFor(
+          eventLog,
+          run.specVersion
+        )((fence) => createEvent(data, { ...params, ...fence }))
       : createEvent(data, params);
   // Separate queue items by type
   const stepItems = suspension.steps.filter(

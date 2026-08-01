@@ -22,6 +22,7 @@ import {
 } from '../serialization.js';
 import {
   appendUniqueEvents,
+  claimFenceFor,
   eventCreateFenceFor,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -31,7 +32,6 @@ import {
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
   mergeLoadedEvents,
-  claimFenceFor,
   preconditionEventDelta,
   preconditionSnapshotParams,
   reserveSlot,
