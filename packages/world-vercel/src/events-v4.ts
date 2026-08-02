@@ -26,6 +26,7 @@ import {
   type Event,
   EventSchema,
   type EventType,
+  EventTypeSchema,
   getEventDataPayloadField,
   HookSchema,
   WaitSchema,
@@ -258,18 +259,35 @@ export interface PreconditionFailureDetails {
   cursor?: string;
 }
 
-const CreateEventV4BodySchema = z.object({
+const CreateEventV4BodyBaseSchema = z.object({
   event: EventSchema,
   run: WorkflowRunSchema.optional(),
   step: StepWireSchema.transform(deserializeStep).optional(),
   hook: HookSchema.optional(),
   wait: WaitSchema.optional(),
-  events: z.array(EventSchema).optional(),
-  cursor: z.string().nullable().optional(),
-  hasMore: z.boolean().optional(),
   stepCreated: z.literal(true).optional(),
   maxEvents: z.number().int().positive().optional(),
 });
+
+const CreateEventV4BodySchema = z.union([
+  CreateEventV4BodyBaseSchema.extend({
+    events: z.array(EventSchema),
+    cursor: z.string().nullable(),
+    hasMore: z.boolean(),
+  }),
+  CreateEventV4BodyBaseSchema.extend({
+    events: z.undefined().optional(),
+    cursor: z.undefined().optional(),
+    hasMore: z.undefined().optional(),
+  }),
+]);
+
+const EventFrameMetaSchema = z
+  .object({
+    eventType: EventTypeSchema,
+    eventData: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
 
 export interface CreateEventV4Result {
   eventId: string;
@@ -564,18 +582,6 @@ export async function createWorkflowRunEventV4(
   return { eventId, runId, createdAt, body };
 }
 
-/** Unvalidated event metadata decoded from a frame's CBOR block. */
-export interface DecodedV4Event {
-  eventId: string;
-  runId: string;
-  eventType: string;
-  correlationId?: string;
-  createdAt: Date | string;
-  occurredAt?: Date | string;
-  specVersion?: number;
-  eventData?: Record<string, unknown>;
-}
-
 function readHeader(
   responseHeaders: Record<string, string | string[] | undefined>,
   name: string
@@ -629,7 +635,7 @@ export async function getEventV4(
   // GET emits a single frame (no sentinel); decodeFrames returns at EOF
   // after yielding it.
   for await (const frame of decodeFrames(chunks)) {
-    return { event: frame.meta as unknown as DecodedV4Event, body: frame.body };
+    return { event: EventFrameMetaSchema.parse(frame.meta), body: frame.body };
   }
   throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
 }
@@ -654,7 +660,7 @@ export interface ListEventsV4Params {
  * exact shape.
  */
 export interface DecodedEventFrame {
-  event: DecodedV4Event;
+  event: z.infer<typeof EventFrameMetaSchema>;
   /** Resolved payload bytes. Empty for events without a payload. */
   body: Uint8Array;
 }
@@ -719,7 +725,7 @@ async function consumeListFrameStream(
       break;
     }
     events.push({
-      event: frame.meta as unknown as DecodedV4Event,
+      event: EventFrameMetaSchema.parse(frame.meta),
       body: frame.body,
     });
   }

@@ -186,6 +186,37 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('rejects an unknown event type', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .reply(
+        200,
+        Buffer.concat([
+          encodeFrame(
+            { eventType: 'future_event', eventData: {} },
+            new Uint8Array()
+          ),
+          encodeFrame({ _end: 1 }, new Uint8Array()),
+        ]),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    await expect(
+      getWorkflowRunEventsV4(
+        'wrun_1',
+        {},
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow();
+    agent.assertNoPendingInterceptors();
+  });
+
   it('captures an explicit hasMore from the sentinel, independent of next', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
