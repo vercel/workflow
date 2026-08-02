@@ -24,6 +24,7 @@
 import { WorkflowWorldError } from '@workflow/errors';
 import {
   type Event,
+  type EventResult,
   EventSchema,
   type EventType,
   EventTypeSchema,
@@ -259,18 +260,44 @@ const CreateEventV4BodyBaseSchema = z.object({
   maxEvents: z.number().int().positive().optional(),
 });
 
-const CreateEventV4BodySchema = z.union([
-  CreateEventV4BodyBaseSchema.extend({
+const CreateEventV4PageSchema = z.union([
+  z.object({
     events: z.array(EventSchema),
     cursor: z.string().nullable(),
     hasMore: z.boolean(),
   }),
-  CreateEventV4BodyBaseSchema.extend({
+  z.object({
     events: z.undefined().optional(),
     cursor: z.undefined().optional(),
     hasMore: z.undefined().optional(),
   }),
 ]);
+
+function createEventV4BodySchema<T extends EventType>(
+  eventType: T
+): z.ZodType<EventResult<T> & { event: Event }> {
+  let bodySchema: z.ZodType = CreateEventV4BodyBaseSchema;
+  if (eventType === 'run_created') {
+    bodySchema = CreateEventV4BodyBaseSchema.extend({
+      run: WorkflowRunSchema,
+    });
+  } else if (eventType === 'run_started') {
+    bodySchema = CreateEventV4BodyBaseSchema.extend({
+      run: WorkflowRunSchema.and(z.object({ startedAt: z.coerce.date() })),
+    });
+  } else if (eventType === 'step_started') {
+    bodySchema = CreateEventV4BodyBaseSchema.extend({
+      step: StepWireSchema.extend({
+        startedAt: z.coerce.date(),
+      }).transform(deserializeStep),
+    });
+  }
+
+  return z.intersection(
+    bodySchema,
+    CreateEventV4PageSchema
+  ) as unknown as z.ZodType<EventResult<T> & { event: Event }>;
+}
 
 const EventFrameMetaSchema = z
   .object({
@@ -278,8 +305,6 @@ const EventFrameMetaSchema = z
     eventData: z.record(z.string(), z.unknown()).optional(),
   })
   .passthrough();
-
-export type CreateEventV4Result = z.infer<typeof CreateEventV4BodySchema>;
 
 /** Build the CBOR meta map for a v4 POST frame. Drops undefined entries
  *  so the wire shape matches what the server expects to see. */
@@ -506,10 +531,10 @@ export function throwForErrorResponse(
  * The frame meta's `eventType` remains authoritative — the backend
  * cross-checks the two and logs (but does not reject) a mismatch.
  */
-export async function createWorkflowRunEventV4(
-  input: CreateEventV4Input,
+export async function createWorkflowRunEventV4<T extends CreateEventV4Input>(
+  input: T,
   config?: APIConfig
-): Promise<CreateEventV4Result> {
+): Promise<EventResult<T['eventType']> & { event: Event }> {
   // getHttpConfig sets the Authorization header (explicit config.token or
   // per-request OIDC fallback) — same contract as the v3 makeRequest path.
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
@@ -533,7 +558,9 @@ export async function createWorkflowRunEventV4(
   if (bodyBytes.byteLength === 0) {
     throw new Error('v4 createEvent: empty response body');
   }
-  const parsedBody = CreateEventV4BodySchema.safeParse(decode(bodyBytes));
+  const parsedBody = createEventV4BodySchema<T['eventType']>(
+    input.eventType
+  ).safeParse(decode(bodyBytes));
   if (!parsedBody.success) {
     throw new WorkflowWorldError('v4 createEvent: invalid response body', {
       code: 'SCHEMA_VALIDATION',

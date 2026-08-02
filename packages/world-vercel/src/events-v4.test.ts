@@ -1112,7 +1112,7 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
         200,
         (opts: { body?: unknown }) => {
           captured = decodeFrameMeta(opts.body);
-          return createEventBody(data);
+          return createEventBody(data, { run: runningRun });
         },
         {
           headers: {
