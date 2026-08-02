@@ -1,7 +1,11 @@
 import { z } from 'zod';
 import { AttributeChangesSchema } from './attributes.js';
+import type { Hook } from './hooks.js';
+import type { StartedWorkflowRun, WorkflowRun } from './runs.js';
 import { SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
+import type { StartedStep, Step } from './steps.js';
+import type { Wait } from './waits.js';
 
 // Event type enum
 export const EventTypeSchema = z.enum([
@@ -861,13 +865,13 @@ export interface EventResult {
   /** The created event (optional for legacy compatibility) */
   event?: Event;
   /** The workflow run entity (for run_* events) */
-  run?: import('./runs.js').WorkflowRun;
+  run?: WorkflowRun;
   /** The step entity (for step_* events) */
-  step?: import('./steps.js').Step;
+  step?: Step;
   /** The hook entity (for hook_created events) */
-  hook?: import('./hooks.js').Hook;
+  hook?: Hook;
   /** The wait entity (for wait_created/wait_completed events) */
-  wait?: import('./waits.js').Wait;
+  wait?: Wait;
   /**
    * Events with data resolved. Two producers populate this:
    *
@@ -901,11 +905,11 @@ export interface EventResult {
 
 export type EventResultFor<T extends AnyEventRequest> =
   T extends EventRequestOfType<'run_created'>
-    ? EventResult & { run: import('./runs.js').WorkflowRun }
+    ? EventResult & { run: WorkflowRun }
     : T extends EventRequestOfType<'run_started'>
-      ? EventResult & { run: import('./runs.js').StartedWorkflowRun }
+      ? EventResult & { run: StartedWorkflowRun }
       : T extends EventRequestOfType<'step_started'>
-        ? EventResult & { step: import('./steps.js').StartedStep }
+        ? EventResult & { step: StartedStep }
         : EventResult;
 
 export interface GetEventParams {
