@@ -21,14 +21,19 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
+import { WorkflowWorldError } from '@workflow/errors';
 import {
   type Event,
   EventSchema,
   type EventType,
   getEventDataPayloadField,
+  HookSchema,
   type PaginationOptions,
+  WaitSchema,
+  WorkflowRunSchema,
 } from '@workflow/world';
 import { decode } from 'cbor-x';
+import { z } from 'zod';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getEventsDispatcher } from './http-client.js';
 import {
@@ -36,6 +41,7 @@ import {
   instrumentedFetch,
   parseRetryAfter,
 } from './http-core.js';
+import { deserializeStep, StepWireSchema } from './steps.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
 /**
@@ -107,10 +113,9 @@ export const V4_RESPONSE_HEADERS = {
   maxEvents: 'x-wf-max-events',
 } as const;
 
-export interface CreateEventV4Input {
+interface CreateEventV4InputBase {
   // runId is required even for run_created, because the payload is keyed under the runId
   runId: string;
-  eventType: EventType;
   /** Opaque payload bytes. Pass undefined for events that don't carry
    *  user data (e.g. step_started). */
   payload?: Uint8Array;
@@ -209,11 +214,6 @@ export interface CreateEventV4Input {
    *  other event types; older servers ignore it entirely (the runtime then
    *  falls back to events.list). */
   sinceCursor?: string;
-  /** Run-started preload opt-out. Turbo backgrounds run_started as a write
-   *  barrier only and never reads the preloaded log, so it asks the server to
-   *  skip the list+resolve. Acted on by the server only for run_started;
-   *  older servers ignore it and preload as before. */
-  skipPreload?: true;
   /**
    * Epoch ms (the ULID time of the latest event the runtime has loaded
    * during replay). Sent by replay-context creates so the backend can
@@ -240,6 +240,14 @@ export interface CreateEventV4Input {
   replayDivergenceCount?: number;
 }
 
+export type CreateEventV4Input = CreateEventV4InputBase &
+  (
+    | { eventType: Exclude<EventType, 'run_started'> }
+    | { eventType: 'run_started'; skipPreload: true }
+  );
+
+type CreateRunStartedEventV4Input = CreateEventV4InputBase;
+
 /**
  * Shape the v4 client attaches to `PreconditionFailedError.details` when a
  * rejecting server returned the missing events inline. `@workflow/errors`
@@ -254,44 +262,59 @@ export interface PreconditionFailureDetails {
   cursor?: string;
 }
 
+const CreateEventV4BodyBaseSchema = z.object({
+  event: EventSchema,
+  run: WorkflowRunSchema.optional(),
+  step: StepWireSchema.transform(deserializeStep).optional(),
+  hook: HookSchema.optional(),
+  wait: WaitSchema.optional(),
+  stepCreated: z.literal(true).optional(),
+  maxEvents: z.number().int().positive().optional(),
+});
+
+const CreateEventV4BodySchema = z.union([
+  CreateEventV4BodyBaseSchema.extend({
+    events: z.array(EventSchema),
+    cursor: z.string().nullable(),
+    hasMore: z.boolean(),
+  }),
+  CreateEventV4BodyBaseSchema.extend({
+    events: z.undefined().optional(),
+    cursor: z.undefined().optional(),
+    hasMore: z.undefined().optional(),
+  }),
+]);
+
+const CreateEventV4HeadersSchema = z.object({
+  eventId: z.string(),
+  runId: z.string(),
+  createdAt: z.string(),
+});
+
 export interface CreateEventV4Result {
   eventId: string;
   runId: string;
   createdAt: string;
-  /**
-   * Materialized-entity bag decoded from CBOR. Streamed run_started responses
-   * carry only maxEvents here; their event and run come from event frames.
-   */
-  body: {
-    event?: unknown;
-    run?: unknown;
-    step?: unknown;
-    hook?: unknown;
-    wait?: unknown;
-    events?: unknown[];
-    cursor?: string | null;
-    hasMore?: boolean;
-    /**
-     * Lazy step start: true when the server's step_started created the step
-     * on this call. Absent from older servers (safe default: not the lazy
-     * creator). Threaded into EventResult.stepCreated by the events adapter.
-     */
-    stepCreated?: boolean;
-    /**
-     * Server-owned per-run event ceiling, returned on run-lifecycle responses.
-     * Absent from older servers. Threaded into EventResult.maxEvents.
-     */
-    maxEvents?: number;
-  };
-  page?: RequiredEventPageV4Result;
+  body: z.infer<typeof CreateEventV4BodySchema>;
 }
 
-type RequiredEventPageV4Result = ListEventsV4Result & { next: string };
+export interface CreateRunStartedEventV4Result {
+  eventId: string;
+  runId: string;
+  createdAt: string;
+  maxEvents: number;
+  events: DecodedEventFrame[];
+  cursor: string;
+  hasMore: boolean;
+}
 
 /** Build the CBOR meta map for a v4 POST frame. Drops undefined entries
  *  so the wire shape matches what the server expects to see. */
 function buildPostFrameMeta(
-  input: CreateEventV4Input
+  input: CreateEventV4InputBase & {
+    eventType: EventType;
+    skipPreload?: true;
+  }
 ): Record<string, unknown> {
   const meta: Record<string, unknown> = {
     eventType: input.eventType,
@@ -503,9 +526,8 @@ export function throwForErrorResponse(
 /**
  * POST /api/v4/runs/:runId/events/:eventType
  *
- * Sends the full request as a single v4 frame. A run_started response may
- * include the current event log as frames; skipPreload and other events use
- * CBOR.
+ * Sends the full request as a single v4 frame and validates the materialized
+ * CBOR response.
  *
  * The trailing `:eventType` path segment is an alias of the canonical
  * `/events` route: it exists purely so the event type is visible in
@@ -513,18 +535,18 @@ export function throwForErrorResponse(
  * The frame meta's `eventType` remains authoritative — the backend
  * cross-checks the two and logs (but does not reject) a mismatch.
  */
-export async function createWorkflowRunEventV4(
-  input: CreateEventV4Input,
+async function postWorkflowRunEventV4(
+  input: CreateEventV4InputBase & {
+    eventType: EventType;
+    skipPreload?: true;
+  },
+  responseType: 'materialized' | 'event-stream',
   config?: APIConfig
-): Promise<CreateEventV4Result> {
-  // getHttpConfig sets the Authorization header (explicit config.token or
-  // per-request OIDC fallback) — same contract as the v3 makeRequest path.
+) {
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   headers.set('Content-Type', 'application/octet-stream');
-  const expectsEventPage =
-    input.eventType === 'run_started' && !input.skipPreload;
-  if (expectsEventPage) {
+  if (responseType === 'event-stream') {
     headers.set('Accept', V4_FRAME_CONTENT_TYPE);
   }
 
@@ -541,50 +563,94 @@ export async function createWorkflowRunEventV4(
     'createEvent'
   );
 
-  const eventId = response.headers.get(V4_RESPONSE_HEADERS.eventId);
-  const runId = response.headers.get(V4_RESPONSE_HEADERS.runId);
-  const createdAt = response.headers.get(V4_RESPONSE_HEADERS.createdAt);
-  if (
-    typeof eventId !== 'string' ||
-    typeof runId !== 'string' ||
-    typeof createdAt !== 'string'
-  ) {
-    throw new Error('v4 createEvent: response missing required x-wf-* headers');
+  const parsedHeaders = CreateEventV4HeadersSchema.safeParse({
+    eventId: response.headers.get(V4_RESPONSE_HEADERS.eventId),
+    runId: response.headers.get(V4_RESPONSE_HEADERS.runId),
+    createdAt: response.headers.get(V4_RESPONSE_HEADERS.createdAt),
+  });
+  if (!parsedHeaders.success) {
+    throw new WorkflowWorldError('v4 createEvent: invalid response headers', {
+      code: 'SCHEMA_VALIDATION',
+      cause: parsedHeaders.error,
+    });
+  }
+  if (parsedHeaders.data.runId !== input.runId) {
+    throw new WorkflowWorldError('v4 createEvent: response runId mismatch', {
+      code: 'SCHEMA_VALIDATION',
+    });
   }
 
-  if (expectsEventPage) {
-    const page = await consumeEventFrameStream(response, 'createEvent');
-    if (page.next === undefined) {
-      throw new Error('v4 createEvent: event stream missing cursor');
-    }
-    const maxEvents = Number(
-      response.headers.get(V4_RESPONSE_HEADERS.maxEvents)
-    );
-    if (!Number.isSafeInteger(maxEvents) || maxEvents <= 0) {
-      throw new Error('v4 createEvent: invalid x-wf-max-events header');
-    }
-    return {
-      eventId,
-      runId,
-      createdAt,
-      body: { maxEvents },
-      page: { ...page, next: page.next },
-    };
-  }
+  return { response, ...parsedHeaders.data };
+}
+
+export async function createWorkflowRunEventV4(
+  input: CreateEventV4Input,
+  config?: APIConfig
+): Promise<CreateEventV4Result> {
+  const result = await postWorkflowRunEventV4(input, 'materialized', config);
+  const { response, ...headers } = result;
 
   const contentType = response.headers.get('content-type');
   if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new Error('v4 createEvent: unexpected event page');
   }
 
-  // Decode the materialized-entity bag from the CBOR response body.
   const bodyBytes = new Uint8Array(await response.arrayBuffer());
   if (bodyBytes.byteLength === 0) {
     throw new Error('v4 createEvent: empty response body');
   }
-  const body = decode(bodyBytes) as CreateEventV4Result['body'];
+  const parsedBody = CreateEventV4BodySchema.safeParse(decode(bodyBytes));
+  if (!parsedBody.success) {
+    throw new WorkflowWorldError('v4 createEvent: invalid response body', {
+      code: 'SCHEMA_VALIDATION',
+      cause: parsedBody.error,
+    });
+  }
+  const body = parsedBody.data;
 
-  return { eventId, runId, createdAt, body };
+  if (
+    body.event.eventId !== result.eventId ||
+    body.event.runId !== result.runId ||
+    body.event.eventType !== input.eventType
+  ) {
+    throw new WorkflowWorldError(
+      'v4 createEvent: response event does not match request',
+      { code: 'SCHEMA_VALIDATION' }
+    );
+  }
+
+  return { ...headers, body };
+}
+
+export async function createWorkflowRunStartedEventV4(
+  input: CreateRunStartedEventV4Input,
+  config?: APIConfig
+): Promise<CreateRunStartedEventV4Result> {
+  const result = await postWorkflowRunEventV4(
+    { ...input, eventType: 'run_started' },
+    'event-stream',
+    config
+  );
+  const page = await consumeEventFrameStream(result.response, 'createEvent');
+  if (page.next === undefined) {
+    throw new Error('v4 createEvent: event stream missing cursor');
+  }
+  const maxEvents = Number(
+    result.response.headers.get(V4_RESPONSE_HEADERS.maxEvents)
+  );
+  if (!Number.isSafeInteger(maxEvents) || maxEvents <= 0) {
+    throw new Error('v4 createEvent: invalid x-wf-max-events header');
+  }
+
+  return {
+    eventId: result.eventId,
+    runId: result.runId,
+    createdAt: result.createdAt,
+    maxEvents,
+    events: page.events,
+    cursor: page.next,
+    hasMore: page.hasMore,
+  };
 }
 
 /** Unvalidated event metadata decoded from a frame's CBOR block. */
