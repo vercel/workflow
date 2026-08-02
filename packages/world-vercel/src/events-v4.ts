@@ -23,12 +23,12 @@
 
 import {
   type Event,
+  EventSchema,
   type EventType,
   getEventDataPayloadField,
   type PaginationOptions,
 } from '@workflow/world';
 import { decode } from 'cbor-x';
-import { coerceEventDates } from './event-coerce.js';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getEventsDispatcher } from './http-client.js';
 import {
@@ -437,9 +437,9 @@ function decodePreconditionDetails(json: {
     const candidate = raw as Record<string, unknown>;
     if (typeof candidate.eventId !== 'string') return undefined;
     if (hasUnusablePayload(candidate)) return undefined;
-    // Same decoder the success-path delta uses: the JSON body carries nested
-    // eventData dates as ISO strings and the runtime calls .getTime() on them.
-    events.push(coerceEventDates(candidate));
+    const event = EventSchema.safeParse(candidate);
+    if (!event.success) return undefined;
+    events.push(event.data);
   }
   return {
     events,
@@ -587,13 +587,7 @@ export async function createWorkflowRunEventV4(
   return { eventId, runId, createdAt, body };
 }
 
-/**
- * Decoded event entity returned by GET /api/v4/runs/:runId/events/:eventId.
- * The server CBOR-encodes the full entity with refs resolved server-side,
- * so the payload field (input/output/result/error/payload/metadata
- * depending on eventType) already contains the resolved bytes — the
- * adapter layer doesn't need to splice them in.
- */
+/** Unvalidated event metadata decoded from a frame's CBOR block. */
 export interface DecodedV4Event {
   eventId: string;
   runId: string;
@@ -630,7 +624,7 @@ export async function getEventV4(
   runId: string,
   eventId: string,
   config?: APIConfig
-): Promise<{ event: DecodedV4Event; body: Uint8Array }> {
+): Promise<DecodedEventFrame> {
   const { baseUrl, headers } = await getHttpConfig(config);
 
   const url = `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}`;
@@ -676,20 +670,17 @@ export interface ListEventsV4Params extends PaginationOptions {
 }
 
 /**
- * A single event extracted from a v4 LIST frame. Mirrors `DecodedV4Event`
- * but also carries the raw payload bytes — for payload-bearing events the
- * server emits the resolved bytes in the frame body (so it never has to
- * decode them) and the SDK is expected to splice them back into the
- * appropriate `eventData` field.
+ * One decoded v4 frame. GET, LIST, and streamed POST responses all use this
+ * exact shape.
  */
-export interface ListedEventV4 {
+export interface DecodedEventFrame {
   event: DecodedV4Event;
   /** Resolved payload bytes. Empty for events without a payload. */
   body: Uint8Array;
 }
 
 export interface ListEventsV4Result {
-  events: ListedEventV4[];
+  events: DecodedEventFrame[];
   /**
    * Trailing cursor. Present even on the final page — it doubles as the
    * resume point for incremental loads — so it is NOT a reliable "more
@@ -712,7 +703,7 @@ async function consumeEventFrameStream(
   }
 
   const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
-  const events: ListedEventV4[] = [];
+  const events: DecodedEventFrame[] = [];
 
   for await (const frame of decodeFrames(chunks)) {
     if (frame.meta._end === 1) {
