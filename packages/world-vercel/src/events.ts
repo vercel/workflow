@@ -55,6 +55,7 @@ import { decode } from 'cbor-x';
 import { withEventPostRetry } from './event-retry.js';
 import {
   createWorkflowRunEventV4,
+  createWorkflowRunStartedEventV4,
   type DecodedEventFrame,
   getEventsByCorrelationIdV4,
   getEventV4,
@@ -63,11 +64,9 @@ import {
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import { hasSerializedDataFormatPrefix } from './serialized-data.js';
-import { deserializeStep } from './steps.js';
 import {
   type APIConfig,
   DEFAULT_RESOLVE_DATA_OPTION,
-  deserializeError,
   makeRequest,
 } from './utils.js';
 
@@ -648,75 +647,65 @@ async function createWorkflowRunEventInner(
     }
   }
 
-  const remoteRefBehavior = eventsNeedingResolve.has(data.eventType)
+  const remoteRefBehavior: 'resolve' | 'lazy' = eventsNeedingResolve.has(
+    data.eventType
+  )
     ? 'resolve'
     : 'lazy';
 
   const { payload, meta } = splitEventDataForV4(data);
 
-  const result = await createWorkflowRunEventV4(
-    {
-      runId: id,
-      eventType: data.eventType,
-      specVersion: data.specVersion ?? 2,
-      ...(data.correlationId ? { correlationId: data.correlationId } : {}),
-      ...(params?.requestId ? { vercelId: params.requestId } : {}),
-      ...(params?.computeInstanceId
-        ? { computeInstanceId: params.computeInstanceId }
-        : {}),
-      // Precondition snapshot. The three fields describe one snapshot and the
-      // runtime always sends them together (or not at all); each is spread
-      // independently only so an older server that knows one but not the
-      // others still gets what it understands.
-      ...(params?.stateUpdatedAt !== undefined
-        ? { stateUpdatedAt: params.stateUpdatedAt }
-        : {}),
-      ...(params?.stateEventCount !== undefined
-        ? { stateEventCount: params.stateEventCount }
-        : {}),
-      ...(params?.stateCursor ? { stateCursor: params.stateCursor } : {}),
-      ...(params?.replayDivergenceCount !== undefined
-        ? { replayDivergenceCount: params.replayDivergenceCount }
-        : {}),
-      occurredAt: params?.occurredAt ?? new Date(),
-      // Opt-in inline-delta: forward the cursor the runtime held before
-      // this write so the server can return the authoritative event-log
-      // delta on the response (events/cursor/hasMore), letting the inline
-      // loop skip a follow-up events.list. The server only acts on it for
-      // step_completed/step_failed; older servers ignore it and the runtime
-      // falls back to events.list.
-      ...(params?.sinceCursor ? { sinceCursor: params.sinceCursor } : {}),
-      // Run-started preload opt-out: turbo backgrounds run_started as a write
-      // barrier only and never reads the preloaded log, so tell the server to
-      // skip the list+resolve. The server only acts on it for run_started;
-      // older servers ignore it and simply preload as before.
-      ...(params?.skipPreload ? { skipPreload: true } : {}),
-      remoteRefBehavior,
-      payload,
-      ...meta,
-    },
-    config
-  );
+  const input = {
+    runId: id,
+    specVersion: data.specVersion ?? 2,
+    ...(data.correlationId ? { correlationId: data.correlationId } : {}),
+    ...(params?.requestId ? { vercelId: params.requestId } : {}),
+    ...(params?.computeInstanceId
+      ? { computeInstanceId: params.computeInstanceId }
+      : {}),
+    // Precondition snapshot. The three fields describe one snapshot and the
+    // runtime always sends them together (or not at all); each is spread
+    // independently only so an older server that knows one but not the
+    // others still gets what it understands.
+    ...(params?.stateUpdatedAt !== undefined
+      ? { stateUpdatedAt: params.stateUpdatedAt }
+      : {}),
+    ...(params?.stateEventCount !== undefined
+      ? { stateEventCount: params.stateEventCount }
+      : {}),
+    ...(params?.stateCursor ? { stateCursor: params.stateCursor } : {}),
+    ...(params?.replayDivergenceCount !== undefined
+      ? { replayDivergenceCount: params.replayDivergenceCount }
+      : {}),
+    occurredAt: params?.occurredAt ?? new Date(),
+    // Opt-in inline-delta: forward the cursor the runtime held before
+    // this write so the server can return the authoritative event-log
+    // delta on the response (events/cursor/hasMore), letting the inline
+    // loop skip a follow-up events.list. The server only acts on it for
+    // step_completed/step_failed; older servers ignore it and the runtime
+    // falls back to events.list.
+    ...(params?.sinceCursor ? { sinceCursor: params.sinceCursor } : {}),
+    remoteRefBehavior,
+    payload,
+    ...meta,
+  };
 
-  // Event payloads remain opaque here, just as they do in frame responses.
-  // EventSchema validates the response and converts stored ISO timestamps
-  // back into the Date instances promised by the World interface.
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  const body = result.body;
-  if (result.page) {
-    const replayEvents = result.page.events.map(decodeEventFrame);
+  if (data.eventType === 'run_started' && !params?.skipPreload) {
+    const result = await createWorkflowRunStartedEventV4(input, config);
+    const replayEvents = result.events.map(decodeEventFrame);
     const runCreated = replayEvents.find(
       (event) => event.eventType === 'run_created'
     );
     const runStarted = replayEvents.find(
-      (event) => event.eventType === 'run_started'
+      (event) => event.eventId === result.eventId
     );
     if (!runCreated) {
       throw new Error(
         'v4 createEvent: run_started stream is missing run_created'
       );
     }
-    if (!runStarted) {
+    if (!runStarted || runStarted.eventType !== 'run_started') {
       throw new Error(
         'v4 createEvent: run_started stream is missing run_started'
       );
@@ -750,28 +739,27 @@ async function createWorkflowRunEventInner(
       events: replayEvents.map((event) =>
         stripEventDataRefs(event, resolveData)
       ),
-      cursor: result.page.next,
-      hasMore: result.page.hasMore,
-      maxEvents: body.maxEvents,
+      cursor: result.cursor,
+      hasMore: result.hasMore,
+      maxEvents: result.maxEvents,
     };
   }
 
+  const result = await createWorkflowRunEventV4(
+    data.eventType === 'run_started'
+      ? { ...input, eventType: 'run_started', skipPreload: true }
+      : { ...input, eventType: data.eventType },
+    config
+  );
+  const body = result.body;
   return {
-    event: body.event
-      ? stripEventDataRefs(EventSchema.parse(body.event), resolveData)
-      : undefined,
-    run: body.run
-      ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
-      : undefined,
-    step: body.step
-      ? deserializeStep(body.step as Parameters<typeof deserializeStep>[0])
-      : undefined,
-    hook: body.hook as EventResult['hook'],
-    wait: body.wait as EventResult['wait'],
-    events: body.events
-      ? body.events.map((event) => EventSchema.parse(event))
-      : undefined,
-    cursor: body.cursor,
+    event: stripEventDataRefs(body.event, resolveData),
+    run: body.run,
+    step: body.step,
+    hook: body.hook,
+    wait: body.wait,
+    events: body.events,
+    cursor: body.cursor ?? undefined,
     hasMore: body.hasMore,
     ...(body.stepCreated ? { stepCreated: true } : {}),
     ...(typeof body.maxEvents === 'number'
