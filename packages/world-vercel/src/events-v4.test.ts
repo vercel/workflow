@@ -8,9 +8,9 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
+  SPEC_VERSION_SLOT_IDENTITY,
   slotEventId,
   slotIdBody,
-  SPEC_VERSION_SLOT_IDENTITY,
 } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
