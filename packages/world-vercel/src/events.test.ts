@@ -421,7 +421,17 @@ describe('createWorkflowRunEvent result contract', () => {
         correlationId: 'step_1',
         specVersion: 2,
       },
-      response: { step: { stepId: 'step_1', status: 'running' } },
+      response: {
+        step: {
+          runId: 'wrun_1',
+          stepId: 'step_1',
+          stepName: 'step',
+          status: 'running',
+          attempt: 1,
+          createdAt: STARTED_AT,
+          updatedAt: STARTED_AT,
+        },
+      },
       error: { name: 'WorkflowWorldError', code: 'SCHEMA_VALIDATION' },
     },
   ])('rejects $case', async ({ eventType, data, response, error }) => {
@@ -432,7 +442,7 @@ describe('createWorkflowRunEvent result contract', () => {
         path: `/api/v4/runs/wrun_1/events/${eventType}`,
         method: 'POST',
       })
-      .reply(200, encode(response), {
+      .reply(200, createEventBody(data as AnyEventRequest, response), {
         headers: {
           'x-wf-event-id': 'evnt_1',
           'x-wf-run-id': 'wrun_1',

@@ -15,6 +15,7 @@ import {
 } from '@workflow/utils';
 import type {
   CreateEventParams,
+  CreateEventRequest,
   Event,
   EventResult,
   SerializedData,
@@ -51,7 +52,6 @@ import {
 } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import {
-  type EventCreator,
   memoizeEncryptionKey,
   type PreconditionSnapshotParams,
 } from './helpers.js';
@@ -273,7 +273,10 @@ export async function executeStep(
     (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
   const replayRecoveryReporter =
     params.replayRecoveryReporter ?? ReplayRecoveryReporter.inert();
-  const createEvent: EventCreator = (data, eventParams) =>
+  const createEvent = <T extends CreateEventRequest>(
+    data: T,
+    eventParams?: CreateEventParams
+  ) =>
     replayRecoveryReporter.withEventCreate(eventParams, (p) =>
       world.events.create(workflowRunId, data, p)
     );
