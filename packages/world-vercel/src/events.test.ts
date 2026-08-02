@@ -1,3 +1,4 @@
+import { gzipSync } from 'node:zlib';
 import type { AnyEventRequest, CreateEventParams } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
@@ -815,7 +816,11 @@ describe('createWorkflowRunEvent response coercion', () => {
             runId: taggedRunId,
             eventType: 'run_created',
             createdAt: '2026-06-10T00:00:01.000Z',
-            eventData: {},
+            eventData: {
+              deploymentId: 'dpl_1',
+              workflowName: 'wf',
+              input: new TextEncoder().encode('[]'),
+            },
           },
         }),
         {
@@ -1093,6 +1098,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
           createdAt: '2026-06-10T00:00:00.000Z',
           eventData: {
             input: { _type: 'RemoteRef', _ref: 's3rf:wrun_1/input' },
+            deploymentId: 'dpl_1',
             workflowName: 'wf',
           },
         },
@@ -1132,9 +1138,13 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('sends remoteRefBehavior=resolve by default and splices the body bytes', async () => {
+  it('sends remoteRefBehavior=resolve and preserves opaque body bytes', async () => {
     const agent = mockAgent();
-    const body = new TextEncoder().encode('"payload"');
+    const serialized = new TextEncoder().encode('devl["payload"]');
+    const compressed = gzipSync(serialized);
+    const body = new Uint8Array(4 + compressed.byteLength);
+    body.set(new TextEncoder().encode('gzip'));
+    body.set(compressed, 4);
     agent
       .get(ORIGIN)
       .intercept({
@@ -1156,6 +1166,42 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
       result.data[0] as { eventData?: Record<string, unknown> }
     ).eventData;
     expect(eventData?.input).toEqual(body);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('rejects a malformed event frame', async () => {
+    const agent = mockAgent();
+    const frames = Buffer.concat([
+      encodeFrame(
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          eventType: 'wait_created',
+          correlationId: 'wait_1',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          eventData: { resumeAt: 'not-a-date' },
+        },
+        new Uint8Array()
+      ),
+      encodeFrame({ _end: 1 }, new Uint8Array()),
+    ]);
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: { remoteRefBehavior: 'resolve' },
+      })
+      .reply(200, frames, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    await expect(
+      getWorkflowRunEvents(
+        { runId: 'wrun_1' },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow();
     agent.assertNoPendingInterceptors();
   });
 });
@@ -1253,7 +1299,7 @@ describe('getWorkflowRunEvents hasMore mapping', () => {
         {
           eventId: 'evnt_1',
           runId: 'wrun_1',
-          eventType: 'run_created',
+          eventType: 'run_cancelled',
           createdAt: '2026-06-10T00:00:00.000Z',
           eventData: {},
         },
