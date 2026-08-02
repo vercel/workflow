@@ -209,7 +209,7 @@ export function createHooksStorage(
   basedir: string,
   tag?: string
 ): Storage['hooks'] {
-  async function isAvailable(hook: Hook): Promise<boolean> {
+  async function ensureHookAvailable(hook: Hook): Promise<boolean> {
     if (await isHookDisposalCommitted(basedir, hook.hookId, tag)) {
       return false;
     }
@@ -254,7 +254,7 @@ export function createHooksStorage(
           HookSchema,
           tag
         );
-        if (hook && hook.token === token && (await isAvailable(hook))) {
+        if (hook && hook.token === token && (await ensureHookAvailable(hook))) {
           return { ...hook, isWebhook: hook.isWebhook ?? true };
         }
       } catch (error) {
@@ -273,7 +273,7 @@ export function createHooksStorage(
     for (const file of files) {
       const hookPath = path.join(hooksDir, `${file}.json`);
       const hook = await readJSON(hookPath, HookSchema);
-      if (hook && hook.token === token && (await isAvailable(hook))) {
+      if (hook && hook.token === token && (await ensureHookAvailable(hook))) {
         return { ...hook, isWebhook: hook.isWebhook ?? true };
       }
     }
@@ -290,7 +290,7 @@ export function createHooksStorage(
       HookSchema,
       tag
     );
-    if (!hook || !(await isAvailable(hook))) {
+    if (!hook || !(await ensureHookAvailable(hook))) {
       const rebuilt = await rebuildLiveHookByIdFromEventLog(
         basedir,
         hookId,
@@ -340,7 +340,7 @@ export function createHooksStorage(
         if (params.runId && hook.runId !== params.runId) {
           return false;
         }
-        return isAvailable(hook);
+        return ensureHookAvailable(hook);
       },
       getCreatedAt: () => {
         // Hook files don't have ULID timestamps in filename, so return null
