@@ -568,17 +568,6 @@ export async function createWorkflowRunEventV4(
   }
   const body = parsedBody.data;
 
-  if (
-    body.event.eventId !== eventId ||
-    body.event.runId !== runId ||
-    body.event.eventType !== input.eventType
-  ) {
-    throw new WorkflowWorldError(
-      'v4 createEvent: response event does not match request',
-      { code: 'SCHEMA_VALIDATION' }
-    );
-  }
-
   return { eventId, runId, createdAt, body };
 }
 
