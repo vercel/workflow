@@ -1296,7 +1296,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
         },
         new Uint8Array()
       ),
-      encodeFrame({ _end: 1 }, new Uint8Array()),
+      encodeFrame({ _end: 1, hasMore: false }, new Uint8Array()),
     ]);
     agent
       .get(ORIGIN)
