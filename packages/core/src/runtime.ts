@@ -111,6 +111,8 @@ import {
 import { getErrorName, getErrorStack, normalizeUnknownError } from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
 import { runWorkflow } from './workflow.js';
+import { getPlatformMaxDurationSeconds } from './runtime/platform-max-duration.js';
+import ms from 'ms';
 
 export type { Event, WorkflowRun };
 export { WorkflowSuspension } from './global.js';
@@ -476,6 +478,42 @@ function openHookAndWaitState(events: Event[]): {
 }
 
 /**
+ * Gets the maximum duration for inline execution.
+ *
+ * Order of precedence:
+ * 1. `WORKFLOW_V2_TIMEOUT_MS` env var
+ * 2. Platform max duration env var, based on Vercel's tiered max durations
+ * 3. Default to 120 seconds
+ */
+function getMaxInlineDurationMs(): number {
+  const raw = process.env.WORKFLOW_V2_TIMEOUT_MS;
+  if (raw !== undefined && raw !== '') {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+    // Invalid / non-positive override (e.g. "", "abc", "0", negative): fall
+    // through to the platform/default path rather than disabling the
+    // inline-replay timeout.
+  }
+
+  const platformMaxDurationSeconds = getPlatformMaxDurationSeconds();
+  if (platformMaxDurationSeconds !== undefined) {
+    if (platformMaxDurationSeconds >= 1800) {
+      return ms('10m');
+    }
+
+    if (platformMaxDurationSeconds >= 800) {
+      return ms('2m');
+    }
+
+    return ms('1m');
+  }
+
+  return ms('2m');
+}
+
+/**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
  * and queue overhead.
@@ -496,8 +534,7 @@ export function workflowEntrypoint(
 ): (req: Request) => Promise<Response> {
   setWorkflowBasePath(options?.basePath);
 
-  const NO_INLINE_REPLAY_AFTER_MS =
-    Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
+  const NO_INLINE_REPLAY_AFTER_MS = getMaxInlineDurationMs();
 
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
