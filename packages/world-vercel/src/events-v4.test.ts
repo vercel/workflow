@@ -479,10 +479,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
       { token: 'test-token', dispatcher: agent }
     );
 
-    expect(result.eventId).toBe('evnt_1');
-    expect(result.runId).toBe('wrun_1');
-    expect(result.createdAt).toBe('2026-06-10T00:00:00.000Z');
-    expect(result.body.step).toMatchObject({ stepId: 'step_1' });
+    expect(result.step).toMatchObject({ stepId: 'step_1' });
     agent.assertNoPendingInterceptors();
   });
 
@@ -639,7 +636,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     );
 
     expect(capturedMeta?.skipPreload).toBe(true);
-    expect(result.body.run).toMatchObject({ status: 'running' });
+    expect(result.run).toMatchObject({ status: 'running' });
     agent.assertNoPendingInterceptors();
   });
 

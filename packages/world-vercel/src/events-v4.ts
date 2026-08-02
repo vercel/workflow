@@ -103,16 +103,7 @@ function headersToRecord(headers: Headers): Record<string, string> {
   return out;
 }
 
-/**
- * POST surfaces these so callers can read the created eventId without
- * decoding the CBOR response body
- */
-export const V4_RESPONSE_HEADERS = {
-  eventId: 'x-wf-event-id',
-  runId: 'x-wf-run-id',
-  createdAt: 'x-wf-created-at',
-  maxEvents: 'x-wf-max-events',
-} as const;
+const MAX_EVENTS_HEADER = 'x-wf-max-events';
 
 interface CreateEventV4InputBase {
   // runId is required even for run_created, because the payload is keyed under the runId
@@ -286,11 +277,7 @@ const CreateEventV4BodySchema = z.union([
   }),
 ]);
 
-const CreateEventV4HeadersSchema = z.object({
-  eventId: z.string(),
-  runId: z.string(),
-  createdAt: z.string(),
-});
+const MaxEventsHeaderSchema = z.coerce.number().int().positive();
 
 const EventFrameMetaSchema = z
   .object({
@@ -299,17 +286,9 @@ const EventFrameMetaSchema = z
   })
   .passthrough();
 
-export interface CreateEventV4Result {
-  eventId: string;
-  runId: string;
-  createdAt: string;
-  body: z.infer<typeof CreateEventV4BodySchema>;
-}
+export type CreateEventV4Result = z.infer<typeof CreateEventV4BodySchema>;
 
 export interface RunStartedEventStreamV4Result {
-  eventId: string;
-  runId: string;
-  createdAt: string;
   maxEvents: number;
   events: DecodedEventFrame[];
   cursor: string;
@@ -564,39 +543,19 @@ async function postWorkflowRunEventV4(
   );
 
   const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/${encodeURIComponent(input.eventType)}`;
-  const response = await fetchV4(
+  return fetchV4(
     url,
     { method: 'POST', headers, body: frame },
     config,
     'createEvent'
   );
-
-  const parsedHeaders = CreateEventV4HeadersSchema.safeParse({
-    eventId: response.headers.get(V4_RESPONSE_HEADERS.eventId),
-    runId: response.headers.get(V4_RESPONSE_HEADERS.runId),
-    createdAt: response.headers.get(V4_RESPONSE_HEADERS.createdAt),
-  });
-  if (!parsedHeaders.success) {
-    throw new WorkflowWorldError('v4 createEvent: invalid response headers', {
-      code: 'SCHEMA_VALIDATION',
-      cause: parsedHeaders.error,
-    });
-  }
-  if (parsedHeaders.data.runId !== input.runId) {
-    throw new WorkflowWorldError('v4 createEvent: response runId mismatch', {
-      code: 'SCHEMA_VALIDATION',
-    });
-  }
-
-  return { response, ...parsedHeaders.data };
 }
 
 export async function createWorkflowRunEventV4(
   input: CreateEventV4Input,
   config?: APIConfig
 ): Promise<CreateEventV4Result> {
-  const result = await postWorkflowRunEventV4(input, 'materialized', config);
-  const { response, ...headers } = result;
+  const response = await postWorkflowRunEventV4(input, 'materialized', config);
 
   const contentType = response.headers.get('content-type');
   if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
@@ -614,47 +573,34 @@ export async function createWorkflowRunEventV4(
       cause: parsedBody.error,
     });
   }
-  const body = parsedBody.data;
-
-  if (
-    body.event.eventId !== result.eventId ||
-    body.event.runId !== result.runId ||
-    body.event.eventType !== input.eventType
-  ) {
-    throw new WorkflowWorldError(
-      'v4 createEvent: response event does not match request',
-      { code: 'SCHEMA_VALIDATION' }
-    );
-  }
-
-  return { ...headers, body };
+  return parsedBody.data;
 }
 
 export async function createWorkflowRunStartedEventV4(
   input: CreateRunStartedEventV4Input,
   config?: APIConfig
 ): Promise<RunStartedEventStreamV4Result> {
-  const result = await postWorkflowRunEventV4(
+  const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'run_started' },
     'event-stream',
     config
   );
-  const page = await consumeEventFrameStream(result.response, 'createEvent');
+  const page = await consumeEventFrameStream(response, 'createEvent');
   if (page.next === undefined) {
     throw new Error('v4 createEvent: event stream missing cursor');
   }
-  const maxEvents = Number(
-    result.response.headers.get(V4_RESPONSE_HEADERS.maxEvents)
+  const maxEvents = MaxEventsHeaderSchema.safeParse(
+    response.headers.get(MAX_EVENTS_HEADER)
   );
-  if (!Number.isSafeInteger(maxEvents) || maxEvents <= 0) {
-    throw new Error('v4 createEvent: invalid x-wf-max-events header');
+  if (!maxEvents.success) {
+    throw new WorkflowWorldError('v4 createEvent: invalid max-events header', {
+      code: 'SCHEMA_VALIDATION',
+      cause: maxEvents.error,
+    });
   }
 
   return {
-    eventId: result.eventId,
-    runId: result.runId,
-    createdAt: result.createdAt,
-    maxEvents,
+    maxEvents: maxEvents.data,
     events: page.events,
     cursor: page.next,
     hasMore: page.hasMore,
