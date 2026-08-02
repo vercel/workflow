@@ -306,7 +306,7 @@ export interface CreateEventV4Result {
   body: z.infer<typeof CreateEventV4BodySchema>;
 }
 
-export interface CreateRunStartedEventV4Result {
+export interface RunStartedEventStreamV4Result {
   eventId: string;
   runId: string;
   createdAt: string;
@@ -633,7 +633,7 @@ export async function createWorkflowRunEventV4(
 export async function createWorkflowRunStartedEventV4(
   input: CreateRunStartedEventV4Input,
   config?: APIConfig
-): Promise<CreateRunStartedEventV4Result> {
+): Promise<RunStartedEventStreamV4Result> {
   const result = await postWorkflowRunEventV4(
     { ...input, eventType: 'run_started' },
     'event-stream',
