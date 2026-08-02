@@ -3,7 +3,7 @@ name: migrating-workflow-v4-to-v5
 description: Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, `experimental_setAttributes`, `createLocalWorld` / `createVercelWorld`, `NestLocalBuilder` imported from `@workflow/nest`, or an SWC transform invoked with `mode: 'client'`.
 metadata:
   author: Vercel Inc.
-  version: '0.2.3'
+  version: '0.2.4'
 ---
 
 # Migrating Workflow SDK 4.x to 5.0
@@ -23,7 +23,7 @@ Do not rewrite workflow or step bodies. If you find yourself restructuring busin
 Before editing, establish:
 
 1. **Which packages are installed.** Read `package.json` for `workflow` and every `@workflow/*` dependency.
-2. **Whether the app touches the runtime.** Grep for `getWorld`, `createWorld`, `getWorldHandlers`, `writeToStream`, `readFromStream`, `closeStream`, `listStreamsByRunId`, `getStreamChunks`, `world.steps`, `runStep`, `stepEntrypoint`, `internal/private`, `core/private`.
+2. **Whether the app touches the runtime.** Grep for `getWorld`, `createWorld`, `getWorldHandlers`, `writeToStream`, `readFromStream`, `closeStream`, `listStreamsByRunId`, `getStreamChunks`, `world.steps`, `listByCorrelationId`, `runStep`, `stepEntrypoint`, `internal/private`, `core/private`.
 3. **Whether the app implements a custom World.** Grep for `implements World`, `: World`, `createLocalWorld`, `createVercelWorld`, `startWorkflowWorld`.
 4. **Which framework integration is in use.** `@workflow/next`, `@workflow/nest`, `@workflow/nitro`, `@workflow/sveltekit`, `@workflow/vite`, `@workflow/nuxt`, `@workflow/astro`, or the CLI.
 5. **Whether `hook.getConflict()` is used.** Grep for `getConflict`.
@@ -127,6 +127,18 @@ const step = await world.steps.get(undefined, stepId);
 
 // v5
 const step = await world.steps.get(runId, stepId);
+```
+
+### `events.listByCorrelationId()` requires a `runId`
+
+A correlation ID identifies a step, hook or wait within its run, not across runs. The lookup is scoped to one run, so pass the run that owns the ID. The same applies to `analytics.events.listByCorrelationId()`.
+
+```ts
+// v4
+const events = await world.events.listByCorrelationId({ correlationId });
+
+// v5
+const events = await world.events.listByCorrelationId({ runId, correlationId });
 ```
 
 ### `hook.getConflict()` resolves with a `Run`
