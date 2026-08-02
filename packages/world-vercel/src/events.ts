@@ -698,14 +698,14 @@ async function createWorkflowRunEventInner(
       (event) => event.eventType === 'run_created'
     );
     const runStarted = replayEvents.find(
-      (event) => event.eventId === result.eventId
+      (event) => event.eventType === 'run_started'
     );
     if (!runCreated) {
       throw new Error(
         'v4 createEvent: run_started stream is missing run_created'
       );
     }
-    if (!runStarted || runStarted.eventType !== 'run_started') {
+    if (!runStarted) {
       throw new Error(
         'v4 createEvent: run_started stream is missing run_started'
       );
@@ -745,13 +745,12 @@ async function createWorkflowRunEventInner(
     };
   }
 
-  const result = await createWorkflowRunEventV4(
+  const body = await createWorkflowRunEventV4(
     data.eventType === 'run_started'
       ? { ...input, eventType: 'run_started', skipPreload: true }
       : { ...input, eventType: data.eventType },
     config
   );
-  const body = result.body;
   return {
     event: stripEventDataRefs(body.event, resolveData),
     run: body.run,
