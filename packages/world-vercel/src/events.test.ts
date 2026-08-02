@@ -36,12 +36,8 @@ function decodePostedMeta(rawBody: unknown): Record<string, unknown> {
   return decode(bytes.subarray(4, 4 + metaLen)) as Record<string, unknown>;
 }
 
-function runStartedResponse(
-  result: Record<string, unknown>,
-  events: Uint8Array[] = []
-): Buffer {
+function runStartedResponse(events: Uint8Array[] = []): Buffer {
   return Buffer.concat([
-    encodeFrame({ _result: 1, ...result }, new Uint8Array()),
     encodeFrame(
       {
         eventId: 'evnt_0',
@@ -53,6 +49,18 @@ function runStartedResponse(
           deploymentId: 'dpl_1',
           workflowName: 'workflow',
         },
+      },
+      new Uint8Array()
+    ),
+    encodeFrame(
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_1',
+        eventType: 'run_started',
+        createdAt: '2026-06-10T00:00:00.000Z',
+        occurredAt: '2026-06-09T23:59:59.500Z',
+        specVersion: 2,
+        eventData: {},
       },
       new Uint8Array()
     ),
@@ -169,13 +177,7 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return runStartedResponse({
-            run: {
-              runId: 'wrun_1',
-              status: 'running',
-              startedAt: STARTED_AT,
-            },
-          });
+          return runStartedResponse();
         },
         {
           headers: {
@@ -183,6 +185,7 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
             'x-wf-event-id': 'evnt_1',
             'x-wf-run-id': 'wrun_1',
             'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+            'x-wf-max-events': '10000',
           },
         }
       );
@@ -212,13 +215,7 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return runStartedResponse({
-            run: {
-              runId: 'wrun_1',
-              status: 'running',
-              startedAt: STARTED_AT,
-            },
-          });
+          return runStartedResponse();
         },
         {
           headers: {
@@ -226,6 +223,7 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
             'x-wf-event-id': 'evnt_1',
             'x-wf-run-id': 'wrun_1',
             'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+            'x-wf-max-events': '10000',
           },
         }
       );
@@ -255,13 +253,7 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return runStartedResponse({
-            run: {
-              runId: 'wrun_1',
-              status: 'running',
-              startedAt: STARTED_AT,
-            },
-          });
+          return runStartedResponse();
         },
         {
           headers: {
@@ -269,6 +261,7 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
             'x-wf-event-id': 'evnt_1',
             'x-wf-run-id': 'wrun_1',
             'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+            'x-wf-max-events': '10000',
           },
         }
       );
@@ -303,13 +296,7 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return runStartedResponse({
-            run: {
-              runId: 'wrun_1',
-              status: 'running',
-              startedAt: STARTED_AT,
-            },
-          });
+          return runStartedResponse();
         },
         {
           headers: {
@@ -317,6 +304,7 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
             'x-wf-event-id': 'evnt_1',
             'x-wf-run-id': 'wrun_1',
             'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+            'x-wf-max-events': '10000',
           },
         }
       );
@@ -390,13 +378,6 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
 describe('createWorkflowRunEvent result contract', () => {
   it.each([
     {
-      case: 'run_started without its run',
-      eventType: 'run_started',
-      data: { eventType: 'run_started', specVersion: 2 },
-      response: {},
-      error: { message: 'v4 createEvent: run_started result missing run' },
-    },
-    {
       case: 'step_started without its step',
       eventType: 'step_started',
       data: {
@@ -405,13 +386,6 @@ describe('createWorkflowRunEvent result contract', () => {
         specVersion: 2,
       },
       response: {},
-      error: { name: 'WorkflowWorldError', code: 'SCHEMA_VALIDATION' },
-    },
-    {
-      case: 'run_started without startedAt',
-      eventType: 'run_started',
-      data: { eventType: 'run_started', specVersion: 2 },
-      response: { run: { runId: 'wrun_1', status: 'running' } },
       error: { name: 'WorkflowWorldError', code: 'SCHEMA_VALIDATION' },
     },
     {
@@ -433,22 +407,13 @@ describe('createWorkflowRunEvent result contract', () => {
         path: `/api/v4/runs/wrun_1/events/${eventType}`,
         method: 'POST',
       })
-      .reply(
-        200,
-        eventType === 'run_started'
-          ? runStartedResponse(response)
-          : encode(response),
-        {
-          headers: {
-            ...(eventType === 'run_started'
-              ? { 'content-type': V4_FRAME_CONTENT_TYPE }
-              : {}),
-            'x-wf-event-id': 'evnt_1',
-            'x-wf-run-id': 'wrun_1',
-            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
-          },
-        }
-      );
+      .reply(200, encode(response), {
+        headers: {
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+        },
+      });
 
     await expect(
       createWorkflowRunEvent('wrun_1', data as AnyEventRequest, undefined, {
@@ -905,13 +870,7 @@ describe('createWorkflowRunEvent response coercion', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return runStartedResponse({
-            run: {
-              runId: 'wrun_1',
-              status: 'running',
-              startedAt: new Date('2026-06-10T00:00:04.000Z'),
-            },
-          });
+          return runStartedResponse();
         },
         {
           headers: {
@@ -919,6 +878,7 @@ describe('createWorkflowRunEvent response coercion', () => {
             'x-wf-event-id': 'evnt_1',
             'x-wf-run-id': 'wrun_1',
             'x-wf-created-at': '2026-06-10T00:00:04.000Z',
+            'x-wf-max-events': '10000',
           },
         }
       );
@@ -953,44 +913,28 @@ describe('createWorkflowRunEvent response coercion', () => {
       })
       .reply(
         200,
-        runStartedResponse(
-          {
-            run: {
+        runStartedResponse([
+          encodeFrame(
+            {
+              eventId: 'evnt_3',
               runId: 'wrun_1',
-              status: 'running',
-              startedAt: new Date('2026-06-10T00:00:01.000Z'),
+              eventType: 'wait_created',
+              correlationId: 'wait_1',
+              createdAt: '2026-06-10T00:00:02.000Z',
+              occurredAt: '2026-06-10T00:00:01.500Z',
+              specVersion: 2,
+              eventData: { resumeAt: '2026-06-10T01:00:00.000Z' },
             },
-            event: {
-              eventId: 'evnt_2',
-              runId: 'wrun_1',
-              eventType: 'run_started',
-              createdAt: '2026-06-10T00:00:01.000Z',
-              occurredAt: '2026-06-10T00:00:00.500Z',
-              eventData: {},
-            },
-          },
-          [
-            encodeFrame(
-              {
-                eventId: 'evnt_3',
-                runId: 'wrun_1',
-                eventType: 'wait_created',
-                correlationId: 'wait_1',
-                createdAt: '2026-06-10T00:00:02.000Z',
-                occurredAt: '2026-06-10T00:00:01.500Z',
-                specVersion: 2,
-                eventData: { resumeAt: '2026-06-10T01:00:00.000Z' },
-              },
-              new Uint8Array()
-            ),
-          ]
-        ),
+            new Uint8Array()
+          ),
+        ]),
         {
           headers: {
             'content-type': V4_FRAME_CONTENT_TYPE,
-            'x-wf-event-id': 'evnt_2',
+            'x-wf-event-id': 'evnt_1',
             'x-wf-run-id': 'wrun_1',
             'x-wf-created-at': '2026-06-10T00:00:01.000Z',
+            'x-wf-max-events': '10000',
           },
         }
       );
@@ -1004,7 +948,7 @@ describe('createWorkflowRunEvent response coercion', () => {
 
     expect(result.event?.createdAt).toBeInstanceOf(Date);
     expect(result.event?.occurredAt).toBeInstanceOf(Date);
-    const preloaded = result.events?.[1] as {
+    const preloaded = result.events?.[2] as {
       createdAt: Date;
       occurredAt: Date;
       eventData: { resumeAt: Date };
@@ -1037,23 +981,6 @@ describe('createWorkflowRunEvent response coercion', () => {
         Buffer.concat([
           encodeFrame(
             {
-              _result: 1,
-              run: {
-                runId: 'wrun_1',
-                status: 'running',
-                startedAt: new Date('2026-06-10T00:00:01.000Z'),
-              },
-              event: {
-                eventId: 'evnt_2',
-                runId: 'wrun_1',
-                eventType: 'run_started',
-                createdAt: new Date('2026-06-10T00:00:01.000Z'),
-              },
-            },
-            new Uint8Array()
-          ),
-          encodeFrame(
-            {
               eventId: 'evnt_1',
               runId: 'wrun_1',
               eventType: 'run_created',
@@ -1063,6 +990,8 @@ describe('createWorkflowRunEvent response coercion', () => {
                 deploymentId: 'dpl_1',
                 workflowName: 'wf',
                 input: { _type: 'RemoteRef', value: 'dbrf:unused' },
+                executionContext: { region: 'iad1' },
+                attributes: { initial: 'value' },
               },
             },
             input
@@ -1079,7 +1008,21 @@ describe('createWorkflowRunEvent response coercion', () => {
             new Uint8Array()
           ),
           encodeFrame(
-            { _end: 1, next: 'eid:evnt_2', hasMore: false },
+            {
+              eventId: 'evnt_3',
+              runId: 'wrun_1',
+              eventType: 'attr_set',
+              createdAt: new Date('2026-06-10T00:00:02.000Z'),
+              specVersion: 5,
+              eventData: {
+                changes: [{ key: 'later', value: 'change' }],
+                writer: { type: 'workflow' },
+              },
+            },
+            new Uint8Array()
+          ),
+          encodeFrame(
+            { _end: 1, next: 'eid:evnt_3', hasMore: false },
             new Uint8Array()
           ),
         ]),
@@ -1089,6 +1032,7 @@ describe('createWorkflowRunEvent response coercion', () => {
             'x-wf-event-id': 'evnt_2',
             'x-wf-run-id': 'wrun_1',
             'x-wf-created-at': '2026-06-10T00:00:01.000Z',
+            'x-wf-max-events': '10000',
           },
         }
       );
@@ -1103,10 +1047,17 @@ describe('createWorkflowRunEvent response coercion', () => {
     expect(result.events?.map((event) => event.eventType)).toEqual([
       'run_created',
       'run_started',
+      'attr_set',
     ]);
     expect(result.events?.[0].eventData?.input).toEqual(input);
     expect(result.run?.input).toEqual(input);
-    expect(result.cursor).toBe('eid:evnt_2');
+    expect(result.run).toMatchObject({
+      deploymentId: 'dpl_1',
+      workflowName: 'wf',
+      executionContext: { region: 'iad1' },
+      attributes: { initial: 'value', later: 'change' },
+    });
+    expect(result.cursor).toBe('eid:evnt_3');
     expect(result.hasMore).toBe(false);
     agent.assertNoPendingInterceptors();
   });

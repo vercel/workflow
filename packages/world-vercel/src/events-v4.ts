@@ -105,6 +105,7 @@ export const V4_RESPONSE_HEADERS = {
   eventId: 'x-wf-event-id',
   runId: 'x-wf-run-id',
   createdAt: 'x-wf-created-at',
+  maxEvents: 'x-wf-max-events',
 } as const;
 
 export interface CreateEventV4Input {
@@ -259,8 +260,8 @@ export interface CreateEventV4Result {
   runId: string;
   createdAt: string;
   /**
-   * Materialized-entity bag decoded from CBOR or the leading result frame.
-   * Keys are unset when the event type doesn't materialize that entity kind.
+   * Materialized-entity bag decoded from CBOR. Streamed run_started responses
+   * carry only maxEvents here; their event and run come from event frames.
    */
   body: {
     event?: unknown;
@@ -504,7 +505,7 @@ export function throwForErrorResponse(
  * POST /api/v4/runs/:runId/events/:eventType
  *
  * Sends the full request as a single v4 frame. A run_started response may
- * include the first event page as frames; skipPreload and other events use
+ * include the current event log as frames; skipPreload and other events use
  * CBOR.
  *
  * The trailing `:eventType` path segment is an alias of the canonical
@@ -553,25 +554,23 @@ export async function createWorkflowRunEventV4(
   }
 
   if (expectsEventPage) {
-    const stream = await consumeEventFrameStream(response, 'createEvent');
-    switch (stream.type) {
-      case 'events':
-        throw new Error(
-          'v4 createEvent: frame stream ended without the result frame'
-        );
-      case 'event-page':
-        return {
-          eventId,
-          runId,
-          createdAt,
-          body: stream.body,
-          page: stream.page,
-        };
-      default: {
-        const exhaustive: never = stream;
-        throw new Error(`v4 createEvent: unknown stream type ${exhaustive}`);
-      }
+    const page = await consumeEventFrameStream(response, 'createEvent');
+    if (page.next === undefined) {
+      throw new Error('v4 createEvent: event stream missing cursor');
     }
+    const maxEvents = Number(
+      response.headers.get(V4_RESPONSE_HEADERS.maxEvents)
+    );
+    if (!Number.isSafeInteger(maxEvents) || maxEvents <= 0) {
+      throw new Error('v4 createEvent: invalid x-wf-max-events header');
+    }
+    return {
+      eventId,
+      runId,
+      createdAt,
+      body: { maxEvents },
+      page: { ...page, next: page.next },
+    };
   }
 
   const contentType = response.headers.get('content-type');
@@ -705,26 +704,10 @@ export interface ListEventsV4Result {
   hasMore: boolean;
 }
 
-type EventFrameStreamResult =
-  | { type: 'events'; page: ListEventsV4Result }
-  | {
-      type: 'event-page';
-      body: CreateEventV4Result['body'];
-      page: RequiredEventPageV4Result;
-    };
-
-type EventFrameStreamState =
-  | { type: 'events'; events: ListedEventV4[] }
-  | {
-      type: 'event-page';
-      body: CreateEventV4Result['body'];
-      events: ListedEventV4[];
-    };
-
 async function consumeEventFrameStream(
   response: Response,
   opName: string
-): Promise<EventFrameStreamResult> {
+): Promise<ListEventsV4Result> {
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new Error(
@@ -733,51 +716,21 @@ async function consumeEventFrameStream(
   }
 
   const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
-  let state: EventFrameStreamState = { type: 'events', events: [] };
+  const events: ListedEventV4[] = [];
 
   for await (const frame of decodeFrames(chunks)) {
-    if (frame.meta._result === 1) {
-      if (
-        state.type !== 'events' ||
-        state.events.length > 0 ||
-        frame.body.byteLength > 0
-      ) {
-        throw new Error(`v4 ${opName}: invalid result frame`);
-      }
-      const { _result, ...body } = frame.meta;
-      state = { type: 'event-page', body, events: state.events };
-      continue;
-    }
     if (frame.meta._end === 1) {
       if (typeof frame.meta.hasMore !== 'boolean') {
         throw new Error(`v4 ${opName}: end frame missing hasMore`);
       }
       const next =
         typeof frame.meta.next === 'string' ? frame.meta.next : undefined;
-      const page = {
-        events: state.events,
-        next,
-        hasMore: frame.meta.hasMore,
-      };
-      switch (state.type) {
-        case 'events':
-          return { type: 'events', page };
-        case 'event-page':
-          if (next === undefined) {
-            throw new Error(`v4 ${opName}: event page missing cursor`);
-          }
-          return {
-            type: 'event-page',
-            body: state.body,
-            page: { ...page, next },
-          };
-        default: {
-          const exhaustive: never = state;
-          throw new Error(`v4 ${opName}: unknown stream state ${exhaustive}`);
-        }
-      }
+      return { events, next, hasMore: frame.meta.hasMore };
     }
-    state.events.push({
+    if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
+      throw new Error(`v4 ${opName}: unexpected control frame`);
+    }
+    events.push({
       event: frame.meta as unknown as DecodedV4Event,
       body: frame.body,
     });
@@ -785,7 +738,7 @@ async function consumeEventFrameStream(
 
   throw new Error(
     `v4 ${opName}: frame stream ended without the end-of-stream sentinel ` +
-      `(${state.events.length} events read) — truncated response?`
+      `(${events.length} events read) — truncated response?`
   );
 }
 
@@ -810,17 +763,7 @@ async function consumeListFrameStream(
     config,
     opName
   );
-  const stream = await consumeEventFrameStream(response, opName);
-  switch (stream.type) {
-    case 'events':
-      return stream.page;
-    case 'event-page':
-      throw new Error(`v4 ${opName}: unexpected result frame`);
-    default: {
-      const exhaustive: never = stream;
-      throw new Error(`v4 ${opName}: unknown stream type ${exhaustive}`);
-    }
-  }
+  return consumeEventFrameStream(response, opName);
 }
 
 /**

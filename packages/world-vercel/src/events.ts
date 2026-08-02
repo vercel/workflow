@@ -16,8 +16,8 @@
  *
  *   - POST request body is one v4 frame (meta + payload). The response
  *     surfaces eventId/runId/createdAt as `x-wf-*` headers and carries
- *     a materialized EventResult. `run_started` negotiates a frame stream
- *     containing that result and the first event page; other events use CBOR.
+ *     a materialized EventResult. `run_started` instead returns the current
+ *     event log using the same frame stream as LIST; other events use CBOR.
  *   - GET single event returns one v4 frame: the event entity in the
  *     frame meta, the user payload bytes in the frame body.
  *   - LIST events returns a stream of v4 frames terminated by a sentinel
@@ -34,6 +34,7 @@
 import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   type AnyEventRequest,
+  applyAttributeChanges,
   type CreateEventParams,
   type Event,
   type EventDataPayloadField,
@@ -770,62 +771,80 @@ async function createWorkflowRunEventInner(
   // matching the v3 path's stripEventAndLegacyRefs behavior.
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const body = result.body;
-  const baseResult = {
+  if (result.page) {
+    const replayEvents = result.page.events.map(({ event, body }) =>
+      buildEventFromV4(event, body, 'replay')
+    );
+    const runCreated = replayEvents[0];
+    const runStarted = replayEvents[1];
+    if (runCreated?.eventType !== 'run_created') {
+      throw new Error(
+        'v4 createEvent: run_started stream must begin with run_created'
+      );
+    }
+    if (runStarted?.eventType !== 'run_started') {
+      throw new Error(
+        'v4 createEvent: run_started stream must contain run_started second'
+      );
+    }
+
+    let attributes = runCreated.eventData.attributes ?? {};
+    let updatedAt = runStarted.createdAt;
+    for (const event of replayEvents) {
+      if (event.eventType === 'attr_set') {
+        attributes = applyAttributeChanges(attributes, event.eventData.changes);
+        updatedAt = event.createdAt;
+      }
+    }
+
+    return {
+      event: stripEventDataRefs(runStarted, resolveData),
+      run: {
+        runId: runCreated.runId,
+        status: 'running',
+        deploymentId: runCreated.eventData.deploymentId,
+        workflowName: runCreated.eventData.workflowName,
+        specVersion: runCreated.specVersion,
+        executionContext: runCreated.eventData.executionContext,
+        input: runCreated.eventData.input,
+        attributes,
+        encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
+        startedAt: runStarted.createdAt,
+        createdAt: runCreated.createdAt,
+        updatedAt,
+      },
+      events: replayEvents.map((event) =>
+        stripEventDataRefs(event, resolveData)
+      ),
+      cursor: result.page.next,
+      hasMore: result.page.hasMore,
+      maxEvents: body.maxEvents,
+    };
+  }
+
+  return {
     event: body.event
       ? stripEventDataRefs(
           coerceEventDates(body.event as Record<string, unknown>),
           resolveData
         )
       : undefined,
+    run: body.run
+      ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
+      : undefined,
     step: body.step
       ? deserializeStep(body.step as Parameters<typeof deserializeStep>[0])
       : undefined,
     hook: body.hook as EventResult['hook'],
     wait: body.wait as EventResult['wait'],
-    // Lazy step start: thread the server's "I created the step on this call"
-    // signal through so the owned-inline runtime path can gate body execution
-    // on it. Absent from older servers → undefined → safe default.
+    events: body.events
+      ? (body.events as Record<string, unknown>[]).map(coerceEventDates)
+      : undefined,
+    cursor: body.cursor,
+    hasMore: body.hasMore,
     ...(body.stepCreated ? { stepCreated: true } : {}),
-    // Server-supplied per-run event ceiling; absent from older servers.
     ...(typeof body.maxEvents === 'number'
       ? { maxEvents: body.maxEvents }
       : {}),
-  };
-
-  if (!result.page) {
-    return {
-      ...baseResult,
-      run: body.run
-        ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
-        : undefined,
-      events: body.events
-        ? (body.events as Record<string, unknown>[]).map(coerceEventDates)
-        : undefined,
-      cursor: body.cursor,
-      hasMore: body.hasMore,
-    };
-  }
-
-  const replayEvents = result.page.events.map(({ event, body }) =>
-    buildEventFromV4(event, body, 'replay')
-  );
-  const runCreated = replayEvents[0];
-  if (runCreated?.eventType !== 'run_created') {
-    throw new Error(
-      'v4 createEvent: run_started page must begin with run_created'
-    );
-  }
-  if (!body.run) {
-    throw new Error('v4 createEvent: run_started result missing run');
-  }
-  const { inputRef: _inputRef, ...run } = deserializeError<
-    WorkflowRun & { inputRef?: unknown }
-  >(body.run as Record<string, unknown>);
-  return {
-    ...baseResult,
-    run: { ...run, input: runCreated.eventData.input },
-    events: replayEvents.map((event) => stripEventDataRefs(event, resolveData)),
-    cursor: result.page.next,
-    hasMore: result.page.hasMore,
   };
 }
