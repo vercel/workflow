@@ -2257,6 +2257,106 @@ describe('runWorkflow', () => {
       ).toEqual(['First payload', 'Second payload']);
     });
 
+    it('should deliver "hook_received" events sharing a resumeId only once (resilient-resume dedup)', async () => {
+      // `hook_received` has no storage-level uniqueness constraint, so the
+      // resilient-resume path can commit the same resume attempt twice when
+      // the same queue message is redelivered concurrently (both deliveries
+      // pass the runtime's snapshot dedup check before either write lands).
+      // Both rows carry the resume attempt's client-minted `resumeId`;
+      // replay must deliver the payload exactly once. Events without a
+      // `resumeId` are never deduped (distinct resume attempts).
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        ),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const firstPayload = await dehydrateStepReturnValue(
+        { message: 'First payload' },
+        'wrun_123',
+        noEncryptionKey,
+        ops
+      );
+      const events: Event[] = [
+        {
+          eventId: 'event-0',
+          runId: workflowRun.runId,
+          eventType: 'hook_received',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
+          eventData: {
+            token: 'test-token',
+            payload: firstPayload,
+            resumeId: '01JXAMPLE0000000000000RSMA',
+          },
+          createdAt: new Date(),
+        },
+        {
+          // Duplicate materialization of the SAME resume attempt — identical
+          // resumeId and payload bytes. Must be skipped by replay.
+          eventId: 'event-1',
+          runId: workflowRun.runId,
+          eventType: 'hook_received',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
+          eventData: {
+            token: 'test-token',
+            payload: firstPayload,
+            resumeId: '01JXAMPLE0000000000000RSMA',
+          },
+          createdAt: new Date(),
+        },
+        {
+          // A distinct resume attempt (different resumeId) — must deliver.
+          eventId: 'event-2',
+          runId: workflowRun.runId,
+          eventType: 'hook_received',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
+          eventData: {
+            token: 'test-token',
+            payload: await dehydrateStepReturnValue(
+              { message: 'Second payload' },
+              'wrun_123',
+              noEncryptionKey,
+              ops
+            ),
+            resumeId: '01JXAMPLE0000000000000RSMB',
+          },
+          createdAt: new Date(),
+        },
+      ];
+
+      const result = await runWorkflow(
+        `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+      async function workflow() {
+        const hook = createHook({ token: 'test-token' });
+        const payload1 = await hook;
+        const payload2 = await hook;
+        return [payload1.message, payload2.message];
+      }${getWorkflowTransformCode('workflow')}`,
+        workflowRun,
+        events,
+        noEncryptionKey
+      );
+      expect(
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        )
+      ).toEqual(['First payload', 'Second payload']);
+    });
+
     it('should support `for await` loops with `createHook`', async () => {
       const ops: Promise<any>[] = [];
       const workflowRun: WorkflowRun = {

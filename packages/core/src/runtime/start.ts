@@ -25,8 +25,8 @@ import {
 import {
   dehydrateWorkflowArguments,
   type PayloadKey,
-  sealTo,
   SerializationFormat,
+  sealTo,
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -507,6 +507,24 @@ export async function start<TArgs extends unknown[], TResult>(
         compression
       );
 
+      // The environment this caller's own `run_created` write is attributed
+      // to. Stamped into the queue message's `runInput` (NOT into
+      // `run_created`, whose tenant the backend already knows) so the
+      // deployment that consumes the message can tell whether the run it is
+      // being asked to resiliently create was created against a different
+      // environment than its own.
+      //
+      // The two writes below go to different places by different routes:
+      // `events.create` is attributed to THIS client's tenant, while the queue
+      // message is pinned to a deploymentId. When those disagree — a
+      // production-credentialed client pinning a preview deployment — the
+      // preview consumer can't find the run in its own tenant, falls back to
+      // resilient start, and re-creates it: one client-minted run id, two
+      // environments, the production copy pending forever and the preview copy
+      // executing. Worlds with a single tenant return undefined and the field
+      // is simply absent.
+      const creatorEnvironment = world.getEnvironment?.();
+
       const executionContext = {
         traceCarrier,
         workflowCoreVersion,
@@ -550,6 +568,9 @@ export async function start<TArgs extends unknown[], TResult>(
                     specVersion,
                     executionContext,
                     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+                    ...(creatorEnvironment !== undefined
+                      ? { environment: creatorEnvironment }
+                      : {}),
                     ...attributeSeed,
                   },
                 }
