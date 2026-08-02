@@ -408,15 +408,13 @@ async function handleLegacyEventPostgres(
 export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
   const ulid = monotonicFactory();
   const { events } = Schema;
-  const terminalRunStatuses: (typeof Schema.runs.status.enumValues)[number][] =
-    [...TERMINAL_WORKFLOW_RUN_STATUSES];
   const ownerRunIsTerminal = drizzle
     .select({ runId: Schema.runs.runId })
     .from(Schema.runs)
     .where(
       and(
         eq(Schema.runs.runId, Schema.hooks.runId),
-        inArray(Schema.runs.status, terminalRunStatuses)
+        inArray(Schema.runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
       )
     );
   const hookRetentionEnded = or(
@@ -945,7 +943,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .where(
             and(
               eq(Schema.runs.runId, effectiveRunId),
-              notInArray(Schema.runs.status, terminalRunStatuses)
+              notInArray(Schema.runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
             )
           )
           .returning();
@@ -988,7 +986,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .where(
             and(
               eq(Schema.runs.runId, effectiveRunId),
-              notInArray(Schema.runs.status, terminalRunStatuses)
+              notInArray(Schema.runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
             )
           )
           .returning();
@@ -1024,7 +1022,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .where(
             and(
               eq(Schema.runs.runId, effectiveRunId),
-              notInArray(Schema.runs.status, terminalRunStatuses)
+              notInArray(Schema.runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
             )
           )
           .returning();
@@ -1958,16 +1956,13 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
 export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
   const { hooks, runs } = Schema;
-  const terminalRunStatuses: (typeof runs.status.enumValues)[number][] = [
-    ...TERMINAL_WORKFLOW_RUN_STATUSES,
-  ];
   const ownerRunIsTerminal = drizzle
     .select({ runId: runs.runId })
     .from(runs)
     .where(
       and(
         eq(runs.runId, hooks.runId),
-        inArray(runs.status, terminalRunStatuses)
+        inArray(runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
       )
     );
   const available = or(
