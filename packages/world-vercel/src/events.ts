@@ -46,29 +46,23 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   type PaginatedResponse,
-  type ResolveData,
   StructuredErrorSchema,
   stripEventDataRefs,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
 import { decode } from 'cbor-x';
-import { coerceEventDates } from './event-coerce.js';
 import { withEventPostRetry } from './event-retry.js';
 import {
   createWorkflowRunEventV4,
-  type DecodedV4Event,
+  type DecodedEventFrame,
   getEventsByCorrelationIdV4,
   getEventV4,
   getWorkflowRunEventsV4,
 } from './events-v4.js';
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
-import {
-  hasSerializedDataFormatPrefix,
-  normalizeEventData,
-  normalizeSerializedData,
-} from './serialized-data.js';
+import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep } from './steps.js';
 import {
   type APIConfig,
@@ -449,10 +443,6 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   return { payload, meta };
 }
 
-function coerceNormalizedEvent(raw: Record<string, unknown>): Event {
-  return coerceEventDates(normalizeEventData(raw));
-}
-
 function decodeLegacyStructuredError(payload: Uint8Array): unknown {
   if (hasSerializedDataFormatPrefix(payload)) {
     return payload;
@@ -469,69 +459,28 @@ function decodeLegacyStructuredError(payload: Uint8Array): unknown {
 }
 
 /**
- * Turn a v4 event (frame meta + frame body) into the Event shape the
- * workflow runtime expects.
+ * Turn a v4 frame into the Event shape promised by the World interface.
  *
- * Both GET single-event and LIST use the same frame format: meta is the
- * full event entity with the payload field as a RefDescriptor, body is
- * the resolved payload bytes (possibly empty). Read mode normalizes
- * compression wrappers for display. Replay mode preserves the serialized
- * bytes so the runtime's hydrate helpers own decompression and telemetry.
- * Stable-line structured errors are decoded after checking that the payload
- * is not a current format-prefixed serialized value.
+ * The frame body is opaque serialized data. Keep it byte-for-byte so the
+ * runtime and observability hydration layers own decompression. Stable-line
+ * structured errors predate the serialized-data format and remain the sole
+ * exception.
  */
-function buildEventFromV4(
-  decoded: DecodedV4Event,
-  payloadBody: Uint8Array,
-  mode: ResolveData | 'replay'
-): Event {
-  const eventData = (decoded.eventData ?? {}) as Record<string, unknown>;
-  const normalizePayload = mode !== 'replay';
+function decodeEventFrame({ event, body }: DecodedEventFrame): Event {
+  const eventData = { ...event.eventData };
 
-  if (payloadBody.byteLength > 0) {
-    const payloadField = getEventDataPayloadField(decoded.eventType);
-    const payload = normalizePayload
-      ? normalizeSerializedData(payloadBody)
-      : payloadBody;
-    if (payloadField && payload instanceof Uint8Array) {
+  if (body.byteLength > 0) {
+    const payloadField = getEventDataPayloadField(event.eventType);
+    if (payloadField) {
       eventData[payloadField] = legacyStructuredErrorEventTypes.has(
-        decoded.eventType
+        event.eventType
       )
-        ? decodeLegacyStructuredError(payload)
-        : payload;
+        ? decodeLegacyStructuredError(body)
+        : body;
     }
   }
 
-  const raw = {
-    eventId: decoded.eventId,
-    runId: decoded.runId,
-    eventType: decoded.eventType,
-    createdAt:
-      decoded.createdAt instanceof Date
-        ? decoded.createdAt
-        : new Date(decoded.createdAt),
-    ...(decoded.occurredAt !== undefined
-      ? {
-          occurredAt:
-            decoded.occurredAt instanceof Date
-              ? decoded.occurredAt
-              : new Date(decoded.occurredAt),
-        }
-      : {}),
-    ...(decoded.correlationId ? { correlationId: decoded.correlationId } : {}),
-    eventData,
-    ...(decoded.specVersion !== undefined
-      ? { specVersion: decoded.specVersion }
-      : {}),
-  };
-
-  const event = normalizePayload
-    ? coerceNormalizedEvent(raw)
-    : coerceEventDates(raw);
-
-  // For resolveData='none', strip eventData entirely. Reuse the world-
-  // side helper so behavior stays in sync with other backends.
-  return mode === 'none' ? stripEventDataRefs(event, 'none') : event;
+  return EventSchema.parse({ ...event, eventData });
 }
 
 // =============================================================================
@@ -545,10 +494,8 @@ export async function getEvent(
   config?: APIConfig
 ): Promise<Event> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  const { event, body } = await getEventV4(runId, eventId, config);
-  // Same shape as a LIST frame — splice the body bytes into
-  // eventData[payloadField] in buildEventFromV4.
-  return buildEventFromV4(event, body, resolveData);
+  const event = decodeEventFrame(await getEventV4(runId, eventId, config));
+  return stripEventDataRefs(event, resolveData);
 }
 
 export async function getWorkflowRunEvents(
@@ -557,10 +504,10 @@ export async function getWorkflowRunEvents(
 ): Promise<PaginatedResponse<Event>> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
   // `resolveData: 'none'` means the caller only wants metadata — it discards
-  // payloads in buildEventFromV4 below. Tell the backend not to stream them
+  // payloads after decoding. Tell the backend not to stream them
   // in the first place (lazy → empty frame bodies). On `'all'` we resolve
   // (the default). A backend that predates this flag ignores it and streams
-  // full bodies regardless; buildEventFromV4 still strips them when
+  // full bodies regardless; the adapter still strips them when
   // resolveData is 'none', so this is purely a bandwidth optimization and is
   // safe against an older backend.
   const remoteRefBehavior: 'lazy' | 'resolve' =
@@ -580,8 +527,8 @@ export async function getWorkflowRunEvents(
         config
       ));
 
-  const events = result.events.map((listed) =>
-    buildEventFromV4(listed.event, listed.body, resolveData)
+  const events = result.events.map((frame) =>
+    stripEventDataRefs(decodeEventFrame(frame), resolveData)
   );
 
   return {
@@ -751,30 +698,13 @@ async function createWorkflowRunEventInner(
     config
   );
 
-  // The server already CBOR-decoded into result.body — just thread the
-  // fields through. This is the runtime's event-append path (world.events
-  // .create is only ever called from the workflow runtime, never from
-  // o11y), and the runtime re-hydrates every payload it consumes through
-  // the decompress-aware helpers (hydrateStepReturnValue, hydrateRunError,
-  // …). So we deliberately do NOT decompress here: doing so would be
-  // redundant work on the TTFB-sensitive run_started/inline-delta path and
-  // would make the runtime's deserialize compression telemetry report
-  // `codec: none` for payloads that were compressed at rest. gzip/zstd
-  // normalization for o11y/display lives on the read paths (getEvent,
-  // getWorkflowRunEvents, getStep, getRun, getHook).
-  //
-  // `event`/`events` go through coerceEventDates only: they can be read
-  // back from the backing store server-side (e.g. the run_started TTFB
-  // preload queries the event log), where nested eventData dates are ISO
-  // strings — same coercion the GET/LIST path applies. The returned event
-  // honors the caller's resolveData: 'none' strips payload fields,
-  // matching the v3 path's stripEventAndLegacyRefs behavior.
+  // Event payloads remain opaque here, just as they do in frame responses.
+  // EventSchema validates the response and converts stored ISO timestamps
+  // back into the Date instances promised by the World interface.
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const body = result.body;
   if (result.page) {
-    const replayEvents = result.page.events.map(({ event, body }) =>
-      buildEventFromV4(event, body, 'replay')
-    );
+    const replayEvents = result.page.events.map(decodeEventFrame);
     const runCreated = replayEvents.find(
       (event) => event.eventType === 'run_created'
     );
@@ -828,10 +758,7 @@ async function createWorkflowRunEventInner(
 
   return {
     event: body.event
-      ? stripEventDataRefs(
-          coerceEventDates(body.event as Record<string, unknown>),
-          resolveData
-        )
+      ? stripEventDataRefs(EventSchema.parse(body.event), resolveData)
       : undefined,
     run: body.run
       ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
@@ -842,7 +769,7 @@ async function createWorkflowRunEventInner(
     hook: body.hook as EventResult['hook'],
     wait: body.wait as EventResult['wait'],
     events: body.events
-      ? (body.events as Record<string, unknown>[]).map(coerceEventDates)
+      ? body.events.map((event) => EventSchema.parse(event))
       : undefined,
     cursor: body.cursor,
     hasMore: body.hasMore,

@@ -629,7 +629,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('ignores a 412 payload whose events do not narrow to events', async () => {
+  it('ignores a 412 payload containing an unknown event type', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -647,7 +647,14 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
           success: false,
           code: 'precondition-failed',
           message: 'Run state is stale',
-          events: [{ noEventId: true }],
+          events: [
+            {
+              eventId: 'evnt_future',
+              runId: 'wrun_1',
+              eventType: 'future_event',
+              createdAt: '2026-06-10T00:00:00.000Z',
+            },
+          ],
         }),
         { headers: { 'content-type': 'application/json' } }
       );
