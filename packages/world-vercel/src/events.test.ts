@@ -962,7 +962,7 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('hydrates streamed run input without decompressing replay events', async () => {
+  it('reconstructs out-of-order lifecycle events without decompressing input', async () => {
     const agent = mockAgent();
     const serializedInput = new TextEncoder().encode('"workflow input"');
     const compressedInput = gzipSync(serializedInput);
@@ -981,6 +981,17 @@ describe('createWorkflowRunEvent response coercion', () => {
         Buffer.concat([
           encodeFrame(
             {
+              eventId: 'evnt_2',
+              runId: 'wrun_1',
+              eventType: 'run_started',
+              createdAt: new Date('2026-06-10T00:00:01.000Z'),
+              specVersion: 5,
+              eventData: {},
+            },
+            new Uint8Array()
+          ),
+          encodeFrame(
+            {
               eventId: 'evnt_1',
               runId: 'wrun_1',
               eventType: 'run_created',
@@ -995,17 +1006,6 @@ describe('createWorkflowRunEvent response coercion', () => {
               },
             },
             input
-          ),
-          encodeFrame(
-            {
-              eventId: 'evnt_2',
-              runId: 'wrun_1',
-              eventType: 'run_started',
-              createdAt: new Date('2026-06-10T00:00:01.000Z'),
-              specVersion: 5,
-              eventData: {},
-            },
-            new Uint8Array()
           ),
           encodeFrame(
             {
@@ -1045,11 +1045,11 @@ describe('createWorkflowRunEvent response coercion', () => {
     );
 
     expect(result.events?.map((event) => event.eventType)).toEqual([
-      'run_created',
       'run_started',
+      'run_created',
       'attr_set',
     ]);
-    expect(result.events?.[0].eventData?.input).toEqual(input);
+    expect(result.events?.[1].eventData?.input).toEqual(input);
     expect(result.run?.input).toEqual(input);
     expect(result.run).toMatchObject({
       deploymentId: 'dpl_1',
