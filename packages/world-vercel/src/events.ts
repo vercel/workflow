@@ -775,16 +775,20 @@ async function createWorkflowRunEventInner(
     const replayEvents = result.page.events.map(({ event, body }) =>
       buildEventFromV4(event, body, 'replay')
     );
-    const runCreated = replayEvents[0];
-    const runStarted = replayEvents[1];
-    if (runCreated?.eventType !== 'run_created') {
+    const runCreated = replayEvents.find(
+      (event) => event.eventType === 'run_created'
+    );
+    const runStarted = replayEvents.find(
+      (event) => event.eventType === 'run_started'
+    );
+    if (!runCreated) {
       throw new Error(
-        'v4 createEvent: run_started stream must begin with run_created'
+        'v4 createEvent: run_started stream is missing run_created'
       );
     }
-    if (runStarted?.eventType !== 'run_started') {
+    if (!runStarted) {
       throw new Error(
-        'v4 createEvent: run_started stream must contain run_started second'
+        'v4 createEvent: run_started stream is missing run_started'
       );
     }
 
