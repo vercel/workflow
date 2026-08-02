@@ -113,6 +113,69 @@ const mixedBatchWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP"
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
+/**
+ * A two-step workflow source: optional prelude, then `s1(argA)` and
+ * `s2(argB)` in sequence. The interesting part of each fixture is exactly
+ * (prelude, argA, argB).
+ */
+function twoStepSource(prelude: string, argA: string, argB = ''): string {
+  return `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
+  ${prelude}
+  async function workflow() {
+    const a = await s1(${argA});
+    const b = await s2(${argB});
+    return a + b;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+}
+
+// Map/Date/typed-array arguments serialize through captured host intrinsics
+// (see serialization/hardened.ts), so these boundaries stay retainable.
+const builtinArgsWorkflow = twoStepSource(
+  '',
+  '{ index: new Map([["k", 1]]), when: new Date(1234) }',
+  'new Uint8Array([1, 2, 3])'
+);
+
+// The Temporal / core-js pattern: polyfills add new data-valued methods to
+// built-in prototypes and constructor statics. Serialization never reads
+// them, so retention is unaffected.
+const polyfillArgsWorkflow = twoStepSource(
+  `Date.prototype.toTemporalInstant = function () { return "instant"; };
+  Set.prototype.union = function (other) { return new Set([...this, ...other]); };
+  Object.groupBy = function () { return {}; };`,
+  'new Date(1234)',
+  'new Set([1, 2])'
+);
+
+// Replacing a serialization-relevant member (Date.prototype.toISOString)
+// does not affect retention: the Date reducer reads through captured host
+// intrinsics (see serialization/hardened.ts), so the patched member never
+// executes and the serialized bytes stay pristine in both modes.
+const patchedDateArgWorkflow = twoStepSource(
+  'Date.prototype.toISOString = function () { return "patched"; };',
+  'new Date(1234)'
+);
+
+// Serializing an Error with a lazy stack records the read (it runs the
+// engine's format-and-cache, and any Error.prepareStackTrace) — the
+// boundary demotes and the formatter's side effects land in a doomed VM.
+const prepareStackTraceWorkflow = twoStepSource(
+  'Error.prepareStackTrace = () => "formatted";',
+  'new Error("boom")'
+);
+
+// A formatter that deletes itself during the stack read still demotes: the
+// gate records the stack read itself, not the formatter's presence.
+const selfDeletingFormatterWorkflow = twoStepSource(
+  `Error.prepareStackTrace = () => {
+    delete Error.prepareStackTrace;
+    return "formatted";
+  };`,
+  'new Error("boom")'
+);
+
 // `crypto.subtle.digest` computes synchronously via node:crypto, so a
 // digest-using VM stays quiescent at suspension and remains retainable.
 const digestWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
@@ -315,6 +378,49 @@ describe('retained VM through the inline replay loop', () => {
       { failEventTypeOnce: 'run_completed' }
     );
     expect(result).toBe(30);
+    expect(vmBuilds).toBeGreaterThan(1);
+  });
+
+  it('retains boundaries whose args are supported built-ins', async () => {
+    const { vmBuilds, output } = await drive(
+      'wrun_retained_builtins',
+      builtinArgsWorkflow
+    );
+    expect(output).toBeInstanceOf(Uint8Array);
+    expect(vmBuilds).toBe(1);
+  });
+
+  it('retains boundaries when prototypes carry polyfilled data methods', async () => {
+    const { vmBuilds, output } = await drive(
+      'wrun_retained_polyfill',
+      polyfillArgsWorkflow
+    );
+    expect(output).toBeInstanceOf(Uint8Array);
+    expect(vmBuilds).toBe(1);
+  });
+
+  it('retains a Date arg even when a serialization member is replaced', async () => {
+    const { vmBuilds, output } = await drive(
+      'wrun_retained_patched_date',
+      patchedDateArgWorkflow
+    );
+    expect(output).toBeInstanceOf(Uint8Array);
+    expect(vmBuilds).toBe(1);
+  });
+
+  it('demotes when the workflow replaced Error.prepareStackTrace', async () => {
+    const { vmBuilds } = await drive(
+      'wrun_retained_prepare_stack_trace',
+      prepareStackTraceWorkflow
+    );
+    expect(vmBuilds).toBeGreaterThan(1);
+  });
+
+  it('demotes when the formatter deletes itself during serialization', async () => {
+    const { vmBuilds } = await drive(
+      'wrun_retained_self_deleting_formatter',
+      selfDeletingFormatterWorkflow
+    );
     expect(vmBuilds).toBeGreaterThan(1);
   });
 
