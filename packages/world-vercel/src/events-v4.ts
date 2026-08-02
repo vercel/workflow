@@ -26,6 +26,7 @@ import {
   type Event,
   EventSchema,
   type EventType,
+  EventTypeSchema,
   getEventDataPayloadField,
   HookSchema,
   type PaginationOptions,
@@ -290,6 +291,13 @@ const CreateEventV4HeadersSchema = z.object({
   runId: z.string(),
   createdAt: z.string(),
 });
+
+const EventFrameMetaSchema = z
+  .object({
+    eventType: EventTypeSchema,
+    eventData: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
 
 export interface CreateEventV4Result {
   eventId: string;
@@ -653,18 +661,6 @@ export async function createWorkflowRunStartedEventV4(
   };
 }
 
-/** Unvalidated event metadata decoded from a frame's CBOR block. */
-export interface DecodedV4Event {
-  eventId: string;
-  runId: string;
-  eventType: string;
-  correlationId?: string;
-  createdAt: Date | string;
-  occurredAt?: Date | string;
-  specVersion?: number;
-  eventData?: Record<string, unknown>;
-}
-
 function readHeader(
   responseHeaders: Record<string, string | string[] | undefined>,
   name: string
@@ -718,7 +714,7 @@ export async function getEventV4(
   // GET emits a single frame (no sentinel); decodeFrames returns at EOF
   // after yielding it.
   for await (const frame of decodeFrames(chunks)) {
-    return { event: frame.meta as unknown as DecodedV4Event, body: frame.body };
+    return { event: EventFrameMetaSchema.parse(frame.meta), body: frame.body };
   }
   throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
 }
@@ -740,7 +736,7 @@ export interface ListEventsV4Params extends PaginationOptions {
  * exact shape.
  */
 export interface DecodedEventFrame {
-  event: DecodedV4Event;
+  event: z.infer<typeof EventFrameMetaSchema>;
   /** Resolved payload bytes. Empty for events without a payload. */
   body: Uint8Array;
 }
@@ -784,7 +780,7 @@ async function consumeEventFrameStream(
       throw new Error(`v4 ${opName}: unexpected control frame`);
     }
     events.push({
-      event: frame.meta as unknown as DecodedV4Event,
+      event: EventFrameMetaSchema.parse(frame.meta),
       body: frame.body,
     });
   }
