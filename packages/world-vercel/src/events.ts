@@ -63,11 +63,9 @@ import {
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import { hasSerializedDataFormatPrefix } from './serialized-data.js';
-import { deserializeStep } from './steps.js';
 import {
   type APIConfig,
   DEFAULT_RESOLVE_DATA_OPTION,
-  deserializeError,
   makeRequest,
 } from './utils.js';
 
@@ -705,20 +703,12 @@ async function createWorkflowRunEventInner(
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const body = result.body;
   return {
-    event: body.event
-      ? stripEventDataRefs(EventSchema.parse(body.event), resolveData)
-      : undefined,
-    run: body.run
-      ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
-      : undefined,
-    step: body.step
-      ? deserializeStep(body.step as Parameters<typeof deserializeStep>[0])
-      : undefined,
-    hook: body.hook as EventResult['hook'],
-    wait: body.wait as EventResult['wait'],
-    events: body.events
-      ? body.events.map((event) => EventSchema.parse(event))
-      : undefined,
+    event: stripEventDataRefs(body.event, resolveData),
+    run: body.run,
+    step: body.step,
+    hook: body.hook,
+    wait: body.wait,
+    events: body.events,
     cursor: body.cursor ?? undefined,
     hasMore: body.hasMore,
     // Lazy step start: thread the server's "I created the step on this call"

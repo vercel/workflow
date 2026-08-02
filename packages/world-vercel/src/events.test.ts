@@ -16,6 +16,31 @@ import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
 const STARTED_AT = new Date('2026-06-10T00:00:00.000Z');
 
+function createEventBody(
+  event: AnyEventRequest,
+  entities: Record<string, unknown> = {}
+) {
+  return encode({
+    event: {
+      ...event,
+      eventId: 'evnt_1',
+      runId: 'wrun_1',
+      createdAt: STARTED_AT,
+    },
+    ...entities,
+  });
+}
+
+const runningRun = {
+  runId: 'wrun_1',
+  status: 'running',
+  deploymentId: 'dpl_1',
+  workflowName: 'workflow',
+  startedAt: STARTED_AT,
+  createdAt: STARTED_AT,
+  updatedAt: STARTED_AT,
+};
+
 function mockAgent() {
   const agent = new MockAgent();
   agent.disableNetConnect();
@@ -140,13 +165,10 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({
-            run: {
-              runId: 'wrun_1',
-              status: 'running',
-              startedAt: STARTED_AT,
-            },
-          });
+          return createEventBody(
+            { eventType: 'run_started', specVersion: 2 },
+            { run: runningRun }
+          );
         },
         {
           headers: {
@@ -182,13 +204,10 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({
-            run: {
-              runId: 'wrun_1',
-              status: 'running',
-              startedAt: STARTED_AT,
-            },
-          });
+          return createEventBody(
+            { eventType: 'run_started', specVersion: 2 },
+            { run: runningRun }
+          );
         },
         {
           headers: {
@@ -224,13 +243,10 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({
-            run: {
-              runId: 'wrun_1',
-              status: 'running',
-              startedAt: STARTED_AT,
-            },
-          });
+          return createEventBody(
+            { eventType: 'run_started', specVersion: 2 },
+            { run: runningRun }
+          );
         },
         {
           headers: {
@@ -271,13 +287,10 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({
-            run: {
-              runId: 'wrun_1',
-              status: 'running',
-              startedAt: STARTED_AT,
-            },
-          });
+          return createEventBody(
+            { eventType: 'run_started', specVersion: 2 },
+            { run: runningRun }
+          );
         },
         {
           headers: {
@@ -434,13 +447,25 @@ async function postStepStartedMeta(
       200,
       (opts: { body?: unknown }) => {
         capturedMeta = decodePostedMeta(opts.body);
-        return encode({
-          step: {
-            stepId: 'step_1',
-            status: 'running',
-            startedAt: STARTED_AT,
+        return createEventBody(
+          {
+            eventType: 'step_started',
+            specVersion: 2,
+            correlationId: 'step_1',
           },
-        });
+          {
+            step: {
+              runId: 'wrun_1',
+              stepId: 'step_1',
+              stepName: 'step',
+              status: 'running',
+              attempt: 1,
+              startedAt: STARTED_AT,
+              createdAt: STARTED_AT,
+              updatedAt: STARTED_AT,
+            },
+          }
+        );
       },
       {
         headers: {
@@ -506,7 +531,21 @@ describe('createWorkflowRunEvent replayDivergenceCount wire field', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({ run: { runId: 'wrun_1', status: 'completed' } });
+          return createEventBody(
+            {
+              eventType: 'run_completed',
+              specVersion: 2,
+              eventData: { output: new Uint8Array() },
+            },
+            {
+              run: {
+                ...runningRun,
+                status: 'completed',
+                output: new Uint8Array(),
+                completedAt: STARTED_AT,
+              },
+            }
+          );
         },
         {
           headers: {
@@ -809,7 +848,11 @@ describe('createWorkflowRunEvent response coercion', () => {
           run: {
             runId: taggedRunId,
             status: 'running',
+            deploymentId: 'dpl_1',
+            workflowName: 'wf',
             startedAt: new Date('2026-06-10T00:00:01.000Z'),
+            createdAt: new Date('2026-06-10T00:00:01.000Z'),
+            updatedAt: new Date('2026-06-10T00:00:01.000Z'),
           },
           event: {
             eventId: 'evnt_1',
@@ -866,13 +909,19 @@ describe('createWorkflowRunEvent response coercion', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({
-            run: {
-              runId: 'wrun_1',
-              status: 'running',
-              startedAt: new Date('2026-06-10T00:00:04.000Z'),
+          return createEventBody(
+            {
+              eventType: 'run_started',
+              specVersion: 2,
+              occurredAt,
             },
-          });
+            {
+              run: {
+                ...runningRun,
+                startedAt: new Date('2026-06-10T00:00:04.000Z'),
+              },
+            }
+          );
         },
         {
           headers: {
@@ -917,7 +966,11 @@ describe('createWorkflowRunEvent response coercion', () => {
           run: {
             runId: 'wrun_1',
             status: 'running',
+            deploymentId: 'dpl_1',
+            workflowName: 'workflow',
             startedAt: new Date('2026-06-10T00:00:01.000Z'),
+            createdAt: new Date('2026-06-10T00:00:00.000Z'),
+            updatedAt: new Date('2026-06-10T00:00:01.000Z'),
           },
           event: {
             eventId: 'evnt_2',
@@ -996,7 +1049,9 @@ describe('createWorkflowRunEvent response coercion', () => {
           wait: {
             waitId: 'wait_1',
             runId: 'wrun_1',
-            status: 'pending',
+            status: 'waiting',
+            createdAt: STARTED_AT,
+            updatedAt: STARTED_AT,
           },
         }),
         {

@@ -21,12 +21,18 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
+import { WorkflowWorldError } from '@workflow/errors';
 import {
   type Event,
   EventSchema,
+  type EventType,
   getEventDataPayloadField,
+  HookSchema,
+  WaitSchema,
+  WorkflowRunSchema,
 } from '@workflow/world';
 import { decode } from 'cbor-x';
+import { z } from 'zod';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { getEventsDispatcher } from './http-client.js';
 import {
@@ -34,6 +40,7 @@ import {
   instrumentedFetch,
   parseRetryAfter,
 } from './http-core.js';
+import { deserializeStep, StepWireSchema } from './steps.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
 /**
@@ -107,7 +114,7 @@ export const V4_RESPONSE_HEADERS = {
 export interface CreateEventV4Input {
   // runId is required even for run_created, because the payload is keyed under the runId
   runId: string;
-  eventType: string;
+  eventType: EventType;
   /** Opaque payload bytes. Pass undefined for events that don't carry
    *  user data (e.g. step_started). */
   payload?: Uint8Array;
@@ -210,7 +217,7 @@ export interface CreateEventV4Input {
    *  barrier only and never reads the preloaded log, so it asks the server to
    *  skip the list+resolve. Acted on by the server only for run_started;
    *  older servers ignore it and preload as before. */
-  skipPreload?: boolean;
+  skipPreload?: true;
   /**
    * Epoch ms (the ULID time of the latest event the runtime has loaded
    * during replay). Sent by replay-context creates so the backend can
@@ -251,38 +258,24 @@ export interface PreconditionFailureDetails {
   cursor?: string;
 }
 
+const CreateEventV4BodySchema = z.object({
+  event: EventSchema,
+  run: WorkflowRunSchema.optional(),
+  step: StepWireSchema.transform(deserializeStep).optional(),
+  hook: HookSchema.optional(),
+  wait: WaitSchema.optional(),
+  events: z.array(EventSchema).optional(),
+  cursor: z.string().nullable().optional(),
+  hasMore: z.boolean().optional(),
+  stepCreated: z.literal(true).optional(),
+  maxEvents: z.number().int().positive().optional(),
+});
+
 export interface CreateEventV4Result {
   eventId: string;
   runId: string;
   createdAt: string;
-  /**
-   * Materialized-entity bag — CBOR-decoded from the response body. The
-   * server hands back the same shape v2/v3 use for EventResult so the
-   * adapter layer can drop these fields into its return value unchanged.
-   * Keys are unset when the event type doesn't materialize that entity
-   * kind.
-   */
-  body: {
-    event?: unknown;
-    run?: unknown;
-    step?: unknown;
-    hook?: unknown;
-    wait?: unknown;
-    events?: unknown[];
-    cursor?: string | null;
-    hasMore?: boolean;
-    /**
-     * Lazy step start: true when the server's step_started created the step
-     * on this call. Absent from older servers (safe default: not the lazy
-     * creator). Threaded into EventResult.stepCreated by the events adapter.
-     */
-    stepCreated?: boolean;
-    /**
-     * Server-owned per-run event ceiling, returned on run-lifecycle responses.
-     * Absent from older servers. Threaded into EventResult.maxEvents.
-     */
-    maxEvents?: number;
-  };
+  body: z.infer<typeof CreateEventV4BodySchema>;
 }
 
 /** Build the CBOR meta map for a v4 POST frame. Drops undefined entries
@@ -544,12 +537,29 @@ export async function createWorkflowRunEventV4(
     throw new Error('v4 createEvent: response missing required x-wf-* headers');
   }
 
-  // Decode the materialized-entity bag from the CBOR response body.
   const bodyBytes = new Uint8Array(await response.arrayBuffer());
-  const body =
-    bodyBytes.byteLength > 0
-      ? (decode(bodyBytes) as CreateEventV4Result['body'])
-      : {};
+  if (bodyBytes.byteLength === 0) {
+    throw new Error('v4 createEvent: empty response body');
+  }
+  const parsedBody = CreateEventV4BodySchema.safeParse(decode(bodyBytes));
+  if (!parsedBody.success) {
+    throw new WorkflowWorldError('v4 createEvent: invalid response body', {
+      code: 'SCHEMA_VALIDATION',
+      cause: parsedBody.error,
+    });
+  }
+  const body = parsedBody.data;
+
+  if (
+    body.event.eventId !== eventId ||
+    body.event.runId !== runId ||
+    body.event.eventType !== input.eventType
+  ) {
+    throw new WorkflowWorldError(
+      'v4 createEvent: response event does not match request',
+      { code: 'SCHEMA_VALIDATION' }
+    );
+  }
 
   return { eventId, runId, createdAt, body };
 }
