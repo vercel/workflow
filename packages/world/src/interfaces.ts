@@ -252,11 +252,11 @@ export interface Storage {
      * @param params - Optional parameters for event creation
      * @returns Promise resolving to the created event and run entity
      */
-    create(
+    create<T extends RunCreatedEventRequest>(
       runId: string | null,
-      data: RunCreatedEventRequest,
+      data: T,
       params?: CreateEventParams
-    ): Promise<EventResult<'run_created'>>;
+    ): Promise<EventResult<T['eventType']>>;
 
     /**
      * Create an event for an existing workflow run and atomically update the entity.
