@@ -921,6 +921,7 @@ describe('Storage (Postgres integration)', () => {
 
         const evts = await events.listByCorrelationId({
           correlationId: 'lazy-step-2',
+          runId: testRunId,
         });
         const created = evts.data.find((e) => e.eventType === 'step_created');
         const started = evts.data.find((e) => e.eventType === 'step_started');
@@ -1305,6 +1306,7 @@ describe('Storage (Postgres integration)', () => {
 
         const result = await events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: {},
         });
 
@@ -1317,7 +1319,11 @@ describe('Storage (Postgres integration)', () => {
         expect(result.data[2].correlationId).toBe(correlationId);
       });
 
-      it('should list events across multiple runs with same correlation ID', async () => {
+      it('returns only the named run when two runs share a correlation ID', async () => {
+        // A correlation id names a hook, step or wait within its run. Two runs
+        // can hold the same one — a slot-numbered run counts its own steps, so
+        // `step_…001` is the first step of every such run — and the query
+        // answers for the run it was given, not for both.
         const correlationId = 'hook-xyz789';
 
         // Create another run
@@ -1351,16 +1357,71 @@ describe('Storage (Postgres integration)', () => {
 
         const result = await events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: {},
         });
 
-        expect(result.data).toHaveLength(3);
-        expect(result.data[0].eventId).toBe(result1.event.eventId);
-        expect(result.data[0].runId).toBe(testRunId);
-        expect(result.data[1].eventId).toBe(result2.event.eventId);
-        expect(result.data[1].runId).toBe(run2.runId);
-        expect(result.data[2].eventId).toBe(result3.event.eventId);
-        expect(result.data[2].runId).toBe(testRunId);
+        expect(result.data.map((event) => event.eventId)).toEqual([
+          result1.event.eventId,
+          result3.event.eventId,
+        ]);
+        expect(result.data.every((event) => event.runId === testRunId)).toBe(
+          true
+        );
+
+        // The other run's event is not lost, it belongs to the other run.
+        const other = await events.listByCorrelationId({
+          correlationId,
+          runId: run2.runId,
+          pagination: {},
+        });
+        expect(other.data.map((event) => event.eventId)).toEqual([
+          result2.event.eventId,
+        ]);
+      });
+
+      it('pages a scoped query past a sibling run holding the same correlation ID', async () => {
+        // The cursor is an event id, and the scope is what keeps it a key: the
+        // sibling run's rows sort into the same id range, so an unscoped page
+        // would spend the caller's page budget on a run it did not ask for.
+        const correlationId = 'hook_shared_paging';
+        const run2 = await createRun(events, {
+          deploymentId: 'deployment-789',
+          workflowName: 'test-workflow-3',
+          input: new Uint8Array(),
+        });
+
+        const created = await events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId,
+          eventData: { token: 'test-token-paging' },
+        });
+        await events.create(run2.runId, {
+          eventType: 'hook_created',
+          correlationId,
+          eventData: { token: 'test-token-paging-2' },
+        });
+        const disposed = await events.create(testRunId, {
+          eventType: 'hook_disposed',
+          correlationId,
+        });
+
+        const seen: string[] = [];
+        let cursor: string | undefined;
+        do {
+          const page = await events.listByCorrelationId({
+            correlationId,
+            runId: testRunId,
+            pagination: { limit: 1, cursor },
+          });
+          expect(page.data.every((event) => event.runId === testRunId)).toBe(
+            true
+          );
+          seen.push(...page.data.map((event) => event.eventId));
+          cursor = page.hasMore ? (page.cursor ?? undefined) : undefined;
+        } while (cursor);
+
+        expect(seen).toEqual([created.event.eventId, disposed.event.eventId]);
       });
 
       it('should return empty list for non-existent correlation ID', async () => {
@@ -1377,6 +1438,7 @@ describe('Storage (Postgres integration)', () => {
 
         const result = await events.listByCorrelationId({
           correlationId: 'non-existent-correlation-id',
+          runId: testRunId,
           pagination: {},
         });
 
@@ -1428,6 +1490,7 @@ describe('Storage (Postgres integration)', () => {
         // Get first page (step_created, step_started, step_retrying)
         const page1 = await events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: { limit: 3 },
         });
 
@@ -1438,6 +1501,7 @@ describe('Storage (Postgres integration)', () => {
         // Get second page (step_started, step_completed)
         const page2 = await events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: { limit: 3, cursor: page1.cursor || undefined },
         });
 
@@ -1466,6 +1530,7 @@ describe('Storage (Postgres integration)', () => {
         // Note: resolveData parameter is ignored by the PG World storage implementation
         const result = await events.listByCorrelationId({
           correlationId: 'step-with-data',
+          runId: testRunId,
           pagination: {},
         });
 
@@ -1500,6 +1565,7 @@ describe('Storage (Postgres integration)', () => {
 
         const result = await events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: {},
         });
 
@@ -1537,6 +1603,7 @@ describe('Storage (Postgres integration)', () => {
 
         const result = await events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: { sortOrder: 'desc' },
         });
 
@@ -1584,6 +1651,7 @@ describe('Storage (Postgres integration)', () => {
 
         const result = await events.listByCorrelationId({
           correlationId: hookId,
+          runId: testRunId,
           pagination: {},
         });
 
