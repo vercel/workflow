@@ -1159,7 +1159,9 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
         200,
         (opts: { body?: unknown }) => {
           captured = decodeFrameMeta(opts.body);
-          if (data.eventType !== 'run_started') return createEventBody(data);
+          if (data.eventType !== 'run_started') {
+            return createEventBody(data, { run: runningRun });
+          }
           return Buffer.concat([
             encodeFrame(
               {

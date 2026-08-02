@@ -7,7 +7,7 @@ import type {
   CreateEventParams,
   CreateEventRequest,
   Event,
-  EventResultFor,
+  EventResult,
   GetEventParams,
   ListEventsByCorrelationIdParams,
   ListEventsParams,
@@ -256,7 +256,7 @@ export interface Storage {
       runId: string | null,
       data: T,
       params?: CreateEventParams
-    ): Promise<EventResultFor<T>>;
+    ): Promise<EventResult<T['eventType']>>;
 
     /**
      * Create an event for an existing workflow run and atomically update the entity.
@@ -271,7 +271,7 @@ export interface Storage {
       runId: string,
       data: T,
       params?: CreateEventParams
-    ): Promise<EventResultFor<T>>;
+    ): Promise<EventResult<T['eventType']>>;
 
     get(
       runId: string,

@@ -535,12 +535,12 @@ export async function getWorkflowRunEvents(
   };
 }
 
-export async function createWorkflowRunEvent(
+export async function createWorkflowRunEvent<T extends AnyEventRequest>(
   id: string | null,
-  data: AnyEventRequest,
+  data: T,
   params?: CreateEventParams,
   config?: APIConfig
-): Promise<EventResult> {
+): Promise<EventResult<T['eventType']>> {
   try {
     // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
     // socket/headers timeouts, transient 5xx) in-process for event types that
@@ -572,7 +572,7 @@ export async function createWorkflowRunEvent(
         { code: 'SCHEMA_VALIDATION' }
       );
     }
-    return result;
+    return result as EventResult<T['eventType']>;
   } catch (err) {
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (

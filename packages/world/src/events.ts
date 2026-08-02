@@ -861,7 +861,7 @@ export interface CreateEventParams {
  *
  * Note: `event` is optional to support legacy runs where event storage is skipped.
  */
-export interface EventResult {
+export type EventResult<T extends EventType = EventType> = {
   /** The created event (optional for legacy compatibility) */
   event?: Event;
   /** The workflow run entity (for run_* events) */
@@ -901,16 +901,13 @@ export interface EventResult {
   stepCreated?: boolean;
   /** Server-owned max event count for the run (run-lifecycle responses); the runtime enforces it. */
   maxEvents?: number;
-}
-
-export type EventResultFor<T extends AnyEventRequest> =
-  T extends EventRequestOfType<'run_created'>
-    ? EventResult & { run: WorkflowRun }
-    : T extends EventRequestOfType<'run_started'>
-      ? EventResult & { run: StartedWorkflowRun }
-      : T extends EventRequestOfType<'step_started'>
-        ? EventResult & { step: StartedStep }
-        : EventResult;
+} & (T extends 'run_created'
+  ? { run: WorkflowRun }
+  : T extends 'run_started'
+    ? { run: StartedWorkflowRun }
+    : T extends 'step_started'
+      ? { step: StartedStep }
+      : unknown);
 
 export interface GetEventParams {
   resolveData?: ResolveData;

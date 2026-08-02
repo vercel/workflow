@@ -19,6 +19,8 @@ import {
   workflowDisplayName,
 } from '@workflow/utils/parse-name';
 import {
+  type CreateEventParams,
+  type CreateEventRequest,
   type Event,
   getQueueTopicPrefix,
   isLegacySpecVersion,
@@ -57,7 +59,6 @@ import {
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
   appendUniqueEvents,
-  type EventCreator,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -726,7 +727,10 @@ export function workflowEntrypoint(
                   const replayRecoveryReporter = replayDivergence
                     ? new ReplayRecoveryReporter(replayDivergence.count)
                     : ReplayRecoveryReporter.inert();
-                  const createEvent: EventCreator = (data, params) =>
+                  const createEvent = <T extends CreateEventRequest>(
+                    data: T,
+                    params?: CreateEventParams
+                  ) =>
                     replayRecoveryReporter.withEventCreate(params, (p) =>
                       world.events.create(runId, data, p)
                     );
