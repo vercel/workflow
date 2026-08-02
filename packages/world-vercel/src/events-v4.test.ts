@@ -404,7 +404,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('requests and decodes the first event page for run_started', async () => {
+  it('requests and decodes the event stream for run_started', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -421,18 +421,6 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
       .reply(
         200,
         Buffer.concat([
-          encodeFrame(
-            {
-              _result: 1,
-              event: {
-                eventId: 'evnt_2',
-                runId: 'wrun_1',
-                eventType: 'run_started',
-              },
-              run: { runId: 'wrun_1', status: 'running' },
-            },
-            new Uint8Array()
-          ),
           encodeFrame(
             {
               eventId: 'evnt_1',
@@ -460,6 +448,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
             'x-wf-event-id': 'evnt_2',
             'x-wf-run-id': 'wrun_1',
             'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+            'x-wf-max-events': '10000',
           },
         }
       );
@@ -474,7 +463,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     );
 
     assert(result.page);
-    expect(result.body.run).toMatchObject({ status: 'running' });
+    expect(result.body).toEqual({ maxEvents: 10000 });
     expect(result.page.events).toHaveLength(2);
     expect(result.page.events[0].body).toEqual(input);
     expect(result.page.next).toBe('eid:evnt_2');
@@ -482,7 +471,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('requires the event-page response requested by run_started', async () => {
+  it('requires the event-stream response requested by run_started', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -1069,20 +1058,18 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
           return Buffer.concat([
             encodeFrame(
               {
-                _result: 1,
-                run: {
-                  runId: 'wrun_1',
-                  status: 'running',
-                  startedAt: new Date('2026-06-10T00:00:00.000Z'),
-                },
+                eventId: 'evnt_0',
+                runId: 'wrun_1',
+                eventType: 'run_created',
+                eventData: {},
               },
               new Uint8Array()
             ),
             encodeFrame(
               {
-                eventId: 'evnt_0',
+                eventId: 'evnt_1',
                 runId: 'wrun_1',
-                eventType: 'run_created',
+                eventType: 'run_started',
                 eventData: {},
               },
               new Uint8Array()
@@ -1096,7 +1083,10 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
         {
           headers: {
             ...(data.eventType === 'run_started'
-              ? { 'content-type': V4_FRAME_CONTENT_TYPE }
+              ? {
+                  'content-type': V4_FRAME_CONTENT_TYPE,
+                  'x-wf-max-events': '10000',
+                }
               : {}),
             'x-wf-event-id': 'evnt_1',
             'x-wf-run-id': 'wrun_1',
