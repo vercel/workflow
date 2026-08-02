@@ -102,16 +102,6 @@ function headersToRecord(headers: Headers): Record<string, string> {
   return out;
 }
 
-/**
- * POST surfaces these so callers can read the created eventId without
- * decoding the CBOR response body
- */
-export const V4_RESPONSE_HEADERS = {
-  eventId: 'x-wf-event-id',
-  runId: 'x-wf-run-id',
-  createdAt: 'x-wf-created-at',
-} as const;
-
 export interface CreateEventV4Input {
   // runId is required even for run_created, because the payload is keyed under the runId
   runId: string;
@@ -289,12 +279,7 @@ const EventFrameMetaSchema = z
   })
   .passthrough();
 
-export interface CreateEventV4Result {
-  eventId: string;
-  runId: string;
-  createdAt: string;
-  body: z.infer<typeof CreateEventV4BodySchema>;
-}
+export type CreateEventV4Result = z.infer<typeof CreateEventV4BodySchema>;
 
 /** Build the CBOR meta map for a v4 POST frame. Drops undefined entries
  *  so the wire shape matches what the server expects to see. */
@@ -544,17 +529,6 @@ export async function createWorkflowRunEventV4(
     'createEvent'
   );
 
-  const eventId = response.headers.get(V4_RESPONSE_HEADERS.eventId);
-  const runId = response.headers.get(V4_RESPONSE_HEADERS.runId);
-  const createdAt = response.headers.get(V4_RESPONSE_HEADERS.createdAt);
-  if (
-    typeof eventId !== 'string' ||
-    typeof runId !== 'string' ||
-    typeof createdAt !== 'string'
-  ) {
-    throw new Error('v4 createEvent: response missing required x-wf-* headers');
-  }
-
   const bodyBytes = new Uint8Array(await response.arrayBuffer());
   if (bodyBytes.byteLength === 0) {
     throw new Error('v4 createEvent: empty response body');
@@ -566,9 +540,7 @@ export async function createWorkflowRunEventV4(
       cause: parsedBody.error,
     });
   }
-  const body = parsedBody.data;
-
-  return { eventId, runId, createdAt, body };
+  return parsedBody.data;
 }
 
 function readHeader(

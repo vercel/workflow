@@ -653,7 +653,7 @@ async function createWorkflowRunEventInner(
 
   const { payload, meta } = splitEventDataForV4(data);
 
-  const result = await createWorkflowRunEventV4(
+  const body = await createWorkflowRunEventV4(
     {
       runId: id,
       eventType: data.eventType,
@@ -701,7 +701,6 @@ async function createWorkflowRunEventInner(
   // EventSchema validates the response and converts stored ISO timestamps
   // back into the Date instances promised by the World interface.
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  const body = result.body;
   return {
     event: stripEventDataRefs(body.event, resolveData),
     run: body.run,
