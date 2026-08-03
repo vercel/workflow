@@ -495,6 +495,49 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('accepts hook_conflict from a hook_created request', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/hook_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        createEventBody({
+          eventType: 'hook_conflict',
+          specVersion: 5,
+          correlationId: 'hook_1',
+          eventData: { token: 'token', conflictingRunId: 'wrun_2' },
+        }),
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': CREATED_AT,
+          },
+        }
+      );
+
+    const result = await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'hook_created',
+        specVersion: 5,
+        correlationId: 'hook_1',
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.event.eventType).toBe('hook_conflict');
+    agent.assertNoPendingInterceptors();
+  });
+
   it('forwards skipPreload in the run_started frame meta (turbo preload opt-out)', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
