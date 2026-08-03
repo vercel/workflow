@@ -1797,32 +1797,26 @@ export function workflowEntrypoint(
                     }
 
                     let replayStart = 0;
-                    // Cursor of this iteration's event log before any inline
-                    // writes advance it — declared at try scope so the
-                    // suspension catch (which runs the inline step) can read it
-                    // as the `sinceCursor` for the inline-delta optimization.
-                    let preInlineWriteCursor: string | null = null;
                     try {
-                      let log: LoadedEventLog;
+                      let loaded: LoadedEventLog;
                       if (eventLog.type === 'ready') {
-                        log = eventLog;
+                        loaded = eventLog;
                       } else {
-                        const loaded = await loadWorkflowRunEvents(
+                        const page = await loadWorkflowRunEvents(
                           runId,
                           eventLog.type === 'loadAfter'
                             ? eventLog.cursor
                             : undefined
                         );
                         if (eventLog.type === 'loadAfter') {
-                          appendEventLog(eventLog, loaded);
-                          log = eventLog;
+                          appendEventLog(eventLog, page);
+                          loaded = eventLog;
                         } else {
-                          log = loaded;
+                          loaded = page;
                         }
                       }
-                      let events = log.events;
 
-                      reportPreconditionRestartReload(events);
+                      reportPreconditionRestartReload(loaded.events);
 
                       // Detect concurrent completion via the event log: if
                       // any other handler wrote a terminal run event, exit
@@ -1830,18 +1824,18 @@ export function workflowEntrypoint(
                       // derived from these events, so checking the log here
                       // gives us the same signal as a runs.get() round-trip
                       // without the extra request per loop iteration.
-                      if (hasRecordedTerminalRunEvent(events, runId)) {
+                      if (hasRecordedTerminalRunEvent(loaded.events, runId)) {
                         return;
                       }
 
                       // Complete elapsed waits
                       const now = Date.now();
                       const completedWaitIds = new Set(
-                        events
+                        loaded.events
                           .filter((e) => e.eventType === 'wait_completed')
                           .map((e) => e.correlationId)
                       );
-                      const waitsToComplete = events
+                      const waitsToComplete = loaded.events
                         .filter(
                           (
                             e
@@ -1867,7 +1861,10 @@ export function workflowEntrypoint(
                         try {
                           await createEvent(waitEvent, {
                             requestId,
-                            ...preconditionSnapshotParams(events, log.cursor),
+                            ...preconditionSnapshotParams(
+                              loaded.events,
+                              loaded.cursor
+                            ),
                           });
                         } catch (err) {
                           if (EntityConflictError.is(err)) {
@@ -1893,13 +1890,13 @@ export function workflowEntrypoint(
                         // reload for older worlds that cannot give us a stable
                         // cursor, or if the cursor delta does not include the
                         // wait completion this handler just attempted.
-                        if (log.cursor) {
-                          const loaded = await loadWorkflowRunEvents(
+                        if (loaded.cursor) {
+                          const page = await loadWorkflowRunEvents(
                             runId,
-                            log.cursor
+                            loaded.cursor
                           );
                           const completedWaitIdsAfterCursor = new Set(
-                            loaded.events
+                            page.events
                               .filter((e) => e.eventType === 'wait_completed')
                               .map((e) => e.correlationId)
                           );
@@ -1911,14 +1908,13 @@ export function workflowEntrypoint(
                           );
 
                           if (sawAllWaitCompletions) {
-                            appendEventLog(log, loaded);
+                            appendEventLog(loaded, page);
                           } else {
-                            log = await loadWorkflowRunEvents(runId);
+                            loaded = await loadWorkflowRunEvents(runId);
                           }
                         } else {
-                          log = await loadWorkflowRunEvents(runId);
+                          loaded = await loadWorkflowRunEvents(runId);
                         }
-                        events = log.events;
                       }
 
                       // Completing elapsed waits refreshes the event snapshot.
@@ -1926,7 +1922,7 @@ export function workflowEntrypoint(
                       // event after the initial snapshot but before this
                       // replay. Once the event log records that outcome, this
                       // delivery is done.
-                      if (hasRecordedTerminalRunEvent(events, runId)) {
+                      if (hasRecordedTerminalRunEvent(loaded.events, runId)) {
                         return;
                       }
 
@@ -1936,10 +1932,10 @@ export function workflowEntrypoint(
                       // run_failed / MAX_EVENTS_EXCEEDED.
                       if (
                         maxEventsLimit !== undefined &&
-                        events.length >= maxEventsLimit
+                        loaded.events.length >= maxEventsLimit
                       ) {
                         throw new MaxEventsExceededError(
-                          events.length,
+                          loaded.events.length,
                           maxEventsLimit
                         );
                       }
@@ -1952,7 +1948,7 @@ export function workflowEntrypoint(
                       // committed pre-step attr_set, and the detour it marks
                       // is subtracted via preStepAttrStartMs regardless of
                       // which invocation wrote it (see runtime/step-latency.ts).
-                      invocationStartedClean ??= events.every(
+                      invocationStartedClean ??= loaded.events.every(
                         (e) =>
                           e.eventType === 'run_created' ||
                           e.eventType === 'run_started' ||
@@ -1968,14 +1964,13 @@ export function workflowEntrypoint(
                       // letting the next iteration skip the incremental
                       // events.list. Captured here because nothing between this
                       // point and the inline executeStep mutates the event log.
-                      preInlineWriteCursor = log.cursor;
-                      eventLog = { ...log, type: 'ready' };
+                      eventLog = { ...loaded, type: 'ready' };
 
                       // Replay workflow
                       runtimeLogger.debug('Starting workflow replay', {
                         workflowRunId: runId,
                         loopIteration,
-                        eventCount: events.length,
+                        eventCount: loaded.events.length,
                       });
                       replayStart = Date.now();
                       // Start every missing decrypt/decompress operation before
@@ -1983,12 +1978,12 @@ export function workflowEntrypoint(
                       // consumers still deserialize and resolve in event order.
                       const payloadPrewarm = replayPayloadCache.prewarm(
                         workflowRun,
-                        events
+                        loaded.events
                       );
                       const result = await runWorkflow(
                         workflowCode,
                         workflowRun,
-                        events,
+                        loaded.events,
                         encryptionKey,
                         replayPayloadCache,
                         // Turbo: the end-of-run drain inside runWorkflow commits
@@ -2025,7 +2020,10 @@ export function workflowEntrypoint(
                           },
                           {
                             requestId,
-                            ...preconditionSnapshotParams(events, log.cursor),
+                            ...preconditionSnapshotParams(
+                              loaded.events,
+                              loaded.cursor
+                            ),
                           }
                         );
                       } catch (err) {
@@ -2105,7 +2103,6 @@ export function workflowEntrypoint(
                           eventLog.type === 'ready',
                           'Workflow suspended before its event log was loaded'
                         );
-                        const loaded = eventLog;
                         let suspensionResult: Awaited<
                           ReturnType<typeof handleSuspension>
                         >;
@@ -2116,7 +2113,7 @@ export function workflowEntrypoint(
                             run: workflowRun,
                             span,
                             requestId,
-                            eventLog: loaded,
+                            eventLog,
                             runReadyBarrier,
                             replayRecoveryReporter,
                           });
@@ -2221,7 +2218,6 @@ export function workflowEntrypoint(
                           });
                           return;
                         }
-                        eventLog = nextEventLogLoad(loaded);
                         preStepBlockingMs += suspensionResult.hookCreationMs;
                         if (
                           suspensionResult.hasAttributeEvents &&
@@ -2261,6 +2257,7 @@ export function workflowEntrypoint(
                         // paying a delivery round-trip here would only add
                         // latency before the workflow's next step.
                         if (suspensionResult.hasAttributeEvents) {
+                          eventLog = nextEventLogLoad(eventLog);
                           continue;
                         }
 
@@ -2549,16 +2546,15 @@ export function workflowEntrypoint(
                         // Open hooks/waits in the cumulative log, computed
                         // once for the two gates below.
                         const openHookWaitState = openHookAndWaitState(
-                          loaded.events
+                          eventLog.events
                         );
 
                         // Inline-delta fast path gate. We request the delta —
                         // and on the next iteration consume it in place of the
                         // events.list — only when ALL hold:
                         //
-                        //  - We have a real prior cursor to diff against
-                        //    (`preInlineWriteCursor`; a World may return none on
-                        //    the initial load).
+                        //  - We have a real prior cursor to diff against (a
+                        //    World may return none on the initial load).
                         //  - This is the clean single-step sequential case:
                         //    this suspension produced exactly one step and no
                         //    waits (`err.{step,wait}Count`), that one step is
@@ -2622,7 +2618,7 @@ export function workflowEntrypoint(
                           world.capabilities?.preconditionGuard === true;
 
                         const requestInlineDelta =
-                          typeof preInlineWriteCursor === 'string' &&
+                          typeof eventLog.cursor === 'string' &&
                           err.stepCount === 1 &&
                           err.waitCount === 0 &&
                           pendingSteps.length === 1 &&
@@ -2717,7 +2713,7 @@ export function workflowEntrypoint(
                         // snapshot has a local-clock createdAt, so under
                         // turbo only the run-id ULID timestamp is trusted.
                         const latencyTracking = computeStepLatencyTracking({
-                          events: loaded.events,
+                          events: eventLog.events,
                           invocationStartedClean:
                             invocationStartedClean === true,
                           runCreatedAtMs:
@@ -2749,8 +2745,8 @@ export function workflowEntrypoint(
                         // outside guarded deployments; Worlds that don't
                         // enforce the guard ignore it.
                         const inlineClaimSnapshot = preconditionSnapshotParams(
-                          loaded.events,
-                          preInlineWriteCursor
+                          eventLog.events,
+                          eventLog.cursor
                         );
 
                         replayBudget.pause();
@@ -2759,8 +2755,9 @@ export function workflowEntrypoint(
                         >[];
                         const stepExecutionPromises = inlineExecutions.map(
                           (s, stepIndex) => {
-                            const run = () =>
-                              executeStep({
+                            const run = () => {
+                              assert(eventLog.type === 'ready');
+                              return executeStep({
                                 world,
                                 workflowRunId: runId,
                                 workflowDeploymentId: workflowRun.deploymentId,
@@ -2799,7 +2796,7 @@ export function workflowEntrypoint(
                                   s.lazyStepInput !== undefined
                                     ? 1
                                     : countStepStartedEvents(
-                                        loaded.events,
+                                        eventLog.events,
                                         s.correlationId,
                                         {
                                           type: 'ownedBy',
@@ -2836,14 +2833,14 @@ export function workflowEntrypoint(
                                 latencyTracking
                                   ? { latencyTracking }
                                   : {}),
-                                ...(requestInlineDelta && preInlineWriteCursor
+                                ...(requestInlineDelta && eventLog.cursor
                                   ? {
-                                      inlineDeltaSinceCursor:
-                                        preInlineWriteCursor,
+                                      inlineDeltaSinceCursor: eventLog.cursor,
                                     }
                                   : {}),
                                 replayRecoveryReporter,
                               });
+                            };
                             // Invariant bookkeeping: this invocation owns
                             // these bodies until they settle — see
                             // assertNoInFlightOwnedSteps.
@@ -3088,12 +3085,14 @@ export function workflowEntrypoint(
                         if (inlineExecutions.length === 1) {
                           const only = stepResults[0];
                           if (only.type === 'completed' && only.inlineDelta) {
-                            appendEventLog(loaded, only.inlineDelta);
+                            appendEventLog(eventLog, only.inlineDelta);
                             eventLog = only.inlineDelta.hasMore
-                              ? nextEventLogLoad(loaded)
-                              : { ...loaded, type: 'ready' };
+                              ? nextEventLogLoad(eventLog)
+                              : { ...eventLog, type: 'ready' };
+                            continue;
                           }
                         }
+                        eventLog = nextEventLogLoad(eventLog);
                       } else {
                         // Stale-snapshot rejection of a guarded write made
                         // directly by the replay loop — the result-bearing
