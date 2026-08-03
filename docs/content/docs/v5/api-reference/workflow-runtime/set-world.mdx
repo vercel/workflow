@@ -1,0 +1,49 @@
+---
+title: setWorld
+description: Override or reset the cached World instance used by the workflow runtime.
+type: reference
+summary: Use setWorld to inject a custom World instance or reset the cache after environment configuration changes.
+prerequisites:
+  - /docs/api-reference/workflow-runtime/get-world
+related:
+  - /docs/api-reference/workflow-runtime/create-world
+---
+
+Overrides the cached [World](/docs/api-reference/workflow-runtime/world) instance that [`getWorld()`](/docs/api-reference/workflow-runtime/get-world) returns. Use it to inject a World constructed with explicit configuration (rather than environment variables), or pass `undefined` to clear the cache so the next `getWorld()` call reinitializes from the current environment.
+
+```typescript lineNumbers
+import { setWorld, getWorld } from "workflow/runtime";
+import type { World } from "@workflow/world";
+declare const customWorld: World; // @setup
+
+setWorld(customWorld); // [!code highlight]
+const world = await getWorld(); // resolves customWorld
+```
+
+## API Signature
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world` | `World \| undefined` | The World instance to use, or `undefined` to reset the cache and reinitialize from environment variables on next access |
+
+### Returns
+
+This function does not return a value.
+
+## Example: Reset After Environment Changes
+
+```typescript lineNumbers
+import { setWorld, getWorld } from "workflow/runtime";
+
+process.env.WORKFLOW_TARGET_WORLD = "@workflow/world-local";
+setWorld(undefined); // clear the cached instance // [!code highlight]
+
+const world = await getWorld(); // reinitialized with new configuration
+```
+
+## Related Functions
+
+- [`getWorld()`](/docs/api-reference/workflow-runtime/get-world) - Resolve the cached World instance.
+- [`createWorld()`](/docs/api-reference/workflow-runtime/create-world) - Construct a fresh World from environment configuration.

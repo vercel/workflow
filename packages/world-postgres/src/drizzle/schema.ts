@@ -1,14 +1,15 @@
 import {
   type Event,
   type Hook,
+  type SerializedData,
   type Step,
   StepStatusSchema,
-  type StructuredError,
   type Wait,
   WaitStatusSchema,
   type WorkflowRun,
   WorkflowRunStatusSchema,
 } from '@workflow/world';
+import { sql } from 'drizzle-orm';
 import {
   boolean,
   customType,
@@ -16,30 +17,32 @@ import {
   integer,
   /** @deprecated: use Cbor instead */
   jsonb,
-  pgEnum,
   pgSchema,
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
   varchar,
 } from 'drizzle-orm/pg-core';
 import { Cbor, type Cborized } from './cbor.js';
+
+export const schema = pgSchema('workflow');
 
 function mustBeMoreThanOne<T>(t: T[]) {
   return t as [T, ...T[]];
 }
 
-export const workflowRunStatus = pgEnum(
+export const workflowRunStatus = schema.enum(
   'status',
   mustBeMoreThanOne(WorkflowRunStatusSchema.options)
 );
 
-export const stepStatus = pgEnum(
+export const stepStatus = schema.enum(
   'step_status',
   mustBeMoreThanOne(StepStatusSchema.options)
 );
 
-export const waitStatus = pgEnum(
+export const waitStatus = schema.enum(
   'wait_status',
   mustBeMoreThanOne(WaitStatusSchema.options)
 );
@@ -59,8 +62,6 @@ type DrizzlishOfType<T extends object> = {
  */
 export type SerializedContent = any[];
 
-export const schema = pgSchema('workflow');
-
 export const runs = schema.table(
   'workflow_runs',
   {
@@ -79,9 +80,39 @@ export const runs = schema.table(
     /** @deprecated */
     inputJson: jsonb('input').$type<SerializedContent>(),
     input: Cbor<SerializedContent>()('input_cbor'),
-    /** @deprecated - use error instead */
+    /** @deprecated - use error instead (legacy JSON-stringified StructuredError) */
     errorJson: text('error'),
-    error: Cbor<StructuredError>()('error_cbor'),
+    /**
+     * The thrown value from a run_failed event, serialized via the workflow
+     * serialization pipeline (dehydrateRunError). Stored as a Uint8Array and
+     * wrapped in CBOR for transport.
+     */
+    error: Cbor<SerializedData>()('error_cbor'),
+    /**
+     * The high-level error category (USER_ERROR, RUNTIME_ERROR, etc.) from
+     * a run_failed event. Plaintext metadata for routing — does not require
+     * decryption or hydration.
+     */
+    errorCode: varchar('error_code'),
+    /**
+     * Plaintext string-string metadata attached to the run via
+     * `setAttributes()`. EXPERIMENTAL MVP: stored as JSONB to allow
+     * SQL-side merge (`jsonb_set` / `jsonb_strip_nulls`) without a
+     * read-modify-write cycle. Defaults to `{}` so existing rows
+     * (pre-migration) read as the empty map.
+     */
+    attributes: jsonb('attributes')
+      .$type<Record<string, string>>()
+      .default({})
+      .notNull(),
+    /**
+     * The run's X25519 public key (base64), stamped at creation by SDKs that
+     * support sealed (`encp`) envelopes. Lets cross-run writers seal payloads
+     * to this run without holding its symmetric key. Not secret — the private
+     * scalar is re-derived on demand and never stored. Null on runs created by
+     * older SDKs, which fall back to the symmetric path.
+     */
+    encryptionPublicKey: varchar('encryption_public_key'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at')
       .defaultNow()
@@ -111,10 +142,32 @@ export const events = schema.table(
     eventDataJson: jsonb('payload'),
     eventData: Cbor<unknown>()('payload_cbor'),
     specVersion: integer('spec_version'),
+    // `resumeId` is omitted deliberately: world-postgres does not advertise
+    // lazy hook-resume dedup and stays on the sequential single-writer path,
+    // so it never needs to persist the resume idempotency key (no column, no
+    // migration).
   } satisfies DrizzlishOfType<
-    Cborized<Event & { eventData?: undefined }, 'eventData'>
+    Cborized<
+      Omit<Event, 'occurredAt' | 'resumeId'> & { eventData?: undefined },
+      'eventData'
+    >
   >,
-  (tb) => [index().on(tb.runId), index().on(tb.correlationId)]
+  (tb) => [
+    index().on(tb.runId),
+    index().on(tb.correlationId),
+    // Runtime-correlated one-shot events must be unique per (run, correlation)
+    // — without
+    // this, two concurrent invocations producing identical correlationIds
+    // (e.g. the snapshot runtime's deterministic ULIDs across replays) can
+    // both insert events, causing duplicate operations in the log.
+    // The unique violation is caught in events.create and translated to
+    // EntityConflictError, matching the runtime's expected dedup contract.
+    uniqueIndex('workflow_events_entity_creation_unique')
+      .on(tb.runId, tb.correlationId, tb.eventType)
+      .where(
+        sql`${tb.eventType} IN ('step_created', 'hook_created', 'wait_created', 'attr_set')`
+      ),
+  ]
 );
 
 export const steps = schema.table(
@@ -130,9 +183,14 @@ export const steps = schema.table(
     /** @deprecated we stream binary data */
     outputJson: jsonb('output').$type<SerializedContent>(),
     output: Cbor<SerializedContent>()('output_cbor'),
-    /** @deprecated - use error instead */
+    /** @deprecated - use error instead (legacy JSON-stringified StructuredError) */
     errorJson: text('error'),
-    error: Cbor<StructuredError>()('error_cbor'),
+    /**
+     * The thrown value from a step_failed / step_retrying event, serialized
+     * via the workflow serialization pipeline (dehydrateStepError). Stored
+     * as a Uint8Array and wrapped in CBOR for transport.
+     */
+    error: Cbor<SerializedData>()('error_cbor'),
     attempt: integer('attempt').notNull(),
     /** Maps to startedAt in Step interface */
     startedAt: timestamp('started_at'),
@@ -170,7 +228,15 @@ export const hooks = schema.table(
     metadata: Cbor<SerializedContent>()('metadata_cbor'),
     specVersion: integer('spec_version'),
     isWebhook: boolean('is_webhook').default(true),
-  } satisfies DrizzlishOfType<Cborized<Hook, 'metadata'>>,
+    isSystem: boolean('is_system').default(false),
+    // Server-synthesized resume slice. Not carried by the hook_created event,
+    // so this backend leaves it null; reads fall back to runs.get.
+    resumeContext: Cbor<NonNullable<Hook['resumeContext']>>()('resume_context'),
+    // `resumeCapabilities` is deliberately response-only — attested fresh on
+    // each by-token lookup, never persisted — so it must not become a column.
+  } satisfies DrizzlishOfType<
+    Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'>
+  >,
   (tb) => [index().on(tb.runId), index().on(tb.token)]
 );
 

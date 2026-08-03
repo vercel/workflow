@@ -4,6 +4,8 @@
  * The manifest adapter transforms the raw SWC plugin output into this format.
  */
 
+import type { WorkflowRunStatus } from '@workflow/world';
+
 export interface Position {
   x: number;
   y: number;
@@ -124,7 +126,7 @@ export interface EdgeTraversal {
 
 export interface WorkflowRunExecution {
   runId: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: WorkflowRunStatus;
   nodeExecutions: Map<string, StepExecution[]>; // nodeId -> array of executions (for retries)
   edgeTraversals: Map<string, EdgeTraversal>; // edgeId -> traversal info
   currentNode?: string; // for running workflows

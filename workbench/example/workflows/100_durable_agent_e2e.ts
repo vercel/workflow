@@ -2,7 +2,7 @@
  * E2E test workflows for DurableAgent using @workflow/ai/test mock providers.
  */
 import { DurableAgent } from '@workflow/ai/agent';
-import { mockTextModel, mockSequenceModel } from '@workflow/ai/test';
+import { mockSequenceModel, mockTextModel } from '@workflow/ai/test';
 import { FatalError, getWritable } from 'workflow';
 import z from 'zod/v4';
 
@@ -132,6 +132,89 @@ export async function agentErrorToolE2e() {
   });
   const result = await agent.stream({
     messages: [{ role: 'user', content: 'Call the throwing tool' }],
+    writable: getWritable(),
+  });
+  return {
+    stepCount: result.steps.length,
+    lastStepText: result.steps[result.steps.length - 1]?.text,
+  };
+}
+
+// ============================================================================
+// Provider tool tests — tool identity preserved across step boundaries
+// ============================================================================
+
+/**
+ * Tests that provider tools (e.g. anthropic.tools.webSearch) are correctly
+ * passed through to the model without being converted to function tools.
+ * The mock model simulates a provider-executed tool call + result.
+ */
+export async function agentProviderToolE2e() {
+  'use workflow';
+  const agent = new DurableAgent({
+    model: mockSequenceModel([
+      {
+        type: 'provider-tool-call',
+        toolName: 'webSearch',
+        input: JSON.stringify({ query: 'workflow sdk' }),
+        result: { title: 'Workflow SDK', url: 'https://example.com' },
+      },
+      { type: 'text', text: 'I found a result for you.' },
+    ]),
+    tools: {
+      webSearch: {
+        type: 'provider',
+        id: 'anthropic.web_search',
+        args: { maxUses: 5 },
+      } as any,
+    },
+  });
+  const result = await agent.stream({
+    messages: [{ role: 'user', content: 'Search for workflow sdk' }],
+    writable: getWritable(),
+  });
+  return {
+    stepCount: result.steps.length,
+    lastStepText: result.steps[result.steps.length - 1]?.text,
+  };
+}
+
+/**
+ * Tests mixing provider tools with regular function tools.
+ * The mock model first calls a provider tool, then a regular tool.
+ */
+export async function agentMixedToolsE2e(a: number, b: number) {
+  'use workflow';
+  const agent = new DurableAgent({
+    model: mockSequenceModel([
+      {
+        type: 'provider-tool-call',
+        toolName: 'webSearch',
+        input: JSON.stringify({ query: 'what is a + b' }),
+        result: { answer: `${a} + ${b}` },
+      },
+      {
+        type: 'tool-call',
+        toolName: 'addNumbers',
+        input: JSON.stringify({ a, b }),
+      },
+      { type: 'text', text: `The answer is ${a + b}` },
+    ]),
+    tools: {
+      webSearch: {
+        type: 'provider',
+        id: 'anthropic.web_search',
+        args: {},
+      } as any,
+      addNumbers: {
+        description: 'Add two numbers',
+        inputSchema: z.object({ a: z.number(), b: z.number() }),
+        execute: addNumbers,
+      },
+    },
+  });
+  const result = await agent.stream({
+    messages: [{ role: 'user', content: `Search and add ${a} + ${b}` }],
     writable: getWritable(),
   });
   return {

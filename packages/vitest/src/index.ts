@@ -7,11 +7,16 @@ import { setWorld } from '@workflow/core/runtime';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Event, Hook } from '@workflow/world';
 import {
-  createLocalWorld,
+  createWorld,
   initDataDir,
   type LocalWorld,
 } from '@workflow/world-local';
 import type { Plugin } from 'vite';
+import type { VitestPluginContext } from 'vitest/node';
+import {
+  resolveWorkflowTestOptions,
+  WORKFLOW_VITEST_OPTIONS_KEY,
+} from './options.js';
 
 class VitestBuilder extends BaseBuilder {
   #outDir: string;
@@ -32,27 +37,25 @@ class VitestBuilder extends BaseBuilder {
     this.#outDir = outDir;
   }
 
-  protected override get shouldLogBaseBuilderInfo(): boolean {
-    return false;
-  }
-
   override async build(): Promise<void> {
     const inputFiles = await this.getInputFiles();
     await mkdir(this.#outDir, { recursive: true });
 
-    await this.createWorkflowsBundle({
-      outfile: join(this.#outDir, 'workflows.mjs'),
+    // V2: Build combined bundle that includes both step registrations
+    // and workflow entrypoint in a single handler.
+    await this.createCombinedBundle({
+      inputFiles,
+      stepsOutfile: join(this.#outDir, '__step_registrations.mjs'),
+      flowOutfile: join(this.#outDir, 'combined.mjs'),
+      format: 'esm',
       bundleFinalOutput: false,
-      format: 'esm',
-      inputFiles,
-    });
-
-    await this.createStepsBundle({
-      outfile: join(this.#outDir, 'steps.mjs'),
       externalizeNonSteps: true,
-      rewriteTsExtensions: true,
-      format: 'esm',
-      inputFiles,
+      // The generated bundles are imported directly by Node in the vitest
+      // worker (no downstream bundler), so project-local imports must be
+      // bundled inline. Externalizing them emits raw `.ts` specifiers that
+      // Node's native ESM loader can only handle with erasable-syntax-only
+      // type stripping (and not at all on older Node versions).
+      bundleTransitiveLocalStepDependencies: true,
     });
   }
 }
@@ -60,13 +63,25 @@ class VitestBuilder extends BaseBuilder {
 export interface WorkflowTestOptions {
   /**
    * The working directory of the project (where workflows/ lives).
-   * Defaults to process.cwd().
+   * Defaults to the resolved Vitest project root.
    */
   cwd?: string;
-}
-
-function getOutDir(cwd: string): string {
-  return join(cwd, '.workflow-vitest');
+  /**
+   * Root directory used for default test artifacts.
+   * When set, `.workflow-data` and `.workflow-vitest` are created here unless
+   * overridden explicitly with `dataDir` or `outDir`.
+   */
+  rootDir?: string;
+  /**
+   * Directory for workflow runtime data written by the test world.
+   * Defaults to `<rootDir>/.workflow-data`.
+   */
+  dataDir?: string;
+  /**
+   * Directory for generated workflow and step bundles.
+   * Defaults to `<rootDir>/.workflow-vitest`.
+   */
+  outDir?: string;
 }
 
 /**
@@ -84,23 +99,34 @@ function getOutDir(cwd: string): string {
  * });
  * ```
  */
-export function workflow(): Plugin[] {
+export function workflow(options?: WorkflowTestOptions): Plugin[] {
+  const transformExcludes: string[] = [];
   const dir = fileURLToPath(new URL('.', import.meta.url));
+  const vitestPlugin = {
+    name: 'workflow:vitest',
+    config() {
+      return {
+        test: {
+          globalSetup: [join(dir, 'global-setup.js')],
+          setupFiles: [join(dir, 'setup-file.js')],
+        },
+      } as Record<string, unknown>;
+    },
+    configureVitest({ project }: VitestPluginContext) {
+      const resolvedOptions = resolveWorkflowTestOptions(
+        options,
+        project.config.root
+      );
+      transformExcludes.push(`${resolvedOptions.outDir}/`);
+      project.provide(WORKFLOW_VITEST_OPTIONS_KEY, resolvedOptions);
+    },
+  };
+
   return [
     workflowTransformPlugin({
-      exclude: [join(process.cwd(), '.workflow-vitest') + '/'],
+      exclude: transformExcludes,
     }),
-    {
-      name: 'workflow:vitest',
-      config() {
-        return {
-          test: {
-            globalSetup: [join(dir, 'global-setup.js')],
-            setupFiles: [join(dir, 'setup-file.js')],
-          },
-        } as Record<string, unknown>;
-      },
-    },
+    vitestPlugin,
   ];
 }
 
@@ -112,12 +138,14 @@ export function workflow(): Plugin[] {
 export async function buildWorkflowTests(
   options?: WorkflowTestOptions
 ): Promise<void> {
-  const cwd = options?.cwd ?? process.cwd();
-  const outDir = getOutDir(cwd);
+  const { cwd, dataDir, outDir } = resolveWorkflowTestOptions(
+    options,
+    process.cwd()
+  );
   const builder = new VitestBuilder(cwd, outDir);
   await builder.build();
   // Pre-create the shared data directory so workers don't race on mkdir
-  await initDataDir(join(cwd, '.workflow-data'));
+  await initDataDir(dataDir);
 }
 
 let world: LocalWorld | undefined;
@@ -139,8 +167,10 @@ export async function setupWorkflowTests(
     world = undefined;
   }
 
-  const cwd = options?.cwd ?? process.cwd();
-  const outDir = getOutDir(cwd);
+  const { dataDir, outDir } = resolveWorkflowTestOptions(
+    options,
+    process.cwd()
+  );
 
   // Lazy-load bundles on first dispatch instead of eagerly at setup time.
   // Eager native import() during setupFiles loads step dependencies into
@@ -168,24 +198,27 @@ export async function setupWorkflowTests(
   // Each vitest worker uses a unique tag to isolate its test data.
   // All workers write to the shared .workflow-data directory so runs
   // are visible to the observability dashboard, but clear() only
-  // deletes files matching the worker's tag.
+  // deletes files matching the worker's tag. Recovery stays disabled because
+  // tests expect a clean world and register direct handlers after setup begins.
   const poolId = process.env.VITEST_POOL_ID ?? '0';
-  world = createLocalWorld({
-    dataDir: join(cwd, '.workflow-data'),
+  world = createWorld({
+    dataDir,
+    recoverActiveRuns: false,
     tag: `vitest-${poolId}`,
   });
-  await world.start?.();
   await world.clear();
 
+  // V2: Single combined handler for both workflow and step execution.
   world.registerHandler(
     '__wkf_workflow_',
-    createLazyHandler(join(outDir, 'workflows.mjs'))
-  );
-  world.registerHandler(
-    '__wkf_step_',
-    createLazyHandler(join(outDir, 'steps.mjs'))
+    createLazyHandler(join(outDir, 'combined.mjs'))
   );
 
+  // Handlers must be registered before start(): if recoverActiveRuns is ever
+  // re-enabled here (or plumbed through from a caller), start() re-enqueues
+  // pending runs and the queue begins dispatching. Registering after start
+  // would race handler installation against that dispatch.
+  await world.start?.();
   setWorld(world);
 }
 

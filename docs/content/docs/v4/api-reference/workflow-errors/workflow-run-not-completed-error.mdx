@@ -1,0 +1,58 @@
+---
+title: WorkflowRunNotCompletedError
+description: Thrown when requesting the result of a workflow run that has not completed yet.
+type: reference
+summary: Catch WorkflowRunNotCompletedError when reading the return value of a run that is still pending or running.
+related:
+  - /docs/api-reference/workflow-api/get-run
+---
+
+`WorkflowRunNotCompletedError` is thrown when requesting the result of a workflow run that has not completed yet. The run's current status (for example `pending` or `running`) is available on the error.
+
+[`run.returnValue()`](/docs/api-reference/workflow-api/get-run) handles this error internally — it polls until the run completes — so you will mainly encounter it when building custom polling logic on lower-level APIs.
+
+```typescript lineNumbers
+import { WorkflowRunNotCompletedError } from "workflow/errors"
+declare function readRunResult(runId: string): Promise<unknown>; // @setup
+declare const runId: string; // @setup
+
+try {
+  const result = await readRunResult(runId);
+} catch (error) {
+  if (WorkflowRunNotCompletedError.is(error)) { // [!code highlight]
+    console.log(`Run ${error.runId} is still ${error.status}`);
+  }
+}
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface WorkflowRunNotCompletedError {
+  /** The workflow run ID. */
+  runId: string;
+  /** The run's status at the time of the error (e.g. "pending", "running"). */
+  status: string;
+  /** The error message. */
+  message: string;
+}
+export default WorkflowRunNotCompletedError;`}
+/>
+
+### Static Methods
+
+#### `WorkflowRunNotCompletedError.is(value)`
+
+Type-safe check for `WorkflowRunNotCompletedError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+```typescript
+import { WorkflowRunNotCompletedError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (WorkflowRunNotCompletedError.is(error)) {
+  // error is typed as WorkflowRunNotCompletedError
+}
+```

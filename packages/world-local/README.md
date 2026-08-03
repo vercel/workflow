@@ -6,3 +6,12 @@ Stores workflow data as JSON files on disk and provides in-memory queuing. Autom
 
 Used by default on `next dev` and `next start`.
 
+## Programmatic configuration
+
+```ts
+import { createWorld } from '@workflow/world-local';
+
+const world = createWorld({
+  dataDir: './custom-workflow-data',
+});
+```

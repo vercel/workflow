@@ -3,11 +3,61 @@ import chalk from 'chalk';
 import open from 'open';
 import { logger } from '../config/log.js';
 import { getEnvVars } from './env.js';
+import { setupCliWorld } from './setup.js';
 import { getVercelDashboardUrl } from './vercel-api.js';
 
 export const getHostUrl = (webPort: number) => `http://localhost:${webPort}`;
 
 let httpServer: Server | null = null;
+
+interface DashboardRegistryEntry {
+  url: string;
+  basename: string;
+  world: string;
+  pid: number;
+  startedAt: string;
+}
+
+/**
+ * Find embedded dashboards (e.g. a framework integration serving `/_workflow`)
+ * that are currently live for this project. Reads the best-effort registry and
+ * health-checks each entry, since stale entries are expected (a SIGKILL'd dev
+ * server can't clean up). Returns [] on any error — coordination is optional.
+ */
+async function findLiveEmbeddedDashboards(): Promise<DashboardRegistryEntry[]> {
+  let entries: DashboardRegistryEntry[];
+  try {
+    const { readDashboardRegistry } = await import('@workflow/web/registry');
+    entries = readDashboardRegistry() as DashboardRegistryEntry[];
+  } catch {
+    return [];
+  }
+
+  const live: DashboardRegistryEntry[] = [];
+  for (const entry of entries) {
+    if (!entry?.url) continue;
+    // Best-effort PID liveness check (same-host dev servers).
+    if (typeof entry.pid === 'number') {
+      try {
+        process.kill(entry.pid, 0);
+      } catch {
+        continue; // process gone
+      }
+    }
+    try {
+      const res = await fetch(entry.url, {
+        method: 'HEAD',
+        redirect: 'manual',
+        signal: AbortSignal.timeout(1500),
+      });
+      // Any non-5xx response means something is serving that route.
+      if (res.status < 500) live.push(entry);
+    } catch {
+      // unreachable — treat as dead
+    }
+  }
+  return live;
+}
 
 /**
  * Check if a server is already listening on the given URL.
@@ -48,7 +98,7 @@ async function startWebServer(webPort: number): Promise<boolean> {
  * The web UI reads world configuration from server-side environment variables.
  * Query params are only used for deep-linking to specific resources (resource/id, runId, etc.)
  */
-function buildWebUIUrl(
+export function buildWebUIUrl(
   hostUrl: string,
   resource: string,
   id: string | undefined,
@@ -118,7 +168,8 @@ export async function launchWebUI(
       teamSlug,
       projectName,
       resource,
-      id
+      id,
+      envVars.WORKFLOW_VERCEL_ENV || 'production'
     );
 
     if (disableBrowserOpen) {
@@ -136,6 +187,43 @@ export async function launchWebUI(
     } catch (error) {
       logger.error(`Failed to open browser: ${error}`);
       logger.info(`Please open the link manually.`);
+      return;
+    }
+  }
+
+  // Defer to an already-running embedded dashboard (e.g. a framework
+  // integration serving `/_workflow`) unless the user forces a standalone
+  // server. Avoids spinning up a redundant UI on :3456 when one is already up.
+  if (!flags.standalone) {
+    const live = await findLiveEmbeddedDashboards();
+    if (live.length === 1) {
+      const target = buildWebUIUrl(live[0].url, resource, id, flags);
+      logger.info(
+        chalk.green(
+          `An embedded workflow dashboard is already running at ${live[0].url}`
+        )
+      );
+      if (disableBrowserOpen) {
+        logger.info(chalk.cyan(`Open it at: ${target}`));
+        return;
+      }
+      logger.info(chalk.cyan(`Opening ${target}`));
+      try {
+        await open(target);
+      } catch (error) {
+        logger.error(`Failed to open browser: ${error}`);
+        logger.info(`Please open the link manually: ${target}`);
+      }
+      return;
+    }
+    if (live.length > 1) {
+      logger.info('Embedded workflow dashboards are already running at:');
+      for (const entry of live) {
+        logger.info(chalk.cyan(`  - ${entry.url}`));
+      }
+      logger.info(
+        'Open the one you want, or pass --standalone to start a separate web UI.'
+      );
       return;
     }
   }
@@ -187,5 +275,73 @@ export async function launchWebUI(
         resolve();
       }
     });
+  }
+}
+
+/**
+ * Build the deep-link URL for a resource without any side effects (no server,
+ * no browser). Picks the Vercel dashboard for a Vercel backend (unless
+ * `--localUi`), otherwise the local web UI deep link.
+ *
+ * Assumes env vars have already been resolved (e.g. via `setupCliWorld`).
+ */
+export function buildDeepLinkUrl(
+  resource: string,
+  id: string | undefined,
+  flags: Record<string, any>
+): string {
+  const envVars = getEnvVars();
+
+  const vercelBackendNames = ['vercel', '@workflow/world-vercel'];
+  const isVercelBackend = vercelBackendNames.includes(
+    envVars.WORKFLOW_TARGET_WORLD
+  );
+  const teamSlug = envVars.WORKFLOW_VERCEL_TEAM;
+  const projectName =
+    envVars.WORKFLOW_VERCEL_PROJECT_NAME || envVars.WORKFLOW_VERCEL_PROJECT;
+
+  // Use the Vercel dashboard when targeting Vercel (and not forced local).
+  if (isVercelBackend && !flags.localUi && teamSlug && projectName) {
+    return getVercelDashboardUrl(
+      teamSlug,
+      projectName,
+      resource,
+      id,
+      envVars.WORKFLOW_VERCEL_ENV || 'production'
+    );
+  }
+
+  // Fall back to the local web UI deep link.
+  const webPort = flags.webPort ?? 3456;
+  return buildWebUIUrl(getHostUrl(webPort), resource, id, flags);
+}
+
+/**
+ * Resolve and print a shareable deep-link URL to stdout, then return — without
+ * opening a browser or starting the local web server. Intended for scripting
+ * and agents that need the link rather than a rendered dashboard.
+ *
+ * Human-readable chatter (the startup box, info/debug logs) is routed to stderr
+ * so stdout contains only the URL (or `{ "url": "..." }` with `--json`).
+ */
+export async function printDeepLink(
+  resource: string,
+  id: string | undefined,
+  flags: Record<string, any>,
+  version: string
+): Promise<void> {
+  const wantsJson = Boolean(flags.json);
+
+  // Force JSON logging mode during setup so the startup box and any info/debug
+  // logs go to stderr, keeping stdout clean for the URL. We print the URL
+  // ourselves below, respecting the user's actual `--json` choice.
+  await setupCliWorld({ ...flags, json: true } as any, version, true);
+
+  const url = buildDeepLinkUrl(resource, id, flags);
+
+  if (wantsJson) {
+    process.stdout.write(`${JSON.stringify({ url }, null, 2)}\n`);
+  } else {
+    process.stdout.write(`${url}\n`);
   }
 }

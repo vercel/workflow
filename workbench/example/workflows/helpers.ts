@@ -17,14 +17,16 @@ export function callThrower() {
 
 // --- Step Error Helpers (step function that throws from this file) ---
 
-function throwErrorFromStep() {
-  throw new Error('Step error from imported helper module');
-}
+export const stepErrorHelpers = {
+  throwErrorFromStep() {
+    throw new Error('Step error from imported helper module');
+  },
+};
 
 /** Step that throws an error - tests cross-file step error stack traces */
 export async function stepThatThrowsFromHelper() {
   'use step';
-  throwErrorFromStep();
+  stepErrorHelpers.throwErrorFromStep();
   return 'never reached';
 }
 stepThatThrowsFromHelper.maxRetries = 0;

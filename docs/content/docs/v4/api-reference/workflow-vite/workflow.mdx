@@ -1,0 +1,47 @@
+---
+title: workflow
+description: Configure Vite and Nitro to transform workflow directives.
+type: reference
+summary: Add the workflow plugin to your Vite config to enable workflow directive transformation in Vite + Nitro apps.
+prerequisites:
+  - /docs/getting-started/vite
+---
+
+Returns the Vite plugins that transform workflow code (`"use step"`/`"use workflow"` directives) and configure the [`workflow/nitro`](/docs/api-reference/workflow-nitro) module on the Nitro server. It is designed to be used alongside `nitro()` from `nitro/vite`, which provides the server framework for API routes and deployment.
+
+## Usage
+
+To enable `"use step"` and `"use workflow"` directives while developing locally or deploying to production, add `workflow()` to the `plugins` array of your Vite config, together with `nitro()`.
+
+```typescript title="vite.config.ts" lineNumbers
+import { nitro } from "nitro/vite";
+import { defineConfig } from "vite";
+import { workflow } from "workflow/vite"; // [!code highlight]
+
+export default defineConfig({
+  plugins: [nitro(), workflow()], // [!code highlight]
+  nitro: {
+    serverDir: "./",
+  },
+});
+```
+
+## API Signature
+
+### Parameters
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `options` | `ModuleOptions` | Optional. Forwarded to the `workflow/nitro` module as its module options. |
+
+#### ModuleOptions
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `dirs` | `string[]` | — | Directories to scan for workflows and steps. By default, the `workflows/` directory is scanned from the project root and all layer source directories. |
+| `typescriptPlugin` | `boolean` | `false` | Adds the `workflow` TypeScript plugin to the generated `tsconfig.json` for IDE IntelliSense. |
+| `runtime` | `string` | — | Node.js runtime version for Vercel Functions (e.g. `'nodejs22.x'`, `'nodejs24.x'`). Only applies when deploying to Vercel. |
+
+### Returns
+
+Returns an array of Vite `Plugin` objects. Spread or pass the array directly to the `plugins` option of your Vite config — Vite flattens nested plugin arrays automatically.

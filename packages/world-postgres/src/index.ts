@@ -1,5 +1,5 @@
 import type { Storage, World } from '@workflow/world';
-import { reenqueueActiveRuns } from '@workflow/world';
+import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
@@ -30,24 +30,30 @@ function getDefaultMaxPoolSize(): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function getDefaultConnectionString(): string {
+  return (
+    process.env.WORKFLOW_POSTGRES_URL ||
+    process.env.DATABASE_URL ||
+    'postgres://world:world@localhost:5432/world'
+  );
+}
+
 export function createWorld(
   config: PostgresWorldConfig = {
-    connectionString:
-      process.env.WORKFLOW_POSTGRES_URL ||
-      'postgres://world:world@localhost:5432/world',
+    connectionString: getDefaultConnectionString(),
     jobPrefix: process.env.WORKFLOW_POSTGRES_JOB_PREFIX,
     queueConcurrency:
-      parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '10', 10) ||
-      10,
+      parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '50', 10) ||
+      50,
+    applicationManagedShutdown:
+      process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN === '1',
   }
 ): World & { start(): Promise<void> } {
   const maxPoolSize = config.maxPoolSize ?? getDefaultMaxPoolSize();
   const pool =
     config.pool ||
     new Pool({
-      connectionString:
-        config.connectionString ||
-        'postgres://world:world@localhost:5432/world',
+      connectionString: config.connectionString || getDefaultConnectionString(),
       ...(maxPoolSize !== undefined ? { max: maxPoolSize } : {}),
     });
 
@@ -57,6 +63,7 @@ export function createWorld(
   const streamer = createStreamer(pool, drizzle);
 
   return {
+    specVersion: SPEC_VERSION_CURRENT,
     ...storage,
     ...streamer,
     ...queue,
@@ -65,11 +72,16 @@ export function createWorld(
     }),
     async start() {
       await queue.start();
-      await reenqueueActiveRuns(storage.runs, queue.queue, 'world-postgres');
+      await reenqueueActiveRuns(
+        storage.runs,
+        queue.queue,
+        'world-postgres',
+        config.namespace
+      );
     },
     async close() {
-      await streamer.close();
       await queue.close();
+      await streamer.close();
       if (pool !== config.pool) {
         await pool.end();
       }

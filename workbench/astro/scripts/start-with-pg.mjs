@@ -8,7 +8,11 @@ async function main() {
   if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
     console.log('Starting Postgres World...');
     const { getWorld } = await import('workflow/runtime');
-    await getWorld().start?.();
+    const world = await getWorld();
+    if (world.start) {
+      console.log('Starting World workers...');
+      await world.start();
+    }
   }
 
   // Now start the Astro server

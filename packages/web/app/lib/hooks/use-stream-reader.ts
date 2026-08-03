@@ -1,18 +1,20 @@
-import { decrypt as aesGcmDecrypt, importKey } from '@workflow/core/encryption';
 import {
+  decryptEnvelope,
+  deriveRunPayloadKeys,
   hydrateData,
   isEncryptedData,
+  type PayloadKey,
 } from '@workflow/core/serialization-format';
-import type { WorkflowRunStatus } from '@workflow/world';
 import { getWebRevivers } from '@workflow/web-shared';
+import type { WorkflowRunStatus } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EnvMap } from '~/lib/types';
 import { readStream } from '~/lib/workflow-api-client';
 
 export interface StreamChunk {
   id: number;
-  /** Serialized payload expected by StreamViewer */
-  text: string;
+  /** Hydrated payload rendered by StreamViewer/DataInspector */
+  value: unknown;
 }
 
 const FRAME_HEADER_SIZE = 4;
@@ -21,80 +23,6 @@ const POLL_INTERVAL_MS = 3000;
 
 function isRunActive(status?: WorkflowRunStatus): boolean {
   return status === 'pending' || status === 'running';
-}
-
-/**
- * Maximum number of entries (array elements / object keys) to keep when
- * sanitizing data for the tree inspector. Beyond this, items are replaced
- * with a "…N more" summary so react-inspector doesn't create thousands
- * of DOM nodes and kill the browser tab.
- */
-const MAX_DISPLAY_ENTRIES = 200;
-const MAX_DISPLAY_DEPTH = 6;
-
-/**
- * Prepare a hydrated value for display in the stream viewer.
- *
- * Typed arrays become compact summaries, large arrays/objects are trimmed,
- * and everything else passes through unchanged. This keeps the data
- * inspectable via react-inspector while preventing tab crashes on large
- * payloads (e.g., a 87KB Uint8Array serializes to 87K object keys).
- */
-function sanitizeForDisplay(value: unknown, depth = 0): unknown {
-  if (value === null || value === undefined) return value;
-
-  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
-    const ta = value as unknown as {
-      length: number;
-      constructor: { name: string };
-    } & ArrayLike<number>;
-    const name = ta.constructor.name;
-    const preview = Array.from(
-      { length: Math.min(ta.length, 8) },
-      (_, i) => ta[i]
-    );
-    const suffix = ta.length > 8 ? ', …' : '';
-    return `${name}(${ta.length}) [${preview.join(', ')}${suffix}]`;
-  }
-
-  if (value instanceof ArrayBuffer) {
-    return `ArrayBuffer(${value.byteLength})`;
-  }
-
-  if (depth >= MAX_DISPLAY_DEPTH) {
-    if (Array.isArray(value)) return `Array(${value.length})`;
-    if (typeof value === 'object') return '{…}';
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    if (value.length <= MAX_DISPLAY_ENTRIES) {
-      return value.map((v) => sanitizeForDisplay(v, depth + 1));
-    }
-    const trimmed = value
-      .slice(0, MAX_DISPLAY_ENTRIES)
-      .map((v) => sanitizeForDisplay(v, depth + 1));
-    trimmed.push(`… ${value.length - MAX_DISPLAY_ENTRIES} more items`);
-    return trimmed;
-  }
-
-  if (typeof value === 'object') {
-    const keys = Object.keys(value as Record<string, unknown>);
-    const out: Record<string, unknown> = {};
-    const limit = Math.min(keys.length, MAX_DISPLAY_ENTRIES);
-    for (let i = 0; i < limit; i++) {
-      out[keys[i]] = sanitizeForDisplay(
-        (value as Record<string, unknown>)[keys[i]],
-        depth + 1
-      );
-    }
-    if (keys.length > MAX_DISPLAY_ENTRIES) {
-      out[`… ${keys.length - MAX_DISPLAY_ENTRIES} more keys`] = '…';
-    }
-    return out;
-  }
-
-  return value;
 }
 
 const yieldToMain = (): Promise<void> =>
@@ -129,6 +57,9 @@ export function useStreamReader(
 ) {
   const [chunks, setChunks] = useState<StreamChunk[]>([]);
   const [isLive, setIsLive] = useState(false);
+  const [isInitialLoading, setIsInitialLoading] = useState(
+    Boolean(streamId && runId)
+  );
   const [error, setError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const chunkIdRef = useRef(0);
@@ -141,7 +72,7 @@ export function useStreamReader(
   const processFrame = useCallback(
     async (
       rawFrame: Uint8Array,
-      cryptoKey: CryptoKey | undefined,
+      cryptoKey: PayloadKey | undefined,
       revivers: ReturnType<typeof getWebRevivers>
     ): Promise<
       { encrypted: true } | { encrypted: false; chunk: StreamChunk }
@@ -176,9 +107,12 @@ export function useStreamReader(
           if (!cryptoKey) {
             return { encrypted: true };
           }
-          const payload = frameData.slice(4);
+          // Envelope-aware: frames may be symmetric ('encr', written by the
+          // run itself) or sealed ('encp', written by another run into a
+          // forwarded stream). `decryptEnvelope` dispatches on the prefix and
+          // strips it, so no manual slice here.
           hydrated = hydrateData(
-            await aesGcmDecrypt(cryptoKey, payload),
+            (await decryptEnvelope(frameData, cryptoKey)) as Uint8Array,
             revivers
           );
         } else {
@@ -188,20 +122,8 @@ export function useStreamReader(
         hydrated = ENCRYPTED_PLACEHOLDER;
       }
 
-      let text: string;
-      try {
-        if (typeof hydrated === 'string') {
-          text = hydrated;
-        } else {
-          const safe = sanitizeForDisplay(hydrated);
-          text = JSON.stringify(safe, null, 2);
-        }
-      } catch {
-        text = '[Serialization Error]';
-      }
-
       const chunkId = chunkIdRef.current++;
-      return { encrypted: false, chunk: { id: chunkId, text } };
+      return { encrypted: false, chunk: { id: chunkId, value: hydrated } };
     },
     []
   );
@@ -209,6 +131,8 @@ export function useStreamReader(
   useEffect(() => {
     setChunks([]);
     setError(null);
+    setIsLive(false);
+    setIsInitialLoading(Boolean(streamId && runId));
     chunkIdRef.current = 0;
     frameCountRef.current = 0;
     serverCursorRef.current = null;
@@ -219,27 +143,25 @@ export function useStreamReader(
     }
 
     if (!streamId || !runId) {
-      setIsLive(false);
+      setIsInitialLoading(false);
       return;
     }
 
     let mounted = true;
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
-    setIsLive(true);
 
     const revivers = getWebRevivers();
 
     const parseLegacyLine = (line: string): StreamChunk => {
       const chunkId = chunkIdRef.current++;
-      let text: string;
+      let value: unknown;
       try {
-        const parsed = JSON.parse(line);
-        text = JSON.stringify(parsed, null, 2);
+        value = JSON.parse(line);
       } catch {
-        text = line;
+        value = line;
       }
-      return { id: chunkId, text };
+      return { id: chunkId, value };
     };
 
     /**
@@ -251,7 +173,7 @@ export function useStreamReader(
      */
     const fetchAndParse = async (
       targetBuffer: StreamChunk[],
-      cryptoKey: CryptoKey | undefined,
+      cryptoKey: PayloadKey | undefined,
       options?: { skipFrames?: number; cursor?: string | null }
     ): Promise<
       | { encrypted: true }
@@ -387,8 +309,10 @@ export function useStreamReader(
 
     const readStreamData = async () => {
       try {
+        // Full capability so sealed ('encp') frames written by other runs
+        // decrypt too, not just this run's own symmetric frames.
         const cryptoKey = encryptionKey
-          ? await importKey(encryptionKey)
+          ? await deriveRunPayloadKeys(encryptionKey)
           : undefined;
 
         const initialChunks: StreamChunk[] = [];
@@ -398,6 +322,7 @@ export function useStreamReader(
           if (mounted) {
             setError('This stream is encrypted. Click Decrypt to view.');
             setIsLive(false);
+            setIsInitialLoading(false);
           }
           return;
         }
@@ -408,6 +333,7 @@ export function useStreamReader(
         if (!mounted || abortController.signal.aborted) return;
 
         setChunks(initialChunks);
+        setIsInitialLoading(false);
 
         // If the stream itself is done, no need to poll regardless of run status
         if (result.done) {
@@ -416,6 +342,7 @@ export function useStreamReader(
         }
 
         if (isRunActive(runStatusRef.current)) {
+          setIsLive(true);
           const poll = async () => {
             if (!mounted || abortController.signal.aborted) return;
             try {
@@ -453,6 +380,7 @@ export function useStreamReader(
         if (mounted) {
           setError(err instanceof Error ? err.message : String(err));
           setIsLive(false);
+          setIsInitialLoading(false);
         }
       }
     };
@@ -479,5 +407,5 @@ export function useStreamReader(
     }
   }, [runStatus]);
 
-  return { chunks, isLive, error };
+  return { chunks, isLive, isInitialLoading, error };
 }

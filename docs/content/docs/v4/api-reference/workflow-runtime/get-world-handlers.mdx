@@ -1,0 +1,44 @@
+---
+title: getWorldHandlers
+description: Build-time-safe access to the World's queue handlers without binding to runtime environment variables.
+type: reference
+summary: Use getWorldHandlers at build time to access queue handler creation without caching an environment-bound World.
+prerequisites:
+  - /docs/api-reference/workflow-runtime/get-world
+---
+
+Returns a restricted view of the [World](/docs/api-reference/workflow-runtime/world) exposing only the members that are safe to use at build time: `createQueueHandler` and `specVersion`. Framework adapters use it while generating workflow route handlers, before the deployment's runtime environment variables exist.
+
+Unlike [`getWorld()`](/docs/api-reference/workflow-runtime/get-world), this function does not cache a fully configured World instance — caching at build time would lock in incomplete environment configuration.
+
+```typescript lineNumbers
+import { getWorldHandlers } from "workflow/runtime";
+
+const handlers = await getWorldHandlers(); // [!code highlight]
+console.log(handlers.specVersion);
+```
+
+## API Signature
+
+### Parameters
+
+This function does not accept any parameters.
+
+### Returns
+
+Returns a `WorldHandlers` object (synchronously in workflow 4.x; async in 5.x), where:
+
+```typescript
+import type { World } from "@workflow/world";
+
+type WorldHandlers = Pick<World, "createQueueHandler" | "specVersion">;
+```
+
+<Callout type="warn">
+  This is SDK infrastructure used by framework adapters and the workflow entrypoint. Application code should use [`getWorld()`](/docs/api-reference/workflow-runtime/get-world) instead.
+</Callout>
+
+## Related Functions
+
+- [`getWorld()`](/docs/api-reference/workflow-runtime/get-world) - Resolve the full World instance at runtime.
+- [`workflowEntrypoint()`](/docs/api-reference/workflow-runtime/workflow-entrypoint) - The route handler factory built on these handlers.

@@ -1,10 +1,21 @@
 import { DocsLayout } from '@/components/geistdocs/docs-layout';
-import { source } from '@/lib/geistdocs/source';
+import { getDocsTreeForVersion } from '@/lib/geistdocs/version-source';
+import { LATEST_VERSION } from '@/lib/geistdocs/versions';
 
 const Layout = async ({ children, params }: LayoutProps<'/[lang]/docs'>) => {
   const { lang } = await params;
 
-  return <DocsLayout tree={source.pageTree[lang]}>{children}</DocsLayout>;
+  return (
+    <div className="bg-background-200">
+      <DocsLayout
+        currentVersion={LATEST_VERSION.id}
+        lang={lang}
+        tree={getDocsTreeForVersion(lang, LATEST_VERSION)}
+      >
+        {children}
+      </DocsLayout>
+    </div>
+  );
 };
 
 export default Layout;

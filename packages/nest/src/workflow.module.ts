@@ -4,9 +4,8 @@ import {
   type OnModuleDestroy,
   type OnModuleInit,
 } from '@nestjs/common';
-import { createBuildQueue } from '@workflow/builders';
 import { join } from 'pathe';
-import { type NestBuilderOptions, NestLocalBuilder } from './builder.js';
+import type { NestBuilderOptions } from './builder.js';
 import {
   configureWorkflowController,
   WorkflowController,
@@ -14,7 +13,8 @@ import {
 
 export interface WorkflowModuleOptions extends NestBuilderOptions {
   /**
-   * Skip building workflow bundles (useful in production when bundles are pre-built)
+   * Skip building workflow bundles. Set this in production (and always on
+   * Vercel) where bundles are pre-built by `workflow-nest build`.
    * @default false
    */
   skipBuild?: boolean;
@@ -23,13 +23,19 @@ export interface WorkflowModuleOptions extends NestBuilderOptions {
 const DEFAULT_OUT_DIR = '.nestjs/workflow';
 
 /**
- * NestJS module that provides workflow functionality.
- * Builds workflow bundles on module initialization and registers the workflow controller.
+ * NestJS module that provides workflow functionality: it registers the
+ * controller that serves the `.well-known/workflow/v1` routes and, in local
+ * dev, rebuilds the workflow bundles on init.
+ *
+ * The build toolchain (`@workflow/builders`, esbuild, SWC) is imported lazily
+ * — only when a build actually runs (`skipBuild` false). Importing this module
+ * must stay free of build-time dependencies so the runtime app can be bundled
+ * into a serverless function without dragging in the compiler.
  */
 @Module({})
 export class WorkflowModule implements OnModuleInit, OnModuleDestroy {
-  private static builder: NestLocalBuilder | null = null;
-  private static buildQueue = createBuildQueue();
+  private static options: WorkflowModuleOptions | null = null;
+  private static outDir: string | null = null;
 
   /**
    * Configure the WorkflowModule with options.
@@ -50,13 +56,8 @@ export class WorkflowModule implements OnModuleInit, OnModuleDestroy {
     // Configure the controller with the output directory
     configureWorkflowController(outDir);
 
-    // Create builder if we're not skipping builds
-    if (!options.skipBuild) {
-      WorkflowModule.builder = new NestLocalBuilder({
-        ...options,
-        outDir,
-      });
-    }
+    WorkflowModule.options = options;
+    WorkflowModule.outDir = outDir;
 
     return {
       module: WorkflowModule,
@@ -72,14 +73,24 @@ export class WorkflowModule implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
-    const builder = WorkflowModule.builder;
-    if (builder) {
-      await WorkflowModule.buildQueue(() => builder.build());
+    const options = WorkflowModule.options;
+    if (!options || options.skipBuild) {
+      return;
     }
+    // Lazy-load the toolchain so it never enters the runtime bundle.
+    const [{ NestLocalBuilder }, { createBuildQueue }] = await Promise.all([
+      import('./builder.js'),
+      import('@workflow/builders'),
+    ]);
+    const builder = new NestLocalBuilder({
+      ...options,
+      outDir: WorkflowModule.outDir ?? undefined,
+    });
+    await createBuildQueue()(() => builder.build());
   }
 
   async onModuleDestroy() {
     // Cleanup if needed
-    WorkflowModule.builder = null;
+    WorkflowModule.options = null;
   }
 }

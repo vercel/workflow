@@ -1,0 +1,111 @@
+---
+title: Workflow SDK vs AWS Step Functions
+description: How the Workflow SDK compares to AWS Step Functions — plain TypeScript control flow versus declarative Amazon States Language JSON, plus a concept-mapping migration guide.
+type: conceptual
+summary: AWS Step Functions is a managed state-machine orchestrator authored in declarative ASL JSON. The Workflow SDK expresses the same orchestration as plain TypeScript.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/foundations/errors-and-retries
+  - /docs/foundations/hooks
+  - /worlds/vercel
+---
+
+[AWS Step Functions](https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html) is a mature, managed orchestrator that runs **state machines defined in Amazon States Language (ASL)** — a declarative JSON DSL. The headline contrast with the Workflow SDK is the authoring model: you assemble a state machine (JSON or a visual editor) instead of writing plain control-flow code.
+
+<Callout type="info">
+**Choose the Workflow SDK** when you want orchestration as ordinary TypeScript (`await`, `if`, `Promise.all`, `try/catch`) that lives in your app, portable off a single cloud, with built-in streaming. **Choose Step Functions** when you're deep in the AWS ecosystem and want a managed engine with native optimized integrations to 200+ AWS services and the broadest compliance footprint.
+</Callout>
+
+## At a glance
+
+| | Workflow SDK | AWS Step Functions |
+| --- | --- | --- |
+| **Authoring** | Plain TypeScript: `"use workflow"` orchestrators calling `"use step"` functions | **Declarative ASL JSON** (or Workflow Studio visual editor / CDK) — not plain code |
+| **Durability model** | Event log + deterministic replay | Managed state machine. **Standard** = exactly-once, up to 1 year; **Express** = at-least-once, up to 5 minutes |
+| **Control flow** | `await`, `if`/`switch`, `Promise.all`, `try/catch` | `Task` / `Choice` / `Wait` / `Parallel` / `Map` states wired with `Next` |
+| **Where it runs** | Your platform (Vercel managed or self-host) | AWS-managed; tasks run in Lambda or 200+ integrated AWS services |
+| **Languages** | TypeScript / JS (Python beta) | ASL JSON for the machine; tasks can be any language (via Lambda) |
+| **Human-in-the-loop** | `createHook()` / `createWebhook()` | `.waitForTaskToken` callback (Standard only) |
+| **Streaming** | Native durable, resumable streaming to clients | No native client streaming |
+| **Versioning** | Runs pinned to immutable deployment | Published versions are immutable; aliases route (≤2 versions) for canary/rollback; **in-flight executions keep their start-time definition** |
+| **Portability** | Apache-2.0; runs anywhere Node runs | Proprietary, AWS-only; ASL is AWS-specific — high lock-in |
+| **Pricing** | SDK free; pay your platform | **Standard:** $0.025 / 1K state transitions. **Express:** $1 / M requests + GB-second duration |
+| **Limits** | 50 MB payload; 2 GB/run; no duration cap ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | 256 KB payload between states; Standard 25K history events / 1 year; Express 5 minutes |
+| **AI** | `WorkflowAgent` in the AI SDK; durable streaming | Bedrock integration + a preview AgentCore "InvokeHarness" task; no native client streaming |
+
+**What the limits mean in practice:** the 256 KB cap on payloads between states is the binding constraint for AI workloads — virtually any model context or tool transcript has to round-trip through S3 with claim-check plumbing — and Standard executions cap history at 25K events. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) are 50 MB per payload and 2 GB of state per run.
+
+## Code vs. JSON
+
+The defining difference: in Step Functions even "call one Lambda" requires a state-machine shell, and orchestration logic is expressed as ASL states (`Choice`, `Wait`, `Parallel`, `Map`). In the Workflow SDK it's ordinary TypeScript — transitions are `await`, branches are `if`, parallelism is `Promise.all`, and error handling is `try/catch`. That keeps orchestration in the same language, repo, and tests as the rest of your app, and removes the orchestrator/compute split (per-task Lambdas, IAM roles, callback queues).
+
+The trade-off: Step Functions' optimized service integrations call AWS services (DynamoDB, SQS, EventBridge, Bedrock, `ecs:runTask.sync`, …) declaratively. In the Workflow SDK those become ordinary SDK calls inside `"use step"` functions — you own the credentials, retries, and any polling.
+
+## Migrating from Step Functions
+
+This guide assumes **Standard** workflows. Express workflows have different semantics (at-least-once, 5-minute max, no execution history) and may be better kept on Step Functions or moved to a queue consumer.
+
+| AWS Step Functions | Workflow SDK | Note |
+| --- | --- | --- |
+| State machine (ASL JSON) | `"use workflow"` function | The workflow function *is* the state machine. |
+| Task state / Lambda | `"use step"` function | Side effects go in steps; no separate Lambda. |
+| Choice state | `if` / `else` / `switch` | Native control flow. |
+| Wait state | `sleep()` | `sleep('1m')` or `sleep(date)`. |
+| Parallel state | `Promise.all()` | Standard concurrency. |
+| Map state | `for` loop / bounded `Promise.all` (e.g. `p-limit`) / step-wrapped `start()` per item for large fan-out | Match the original concurrency mode. |
+| Retry / Catch | `maxRetries`, `RetryableError`, `FatalError`; `try/catch` for compensation | Retry logic moves to step boundaries. |
+| `.waitForTaskToken` | `createHook()` / `createWebhook()` | Hooks for typed signals; webhooks for HTTP. |
+| Child state machine (`StartExecution`) | `"use step"` wrapper around `start()` / `getRun()` | Return the `Run` object for deep-linking. |
+
+A single `Task` state and its Lambda collapse into two directive-tagged functions:
+
+```typescript title="workflows/order.ts"
+export async function processOrder(orderId: string) {
+  'use workflow'; // [!code highlight]
+  const order = await loadOrder(orderId);
+  if (order.total > 1000) await reviewManually(order); // Choice → if
+  await chargePayment(order);
+}
+
+async function loadOrder(id: string) {
+  'use step'; // [!code highlight]
+  return fetch(`https://example.com/api/orders/${id}`).then((r) => r.json());
+}
+```
+
+A `.waitForTaskToken` callback becomes a hook — no SQS queue, task token, or callback Lambda:
+
+```typescript title="workflows/refund.ts"
+import { createHook } from 'workflow';
+
+export async function refundWorkflow(refundId: string) {
+  'use workflow';
+  using approval = createHook<{ approved: boolean }>({
+    token: `refund:${refundId}:approval`, // [!code highlight]
+  });
+  return await approval; // resumed via resumeHook(), not SendTaskSuccess
+}
+```
+
+<Callout type="info">
+Install the migration skill to translate a state machine automatically:
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
+```
+</Callout>
+
+### Step Functions features without a direct Workflow SDK equivalent
+
+Each row is a Step Functions capability the Workflow SDK does not replicate one-to-one, paired with how to cover it on the Workflow SDK side:
+
+| Step Functions feature | How to cover it with the Workflow SDK |
+| --- | --- |
+| Express workflows | At-least-once and 5-minute duration fit the durable-replay model poorly; keep them on Step Functions or move to a queue consumer |
+| Distributed Map (up to 10,000 concurrent children, S3 item sources) | Fan out with step-wrapped `start()` per item, then bound concurrency with `p-limit` |
+| Optimized AWS service integrations | Become ordinary SDK calls inside steps; `.sync` waits become explicit polling or hooks |
+| Per-state IAM roles | Steps share the deployment's credentials; scope secrets at deploy time |
+
+---
+*Compiled from public documentation. Step Functions pricing/limits are region-specific (figures are us-east-1); verify against [the AWS pricing page](https://aws.amazon.com/step-functions/pricing/). Not based on head-to-head benchmarks.*

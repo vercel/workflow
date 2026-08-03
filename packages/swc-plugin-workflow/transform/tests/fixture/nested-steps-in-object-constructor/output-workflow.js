@@ -1,7 +1,7 @@
 import { DurableAgent } from '@workflow/ai/agent';
 import { tool } from 'ai';
 import * as z from 'zod';
-/**__internal_workflows{"workflows":{"input.js":{"test":{"workflowId":"workflow//./input//test"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//_anonymousStep1"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"test":{"workflowId":"workflow//./input//test"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//test/_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//test/_anonymousStep1"}}}}*/;
 export async function test() {
     const agent = new DurableAgent({
         model: globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//test/_anonymousStep0"),

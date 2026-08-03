@@ -1,5 +1,5 @@
-import { Link } from 'react-router';
 import * as React from 'react';
+import { Link } from 'react-router';
 
 import { cn } from '~/lib/utils';
 
@@ -17,7 +17,7 @@ const DocsLink = React.forwardRef<HTMLAnchorElement, DocsLinkProps>(
     // Convert relative paths to full docs URLs
     const fullHref = href.startsWith('http')
       ? href
-      : `https://useworkflow.dev/docs/${href.replace(/^\//, '')}`;
+      : `https://workflow-sdk.dev/docs/${href.replace(/^\//, '')}`;
 
     return (
       <Link

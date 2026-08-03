@@ -1,4 +1,4 @@
-import { Callout } from '@/components/geistdocs/callout';
+import { Callout } from '@vercel/geistdocs/components/callout';
 
 export const FluidComputeCallout = () => (
   <Callout type="warn">

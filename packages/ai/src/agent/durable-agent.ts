@@ -27,6 +27,7 @@ import {
 } from 'ai';
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
 import { getErrorMessage } from '../get-error-message.js';
+import { safeParseToolCallInput } from './safe-parse-tool-call-input.js';
 import { streamTextIterator } from './stream-text-iterator.js';
 import { recordSpan, runInContext } from './telemetry.js';
 import type { CompatibleLanguageModel } from './types.js';
@@ -735,6 +736,16 @@ export interface DurableAgentStreamResult<
   toolResults: ToolResult[];
 
   /**
+   * The finish reason from the last step.
+   */
+  finishReason: FinishReason;
+
+  /**
+   * The total token usage across all steps.
+   */
+  totalUsage: LanguageModelUsage;
+
+  /**
    * The generated structured output. It uses the `experimental_output` specification.
    * Only available when `experimental_output` is specified.
    */
@@ -857,15 +868,20 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     let effectiveAbortSignal =
       options.abortSignal ?? this.generationSettings.abortSignal;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    // The workflow VM replaces setTimeout with a throwing stub, so the
+    // timeout path is skipped there. The VM sets WORKFLOW_CONTEXT on its
+    // globalThis before user code runs; its absence means real timers work.
+    const inWorkflowVm =
+      (globalThis as any)[Symbol.for('WORKFLOW_CONTEXT')] !== undefined;
     if (
       options.timeout !== undefined &&
-      typeof AbortController !== 'undefined'
+      typeof AbortController !== 'undefined' &&
+      !inWorkflowVm
     ) {
       const timeoutController = new AbortController();
       timeoutId = setTimeout(() => timeoutController.abort(), options.timeout);
       const timeoutSignal = timeoutController.signal;
       if (effectiveAbortSignal) {
-        // Combine: whichever fires first wins
         const combined = new AbortController();
         effectiveAbortSignal.addEventListener('abort', () => combined.abort(), {
           once: true,
@@ -979,6 +995,8 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
         steps,
         toolCalls: [],
         toolResults: [],
+        finishReason: 'other',
+        totalUsage: aggregateUsage(steps),
         experimental_output: undefined as OUTPUT,
         uiMessages: undefined,
       };
@@ -1133,7 +1151,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
               type: 'tool-call' as const,
               toolCallId: tc.toolCallId,
               toolName: tc.toolName,
-              input: safeParseInput(tc.input),
+              input: safeParseToolCallInput(tc.input),
             }));
 
             // Build toolResults only for tools that were executed
@@ -1141,7 +1159,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
               type: 'tool-result' as const,
               toolCallId: r.toolCallId,
               toolName: r.toolName,
-              input: safeParseInput(
+              input: safeParseToolCallInput(
                 toolCalls.find((tc) => tc.toolCallId === r.toolCallId)?.input
               ),
               output: 'value' in r.output ? r.output.value : undefined,
@@ -1167,15 +1185,17 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
             // resolved tool results), so callers can resume the conversation.
             // Cast matches the existing pattern used at the end of stream().
             const messages = iterMessages as unknown as ModelMessage[];
+            const lastStep = steps[steps.length - 1];
+            const totalUsage = aggregateUsage(steps);
+            const finishReason = lastStep?.finishReason ?? 'other';
 
             if (mergedOnFinish && !wasAborted) {
-              const lastStep = steps[steps.length - 1];
               await mergedOnFinish({
                 steps,
                 messages,
                 text: lastStep?.text ?? '',
-                finishReason: lastStep?.finishReason ?? 'other',
-                totalUsage: aggregateUsage(steps),
+                finishReason,
+                totalUsage,
                 experimental_context: experimentalContext,
                 experimental_output: undefined as OUTPUT,
               });
@@ -1190,6 +1210,8 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
               steps,
               toolCalls: allToolCalls,
               toolResults: allToolResults,
+              finishReason,
+              totalUsage,
               experimental_output: undefined as OUTPUT,
               uiMessages,
             };
@@ -1244,13 +1266,13 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
             type: 'tool-call' as const,
             toolCallId: tc.toolCallId,
             toolName: tc.toolName,
-            input: safeParseInput(tc.input),
+            input: safeParseToolCallInput(tc.input),
           }));
           lastStepToolResults = toolResults.map((r) => ({
             type: 'tool-result' as const,
             toolCallId: r.toolCallId,
             toolName: r.toolName,
-            input: safeParseInput(
+            input: safeParseToolCallInput(
               toolCalls.find((tc) => tc.toolCallId === r.toolCallId)?.input
             ),
             output: 'value' in r.output ? r.output.value : undefined,
@@ -1327,15 +1349,18 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       }
     }
 
+    const lastStep = steps[steps.length - 1];
+    const totalUsage = aggregateUsage(steps);
+    const finishReason = lastStep?.finishReason ?? 'other';
+
     // Call onFinish callback if provided (always call, even on errors, but not on abort)
     if (mergedOnFinish && !wasAborted) {
-      const lastStep = steps[steps.length - 1];
       await mergedOnFinish({
         steps,
         messages: messages as ModelMessage[],
         text: lastStep?.text ?? '',
-        finishReason: lastStep?.finishReason ?? 'other',
-        totalUsage: aggregateUsage(steps),
+        finishReason,
+        totalUsage,
         experimental_context: experimentalContext,
         experimental_output: experimentalOutput,
       });
@@ -1357,6 +1382,8 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       steps,
       toolCalls: lastStepToolCalls,
       toolResults: lastStepToolResults,
+      finishReason,
+      totalUsage,
       experimental_output: experimentalOutput,
       uiMessages,
     };
@@ -1367,20 +1394,85 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
  * Filter tools to only include the specified active tools.
  */
 /**
- * Aggregate token usage across all steps.
+ * Add two token counts, preserving `undefined` when both operands are absent
+ * (so missing details aren't coerced to 0). Mirrors the AI SDK's internal
+ * `addTokenCounts`.
+ */
+function addTokenCounts(
+  a: number | undefined,
+  b: number | undefined
+): number | undefined {
+  return a == null && b == null ? undefined : (a ?? 0) + (b ?? 0);
+}
+
+/**
+ * Sum two `LanguageModelUsage` values across every field, including the v6
+ * nested `inputTokenDetails`/`outputTokenDetails` and the deprecated flat
+ * `reasoningTokens`/`cachedInputTokens`. Mirrors the AI SDK's internal
+ * `addLanguageModelUsage` so aggregated usage matches `streamText`/ToolLoopAgent.
+ */
+function addLanguageModelUsage(
+  a: LanguageModelUsage,
+  b: LanguageModelUsage
+): LanguageModelUsage {
+  return {
+    inputTokens: addTokenCounts(a.inputTokens, b.inputTokens),
+    inputTokenDetails: {
+      noCacheTokens: addTokenCounts(
+        a.inputTokenDetails?.noCacheTokens,
+        b.inputTokenDetails?.noCacheTokens
+      ),
+      cacheReadTokens: addTokenCounts(
+        a.inputTokenDetails?.cacheReadTokens,
+        b.inputTokenDetails?.cacheReadTokens
+      ),
+      cacheWriteTokens: addTokenCounts(
+        a.inputTokenDetails?.cacheWriteTokens,
+        b.inputTokenDetails?.cacheWriteTokens
+      ),
+    },
+    outputTokens: addTokenCounts(a.outputTokens, b.outputTokens),
+    outputTokenDetails: {
+      textTokens: addTokenCounts(
+        a.outputTokenDetails?.textTokens,
+        b.outputTokenDetails?.textTokens
+      ),
+      reasoningTokens: addTokenCounts(
+        a.outputTokenDetails?.reasoningTokens,
+        b.outputTokenDetails?.reasoningTokens
+      ),
+    },
+    totalTokens: addTokenCounts(a.totalTokens, b.totalTokens),
+    reasoningTokens: addTokenCounts(a.reasoningTokens, b.reasoningTokens),
+    cachedInputTokens: addTokenCounts(a.cachedInputTokens, b.cachedInputTokens),
+  };
+}
+
+/**
+ * Aggregate token usage across all steps, preserving the full AI SDK v6 usage
+ * shape (nested token details and deprecated flat fields) so consumers reading
+ * `result.totalUsage` see the same data as `streamText`/ToolLoopAgent.
  */
 function aggregateUsage(steps: StepResult<any>[]): LanguageModelUsage {
-  let inputTokens = 0;
-  let outputTokens = 0;
-  for (const step of steps) {
-    inputTokens += step.usage?.inputTokens ?? 0;
-    outputTokens += step.usage?.outputTokens ?? 0;
-  }
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens: inputTokens + outputTokens,
-  } as LanguageModelUsage;
+  return steps.reduce<LanguageModelUsage>(
+    (total, step) => addLanguageModelUsage(total, step.usage),
+    {
+      inputTokens: undefined,
+      inputTokenDetails: {
+        noCacheTokens: undefined,
+        cacheReadTokens: undefined,
+        cacheWriteTokens: undefined,
+      },
+      outputTokens: undefined,
+      outputTokenDetails: {
+        textTokens: undefined,
+        reasoningTokens: undefined,
+      },
+      totalTokens: undefined,
+      reasoningTokens: undefined,
+      cachedInputTokens: undefined,
+    }
+  );
 }
 
 function filterTools<TTools extends ToolSet>(
@@ -1479,10 +1571,6 @@ async function convertChunksToUIMessages(
 }
 
 /**
- * Safely parse tool call input JSON. Returns the parsed value or the raw string
- * if parsing fails (e.g., for tool calls that were repaired).
- */
-/**
  * Valid `type` values for LanguageModelV3ToolResultOutput.
  * When a tool returns an object whose `type` matches one of these,
  * it is passed through as-is instead of being wrapped in json/text.
@@ -1503,11 +1591,35 @@ function isToolResultOutput(
   return TOOL_RESULT_OUTPUT_TYPES.has((result as { type?: string }).type ?? '');
 }
 
-function safeParseInput(input: string | undefined): unknown {
-  try {
-    return JSON.parse(input || '{}');
-  } catch {
-    return input;
+function patchToolCallInMessages(
+  messages: LanguageModelV3Prompt,
+  toolCall: LanguageModelV3ToolCall
+): void {
+  const repairedInput = safeParseToolCallInput(toolCall.input);
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) {
+      continue;
+    }
+
+    const toolCallPart = message.content.find(
+      (
+        part
+      ): part is {
+        type: 'tool-call';
+        toolCallId: string;
+        toolName: string;
+        input: unknown;
+      } => part.type === 'tool-call' && part.toolCallId === toolCall.toolCallId
+    );
+
+    if (toolCallPart) {
+      toolCallPart.toolName = toolCall.toolName;
+      toolCallPart.input = repairedInput;
+      return;
+    }
   }
 }
 
@@ -1589,6 +1701,9 @@ async function executeTool(
           messages,
         });
         if (repairedToolCall) {
+          toolCall.toolName = repairedToolCall.toolName;
+          toolCall.input = repairedToolCall.input;
+          patchToolCallInMessages(messages, repairedToolCall);
           // Retry with repaired tool call
           return executeTool(
             repairedToolCall,
@@ -1614,6 +1729,9 @@ async function executeTool(
         messages,
       });
       if (repairedToolCall) {
+        toolCall.toolName = repairedToolCall.toolName;
+        toolCall.input = repairedToolCall.input;
+        patchToolCallInMessages(messages, repairedToolCall);
         // Retry with repaired tool call
         return executeTool(
           repairedToolCall,
@@ -1624,7 +1742,45 @@ async function executeTool(
         );
       }
     }
-    throw parseError;
+    // Input that fails to parse or validate (even after repair) is recoverable,
+    // exactly like a tool execution error below: feed the error back to the model
+    // as an error-text result so the agent can correct the call and retry, instead
+    // of aborting the entire stream. This aligns with AI SDK's streamText behavior
+    // for tool failures. Reaches here both for malformed JSON and for the
+    // re-thrown "Invalid input for tool ..." schema-validation error above.
+    //
+    // This path intentionally does not reach `onError` (it no longer throws),
+    // matching the tool-execution-error path below. Emit an `ai.toolCall` span
+    // recording the failure so the recovered error stays observable in traces.
+    const parseErrorMessage = getErrorMessage(parseError);
+    return recordSpan({
+      name: 'ai.toolCall',
+      telemetry,
+      attributes: {
+        'ai.toolCall.name': toolCall.toolName,
+        'ai.toolCall.id': toolCall.toolCallId,
+        ...(telemetry?.recordOutputs !== false && {
+          'ai.toolCall.args': toolCall.input,
+        }),
+      },
+      fn: (span) => {
+        if (span) {
+          // 2 === OTel SpanStatusCode.ERROR (inlined to avoid a hard dependency
+          // on the optional @opentelemetry/api package).
+          span.setStatus({ code: 2, message: parseErrorMessage });
+          span.setAttributes({ 'ai.toolCall.error': parseErrorMessage });
+        }
+        return {
+          type: 'tool-result' as const,
+          toolCallId: toolCall.toolCallId,
+          toolName: toolCall.toolName,
+          output: {
+            type: 'error-text' as const,
+            value: parseErrorMessage,
+          },
+        };
+      },
+    });
   }
 
   return recordSpan({

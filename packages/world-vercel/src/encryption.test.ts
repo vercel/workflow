@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { mockFetch } = vi.hoisted(() => ({
   mockFetch: vi.fn(),
@@ -8,7 +8,11 @@ vi.mock('./http-client.js', () => ({
   getDispatcher: vi.fn().mockReturnValue({}),
 }));
 
-import { deriveRunKey, fetchRunKey } from './encryption.js';
+import {
+  createGetEncryptionKeyForRun,
+  deriveRunKey,
+  fetchRunKey,
+} from './encryption.js';
 
 const testProjectId = 'prj_test123';
 const testRunId = 'wrun_abc123';
@@ -136,5 +140,67 @@ describe('fetchRunKey', () => {
         token: 'test-token',
       })
     ).rejects.toThrow('HTTP 404');
+  });
+});
+
+describe('createGetEncryptionKeyForRun (runId, { deploymentId }) overload', () => {
+  const projectId = 'prj_test123';
+  const runId = 'wrun_xdeploy';
+  const currentDeployment = 'dpl_A';
+  const otherDeployment = 'dpl_B';
+
+  let savedEnv: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    savedEnv = {
+      VERCEL: process.env.VERCEL,
+      VERCEL_DEPLOYMENT_ID: process.env.VERCEL_DEPLOYMENT_ID,
+      VERCEL_DEPLOYMENT_KEY: process.env.VERCEL_DEPLOYMENT_KEY,
+    };
+    // Serverless runtime with a local deployment key for the current deployment.
+    process.env.VERCEL = '1';
+    process.env.VERCEL_DEPLOYMENT_ID = currentDeployment;
+    process.env.VERCEL_DEPLOYMENT_KEY =
+      Buffer.from(testDeploymentKey).toString('base64');
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    mockFetch.mockReset();
+  });
+
+  it('derives locally and does not fetch when the context deployment is the current one', async () => {
+    const getKey = createGetEncryptionKeyForRun(projectId, undefined, 'tok');
+    if (!getKey) throw new Error('expected getEncryptionKeyForRun to exist');
+    const key = await getKey(runId, { deploymentId: currentDeployment });
+
+    expect(key).toBeInstanceOf(Uint8Array);
+    expect(key?.byteLength).toBe(32);
+    expect(key).toEqual(
+      await deriveRunKey(testDeploymentKey, projectId, runId)
+    );
+    // Same-deployment key work stays local — no cross-deployment API call.
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('fetches the run key for a different context deployment', async () => {
+    const keyBase64 = Buffer.from(testDeploymentKey).toString('base64');
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ key: keyBase64 }), { status: 200 })
+    );
+
+    const getKey = createGetEncryptionKeyForRun(projectId, undefined, 'tok');
+    if (!getKey) throw new Error('expected getEncryptionKeyForRun to exist');
+    const key = await getKey(runId, { deploymentId: otherDeployment });
+
+    expect(key).toEqual(Buffer.from(keyBase64, 'base64'));
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    // The fetch targets the OTHER deployment's run-key endpoint.
+    const callArgs = JSON.stringify(mockFetch.mock.calls[0]);
+    expect(callArgs).toContain(`run-key/${otherDeployment}`);
+    expect(callArgs).not.toContain(`run-key/${currentDeployment}`);
   });
 });

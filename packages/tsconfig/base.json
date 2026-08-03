@@ -6,8 +6,9 @@
     "declarationMap": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "sourceMap": true,
-    "inlineSources": false,
+    "sourceMap": false,
+    "inlineSourceMap": true,
+    "inlineSources": true,
     "isolatedModules": true,
     "moduleResolution": "node16",
     "noUnusedLocals": true,
@@ -15,7 +16,9 @@
     "preserveWatchOutput": true,
     "skipLibCheck": true,
     "module": "node20",
+    "target": "es2023",
     "lib": ["es2022"],
+    "types": ["*"],
     "strict": true
   }
 }

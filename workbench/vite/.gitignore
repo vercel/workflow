@@ -5,3 +5,4 @@ manifest.js
 .data
 .vercel
 _workflows.ts
+/.swc

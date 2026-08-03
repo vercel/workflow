@@ -3,3 +3,8 @@
 # Alias to build actual plugin binary for the specified target.
 build-wasip1 = "build --target wasm32-wasip1"
 build-wasm32 = "build --target wasm32-unknown-unknown"
+
+[target.wasm32-unknown-unknown]
+# SWC supplies these imports when it loads the plugin. Some rust-lld builds
+# reject them by default, notably on Windows CI, unless we allow host imports.
+rustflags = ["-C", "link-arg=--allow-undefined"]

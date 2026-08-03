@@ -1,0 +1,41 @@
+---
+title: parseClassName
+description: Parse a machine-readable class ID into display-friendly components.
+type: reference
+summary: Use parseClassName to extract a display-friendly class name from a serialized class instance identifier.
+related:
+  - /docs/api-reference/workflow-observability/parse-step-name
+  - /docs/api-reference/workflow-observability/parse-workflow-name
+  - /docs/api-reference/workflow-serde
+---
+
+Serialized class instances reference their class with machine-readable IDs like `class//./src/models//User`. This function parses them into components suitable for display in a UI.
+
+```typescript lineNumbers
+import { parseClassName } from "workflow/observability"; // [!code highlight]
+
+const parsed = parseClassName("class//./src/models//User"); // [!code highlight]
+// parsed?.shortName → "User"
+// parsed?.moduleSpecifier → "./src/models"
+// parsed?.functionName → "User"
+```
+
+## API Signature
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `string` | The machine-readable class ID |
+
+### Returns
+
+`{ shortName: string; moduleSpecifier: string; functionName: string } | null`
+
+| Property | Description |
+|----------|-------------|
+| `shortName` | The display name of the class (e.g. `"User"`). |
+| `moduleSpecifier` | The module the class is defined in — a relative path (`./src/models`) or a package specifier (`point@0.0.1`). |
+| `functionName` | The class name as recorded by the compiler. |
+
+Returns `null` when the input is not a valid class ID.

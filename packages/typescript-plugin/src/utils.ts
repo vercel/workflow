@@ -61,7 +61,6 @@ export function detectSimilarStrings(a: string, b: string): boolean {
  */
 export function getDirective(
   node: FunctionLikeDeclaration,
-  _sourceFile: SourceFile,
   ts: TypeScriptLib
 ): 'use workflow' | 'use step' | null {
   if (!node.body || !ts.isBlock(node.body)) {
@@ -84,6 +83,19 @@ export function getDirective(
   }
 
   return null;
+}
+
+export function isDirectiveFunctionLike(
+  node: Node,
+  ts: TypeScriptLib
+): node is FunctionLikeDeclaration {
+  return (
+    ts.isFunctionDeclaration(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isFunctionExpression(node)
+  );
 }
 
 /**

@@ -1,11 +1,100 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { EntityConflictError } from '@workflow/errors';
+import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
 import type { PaginatedResponse } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
+import {
+  isUnwritableDirCode,
+  UnwritableDataDirError,
+} from './build-target-mismatch.js';
 
 const ulid = monotonicFactory(() => Math.random());
+
+/**
+ * Truncate a possibly-untrusted value for inclusion in an error message.
+ * Keeps error output actionable for developers in dev mode while limiting
+ * the amount of attacker-controlled data reflected back if a `world-local`
+ * backend is ever run in a context that surfaces these messages to clients.
+ */
+function truncateForError(value: unknown): string {
+  const s = typeof value === 'string' ? value : String(value);
+  const MAX = 48;
+  return s.length > MAX ? `${s.slice(0, MAX)}…` : s;
+}
+
+/**
+ * Thrown when a caller-supplied entity ID contains characters that would
+ * escape the storage root (path traversal) or otherwise produce an unsafe
+ * filename. Extends {@link WorkflowWorldError} so the platform's standard
+ * error-to-HTTP mapping handles it alongside other world-layer errors.
+ */
+export class UnsafeEntityIdError extends WorkflowWorldError {
+  constructor(kind: string, value: string) {
+    super(
+      `Unsafe ${kind} "${truncateForError(value)}": must not be empty, contain ".", "/", "\\", or null bytes`
+    );
+    this.name = 'UnsafeEntityIdError';
+  }
+
+  static is(value: unknown): value is UnsafeEntityIdError {
+    return value instanceof Error && value.name === 'UnsafeEntityIdError';
+  }
+}
+
+/**
+ * Validate that a string is safe to embed in a filesystem path as a single
+ * path component. Rejects values that are:
+ *   - empty
+ *   - starting with `.` (blocks `.`, `..`, `.locks`, `.tmp`, and other
+ *     hidden or reserved filenames)
+ *   - containing `.` (would collide with the `.tag` / `.json` suffix the
+ *     tagging logic strips from filenames; see {@link stripTag} /
+ *     {@link getObjectCreatedAt})
+ *   - containing `/`, `\`, or a NUL byte
+ *
+ * This is the primary defense against path-traversal attacks where a
+ * request body supplies a `runId` / `stepId` / `correlationId` containing
+ * `../` sequences to read or write files outside the storage root.
+ * {@link resolveWithinBase} provides a belt-and-suspenders containment
+ * check at the point of `path.join` for defense in depth.
+ *
+ * @param kind - Human-readable label used in the error message (e.g. "runId")
+ * @param value - The value to validate; throws {@link UnsafeEntityIdError}
+ *   if the value is not safe.
+ */
+export function assertSafeEntityId(kind: string, value: string): void {
+  if (
+    value.length === 0 ||
+    value.startsWith('.') ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    value.includes('\0') ||
+    value.includes('.')
+  ) {
+    throw new UnsafeEntityIdError(kind, value);
+  }
+}
+
+/**
+ * Join `basedir` with an entity-relative path and assert the result stays
+ * inside `basedir`. Complements {@link assertSafeEntityId}: per-entry-point
+ * validation is the primary defense, and this final check catches any path
+ * escape that slipped past (e.g. a new call site that forgot to validate,
+ * or an unusual character combination on a future filesystem). Throws
+ * {@link UnsafeEntityIdError} if the joined path escapes `basedir`.
+ */
+export function resolveWithinBase(
+  basedir: string,
+  ...segments: string[]
+): string {
+  const resolvedBase = path.resolve(basedir);
+  const joined = path.resolve(basedir, ...segments);
+  if (joined !== resolvedBase && !joined.startsWith(resolvedBase + path.sep)) {
+    throw new UnsafeEntityIdError('path', segments.join('/'));
+  }
+  return joined;
+}
 
 const isWindows = process.platform === 'win32';
 
@@ -15,7 +104,7 @@ const isWindows = process.platform === 'win32';
  * are briefly locked by another process or antivirus. This wrapper adds
  * exponential backoff retry logic. On non-Windows platforms, executes directly.
  */
-async function withWindowsRetry<T>(
+export async function withWindowsRetry<T>(
   fn: () => Promise<T>,
   maxRetries = 5
 ): Promise<T> {
@@ -43,12 +132,16 @@ async function withWindowsRetry<T>(
 // In-memory cache of created files to avoid expensive fs.access() calls
 // This is safe because we only write once per file path (no overwrites without explicit flag)
 const createdFilesCache = new Set<string>();
+// Writes repeatedly target a small fixed set of entity directories. Once one
+// exists in this process, avoid another recursive mkdir syscall per event.
+const createdDirectoriesCache = new Set<string>();
 
 /**
- * Clear the created files cache. Useful for testing or when files are deleted externally.
+ * Clear write-path caches. Useful for testing or when files are deleted externally.
  */
 export function clearCreatedFilesCache(): void {
   createdFilesCache.clear();
+  createdDirectoriesCache.clear();
 }
 
 export { ulidToDate } from '@workflow/world';
@@ -72,9 +165,36 @@ export function stripTag(fileId: string): string {
 }
 
 /**
+ * Check whether a fileId belongs to a specific tag.
+ * `wrun_ABC.vitest-0` belongs to `vitest-0`.
+ * Untagged fileIds never match a tag-scoped lookup.
+ */
+export function hasTag(fileId: string, tag: string): boolean {
+  return fileId.endsWith(`.${tag}`);
+}
+
+/**
+ * Check whether a fileId carries no tag suffix at all.
+ * `wrun_ABC` → true, `wrun_ABC.vitest-0` → false.
+ *
+ * An untagged world's reads (`readJSONWithFallback`) can only resolve untagged
+ * files, so when it lists entities for recovery it must skip files tagged by
+ * other worlds (e.g. the vitest harness) sharing the same data directory —
+ * otherwise it would re-enqueue runs it cannot subsequently read back.
+ */
+export function isUntagged(fileId: string): boolean {
+  return !TAG_PATTERN.test(fileId);
+}
+
+/**
  * Build the file path for an entity, with optional tag embedded in the filename.
- * `taggedPath('runs', 'wrun_ABC', 'vitest-0')` → `runs/wrun_ABC.vitest-0.json`
- * `taggedPath('runs', 'wrun_ABC')` → `runs/wrun_ABC.json`
+ * `taggedPath('/data', 'runs', 'wrun_ABC', 'vitest-0')` → `/data/runs/wrun_ABC.vitest-0.json`
+ * `taggedPath('/data', 'runs', 'wrun_ABC')` → `/data/runs/wrun_ABC.json`
+ *
+ * The `fileId` and `tag` are validated with {@link assertSafeEntityId} and
+ * the result is containment-checked with {@link resolveWithinBase} to
+ * prevent path-traversal attacks when values are derived from untrusted
+ * request input.
  */
 export function taggedPath(
   basedir: string,
@@ -82,8 +202,10 @@ export function taggedPath(
   fileId: string,
   tag?: string
 ): string {
+  assertSafeEntityId('fileId', fileId);
+  if (tag !== undefined) assertSafeEntityId('tag', tag);
   const filename = tag ? `${fileId}.${tag}.json` : `${fileId}.json`;
-  return path.join(basedir, entityDir, filename);
+  return resolveWithinBase(basedir, entityDir, filename);
 }
 
 /**
@@ -98,14 +220,19 @@ export async function readJSONWithFallback<T>(
   schema: z.ZodType<T>,
   tag?: string
 ): Promise<T | null> {
+  assertSafeEntityId('fileId', fileId);
+  if (tag !== undefined) assertSafeEntityId('tag', tag);
   if (tag) {
     const result = await readJSON(
-      path.join(basedir, entityDir, `${fileId}.${tag}.json`),
+      resolveWithinBase(basedir, entityDir, `${fileId}.${tag}.json`),
       schema
     );
     if (result !== null) return result;
   }
-  return readJSON(path.join(basedir, entityDir, `${fileId}.json`), schema);
+  return readJSON(
+    resolveWithinBase(basedir, entityDir, `${fileId}.json`),
+    schema
+  );
 }
 
 /**
@@ -146,10 +273,56 @@ export async function listTaggedFilesByExtension(
 }
 
 export async function ensureDir(dirPath: string): Promise<void> {
+  const resolvedPath = path.resolve(dirPath);
+  if (createdDirectoriesCache.has(resolvedPath)) {
+    return;
+  }
   try {
-    await fs.mkdir(dirPath, { recursive: true });
-  } catch (_error) {
+    await fs.mkdir(resolvedPath, { recursive: true });
+    createdDirectoriesCache.add(resolvedPath);
+  } catch (error) {
+    // A filesystem that refuses the directory outright will refuse every write
+    // into it too, and the caller's write would surface as a confusing ENOENT
+    // on the file rather than a missing directory. Report it here instead —
+    // unless the directory turns out to exist, in which case the failure was
+    // incidental (a race, or an unsearchable parent that reads fine) and the
+    // historical "ignore if already exists" behavior applies.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (
+      isUnwritableDirCode(code) &&
+      !(await isExistingDirectory(resolvedPath))
+    ) {
+      throw new UnwritableDataDirError(resolvedPath, code as string);
+    }
     // Ignore if already exists
+  }
+}
+
+async function isExistingDirectory(dirPath: string): Promise<boolean> {
+  try {
+    return (await fs.stat(dirPath)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function withEnsuredDirectory<T>(
+  dirPath: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  await ensureDir(dirPath);
+  try {
+    return await operation();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+
+    // A dev server may outlive an external cleanup of its data directory.
+    // Forget the cached directory and retry once after recreating it.
+    createdDirectoriesCache.delete(path.resolve(dirPath));
+    await ensureDir(dirPath);
+    return operation();
   }
 }
 
@@ -236,10 +409,11 @@ export async function write(
   const tempPath = `${filePath}.tmp.${ulid()}`;
   let tempFileCreated = false;
   try {
-    await ensureDir(path.dirname(filePath));
-    await fs.writeFile(tempPath, data);
-    tempFileCreated = true;
-    await withWindowsRetry(() => fs.rename(tempPath, filePath));
+    await withEnsuredDirectory(path.dirname(filePath), async () => {
+      await fs.writeFile(tempPath, data);
+      tempFileCreated = true;
+      await withWindowsRetry(() => fs.rename(tempPath, filePath));
+    });
     // Track this file in cache so future writes know it exists
     createdFilesCache.add(filePath);
   } catch (error) {
@@ -269,30 +443,101 @@ export async function readBuffer(filePath: string): Promise<Buffer> {
   return content;
 }
 
+export async function readFirstByte(
+  filePath: string
+): Promise<number | undefined> {
+  const file = await fs.open(filePath, 'r');
+  try {
+    const byte = Buffer.allocUnsafe(1);
+    const { bytesRead } = await file.read(byte, 0, 1, 0);
+    return bytesRead === 0 ? undefined : byte[0];
+  } finally {
+    await file.close();
+  }
+}
+
 export async function deleteJSON(filePath: string): Promise<void> {
   try {
-    await fs.unlink(filePath);
+    // On Windows, a concurrent reader briefly holding the file open makes
+    // unlink fail with EPERM (share violation), so retry like the other
+    // mutation paths in this module. A reader's window is milliseconds;
+    // without the retry a transient EPERM surfaces as a failed operation
+    // (e.g. run cancellation via deleteAllHooksForRun).
+    await withWindowsRetry(() => fs.unlink(filePath));
   } catch (error) {
     if ((error as any).code !== 'ENOENT') throw error;
   }
 }
 
 /**
- * Atomically create a file using O_CREAT | O_EXCL flags.
- * Returns true if the file was created, false if it already exists.
- * This is atomic at the OS level, safe for concurrent access.
+ * Atomically publish a fully-written file without overwriting an existing one.
+ *
+ * Writing directly with O_CREAT | O_EXCL makes the destination visible before
+ * its contents are complete, so concurrent readers can observe a partial file.
+ * Instead, write to a unique file in the same directory, then hard-link it into
+ * place. Creating the link is atomic and fails with EEXIST if another writer
+ * published the destination first.
  */
 export async function writeExclusive(
   filePath: string,
   data: string
 ): Promise<boolean> {
-  await ensureDir(path.dirname(filePath));
+  const tempPath = `${filePath}.tmp.${ulid()}`;
+  let tempFileCreated = false;
+
   try {
-    await fs.writeFile(filePath, data, { flag: 'wx' });
-    return true;
+    return await withEnsuredDirectory(path.dirname(filePath), async () => {
+      await fs.writeFile(tempPath, data, { flag: 'wx' });
+      tempFileCreated = true;
+
+      try {
+        await withWindowsRetry(() => fs.link(tempPath, filePath));
+        return true;
+      } catch (error: any) {
+        if (error.code === 'EEXIST') {
+          return false;
+        }
+        throw error;
+      }
+    });
+  } finally {
+    if (tempFileCreated) {
+      await withWindowsRetry(() => fs.unlink(tempPath), 3).catch(() => {});
+    }
+  }
+}
+
+/**
+ * Atomically promote a previously staged file (see {@link writeExclusive})
+ * to its visible destination via a hard link. The single `link(2)` call is
+ * the linearization point:
+ *
+ *   - `'linked'`  — this call made the destination visible.
+ *   - `'exists'`  — another writer published the destination first
+ *                   (same meaning as `writeExclusive` returning false).
+ *   - `'missing'` — the staged file was concurrently unlinked, so the
+ *                   promotion atomically lost to whoever removed it and
+ *                   the destination was never made visible.
+ *
+ * The staged file is left in place on success; callers unlink it
+ * themselves (a leftover staged file is harmless — it is not at a
+ * reader-visible path).
+ */
+export async function promoteExclusive(
+  stagedPath: string,
+  filePath: string
+): Promise<'linked' | 'exists' | 'missing'> {
+  try {
+    await withEnsuredDirectory(path.dirname(filePath), () =>
+      withWindowsRetry(() => fs.link(stagedPath, filePath))
+    );
+    return 'linked';
   } catch (error: any) {
     if (error.code === 'EEXIST') {
-      return false;
+      return 'exists';
+    }
+    if (error.code === 'ENOENT') {
+      return 'missing';
     }
     throw error;
   }
@@ -320,7 +565,14 @@ export async function listFilesByExtension(
 interface PaginatedFileSystemQueryConfig<T> {
   directory: string;
   schema: z.ZodType<T>;
+  /**
+   * Optional immutable-item cache, keyed by absolute file path. Event files
+   * are append-only, so world-local can replay events it just persisted
+   * without rereading and reparsing them from disk.
+   */
+  cachedItems?: ReadonlyMap<string, T>;
   filePrefix?: string;
+  fileIdFilter?: (fileId: string) => boolean;
   filter?: (item: T) => boolean;
   sortOrder?: 'asc' | 'desc';
   limit?: number;
@@ -354,7 +606,9 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
   const {
     directory,
     schema,
+    cachedItems,
     filePrefix,
+    fileIdFilter,
     filter,
     sortOrder = 'desc',
     limit = 20,
@@ -363,20 +617,34 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     getId,
   } = config;
 
+  // Validate filePrefix (typically `${runId}-`) so request-derived prefixes
+  // consistently reject unsafe characters. filePrefix is only used below to
+  // filter readdir() results by prefix — it doesn't participate in path
+  // construction — but keeping the validation rule uniform across the
+  // storage layer avoids special cases and catches bad values earlier.
+  if (filePrefix !== undefined) {
+    assertSafeEntityId('filePrefix', filePrefix);
+  }
+
+  const resolvedDirectory = path.resolve(directory);
+
   // 1. Get all JSON files in directory
-  const fileIds = await listJSONFiles(directory);
+  const fileIds = await listJSONFiles(resolvedDirectory);
 
   // 2. Filter by prefix if provided
   const relevantFileIds = filePrefix
     ? fileIds.filter((fileId) => fileId.startsWith(filePrefix))
     : fileIds;
+  const filteredFileIds = fileIdFilter
+    ? relevantFileIds.filter(fileIdFilter)
+    : relevantFileIds;
 
   // 3. ULID Optimization: Filter by cursor using filename timestamps before loading JSON
   const parsedCursor = parseCursor(cursor);
-  let candidateFileIds = relevantFileIds;
+  let candidateFileIds = filteredFileIds;
 
   if (parsedCursor) {
-    candidateFileIds = relevantFileIds.filter((fileId) => {
+    candidateFileIds = filteredFileIds.filter((fileId) => {
       const filenameDate = getCreatedAt(`${fileId}.json`);
       if (filenameDate) {
         // Use filename timestamp for cursor filtering
@@ -404,29 +672,46 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     });
   }
 
-  // 4. Load files individually and collect valid items
+  // 4. Load files with bounded concurrency and collect valid items.
+  // Reads are independent; ordering is restored by the sort below.
+  const readConcurrency = 32;
   const validItems: T[] = [];
 
-  for (const fileId of candidateFileIds) {
-    const filePath = path.join(directory, `${fileId}.json`);
-    let item: T | null = null;
-    try {
-      item = await readJSON(filePath, schema);
-    } catch (error: unknown) {
-      // We don't expect zod errors to happen, but if the JSON does get malformed,
-      // we skip the item. Preferably, we'd have a way to mark items as malformed,
-      // so that the UI can display them as such, with richer messaging. In the meantime,
-      // we just log a warning and skip the item.
-      if (error instanceof z.ZodError) {
-        console.warn(
-          `Skipping item ${fileId} due to malformed JSON: ${error.message}`
-        );
-        continue;
-      }
-      throw error;
-    }
+  for (
+    let batchStart = 0;
+    batchStart < candidateFileIds.length;
+    batchStart += readConcurrency
+  ) {
+    const batch = candidateFileIds.slice(
+      batchStart,
+      batchStart + readConcurrency
+    );
+    const loadedBatch = await Promise.all(
+      batch.map(async (fileId): Promise<T | null> => {
+        const filePath = path.join(resolvedDirectory, `${fileId}.json`);
+        try {
+          const cachedItem = cachedItems?.get(filePath);
+          return cachedItem === undefined
+            ? await readJSON(filePath, schema)
+            : structuredClone(cachedItem);
+        } catch (error: unknown) {
+          // We don't expect zod errors to happen, but if the JSON does get malformed,
+          // we skip the item. Preferably, we'd have a way to mark items as malformed,
+          // so that the UI can display them as such, with richer messaging. In the meantime,
+          // we just log a warning and skip the item.
+          if (error instanceof z.ZodError) {
+            console.warn(
+              `Skipping item ${fileId} due to malformed JSON: ${error.message}`
+            );
+            return null;
+          }
+          throw error;
+        }
+      })
+    );
 
-    if (item) {
+    for (const item of loadedBatch) {
+      if (!item) continue;
       // Apply custom filter early if provided
       if (filter && !filter(item)) continue;
 

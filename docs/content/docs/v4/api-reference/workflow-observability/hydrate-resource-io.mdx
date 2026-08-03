@@ -1,0 +1,62 @@
+---
+title: hydrateResourceIO
+description: Hydrate the serialized data fields of a run, step, hook, or event for display.
+type: reference
+summary: Use hydrateResourceIO with observabilityRevivers to deserialize step input/output for display in observability tools.
+prerequisites:
+  - /docs/api-reference/workflow-runtime/get-world
+related:
+  - /docs/api-reference/workflow-observability/observability-revivers
+  - /docs/api-reference/workflow-runtime/world/storage
+---
+
+Hydrates (deserializes) the data fields of a resource returned by the [World SDK](/docs/api-reference/workflow-runtime/world) — a workflow run, step, hook, or event. Workflow data is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format, so this is required before displaying step input/output in a UI.
+
+The function dispatches on the resource shape: steps get `input`/`output` hydrated, hooks get `metadata`, events get `eventData`, and runs get `input`/`output`.
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+import { hydrateResourceIO, observabilityRevivers } from "workflow/observability"; // [!code highlight]
+declare const runId: string; // @setup
+declare const stepId: string; // @setup
+
+const world = await getWorld();
+const step = await world.steps.get(runId, stepId);
+const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
+console.log(hydrated.input, hydrated.output);
+```
+
+## API Signature
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `resource` | `WorkflowRun \| Step \| Hook \| Event` | The resource with serialized data fields |
+| `revivers` | `Revivers` | Reviver functions for deserialization. Use [`observabilityRevivers`](/docs/api-reference/workflow-observability/observability-revivers) for standard use. |
+
+### Returns
+
+The same resource with its data fields hydrated into plain JavaScript values.
+
+<Callout type="info">
+  Encrypted data fields pass through as raw `Uint8Array` values rather than being decrypted — see [Encrypted Data](/docs/api-reference/workflow-observability#encrypted-data).
+</Callout>
+
+## Examples
+
+### Display a Run's Steps with Hydrated I/O
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+import { hydrateResourceIO, observabilityRevivers } from "workflow/observability"; // [!code highlight]
+declare const runId: string; // @setup
+
+const world = await getWorld();
+const steps = await world.steps.list({ runId, resolveData: "all" });
+
+for (const step of steps.data) {
+  const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
+  console.log(step.stepName, hydrated.input, hydrated.output);
+}
+```

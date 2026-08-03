@@ -1,5 +1,5 @@
 import type { Program, QuickInfo } from 'typescript/lib/tsserverlibrary';
-import { getDirective } from './utils';
+import { getDirective, isDirectiveFunctionLike } from './utils';
 
 type TypeScriptLib = typeof import('typescript/lib/tsserverlibrary');
 
@@ -56,14 +56,7 @@ export function getHoverInfo(
   }
 
   const blockParent = grandParent.parent;
-  if (
-    !blockParent ||
-    !(
-      ts.isFunctionDeclaration(blockParent) ||
-      ts.isArrowFunction(blockParent) ||
-      ts.isFunctionExpression(blockParent)
-    )
-  ) {
+  if (!blockParent || !isDirectiveFunctionLike(blockParent, ts)) {
     return undefined;
   }
 
@@ -73,15 +66,15 @@ export function getHoverInfo(
   }
 
   // Get the parent function to determine directive type
-  const directive = getDirective(blockParent, sourceFile, ts);
+  const directive = getDirective(blockParent, ts);
   if (!directive) {
     return undefined;
   }
 
   const isWorkflow = directive === 'use workflow';
   const docUrl = isWorkflow
-    ? 'https://useworkflow.dev/docs/foundations/workflows-and-steps#workflow-functions'
-    : 'https://useworkflow.dev/docs/foundations/workflows-and-steps#step-functions';
+    ? 'https://workflow-sdk.dev/docs/foundations/workflows-and-steps#workflow-functions'
+    : 'https://workflow-sdk.dev/docs/foundations/workflows-and-steps#step-functions';
   const directiveType = isWorkflow ? 'Workflow' : 'Step';
 
   return {

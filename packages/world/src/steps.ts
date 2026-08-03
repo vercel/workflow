@@ -1,11 +1,6 @@
 import { z } from 'zod';
 import { type SerializedData, SerializedDataSchema } from './serialization.js';
-import {
-  type PaginationOptions,
-  type ResolveData,
-  type StructuredError,
-  StructuredErrorSchema,
-} from './shared.js';
+import type { PaginationOptions, ResolveData } from './shared.js';
 
 // Step schemas
 export const StepStatusSchema = z.enum([
@@ -49,14 +44,19 @@ export const StepSchema = z.object({
    */
   stepName: z.string(),
   status: StepStatusSchema,
-  input: SerializedDataSchema,
+  input: SerializedDataSchema.optional(),
   output: SerializedDataSchema.optional(),
   /**
-   * The error from a step_retrying or step_failed event.
-   * This tracks the most recent error the step encountered, which may
-   * be from a retry attempt (step_retrying) or the final failure (step_failed).
+   * The thrown value from a step_retrying or step_failed event, serialized
+   * via the workflow serialization pipeline. Tracks the most recent error
+   * the step encountered, which may be from a retry attempt (step_retrying)
+   * or the final failure (step_failed).
+   *
+   * To display the error to a user, hydrate it via `hydrateStepError` (with
+   * the encryption key if encryption is enabled). Observability tools cannot
+   * view the error without going through the decryption + hydration pipeline.
    */
-  error: StructuredErrorSchema.optional(),
+  error: SerializedDataSchema.optional(),
   attempt: z.number(),
   /**
    * When the step first started executing. Set by the first step_started event
@@ -73,6 +73,20 @@ export const StepSchema = z.object({
 
 // Inferred types
 export type StepStatus = z.infer<typeof StepStatusSchema>;
+export const TerminalStepStatusSchema = StepStatusSchema.extract([
+  'completed',
+  'failed',
+  'cancelled',
+] as const);
+export type TerminalStepStatus = z.infer<typeof TerminalStepStatusSchema>;
+export const TERMINAL_STEP_STATUSES = TerminalStepStatusSchema.options;
+
+export function isTerminalStepStatus(
+  status: string
+): status is TerminalStepStatus {
+  return TERMINAL_STEP_STATUSES.includes(status as TerminalStepStatus);
+}
+
 export type Step = z.infer<typeof StepSchema>;
 
 /**
@@ -95,7 +109,7 @@ export interface UpdateStepRequest {
   attempt?: number;
   status?: StepStatus;
   output?: SerializedData;
-  error?: StructuredError;
+  error?: SerializedData;
   retryAfter?: Date;
 }
 

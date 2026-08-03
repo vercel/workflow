@@ -1,5 +1,6 @@
 import {
   cancelRun as cancelRunServerAction,
+  fetchHookToken as fetchHookTokenServerAction,
   recreateRun as recreateRunServerAction,
   reenqueueRun as reenqueueRunServerAction,
   resumeHook as resumeHookServerAction,
@@ -46,4 +47,21 @@ export async function resumeHook(
   payload: unknown
 ): Promise<ResumeHookResult> {
   return unwrapOrThrow(resumeHookServerAction(env, token, payload));
+}
+
+/**
+ * Fetch a single hook's secret token on demand.
+ *
+ * Used by the hooks list, where rows are metadata-only: the token is fetched
+ * one hook at a time when the user reveals/copies it or resumes the hook.
+ */
+export async function fetchHookToken(
+  env: EnvMap,
+  runId: string,
+  hookId: string
+): Promise<string> {
+  const { token } = await unwrapOrThrow(
+    fetchHookTokenServerAction(env, runId, hookId)
+  );
+  return token;
 }

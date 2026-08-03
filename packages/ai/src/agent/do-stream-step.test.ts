@@ -1,5 +1,7 @@
+import type { UIMessageChunk } from 'ai';
 import { describe, expect, it } from 'vitest';
-import { normalizeFinishReason } from './do-stream-step.js';
+import { doStreamStep, normalizeFinishReason } from './do-stream-step.js';
+import { safeParseToolCallInput } from './safe-parse-tool-call-input.js';
 
 describe('normalizeFinishReason', () => {
   describe('string finish reasons', () => {
@@ -119,6 +121,135 @@ describe('normalizeFinishReason', () => {
       const normalized = normalizeFinishReason({ type: 'tool-calls' });
       expect(normalized).toBe('tool-calls');
       expect(typeof normalized).toBe('string');
+    });
+  });
+});
+
+describe('safeParseToolCallInput', () => {
+  it('should parse valid JSON input', () => {
+    expect(safeParseToolCallInput('{"city":"San Francisco"}')).toEqual({
+      city: 'San Francisco',
+    });
+  });
+
+  it('should return empty object for undefined input', () => {
+    expect(safeParseToolCallInput(undefined)).toEqual({});
+  });
+
+  it('should preserve malformed input as a string', () => {
+    expect(safeParseToolCallInput('{"city":"San Francisco"')).toBe(
+      '{"city":"San Francisco"'
+    );
+  });
+});
+
+describe('doStreamStep', () => {
+  it('should not throw when streamed tool-call input is malformed JSON', async () => {
+    const writtenChunks: UIMessageChunk[] = [];
+    const writable = new WritableStream<UIMessageChunk>({
+      write: async (chunk) => {
+        writtenChunks.push(chunk);
+      },
+    });
+
+    const model = {
+      provider: 'mock-provider',
+      modelId: 'mock-model',
+      doStream: async () => ({
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: 'stream-start', warnings: [] });
+            controller.enqueue({
+              type: 'tool-call',
+              toolCallId: 'call-1',
+              toolName: 'getWeather',
+              input: '{"city":"San Francisco"',
+            });
+            controller.enqueue({
+              type: 'finish',
+              finishReason: 'tool-calls',
+              usage: {
+                inputTokens: { total: 10, noCache: 10 },
+                outputTokens: { total: 5, text: 0, reasoning: 5 },
+              },
+            });
+            controller.close();
+          },
+        }),
+      }),
+    };
+
+    const result = await doStreamStep(
+      [{ role: 'user', content: [{ type: 'text', text: 'test' }] }],
+      async () => model as any,
+      writable,
+      undefined,
+      { sendStart: false }
+    );
+
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0]?.input).toBe('{"city":"San Francisco"');
+    expect(writtenChunks).toContainEqual(
+      expect.objectContaining({
+        type: 'tool-input-available',
+        toolCallId: 'call-1',
+        toolName: 'getWeather',
+        input: '{"city":"San Francisco"',
+      })
+    );
+  });
+
+  it('merges partial response-metadata chunks instead of overwriting', async () => {
+    const writable = new WritableStream<UIMessageChunk>({
+      write: async () => {},
+    });
+
+    const timestamp = new Date('2026-06-24T00:00:00.000Z');
+    const model = {
+      provider: 'mock-provider',
+      modelId: 'mock-model',
+      doStream: async () => ({
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: 'stream-start', warnings: [] });
+            // First chunk carries id + timestamp but no modelId.
+            controller.enqueue({
+              type: 'response-metadata',
+              id: 'resp-1',
+              timestamp,
+            });
+            // Later partial chunk carries only modelId — must not drop the
+            // id/timestamp established above.
+            controller.enqueue({
+              type: 'response-metadata',
+              modelId: 'resolved-model',
+            });
+            controller.enqueue({
+              type: 'finish',
+              finishReason: 'stop',
+              usage: {
+                inputTokens: { total: 10, noCache: 10 },
+                outputTokens: { total: 5, text: 5, reasoning: 0 },
+              },
+            });
+            controller.close();
+          },
+        }),
+      }),
+    };
+
+    const result = await doStreamStep(
+      [{ role: 'user', content: [{ type: 'text', text: 'test' }] }],
+      async () => model as any,
+      writable,
+      undefined,
+      { sendStart: false }
+    );
+
+    expect(result.raw.responseMetadata).toEqual({
+      id: 'resp-1',
+      modelId: 'resolved-model',
+      timestamp,
     });
   });
 });

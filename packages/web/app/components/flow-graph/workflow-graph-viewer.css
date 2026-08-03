@@ -22,13 +22,13 @@
 /* Custom styling for React Flow controls in dark mode */
 .react-flow__controls {
     button {
-      background-color: hsl(var(--background));
-      border: 1px solid hsl(var(--border));
-      color: hsl(var(--foreground));
+      background-color: var(--background);
+      border: 1px solid var(--border);
+      color: var(--foreground);
     }
   
     button:hover {
-      background-color: hsl(var(--accent));
+      background-color: var(--accent);
     }
   
     button path {
@@ -92,7 +92,7 @@
     left: 12px;
     font-size: 11px;
     font-weight: 600;
-    color: hsl(var(--muted-foreground));
+    color: var(--muted-foreground);
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }

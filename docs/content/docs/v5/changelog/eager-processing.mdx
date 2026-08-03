@@ -1,0 +1,269 @@
+---
+title: Eager Processing of Steps & Incremental Event Replay
+description: Combine workflow event replay and step bundles to do work inline where possible, only deferring to queue for parallelism
+type: overview
+---
+
+# Eager Processing of Steps & Incremental Event Replay
+
+**Date**: March 2026
+
+This is a major internal architecture change to how Workflow DevKit executes workflows and steps. It reduces function invocations and queue overhead by executing steps _inline_ within the same function invocation as the workflow replay, rather than dispatching every step to a separate function via the queue.
+
+## Previous Architecture
+
+The previous architecture used two separate routes, each backed by its own queue trigger:
+
+```
+Queue: __wkf_workflow_*  -->  /.well-known/workflow/v1/flow   (workflow replay in VM)
+                                |
+                          suspension (step needed)
+                                |
+                          queue step to __wkf_step_*
+                                |
+Queue: __wkf_step_*      -->  /.well-known/workflow/v1/step   (step execution in Node.js)
+                                |
+                          step completes
+                                |
+                          queue continuation to __wkf_workflow_*
+                                v
+                          (cycle repeats for each step)
+```
+
+Each step required **2 queue messages** (step invoke + workflow continuation) and **2 function invocations**, plus cold start overhead for each. A serial workflow with 10 steps needed ~21 function invocations.
+
+## New Architecture
+
+The two routes are merged into a single handler at `/.well-known/workflow/v1/flow` using `workflowEntrypoint()`. The step route is no longer generated.
+
+The handler runs an inline execution loop:
+
+```
+receive queue message
+  |
+  +-- if message has stepId+stepName: execute that step, queue workflow continuation, exit
+  |
+  v
+replay workflow in VM
+  |
+  +-- workflow completed --> create run_completed event, exit
+  +-- workflow failed   --> create run_failed event, exit
+  |
+  v
+suspension with pending operations
+  |
+  +-- process hooks and waits (unchanged)
+  |
+  +-- 0 pending steps  --> return (waits/hooks only)
+  +-- 1 pending step   --> execute inline, loop back to replay
+  +-- N pending steps  --> queue N-1 to self (with stepId),
+  |                        execute 1 inline, loop back to replay
+  |
+  +-- timeout check: if wall-clock time >= threshold,
+  |   re-schedule self via queue and exit
+  |
+  v
+(loop continues until completion, timeout, or non-step suspension)
+```
+
+A serial workflow with 10 steps now completes in **1 function invocation**.
+
+## Background Steps (Parallel Execution)
+
+When a workflow suspends with multiple pending steps (e.g., from `Promise.all`), the handler creates `step_created` events for all of them, queues N-1 back to `__wkf_workflow_*` with `stepId` and `stepName` in the message payload, executes 1 step inline, and loops back to replay.
+
+Each background step message is handled by a separate function invocation of the same handler. When a message arrives with `stepId` and `stepName`, the handler executes that specific step, then checks if all parallel steps from the batch are done by comparing `step_created` events against terminal events (`step_completed`/`step_failed`):
+
+- **All steps done**: The handler replays the workflow inline, continuing the execution loop without a queue roundtrip.
+- **Steps still pending**: The handler returns without queuing a continuation. The last handler to complete its step will see all steps done and replay inline.
+- **Pending ops (stream writes)**: The handler queues a continuation and returns, so `waitUntil` can flush the pending stream data.
+
+### Convergence After Parallel Steps
+
+When multiple background steps complete near-simultaneously, multiple handlers may observe "all steps done" and attempt to advance the workflow concurrently. The event-sourced architecture plus the invariants below ensure safe convergence:
+
+- **`step_created` idempotency** — duplicate creates return 409; exactly one handler owns each step
+- **`step_completed` / `step_failed` idempotency** — only the first invocation to record a terminal result wins
+- **Queue idempotency keys** — background step messages use `correlationId` as idempotency key
+- **Deterministic replay** — all invocations produce the same result given the same event log
+
+### Single Inline Executor Per Step
+
+Inline step execution combined with background-step dispatch introduces a new coordination requirement: when multiple handlers reach the same `Promise.all` batch concurrently, we need to guarantee that each step body runs at most once via the inline path. Without that guarantee, the event log accumulates duplicate `step_started` events (including some written *after* `step_completed`, which orphans them on replay) and step bodies run redundantly.
+
+The design enforces a simple invariant: **exactly one handler owns each step, and only the owner may execute it inline**. Ownership is established by the atomicity of `step_created`:
+
+1. **Atomic `step_created`** — `events.create('step_created', correlationId=X)` is serialized per-correlationId in every world. Exactly one concurrent caller succeeds; the rest receive `EntityConflictError`.
+2. **Suspension handler reports ownership** — only `step_created` writes that actually succeeded (not those that caught 409) count toward ownership.
+3. **Inline execution is gated on ownership** — a handler that didn't win any `step_created` race performs no inline execution.
+4. **Queueing is unconditional** — for every pending step except the one being inline-executed, the handler enqueues a background step message with `idempotencyKey: correlationId`. This is what makes crash recovery work: if a prior handler wrote `step_created` but crashed before enqueueing, a later handler will enqueue the orphaned step. Concurrent handlers' redundant enqueues dedupe on the idempotency key.
+
+Together these give: every `step_created` event has exactly one inline executor **and** at least one queued dispatch. Step bodies are never executed concurrently, and `step_started` events never land in the log after `step_completed` for the same step.
+
+**Retry semantics are preserved**: a step that is currently running (status=`running`) still accepts a second `step_started` write with an incremented attempt counter — this is how queue redelivery after a SIGKILL mid-execution legitimately re-runs the step.
+
+## Incremental Event Loading
+
+The handler caches the event log in memory across loop iterations. Instead of re-fetching the entire event log on each replay:
+
+1. **First iteration**: full load, returning both the events and the final pagination cursor
+2. **Subsequent iterations**: fetch only events created after the saved cursor and append them to the cached array
+
+For a 10-step serial workflow completing in one invocation, the 10th replay loads ~2 new events instead of re-fetching all ~30.
+
+Incremental loading depends on the World returning a cursor even on the final page of results. If a World implementation does not return a cursor after the initial load, the handler logs an error and falls back to a full reload.
+
+## Timeout Handling
+
+The inline execution loop checks wall-clock time before each replay iteration. If the elapsed time exceeds a configurable threshold (default: 110 seconds, for a 120-second function limit), the handler re-schedules itself via the queue and returns. Configurable via `WORKFLOW_V2_TIMEOUT_MS`.
+
+If a single step takes longer than the timeout threshold, the step runs to completion (or SIGKILL) — there is no interruption mechanism for in-progress step execution. This is the same behavior as the previous architecture.
+
+## Queue Message Changes
+
+The `WorkflowInvokePayload` schema has two new optional fields: `stepId` and `stepName`. When `stepId` is present, the handler executes that specific step before (or instead of) replaying the workflow. Background steps are queued with both set, so the handler knows which step function to call without loading the event log. Previously, `stepName` was resolved by loading all events and searching for the `step_created` event matching the `stepId` — an O(N) operation on the full event history for every background step arrival.
+
+The queue trigger configuration uses `WORKFLOW_QUEUE_TRIGGER` on the `__wkf_workflow_*` topic. The `__wkf_step_*` topic and its separate trigger are no longer generated.
+
+## Generated File Layout
+
+```
+.well-known/workflow/v1/
+  flow/
+    route.js                  # Handler (workflowEntrypoint)
+    __step_registrations.js   # Step function registrations (side effects)
+  webhook/
+    [token]/
+      route.js                # Webhook handler (unchanged)
+  manifest.json               # Workflow/step/class manifest (unchanged)
+  config.json                 # Functions config (single trigger)
+```
+
+The `step/` directory is no longer generated.
+
+## Design Notes and Tradeoffs
+
+### Parent→Child Polling Holds Worker Slots
+
+`Run#returnValue` is implemented as a polling step: the workflow awaits the child run's terminal status inside a step body. In worker-based worlds (notably `world-postgres`), each such poll occupies a queue worker slot until the child run finishes. Parent workflows that fan out to many child runs — recursive workflows like `fibonacciWorkflow` are the obvious case — can therefore consume a large fraction of available workers just holding positions in `Promise.all([...children.map(c => c.returnValue)])`.
+
+If `queueConcurrency` is smaller than the peak number of concurrent parent polls plus the workers needed for any in-flight children, the system deadlocks: every slot is held by a parent waiting on a child, but no child can acquire a slot to start.
+
+For `world-postgres`, the default `queueConcurrency` is set to **50**. Workflows that fan out more aggressively must raise this ceiling.
+
+To prevent deadlock when polling is executed inline by the step executor, `Run#pollReturnValue()` detects when it's running inside a step executor and throws `TooEarlyError` instead of polling in a blocking loop. The step executor handles `TooEarlyError` by re-queueing the step with a 1-second delay, freeing the worker. Unlike `RetryableError`, `TooEarlyError` does NOT count against `maxRetries`, so polling steps can retry indefinitely until the child completes.
+
+**Follow-up**: Replace the worker-pool sizing requirement with a polling design that does not occupy a worker slot. Options under consideration: moving child-completion polling out of the step body into the suspension layer, or emitting a `run_completed` notification on the parent's stream/queue so the parent only resumes when the child actually finishes.
+
+### Mixed Suspensions
+
+A suspension may contain steps, hooks, and waits simultaneously. The handler creates events for all, then dispatches everything we are not running inline as a single parallel batch of queue messages:
+
+```
+ownedPendingSteps = pendingSteps.filter(owned by this handler)
+inlineStep        = ownedPendingSteps[0]   // optional
+
+dispatches = [
+  ...for each non-inline pendingStep: queue stepId message (idempotency=correlationId),
+  ...if soonest pending wait:          queue delayed continuation
+                                       (delaySeconds=min(remaining, maxDelay),
+                                        idempotency=waitCorrelationId[:hop|:secondBucket]),
+]
+await Promise.all(dispatches)
+
+if (!inlineStep) return
+await executeStep(inlineStep)
+```
+
+The wait timer is queued as its own continuation rather than encoded in the handler's return value (`{ timeoutSeconds }`). This is what makes `Promise.race(step, sleep)` behave correctly: even when the inline step blocks the handler for the full step duration, the wait continuation fires in a separate function invocation. If the sleep wins, that parallel invocation observes `wait_completed` via the "complete elapsed waits" pass and finishes the run; if the step wins, the wait continuation fires later and no-ops on the terminal run via the existing terminal-event check.
+
+Step queueing remains unconditional (covers crash recovery: if a prior handler wrote `step_created` but crashed before queueing, a later handler will queue it; idempotency keys dedupe redundant queues across concurrent handlers).
+
+Wait continuations are likewise deduplicated, keyed on the wait's correlation ID: while a wait is pending, every replay pass over the run re-observes it and would otherwise enqueue another delayed continuation. A key is attached in all cases, since some worlds serialize key-less workflow messages per run, which would park the continuation behind the handler's own inline step execution.
+
+Two situations deliver a continuation while its wait is still pending, and each varies the key so the re-enqueue isn't dropped by a world's dedupe window (which outlives the first delivery): waits longer than the maximum queue delay (23h, bounded by VQS's 24h message retention) are clamped and chained across hops, with the hop index suffixed to the key so each hop dedupes within its window but the chain always advances; and near-elapsed waits (≤2s remaining) use a second-bucketed key suffix so a continuation delivered marginally early (clock skew) can enqueue a fresh short-delay retry. See `runtime/wait-continuation.ts` for the full selection logic.
+
+The retry/throttle and hook-conflict paths still return `{ timeoutSeconds }` since their semantics are "redeliver THIS message after a delay" rather than "schedule a fresh wait timer." Those can be unified in a follow-up.
+
+The unified dispatch requires `world-local` to honor `delaySeconds` on the queue (added in the same PR series). Without it, the wait continuation would fire instantly in dev and trigger a spurious replay before the wait elapsed (recoverable via redelivery, but inefficient and observable as duplicate `step_started` events under contention).
+
+### VM Sandboxing
+
+Workflow code still runs in a Node.js VM for determinism and sandboxing. Step code runs in the Node.js host context. The only change is that both happen within the same function invocation.
+
+### Bundle Size and Cold Start
+
+The combined bundle is larger (contains both step code and workflow VM code). Cold start time increases slightly. The reduction in total function invocations more than compensates.
+
+### Step Retries
+
+When an inline step fails with retries remaining:
+
+- `RetryableError` with explicit `retryAfter` delay: re-queue to self with `stepId` and delay
+- Transient errors with immediate retry: re-queue to self with `stepId` (delay = 1s)
+- `FatalError`: fail immediately
+
+### Encryption Key Resolution
+
+Encryption keys are resolved once before the inline execution loop starts (after the run status is confirmed as `running`) and reused across all iterations. Background step executions resolve the key independently. The key does not change within a run.
+
+### Module Scope Duplication in Re-Bundled Output
+
+Builders that re-bundle the combined output into a single file (standalone CLI, Vercel Build Output API, NestJS) produce a layout where esbuild creates isolated module scopes for each source module, even within the same output file. Without intervention this means `registerStepFunction` and `getStepFunction` operate on different `Map` instances — steps are registered into one Map but looked up from another.
+
+The step function registry and the step context storage are `globalThis` singletons (via `Symbol.for`) to ensure all module scopes share the same instances. The same pattern is used for the World singleton and the class serialization registry.
+
+### Inline Step Execution with Pending Stream Operations
+
+When a step's arguments or return value include serialized streams (e.g., `WritableStream` from `getWritable()`, or AI SDK streaming steps), the serialization layer creates background `flushablePipe` operations that pipe data to S3. These ops are tracked in an `ops` array and need to complete before the stream data is readable by external consumers.
+
+In V1, each step ran in a separate function invocation. After the step completed, `waitUntil(ops)` kept the function alive to flush the ops. In V2, the inline execution loop continues immediately after the step body returns — so we need to know whether to keep looping or break out and let `waitUntil` flush.
+
+`executeStep()` attempts a 500ms `Promise.race` between the ops settling and a timeout. If ops settle in time (data confirmed on server), it returns `hasPendingOps: false` and the V2 handler continues the inline loop. If ops don't settle in 500ms (e.g., `WritableStream` kept open across steps), it returns `hasPendingOps: true` and the V2 handler breaks the loop and queues a continuation so `waitUntil` can flush them.
+
+**Follow-up**: Shrink the 500ms inline-ops budget once we have confidence that the flush-waiter path settles deterministically across all worlds. A signaled "ops drained" event from the world layer would let `executeStep()` proceed without the timeout in the common case.
+
+### Buffered Stream Flush with Waiter Promises
+
+`WorkflowServerWritableStream` buffers writes and flushes via a 10ms `setTimeout` for batching. Naively, `write()` could return immediately after buffering, but that would cause the `flushablePipe`'s `pendingOps` counter to reach 0 before data actually reached the server — the V2 inline loop would see ops as settled prematurely and produce data-loss races on every step with `WritableStream` serialization.
+
+`write()` returns a promise that resolves only after the scheduled flush completes. Multiple writes within the 10ms window still share a single batched HTTP request (the batching optimization is preserved). Each write registers a `{resolve, reject}` pair in a `flushWaiters` array. When the `setTimeout` fires and `flush()` completes the HTTP round-trip, all waiters are resolved (or rejected on error). This makes `pendingOps` accurately reflect server-side data state while keeping network-efficient batching.
+
+### Lock-Release Polling Interval
+
+`flushablePipe`'s `pollWritableLock` / `pollReadableLock` use `setInterval` to detect when a user releases their stream lock without closing the stream — the Web Streams API has no event for that state. The V2 step executor's `opsSettled` race waits for this poll to resolve after each writable-bearing step body returns, so the polling interval sits on the critical path of every streaming step.
+
+The interval was lowered from 100ms to 10ms. Per-step wait drops from ~50ms average to ~5ms (scaling linearly with the number of writable-bearing steps in a workflow). Per-tick work is just `writable.locked` plus a `getWriter()`/`releaseLock()` probe — microsecond-scale, so 10× more ticks is not measurable in practice.
+
+**Follow-up**: Replace polling entirely with an event-driven release signal — wrap the writable returned from the `WritableStream` reviver with a writer that fires on `releaseLock()` — bringing the wait to ~0ms. This would also remove a source of timing drift between worlds with synchronous storage (`world-local`) and worlds with HTTP-deferred storage (`world-vercel`).
+
+### Concurrent `step_started` and Attempt Counter
+
+When the V2 handler dispatches N parallel steps as background messages, each background step completion queues a workflow continuation. Up to N continuations may replay concurrently, and each may attempt to start the same not-yet-completed step (since `step_started` succeeds for already-running steps). Each call atomically increments the `attempt` counter — so with N=5 parallel steps, the counter can reach 5 on the first genuine execution.
+
+The max retries check in `executeStep()` only enforces when `step.error` exists — distinguishing actual retries (failed → retry with error) from concurrent first-attempt races (multiple handlers start the same step simultaneously without any prior failure). Concurrent starts are harmless since `step_completed` idempotency ensures only the first completion wins.
+
+### Unconsumed Event Check Two-Phase Drain
+
+The `EventsConsumer`'s unconsumed event check uses a two-phase promise queue drain: yield once after the first drain (via `setTimeout(0)`) so cross-VM promise chains can append follow-up async work, then re-drain before checking. This improves timing for scenarios like `step_completed` → for-await loop resume → next hook hydration.
+
+The check additionally arms a `DEFERRED_CHECK_DELAY_MS = 100` `setTimeout` after the second drain, since Node.js does not guarantee that `setTimeout(0)` fires after all cross-context microtasks settle. Any `subscribe()` call arriving during that 100ms window cancels the check via version invalidation + `clearTimeout`, so the delay only adds latency to genuine corruption — never to the happy path.
+
+**Follow-up**: 100ms is a heuristic chosen empirically. A deterministic settlement signal — for example, a "VM idle" callback exposed by the workflow VM bridge that fires only after all pending cross-context promise chains have resolved — would let the consumer fire the unconsumed-event check immediately on quiescence instead of waiting for a wall-clock timeout.
+
+### Lazy World Loading
+
+Static imports of `world-local` and `world-vercel` from the runtime caused two distinct build-time issues: Next.js production builds pulled both worlds (including their Node-only deps like `debug`'s `tty` requires) into the route module, and Turbopack's NFT (Node File Trace) errored on `process.cwd()` and dynamic `import()` patterns it couldn't statically analyze.
+
+A `getWorldLazy()` accessor (backed by a `globalThis` `Symbol.for` cache) replaces the static import in step-side modules. This breaks the static import chain from step code to `world.ts`, preventing both worlds from being bundled into the step registrations.
+
+Because tree-shaking can otherwise drop `world.ts`'s module-load registration entirely, a server-only side-effect module (`@workflow/core/runtime/world-init`) imports `./world.js` purely for its module-load side effect. It's wired via package conditions:
+
+- `default` → real, loads `world.ts`
+- `workflow` → empty stub, used by VM/step bundles
+
+This guarantees the world is loaded for routes that consume `start()` without going through the queue-driven flow handler first, while keeping `world.ts` and its server-only deps out of the workflow sandbox bundle.
+
+### Community Worlds and the `world.streams` API
+
+Community world adapters must implement the `world.streams.*` interface. The runtime legacy stream normalization was removed as part of this work.

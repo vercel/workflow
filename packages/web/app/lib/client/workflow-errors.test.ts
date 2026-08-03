@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { WorkflowWebAPIError, unwrapOrThrow } from './workflow-errors';
+import {
+  createWorkflowAPIError,
+  getErrorMessage,
+  getErrorTitle,
+  isObservabilityUpgradeRequired,
+  unwrapOrThrow,
+  WorkflowWebAPIError,
+} from './workflow-errors';
 
 describe('unwrapOrThrow', () => {
   it('returns data on success', async () => {
@@ -39,5 +46,26 @@ describe('unwrapOrThrow', () => {
 
     expect(err).toBeInstanceOf(WorkflowWebAPIError);
     expect(err.message).toBe('network error');
+  });
+
+  it('formats observability plan cap errors as upgrade prompts', () => {
+    const error = createWorkflowAPIError({
+      message: 'upgrade required',
+      layer: 'API',
+      request: {
+        operation: 'fetchRun',
+        params: { runId: 'run_123' },
+        status: 402,
+        code: 'observability-upgrade-required',
+      },
+    });
+
+    expect(isObservabilityUpgradeRequired(error)).toBe(true);
+    expect(getErrorTitle(error, 'Error loading run')).toBe(
+      'Upgrade Observability Plus'
+    );
+    expect(getErrorMessage(error)).toBe(
+      'This workflow observability data is outside your current plan window. Upgrade Observability Plus to view up to 30 days of workflow data.'
+    );
   });
 });

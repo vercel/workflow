@@ -7,10 +7,26 @@ import { applySwcTransform } from './apply-swc-transform.js';
 import {
   detectWorkflowPatterns,
   isGeneratedWorkflowFile,
-  isWorkflowSdkFile,
 } from './transform-utils.js';
 
-const enhancedResolve = promisify(enhancedResolveOriginal);
+const enhancedResolve = promisify(
+  enhancedResolveOriginal.create({
+    extensions: [
+      '.ts',
+      '.tsx',
+      '.mts',
+      '.cts',
+      '.js',
+      '.jsx',
+      '.mjs',
+      '.cjs',
+      '.json',
+      '.node',
+    ],
+    fullySpecified: false,
+    conditionNames: ['node', 'import', 'require'],
+  })
+);
 
 export const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
 
@@ -27,6 +43,7 @@ function hasManifestEntries(
 function isGeneratedBuildArtifactPath(filePath: string): boolean {
   const normalizedPath = filePath.replace(/\\/g, '/');
   return (
+    normalizedPath.includes('/.nitro/') ||
     normalizedPath.includes('/.output/') ||
     normalizedPath.includes('/.next/') ||
     normalizedPath.includes('/.nuxt/') ||
@@ -41,8 +58,17 @@ export const importParents = new Map<string, Set<string>>();
 // check if a parent has a child in its import chain
 // e.g. if a dependency needs to be bundled because it has
 // a 'use workflow/'use step' directive in it
-export function parentHasChild(parent: string, childToFind: string): boolean {
+export function parentHasChild(
+  parent: string,
+  childToFind: string,
+  {
+    excludedRoots,
+  }: {
+    excludedRoots?: Iterable<string>;
+  } = {}
+): boolean {
   const visited = new Set<string>();
+  const excluded = new Set(excludedRoots);
   const queue: string[] = [parent];
 
   while (queue.length > 0) {
@@ -59,6 +85,9 @@ export function parentHasChild(parent: string, childToFind: string): boolean {
     }
 
     for (const child of children) {
+      if (excluded.has(child)) {
+        continue;
+      }
       if (child === childToFind) {
         return true;
       }
@@ -80,7 +109,12 @@ export function createDiscoverEntriesPlugin(
   return {
     name: 'discover-entries-esbuild-plugin',
     setup(build) {
-      build.onResolve({ filter: jsTsRegex }, async (args) => {
+      // Track parent→child import relationships for ALL imports (not just
+      // those with file extensions) so that `parentHasChild()` can correctly
+      // identify transitive parents of serde/step files even when the
+      // dependency chain passes through bare specifier imports like
+      // `@workflow/core/runtime` or `workflow/runtime`.
+      build.onResolve({ filter: /.*/ }, async (args) => {
         try {
           const resolved = await enhancedResolve(args.resolveDir, args.path);
 
@@ -172,11 +206,7 @@ export function createDiscoverEntriesPlugin(
               state.discoveredSteps.add(normalizedPath);
             }
 
-            // For @workflow SDK packages, only discover files with actual
-            // directives, not files that just match serde patterns (internal
-            // SDK implementation files).
-            const isSdkFile = isWorkflowSdkFile(args.path);
-            if (hasManifestEntries(workflowManifest.classes) && !isSdkFile) {
+            if (hasManifestEntries(workflowManifest.classes)) {
               state.discoveredSerdeFiles.add(normalizedPath);
             }
           } else {

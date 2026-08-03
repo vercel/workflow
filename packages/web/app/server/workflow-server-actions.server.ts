@@ -6,19 +6,20 @@
  */
 
 import fs from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import * as workflowRunHelpers from '@workflow/core/runtime';
-import { createWorld } from '@workflow/core/runtime';
 import {
-  type HealthCheckEndpoint,
   type HealthCheckResult,
   healthCheck,
 } from '@workflow/core/runtime/helpers';
 import { resumeHook as resumeHookRuntime } from '@workflow/core/runtime/resume-hook';
 
-import { WorkflowWorldError, WorkflowRunNotFoundError } from '@workflow/errors';
+import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import type {
+  AnalyticsEvent,
   Event,
   Hook,
   Step,
@@ -26,7 +27,9 @@ import type {
   WorkflowRunStatus,
   World,
 } from '@workflow/world';
-import { type APIConfig, createVercelWorld } from '@workflow/world-vercel';
+import { createWorld as createLocalWorld } from '@workflow/world-local';
+import { createWorld as createVercelBackendWorld } from '@workflow/world-vercel';
+import type { HookListItem, HookTokenResult } from '~/lib/types';
 
 /**
  * Environment variable map for world configuration.
@@ -357,6 +360,7 @@ export interface PaginatedResult<T> {
   data: T[];
   cursor?: string;
   hasMore: boolean;
+  pageInfo?: AnalyticsPageInfo;
 }
 
 /**
@@ -383,6 +387,29 @@ export type ServerActionResult<T> =
   | { success: true; data: T }
   | { success: false; error: ServerActionError };
 
+interface AnalyticsPageInfo {
+  currentLookbackDays: number;
+  maxLookbackDays: number;
+  currentWindowStart: Date;
+  maxWindowStart: Date;
+  upgradeAvailable: boolean;
+}
+
+const OBSERVABILITY_UPGRADE_REQUIRED_CODE = 'observability-upgrade-required';
+const OBSERVABILITY_UPGRADE_REQUIRED_MESSAGE =
+  'This workflow observability data is outside your current plan window. Upgrade Observability Plus to view up to 30 days of workflow data.';
+
+function getPageInfo(result: unknown): AnalyticsPageInfo | undefined {
+  if (
+    typeof result !== 'object' ||
+    result === null ||
+    !('pageInfo' in result)
+  ) {
+    return undefined;
+  }
+  return (result as { pageInfo?: AnalyticsPageInfo }).pageInfo;
+}
+
 /**
  * Cache for World instances.
  *
@@ -408,7 +435,7 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
   // and we instantiate the world per-user directly to avoid having to set
   // process.env.
   if (isVercelWorld) {
-    return createVercelWorld({
+    return createVercelBackendWorld({
       token:
         userEnvMap.WORKFLOW_VERCEL_AUTH_TOKEN ||
         process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
@@ -447,9 +474,53 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
     return cachedWorld;
   }
 
-  const world = createWorld();
+  const world = await createWorldForBackend(backendId);
   worldCache.set(cacheKey, world);
   return world;
+}
+
+/**
+ * Construct the world for the configured backend explicitly.
+ *
+ * `createWorld()` from `@workflow/core/runtime` is a static-injection stub:
+ * framework build plugins alias it to the selected world package when the
+ * user's app is built. The web UI selects its backend at runtime via env,
+ * so it must construct worlds directly (mirroring the CLI's world setup).
+ * The local world is a direct dependency; other world packages (e.g.
+ * `@workflow/world-postgres` or community worlds) are resolved from the
+ * inspected project's directory.
+ */
+async function createWorldForBackend(backendId: string): Promise<World> {
+  if (backendId === 'local' || backendId === '@workflow/world-local') {
+    return createLocalWorld();
+  }
+
+  const cwd = getObservabilityCwd();
+  let worldPath: string;
+  try {
+    worldPath = createRequire(path.join(cwd, 'package.json')).resolve(
+      backendId,
+      { paths: [cwd] }
+    );
+  } catch {
+    throw new Error(
+      `Could not resolve workflow backend package "${backendId}" from "${cwd}". ` +
+        'Make sure the package is installed in the inspected project.'
+    );
+  }
+  const mod = (await import(pathToFileURL(worldPath).href)) as {
+    createWorld?: () => World | Promise<World>;
+    default?: { createWorld?: () => World | Promise<World> };
+  };
+  // Fall back to default.createWorld for CJS packages whose named exports
+  // aren't statically detectable by cjs-module-lexer.
+  const createWorldFn = mod.createWorld ?? mod.default?.createWorld;
+  if (typeof createWorldFn !== 'function') {
+    throw new Error(
+      `Workflow backend package "${backendId}" does not export createWorld().`
+    );
+  }
+  return createWorldFn();
 }
 
 /**
@@ -472,7 +543,7 @@ function createServerActionError<T>(
       console.error(`[web-api] ${operation} error:`, err);
     }
     errorResponse = {
-      message: getUserFacingErrorMessage(err, error.status),
+      message: getUserFacingErrorMessage(err, error.status, error.code),
       layer: 'API',
       cause: err.stack || err.message,
       request: {
@@ -511,9 +582,17 @@ function createServerActionError<T>(
 /**
  * Converts an error into a user-facing message
  */
-function getUserFacingErrorMessage(error: Error, status?: number): string {
+function getUserFacingErrorMessage(
+  error: Error,
+  status?: number,
+  code?: string
+): string {
   if (!status) {
     return `Error creating response: ${error.message}`;
+  }
+
+  if (status === 402 && code === OBSERVABILITY_UPGRADE_REQUIRED_CODE) {
+    return OBSERVABILITY_UPGRADE_REQUIRED_MESSAGE;
   }
 
   // Check for common error patterns
@@ -560,6 +639,15 @@ export async function fetchRuns(
     limit?: number;
     workflowName?: string;
     status?: WorkflowRunStatus;
+    /**
+     * Optional listing window (ISO timestamps, both required together).
+     * Honored by the analytics read path, where it bounds the backend scan;
+     * the runtime storage APIs have no time filter, so the fallback path
+     * ignores it. Windows outside the plan's observability lookback surface
+     * as a 402 `observability-upgrade-required` error.
+     */
+    startTime?: string;
+    endTime?: string;
   }
 ): Promise<ServerActionResult<PaginatedResult<WorkflowRun>>> {
   const {
@@ -568,19 +656,31 @@ export async function fetchRuns(
     limit = 10,
     workflowName,
     status,
+    startTime,
+    endTime,
   } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
-    const result = await world.runs.list({
-      ...(workflowName ? { workflowName } : {}),
-      ...(status ? { status: status } : {}),
-      pagination: { cursor, limit, sortOrder },
-      resolveData: 'none',
-    });
+    // Prefer the metadata-only analytics read path when the backend provides
+    // one; fall back to the runtime storage API otherwise.
+    const result = world.analytics
+      ? await world.analytics.runs.list({
+          ...(workflowName ? { workflowName } : {}),
+          ...(status ? { status } : {}),
+          ...(startTime && endTime ? { startTime, endTime } : {}),
+          pagination: { cursor, limit, sortOrder },
+        })
+      : await world.runs.list({
+          ...(workflowName ? { workflowName } : {}),
+          ...(status ? { status } : {}),
+          pagination: { cursor, limit, sortOrder },
+          resolveData: 'none',
+        });
     return createResponse({
       data: result.data as unknown as WorkflowRun[],
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
+      pageInfo: getPageInfo(result),
     });
   } catch (error) {
     return createServerActionError<PaginatedResult<WorkflowRun>>(
@@ -626,16 +726,24 @@ export async function fetchSteps(
   const { cursor, sortOrder = 'asc', limit = 100 } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
-    const result = await world.steps.list({
-      runId,
-      pagination: { cursor, limit, sortOrder },
-      resolveData: 'none',
-    });
+    // Prefer the metadata-only analytics read path when the backend provides
+    // one; fall back to the runtime storage API otherwise.
+    const result = world.analytics
+      ? await world.analytics.steps.list({
+          runId,
+          pagination: { cursor, limit, sortOrder },
+        })
+      : await world.steps.list({
+          runId,
+          pagination: { cursor, limit, sortOrder },
+          resolveData: 'none',
+        });
     return createResponse({
       // StepWithoutData has undefined input/output, but after hydration the structure is compatible
       data: result.data as unknown as Step[],
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
+      pageInfo: getPageInfo(result),
     });
   } catch (error) {
     return createServerActionError<PaginatedResult<Step>>(
@@ -672,6 +780,35 @@ export async function fetchStep(
 }
 
 /**
+ * Adapt a metadata-only analytics event row to the runtime `Event` shape the
+ * observability UI consumes. The analytics row carries event metadata as flat
+ * top-level fields, whereas the runtime `Event` nests step metadata under
+ * `eventData`. We reconstruct that nested shape (matching what the runtime list
+ * returns with `resolveData: 'none'`), carrying `stepName` when present. Payload
+ * fields (input/output/result/error/payload) are intentionally omitted — they
+ * are loaded lazily per event via `fetchEvent(..., 'all')` on the runtime path.
+ */
+export function analyticsEventToEvent(event: AnalyticsEvent): Event {
+  const eventData = {
+    ...(event.stepName ? { stepName: event.stepName } : {}),
+    ...(event.resumeAt ? { resumeAt: event.resumeAt } : {}),
+    ...(event.retryAfter ? { retryAfter: event.retryAfter } : {}),
+  };
+  const base = {
+    runId: event.runId,
+    eventId: event.eventId,
+    eventType: event.eventType,
+    createdAt: event.createdAt,
+    ...(event.correlationId ? { correlationId: event.correlationId } : {}),
+    ...(event.specVersion !== undefined
+      ? { specVersion: event.specVersion }
+      : {}),
+    ...(Object.keys(eventData).length > 0 ? { eventData } : {}),
+  };
+  return base as unknown as Event;
+}
+
+/**
  * Fetch paginated list of events for a run
  */
 export async function fetchEvents(
@@ -687,6 +824,22 @@ export async function fetchEvents(
   const { cursor, sortOrder = 'asc', limit = 1000, withData = false } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
+    // Prefer the metadata-only analytics read path when the backend provides one
+    // and no payloads are requested. Event payloads are loaded lazily per event
+    // via `fetchEvent(..., 'all')`, so the list never needs them; the analytics
+    // rows are mapped to the runtime `Event` shape the UI consumes.
+    if (world.analytics && !withData) {
+      const result = await world.analytics.events.list({
+        runId,
+        pagination: { cursor, limit, sortOrder },
+      });
+      return createResponse({
+        data: result.data.map(analyticsEventToEvent),
+        cursor: result.cursor ?? undefined,
+        hasMore: result.hasMore,
+        pageInfo: getPageInfo(result),
+      });
+    }
     const result = await world.events.list({
       runId,
       pagination: { cursor, limit, sortOrder },
@@ -696,6 +849,7 @@ export async function fetchEvents(
       data: result.data as unknown as Event[],
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
+      pageInfo: getPageInfo(result),
     });
   } catch (error) {
     return createServerActionError<PaginatedResult<Event>>(
@@ -732,8 +886,68 @@ export async function fetchEvent(
 }
 
 /**
+ * Fetch paginated events for a step correlation ID.
+ */
+export async function fetchEventsByCorrelationId(
+  worldEnv: EnvMap,
+  correlationId: string,
+  params: {
+    cursor?: string;
+    sortOrder?: 'asc' | 'desc';
+    limit?: number;
+    withData?: boolean;
+  }
+): Promise<ServerActionResult<PaginatedResult<Event>>> {
+  const { cursor, sortOrder = 'asc', limit = 100, withData = false } = params;
+  try {
+    const world = await getWorldFromEnv(worldEnv);
+    // Prefer the metadata-only analytics read path when the backend provides one
+    // and no payloads are requested (payloads are loaded lazily per event via
+    // `fetchEvent(..., 'all')`); analytics rows are mapped to the runtime `Event`
+    // shape the UI consumes.
+    if (world.analytics && !withData) {
+      const result = await world.analytics.events.listByCorrelationId({
+        correlationId,
+        pagination: { cursor, limit, sortOrder },
+      });
+      return createResponse({
+        data: result.data.map(analyticsEventToEvent),
+        cursor: result.cursor ?? undefined,
+        hasMore: result.hasMore,
+        pageInfo: getPageInfo(result),
+      });
+    }
+    const result = await world.events.listByCorrelationId({
+      correlationId,
+      pagination: { cursor, limit, sortOrder },
+      resolveData: withData ? 'all' : 'none',
+    });
+    return createResponse({
+      data: result.data as unknown as Event[],
+      cursor: result.cursor ?? undefined,
+      hasMore: result.hasMore,
+      pageInfo: getPageInfo(result),
+    });
+  } catch (error) {
+    return createServerActionError<PaginatedResult<Event>>(
+      error,
+      'world.events.listByCorrelationId',
+      {
+        correlationId,
+        ...params,
+      }
+    );
+  }
+}
+
+/**
  * Fetch paginated list of hooks
  */
+export function hookToListItem(hook: Hook): HookListItem {
+  const { token: _token, ...hookListItem } = hook;
+  return hookListItem;
+}
+
 export async function fetchHooks(
   worldEnv: EnvMap,
   params: {
@@ -742,26 +956,68 @@ export async function fetchHooks(
     sortOrder?: 'asc' | 'desc';
     limit?: number;
   }
-): Promise<ServerActionResult<PaginatedResult<Hook>>> {
+): Promise<ServerActionResult<PaginatedResult<HookListItem>>> {
   const { runId, cursor, sortOrder = 'desc', limit = 10 } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
+    // Prefer the metadata-only analytics read path when the backend provides
+    // one and the run scope required by analytics is present. The hook list is
+    // metadata only — the secret `token` is fetched on demand per hook via
+    // `fetchHookToken` for the copy-token and resume affordances — so the list
+    // never carries it.
+    if (world.analytics && runId) {
+      const result = await world.analytics.hooks.list({
+        runId,
+        pagination: { cursor, limit, sortOrder },
+      });
+      return createResponse({
+        data: result.data as unknown as HookListItem[],
+        cursor: result.cursor ?? undefined,
+        hasMore: result.hasMore,
+        pageInfo: getPageInfo(result),
+      });
+    }
     const result = await world.hooks.list({
       ...(runId ? { runId } : {}),
       pagination: { cursor, limit, sortOrder },
       resolveData: 'none',
     });
     return createResponse({
-      data: result.data as Hook[],
+      data: result.data.map(hookToListItem),
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
+      pageInfo: getPageInfo(result),
     });
   } catch (error) {
-    return createServerActionError<PaginatedResult<Hook>>(
+    return createServerActionError<PaginatedResult<HookListItem>>(
       error,
       'world.hooks.list',
       params
     );
+  }
+}
+
+/**
+ * Fetch a single hook's secret token on demand.
+ *
+ * Hook list rows are metadata-only; the token is read from the runtime storage
+ * API one hook at a time, only when the user reveals/copies it or resumes the
+ * hook. This keeps the secret out of bulk list responses.
+ */
+export async function fetchHookToken(
+  worldEnv: EnvMap,
+  runId: string,
+  hookId: string
+): Promise<ServerActionResult<HookTokenResult>> {
+  try {
+    const world = await getWorldFromEnv(worldEnv);
+    const hook = await world.hooks.get(hookId, { resolveData: 'none' });
+    return createResponse({ token: hook.token });
+  } catch (error) {
+    return createServerActionError<HookTokenResult>(error, 'world.hooks.get', {
+      runId,
+      hookId,
+    });
   }
 }
 
@@ -931,15 +1187,16 @@ export async function resumeHook(
 export async function readStreamServerAction(
   env: EnvMap,
   streamId: string,
-  startIndex?: number
+  startIndex: number | undefined,
+  runId: string
 ): Promise<ReadableStream<Uint8Array> | ServerActionError> {
   try {
     const world = await getWorldFromEnv(env);
     // Return the raw binary stream — deserialization and decryption
     // happen entirely client-side.
-    return await world.readFromStream(streamId, startIndex);
+    return await world.streams.get(runId, streamId, startIndex);
   } catch (error) {
-    const actionError = createServerActionError(error, 'world.readFromStream', {
+    const actionError = createServerActionError(error, 'world.streams.get', {
       streamId,
       startIndex,
     });
@@ -981,13 +1238,13 @@ export async function readStreamChunksServerAction(
     let pageCursor: string | undefined = startCursor;
     let streamDone = false;
     // Track the last non-null cursor so we can resume from the start of
-    // the final page on the next poll. When getStreamChunks returns
+    // the final page on the next poll. When getChunks returns
     // cursor=null we've exhausted all pages, but this saved cursor lets
     // the client re-fetch only the last page + any new chunks.
     let resumeCursor: string | null = startCursor ?? null;
 
     do {
-      const result = await world.getStreamChunks(streamId, runId, {
+      const result = await world.streams.getChunks(runId, streamId, {
         limit: CHUNKS_PAGE_SIZE,
         cursor: pageCursor,
       });
@@ -1019,7 +1276,7 @@ export async function readStreamChunksServerAction(
   } catch (error) {
     const actionError = createServerActionError(
       error,
-      'world.getStreamChunks',
+      'world.streams.getChunks',
       { streamId, runId }
     );
     if (!actionError.success) {
@@ -1038,16 +1295,12 @@ export async function fetchStreams(
 ): Promise<ServerActionResult<string[]>> {
   try {
     const world = await getWorldFromEnv(env);
-    const streams = await world.listStreamsByRunId(runId);
+    const streams = await world.streams.list(runId);
     return createResponse(streams);
   } catch (error) {
-    return createServerActionError<string[]>(
-      error,
-      'world.listStreamsByRunId',
-      {
-        runId,
-      }
-    );
+    return createServerActionError<string[]>(error, 'world.streams.list', {
+      runId,
+    });
   }
 }
 
@@ -1146,17 +1399,15 @@ export async function fetchWorkflowsManifest(
  * verify the endpoint is healthy.
  *
  * @param worldEnv - Environment configuration for the World
- * @param endpoint - Which endpoint to check: 'workflow' or 'step'
  * @param options - Optional configuration (timeout in ms)
  */
 export async function runHealthCheck(
   worldEnv: EnvMap,
-  endpoint: HealthCheckEndpoint,
   options?: { timeout?: number }
 ): Promise<ServerActionResult<HealthCheckResult>> {
   try {
     const world = await getWorldFromEnv(worldEnv);
-    const result = await healthCheck(world, endpoint, options);
+    const result = await healthCheck(world, options);
     return createResponse({
       ...result,
     });

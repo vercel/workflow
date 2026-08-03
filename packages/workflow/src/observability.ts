@@ -6,10 +6,10 @@
  *
  * @example
  * ```ts
- * import { getWorld } from 'workflow/api';
+ * import { getWorld } from 'workflow/runtime';
  * import { hydrateResourceIO, observabilityRevivers } from 'workflow/observability';
  *
- * const world = getWorld();
+ * const world = await getWorld();
  * const step = await world.steps.get(runId, stepId, { resolveData: 'all' });
  * const hydrated = hydrateResourceIO(step, observabilityRevivers);
  * // hydrated.input and hydrated.output are now plain JS objects

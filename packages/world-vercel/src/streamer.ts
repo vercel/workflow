@@ -1,10 +1,22 @@
-import type {
-  GetChunksOptions,
-  StreamChunksResponse,
-  Streamer,
-  StreamInfoResponse,
+import {
+  envNumber,
+  type GetChunksOptions,
+  type StreamChunksResponse,
+  type Streamer,
+  type StreamInfoResponse,
 } from '@workflow/world';
 import { z } from 'zod';
+import {
+  getStreamCloseDispatcher,
+  getStreamDispatcher,
+} from './http-client.js';
+import { getVercelDiagnostics, instrumentedFetch } from './http-core.js';
+import {
+  WorkflowRunId,
+  WorkflowStreamName,
+  WorkflowStreamOperation,
+  WorkflowStreamStartIndex,
+} from './telemetry.js';
 import {
   type APIConfig,
   getHttpConfig,
@@ -18,22 +30,91 @@ import {
  */
 export const MAX_CHUNKS_PER_REQUEST = 1000;
 
-// Streaming calls use plain fetch() without the undici dispatcher.
-// The dispatcher's retry logic doesn't apply well to streaming operations
-// (partial writes, long-lived reads), and duplex streams are incompatible
-// with undici's experimental H2 support.
+/**
+ * Effective max chunks per write request. Override via
+ * `WORKFLOW_MAX_CHUNKS_PER_REQUEST` — lower it (paired with the server's
+ * `MAX_CHUNKS_PER_BATCH` override) to exercise the batch-splitting path.
+ */
+const getMaxChunksPerRequest = (): number =>
+  envNumber('WORKFLOW_MAX_CHUNKS_PER_REQUEST', MAX_CHUNKS_PER_REQUEST, {
+    integer: true,
+    min: 1,
+  });
 
-function getStreamUrl(
-  name: string,
-  runId: string | undefined,
-  httpConfig: HttpConfig
-) {
-  if (runId) {
-    return new URL(
-      `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
-    );
-  }
-  return new URL(`${httpConfig.baseUrl}/v2/stream/${encodeURIComponent(name)}`);
+// All stream requests share the instrumented envelope (`instrumentedFetch`):
+// an OTEL client span, trace-context injection, `DEBUG` logging, and the
+// x-vercel diagnostic headers — the same coverage the v3/v4 paths have.
+//
+// Writes (the PUT write/close path) go through the H2 stream dispatcher (see
+// getStreamDispatcher): they send a fully-buffered body (or none), so they
+// benefit from H2 multiplexing without hitting the duplex issues that keep the
+// long-lived live-read (GET) on the global dispatcher. Because stream appends
+// aren't idempotent, that stream dispatcher uses a deliberately narrowed retry
+// policy (see STREAM_RETRY_OPTIONS): it retries only on transient connection
+// errors and HTTP 429 — both of which guarantee the chunk was never persisted —
+// and never on 5xx, so a retry can't duplicate an already-applied write.
+// Snapshot reads (chunks/info) go through makeRequest (default H1 dispatcher);
+// the live-read (GET) and list keep the global dispatcher (no custom retry) and
+// no request timeout — the live read is long-lived and a whole-request deadline
+// would truncate it.
+
+// Writes (PUT) and stream completion use the v2 stream endpoint.
+function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
+  return new URL(
+    `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
+  );
+}
+
+// The live-read (GET) endpoint is versioned at v3: on a max-duration timeout
+// (or a mid-stream connection drop) the server errors the response body
+// instead of closing it cleanly, which is what lets the reconnecting reader
+// (`createReconnectingFramedStream`) resume from the next chunk rather than
+// treating the timeout as end-of-stream. Reading from v2 would silently
+// truncate long-lived streams at the server's 2-minute limit. Only the live
+// read is affected by the timeout — writes, completion, and snapshot reads
+// (chunks/info/list) stay on v2.
+function getStreamReadUrl(name: string, runId: string, httpConfig: HttpConfig) {
+  return new URL(
+    `${httpConfig.baseUrl}/v3/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
+  );
+}
+
+/**
+ * Stream-operation attributes layered onto the shared HTTP client span (see
+ * instrumentedFetch). These make stream writes/reads sliceable by run, stream
+ * name, and operation — beyond the generic `http PUT`/`http GET` verb — and
+ * are no-ops when no OTEL SDK is registered (the span is undefined).
+ */
+function streamSpanAttributes(args: {
+  runId: string;
+  name: string;
+  operation: 'write' | 'write_multi' | 'close' | 'read';
+  startIndex?: number;
+}): Record<string, string | number> {
+  return {
+    ...WorkflowRunId(args.runId),
+    ...WorkflowStreamName(args.name),
+    ...WorkflowStreamOperation(args.operation),
+    ...(typeof args.startIndex === 'number'
+      ? WorkflowStreamStartIndex(args.startIndex)
+      : {}),
+  };
+}
+
+function createStreamRequestError(
+  operation: 'write' | 'close',
+  url: URL,
+  response: Response,
+  text: string
+): Error {
+  const context = [
+    `PUT ${url.origin}${url.pathname}`,
+    ...getVercelDiagnostics(response.headers),
+  ];
+
+  return new Error(
+    `Stream ${operation} failed: HTTP ${response.status} (${context.join('; ')}): ${text}`
+  );
 }
 
 /**
@@ -98,158 +179,205 @@ const StreamChunksResponseSchema = z.object({
 /** Creates the HTTP-backed streamer that talks to workflow-server. */
 export function createStreamer(config?: APIConfig): Streamer {
   return {
-    async writeToStream(
-      name: string,
-      runId: string | Promise<string>,
-      chunk: string | Uint8Array
-    ) {
-      // Await runId if it's a promise to ensure proper flushing
-      const resolvedRunId = await runId;
+    streams: {
+      async write(
+        runId: string | Promise<string>,
+        name: string,
+        chunk: string | Uint8Array
+      ) {
+        // Await runId if it's a promise to ensure proper flushing
+        const resolvedRunId = await runId;
 
-      const httpConfig = await getHttpConfig(config);
-      const response = await fetch(
-        getStreamUrl(name, resolvedRunId, httpConfig),
-        {
+        const httpConfig = await getHttpConfig(config);
+        const url = getStreamUrl(name, resolvedRunId, httpConfig);
+        const response = await instrumentedFetch({
           method: 'PUT',
+          url: url.toString(),
           body: chunk,
           headers: httpConfig.headers,
-        }
-      );
-      const text = await response.text();
-      if (!response.ok) {
-        throw new Error(
-          `Stream write failed: HTTP ${response.status}: ${text}`
-        );
-      }
-    },
+          dispatcher: getStreamDispatcher(config),
+          timeoutMs: null,
+          logLabel: url.pathname,
+          spanName: 'workflow.stream.write',
+          durationAttribute: 'workflow.stream.write.chunk_rtt',
+          attributes: streamSpanAttributes({
+            runId: resolvedRunId,
+            name,
+            operation: 'write',
+          }),
+          buildError: async (res) =>
+            createStreamRequestError('write', url, res, await res.text()),
+        });
+        // Drain the (empty) response so undici can release the pooled connection.
+        await response.text();
+      },
 
-    async writeToStreamMulti(
-      name: string,
-      runId: string | Promise<string>,
-      chunks: (string | Uint8Array)[]
-    ) {
-      if (chunks.length === 0) return;
+      async writeMulti(
+        runId: string | Promise<string>,
+        name: string,
+        chunks: (string | Uint8Array)[]
+      ) {
+        if (chunks.length === 0) return;
 
-      // Await runId if it's a promise to ensure proper flushing
-      const resolvedRunId = await runId;
+        // Await runId if it's a promise to ensure proper flushing
+        const resolvedRunId = await runId;
 
-      const httpConfig = await getHttpConfig(config);
+        const httpConfig = await getHttpConfig(config);
 
-      // Signal to server that this is a multi-chunk batch
-      httpConfig.headers.set('X-Stream-Multi', 'true');
+        // Signal to server that this is a multi-chunk batch
+        httpConfig.headers.set('X-Stream-Multi', 'true');
 
-      // Send in pages of MAX_CHUNKS_PER_REQUEST to stay within the
-      // server's per-batch limit (MAX_CHUNKS_PER_BATCH).
-      // Note: for batches spanning multiple pages, atomicity is relaxed —
-      // earlier pages may persist while a later page fails. The caller
-      // retains the full buffer on error, so chunks from successful pages
-      // will be re-sent on retry, producing duplicates. This is acceptable
-      // because the alternative (400 on all >1000 chunk flushes) is worse,
-      // and the scenario requires a network failure mid-batch.
-      for (let i = 0; i < chunks.length; i += MAX_CHUNKS_PER_REQUEST) {
-        const batch = chunks.slice(i, i + MAX_CHUNKS_PER_REQUEST);
-        const body = encodeMultiChunks(batch);
-        const response = await fetch(
-          getStreamUrl(name, resolvedRunId, httpConfig),
-          {
+        // Send in pages of MAX_CHUNKS_PER_REQUEST to stay within the
+        // server's per-batch limit (MAX_CHUNKS_PER_BATCH).
+        // Note: for batches spanning multiple pages, atomicity is relaxed —
+        // earlier pages may persist while a later page fails. The caller
+        // retains the full buffer on error, so chunks from successful pages
+        // will be re-sent on retry, producing duplicates. This is acceptable
+        // because the alternative (400 on all >1000 chunk flushes) is worse,
+        // and the scenario requires a network failure mid-batch.
+        const maxChunksPerRequest = getMaxChunksPerRequest();
+        for (let i = 0; i < chunks.length; i += maxChunksPerRequest) {
+          const batch = chunks.slice(i, i + maxChunksPerRequest);
+          const body = encodeMultiChunks(batch);
+          const url = getStreamUrl(name, resolvedRunId, httpConfig);
+          const response = await instrumentedFetch({
             method: 'PUT',
+            url: url.toString(),
             body,
             headers: httpConfig.headers,
-          }
-        );
-        const text = await response.text();
-        if (!response.ok) {
-          throw new Error(
-            `Stream write failed: HTTP ${response.status}: ${text}`
-          );
+            dispatcher: getStreamDispatcher(config),
+            timeoutMs: null,
+            logLabel: url.pathname,
+            spanName: 'workflow.stream.write',
+            durationAttribute: 'workflow.stream.write.chunk_rtt',
+            attributes: streamSpanAttributes({
+              runId: resolvedRunId,
+              name,
+              operation: 'write_multi',
+            }),
+            buildError: async (res) =>
+              createStreamRequestError('write', url, res, await res.text()),
+          });
+          // Drain so undici can release the pooled connection between pages.
+          await response.text();
         }
-      }
-    },
+      },
 
-    async closeStream(name: string, runId: string | Promise<string>) {
-      // Await runId if it's a promise to ensure proper flushing
-      const resolvedRunId = await runId;
+      async close(runId: string | Promise<string>, name: string) {
+        // Await runId if it's a promise to ensure proper flushing
+        const resolvedRunId = await runId;
 
-      const httpConfig = await getHttpConfig(config);
-      httpConfig.headers.set('X-Stream-Done', 'true');
-      const response = await fetch(
-        getStreamUrl(name, resolvedRunId, httpConfig),
-        {
+        const httpConfig = await getHttpConfig(config);
+        httpConfig.headers.set('X-Stream-Done', 'true');
+        const url = getStreamUrl(name, resolvedRunId, httpConfig);
+        const response = await instrumentedFetch({
           method: 'PUT',
+          url: url.toString(),
           headers: httpConfig.headers,
+          // Close is idempotent (unlike chunk appends), so its dispatcher
+          // retries 5xx — required by the server's close-barrier protocol,
+          // which surfaces transient reconciliation states as retriable
+          // 503s with the stream left durably closing.
+          dispatcher: getStreamCloseDispatcher(config),
+          timeoutMs: null,
+          logLabel: url.pathname,
+          spanName: 'workflow.stream.write',
+          durationAttribute: 'workflow.stream.write.chunk_rtt',
+          attributes: streamSpanAttributes({
+            runId: resolvedRunId,
+            name,
+            operation: 'close',
+          }),
+          buildError: async (res) =>
+            createStreamRequestError('close', url, res, await res.text()),
+        });
+        // Drain the (empty) response so undici can release the pooled connection.
+        await response.text();
+      },
+
+      async get(runId: string, name: string, startIndex?: number) {
+        const httpConfig = await getHttpConfig(config);
+        const url = getStreamReadUrl(name, runId, httpConfig);
+        if (typeof startIndex === 'number') {
+          url.searchParams.set('startIndex', String(startIndex));
         }
-      );
-      const text = await response.text();
-      if (!response.ok) {
-        throw new Error(
-          `Stream close failed: HTTP ${response.status}: ${text}`
+        // The `.connect` span covers dispatch → response headers (the
+        // network-connect portion). The end-to-end time-to-first-chunk span
+        // (`workflow.stream.read`) is emitted from the core reader
+        // (`WorkflowServerReadableStream`) when the first chunk reaches the
+        // consumer, so it includes deframing and doesn't need a wrapper here.
+        // Live read: keep the global dispatcher and no request timeout so the
+        // long-lived, reconnecting read isn't truncated.
+        const response = await instrumentedFetch({
+          method: 'GET',
+          url: url.toString(),
+          headers: httpConfig.headers,
+          dispatcher: undefined,
+          timeoutMs: null,
+          logLabel: url.pathname,
+          spanName: 'workflow.stream.read.connect',
+          attributes: streamSpanAttributes({
+            runId,
+            name,
+            operation: 'read',
+            startIndex,
+          }),
+          buildError: (res) =>
+            new Error(`Failed to fetch stream: ${res.status}`),
+        });
+        if (!response.body) {
+          throw new Error('No response body for stream');
+        }
+        return response.body as ReadableStream<Uint8Array>;
+      },
+
+      async getChunks(
+        runId: string,
+        name: string,
+        options?: GetChunksOptions
+      ): Promise<StreamChunksResponse> {
+        const params = new URLSearchParams();
+        if (options?.limit != null) {
+          params.set('limit', String(options.limit));
+        }
+        if (options?.cursor) {
+          params.set('cursor', options.cursor);
+        }
+        const qs = params.toString();
+        const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/chunks${qs ? `?${qs}` : ''}`;
+        return makeRequest({
+          endpoint,
+          config,
+          schema: StreamChunksResponseSchema,
+        });
+      },
+
+      async getInfo(runId: string, name: string): Promise<StreamInfoResponse> {
+        const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/info`;
+        return makeRequest({
+          endpoint,
+          config,
+          schema: StreamInfoResponseSchema,
+        });
+      },
+
+      async list(runId: string) {
+        const httpConfig = await getHttpConfig(config);
+        const url = new URL(
+          `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/streams`
         );
-      }
-    },
-
-    async readFromStream(name: string, startIndex?: number) {
-      const httpConfig = await getHttpConfig(config);
-      const url = getStreamUrl(name, undefined, httpConfig);
-      if (typeof startIndex === 'number') {
-        url.searchParams.set('startIndex', String(startIndex));
-      }
-      const response = await fetch(url, {
-        headers: httpConfig.headers,
-      });
-      if (!response.ok) {
-        throw new Error(`Failed to fetch stream: ${response.status}`);
-      }
-      if (!response.body) {
-        throw new Error('No response body for stream');
-      }
-      return response.body as ReadableStream<Uint8Array>;
-    },
-
-    async getStreamChunks(
-      name: string,
-      runId: string,
-      options?: GetChunksOptions
-    ): Promise<StreamChunksResponse> {
-      const params = new URLSearchParams();
-      if (options?.limit != null) {
-        params.set('limit', String(options.limit));
-      }
-      if (options?.cursor) {
-        params.set('cursor', options.cursor);
-      }
-      const qs = params.toString();
-      const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/chunks${qs ? `?${qs}` : ''}`;
-      return makeRequest({
-        endpoint,
-        config,
-        schema: StreamChunksResponseSchema,
-      });
-    },
-
-    async getStreamInfo(
-      name: string,
-      runId: string
-    ): Promise<StreamInfoResponse> {
-      const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/info`;
-      return makeRequest({
-        endpoint,
-        config,
-        schema: StreamInfoResponseSchema,
-      });
-    },
-
-    async listStreamsByRunId(runId: string) {
-      const httpConfig = await getHttpConfig(config);
-      const url = new URL(
-        `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/streams`
-      );
-      const response = await fetch(url, {
-        headers: httpConfig.headers,
-      });
-      if (!response.ok) {
-        throw new Error(`Failed to list streams: ${response.status}`);
-      }
-      return (await response.json()) as string[];
+        const response = await instrumentedFetch({
+          method: 'GET',
+          url: url.toString(),
+          headers: httpConfig.headers,
+          dispatcher: undefined,
+          timeoutMs: null,
+          logLabel: url.pathname,
+          buildError: (res) =>
+            new Error(`Failed to list streams: ${res.status}`),
+        });
+        return (await response.json()) as string[];
+      },
     },
   };
 }

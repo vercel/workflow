@@ -17,8 +17,6 @@ import '@xyflow/react/dist/style.css';
 import { GitBranch, Loader2, X } from 'lucide-react';
 import './workflow-graph-viewer.css';
 import { formatDuration } from '@workflow/web-shared';
-import type { EnvMap } from '~/lib/types';
-import { useWorkflowResourceData } from '~/lib/workflow-api-client';
 import { StatusBadge } from '~/components/display-utils/status-badge';
 import { Badge } from '~/components/ui/badge';
 import type {
@@ -27,6 +25,8 @@ import type {
   WorkflowGraph,
   WorkflowRunExecution,
 } from '~/lib/flow-graph/workflow-graph-types';
+import type { EnvMap } from '~/lib/types';
+import { useWorkflowResourceData } from '~/lib/workflow-api-client';
 import {
   type ConsolidatedEdge,
   calculateEnhancedLayout,
@@ -256,7 +256,7 @@ function getExecutionNodeStyle(nodeKind: string, executions?: StepExecution[]) {
   // If no execution data, show faded state with gray border
   if (!executions || executions.length === 0) {
     return {
-      color: 'hsl(var(--card-foreground))',
+      color: 'var(--card-foreground)',
       backgroundColor,
       borderColor: '#9ca3af', // gray-400
       opacity: 0.4,
@@ -293,7 +293,7 @@ function getExecutionNodeStyle(nodeKind: string, executions?: StepExecution[]) {
   }
 
   return {
-    color: 'hsl(var(--card-foreground))',
+    color: 'var(--card-foreground)',
     backgroundColor,
     borderColor,
     borderWidth,

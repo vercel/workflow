@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -9,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { BaseBuilder } from './base-builder.js';
-import type { StandaloneConfig } from './types.js';
+import type { StandaloneConfig, VercelBuildOutputConfig } from './types.js';
 
 /**
  * Minimal subclass to expose the protected `getInputFiles()` for testing.
@@ -22,6 +23,14 @@ class TestBuilder extends BaseBuilder {
   // Expose for tests
   public getInputFiles(): Promise<string[]> {
     return super.getInputFiles();
+  }
+
+  public getDiagnosticsManifestPath(): string | undefined {
+    return super.getDiagnosticsManifestPath();
+  }
+
+  public ensureSwcIgnored(): Promise<void> {
+    return super.ensureSwcIgnored();
   }
 }
 
@@ -44,7 +53,11 @@ function writeFile(dir: string, relativePath: string, content = ''): string {
   return fullPath;
 }
 
-function createBuilder(workingDir: string, dirs: string[]): TestBuilder {
+function createBuilder(
+  workingDir: string,
+  dirs: string[],
+  configOverrides: Partial<StandaloneConfig> = {}
+): TestBuilder {
   const config: StandaloneConfig = {
     buildTarget: 'standalone',
     workingDir,
@@ -52,6 +65,7 @@ function createBuilder(workingDir: string, dirs: string[]): TestBuilder {
     stepsBundlePath: join(workingDir, 'steps.js'),
     workflowsBundlePath: join(workingDir, 'workflows.js'),
     webhookBundlePath: join(workingDir, 'webhook.js'),
+    ...configOverrides,
   };
   return new TestBuilder(config);
 }
@@ -103,6 +117,7 @@ describe('getInputFiles', () => {
     writeFile(srcDir, '.workflow-data/state.ts');
     writeFile(srcDir, '.workflow-vitest/workflows.mjs');
     writeFile(srcDir, '.well-known/workflow/route.ts');
+    writeFile(srcDir, '.swc/cache/plugin-output.ts');
     writeFile(srcDir, '.turbo/cache/build.ts');
     writeFile(srcDir, '.cache/babel/plugin.js');
     writeFile(srcDir, '.yarn/releases/yarn.cjs');
@@ -139,6 +154,9 @@ describe('getInputFiles', () => {
       normalize(join(srcDir, '.well-known/workflow/route.ts'))
     );
     expect(files).not.toContain(
+      normalize(join(srcDir, '.swc/cache/plugin-output.ts'))
+    );
+    expect(files).not.toContain(
       normalize(join(srcDir, '.turbo/cache/build.ts'))
     );
     expect(files).not.toContain(
@@ -170,5 +188,100 @@ describe('getInputFiles', () => {
     expect(files).toContain(normalize(join(srcDir, '.api/handler.mts')));
     expect(files).toContain(normalize(join(srcDir, '.api/utils.js')));
     expect(files).toContain(normalize(join(srcDir, '.api/config.cjs')));
+  });
+});
+
+describe('ensureSwcIgnored', () => {
+  let testRoot: string;
+
+  beforeEach(() => {
+    testRoot = mkdtempSync(join(realTmpdir, 'swc-gitignore-'));
+  });
+
+  afterEach(() => {
+    rmSync(testRoot, { recursive: true, force: true });
+  });
+
+  it('adds .swc to the project .gitignore once', async () => {
+    writeFile(testRoot, '.gitignore', 'node_modules\n');
+
+    const builder = createBuilder(testRoot, ['src']);
+
+    await builder.ensureSwcIgnored();
+    await builder.ensureSwcIgnored();
+
+    const gitignore = readFileSync(join(testRoot, '.gitignore'), 'utf-8');
+    const swcEntries = gitignore
+      .split(/\r?\n/)
+      .filter((line) => line.trim() === '/.swc');
+
+    expect(gitignore).toBe('node_modules\n/.swc\n');
+    expect(swcEntries).toHaveLength(1);
+  });
+
+  it('preserves existing .swc gitignore variants', async () => {
+    writeFile(testRoot, '.gitignore', 'node_modules\n.swc/\n');
+
+    const builder = createBuilder(testRoot, ['src']);
+
+    await builder.ensureSwcIgnored();
+
+    expect(readFileSync(join(testRoot, '.gitignore'), 'utf-8')).toBe(
+      'node_modules\n.swc/\n'
+    );
+  });
+});
+
+describe('getDiagnosticsManifestPath', () => {
+  let testRoot: string;
+
+  beforeEach(() => {
+    testRoot = mkdtempSync(join(realTmpdir, 'diagnostics-path-'));
+  });
+
+  afterEach(() => {
+    rmSync(testRoot, { recursive: true, force: true });
+  });
+
+  it('uses an explicit diagnosticsDir when configured', () => {
+    const builder = createBuilder(testRoot, ['src'], {
+      diagnosticsDir: '.next/diagnostics',
+    });
+
+    expect(builder.getDiagnosticsManifestPath()).toBe(
+      join(testRoot, '.next/diagnostics/workflows-manifest.json')
+    );
+  });
+
+  it('does not emit Vercel diagnostics for non-Vercel builder targets', () => {
+    const previousTargetWorld = process.env.WORKFLOW_TARGET_WORLD;
+    process.env.WORKFLOW_TARGET_WORLD = 'vercel';
+    try {
+      const builder = createBuilder(testRoot, ['src']);
+
+      expect(builder.getDiagnosticsManifestPath()).toBeUndefined();
+    } finally {
+      if (previousTargetWorld === undefined) {
+        delete process.env.WORKFLOW_TARGET_WORLD;
+      } else {
+        process.env.WORKFLOW_TARGET_WORLD = previousTargetWorld;
+      }
+    }
+  });
+
+  it('falls back to Vercel output diagnostics for the Vercel builder', () => {
+    const config: VercelBuildOutputConfig = {
+      buildTarget: 'vercel-build-output-api',
+      workingDir: testRoot,
+      dirs: ['src'],
+      stepsBundlePath: join(testRoot, 'steps.js'),
+      workflowsBundlePath: join(testRoot, 'workflows.js'),
+      webhookBundlePath: join(testRoot, 'webhook.js'),
+    };
+    const builder = new TestBuilder(config);
+
+    expect(builder.getDiagnosticsManifestPath()).toBe(
+      join(testRoot, '.vercel/output/diagnostics/workflows-manifest.json')
+    );
   });
 });

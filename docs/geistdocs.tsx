@@ -1,31 +1,26 @@
-export const Logo = () => (
-  <span className="flex items-center gap-1.5 font-semibold text-foreground tracking-tight text-xl">
-    <svg
-      fill="none"
-      height={18}
-      viewBox="0 0 305 234"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <title>Workflow SDK Logo</title>
-      <g fill="currentColor">
-        <path d="m125.776 0c-4.847.00001649-8.776 3.9291-8.776 8.77539v52.64941c0 4.8463 3.929 8.7754 8.776 8.7754h35.099l.378.0049c7.779.1972 14.048 6.4683 14.242 14.248l.005.3721v58.4998c0 4.846 3.929 8.776 8.776 8.776h35.099l.378.004c7.777.198 14.045 6.466 14.242 14.243l.005.378v58.499c0 4.846 3.929 8.775 8.776 8.775h52.649c4.846 0 8.775-3.929 8.775-8.775v-52.65c0-4.846-3.929-8.775-8.775-8.775h-35.175c-7.916-.04-14.345-6.37-14.545-14.247l-.005-.377v-58.5002c0-4.8463-3.929-8.7754-8.775-8.7754h-35.1c-7.951 0-14.42-6.3453-14.62-14.2481l-.005-.3769v-58.50001c0-4.84629-3.929-8.7753735-8.775-8.77539z" />
-        <path d="m67.2755 81.9004c-4.8462 0-8.7753 3.9291-8.7753 8.7754v52.6492c.0002 4.846 3.9292 8.776 8.7753 8.776h35.0995l.378.004c7.777.198 14.045 6.466 14.242 14.243l.005.378v58.499c0 4.846 3.929 8.775 8.776 8.775h52.649c4.846 0 8.775-3.929 8.775-8.775v-52.65c0-4.846-3.929-8.775-8.775-8.775h-35.175c-7.916-.04-14.345-6.37-14.545-14.247l-.005-.377v-58.5002c0-4.8463-3.929-8.7754-8.775-8.7754z" />
-        <path d="m8.77454 163.8c-4.8461 0-8.77441793 3.929-8.77441793 8.775v52.65c0 4.846 3.92831793 8.775 8.77441793 8.775h52.65036c4.8463 0 8.7754-3.929 8.7754-8.775v-52.65c0-4.846-3.9291-8.775-8.7754-8.775z" />
-      </g>
-    </svg>
-    <span className="hidden sm:block">Workflow</span>
-  </span>
-);
+import { LogoWorkflowSdk } from '@vercel/geistdocs/assets/logos/logo-workflow-sdk';
+import type { GeistdocsAgentReadinessConfig } from '@vercel/geistdocs/config';
+
+export const Logo = () => <LogoWorkflowSdk />;
 
 export const github = {
+  branch: 'main',
+  editPath: 'docs/content/docs/{path}',
   owner: 'vercel',
   repo: 'workflow',
 };
 
-export const nav = [
+export const examplesRepositoryUrl =
+  'https://github.com/vercel/workflow-examples';
+
+export const nav: { label: string; href: string; preview?: boolean }[] = [
   {
     label: 'Docs',
     href: '/docs',
+  },
+  {
+    label: 'Cookbook',
+    href: '/cookbook',
   },
   {
     label: 'Worlds',
@@ -33,7 +28,7 @@ export const nav = [
   },
   {
     label: 'Examples',
-    href: 'https://github.com/vercel/workflow-examples',
+    href: examplesRepositoryUrl,
   },
 ];
 
@@ -50,9 +45,40 @@ export const title = 'Workflow SDK Documentation';
 export const prompt = `
 You are a helpful assistant specializing in answering questions about Workflow, an SDK by Vercel that brings durability, reliability, and observability to async JavaScript. Build apps and AI Agents that can suspend, resume, and maintain state with ease.
 
-Always link to relevant documentation using Markdown with the domain \`useworkflow.dev\`. Ensure the link text is descriptive (e.g. [Deploying](https://useworkflow.dev/docs/deploying)) and not just the URL.
+Always link to relevant documentation using Markdown with the domain \`workflow-sdk.dev\`. Ensure the link text is descriptive (e.g. [Deploying](https://workflow-sdk.dev/docs/deploying)) and not just the URL.
 
 Politely refuse to respond to queries that do not relate to Vercel or Workflow SDK's documentation, guides, or tools.`;
+
+export const agent = {
+  product: {
+    name: 'Workflow SDK',
+    description:
+      'Workflow SDK is a durable functions framework for JavaScript and TypeScript that makes long-running application logic resilient across stateless compute.',
+    category: 'Developer tools',
+    audience: [
+      'JavaScript developers',
+      'TypeScript developers',
+      'AI agent builders',
+    ],
+    useCases: [
+      'Build durable workflows and steps',
+      'Run long-lived AI agents with persisted state',
+      'Deploy workflow-backed applications across supported frameworks',
+    ],
+  },
+  links: [
+    {
+      label: 'Workflow source',
+      href: `https://github.com/${github.owner}/${github.repo}`,
+      description: 'Source repository for Workflow SDK.',
+    },
+    {
+      label: 'Workflow examples',
+      href: examplesRepositoryUrl,
+      description: 'Example applications using Workflow SDK.',
+    },
+  ],
+} satisfies GeistdocsAgentReadinessConfig;
 
 export const translations = {
   en: {

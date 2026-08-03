@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { WorkflowWorldError } from '@workflow/errors';
 import type { PaginatedResponse } from '@workflow/world';
 import ms from 'ms';
 import { monotonicFactory } from 'ulid';
@@ -14,7 +15,22 @@ import {
   vi,
 } from 'vitest';
 import { z } from 'zod';
-import { paginatedFileSystemQuery, ulidToDate, writeJSON } from './fs.js';
+import { UnwritableDataDirError } from './build-target-mismatch.js';
+import {
+  assertSafeEntityId,
+  clearCreatedFilesCache,
+  deleteJSON,
+  ensureDir,
+  paginatedFileSystemQuery,
+  readFirstByte,
+  readJSONWithFallback,
+  resolveWithinBase,
+  taggedPath,
+  UnsafeEntityIdError,
+  ulidToDate,
+  writeExclusive,
+  writeJSON,
+} from './fs.js';
 
 // Create a new monotonic ULID factory for each test to avoid state pollution
 let ulid = monotonicFactory(() => Math.random());
@@ -55,6 +71,7 @@ describe('fs utilities', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await fs.rm(testDir, { recursive: true, force: true });
   });
 
@@ -84,6 +101,150 @@ describe('fs utilities', () => {
       const testUlid = ulid(testTime.getTime());
       const result = ulidToDate(testUlid);
       expect(result?.getTime()).toEqual(testTime.getTime());
+    });
+  });
+
+  describe('readFirstByte', () => {
+    it('reads only the marker value and handles empty files', async () => {
+      const dataPath = path.join(testDir, 'chunk.bin');
+      const nonEofPath = path.join(testDir, 'non-eof-chunk.bin');
+      const emptyPath = path.join(testDir, 'empty.bin');
+      await fs.writeFile(dataPath, Buffer.from([1, 2, 3]));
+      await fs.writeFile(nonEofPath, Buffer.from([0, 2, 3]));
+      await fs.writeFile(emptyPath, Buffer.alloc(0));
+
+      expect(await readFirstByte(dataPath)).toBe(1);
+      expect(await readFirstByte(nonEofPath)).toBe(0);
+      expect(await readFirstByte(emptyPath)).toBeUndefined();
+    });
+  });
+
+  describe('deleteJSON', () => {
+    it('deletes the file and tolerates one that is already gone', async () => {
+      const filePath = path.join(testDir, 'victim.json');
+      await fs.writeFile(filePath, '{}');
+
+      await deleteJSON(filePath);
+      await expect(fs.access(filePath)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+
+      await expect(deleteJSON(filePath)).resolves.toBeUndefined();
+    });
+
+    it('propagates non-ENOENT unlink failures', async () => {
+      const eisdir = Object.assign(new Error('EISDIR: illegal operation'), {
+        code: 'EISDIR',
+      });
+      vi.spyOn(fs, 'unlink').mockRejectedValue(eisdir);
+
+      await expect(deleteJSON(path.join(testDir, 'x.json'))).rejects.toThrow(
+        'EISDIR'
+      );
+    });
+
+    it('retries transient EPERM unlink failures on Windows', async () => {
+      // On Windows, unlink fails with EPERM while a concurrent reader briefly
+      // holds the file open (e.g. hook polling racing deleteAllHooksForRun).
+      // Re-import the module with the platform stubbed so its module-level
+      // isWindows check takes the retry path.
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      vi.resetModules();
+      try {
+        const freshFsModule = await import('./fs.js');
+        const filePath = path.join(testDir, 'locked.json');
+        await fs.writeFile(filePath, '{}');
+
+        const eperm = Object.assign(
+          new Error('EPERM: operation not permitted, unlink'),
+          { code: 'EPERM' }
+        );
+        const unlinkSpy = vi
+          .spyOn(fs, 'unlink')
+          .mockRejectedValueOnce(eperm)
+          .mockRejectedValueOnce(eperm);
+
+        await freshFsModule.deleteJSON(filePath);
+
+        expect(unlinkSpy).toHaveBeenCalledTimes(3);
+        await expect(fs.access(filePath)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      } finally {
+        if (platform) {
+          Object.defineProperty(process, 'platform', platform);
+        }
+        vi.resetModules();
+      }
+    });
+  });
+
+  describe('ensureDir', () => {
+    it('does not repeat mkdir for a directory created by this process', async () => {
+      clearCreatedFilesCache();
+      const nestedDir = path.join(testDir, 'events');
+      const mkdirSpy = vi.spyOn(fs, 'mkdir');
+
+      await ensureDir(nestedDir);
+      await ensureDir(nestedDir);
+
+      expect(
+        mkdirSpy.mock.calls.filter(([dirPath]) => dirPath === nestedDir)
+      ).toHaveLength(1);
+    });
+
+    it('recreates a cached directory removed before an atomic write', async () => {
+      clearCreatedFilesCache();
+      const eventsDir = path.join(testDir, 'events');
+      const firstPath = path.join(eventsDir, 'first.json');
+      const secondPath = path.join(eventsDir, 'second.json');
+
+      await writeJSON(firstPath, { value: 'first' });
+      await fs.rm(eventsDir, { recursive: true, force: true });
+      await writeJSON(secondPath, { value: 'second' });
+
+      expect(JSON.parse(await fs.readFile(secondPath, 'utf8'))).toEqual({
+        value: 'second',
+      });
+    });
+
+    it('recreates a cached directory removed before an exclusive write', async () => {
+      clearCreatedFilesCache();
+      const locksDir = path.join(testDir, '.locks');
+
+      expect(await writeExclusive(path.join(locksDir, 'first'), '')).toBe(true);
+      await fs.rm(locksDir, { recursive: true, force: true });
+      expect(await writeExclusive(path.join(locksDir, 'second'), '')).toBe(
+        true
+      );
+    });
+
+    it('names the unwritable directory instead of letting the write fail as ENOENT', async () => {
+      clearCreatedFilesCache();
+      const readOnlyDir = path.join(testDir, 'read-only', 'runs');
+      const rofs: NodeJS.ErrnoException = new Error('read-only file system');
+      rofs.code = 'EROFS';
+      vi.spyOn(fs, 'mkdir').mockRejectedValue(rofs);
+
+      const error = await ensureDir(readOnlyDir).catch((e) => e);
+
+      assert(UnwritableDataDirError.is(error));
+      expect(error.dataDir).toBe(readOnlyDir);
+      // The message has to name the build-time cause, since a Vercel deployment
+      // running the local world is the likeliest way to reach a read-only path.
+      expect(error.message).toContain('WORKFLOW_TARGET_WORLD=vercel');
+    });
+
+    it('still tolerates a permission error on a directory that already exists', async () => {
+      clearCreatedFilesCache();
+      const eacces: NodeJS.ErrnoException = new Error('permission denied');
+      eacces.code = 'EACCES';
+      vi.spyOn(fs, 'mkdir').mockRejectedValue(eacces);
+
+      // `testDir` exists, so the failure was incidental — a racing writer, or an
+      // unsearchable parent that `stat` can still resolve.
+      await expect(ensureDir(testDir)).resolves.toBeUndefined();
     });
   });
 
@@ -580,6 +741,71 @@ describe('fs utilities', () => {
         assert(result.data[0], 'expected first result to be defined');
         expect(result.data[0].name).toBe('prefixed-1');
       });
+
+      it('keeps fileIdFilter applied on later cursor pages', async () => {
+        const pageDir = await fs.mkdtemp(
+          path.join(os.tmpdir(), 'fileid-filter-pagination-')
+        );
+        const baseTime = new Date('2024-01-01T00:00:00.000Z').getTime();
+        const ulidAfter = createUlidAfter(baseTime);
+
+        try {
+          const files: Record<string, object> = {};
+          for (let i = 0; i < 5; i++) {
+            const fileId = `match_${ulidAfter(`${i}m`)}`;
+            files[fileId] = {
+              id: fileId,
+              name: `match-${i}`,
+              createdAt: new Date(baseTime + ms(`${i}m`)),
+            };
+          }
+
+          for (let i = 5; i < 8; i++) {
+            const fileId = `other_${ulidAfter(`${i}m`)}`;
+            files[fileId] = {
+              id: fileId,
+              name: `other-${i}`,
+              createdAt: new Date(baseTime + ms(`${i}m`)),
+            };
+          }
+
+          await createFilesystem(pageDir, files);
+
+          const firstPage = await paginatedFileSystemQuery({
+            directory: pageDir,
+            schema: TestItemSchema,
+            fileIdFilter: (fileId) => fileId.startsWith('match_'),
+            getCreatedAt: getPrefixCreatedAt,
+            getId: (item) => item.id,
+            limit: 2,
+            sortOrder: 'desc',
+          });
+
+          expect(firstPage.data).toHaveLength(2);
+          expect(
+            firstPage.data.every((item) => item.id.startsWith('match_'))
+          ).toBe(true);
+          assert(firstPage.cursor, 'expected first page cursor to be defined');
+
+          const secondPage = await paginatedFileSystemQuery({
+            directory: pageDir,
+            schema: TestItemSchema,
+            fileIdFilter: (fileId) => fileId.startsWith('match_'),
+            getCreatedAt: getPrefixCreatedAt,
+            getId: (item) => item.id,
+            limit: 2,
+            cursor: firstPage.cursor,
+            sortOrder: 'desc',
+          });
+
+          expect(secondPage.data).toHaveLength(2);
+          expect(
+            secondPage.data.every((item) => item.id.startsWith('match_'))
+          ).toBe(true);
+        } finally {
+          await fs.rm(pageDir, { recursive: true, force: true });
+        }
+      });
     });
 
     describe('error handling', () => {
@@ -771,6 +997,214 @@ describe('fs utilities', () => {
           createdAt: testTime,
         }),
       ]);
+    });
+  });
+
+  describe('writeExclusive', () => {
+    it('does not expose the destination until the full contents are written', async () => {
+      const filePath = path.join(testDir, 'exclusive.json');
+      const contents = JSON.stringify({ value: 'complete' });
+      const originalWriteFile = fs.writeFile.bind(fs);
+      let notifyWriteStarted: () => void = () => {};
+      let releaseWrite: () => void = () => {};
+      const writeStarted = new Promise<void>((resolve) => {
+        notifyWriteStarted = resolve;
+      });
+      const writeReleased = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+
+      vi.spyOn(fs, 'writeFile').mockImplementation(
+        async (target, data, options) => {
+          const targetPath = target.toString();
+          if (
+            targetPath === filePath ||
+            targetPath.startsWith(`${filePath}.tmp.`)
+          ) {
+            await originalWriteFile(target, '{"value":', options);
+            notifyWriteStarted();
+            await writeReleased;
+            await originalWriteFile(target, data);
+            return;
+          }
+          await originalWriteFile(target, data, options);
+        }
+      );
+
+      const writePromise = writeExclusive(filePath, contents);
+      await writeStarted;
+
+      try {
+        await expect(fs.readFile(filePath, 'utf8')).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      } finally {
+        releaseWrite();
+        await writePromise;
+      }
+
+      expect(await fs.readFile(filePath, 'utf8')).toBe(contents);
+    });
+
+    it('allows exactly one concurrent writer to publish the destination', async () => {
+      const filePath = path.join(testDir, 'exclusive.json');
+      const values = Array.from({ length: 16 }, (_, index) => `value-${index}`);
+
+      const results = await Promise.all(
+        values.map((value) => writeExclusive(filePath, value))
+      );
+
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const winner = results.findIndex(Boolean);
+      expect(await fs.readFile(filePath, 'utf8')).toBe(values[winner]);
+      expect(await fs.readdir(testDir)).toEqual(['exclusive.json']);
+    });
+
+    it('does not clean up a temp file that it failed to create', async () => {
+      const filePath = path.join(testDir, 'exclusive.json');
+      const unlink = vi.spyOn(fs, 'unlink');
+      vi.spyOn(fs, 'writeFile').mockRejectedValueOnce(
+        Object.assign(new Error('file already exists'), { code: 'EEXIST' })
+      );
+
+      await expect(writeExclusive(filePath, 'value')).rejects.toMatchObject({
+        code: 'EEXIST',
+      });
+
+      expect(unlink).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('assertSafeEntityId (path traversal prevention)', () => {
+    // Values that should be accepted: actual entity IDs used by the system.
+    const safeIds = [
+      'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      'evnt_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      'step_0',
+      'step_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      'hook_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      'wrun_01ARZ3-step_01ARYY', // composite key with hyphen
+      'vitest-0', // tag
+      'strm_01ARZ3_user', // stream id with underscores
+      'strm_01ARZ3_user_bmFtZXNwYWNl', // stream id with base64url namespace
+      'a', // minimal valid value
+    ];
+
+    // Values that should be rejected: real-world path traversal attempts
+    // plus dotted inputs that would confuse stripTag()/getObjectCreatedAt().
+    const unsafeIds = [
+      '',
+      '.',
+      '..',
+      '../foo',
+      '../../../package',
+      '../runs/wrun_01K8PSDCVBE9PBKXHR39AH15RE',
+      '..\\..\\windows',
+      'foo/bar',
+      'foo\\bar',
+      '/etc/passwd',
+      '.hidden',
+      '.locks',
+      '.tmp',
+      'foo\0bar', // null byte
+      'a/../b',
+      'a\\..\\b',
+      // Dots in entity IDs would be misparsed by stripTag(), which strips
+      // a trailing `.[tag]` suffix from filenames. A runId like
+      // `wrun_123.foo` would be silently mangled to `wrun_123` during
+      // listing/pagination, breaking lookups for tagged file handling.
+      'wrun_ABC.vitest-0',
+      'wrun_123.foo',
+      'foo.bar',
+      'wrun_ABC.',
+    ];
+
+    for (const id of safeIds) {
+      it(`accepts safe ID: ${JSON.stringify(id)}`, () => {
+        expect(() => assertSafeEntityId('test', id)).not.toThrow();
+      });
+    }
+
+    for (const id of unsafeIds) {
+      it(`rejects unsafe ID: ${JSON.stringify(id)}`, () => {
+        expect(() => assertSafeEntityId('test', id)).toThrow(
+          UnsafeEntityIdError
+        );
+      });
+    }
+
+    it('includes the kind label in the error message', () => {
+      expect(() => assertSafeEntityId('runId', '../escape')).toThrow(
+        /Unsafe runId/
+      );
+    });
+
+    it('taggedPath rejects path-traversal fileIds', () => {
+      expect(() => taggedPath(testDir, 'runs', '../escape')).toThrow(
+        UnsafeEntityIdError
+      );
+      expect(() => taggedPath(testDir, 'runs', 'wrun_ABC', '../tag')).toThrow(
+        UnsafeEntityIdError
+      );
+    });
+
+    it('taggedPath still produces correct paths for safe IDs', () => {
+      expect(taggedPath(testDir, 'runs', 'wrun_ABC')).toBe(
+        path.join(testDir, 'runs', 'wrun_ABC.json')
+      );
+      expect(taggedPath(testDir, 'runs', 'wrun_ABC', 'vitest-0')).toBe(
+        path.join(testDir, 'runs', 'wrun_ABC.vitest-0.json')
+      );
+    });
+
+    it('readJSONWithFallback rejects path-traversal fileIds', async () => {
+      const schema = z.object({ id: z.string() });
+      await expect(
+        readJSONWithFallback(testDir, 'runs', '../package', schema)
+      ).rejects.toThrow(UnsafeEntityIdError);
+    });
+
+    it('UnsafeEntityIdError extends WorkflowWorldError', () => {
+      const err = new UnsafeEntityIdError('runId', '../escape');
+      expect(err).toBeInstanceOf(WorkflowWorldError);
+      expect(err.name).toBe('UnsafeEntityIdError');
+      expect(UnsafeEntityIdError.is(err)).toBe(true);
+    });
+
+    it('UnsafeEntityIdError truncates long values in the message', () => {
+      const longValue = 'a'.repeat(500);
+      const err = new UnsafeEntityIdError('runId', `${longValue}/escape`);
+      expect(err.message.length).toBeLessThan(200);
+      expect(err.message).toContain('…');
+    });
+  });
+
+  describe('resolveWithinBase (containment check)', () => {
+    it('resolves safe segments inside the base directory', () => {
+      const result = resolveWithinBase(testDir, 'runs', 'wrun_ABC.json');
+      expect(result).toBe(path.join(testDir, 'runs', 'wrun_ABC.json'));
+    });
+
+    it('resolves to the base directory itself without error', () => {
+      expect(resolveWithinBase(testDir)).toBe(path.resolve(testDir));
+    });
+
+    it('throws when a segment escapes the base via ..', () => {
+      expect(() => resolveWithinBase(testDir, '..', 'etc', 'passwd')).toThrow(
+        UnsafeEntityIdError
+      );
+    });
+
+    it('throws when a segment is an absolute path', () => {
+      expect(() => resolveWithinBase(testDir, '/etc/passwd')).toThrow(
+        UnsafeEntityIdError
+      );
+    });
+
+    it('throws when joined path escapes via chained ..', () => {
+      expect(() =>
+        resolveWithinBase(testDir, 'runs', '..', '..', 'package.json')
+      ).toThrow(UnsafeEntityIdError);
     });
   });
 });

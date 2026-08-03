@@ -2,7 +2,13 @@ import { mockProvider } from './mock-function-wrapper.js';
 
 export type MockResponseDescriptor =
   | { type: 'text'; text: string }
-  | { type: 'tool-call'; toolName: string; input: string };
+  | { type: 'tool-call'; toolName: string; input: string }
+  | {
+      type: 'provider-tool-call';
+      toolName: string;
+      input: string;
+      result: unknown;
+    };
 
 /**
  * Mock model that returns a fixed text response.
@@ -64,51 +70,85 @@ export function mockSequenceModel(responses: MockResponseDescriptor[]) {
           _responses.length - 1
         );
         const r = _responses[idx];
-        const parts =
-          r.type === 'text'
-            ? [
-                { type: 'stream-start', warnings: [] },
-                {
-                  type: 'response-metadata',
-                  id: 'r',
-                  modelId: 'mock',
-                  timestamp: new Date(),
-                },
-                { type: 'text-start', id: '1' },
-                { type: 'text-delta', id: '1', delta: r.text },
-                { type: 'text-end', id: '1' },
-                {
-                  type: 'finish',
-                  finishReason: { unified: 'stop', raw: 'stop' },
-                  usage: {
-                    inputTokens: { total: 5, noCache: 5 },
-                    outputTokens: { total: 10, text: 10 },
-                  },
-                },
-              ]
-            : [
-                { type: 'stream-start', warnings: [] },
-                {
-                  type: 'response-metadata',
-                  id: 'r',
-                  modelId: 'mock',
-                  timestamp: new Date(),
-                },
-                {
-                  type: 'tool-call',
-                  toolCallId: `call-${idx + 1}`,
-                  toolName: r.toolName,
-                  input: r.input,
-                },
-                {
-                  type: 'finish',
-                  finishReason: { unified: 'tool-calls', raw: undefined },
-                  usage: {
-                    inputTokens: { total: 5, noCache: 5 },
-                    outputTokens: { total: 10, text: 10 },
-                  },
-                },
-              ];
+        let parts: any[];
+        if (r.type === 'text') {
+          parts = [
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'response-metadata',
+              id: 'r',
+              modelId: 'mock',
+              timestamp: new Date(),
+            },
+            { type: 'text-start', id: '1' },
+            { type: 'text-delta', id: '1', delta: r.text },
+            { type: 'text-end', id: '1' },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: {
+                inputTokens: { total: 5, noCache: 5 },
+                outputTokens: { total: 10, text: 10 },
+              },
+            },
+          ];
+        } else if (r.type === 'provider-tool-call') {
+          const callId = `call-${idx + 1}`;
+          parts = [
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'response-metadata',
+              id: 'r',
+              modelId: 'mock',
+              timestamp: new Date(),
+            },
+            {
+              type: 'tool-call',
+              toolCallId: callId,
+              toolName: r.toolName,
+              input: r.input,
+              providerExecuted: true,
+            },
+            {
+              type: 'tool-result',
+              toolCallId: callId,
+              toolName: r.toolName,
+              result: r.result,
+            },
+            {
+              type: 'finish',
+              finishReason: { unified: 'tool-calls', raw: undefined },
+              usage: {
+                inputTokens: { total: 5, noCache: 5 },
+                outputTokens: { total: 10, text: 10 },
+              },
+            },
+          ];
+        } else {
+          parts = [
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'response-metadata',
+              id: 'r',
+              modelId: 'mock',
+              timestamp: new Date(),
+            },
+            {
+              type: 'tool-call',
+              toolCallId: `call-${idx + 1}`,
+              toolName: r.toolName,
+              input: r.input,
+            },
+            {
+              type: 'finish',
+              finishReason: { unified: 'tool-calls', raw: undefined },
+              usage: {
+                inputTokens: { total: 5, noCache: 5 },
+                outputTokens: { total: 10, text: 10 },
+              },
+            },
+          ];
+        }
         return {
           stream: new ReadableStream({
             start(c) {

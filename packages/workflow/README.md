@@ -1,8 +1,8 @@
 <div align="center">
-  <a href="https://useworkflow.dev">
+  <a href="https://workflow-sdk.dev">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://useworkflow.dev/workflow-circle-symbol-dark.svg">
-      <img alt="Workflow SDK logo" src="https://useworkflow.dev/workflow-circle-symbol-light.svg" height="128">
+      <source media="(prefers-color-scheme: dark)" srcset="https://workflow-sdk.dev/workflow-circle-symbol-dark.svg">
+      <img alt="Workflow SDK logo" src="https://workflow-sdk.dev/workflow-circle-symbol-light.svg" height="128">
     </picture>
   </a>
   <h1>Workflow SDK</h1>
@@ -18,7 +18,7 @@
 
 The **Workflow SDK** lets you easily add durability, reliability, and observability to async JavaScript. Build apps and AI agents that can suspend, resume, and maintain state with ease.
 
-Visit [https://useworkflow.dev](https://useworkflow.dev) to view the full documentation.
+Visit [https://workflow-sdk.dev](https://workflow-sdk.dev) to view the full documentation.
 
 ## Community
 
@@ -27,22 +27,6 @@ The Workflow SDK community can be found on [GitHub Discussions](https://github.c
 ## Contributing
 
 Contributions to Workflow SDK are welcome and highly appreciated. Please use GitHub [issues](https://github.com/vercel/workflow/issues) and [discussions](https://github.com/vercel/workflow/discussions) to collaborate with the team and wider community.
-
-## Author list
-
-Workflow SDK was built by engineers at [Vercel](https://vercel.com) and the [Open Source Community](https://github.com/vercel/workflow/graphs/contributors).
-
-The initial core contributing engineers are:
-
-- Adrian Lam ([@adriandlam](https://github.com/adriandlam))
-- Dillon Mulroy ([@dmmulroy](https://github.com/dmmulroy))
-- Gal Schlezinger ([@Schniz](https://github.com/Schniz))
-- JJ Kasper ([@ijjk](https://github.com/ijjk))
-- Nathan Rajlich ([@TooTallNate](https://github.com/TooTallNate))
-- Peter Wielander ([@VaguelySerious](https://github.com/VaguelySerious))
-- Pranay Prakash ([@pranaygp](https://github.com/pranaygp))
-
-The Workflow SDK logo was designed by Cecilio Ruiz [@ceciliorz](https://x.com/ceciliorz)
 
 ---
 

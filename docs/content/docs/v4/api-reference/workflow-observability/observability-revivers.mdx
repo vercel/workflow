@@ -1,0 +1,50 @@
+---
+title: observabilityRevivers
+description: Standard reviver functions for deserializing workflow data types in observability tools.
+type: reference
+summary: Pass observabilityRevivers to hydrateResourceIO or hydrateData to deserialize standard workflow data types.
+related:
+  - /docs/api-reference/workflow-observability/hydrate-resource-io
+  - /docs/api-reference/workflow-observability/hydrate-data
+---
+
+A set of reviver functions that handle the workflow serialization format's workflow-specific types — streams, step/workflow function references, class instances, `AbortController`/`AbortSignal`, and `DOMException` — reviving them as display-friendly marker objects or strings. Built-in JavaScript types (`Date`, `Map`, `Set`, `RegExp`, etc.) are handled by the devalue format itself and need no revivers.
+
+Pass it as the `revivers` argument to [`hydrateResourceIO()`](/docs/api-reference/workflow-observability/hydrate-resource-io) or [`hydrateData()`](/docs/api-reference/workflow-observability/hydrate-data).
+
+```typescript lineNumbers
+import { hydrateResourceIO, observabilityRevivers } from "workflow/observability"; // [!code highlight]
+import type { Step } from "@workflow/world";
+declare const step: Step; // @setup
+
+const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
+```
+
+## API Signature
+
+```typescript
+import type { Revivers } from "workflow/observability";
+
+declare const observabilityRevivers: Revivers;
+```
+
+Where `Revivers` is:
+
+```typescript
+type Revivers = Record<string, (value: any) => any>;
+```
+
+Each key is a serialized type tag, and each function revives a serialized value of that type. You can spread `observabilityRevivers` into a custom reviver map to override how specific types are displayed:
+
+```typescript lineNumbers
+import { hydrateData, observabilityRevivers } from "workflow/observability";
+declare const value: unknown; // @setup
+
+const customRevivers = {
+  ...observabilityRevivers,
+  // Render stream references as plain strings instead of marker objects
+  ReadableStream: () => "<stream>",
+};
+
+const hydrated = hydrateData(value, customRevivers);
+```

@@ -23,6 +23,7 @@ export async function createRun(
     workflowName: string;
     input: SerializedData;
     executionContext?: Record<string, unknown>;
+    attributes?: Record<string, string>;
   }
 ): Promise<WorkflowRun> {
   const result = await storage.events.create(null, {

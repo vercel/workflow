@@ -1,16 +1,16 @@
 import '../global.css';
+import { Footer } from '@vercel/geistdocs/footer';
+import { Navbar } from '@vercel/geistdocs/navbar';
 import type { Metadata } from 'next';
-import { Footer } from '@/components/geistdocs/footer';
-import { Navbar } from '@/components/geistdocs/navbar';
 import { GeistdocsProvider } from '@/components/geistdocs/provider';
-import { basePath } from '@/geistdocs';
+import { config } from '@/lib/geistdocs/config';
 import { mono, sans } from '@/lib/geistdocs/fonts';
 import { cn } from '@/lib/utils';
 
 const getMetadataBase = () => {
   // Use VERCEL_URL for preview deployments, production URL for production
   if (process.env.VERCEL_ENV === 'production') {
-    return new URL('https://useworkflow.dev');
+    return new URL('https://workflow-sdk.dev');
   }
   if (process.env.VERCEL_URL) {
     return new URL(`https://${process.env.VERCEL_URL}`);
@@ -28,13 +28,13 @@ const Layout = async ({ children, params }: LayoutProps<'/[lang]'>) => {
 
   return (
     <html
-      className={cn(sans.variable, mono.variable, 'scroll-smooth antialiased')}
+      className={cn(sans.variable, mono.variable, 'antialiased')}
       lang={lang}
       suppressHydrationWarning
     >
       <body>
-        <GeistdocsProvider basePath={basePath} lang={lang}>
-          <Navbar />
+        <GeistdocsProvider basePath={config.basePath} lang={lang}>
+          <Navbar config={config} />
           {children}
           <Footer />
         </GeistdocsProvider>

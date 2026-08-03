@@ -1,7 +1,9 @@
+import { statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
-import type { WorkflowConfig } from './types.js';
+import type { SourcemapMode, WorkflowConfig } from './types.js';
 
 export interface DecoratorOptions {
   decorators: boolean;
@@ -96,6 +98,7 @@ export function createBaseBuilderConfig(options: {
   watch?: boolean;
   externalPackages?: string[];
   runtime?: string;
+  sourcemap?: SourcemapMode;
 }): Omit<WorkflowConfig, 'buildTarget'> {
   return {
     dirs: options.dirs ?? ['workflows'],
@@ -107,5 +110,79 @@ export function createBaseBuilderConfig(options: {
     webhookBundlePath: '', // Not used by base builder methods
     externalPackages: options.externalPackages,
     runtime: options.runtime,
+    sourcemap: options.sourcemap,
   };
+}
+
+const WORKSPACE_ROOT_FILES = ['pnpm-workspace.yaml'];
+const PROJECT_ROOT_FILES = [
+  'pnpm-lock.yaml',
+  'package-lock.json',
+  'yarn.lock',
+  'bun.lock',
+  'bun.lockb',
+];
+
+function fileExists(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function findRootFile(names: string[], workingDir: string): string | undefined {
+  let current = resolve(workingDir);
+
+  while (true) {
+    for (const name of names) {
+      const file = join(current, name);
+      if (fileExists(file)) {
+        return file;
+      }
+    }
+
+    const parent = dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
+}
+
+function findProjectRootFile(workingDir: string): string | undefined {
+  return (
+    findRootFile(WORKSPACE_ROOT_FILES, workingDir) ??
+    findRootFile(PROJECT_ROOT_FILES, workingDir)
+  );
+}
+
+export function resolveConfiguredProjectRoot(
+  workingDir: string,
+  configuredRoot: string
+): string {
+  return isAbsolute(configuredRoot)
+    ? configuredRoot
+    : resolve(workingDir, configuredRoot);
+}
+
+export function resolveProjectRoot(workingDir: string): string {
+  let rootFile = findProjectRootFile(workingDir);
+  if (!rootFile) {
+    return resolve(workingDir);
+  }
+
+  while (true) {
+    const currentDir = dirname(rootFile);
+    const parentDir = dirname(currentDir);
+    if (parentDir === currentDir) {
+      return currentDir;
+    }
+
+    const parentRootFile = findProjectRootFile(parentDir);
+    if (!parentRootFile) {
+      return currentDir;
+    }
+    rootFile = parentRootFile;
+  }
 }

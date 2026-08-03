@@ -2,9 +2,9 @@ import { Args } from '@oclif/core';
 import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
 import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
-import { cliFlags } from '../lib/inspect/flags.js';
+import { cliFlags, urlFlag } from '../lib/inspect/flags.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
-import { launchWebUI } from '../lib/inspect/web.js';
+import { launchWebUI, printDeepLink } from '../lib/inspect/web.js';
 
 export default class Web extends BaseCommand {
   static description = 'Open the web UI to inspect workflow runs';
@@ -40,12 +40,19 @@ export default class Web extends BaseCommand {
 
   static flags = {
     ...cliFlags,
+    ...urlFlag,
   } as const;
 
   public async run(): Promise<void> {
     try {
       const { args, flags } = await this.parse(Web);
       const id = args.id;
+
+      // Print-only deep link: resolve config and emit the URL, no browser/server.
+      if (flags.url) {
+        await printDeepLink('run', id, flags, this.config.version);
+        process.exit(0);
+      }
 
       // Setup the CLI world to write env vars from flags
       // This ensures backend, authToken, team, project, etc. are properly set

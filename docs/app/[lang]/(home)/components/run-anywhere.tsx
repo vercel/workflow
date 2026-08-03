@@ -1,3 +1,5 @@
+import { Button } from '@vercel/geistdocs/components/button';
+import Link from 'next/link';
 import type { ComponentProps } from 'react';
 import { CodeBlock } from '@/app/[lang]/(home)/components/code-block';
 import { cn } from '@/lib/utils';
@@ -98,34 +100,48 @@ const Vercel = (props: ComponentProps<'svg'>) => (
 
 const code = `export async function welcome(userId: string) {
   "use workflow";
-  
+
   const user = await getUser(userId);
   const { subject, body } = await generateEmail({
     name: user.name, plan: user.plan
   });
-  
+
   const { status } = await sendEmail({
     to: user.email,
     subject,
     body,
   });
-  
+
   return { status, subject, body };
 }`;
 
 export const RunAnywhere = () => (
-  <div className="px-4 py-8 sm:py-12 sm:px-12 grid gap-10 items-center overflow-hidden">
-    <div className="grid gap-4 max-w-lg text-center mx-auto">
-      <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl lg:text-[40px]">
-        Run anywhere, no lock‑in
-      </h2>
-      <p className="text-balance text-lg text-muted-foreground">
-        The same code runs locally on your laptop, in Docker, on Vercel or any
-        other cloud. Open source and portable by design.
-      </p>
+  <div className="py-8 sm:py-12 grid gap-10 items-center overflow-hidden">
+    <div className="space-y-4">
+      <div className="grid gap-4 max-w-lg text-left sm:text-center sm:mx-auto">
+        <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
+          Run anywhere, no lock‑in
+        </h2>
+        <p className="text-lg text-muted-foreground">
+          Run locally, self-host, or swap every component — Workflow SDK is
+          fully portable. For zero-config, secure, and scalable workflows,
+          deploy on Vercel.
+        </p>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center sm:justify-center gap-3 mt-2">
+          <Button asChild className="rounded-full h-10">
+            <Link href="https://vercel.com/workflows" target="_blank">
+              Workflows on Vercel
+            </Link>
+          </Button>
+          {/* Outline variant appears smaller due to inset border — h-[42px] compensates to match the filled button visually */}
+          <Button asChild variant="outline" className="rounded-full h-[42px]">
+            <Link href="/worlds">Learn about self-hosting</Link>
+          </Button>
+        </div>
+      </div>
     </div>
     <div className="relative isolate">
-      <div className="absolute -left-32 top-1/2 -translate-y-1/2 hidden md:flex items-center gap-2">
+      <div className="absolute right-[calc(50%+140px)] top-1/2 -translate-y-1/2 hidden md:flex items-center gap-2 [mask-image:linear-gradient(to_right,transparent,black)]">
         {[DigitalOcean, AWS].map((Logo, index) => (
           <div
             className={cn(
@@ -150,7 +166,7 @@ export const RunAnywhere = () => (
           }}
         />
       </div>
-      <div className="absolute -right-32 top-1/2 -translate-y-1/2 hidden md:flex items-center gap-2">
+      <div className="absolute left-[calc(50%+140px)] top-1/2 -translate-y-1/2 hidden md:flex items-center gap-2 [mask-image:linear-gradient(to_left,transparent,black)]">
         {[Docker, Vercel].map((Logo, index) => (
           <div
             className={cn(

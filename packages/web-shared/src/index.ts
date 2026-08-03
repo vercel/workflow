@@ -1,7 +1,4 @@
-export type {
-  HealthCheckEndpoint,
-  HealthCheckResult,
-} from '@workflow/core/runtime';
+export type { HealthCheckResult } from '@workflow/core/runtime';
 export {
   parseStepName,
   parseWorkflowName,
@@ -33,6 +30,13 @@ export {
   materializeSteps,
   materializeWaits,
 } from './lib/event-materialization';
+export {
+  type ExactIdSearchResult,
+  type ExactWorkflowSearchId,
+  type ExactWorkflowSearchIdKind,
+  looksLikeWorkflowIdSearchInput,
+  parseExactWorkflowSearchId,
+} from './lib/exact-event-search-id';
 export type { Revivers, StreamRef } from './lib/hydration';
 export {
   CLASS_INSTANCE_REF_TYPE,
@@ -40,7 +44,9 @@ export {
   ENCRYPTED_PLACEHOLDER,
   extractStreamIds,
   getWebRevivers,
+  hasEncryptedFields,
   hydrateResourceIO,
+  hydrateResourceIOAsync,
   hydrateResourceIOWithKey,
   isClassInstanceRef,
   isEncryptedMarker,
@@ -49,12 +55,14 @@ export {
   STREAM_REF_TYPE,
   truncateId,
 } from './lib/hydration';
+export type { DecodedStreamChunkSource } from './lib/stream-display';
 export type { ToastAdapter } from './lib/toast';
 export { ToastProvider, useToast } from './lib/toast';
 export type { StreamStep } from './lib/utils';
 export {
   extractConversation,
   formatDuration,
+  formatDurationPrecise,
   identifyStreamSteps,
   isDoStreamStep,
 } from './lib/utils';

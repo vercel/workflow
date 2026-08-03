@@ -1,5 +1,38 @@
 # @workflow/typescript-plugin
 
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- [#2769](https://github.com/vercel/workflow/pull/2769) [`eb7f60c`](https://github.com/vercel/workflow/commit/eb7f60c7e950b21c8f927b538dc64ff877ce7bb9) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Stop warning on direct workflow calls from workflow code, where direct-await composition is valid.
+
+## 5.0.0-beta.4
+
+### Patch Changes
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+## 5.0.0-beta.3
+
+### Patch Changes
+
+- [#1830](https://github.com/vercel/workflow/pull/1830) [`a38f140`](https://github.com/vercel/workflow/commit/a38f140ce3aee3e25f821a702d70a1fd21598faf) Thanks [@ijjk](https://github.com/ijjk)! - Make the TypeScript peer dependency optional and show a clearer error
+  when TypeScript is unavailable.
+
+## 5.0.0-beta.2
+
+### Patch Changes
+
+- [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
+
+- [#1759](https://github.com/vercel/workflow/pull/1759) [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Rename `useworkflow.dev` URLs to `workflow-sdk.dev`
+
+## 5.0.0-beta.1
+
+### Minor Changes
+
+- [#1633](https://github.com/vercel/workflow/pull/1633) [`d040182`](https://github.com/vercel/workflow/commit/d0401829320c2880a0a5c2404ed9dede94eb17a0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Allow synchronous functions to use `"use step"` directive. This enables using `"use step"` as a mechanism to strip Node.js-dependent code from the workflow VM bundle without requiring the function to be async.
+
 ## 5.0.0-beta.0
 
 ### Major Changes

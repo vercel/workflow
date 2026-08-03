@@ -4,23 +4,29 @@ import {
   WorkflowRunNotCompletedError,
   WorkflowRunNotFoundError,
 } from '@workflow/errors';
+import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import {
   SPEC_VERSION_CURRENT,
   type WorkflowRunStatus,
   type World,
 } from '@workflow/world';
-import { type CryptoKey, importKey } from '../encryption.js';
+import {
+  deriveRunPayloadKeys,
+  type PayloadKey,
+} from '../serialization/encryption.js';
 import {
   getExternalRevivers,
+  hydrateRunError,
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
+import { getWorldLazy } from './get-world-lazy.js';
 import {
+  type CancelRunOptions,
   type StopSleepOptions,
   type StopSleepResult,
   wakeUpRun,
 } from './runs.js';
-import { getWorld } from './world.js';
 
 /**
  * A `ReadableStream` extended with workflow-specific helpers.
@@ -69,6 +75,17 @@ export interface WorkflowReadableStreamOptions {
  * A handler class for a workflow run.
  */
 export class Run<TResult> {
+  static [WORKFLOW_SERIALIZE](instance: Run<unknown>) {
+    return { runId: instance.runId, resilientStart: instance.#resilientStart };
+  }
+
+  static [WORKFLOW_DESERIALIZE](data: {
+    runId: string;
+    resilientStart?: boolean;
+  }) {
+    return new Run(data.runId, { resilientStart: data.resilientStart });
+  }
+
   /**
    * The ID of the workflow run.
    */
@@ -78,14 +95,18 @@ export class Run<TResult> {
    * The world object.
    * @internal
    */
-  private world: World;
+  #worldPromise: Promise<World> | undefined;
+  get #lazyWorldPromise() {
+    if (!this.#worldPromise) this.#worldPromise = getWorldLazy();
+    return this.#worldPromise;
+  }
 
   /**
    * Cached encryption key resolution. Resolved once on first use and
    * reused for returnValue, getReadable(), etc.
    * @internal
    */
-  private encryptionKeyPromise: Promise<CryptoKey | undefined> | null = null;
+  #encryptionKeyPromise: Promise<PayloadKey | undefined> | null = null;
 
   /**
    * When true, run_created failed and the run may not exist yet (the
@@ -94,12 +115,11 @@ export class Run<TResult> {
    * that normal runs fail fast on 404.
    * @internal
    */
-  private resilientStart = false;
+  #resilientStart = false;
 
   constructor(runId: string, opts?: { resilientStart?: boolean }) {
     this.runId = runId;
-    this.world = getWorld();
-    this.resilientStart = opts?.resilientStart ?? false;
+    this.#resilientStart = opts?.resilientStart ?? false;
   }
 
   /**
@@ -108,15 +128,26 @@ export class Run<TResult> {
    * to be resolved once.
    * @internal
    */
-  private getEncryptionKey(): Promise<CryptoKey | undefined> {
-    if (!this.encryptionKeyPromise) {
-      this.encryptionKeyPromise = (async () => {
-        const run = await this.world.runs.get(this.runId);
-        const rawKey = await this.world.getEncryptionKeyForRun?.(run);
-        return rawKey ? await importKey(rawKey) : undefined;
+  #getEncryptionKey(): Promise<PayloadKey | undefined> {
+    if (!this.#encryptionKeyPromise) {
+      this.#encryptionKeyPromise = (async () => {
+        const world = await this.#lazyWorldPromise;
+        const run = await world.runs.get(this.runId);
+        const rawKey = await world.getEncryptionKeyForRun?.(run);
+        return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
       })();
     }
-    return this.encryptionKeyPromise;
+    return this.#encryptionKeyPromise;
+  }
+
+  /**
+   * Defer fetching the run and its encryption key until serialized stream data
+   * is actually read. An empty or metadata-only stream must not start an
+   * unobserved run lookup.
+   * @internal
+   */
+  #getEncryptionKeyLazily(): () => Promise<PayloadKey | undefined> {
+    return () => this.#getEncryptionKey();
   }
 
   /**
@@ -127,16 +158,26 @@ export class Run<TResult> {
    * @returns A {@link StopSleepResult} object containing the number of sleep calls that were interrupted.
    */
   async wakeUp(options?: StopSleepOptions): Promise<StopSleepResult> {
-    return wakeUpRun(this.world, this.runId, options);
+    'use step';
+    return wakeUpRun(await this.#lazyWorldPromise, this.runId, options);
   }
 
   /**
    * Cancels the workflow run.
+   *
+   * @param options - Optional cancellation settings. `cancelReason` records a
+   *   free-text reason (max 512 chars) on the run_cancelled event, surfaced in
+   *   the run detail view.
    */
-  async cancel(): Promise<void> {
-    await this.world.events.create(this.runId, {
+  async cancel(options?: CancelRunOptions): Promise<void> {
+    'use step';
+    const world = await this.#lazyWorldPromise;
+    await world.events.create(this.runId, {
       eventType: 'run_cancelled',
       specVersion: SPEC_VERSION_CURRENT,
+      ...(options?.cancelReason !== undefined
+        ? { eventData: { cancelReason: options.cancelReason } }
+        : {}),
     });
   }
 
@@ -144,22 +185,28 @@ export class Run<TResult> {
    * Whether the workflow run exists.
    */
   get exists(): Promise<boolean> {
-    return this.world.runs
-      .get(this.runId, { resolveData: 'none' })
-      .then(() => true)
-      .catch((error) => {
-        if (WorkflowRunNotFoundError.is(error)) {
-          return false;
-        }
-        throw error;
-      });
+    'use step';
+    return this.#lazyWorldPromise.then((world) =>
+      world.runs
+        .get(this.runId, { resolveData: 'none' })
+        .then(() => true)
+        .catch((error) => {
+          if (WorkflowRunNotFoundError.is(error)) {
+            return false;
+          }
+          throw error;
+        })
+    );
   }
 
   /**
    * The status of the workflow run.
    */
   get status(): Promise<WorkflowRunStatus> {
-    return this.world.runs.get(this.runId).then((run) => run.status);
+    'use step';
+    return this.#lazyWorldPromise.then((world) =>
+      world.runs.get(this.runId).then((run) => run.status)
+    );
   }
 
   /**
@@ -167,21 +214,28 @@ export class Run<TResult> {
    * Polls the workflow return value until it is completed.
    */
   get returnValue(): Promise<TResult> {
-    return this.pollReturnValue();
+    'use step';
+    return this.#pollReturnValue();
   }
 
   /**
    * The name of the workflow.
    */
   get workflowName(): Promise<string> {
-    return this.world.runs.get(this.runId).then((run) => run.workflowName);
+    'use step';
+    return this.#lazyWorldPromise.then((world) =>
+      world.runs.get(this.runId).then((run) => run.workflowName)
+    );
   }
 
   /**
    * The timestamp when the workflow run was created.
    */
   get createdAt(): Promise<Date> {
-    return this.world.runs.get(this.runId).then((run) => run.createdAt);
+    'use step';
+    return this.#lazyWorldPromise.then((world) =>
+      world.runs.get(this.runId).then((run) => run.createdAt)
+    );
   }
 
   /**
@@ -189,7 +243,10 @@ export class Run<TResult> {
    * Returns undefined if the workflow has not started yet.
    */
   get startedAt(): Promise<Date | undefined> {
-    return this.world.runs.get(this.runId).then((run) => run.startedAt);
+    'use step';
+    return this.#lazyWorldPromise.then((world) =>
+      world.runs.get(this.runId).then((run) => run.startedAt)
+    );
   }
 
   /**
@@ -197,7 +254,10 @@ export class Run<TResult> {
    * Returns undefined if the workflow has not completed yet.
    */
   get completedAt(): Promise<Date | undefined> {
-    return this.world.runs.get(this.runId).then((run) => run.completedAt);
+    'use step';
+    return this.#lazyWorldPromise.then((world) =>
+      world.runs.get(this.runId).then((run) => run.completedAt)
+    );
   }
 
   /**
@@ -222,26 +282,25 @@ export class Run<TResult> {
   getReadable<R = any>(
     options: WorkflowReadableStreamOptions = {}
   ): WorkflowReadableStream<R> {
+    'use step';
     const { ops = [], global = globalThis, startIndex, namespace } = options;
     const name = getWorkflowRunStreamId(this.runId, namespace);
-    // Pass the key as a promise — it will be resolved lazily inside
-    // the first async transform() call of the deserialize stream.
-    const encryptionKey = this.getEncryptionKey();
-    const stream = getExternalRevivers(
-      global,
-      ops,
-      this.runId,
-      encryptionKey
-    ).ReadableStream({
+    // The resolver starts only when the deserialize stream sees its first
+    // chunk, so creating or probing an empty stream cannot reject in the
+    // background.
+    const encryptionKey = this.#getEncryptionKeyLazily();
+    const stream = getExternalRevivers(global, ops, this.runId, encryptionKey)
+      .ReadableStream!({
       name,
       startIndex,
     }) as ReadableStream<R>;
 
-    const world = this.world;
+    const worldPromise = this.#lazyWorldPromise;
     const runId = this.runId;
     return Object.assign(stream, {
       getTailIndex: async (): Promise<number> => {
-        const info = await world.getStreamInfo(name, runId);
+        const world = await worldPromise;
+        const info = await world.streams.getInfo(runId, name);
         return info.tailIndex;
       },
     });
@@ -252,22 +311,31 @@ export class Run<TResult> {
    * @internal
    * @returns The workflow return value.
    */
-  private async pollReturnValue(): Promise<TResult> {
+  async #pollReturnValue(): Promise<TResult> {
+    const world = await this.#lazyWorldPromise;
+
     // When resilientStart is true, run_created failed and the run may
     // not exist yet. Retry on WorkflowRunNotFoundError up to 3 times
     // (1s + 3s + 6s = 10s total) to give the queue time to deliver
     // and the runtime to create the run via run_started.
     // When resilientStart is false, 404 is a real error — fail fast.
     let notFoundRetries = 0;
-    const NOT_FOUND_MAX_RETRIES = this.resilientStart ? 3 : 0;
+    const NOT_FOUND_MAX_RETRIES = this.#resilientStart ? 3 : 0;
     const NOT_FOUND_DELAYS = [1_000, 3_000, 6_000];
 
+    // NOTE: when this poll runs inside a step (e.g. the step that a parent
+    // workflow uses to await a child workflow's `returnValue`), it blocks
+    // a queue worker slot for as long as the child run takes to finish.
+    // Worker-based worlds like `world-postgres` must be sized to cover the
+    // peak number of such polls in flight — see the `queueConcurrency`
+    // default on the Postgres world and the notes in the eager-processing
+    // changelog for details.
     while (true) {
       try {
-        const run = await this.world.runs.get(this.runId);
+        const run = await world.runs.get(this.runId);
 
         if (run.status === 'completed') {
-          const encryptionKey = await this.getEncryptionKey();
+          const encryptionKey = await this.#getEncryptionKey();
           return await hydrateWorkflowReturnValue(
             run.output,
             this.runId,
@@ -280,9 +348,29 @@ export class Run<TResult> {
         }
 
         if (run.status === 'failed') {
-          throw new WorkflowRunFailedError(this.runId, run.error);
+          // Hydrate the serialized run error so the original thrown value
+          // (with its type identity, cause chain, etc.) is set as the
+          // `cause` on WorkflowRunFailedError.
+          const encryptionKey = await this.#getEncryptionKey();
+          let hydratedError: unknown;
+          try {
+            hydratedError = await hydrateRunError(
+              run.error,
+              this.runId,
+              encryptionKey
+            );
+          } catch {
+            // If hydration fails, surface a generic fallback rather than
+            // leaving the user with a raw Uint8Array. The run's errorCode
+            // is still preserved on the thrown WorkflowRunFailedError.
+            hydratedError = new Error('Failed to hydrate workflow run error');
+          }
+          throw new WorkflowRunFailedError(this.runId, hydratedError, {
+            errorCode: run.errorCode,
+          });
         }
 
+        // Run not completed yet — sleep and poll again.
         throw new WorkflowRunNotCompletedError(this.runId, run.status);
       } catch (error) {
         if (WorkflowRunNotCompletedError.is(error)) {

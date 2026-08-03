@@ -1,0 +1,102 @@
+---
+title: Workflow SDK vs Inngest
+description: How the Workflow SDK compares to Inngest — event-driven durable functions that run on your own infrastructure over HTTP, with a concept-mapping migration guide.
+type: conceptual
+summary: Inngest is an event-driven durable-functions platform that invokes your code over HTTP and memoizes step results. The Workflow SDK co-locates orchestration and execution and replays from an event log.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/foundations/hooks
+  - /docs/foundations/streaming
+  - /docs/ai
+---
+
+[Inngest](https://www.inngest.com) is a durable-functions platform with an **event-driven** core: functions trigger on events or cron, and Inngest invokes your code — running on your own infrastructure — one step at a time over HTTP, memoizing each step's result. It overlaps heavily with the Workflow SDK, with a different execution topology and a strong AI/agent story on both sides.
+
+<Callout type="info">
+**Choose the Workflow SDK** when you want orchestration and execution co-located (no per-step HTTP round-trips), deployment-pinned versioning, and a fully-supported open-source self-host path. **Choose Inngest** when an event-bus model fits your architecture and you want its mature flow-control suite (concurrency, throttling, debounce, batching, priority) out of the box.
+</Callout>
+
+## At a glance
+
+| | Workflow SDK | Inngest |
+| --- | --- | --- |
+| **Category** | Open-source durable-functions SDK | Durable functions on an event-driven platform |
+| **Durability model** | Event log + deterministic replay | **Step-result memoization** (each `step.run` runs once; completed steps are skipped) — not whole-function replay |
+| **Trigger model** | Direct `start(workflow, [args])` (import the function) | Event bus (`inngest.send`) + cron; loosely coupled publishers/consumers |
+| **Where execution runs** | Orchestration + execution co-located on your platform | **Your code runs on your infra**; Inngest invokes it per step over HTTP (Serve) or a persistent worker connection (Connect, in public beta) |
+| **Languages** | TypeScript / JS (Python beta) | TypeScript; Python & Go (production, pre-1.0) |
+| **Versioning** | Runs pinned to immutable deployment | Tracked by step-ID hashes — hot-edit functions, but editing a step's logic under the **same ID** reuses the old memoized result for in-flight runs; rename the ID or route a new function by timestamp for rewrites |
+| **AI & streaming** | `WorkflowAgent` in the AI SDK; native resumable streaming | Native AI SDK via `step.ai.wrap`; **AgentKit** multi-agent framework and durable **Realtime** (`step.realtime.publish`) + `useAgent` hook — both Developer Preview |
+| **Security** | Zero-config per-run E2E encryption by default; platform security is per-World (the Vercel World inherits Vercel's security posture) | Runs on your infra; signed requests; first-party E2E encryption middleware (TS + Python); SOC 2 Type II, HIPAA add-on |
+| **Portability** | Apache-2.0; World abstraction; **self-host supported** | Engine open source (SSPL); self-host via single Go binary + Postgres, but **self-hosting is community/best-effort** — no support SLA, and the `inngest start` binary is Beta (SaaS is the default) |
+| **Pricing** | SDK free; pay your platform | Per-execution: billed for the run **plus each step plus retries**; Pro from $99/mo, then ~$50 per 1M executions |
+| **Limits** | 50 MB payload; 2 GB/run; 10K steps ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | 1,000 steps/function; 4 MiB step payload; 32 MiB run state; runs up to 366 days |
+
+**What the limits mean in practice:** Inngest's caps are restrictive for real long-running AI workloads. An agent loop spends steps on every model and tool call, so 1,000 steps per function goes quickly; a single large LLM response can approach the 4 MiB step-payload cap; and an accumulated conversation or context easily outgrows 32 MiB of run state. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) are 50 MB per payload and 2 GB of state per run.
+
+## Topology: co-located vs. invoked-over-HTTP
+
+Inngest's engine lives outside your code and calls your functions step-by-step over HTTP (or a Connect worker). That keeps your code on your own infra (a portability and data-locality plus), but adds a network round-trip per step — relevant for workflows with many small sequential steps. The Workflow SDK co-locates orchestration and execution on one platform, so steps don't pay a per-step HTTP hop.
+
+Triggering differs too: Inngest is event-driven (publishers `send` events; functions subscribe), which is great for loosely-coupled fan-out. The Workflow SDK's `start()` imports the workflow function directly — tighter coupling, stronger type safety. For event-bus-style fan-out, wrap `start()` in a shared publisher.
+
+## Versioning
+
+Inngest doesn't use version numbers; it keys state by **step-ID hash**, so you can edit functions while runs are in flight. The catch: if you change the logic *inside* a step but keep the same ID, in-flight runs that already completed that step silently reuse the **old** memoized result — only new runs see the change. To force re-execution you rename the step ID, and for incompatible rewrites the recommended pattern is a new function with timestamp-based event routing.
+
+The Workflow SDK pins each run to its immutable deployment, so in-flight runs always finish on the exact code they started with, and upgrades are explicit — no per-step-ID reasoning required.
+
+## AI agents
+
+Both are strong here. Inngest offers `step.ai.wrap()` (wrap Vercel AI SDK calls as durable steps), **AgentKit** (a multi-agent framework with MCP tools), and durable **Realtime** streaming with a `useAgent` React hook — though AgentKit and Realtime are both Developer Preview. The Workflow SDK offers `WorkflowAgent` directly inside the AI SDK and native [resumable streaming](/docs/ai/resumable-streams). If you're already event-driven and want a batteries-included agent framework, AgentKit is compelling; if you want the agent loop to *be* a durable workflow in your app with streaming built into the runtime, the Workflow SDK fits.
+
+## Migrating from Inngest
+
+| Inngest | Workflow SDK | Note |
+| --- | --- | --- |
+| `inngest.createFunction()` | `"use workflow"` function started with `start()` | No factory or event binding. |
+| `step.run()` | `"use step"` function | Named async function with Node.js access. |
+| `step.sleep()` / `step.sleepUntil()` | `sleep('5m')` / `sleep(date)` | Import from `workflow`. |
+| `step.waitForEvent()` | `createHook()` / `createWebhook()` | Token encodes the routing; no event schema. |
+| `step.invoke()` | `"use step"` wrappers around `start()` / `getRun()` | Spawn a child run. |
+| `inngest.send()` / event triggers | `start()` from your app boundary | Start workflows directly. |
+| Retry config (`retries`) | `maxRetries`, `RetryableError`, `FatalError` | Retries live at the step boundary. |
+| `step.realtime.publish()` / Realtime | `getWritable()` / named streams | Clients read from the stream. |
+
+The `createFunction` factory collapses into a plain exported function:
+
+```typescript title="workflows/order.ts"
+export async function processOrder(orderId: string) {
+  'use workflow'; // [!code highlight]
+  const order = await loadOrder(orderId);
+  return { orderId: order.id, status: 'completed' };
+}
+
+async function loadOrder(orderId: string) {
+  'use step'; // [!code highlight]
+  const res = await fetch(`https://example.com/api/orders/${orderId}`);
+  return res.json() as Promise<{ id: string }>;
+}
+```
+
+<Callout type="info">
+Install the migration skill to translate an Inngest app automatically:
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
+```
+</Callout>
+
+### Inngest features without a direct Workflow SDK equivalent
+
+Each row is an Inngest capability the Workflow SDK does not replicate one-to-one, paired with how to cover it on the Workflow SDK side:
+
+| Inngest feature | How to cover it with the Workflow SDK |
+| --- | --- |
+| Flow control (concurrency, throttling, debounce, rate limiting, batching, priority) | No direct function-level analog; enforce limits inside steps or debounce at the publisher before `start()` |
+| Cron / scheduled functions | Trigger from Vercel Cron or a system cron calling `start()` |
+| Event-bus fan-out by name match | Replace with explicit `start()` calls per target workflow |
+
+---
+*Compiled from public documentation. Inngest tier names and pricing vary across sources; verify against [inngest.com/pricing](https://www.inngest.com/pricing). Not based on head-to-head benchmarks.*

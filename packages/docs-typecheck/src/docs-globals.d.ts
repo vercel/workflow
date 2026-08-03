@@ -64,6 +64,10 @@ declare global {
   function makeCardText(...args: any[]): Promise<any>;
   function transform(...args: any[]): any;
   function follow(...args: any[]): Promise<any>;
+  function loadOrder(...args: any[]): Promise<any>;
+  function reserveInventory(...args: any[]): Promise<any>;
+  function reviewManually(...args: any[]): Promise<any>;
+  function spawnChild(...args: any[]): Promise<any>;
 
   // Streaming helpers
   function startStream(...args: any[]): Promise<void>;
@@ -198,41 +202,76 @@ declare global {
       list: (...args: any[]) => Promise<any>;
       listByCorrelationId: (...args: any[]) => Promise<any>;
     };
-    // Stream methods live directly on world (Streamer interface)
-    writeToStream: (
-      name: string,
-      runId: string,
-      chunk: string | Uint8Array
-    ) => Promise<void>;
-    writeToStreamMulti?: (
-      name: string,
-      runId: string,
-      chunks: (string | Uint8Array)[]
-    ) => Promise<void>;
-    readFromStream: (
-      name: string,
-      startIndex?: number
-    ) => Promise<ReadableStream<Uint8Array>>;
-    closeStream: (name: string, runId: string) => Promise<void>;
-    listStreamsByRunId: (runId: string) => Promise<string[]>;
-    getStreamChunks: (
-      name: string,
-      runId: string,
-      options?: { limit?: number; cursor?: string }
-    ) => Promise<any>;
-    getStreamInfo: (
-      name: string,
-      runId: string
-    ) => Promise<{ tailIndex: number; done: boolean }>;
+    // Stream methods live on world.streams (Streamer interface)
+    streams: {
+      write: (
+        runId: string,
+        name: string,
+        chunk: string | Uint8Array
+      ) => Promise<void>;
+      writeMulti?: (
+        runId: string,
+        name: string,
+        chunks: (string | Uint8Array)[]
+      ) => Promise<void>;
+      get: (
+        runId: string,
+        name: string,
+        startIndex?: number
+      ) => Promise<ReadableStream<Uint8Array>>;
+      close: (runId: string, name: string) => Promise<void>;
+      list: (runId: string) => Promise<string[]>;
+      getChunks: (
+        runId: string,
+        name: string,
+        options?: { limit?: number; cursor?: string }
+      ) => Promise<any>;
+      getInfo: (
+        runId: string,
+        name: string
+      ) => Promise<{ tailIndex: number; done: boolean }>;
+    };
+    // Metadata-only analytics namespace (optional on World; liberal here
+    // so reference snippets can call it without a feature-detect guard)
+    analytics: {
+      runs: {
+        get: (...args: any[]) => Promise<any>;
+        list: (...args: any[]) => Promise<any>;
+      };
+      attributes: {
+        list: (...args: any[]) => Promise<any>;
+      };
+      steps: {
+        get: (...args: any[]) => Promise<any>;
+        list: (...args: any[]) => Promise<any>;
+      };
+      events: {
+        get: (...args: any[]) => Promise<any>;
+        list: (...args: any[]) => Promise<any>;
+        listByCorrelationId: (...args: any[]) => Promise<any>;
+      };
+      hooks: {
+        get: (...args: any[]) => Promise<any>;
+        list: (...args: any[]) => Promise<any>;
+      };
+      waits: {
+        get: (...args: any[]) => Promise<any>;
+        list: (...args: any[]) => Promise<any>;
+      };
+    };
     // Queue methods live directly on world (Queue interface)
     getDeploymentId: (...args: any[]) => Promise<any>;
     queue: (...args: any[]) => Promise<any>;
     createQueueHandler: (...args: any[]) => any;
   };
+  /** Resolves the configured World (async — may perform dynamic import / env-based setup). */
+  function getWorld(): Promise<typeof world>;
+
   const streamId: string;
   const streamName: string;
   const hookId: string;
   const eventId: string;
+  const correlationId: string;
   const cursor: string | undefined;
   const name: string;
   const chunk: any;
@@ -249,4 +288,22 @@ declare global {
 
   // Workflow placeholders used in examples
   const myWorkflow: (...args: any[]) => Promise<any>;
+  const childWorkflow: (...args: any[]) => Promise<any>;
+  const orderId: string;
+
+  // Nitro server-side auto-imports. These are globally available inside a
+  // Nitro runtime (and therefore inside `"use step"` functions when running
+  // under the native Nitro v3 bundling), so they appear unimported in docs
+  // samples. Liberal types keep the type-checker happy without pulling in
+  // Nitro's full type surface.
+  function useStorage(base?: string): {
+    getItem(key: string): Promise<any>;
+    setItem(key: string, value: any): Promise<void>;
+    removeItem(key: string): Promise<void>;
+    getKeys(base?: string): Promise<string[]>;
+    clear(base?: string): Promise<void>;
+    [key: string]: any;
+  };
+  function useDatabase(name?: string): any;
+  function useRuntimeConfig(event?: any): any;
 }

@@ -1,0 +1,19 @@
+{
+  "title": "Getting Started",
+  "pages": [
+    "next",
+    "react-router",
+    "astro",
+    "express",
+    "fastify",
+    "hono",
+    "nitro",
+    "nuxt",
+    "sveltekit",
+    "tanstack-start",
+    "vite",
+    "python",
+    "nestjs"
+  ],
+  "defaultOpen": true
+}

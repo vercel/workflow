@@ -1,10 +1,11 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
   type AstroConfig,
   BaseBuilder,
   createBaseBuilderConfig,
   NORMALIZE_REQUEST_CODE,
+  resolveProjectRoot,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 
@@ -14,31 +15,39 @@ const WORKFLOW_ROUTES = [
     dest: '/.well-known/workflow/v1/flow',
   },
   {
-    src: '^/\\.well-known/workflow/v1/step/?$',
-    dest: '/.well-known/workflow/v1/step',
-  },
-  {
     src: '^/\\.well-known/workflow/v1/webhook/([^/]+?)/?$',
     dest: '/.well-known/workflow/v1/webhook/[token]',
   },
 ];
 
 export class LocalBuilder extends BaseBuilder {
-  constructor() {
+  #pagesDir: string;
+
+  constructor(options: Partial<AstroConfig> = {}) {
+    const config = resolveAstroBuilderConfig(options);
     super({
-      dirs: ['src/pages', 'src/workflows'],
+      ...createBaseBuilderConfig({
+        workingDir: config.workingDir,
+        projectRoot: config.projectRoot,
+        dirs: config.dirs,
+        sourcemap: options.sourcemap,
+      }),
+      ...options,
+      dirs: config.dirs,
       buildTarget: 'astro' as const,
-      stepsBundlePath: '', // unused in base
-      workflowsBundlePath: '', // unused in base
-      webhookBundlePath: '', // unused in base
-      workingDir: process.cwd(),
+      workingDir: config.workingDir,
+      projectRoot: config.projectRoot,
+      moduleSpecifierRoot: options.moduleSpecifierRoot ?? config.workingDir,
       debugFilePrefix: '_', // Prefix with underscore so Astro ignores debug files
     });
+    this.#pagesDir = config.pagesDir;
   }
 
   override async build(): Promise<void> {
-    const pagesDir = resolve(this.config.workingDir, 'src/pages');
-    const workflowGeneratedDir = join(pagesDir, '.well-known/workflow/v1');
+    const workflowGeneratedDir = join(
+      this.#pagesDir,
+      '.well-known/workflow/v1'
+    );
 
     // Ensure output directories exist
     await mkdir(workflowGeneratedDir, { recursive: true });
@@ -48,30 +57,42 @@ export class LocalBuilder extends BaseBuilder {
       await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
     }
 
+    // Clean up stale V1 step route (may persist via Vercel build cache)
+    await rm(join(workflowGeneratedDir, 'step.js'), { force: true });
+
     // Get workflow and step files to bundle
     const inputFiles = await this.getInputFiles();
     const tsconfigPath = await this.findTsConfigPath();
 
-    const options = {
+    // Create combined bundle
+    const { manifest } = await this.createCombinedBundle({
       inputFiles,
-      workflowGeneratedDir,
+      stepsOutfile: join(workflowGeneratedDir, '__step_registrations.js'),
+      flowOutfile: join(workflowGeneratedDir, 'flow.js'),
+      format: 'esm',
+      bundleFinalOutput: false,
+      externalizeNonSteps: true,
       tsconfigPath,
-    };
+    });
 
-    // Generate the three Astro route handlers
-    const stepsManifest = await this.buildStepsRoute(options);
-    const workflowsManifest = await this.buildWorkflowsRoute(options);
+    // Post-process the generated file to wrap with Astro request converter
+    const workflowsRouteFile = join(workflowGeneratedDir, 'flow.js');
+    let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
+
+    // Normalize request, needed for preserving request through astro
+    workflowsRouteContent = workflowsRouteContent.replace(
+      /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
+      (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
+export const POST = async ({request}) => {
+  const normalRequest = await normalizeRequest(request);
+  return workflowEntrypoint(workflowCode${options})(normalRequest);
+}
+
+export const prerender = false;`
+    );
+    await writeFile(workflowsRouteFile, workflowsRouteContent);
+
     await this.buildWebhookRoute({ workflowGeneratedDir });
-
-    // Merge manifests from both bundles
-    const manifest = {
-      steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
-      workflows: {
-        ...stepsManifest.workflows,
-        ...workflowsManifest.workflows,
-      },
-      classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
-    };
 
     // Generate unified manifest
     const workflowBundlePath = join(workflowGeneratedDir, 'flow.js');
@@ -95,80 +116,6 @@ export class LocalBuilder extends BaseBuilder {
 export const prerender = false;\n`
       );
     }
-  }
-
-  private async buildStepsRoute({
-    inputFiles,
-    workflowGeneratedDir,
-    tsconfigPath,
-  }: {
-    inputFiles: string[];
-    workflowGeneratedDir: string;
-    tsconfigPath?: string;
-  }) {
-    // Create steps route: .well-known/workflow/v1/step.js
-    const stepsRouteFile = join(workflowGeneratedDir, 'step.js');
-    const { manifest } = await this.createStepsBundle({
-      format: 'esm',
-      inputFiles,
-      outfile: stepsRouteFile,
-      externalizeNonSteps: true,
-      tsconfigPath,
-    });
-
-    let stepsRouteContent = await readFile(stepsRouteFile, 'utf-8');
-
-    // Normalize request, needed for preserving request through astro
-    stepsRouteContent = stepsRouteContent.replace(
-      /export\s*\{\s*stepEntrypoint\s+as\s+POST\s*\}\s*;?$/m,
-      `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
-  const normalRequest = await normalizeRequest(request);
-  return stepEntrypoint(normalRequest);
-}
-
-export const prerender = false;`
-    );
-    await writeFile(stepsRouteFile, stepsRouteContent);
-
-    return manifest;
-  }
-
-  private async buildWorkflowsRoute({
-    inputFiles,
-    workflowGeneratedDir,
-    tsconfigPath,
-  }: {
-    inputFiles: string[];
-    workflowGeneratedDir: string;
-    tsconfigPath?: string;
-  }) {
-    // Create workflows route: .well-known/workflow/v1/flow.js
-    const workflowsRouteFile = join(workflowGeneratedDir, 'flow.js');
-    const { manifest } = await this.createWorkflowsBundle({
-      format: 'esm',
-      outfile: workflowsRouteFile,
-      bundleFinalOutput: false,
-      inputFiles,
-      tsconfigPath,
-    });
-
-    let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
-
-    // Normalize request, needed for preserving request through astro
-    workflowsRouteContent = workflowsRouteContent.replace(
-      /export const POST = workflowEntrypoint\(workflowCode\);?$/m,
-      `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
-  const normalRequest = await normalizeRequest(request);
-  return workflowEntrypoint(workflowCode)(normalRequest);
-}
-
-export const prerender = false;`
-    );
-    await writeFile(workflowsRouteFile, workflowsRouteContent);
-
-    return manifest;
   }
 
   private async buildWebhookRoute({
@@ -199,13 +146,15 @@ export const prerender = false;`
       ''
     );
 
-    // Normalize request, needed for preserving request through astro
+    // Astro's `request` is already a standard `Request`, so it is handed to
+    // the webhook handler as-is. Notably it must NOT be copied via a
+    // normalizer that buffers the body: this is a public route where the
+    // token is checked inside `handler`, so the body must stay unread until
+    // the token has been accepted.
     webhookRouteContent = webhookRouteContent.replace(
       /export const GET = handler;\nexport const POST = handler;\nexport const PUT = handler;\nexport const PATCH = handler;\nexport const DELETE = handler;\nexport const HEAD = handler;\nexport const OPTIONS = handler;/,
-      `${NORMALIZE_REQUEST_CODE}
-const createHandler = (method) => async ({ request, params, platform }) => {
-  const normalRequest = await normalizeRequest(request);
-  const response = await handler(normalRequest, params.token);
+      `const createHandler = (method) => async ({ request, params, platform }) => {
+  const response = await handler(request, params.token);
   return response;
 };
 
@@ -225,15 +174,22 @@ export const prerender = false;`
 }
 
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
-  constructor(config?: Partial<AstroConfig>) {
-    const workingDir = config?.workingDir || process.cwd();
+  constructor(options: Partial<AstroConfig> = {}) {
+    const config = resolveAstroBuilderConfig(options);
     super({
       ...createBaseBuilderConfig({
-        workingDir,
-        dirs: ['src/pages', 'src/workflows'],
-        runtime: config?.runtime,
+        workingDir: config.workingDir,
+        projectRoot: config.projectRoot,
+        dirs: config.dirs,
+        runtime: options.runtime,
+        sourcemap: options.sourcemap,
       }),
+      ...options,
+      dirs: config.dirs,
       buildTarget: 'vercel-build-output-api',
+      workingDir: config.workingDir,
+      projectRoot: config.projectRoot,
+      moduleSpecifierRoot: options.moduleSpecifierRoot ?? config.workingDir,
       debugFilePrefix: '_',
     });
   }
@@ -275,4 +231,22 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     // Use old astro config with updated routes
     await writeFile(configPath, JSON.stringify(config, null, 2));
   }
+}
+
+function resolveAstroBuilderConfig(options: Partial<AstroConfig> = {}): {
+  workingDir: string;
+  pagesDir: string;
+  dirs: string[];
+  projectRoot: string;
+} {
+  const workingDir = resolve(options.workingDir ?? process.cwd());
+  const dirs = options.dirs ?? ['src/pages', 'src/workflows'];
+  const pagesDir = resolve(workingDir, dirs[0]);
+
+  return {
+    workingDir,
+    pagesDir,
+    dirs,
+    projectRoot: options.projectRoot ?? resolveProjectRoot(workingDir),
+  };
 }

@@ -4,12 +4,14 @@ import {
   type ListWorkflowRunStepsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
+  SerializedDataSchema,
   type Step,
   StepSchema,
   type StepWithoutData,
   type UpdateStepRequest,
 } from '@workflow/world';
 import { z } from 'zod';
+import { normalizeStepData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
@@ -19,25 +21,15 @@ import {
 
 /**
  * Wire format schema for steps coming from the backend.
- * Handles error deserialization from wire format.
+ *
+ * `error` is SerializedData (Uint8Array) produced by dehydrateStepError.
+ * For backward compatibility with legacy wire formats, we also accept
+ * any other shape and let the resolved `errorRef` supersede it when present.
  */
 export const StepWireSchema = StepSchema.omit({
   error: true,
 }).extend({
-  // Backend returns error either as:
-  // - A JSON string (legacy/lazy mode)
-  // - An object {message, stack} (when errorRef is resolved)
-  // This will be deserialized and mapped to error
-  error: z
-    .union([
-      z.string(),
-      z.object({
-        message: z.string(),
-        stack: z.string().optional(),
-        code: z.string().optional(),
-      }),
-    ])
-    .optional(),
+  error: z.union([SerializedDataSchema, z.any()]).optional(),
   errorRef: z.any().optional(),
 });
 
@@ -55,49 +47,25 @@ const StepWireWithRefsSchema = StepWireSchema.omit({
 
 /**
  * Transform step from wire format to Step interface format.
- * Maps:
- * - error/errorRef → error (deserializing JSON string to StructuredError)
+ *
+ * The `error` field on Step is SerializedData (Uint8Array) from the
+ * serialization pipeline — we pass through the wire-format `error` (or
+ * the resolved `errorRef`) as-is. Consumers hydrate via `hydrateStepError`.
+ *
+ * Wire→shape only: this does NOT decompress. The runtime write paths
+ * (createStep/updateStep/events.create) re-hydrate step payloads through
+ * `hydrateStepReturnValue`/`hydrateStepError`, which decompress on their
+ * own, so decompressing here would be redundant work and would skew the
+ * runtime's deserialize compression telemetry. Compression normalization
+ * for o11y/display is applied in {@link filterStepData}, the read path.
  */
 export function deserializeStep(wireStep: any): Step {
   const { error, errorRef, ...rest } = wireStep;
-
-  const result: any = {
-    ...rest,
-  };
-
-  // Deserialize error to StructuredError
-  // The backend returns error as:
-  // - error: JSON string (legacy) or object (when resolved)
-  // - errorRef: resolved object {message, stack} when remoteRefBehavior=resolve
+  const result: any = { ...rest };
   const errorSource = error ?? errorRef;
-  if (errorSource) {
-    if (typeof errorSource === 'string') {
-      try {
-        const parsed = JSON.parse(errorSource);
-        if (typeof parsed === 'object' && parsed.message !== undefined) {
-          result.error = {
-            message: parsed.message,
-            stack: parsed.stack,
-            code: parsed.code,
-          };
-        } else {
-          // Parsed but not an object with message
-          result.error = { message: String(parsed) };
-        }
-      } catch {
-        // Not JSON, treat as plain string
-        result.error = { message: errorSource };
-      }
-    } else if (typeof errorSource === 'object' && errorSource !== null) {
-      // Already an object (from resolved ref)
-      result.error = {
-        message: errorSource.message ?? 'Unknown error',
-        stack: errorSource.stack,
-        code: errorSource.code,
-      };
-    }
+  if (errorSource !== undefined && errorSource !== null) {
+    result.error = errorSource;
   }
-
   return result as Step;
 }
 
@@ -110,21 +78,25 @@ function filterStepData(
 ): Step | StepWithoutData;
 
 // Implementation - when resolveData='none', returns Step with input/output set to undefined
-// to match other World implementations (world-local, world-postgres)
+// to match other World implementations (world-local, world-postgres).
+//
+// This is the read/display entry point, so it decompresses gzip/zstd
+// payload wrappers via `normalizeStepData` (the runtime write paths use
+// `deserializeStep` directly and skip this — see its doc comment).
 function filterStepData(
   step: any,
   resolveData: 'none' | 'all'
 ): Step | StepWithoutData {
   if (resolveData === 'none') {
     const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = step;
-    const deserialized = deserializeStep(rest);
+    const deserialized = normalizeStepData(deserializeStep(rest));
     return {
       ...deserialized,
       input: undefined,
       output: undefined,
     } as StepWithoutData;
   }
-  return deserializeStep(step);
+  return normalizeStepData(deserializeStep(step));
 }
 
 // Functions
@@ -212,25 +184,25 @@ export async function updateStep(
 }
 
 export async function getStep(
-  runId: string | undefined,
+  runId: string,
   stepId: string,
   params: GetStepParams & { resolveData: 'none' },
   config?: APIConfig
 ): Promise<StepWithoutData>;
 export async function getStep(
-  runId: string | undefined,
+  runId: string,
   stepId: string,
   params?: GetStepParams & { resolveData?: 'all' },
   config?: APIConfig
 ): Promise<Step>;
 export async function getStep(
-  runId: string | undefined,
+  runId: string,
   stepId: string,
   params?: GetStepParams,
   config?: APIConfig
 ): Promise<Step | StepWithoutData>;
 export async function getStep(
-  runId: string | undefined,
+  runId: string,
   stepId: string,
   params?: GetStepParams,
   config?: APIConfig
@@ -242,9 +214,7 @@ export async function getStep(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = runId
-    ? `/v2/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepId)}${queryString ? `?${queryString}` : ''}`
-    : `/v2/steps/${encodeURIComponent(stepId)}${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepId)}${queryString ? `?${queryString}` : ''}`;
 
   const step = await makeRequest({
     endpoint,

@@ -1,0 +1,72 @@
+name: 'Detect CI Scope'
+description: 'Classify pull request changes for runtime and validation CI fast paths.'
+
+inputs:
+  github-token:
+    description: 'Token used to list changed pull request files.'
+    required: true
+
+outputs:
+  runtime-fast-path:
+    description: 'Whether expensive runtime E2E and benchmark lanes may be skipped.'
+    value: ${{ steps.scope.outputs.runtime-fast-path }}
+  validation-fast-path:
+    description: 'Whether all package validation lanes may be skipped.'
+    value: ${{ steps.scope.outputs.validation-fast-path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Classify changed files
+      id: scope
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          if (context.eventName !== 'pull_request') {
+            core.setOutput('runtime-fast-path', 'false');
+            core.setOutput('validation-fast-path', 'false');
+            return;
+          }
+
+          const files = await github.paginate(github.rest.pulls.listFiles, {
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: context.issue.number,
+            per_page: 100,
+          });
+          const validationFastPathPatterns = [
+            /^\.changeset\/[^/]+\.md$/,
+            /^docs\//,
+            /^(AGENTS|CONTRIBUTING|LICENSE|README)\.md$/,
+            /^packages\/[^/]+\/README\.md$/,
+          ];
+          const runtimeFastPathPatterns = [
+            ...validationFastPathPatterns,
+            /^packages\/web\//,
+            /^packages\/web-shared\//,
+          ];
+          const changedFiles = files.map((file) => file.filename);
+          const runtimeFiles = changedFiles.filter(
+            (filename) =>
+              !runtimeFastPathPatterns.some((pattern) => pattern.test(filename))
+          );
+          const validationFiles = changedFiles.filter(
+            (filename) =>
+              !validationFastPathPatterns.some((pattern) => pattern.test(filename))
+          );
+          const runtimeFastPath = runtimeFiles.length === 0;
+          const validationFastPath = validationFiles.length === 0;
+
+          core.setOutput('runtime-fast-path', runtimeFastPath ? 'true' : 'false');
+          core.setOutput('validation-fast-path', validationFastPath ? 'true' : 'false');
+          core.info(
+            runtimeFastPath
+              ? 'Only docs or UI files changed; runtime E2E and benchmarks may be skipped.'
+              : `Runtime CI required by: ${runtimeFiles.join(', ')}`
+          );
+          core.info(
+            validationFastPath
+              ? 'Only inert documentation files changed; package validation may be skipped.'
+              : `Package validation required by: ${validationFiles.join(', ')}`
+          );

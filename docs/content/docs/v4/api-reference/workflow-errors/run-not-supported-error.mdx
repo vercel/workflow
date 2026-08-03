@@ -1,0 +1,58 @@
+---
+title: RunNotSupportedError
+description: Thrown when a workflow run requires a newer workflow spec version than the installed SDK supports.
+type: reference
+summary: Catch RunNotSupportedError when stored run data requires a newer workflow package version.
+related:
+  - /docs/foundations/versioning
+---
+
+`RunNotSupportedError` is thrown when reading a workflow run whose data was written with a newer workflow spec version than the running SDK supports. This typically means the run was created by a newer version of the `workflow` package — upgrade the package to process it.
+
+```typescript lineNumbers
+import { RunNotSupportedError } from "workflow/errors"
+declare function readRun(runId: string): Promise<unknown>; // @setup
+declare const runId: string; // @setup
+
+try {
+  await readRun(runId);
+} catch (error) {
+  if (RunNotSupportedError.is(error)) { // [!code highlight]
+    console.error(
+      `Run requires spec v${error.runSpecVersion}, world supports v${error.worldSpecVersion}`
+    );
+  }
+}
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface RunNotSupportedError {
+  /** The spec version the run's stored data requires. */
+  runSpecVersion: number;
+  /** The spec version the current World supports. */
+  worldSpecVersion: number;
+  /** The error message. */
+  message: string;
+}
+export default RunNotSupportedError;`}
+/>
+
+### Static Methods
+
+#### `RunNotSupportedError.is(value)`
+
+Type-safe check for `RunNotSupportedError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+```typescript
+import { RunNotSupportedError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (RunNotSupportedError.is(error)) {
+  // error is typed as RunNotSupportedError
+}
+```

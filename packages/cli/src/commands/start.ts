@@ -1,6 +1,10 @@
 import { Args } from '@oclif/core';
 import { BaseCommand } from '../base.js';
-import { LOGGING_CONFIG } from '../lib/config/log.js';
+import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
+import {
+  getObservabilityUpgradeRequiredMessage,
+  isObservabilityUpgradeRequiredError,
+} from '../lib/inspect/errors.js';
 import { cliFlags } from '../lib/inspect/flags.js';
 import { startRun } from '../lib/inspect/run.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
@@ -16,7 +20,10 @@ export default class Start extends BaseCommand {
   ];
 
   async catch(error: any) {
-    if (LOGGING_CONFIG.VERBOSE_MODE) {
+    if (isObservabilityUpgradeRequiredError(error)) {
+      logger.error(getObservabilityUpgradeRequiredMessage());
+      process.exit(1);
+    } else if (LOGGING_CONFIG.VERBOSE_MODE) {
       console.error(error);
     }
     throw error;

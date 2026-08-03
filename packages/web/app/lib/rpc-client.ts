@@ -14,10 +14,12 @@ import type {
   WorkflowRunStatus,
 } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
+import { apiBase } from '~/lib/api-base';
 import type {
   EnvMap,
-  HealthCheckEndpoint,
   HealthCheckResult,
+  HookListItem,
+  HookTokenResult,
   PaginatedResult,
   ResumeHookResult,
   ServerActionResult,
@@ -26,7 +28,7 @@ import type {
 } from '~/lib/types';
 
 async function rpc<T>(method: string, params?: any): Promise<T> {
-  const res = await fetch('/api/rpc', {
+  const res = await fetch(`${apiBase()}/api/rpc`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/cbor',
@@ -68,6 +70,8 @@ export async function fetchRuns(
     limit?: number;
     workflowName?: string;
     status?: WorkflowRunStatus;
+    startTime?: string;
+    endTime?: string;
   }
 ): Promise<ServerActionResult<PaginatedResult<WorkflowRun>>> {
   return rpc('fetchRuns', { worldEnv, params });
@@ -124,6 +128,23 @@ export async function fetchEvent(
   return rpc('fetchEvent', { worldEnv, runId, eventId, resolveData });
 }
 
+export async function fetchEventsByCorrelationId(
+  worldEnv: EnvMap,
+  correlationId: string,
+  params: {
+    cursor?: string;
+    sortOrder?: 'asc' | 'desc';
+    limit?: number;
+    withData?: boolean;
+  }
+): Promise<ServerActionResult<PaginatedResult<Event>>> {
+  return rpc('fetchEventsByCorrelationId', {
+    worldEnv,
+    correlationId,
+    params,
+  });
+}
+
 export async function fetchHooks(
   worldEnv: EnvMap,
   params: {
@@ -132,8 +153,16 @@ export async function fetchHooks(
     sortOrder?: 'asc' | 'desc';
     limit?: number;
   }
-): Promise<ServerActionResult<PaginatedResult<Hook>>> {
+): Promise<ServerActionResult<PaginatedResult<HookListItem>>> {
   return rpc('fetchHooks', { worldEnv, params });
+}
+
+export async function fetchHookToken(
+  worldEnv: EnvMap,
+  runId: string,
+  hookId: string
+): Promise<ServerActionResult<HookTokenResult>> {
+  return rpc('fetchHookToken', { worldEnv, runId, hookId });
 }
 
 export async function fetchHook(
@@ -197,10 +226,9 @@ export async function fetchWorkflowsManifest(
 
 export async function runHealthCheck(
   worldEnv: EnvMap,
-  endpoint: HealthCheckEndpoint,
   options?: { timeout?: number }
 ): Promise<ServerActionResult<HealthCheckResult>> {
-  return rpc('runHealthCheck', { worldEnv, endpoint, options });
+  return rpc('runHealthCheck', { worldEnv, options });
 }
 
 export async function getEncryptionKeyForRun(

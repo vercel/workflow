@@ -1,0 +1,232 @@
+---
+title: React Router v8
+description: Add durable workflows to a React Router v8 framework-mode app using Nitro v3.
+type: guide
+summary: Configure React Router v8, Nitro v3, and Workflow SDK in one Vite build.
+prerequisites:
+  - /docs/getting-started/react-router
+related:
+  - /docs/getting-started/nitro
+  - /docs/foundations/workflows-and-steps
+---
+
+This guide starts with an existing React Router v8 framework-mode app.
+
+<Steps>
+
+<Step>
+
+## Install Nitro and Workflow SDK
+
+<Tabs items={["npm", "pnpm", "bun", "yarn"]} defaultValue="pnpm">
+
+<Tab value="npm">
+
+```bash
+npm install nitro workflow
+```
+
+</Tab>
+
+<Tab value="pnpm">
+
+```bash
+pnpm add nitro workflow
+```
+
+</Tab>
+
+<Tab value="bun">
+
+```bash
+bun add nitro workflow
+```
+
+</Tab>
+
+<Tab value="yarn">
+
+```bash
+yarn add nitro workflow
+```
+
+</Tab>
+
+</Tabs>
+
+This integration requires Nitro v3.
+
+</Step>
+
+<Step>
+
+## Use a shared build directory
+
+Set an explicit build directory in your React Router config:
+
+```typescript title="react-router.config.ts" lineNumbers
+import type { Config } from "@react-router/dev/config";
+
+export default {
+  ssr: true,
+  buildDirectory: "build", // [!code highlight]
+} satisfies Config;
+```
+
+React Router will place browser assets in `build/client`. Nitro will place the runnable server in `build/server`.
+
+</Step>
+
+<Step>
+
+## Create the React Router server handler
+
+Create `server/ssr.ts`:
+
+```typescript title="server/ssr.ts" lineNumbers
+import { createRequestHandler } from "react-router";
+
+export default {
+  fetch: createRequestHandler(
+    () => import("virtual:react-router/server-build"),
+    import.meta.env.MODE,
+  ),
+};
+```
+
+This adapts React Router's generated server build to the Fetch API handler Nitro expects.
+
+</Step>
+
+<Step>
+
+## Configure Vite
+
+Update `vite.config.ts`:
+
+```typescript title="vite.config.ts" lineNumbers
+import { reactRouter } from "@react-router/dev/vite";
+import { nitro } from "nitro/vite";
+import { defineConfig } from "vite";
+import { workflow } from "workflow/vite";
+import reactRouterConfig from "./react-router.config";
+
+export default defineConfig({
+  plugins: [
+    reactRouter(),
+    nitro({
+      serverDir: "./server",
+      output: {
+        dir: reactRouterConfig.buildDirectory,
+        serverDir: `${reactRouterConfig.buildDirectory}/server`,
+        publicDir: `${reactRouterConfig.buildDirectory}/client`,
+      },
+    }),
+    workflow({ dirs: ["workflows"] }),
+  ],
+  environments: {
+    ssr: {
+      build: {
+        rollupOptions: {
+          input: "./server/ssr.ts",
+        },
+      },
+    },
+  },
+});
+```
+
+Keep `dirs: ["workflows"]` so subsequent builds do not scan generated files under `build`. Place `reactRouter()` before `nitro()` in the plugin array.
+
+</Step>
+
+<Step>
+
+## Create a workflow
+
+Create `workflows/greeting.ts`:
+
+```typescript title="workflows/greeting.ts" lineNumbers
+export async function greetingWorkflow(name: string) {
+  "use workflow";
+
+  return greet(name);
+}
+
+async function greet(name: string) {
+  "use step";
+
+  return `Hello, ${name}!`;
+}
+```
+
+</Step>
+
+<Step>
+
+## Start the workflow from a Nitro route
+
+Create `server/routes/api/greeting.post.ts`:
+
+```typescript title="server/routes/api/greeting.post.ts" lineNumbers
+import { defineHandler } from "nitro";
+import { start } from "workflow/api";
+import { greetingWorkflow } from "../../../workflows/greeting";
+
+export default defineHandler(async (event) => {
+  const { name } = (await event.req.json()) as { name: string };
+  const run = await start(greetingWorkflow, [name]);
+
+  return { runId: run.runId };
+});
+```
+
+React Router continues to handle your application routes. Nitro handles this server route at `POST /api/greeting`, as well as Workflow SDK's internal routes.
+
+</Step>
+
+<Step>
+
+## Run the app
+
+Start the development server:
+
+```bash
+pnpm vite dev
+```
+
+Then start a workflow:
+
+```bash
+curl -X POST \
+  -H "content-type: application/json" \
+  -d '{"name":"Workflow"}' \
+  http://localhost:3000/api/greeting
+```
+
+Build and start the production server:
+
+```bash
+pnpm vite build
+node ./build/server/index.mjs
+```
+
+You can inspect local runs with `pnpm workflow web`.
+
+</Step>
+
+</Steps>
+
+## Troubleshooting
+
+### React Router pages return 404
+
+Check that the `ssr` environment input points to `./server/ssr.ts`.
+
+### A second build tries to compile files under `build/server`
+
+Use `workflow({ dirs: ["workflows"] })`, remove the existing `build` directory once, and rebuild.
+
+### `vite build` finishes output but does not exit
+
+Use `workflow@5.0.0-beta.33` or later with Nitro v3.

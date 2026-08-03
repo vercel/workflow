@@ -1,5 +1,6 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { Hook as HookEntity } from '@workflow/world';
+import { throwNotInWorkflowContext } from './context-errors.js';
 import type { Hook, HookOptions } from './create-hook.js';
 import { resumeHook } from './runtime/resume-hook.js';
 
@@ -72,12 +73,19 @@ export function defineHook<TInput, TOutput = TInput>({
 }: {
   schema?: StandardSchemaV1<TInput, TOutput>;
 } = {}): TypedHook<TInput, TOutput> {
+  function create(_options?: HookOptions): Hook<TOutput> {
+    // NOTE: `create` is referenced by name (not `this.create`) so the stack
+    // strip still works if the caller destructured the hook (`const { create }
+    // = defineHook(); create()`) — in that case `this` is undefined.
+    throwNotInWorkflowContext(
+      'defineHook().create()',
+      'https://workflow-sdk.dev/docs/api-reference/workflow/define-hook',
+      create
+    );
+  }
+
   return {
-    create(_options?: HookOptions): Hook<TOutput> {
-      throw new Error(
-        '`defineHook().create()` can only be called inside a workflow function.'
-      );
-    },
+    create,
     async resume(token: string, payload: TInput): Promise<HookEntity> {
       if (!schema?.['~standard']) {
         return await resumeHook(token, payload);
@@ -90,7 +98,21 @@ export function defineHook<TInput, TOutput = TInput>({
 
       // if the `issues` field exists, the validation failed
       if (result.issues) {
-        throw new Error(JSON.stringify(result.issues, null, 2));
+        const lines = result.issues.map((issue) => {
+          const path = issue.path
+            ?.map((segment) =>
+              typeof segment === 'object' && segment !== null
+                ? String((segment as { key: PropertyKey }).key)
+                : String(segment)
+            )
+            .join('.');
+          return path
+            ? `  at "${path}": ${issue.message}`
+            : `  ${issue.message}`;
+        });
+        throw new Error(
+          `Hook payload did not match the defined schema:\n${lines.join('\n')}`
+        );
       }
 
       return await resumeHook<TOutput>(token, result.value);

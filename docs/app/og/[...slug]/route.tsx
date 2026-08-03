@@ -14,8 +14,8 @@ export const GET = async (
   }
 
   return createOgImage({
-    title: page.data.title,
-    description: page.data.description,
+    title: page.data.title ?? '',
+    description: page.data.description ?? '',
   });
 };
 
