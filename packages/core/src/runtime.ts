@@ -12,7 +12,7 @@ import {
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { setWorkflowBasePath } from '@workflow/utils';
+import { once, setWorkflowBasePath } from '@workflow/utils';
 import {
   parseWorkflowName,
   workflowDisplayName,
@@ -509,7 +509,7 @@ function openHookAndWaitState(events: Event[]): {
 function canRetainWorkflowSession(
   suspension: WorkflowSuspension,
   stepInputsSafe: boolean,
-  getOpenHookWaitState: () => ReturnType<typeof openHookAndWaitState>
+  openHookWait: { value: ReturnType<typeof openHookAndWaitState> }
 ): boolean {
   if (
     !isVmRetentionEnabled() ||
@@ -519,7 +519,7 @@ function canRetainWorkflowSession(
   ) {
     return false;
   }
-  const { openHook, openWait } = getOpenHookWaitState();
+  const { openHook, openWait } = openHookWait.value;
   return !openHook && !openWait;
 }
 
@@ -2446,12 +2446,9 @@ export function workflowEntrypoint(
                         // lose `cachedEvents`'s non-null narrowing. Nothing in
                         // this catch scope reassigns the array.
                         const suspensionEvents = cachedEvents;
-                        let openHookWaitMemo:
-                          | ReturnType<typeof openHookAndWaitState>
-                          | undefined;
-                        const getOpenHookWaitState = () =>
-                          (openHookWaitMemo ??=
-                            openHookAndWaitState(suspensionEvents));
+                        const openHookWait = once(() =>
+                          openHookAndWaitState(suspensionEvents)
+                        );
 
                         // The single retention decision: keep the parked
                         // session only across a pure step boundary with no
@@ -2462,7 +2459,7 @@ export function workflowEntrypoint(
                           !canRetainWorkflowSession(
                             err,
                             suspensionResult.retainedStepInputsSafe,
-                            getOpenHookWaitState
+                            openHookWait
                           )
                         ) {
                           retainedSession = null;
@@ -2787,7 +2784,7 @@ export function workflowEntrypoint(
 
                         // Open hooks/waits are consulted by all three gates
                         // below; resolve the memoized scan once here.
-                        const openHookWaitState = getOpenHookWaitState();
+                        const openHookWaitState = openHookWait.value;
 
                         // Inline-delta fast path gate. We request the delta —
                         // and on the next iteration consume it in place of the

@@ -1087,7 +1087,7 @@ async function createWorkflowSession({
           const isStrictExtension =
             nextEvents.length > knownEvents.length &&
             knownEvents.every(
-              (event, index) => event.eventId === nextEvents[index]?.eventId
+              (event, index) => event.eventId === nextEvents[index].eventId
             );
           if (!isStrictExtension) {
             state = { type: 'replay' };

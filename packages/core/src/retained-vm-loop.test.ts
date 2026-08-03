@@ -177,15 +177,15 @@ async function drive(
         step: {
           runId,
           stepId: data.correlationId,
-          stepName: d?.stepName,
+          stepName: d.stepName,
           status: 'running' as const,
           attempt: 1,
-          input: d?.input,
+          input: d.input,
           startedAt: new Date(),
           createdAt: new Date(),
           updatedAt: new Date(),
         },
-        ...(d?.input !== undefined ? { stepCreated: true } : {}),
+        ...(d.input !== undefined ? { stepCreated: true } : {}),
       };
     }
     return { event };
