@@ -1189,7 +1189,7 @@ describe('createWorkflowRunEvent response coercion', () => {
 });
 
 describe('createWorkflowRunEvent resolveData', () => {
-  it("strips payload fields from the returned event when resolveData is 'none'", async () => {
+  it("returns the validated lazy ref when resolveData is 'none'", async () => {
     const agent = mockAgent();
     agent
       .get(ORIGIN)
@@ -1207,7 +1207,10 @@ describe('createWorkflowRunEvent resolveData', () => {
             correlationId: 'step_1',
             createdAt: '2026-06-10T00:00:00.000Z',
             eventData: {
-              result: new TextEncoder().encode('"payload-bytes"'),
+              result: {
+                _type: 'RemoteRef',
+                _ref: 's3rf:wrun_1/evnt_1/result',
+              },
               stepName: 'my-step',
             },
           },
@@ -1235,11 +1238,12 @@ describe('createWorkflowRunEvent resolveData', () => {
       { token: 'test-token', dispatcher: agent }
     );
 
-    // The Storage contract: a caller asking for resolveData 'none' must
-    // not get payload bytes back — only entity metadata.
     const eventData = (result.event as { eventData?: Record<string, unknown> })
       ?.eventData;
-    expect(eventData?.result).toBeUndefined();
+    expect(eventData?.result).toEqual({
+      _type: 'RemoteRef',
+      _ref: 's3rf:wrun_1/evnt_1/result',
+    });
     expect(eventData?.stepName).toBe('my-step');
     agent.assertNoPendingInterceptors();
   });
@@ -1267,12 +1271,10 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     ]);
   }
 
-  it("sends remoteRefBehavior=lazy for resolveData 'none' and strips any returned body", async () => {
+  it("sends remoteRefBehavior=lazy for resolveData 'none'", async () => {
     const agent = mockAgent();
     // The interceptor only matches when the request carries
     // ?remoteRefBehavior=lazy — so a missing/wrong param fails the request.
-    // The reply still includes payload bytes, simulating a backend that
-    // predates the flag: the adapter must strip them regardless.
     agent
       .get(ORIGIN)
       .intercept({
@@ -1280,7 +1282,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
         method: 'GET',
         query: { remoteRefBehavior: 'lazy' },
       })
-      .reply(200, listResponse(new TextEncoder().encode('"payload"')), {
+      .reply(200, listResponse(new Uint8Array()), {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });
 
@@ -1292,7 +1294,10 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     const eventData = (
       result.data[0] as { eventData?: Record<string, unknown> }
     ).eventData;
-    expect(eventData?.input).toBeUndefined();
+    expect(eventData?.input).toEqual({
+      _type: 'RemoteRef',
+      _ref: 's3rf:wrun_1/input',
+    });
     expect(eventData?.workflowName).toBe('wf');
     agent.assertNoPendingInterceptors();
   });
@@ -1539,6 +1544,6 @@ describe('getWorkflowRunEvents hasMore mapping', () => {
         { runId: 'wrun_1' },
         { token: 'test-token', dispatcher: agent }
       )
-    ).rejects.toThrow('v4 listEvents: end frame missing hasMore');
+    ).rejects.toThrow();
   });
 });

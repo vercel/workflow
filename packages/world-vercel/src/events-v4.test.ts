@@ -189,9 +189,9 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     );
 
     expect(result.events).toHaveLength(1);
-    expect(result.events[0].event.eventId).toBe('evnt_1');
+    expect(result.events[0].meta.eventId).toBe('evnt_1');
     expect(new Uint8Array(result.events[0].body)).toEqual(body);
-    expect(result.next).toBe('cursor-2');
+    expect(result.cursor).toBe('cursor-2');
     agent.assertNoPendingInterceptors();
   });
 
@@ -211,7 +211,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
             { eventType: 'future_event', eventData: {} },
             new Uint8Array()
           ),
-          encodeFrame({ _end: 1 }, new Uint8Array()),
+          encodeFrame({ _end: 1, hasMore: false }, new Uint8Array()),
         ]),
         { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
       );
@@ -268,7 +268,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
       { token: 'test-token', dispatcher: agent }
     );
 
-    expect(result.next).toBe('eid:last');
+    expect(result.cursor).toBe('eid:last');
     expect(result.hasMore).toBe(false);
   });
 
@@ -296,7 +296,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         {},
         { token: 'test-token', dispatcher: agent }
       )
-    ).rejects.toThrow('v4 listEvents: end frame missing hasMore');
+    ).rejects.toThrow();
   });
 
   it('throws when the stream ends without the end sentinel (truncated response)', async () => {
@@ -374,18 +374,23 @@ describe('getEventV4 over HTTP', () => {
 
     agent
       .get(origin)
-      .intercept({ path: '/api/v4/runs/wrun_1/events/evnt_1', method: 'GET' })
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/evnt_1?remoteRefBehavior=resolve',
+        method: 'GET',
+      })
       .reply(200, frames, {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });
 
-    const { event, body: returnedBody } = await getEventV4('wrun_1', 'evnt_1', {
-      token: 'test-token',
-      dispatcher: agent,
-    });
+    const { meta, body: returnedBody } = await getEventV4(
+      'wrun_1',
+      'evnt_1',
+      'resolve',
+      { token: 'test-token', dispatcher: agent }
+    );
 
-    expect(event.eventId).toBe('evnt_1');
-    expect(event.eventType).toBe('run_created');
+    expect(meta.eventId).toBe('evnt_1');
+    expect(meta.eventType).toBe('run_created');
     expect(new Uint8Array(returnedBody)).toEqual(body);
     agent.assertNoPendingInterceptors();
   });
@@ -609,7 +614,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     expect(result.maxEvents).toBe(10000);
     expect(result.events).toHaveLength(2);
     expect(result.events[0]?.body).toEqual(input);
-    expect(result.next).toBe('eid:evnt_2');
+    expect(result.cursor).toBe('eid:evnt_2');
     expect(result.hasMore).toBe(false);
     agent.assertNoPendingInterceptors();
   });

@@ -474,11 +474,8 @@ function openHookAndWaitState(events: Event[]): {
 
 type ReplayEventLog =
   | { type: 'loadAll' }
-  | { type: 'ready'; log: LoadedEventLog }
-  | {
-      type: 'loadAfter';
-      log: LoadedEventLog & { cursor: string };
-    };
+  | ({ type: 'ready' } & LoadedEventLog)
+  | ({ type: 'loadAfter'; cursor: string } & LoadedEventLog);
 
 function nextEventLogLoad(log: LoadedEventLog): ReplayEventLog {
   if (log.cursor === null) {
@@ -486,7 +483,8 @@ function nextEventLogLoad(log: LoadedEventLog): ReplayEventLog {
   }
   return {
     type: 'loadAfter',
-    log: { events: log.events, cursor: log.cursor },
+    events: log.events,
+    cursor: log.cursor,
   };
 }
 
@@ -1011,26 +1009,26 @@ export function workflowEntrypoint(
                       allowDelta && preconditionRestarts === 1
                         ? preconditionEventDelta(error, runId)
                         : null;
-                    const log =
-                      eventLog.type === 'loadAll' ? null : eventLog.log;
                     // A delta is only usable if there is a loaded log to merge
                     // it into; without one the restart must load everything.
-                    const usedDelta = delta !== null && log !== null;
+                    const usedDelta =
+                      delta !== null && eventLog.type !== 'loadAll';
                     // Snapshot the set being discarded while it is still in
                     // hand; the comparison happens once the next load resolves.
-                    preconditionRestartBaseline = log
-                      ? {
-                          ids: new Set(
-                            log.events.map((event) => event.eventId)
-                          ),
-                          restart: preconditionRestarts,
-                          reason,
-                          source: usedDelta ? 'inline-delta' : 'full-reload',
-                        }
-                      : null;
-                    if (delta && log) {
-                      appendEventLog(log, delta);
-                      eventLog = { type: 'ready', log };
+                    preconditionRestartBaseline =
+                      eventLog.type !== 'loadAll'
+                        ? {
+                            ids: new Set(
+                              eventLog.events.map((event) => event.eventId)
+                            ),
+                            restart: preconditionRestarts,
+                            reason,
+                            source: usedDelta ? 'inline-delta' : 'full-reload',
+                          }
+                        : null;
+                    if (delta && eventLog.type !== 'loadAll') {
+                      appendEventLog(eventLog, delta);
+                      eventLog = { ...eventLog, type: 'ready' };
                     } else {
                       // MUST be a full, cursor-less reload. The cursor filters
                       // by lexicographic event id while a hole is defined by
@@ -1458,7 +1456,8 @@ export function workflowEntrypoint(
                       // without a spurious "cursor missing" warning.
                       eventLog = {
                         type: 'ready',
-                        log: { events: [], cursor: null },
+                        events: [],
+                        cursor: null,
                       };
                       const now = new Date();
                       workflowRun = {
@@ -1510,13 +1509,13 @@ export function workflowEntrypoint(
                         runStartedReceivedAtMs = Date.now();
 
                         if (result.events?.length) {
-                          const log = {
+                          const loaded = {
                             events: [...result.events],
                             cursor: result.cursor ?? null,
                           };
                           eventLog = result.hasMore
-                            ? nextEventLogLoad(log)
-                            : { type: 'ready', log };
+                            ? nextEventLogLoad(loaded)
+                            : { ...loaded, type: 'ready' };
                         }
                         workflowStartedAt = +result.run.startedAt;
                         span?.setAttributes({
@@ -1603,7 +1602,7 @@ export function workflowEntrypoint(
                     const alreadyPreloaded =
                       hookInput.resumeId !== undefined &&
                       eventLog.type !== 'loadAll' &&
-                      eventLog.log.events.some(
+                      eventLog.events.some(
                         (e) =>
                           e.eventType === 'hook_received' &&
                           e.resumeId === hookInput.resumeId
@@ -1720,7 +1719,7 @@ export function workflowEntrypoint(
                       // list re-observes it. Only when the World returns no event
                       // do we fall back to reloading the complete log.
                       if (eventLog.type !== 'loadAll' && ensuredEvent) {
-                        insertEventByEventId(eventLog.log.events, ensuredEvent);
+                        insertEventByEventId(eventLog.events, ensuredEvent);
                       } else {
                         eventLog = { type: 'loadAll' };
                       }
@@ -1806,17 +1805,17 @@ export function workflowEntrypoint(
                     try {
                       let log: LoadedEventLog;
                       if (eventLog.type === 'ready') {
-                        log = eventLog.log;
+                        log = eventLog;
                       } else {
                         const loaded = await loadWorkflowRunEvents(
                           runId,
                           eventLog.type === 'loadAfter'
-                            ? eventLog.log.cursor
+                            ? eventLog.cursor
                             : undefined
                         );
                         if (eventLog.type === 'loadAfter') {
-                          appendEventLog(eventLog.log, loaded);
-                          log = eventLog.log;
+                          appendEventLog(eventLog, loaded);
+                          log = eventLog;
                         } else {
                           log = loaded;
                         }
@@ -1970,7 +1969,7 @@ export function workflowEntrypoint(
                       // events.list. Captured here because nothing between this
                       // point and the inline executeStep mutates the event log.
                       preInlineWriteCursor = log.cursor;
-                      eventLog = { type: 'ready', log };
+                      eventLog = { ...log, type: 'ready' };
 
                       // Replay workflow
                       runtimeLogger.debug('Starting workflow replay', {
@@ -2106,7 +2105,7 @@ export function workflowEntrypoint(
                           eventLog.type === 'ready',
                           'Workflow suspended before its event log was loaded'
                         );
-                        const suspensionLog = eventLog.log;
+                        const loaded = eventLog;
                         let suspensionResult: Awaited<
                           ReturnType<typeof handleSuspension>
                         >;
@@ -2117,7 +2116,7 @@ export function workflowEntrypoint(
                             run: workflowRun,
                             span,
                             requestId,
-                            eventLog: suspensionLog,
+                            eventLog: loaded,
                             runReadyBarrier,
                             replayRecoveryReporter,
                           });
@@ -2222,7 +2221,7 @@ export function workflowEntrypoint(
                           });
                           return;
                         }
-                        eventLog = nextEventLogLoad(suspensionLog);
+                        eventLog = nextEventLogLoad(loaded);
                         preStepBlockingMs += suspensionResult.hookCreationMs;
                         if (
                           suspensionResult.hasAttributeEvents &&
@@ -2550,7 +2549,7 @@ export function workflowEntrypoint(
                         // Open hooks/waits in the cumulative log, computed
                         // once for the two gates below.
                         const openHookWaitState = openHookAndWaitState(
-                          suspensionLog.events
+                          loaded.events
                         );
 
                         // Inline-delta fast path gate. We request the delta —
@@ -2718,7 +2717,7 @@ export function workflowEntrypoint(
                         // snapshot has a local-clock createdAt, so under
                         // turbo only the run-id ULID timestamp is trusted.
                         const latencyTracking = computeStepLatencyTracking({
-                          events: suspensionLog.events,
+                          events: loaded.events,
                           invocationStartedClean:
                             invocationStartedClean === true,
                           runCreatedAtMs:
@@ -2750,7 +2749,7 @@ export function workflowEntrypoint(
                         // outside guarded deployments; Worlds that don't
                         // enforce the guard ignore it.
                         const inlineClaimSnapshot = preconditionSnapshotParams(
-                          suspensionLog.events,
+                          loaded.events,
                           preInlineWriteCursor
                         );
 
@@ -2800,7 +2799,7 @@ export function workflowEntrypoint(
                                   s.lazyStepInput !== undefined
                                     ? 1
                                     : countStepStartedEvents(
-                                        suspensionLog.events,
+                                        loaded.events,
                                         s.correlationId,
                                         {
                                           type: 'ownedBy',
@@ -3089,10 +3088,10 @@ export function workflowEntrypoint(
                         if (inlineExecutions.length === 1) {
                           const only = stepResults[0];
                           if (only.type === 'completed' && only.inlineDelta) {
-                            appendEventLog(suspensionLog, only.inlineDelta);
+                            appendEventLog(loaded, only.inlineDelta);
                             eventLog = only.inlineDelta.hasMore
-                              ? nextEventLogLoad(suspensionLog)
-                              : { type: 'ready', log: suspensionLog };
+                              ? nextEventLogLoad(loaded)
+                              : { ...loaded, type: 'ready' };
                           }
                         }
                       } else {
