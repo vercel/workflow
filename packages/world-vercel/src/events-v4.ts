@@ -278,6 +278,10 @@ const CreateEventV4PageSchema = z.union([
   }),
 ]);
 
+const CreateEventV4BodySchema = CreateEventV4BodyBaseSchema.and(
+  CreateEventV4PageSchema
+);
+
 const CreateEventV4BodySchemas: {
   [T in EventType]: z.ZodType<EventResult<T> & { event: Event }>;
 } = {
@@ -295,20 +299,20 @@ const CreateEventV4BodySchemas: {
       startedAt: step.startedAt,
     })),
   }).and(CreateEventV4PageSchema),
-  run_completed: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
-  run_failed: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
-  run_cancelled: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
-  attr_set: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
-  step_created: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
-  step_completed: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
-  step_failed: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
-  step_retrying: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
-  hook_created: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
-  hook_received: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
-  hook_disposed: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
-  hook_conflict: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
-  wait_created: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
-  wait_completed: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
+  run_completed: CreateEventV4BodySchema,
+  run_failed: CreateEventV4BodySchema,
+  run_cancelled: CreateEventV4BodySchema,
+  attr_set: CreateEventV4BodySchema,
+  step_created: CreateEventV4BodySchema,
+  step_completed: CreateEventV4BodySchema,
+  step_failed: CreateEventV4BodySchema,
+  step_retrying: CreateEventV4BodySchema,
+  hook_created: CreateEventV4BodySchema,
+  hook_received: CreateEventV4BodySchema,
+  hook_disposed: CreateEventV4BodySchema,
+  hook_conflict: CreateEventV4BodySchema,
+  wait_created: CreateEventV4BodySchema,
+  wait_completed: CreateEventV4BodySchema,
 };
 
 const MaxEventsHeaderSchema = z.coerce.number().int().positive();
