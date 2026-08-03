@@ -21,12 +21,14 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
+import assert from 'node:assert/strict';
 import { WorkflowWorldError } from '@workflow/errors';
 import {
   type Event,
   type EventResult,
   EventSchema,
   type EventType,
+  EventTypeSchema,
   getEventDataPayloadField,
   HookSchema,
   type PaginationOptions,
@@ -35,7 +37,12 @@ import {
 } from '@workflow/world';
 import { decode } from 'cbor-x';
 import { z } from 'zod';
-import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
+import {
+  type DecodedFrame,
+  decodeFrames,
+  encodeFrame,
+  V4_FRAME_CONTENT_TYPE,
+} from './frames.js';
 import { getEventsDispatcher } from './http-client.js';
 import {
   errorForResponse,
@@ -319,6 +326,11 @@ const CreateEventV4BodySchemas: {
 };
 
 const MaxEventsHeaderSchema = z.coerce.number().int().positive();
+const EventStreamEndSchema = z.object({
+  _end: z.literal(1),
+  next: z.string().optional(),
+  hasMore: z.boolean(),
+});
 
 /** Build the CBOR meta map for a v4 POST frame. Drops undefined entries
  *  so the wire shape matches what the server expects to see. */
@@ -622,9 +634,7 @@ export async function createWorkflowRunStartedEventV4(
     config
   );
   const page = await consumeEventFrameStream(response, 'createEvent');
-  if (page.next === undefined) {
-    throw new Error('v4 createEvent: event stream missing cursor');
-  }
+  assert(page.cursor, 'v4 createEvent: event stream missing cursor');
   const maxEvents = MaxEventsHeaderSchema.safeParse(
     response.headers.get(MAX_EVENTS_HEADER)
   );
@@ -635,11 +645,7 @@ export async function createWorkflowRunStartedEventV4(
     });
   }
 
-  return {
-    ...page,
-    next: page.next,
-    maxEvents: maxEvents.data,
-  };
+  return { ...page, maxEvents: maxEvents.data };
 }
 
 function readHeader(
@@ -666,11 +672,14 @@ function readHeader(
 export async function getEventV4(
   runId: string,
   eventId: string,
+  remoteRefBehavior: 'resolve' | 'lazy',
   config?: APIConfig
-): Promise<DecodedEventFrame> {
+): Promise<DecodedFrame> {
   const { baseUrl, headers } = await getHttpConfig(config);
 
-  const url = `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}`;
+  const url =
+    `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}` +
+    `?remoteRefBehavior=${remoteRefBehavior}`;
   const response = await fetchV4(
     url,
     { method: 'GET', headers },
@@ -695,7 +704,8 @@ export async function getEventV4(
   // GET emits a single frame (no sentinel); decodeFrames returns at EOF
   // after yielding it.
   for await (const frame of decodeFrames(chunks)) {
-    return { event: EventSchema.parse(frame.meta), body: frame.body };
+    EventTypeSchema.parse(frame.meta.eventType);
+    return frame;
   }
   throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
 }
@@ -706,30 +716,15 @@ export interface ListEventsV4Params extends PaginationOptions {
    * `resolve` (default) streams the bytes; `lazy` emits empty-body frames
    * (the ref descriptor stays in the frame meta) — for metadata-only
    * listings that would otherwise download every payload just to discard
-   * it. A backend that predates this flag ignores it and streams full
-   * bodies, so callers must still tolerate bodies being present.
+   * it.
    */
   remoteRefBehavior?: 'resolve' | 'lazy';
 }
 
-/**
- * One decoded v4 frame. GET, LIST, and streamed POST responses all use this
- * exact shape.
- */
-export interface DecodedEventFrame {
-  event: Event;
-  /** Resolved payload bytes. Empty for events without a payload. */
-  body: Uint8Array;
-}
-
 export interface ListEventsV4Result {
-  events: DecodedEventFrame[];
-  /**
-   * Trailing cursor. Present even on the final page — it doubles as the
-   * resume point for incremental loads — so it is NOT a reliable "more
-   * pages" signal on its own. Use `hasMore` for that.
-   */
-  next?: string;
+  events: DecodedFrame[];
+  /** Trailing event-log cursor, or null when the stream contained no events. */
+  cursor: string | null;
   /** Explicit "another page of results exists" flag from the sentinel. */
   hasMore: boolean;
 }
@@ -746,24 +741,18 @@ async function consumeEventFrameStream(
   }
 
   const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
-  const events: DecodedEventFrame[] = [];
+  const events: DecodedFrame[] = [];
 
   for await (const frame of decodeFrames(chunks)) {
     if (frame.meta._end === 1) {
-      if (typeof frame.meta.hasMore !== 'boolean') {
-        throw new Error(`v4 ${opName}: end frame missing hasMore`);
-      }
-      const next =
-        typeof frame.meta.next === 'string' ? frame.meta.next : undefined;
-      return { events, next, hasMore: frame.meta.hasMore };
+      const end = EventStreamEndSchema.parse(frame.meta);
+      return { events, cursor: end.next ?? null, hasMore: end.hasMore };
     }
     if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
       throw new Error(`v4 ${opName}: unexpected control frame`);
     }
-    events.push({
-      event: EventSchema.parse(frame.meta),
-      body: frame.body,
-    });
+    EventTypeSchema.parse(frame.meta.eventType);
+    events.push(frame);
   }
 
   throw new Error(

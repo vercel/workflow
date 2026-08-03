@@ -31,6 +31,7 @@
  * the v3 path.
  */
 
+import assert from 'node:assert/strict';
 import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   type AnyEventRequest,
@@ -40,6 +41,7 @@ import {
   type EventDataPayloadField,
   type EventResult,
   EventSchema,
+  EventTypeSchema,
   type GetEventParams,
   getEventDataPayloadField,
   isHookEventRequiringExistence,
@@ -47,7 +49,6 @@ import {
   type ListEventsParams,
   type PaginatedResponse,
   StructuredErrorSchema,
-  stripEventDataRefs,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
@@ -56,11 +57,12 @@ import { withEventPostRetry } from './event-retry.js';
 import {
   createWorkflowRunEventV4,
   createWorkflowRunStartedEventV4,
-  type DecodedEventFrame,
   getEventsByCorrelationIdV4,
   getEventV4,
   getWorkflowRunEventsV4,
+  type ListEventsV4Params,
 } from './events-v4.js';
+import type { DecodedFrame } from './frames.js';
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import { hasSerializedDataFormatPrefix } from './serialized-data.js';
@@ -447,22 +449,23 @@ function decodeLegacyStructuredError(payload: Uint8Array): unknown {
  * structured errors predate the serialized-data format and remain the sole
  * exception.
  */
-function decodeEventFrame({ event, body }: DecodedEventFrame): Event {
-  if (body.byteLength > 0) {
-    const payloadField = getEventDataPayloadField(event.eventType);
-    if (payloadField) {
-      return Object.assign({}, event, {
-        eventData: {
-          ...event.eventData,
-          [payloadField]: legacyStructuredErrorEventTypes.has(event.eventType)
-            ? decodeLegacyStructuredError(body)
-            : body,
-        },
-      });
-    }
-  }
+function decodeEventFrame({ meta, body }: DecodedFrame): Event {
+  const eventType = EventTypeSchema.parse(meta.eventType);
+  if (body.byteLength === 0) return EventSchema.parse(meta);
 
-  return event;
+  const payloadField = getEventDataPayloadField(eventType);
+  assert(payloadField, `Event type ${eventType} cannot carry a payload body`);
+  assert(meta.eventData && typeof meta.eventData === 'object');
+
+  return EventSchema.parse({
+    ...meta,
+    eventData: {
+      ...meta.eventData,
+      [payloadField]: legacyStructuredErrorEventTypes.has(eventType)
+        ? decodeLegacyStructuredError(body)
+        : body,
+    },
+  });
 }
 
 // =============================================================================
@@ -475,9 +478,14 @@ export async function getEvent(
   params?: GetEventParams,
   config?: APIConfig
 ): Promise<Event> {
-  const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  const event = decodeEventFrame(await getEventV4(runId, eventId, config));
-  return stripEventDataRefs(event, resolveData);
+  return decodeEventFrame(
+    await getEventV4(
+      runId,
+      eventId,
+      params?.resolveData === 'none' ? 'lazy' : 'resolve',
+      config
+    )
+  );
 }
 
 export async function getWorkflowRunEvents(
@@ -485,30 +493,23 @@ export async function getWorkflowRunEvents(
   config?: APIConfig
 ): Promise<PaginatedResponse<Event>> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
-  // `resolveData: 'none'` means the caller only wants metadata — it discards
-  // payloads after decoding. Tell the backend not to stream them
-  // in the first place (lazy → empty frame bodies). On `'all'` we resolve
-  // (the default). A backend that predates this flag ignores it and streams
-  // full bodies regardless; the adapter still strips them when
-  // resolveData is 'none', so this is purely a bandwidth optimization and is
-  // safe against an older backend.
-  const remoteRefBehavior: 'lazy' | 'resolve' =
-    resolveData === 'none' ? 'lazy' : 'resolve';
-  const wirePagination = { ...pagination, remoteRefBehavior };
+  // `resolveData: 'none'` leaves payload refs unresolved, so the backend can
+  // skip reading and streaming their contents. The validated lazy descriptors
+  // remain on the returned events.
+  const listParams: ListEventsV4Params = {
+    ...pagination,
+    remoteRefBehavior: resolveData === 'none' ? 'lazy' : 'resolve',
+  };
 
   const result = await ('correlationId' in params
-    ? getEventsByCorrelationIdV4(params.correlationId, wirePagination, config)
-    : getWorkflowRunEventsV4(params.runId, wirePagination, config));
-
-  const events = result.events.map((frame) =>
-    stripEventDataRefs(decodeEventFrame(frame), resolveData)
-  );
+    ? getEventsByCorrelationIdV4(params.correlationId, listParams, config)
+    : getWorkflowRunEventsV4(params.runId, listParams, config));
 
   return {
-    data: events,
-    // `next` is present even on the final page because it is also the
-    // incremental-load resume cursor. `hasMore` is the page-completion signal.
-    cursor: result.next ?? null,
+    data: result.events.map(decodeEventFrame),
+    // The cursor is present even on the final page because it is also the
+    // incremental-load resume point. `hasMore` is the pagination signal.
+    cursor: result.cursor,
     hasMore: result.hasMore,
   };
 }
@@ -658,7 +659,6 @@ async function createWorkflowRunEventInner(
     ...meta,
   };
 
-  const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   if (data.eventType === 'run_started' && !params?.skipPreload) {
     const result = await createWorkflowRunStartedEventV4(input, config);
     const replayEvents = result.events.map(decodeEventFrame);
@@ -674,16 +674,15 @@ async function createWorkflowRunEventInner(
 
     let attributes = runCreated.eventData.attributes ?? {};
     let updatedAt = runStarted.createdAt;
-    const events = replayEvents.map((event) => {
+    for (const event of replayEvents) {
       if (event.eventType === 'attr_set') {
         attributes = applyAttributeChanges(attributes, event.eventData.changes);
         updatedAt = event.createdAt;
       }
-      return stripEventDataRefs(event, resolveData);
-    });
+    }
 
     return {
-      event: stripEventDataRefs(runStarted, resolveData),
+      event: runStarted,
       run: {
         runId: runCreated.runId,
         status: 'running',
@@ -698,8 +697,8 @@ async function createWorkflowRunEventInner(
         createdAt: runCreated.createdAt,
         updatedAt,
       },
-      events,
-      cursor: result.next,
+      events: replayEvents,
+      cursor: result.cursor,
       hasMore: result.hasMore,
       maxEvents: result.maxEvents,
     };
@@ -711,5 +710,5 @@ async function createWorkflowRunEventInner(
       : { ...input, eventType: data.eventType },
     config
   );
-  return { ...body, event: stripEventDataRefs(body.event, resolveData) };
+  return body;
 }
