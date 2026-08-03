@@ -1,0 +1,518 @@
+/**
+ * workerd smoke test for the QuickJS workflow VM engine.
+ *
+ * Drives `runQuickJSWorkflow` — the real engine entry point, not a
+ * hand-rolled approximation — through a multi-invocation event replay
+ * inside Cloudflare's workerd, where `node:vm` is unavailable. The
+ * scenario exercises a step, a sleep, and completion:
+ *
+ *   invocation 1: suspends on the step        (step pending operation)
+ *   invocation 2: step_completed replayed,
+ *                 suspends on the sleep       (wait pending operation)
+ *   invocation 3: wait_completed replayed,     -> completed
+ *
+ * `runQuickJSWorkflow` is pure data-in/data-out (workflow code + run entity
+ * + event log -> pending operations / result), so the whole replay runs
+ * without a World, a queue, or any network access.
+ *
+ * ASSET LOADING (the workerd constraint): workerd bans runtime WASM
+ * compilation from bytes (`WebAssembly.compile(bytes)` -> "Wasm code
+ * generation disallowed by embedder"). Core's `quickjs-assets.generated.ts`
+ * base64-decodes the binaries and hands raw bytes to `QuickJS.create()` —
+ * correct for Node/Vercel (no filesystem, no bundler config), but it
+ * cannot work on workerd. `?assets=precompiled` (the default) installs
+ * pre-compiled `WebAssembly.Module`s via core's asset override hook;
+ * wrangler/esbuild compiles them at bundle time (`.so` -> CompiledWasm via
+ * wrangler `rules`). `?assets=default` skips the override so the failure
+ * mode of the unpatched engine can be observed directly.
+ */
+import { runQuickJSWorkflow } from '../../../src/runtime/quickjs-runtime.js';
+import { setQuickJSAssets } from '../../../src/runtime/quickjs-assets.js';
+import {
+  deserialize,
+  serialize,
+} from '../../../src/serialization/workflow-vm.js';
+import {
+  compress,
+  decompress,
+} from '../../../src/serialization/compression.js';
+import { encodeWithFormatPrefix } from '../../../src/serialization/format.js';
+import { SerializationFormat } from '../../../src/serialization/types.js';
+
+/** gzip via the web-standard CompressionStream (available on workerd). */
+async function pipeGzip(data: Uint8Array): Promise<Uint8Array> {
+  const cs = new CompressionStream('gzip');
+  const writer = cs.writable.getWriter();
+  const write = writer.write(data).then(() => writer.close());
+  write.catch(() => {});
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const reader = cs.readable.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    total += value.length;
+  }
+  await write;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.length;
+  }
+  return out;
+}
+
+// Pre-compiled WebAssembly.Module imports (compiled at bundle time, not
+// at runtime). wrangler resolves `.wasm` to a WebAssembly.Module natively;
+// `.so` is mapped to CompiledWasm by the `rules` in wrangler.jsonc.
+// @ts-expect-error - wrangler resolves .wasm to a WebAssembly.Module
+import quickjsModule from 'quickjs-wasi/quickjs.wasm';
+// @ts-expect-error - .so -> CompiledWasm
+import encodingModule from 'quickjs-wasi/encoding.so';
+// @ts-expect-error - .so -> CompiledWasm
+import headersModule from 'quickjs-wasi/headers.so';
+// @ts-expect-error - .so -> CompiledWasm
+import urlModule from 'quickjs-wasi/url.so';
+// @ts-expect-error - .so -> CompiledWasm
+import structuredCloneModule from 'quickjs-wasi/structured-clone.so';
+
+/**
+ * Mirror of core's `quickjsExtensions`, but carrying pre-compiled Modules.
+ * Keep the names, order, and `initFn` in sync with
+ * `scripts/build-quickjs-assets.js`.
+ */
+function installPrecompiledAssets(): void {
+  setQuickJSAssets({
+    quickjsWasm: quickjsModule as WebAssembly.Module,
+    quickjsExtensions: [
+      { name: 'encoding', wasm: encodingModule as WebAssembly.Module },
+      { name: 'headers', wasm: headersModule as WebAssembly.Module },
+      { name: 'url', wasm: urlModule as WebAssembly.Module },
+      {
+        name: 'structured-clone',
+        wasm: structuredCloneModule as WebAssembly.Module,
+        initFn: 'qjs_ext_structured_clone_init',
+      },
+      // biome-ignore lint/suspicious/noExplicitAny: ExtensionDescriptor types the wasm field as bytes
+    ] as any,
+  });
+}
+
+const WORKFLOW_ID = 'workflow//test//workflow';
+
+/**
+ * A compiled workflow bundle (what the SWC workflow-mode output looks like):
+ * a step proxy, a sleep, and a registration into `__private_workflows`.
+ */
+const WORKFLOW_CODE = `
+  var add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//add");
+  async function workflow(a, b) {
+    var sum = await add(a, b);
+    await globalThis[Symbol.for("WORKFLOW_SLEEP")]("5s");
+    return { sum: sum, wokeAt: Date.now() };
+  }
+  workflow.workflowId = ${JSON.stringify(WORKFLOW_ID)};
+  globalThis.__private_workflows.set(${JSON.stringify(WORKFLOW_ID)}, workflow);
+`;
+
+const RUN_CREATED_AT = new Date('2025-01-01T00:00:00Z');
+const STEP_AT = new Date('2025-01-01T00:00:01Z');
+const WAIT_CREATED_AT = new Date('2025-01-01T00:00:02Z');
+/** 5s sleep: the VM clock must advance to here by the final invocation. */
+const WAIT_COMPLETED_AT = new Date('2025-01-01T00:00:07Z');
+
+function makeRun() {
+  return {
+    runId: 'wrun_test123',
+    deploymentId: 'dpl_test',
+    workflowName: 'test-workflow',
+    input: undefined,
+    status: 'running' as const,
+    output: undefined,
+    error: undefined,
+    completedAt: undefined,
+    startedAt: RUN_CREATED_AT,
+    createdAt: RUN_CREATED_AT,
+    updatedAt: RUN_CREATED_AT,
+    specVersion: 2,
+  };
+}
+
+function runCreatedEvent(runId: string, args: unknown[]) {
+  return {
+    eventId: 'evnt_run_created',
+    runId,
+    eventType: 'run_created' as const,
+    eventData: { input: serialize(args) },
+    createdAt: RUN_CREATED_AT,
+  };
+}
+
+async function runScenario(useDefaultAssets: boolean) {
+  if (!useDefaultAssets) installPrecompiledAssets();
+
+  const checks: Record<string, unknown> = {};
+  const run = makeRun();
+  // biome-ignore lint/suspicious/noExplicitAny: synthetic entities for the harness
+  const base = { workflowCode: WORKFLOW_CODE, workflowId: WORKFLOW_ID } as any;
+
+  // ---- invocation 1: cold start, suspends on the step ----
+  const r1 = await runQuickJSWorkflow({
+    ...base,
+    workflowRun: run,
+    events: [],
+    runInput: { args: [10, 7] },
+  });
+  const op1 = r1.suspended?.pendingOperations?.[0];
+  checks.invocation1 = {
+    suspended: !!r1.suspended,
+    opType: op1?.type,
+    stepId: op1?.type === 'step' ? op1.stepId : undefined,
+    correlationId: op1?.correlationId,
+  };
+  if (op1?.type !== 'step') {
+    return { checks, error: 'invocation 1 did not suspend on a step' };
+  }
+  const stepCid = op1.correlationId;
+
+  // ---- invocation 2: step_completed replayed, suspends on the sleep ----
+  const eventsAfterStep = [
+    runCreatedEvent(run.runId, [10, 7]),
+    {
+      eventId: 'evnt_001',
+      runId: run.runId,
+      eventType: 'step_created' as const,
+      correlationId: stepCid,
+      eventData: { stepName: 'step//test//add' },
+      createdAt: STEP_AT,
+    },
+    {
+      eventId: 'evnt_002',
+      runId: run.runId,
+      eventType: 'step_completed' as const,
+      correlationId: stepCid,
+      eventData: { result: 17 },
+      createdAt: STEP_AT,
+    },
+  ];
+  const r2 = await runQuickJSWorkflow({
+    ...base,
+    workflowRun: run,
+    events: eventsAfterStep,
+  });
+  const op2 = r2.suspended?.pendingOperations?.[0];
+  checks.invocation2 = {
+    suspended: !!r2.suspended,
+    opType: op2?.type,
+    resumeAt: op2?.type === 'wait' ? op2.resumeAt : undefined,
+    correlationId: op2?.correlationId,
+  };
+  if (op2?.type !== 'wait') {
+    return { checks, error: 'invocation 2 did not suspend on a wait (sleep)' };
+  }
+  const waitCid = op2.correlationId;
+
+  // ---- invocation 3: wait_completed replayed -> completed ----
+  const r3 = await runQuickJSWorkflow({
+    ...base,
+    workflowRun: run,
+    events: [
+      ...eventsAfterStep,
+      {
+        eventId: 'evnt_003',
+        runId: run.runId,
+        eventType: 'wait_created' as const,
+        correlationId: waitCid,
+        eventData: { resumeAt: WAIT_COMPLETED_AT },
+        createdAt: WAIT_CREATED_AT,
+      },
+      {
+        eventId: 'evnt_004',
+        runId: run.runId,
+        eventType: 'wait_completed' as const,
+        correlationId: waitCid,
+        createdAt: WAIT_COMPLETED_AT,
+      },
+    ],
+  });
+  checks.invocation3 = {
+    completed: !!r3.completed,
+    failed: r3.failed,
+    result: r3.completed ? deserialize(r3.completed.result) : undefined,
+  };
+  return { checks };
+}
+
+/**
+ * Compression probe: real worlds persist event payloads as serialized
+ * bytes, and specVersion >= 5 payloads may be compressed, so the engine
+ * runs every payload through `decompress()` on the host side before
+ * handing it to the VM. This checks which codecs survive on workerd.
+ *
+ * zstd needs `node:zlib` (>= 22.15) reached via `process.getBuiltinModule`;
+ * gzip uses the web-standard `DecompressionStream`. Both write and read
+ * sides are probed, plus a full replay whose step result is a compressed
+ * payload — the shape a real world would hand the engine.
+ */
+async function runCompressionProbe() {
+  installPrecompiledAssets();
+  const out: Record<string, unknown> = {};
+
+  const zlib = (
+    globalThis as {
+      process?: { getBuiltinModule?: (id: string) => unknown };
+    }
+  ).process?.getBuiltinModule?.('node:zlib') as
+    | Record<string, unknown>
+    | undefined;
+  out.env = {
+    hasProcessGetBuiltinModule:
+      typeof (globalThis as { process?: { getBuiltinModule?: unknown } })
+        .process?.getBuiltinModule === 'function',
+    nodeZlibResolved: !!zlib,
+    zstdCompressSync: typeof zlib?.zstdCompressSync,
+    zstdDecompressSync: typeof zlib?.zstdDecompressSync,
+    hasCompressionStream: typeof CompressionStream,
+    hasDecompressionStream: typeof DecompressionStream,
+    hasBuffer: typeof Buffer,
+  };
+
+  // A payload above COMPRESSION_MIN_BYTES so compression actually engages.
+  const big = { sum: 17, filler: 'x'.repeat(4096) };
+  const plain = serialize(big);
+
+  // `compress()` picks the codec itself (zstd when node:zlib offers it,
+  // else gzip via CompressionStream) — this is what a workerd-hosted
+  // WRITE path would produce.
+  const payloads: Record<string, Uint8Array> = {};
+  {
+    const entry: Record<string, unknown> = {};
+    try {
+      const compressed = (await compress(plain, true)) as Uint8Array;
+      entry.prefix = new TextDecoder().decode(compressed.subarray(0, 4));
+      entry.plainBytes = plain.byteLength;
+      entry.compressedBytes = compressed.byteLength;
+      payloads.selected = compressed;
+      try {
+        const back = (await decompress(compressed)) as Uint8Array;
+        entry.roundTrip = (deserialize(back) as { sum: number }).sum === 17;
+      } catch (e) {
+        entry.decompressError = e instanceof Error ? e.message : String(e);
+      }
+    } catch (e) {
+      entry.compressError = e instanceof Error ? e.message : String(e);
+    }
+    out.writePathSelectedCodec = entry;
+  }
+
+  // Force the other codec explicitly, to prove the READ path handles both
+  // regardless of which runtime wrote the payload. A Node writer picks
+  // zstd, so a workerd reader must be able to inflate zstd too.
+  for (const codec of ['gzip', 'zstd'] as const) {
+    const entry: Record<string, unknown> = {};
+    try {
+      const inner =
+        codec === 'gzip'
+          ? await pipeGzip(plain)
+          : new Uint8Array(
+              (
+                zlib as {
+                  zstdCompressSync: (d: Uint8Array) => Uint8Array;
+                }
+              ).zstdCompressSync(plain)
+            );
+      const wrapped = encodeWithFormatPrefix(
+        codec === 'gzip' ? SerializationFormat.GZIP : SerializationFormat.ZSTD,
+        inner
+      );
+      payloads[codec] = wrapped;
+      entry.prefix = new TextDecoder().decode(wrapped.subarray(0, 4));
+      entry.bytes = wrapped.byteLength;
+      const back = (await decompress(wrapped)) as Uint8Array;
+      entry.decompressed = (deserialize(back) as { sum: number }).sum === 17;
+    } catch (e) {
+      entry.error = e instanceof Error ? e.message : String(e);
+    }
+    out[`readPath_${codec}`] = entry;
+  }
+
+  // End-to-end: a compressed step payload flowing through replay, which is
+  // what a real world hands the engine for any non-trivial step result.
+  const run = makeRun();
+  // biome-ignore lint/suspicious/noExplicitAny: synthetic entities for the harness
+  const base = { workflowCode: WORKFLOW_CODE, workflowId: WORKFLOW_ID } as any;
+  const r1 = await runQuickJSWorkflow({
+    ...base,
+    workflowRun: run,
+    events: [],
+    runInput: { args: [10, 7] },
+  });
+  const stepCid = r1.suspended?.pendingOperations?.[0]?.correlationId;
+  for (const codec of ['gzip', 'zstd'] as const) {
+    const entry: Record<string, unknown> = {};
+    const payload = payloads[codec];
+    if (!payload) {
+      out[`replayWith_${codec}`] = { skipped: 'payload not built' };
+      continue;
+    }
+    try {
+      const r2 = await runQuickJSWorkflow({
+        ...base,
+        workflowRun: run,
+        events: [
+          runCreatedEvent(run.runId, [10, 7]),
+          {
+            eventId: 'evnt_001',
+            runId: run.runId,
+            eventType: 'step_created' as const,
+            correlationId: stepCid,
+            eventData: { stepName: 'step//test//add' },
+            createdAt: STEP_AT,
+          },
+          {
+            eventId: 'evnt_002',
+            runId: run.runId,
+            eventType: 'step_completed' as const,
+            correlationId: stepCid,
+            eventData: { result: payload },
+            createdAt: STEP_AT,
+          },
+        ],
+      });
+      // The step result reached the VM if the workflow got past the step
+      // and suspended on the sleep.
+      entry.reachedSleep =
+        r2.suspended?.pendingOperations?.[0]?.type === 'wait';
+      entry.failed = r2.failed?.message;
+    } catch (e) {
+      entry.threw = e instanceof Error ? e.message : String(e);
+    }
+    out[`replayWith_${codec}`] = entry;
+  }
+  return out;
+}
+
+function allOk(checks: Record<string, unknown>): boolean {
+  const i1 = checks.invocation1 as Record<string, unknown> | undefined;
+  const i2 = checks.invocation2 as Record<string, unknown> | undefined;
+  const i3 = checks.invocation3 as Record<string, unknown> | undefined;
+  const result = i3?.result as Record<string, unknown> | undefined;
+  return (
+    i1?.suspended === true &&
+    i1.opType === 'step' &&
+    i1.stepId === 'step//test//add' &&
+    typeof i1.correlationId === 'string' &&
+    (i1.correlationId as string).startsWith('step_') &&
+    i2?.suspended === true &&
+    i2.opType === 'wait' &&
+    typeof i2.correlationId === 'string' &&
+    (i2.correlationId as string).startsWith('wait_') &&
+    i3?.completed === true &&
+    !!result &&
+    // The step result flowed back through replay...
+    result.sum === 17 &&
+    // ...and the deterministic clock advanced to the wake event, proving
+    // the VM read the replay clock (WASI clock_time_get override) and not
+    // wall time.
+    result.wokeAt === WAIT_COMPLETED_AT.getTime()
+  );
+}
+
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const useDefaultAssets = url.searchParams.get('assets') === 'default';
+    const body: Record<string, unknown> = {
+      runtime: 'workerd',
+      assets: useDefaultAssets ? 'default (core bytes)' : 'precompiled Modules',
+    };
+    // Why this smoke test exists: the node:vm engine cannot run here.
+    // Re-checked rather than assumed, since it is the whole premise.
+    if (url.searchParams.get('probe') === 'nodevm') {
+      const probe: Record<string, unknown> = {};
+      try {
+        const vm = (
+          globalThis as {
+            process?: { getBuiltinModule?: (id: string) => unknown };
+          }
+        ).process?.getBuiltinModule?.('node:vm') as
+          | Record<string, unknown>
+          | undefined;
+        probe.resolved = !!vm;
+        probe.runInNewContext = typeof vm?.runInNewContext;
+        probe.ScriptCtor = typeof vm?.Script;
+        if (typeof vm?.runInNewContext === 'function') {
+          try {
+            probe.runInNewContextResult = (
+              vm.runInNewContext as (code: string) => unknown
+            )('1 + 1');
+          } catch (e) {
+            probe.runInNewContextError =
+              e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+          }
+        }
+      } catch (e) {
+        probe.importError = e instanceof Error ? e.message : String(e);
+      }
+      try {
+        probe.evalResult = eval('1 + 1');
+      } catch (e) {
+        probe.evalError =
+          e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      }
+      try {
+        probe.newFunctionResult = new Function('return 1 + 1')();
+      } catch (e) {
+        probe.newFunctionError =
+          e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      }
+      return new Response(JSON.stringify({ ...body, nodeVm: probe }, null, 2), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url.searchParams.get('probe') === 'compression') {
+      try {
+        const compression = await runCompressionProbe();
+        return new Response(JSON.stringify({ ...body, compression }, null, 2), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (e) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error: e instanceof Error ? `${e.message}\n${e.stack}` : String(e),
+          }),
+          { status: 500, headers: { 'content-type': 'application/json' } }
+        );
+      }
+    }
+    try {
+      const { checks, error } = await runScenario(useDefaultAssets);
+      const ok = !error && allOk(checks);
+      return new Response(
+        JSON.stringify({ ok, ...body, error, checks }, null, 2),
+        {
+          status: ok ? 200 : 500,
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+    } catch (e) {
+      return new Response(
+        JSON.stringify(
+          {
+            ok: false,
+            ...body,
+            error: e instanceof Error ? `${e.message}\n${e.stack}` : String(e),
+          },
+          null,
+          2
+        ),
+        { status: 500, headers: { 'content-type': 'application/json' } }
+      );
+    }
+  },
+};

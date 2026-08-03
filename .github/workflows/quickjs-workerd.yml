@@ -1,0 +1,105 @@
+name: QuickJS VM (workerd)
+
+# Runs the QuickJS workflow VM engine inside Cloudflare's workerd, where
+# `node:vm` does not work (the `enable_nodejs_vm_module` module resolves under
+# nodejs_compat, but calling it throws "The runInThisContext method is not
+# implemented", and `eval`/`new Function` are banned platform-wide). This is
+# the foundation for running workflows on Cloudflare Workers: if the engine
+# executes here, workflow orchestrator code can run on Workers.
+#
+# The smoke worker drives `runQuickJSWorkflow` — the real engine entry point —
+# through a step + sleep + completion replay, and returns HTTP 200 only if
+# every check passes. It must import the QuickJS binaries as pre-compiled
+# WebAssembly.Modules (installed via `setQuickJSAssets`), because workerd
+# rejects runtime WASM compilation from bytes.
+#
+# Node-side QuickJS coverage lives in tests.yml (the `vitest-plugin` matrix
+# runs with WORKFLOW_VM=quickjs); this workflow covers only workerd.
+
+on:
+  push:
+    branches: [main, stable]
+  pull_request:
+    paths:
+      - 'packages/core/src/runtime/quickjs-runtime.ts'
+      - 'packages/core/src/runtime/quickjs-entrypoint.ts'
+      - 'packages/core/src/runtime/quickjs-assets.ts'
+      - 'packages/core/src/runtime/vm-mode.ts'
+      - 'packages/core/src/serialization/**'
+      - 'packages/core/scripts/build-quickjs-assets.js'
+      - 'packages/core/scripts/build-vm-serde-bundle.js'
+      - 'packages/core/test/workerd-smoke/**'
+      - '.github/workflows/quickjs-workerd.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  workerd:
+    name: QuickJS VM (workerd)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'false'
+
+      # Generates quickjs-assets.generated.ts + vm-serde-bundle.generated.ts,
+      # which the smoke worker imports.
+      - name: Build @workflow/core
+        run: pnpm turbo run build --filter=@workflow/core
+
+      - name: Run workerd smoke test
+        working-directory: packages/core/test/workerd-smoke
+        run: |
+          npx --yes wrangler@4.100.0 dev --port 8788 > /tmp/workerd-smoke.log 2>&1 &
+          WRANGLER_PID=$!
+          trap 'kill $WRANGLER_PID 2>/dev/null || true' EXIT
+
+          echo "Waiting for workerd to be ready..."
+          ready=false
+          for i in $(seq 1 60); do
+            if grep -qiE "Ready on|localhost:8788" /tmp/workerd-smoke.log 2>/dev/null; then ready=true; break; fi
+            if grep -qiE "\[ERROR\]|Build failed" /tmp/workerd-smoke.log 2>/dev/null; then break; fi
+            sleep 2
+          done
+          if [ "$ready" != "true" ]; then
+            echo "::error::workerd did not become ready"; cat /tmp/workerd-smoke.log; exit 1
+          fi
+
+          # Retry while the isolate warms up (first request compiles the
+          # QuickJS modules and boots the VM).
+          code=0
+          for i in $(seq 1 10); do
+            code=$(curl -s -m 60 -o /tmp/workerd-smoke-resp.json -w "%{http_code}" http://localhost:8788/ || echo 000)
+            if [ "$code" = "200" ]; then break; fi
+            sleep 3
+          done
+
+          echo "=== replay response ==="; cat /tmp/workerd-smoke-resp.json || true; echo
+          if [ "$code" != "200" ]; then
+            echo "::error::workerd smoke test failed (HTTP $code)"; cat /tmp/workerd-smoke.log; exit 1
+          fi
+
+          # Diagnostics — recorded for humans reading the log, not asserted.
+          # `?assets=default` is EXPECTED to fail (it is the runtime-WASM-
+          # compilation path workerd bans); it is captured so a change in
+          # workerd's behavior is visible here rather than silently.
+          echo "=== node:vm / eval availability (expected: unusable) ==="
+          curl -s -m 30 "http://localhost:8788/?probe=nodevm" || true; echo
+          echo "=== compression codecs ==="
+          curl -s -m 60 "http://localhost:8788/?probe=compression" || true; echo
+          echo "=== default (byte-compiled) assets (expected: HTTP 500) ==="
+          curl -s -m 30 "http://localhost:8788/?assets=default" || true; echo
+
+          echo "workerd smoke test passed"

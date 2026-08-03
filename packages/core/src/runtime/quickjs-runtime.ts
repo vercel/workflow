@@ -35,7 +35,7 @@ import { runtimeLogger } from '../logger.js';
 import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
 import { decrypt } from '../serialization/encryption.js';
-import { quickjsExtensions, quickjsWasm } from './quickjs-assets.generated.js';
+import { getQuickJSAssets } from './quickjs-assets.js';
 import { runIdCreatedAt } from './run-id-time.js';
 import { VM_SERDE_BUNDLE } from './vm-serde-bundle.generated.js';
 
@@ -919,6 +919,8 @@ async function initWorkflowVM(getNowMs: () => number): Promise<QuickJS> {
       return 0;
     },
   });
+
+  const { quickjsWasm, quickjsExtensions } = getQuickJSAssets();
 
   const vm = await QuickJS.create({
     wasm: quickjsWasm,
