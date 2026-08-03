@@ -469,8 +469,7 @@ function decodeEventFrame({ event, body }: DecodedEventFrame): Event {
   if (body.byteLength > 0) {
     const payloadField = getEventDataPayloadField(event.eventType);
     if (payloadField) {
-      return EventSchema.parse({
-        ...event,
+      return Object.assign({}, event, {
         eventData: {
           ...event.eventData,
           [payloadField]: legacyStructuredErrorEventTypes.has(event.eventType)
