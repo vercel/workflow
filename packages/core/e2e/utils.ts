@@ -840,3 +840,39 @@ export const cliHealthJson = async (options?: { timeout?: number }) => {
     throw err;
   }
 };
+
+/**
+ * Poll `cliInspectJson(args)` until `predicate(json)` holds, or the timeout
+ * elapses — in which case the LAST result is returned so the caller's
+ * assertions still run and produce a real failure message.
+ *
+ * Needed for step/event listing assertions made right after a run settles:
+ * on the vercel world these listings are served analytics-first from an
+ * eventually-consistent store, so rows for just-finished steps can be
+ * missing or carry stale pending/running statuses for a few seconds
+ * before converging on the durable state.
+ */
+export const cliInspectJsonUntil = async (
+  args: string,
+  predicate: (json: any) => boolean,
+  {
+    timeoutMs = 30_000,
+    intervalMs = 2_000,
+  }: { timeoutMs?: number; intervalMs?: number } = {}
+): Promise<any> => {
+  const deadline = Date.now() + timeoutMs;
+  // biome-ignore lint/suspicious/noExplicitAny: raw CLI JSON
+  let json: any;
+  for (;;) {
+    ({ json } = await cliInspectJson(args));
+    let satisfied = false;
+    try {
+      satisfied = predicate(json);
+    } catch {
+      // Malformed intermediate state (e.g. `.find()` returned undefined)
+      // counts as not-yet-converged.
+    }
+    if (satisfied || Date.now() >= deadline) return json;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+};
