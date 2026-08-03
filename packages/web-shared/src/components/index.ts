@@ -14,7 +14,6 @@ export {
   ResolveHookModal,
   useHookActions,
 } from './hook-actions';
-export { TraceViewerSkeleton } from './new-trace-viewer/components/trace-viewer-skeleton';
 export { ConversationView } from './sidebar/conversation-view';
 export type {
   SelectedSpanInfo,
@@ -30,7 +29,8 @@ export type {
 } from './sidebar/use-selected-span-detail';
 export { type StreamChunk, StreamViewer } from './stream-viewer';
 export { StreamViewerSkeleton } from './stream-viewer-skeleton';
-export { NewTraceViewer } from './trace-viewer-new';
+export { TraceViewer } from './trace-viewer';
+export { TraceViewerSkeleton } from './trace-viewer/components/trace-viewer-skeleton';
 export {
   DataInspector,
   type DataInspectorProps,

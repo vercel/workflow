@@ -5,7 +5,7 @@ import {
   ErrorBoundary,
   EventListView,
   hydrateResourceIOAsync,
-  NewTraceViewer,
+  TraceViewer,
   type SidebarDataContextValue,
   StreamViewer,
   StreamViewerSkeleton,
@@ -744,7 +744,7 @@ export function RunDetailView({
             <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load trace viewer">
                 <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
-                  <NewTraceViewer
+                  <TraceViewer
                     run={run}
                     events={allEvents ?? []}
                     loading={loading}

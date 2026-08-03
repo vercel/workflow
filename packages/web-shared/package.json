@@ -38,7 +38,7 @@
     "directory": "packages/web-shared"
   },
   "scripts": {
-    "build": "tsc && cp src/components/new-trace-viewer/components/*.module.css dist/components/new-trace-viewer/components/ && cp src/styles.css dist/styles.css",
+    "build": "tsc && cp src/components/trace-viewer/components/*.module.css dist/components/trace-viewer/components/ && cp src/styles.css dist/styles.css",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -r dist ||:",
     "test": "vitest run",

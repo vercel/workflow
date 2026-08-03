@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   parseSpanSearchQuery,
   searchSpans,
-} from '../src/components/new-trace-viewer/search.js';
+} from '../src/components/trace-viewer/search.js';
 import type { Span } from '../src/lib/trace-types.js';
 
 function makeSpan(overrides: Partial<Span> = {}): Span {
@@ -37,7 +37,7 @@ function makeSpan(overrides: Partial<Span> = {}): Span {
   };
 }
 
-describe('new trace viewer search', () => {
+describe('trace viewer search', () => {
   it('parses free text separately from key:value filters', () => {
     expect(
       parseSpanSearchQuery('email resource:step status:completed')
