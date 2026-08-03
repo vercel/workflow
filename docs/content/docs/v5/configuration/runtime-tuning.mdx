@@ -33,6 +33,12 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Delivery attempts before a run or step is failed gracefully.
 - Can only be lowered. The default is calibrated so Workflow can record failure before the queue expires the message.
 
+### `WORKFLOW_MAX_EVENTS`
+
+- Default: `25000`
+- Positive-integer event limit used by the Local World. When the runtime requests a complete replay log, the Local and Postgres Worlds also use it as the maximum page size.
+- Invalid or non-positive values fall back to the default.
+
 ### `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`
 
 - Default: `3`
