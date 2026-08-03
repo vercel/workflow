@@ -27,7 +27,6 @@ import {
   type EventResult,
   EventSchema,
   type EventType,
-  EventTypeSchema,
   getEventDataPayloadField,
   HookSchema,
   type ListEventsParams,
@@ -279,40 +278,40 @@ const CreateEventV4PageSchema = z.union([
   }),
 ]);
 
-function createEventV4BodySchema<T extends EventType>(
-  eventType: T
-): z.ZodType<EventResult<T> & { event: Event }> {
-  let bodySchema: z.ZodType = CreateEventV4BodyBaseSchema;
-  if (eventType === 'run_created') {
-    bodySchema = CreateEventV4BodyBaseSchema.extend({
-      run: WorkflowRunSchema,
-    });
-  } else if (eventType === 'run_started') {
-    bodySchema = CreateEventV4BodyBaseSchema.extend({
-      run: WorkflowRunSchema.and(z.object({ startedAt: z.coerce.date() })),
-    });
-  } else if (eventType === 'step_started') {
-    bodySchema = CreateEventV4BodyBaseSchema.extend({
-      step: StepWireSchema.extend({
-        startedAt: z.coerce.date(),
-      }).transform(deserializeStep),
-    });
-  }
-
-  return z.intersection(
-    bodySchema,
-    CreateEventV4PageSchema
-  ) as unknown as z.ZodType<EventResult<T> & { event: Event }>;
-}
+const CreateEventV4BodySchemas: {
+  [T in EventType]: z.ZodType<EventResult<T> & { event: Event }>;
+} = {
+  run_created: CreateEventV4BodyBaseSchema.extend({
+    run: WorkflowRunSchema,
+  }).and(CreateEventV4PageSchema),
+  run_started: CreateEventV4BodyBaseSchema.extend({
+    run: WorkflowRunSchema.and(z.object({ startedAt: z.coerce.date() })),
+  }).and(CreateEventV4PageSchema),
+  step_started: CreateEventV4BodyBaseSchema.extend({
+    step: StepWireSchema.extend({
+      startedAt: z.coerce.date(),
+    }).transform((step) => ({
+      ...deserializeStep(step),
+      startedAt: step.startedAt,
+    })),
+  }).and(CreateEventV4PageSchema),
+  run_completed: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
+  run_failed: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
+  run_cancelled: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
+  attr_set: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
+  step_created: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
+  step_completed: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
+  step_failed: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
+  step_retrying: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
+  hook_created: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
+  hook_received: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
+  hook_disposed: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
+  hook_conflict: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
+  wait_created: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
+  wait_completed: CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema),
+};
 
 const MaxEventsHeaderSchema = z.coerce.number().int().positive();
-
-const EventFrameMetaSchema = z
-  .object({
-    eventType: EventTypeSchema,
-    eventData: z.record(z.string(), z.unknown()).optional(),
-  })
-  .passthrough();
 
 export interface RunStartedEventStreamV4Result {
   maxEvents: number;
@@ -576,10 +575,10 @@ async function postWorkflowRunEventV4(
   );
 }
 
-export async function createWorkflowRunEventV4<T extends CreateEventV4Input>(
-  input: T,
+export async function createWorkflowRunEventV4<T extends EventType>(
+  input: CreateEventV4Input & { eventType: T },
   config?: APIConfig
-): Promise<EventResult<T['eventType']> & { event: Event }> {
+): Promise<EventResult<T> & { event: Event }> {
   const response = await postWorkflowRunEventV4(input, 'materialized', config);
 
   const contentType = response.headers.get('content-type');
@@ -591,9 +590,12 @@ export async function createWorkflowRunEventV4<T extends CreateEventV4Input>(
   if (bodyBytes.byteLength === 0) {
     throw new Error('v4 createEvent: empty response body');
   }
-  const parsedBody = createEventV4BodySchema<T['eventType']>(
-    input.eventType
-  ).safeParse(decode(bodyBytes));
+  const schema: z.ZodType<EventResult<T> & { event: Event }> =
+    CreateEventV4BodySchemas[input.eventType].refine(
+      ({ event }) => event.eventType === input.eventType,
+      { path: ['event', 'eventType'] }
+    );
+  const parsedBody = schema.safeParse(decode(bodyBytes));
   if (!parsedBody.success) {
     throw new WorkflowWorldError('v4 createEvent: invalid response body', {
       code: 'SCHEMA_VALIDATION',
@@ -687,7 +689,7 @@ export async function getEventV4(
   // GET emits a single frame (no sentinel); decodeFrames returns at EOF
   // after yielding it.
   for await (const frame of decodeFrames(chunks)) {
-    return { event: EventFrameMetaSchema.parse(frame.meta), body: frame.body };
+    return { event: EventSchema.parse(frame.meta), body: frame.body };
   }
   throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
 }
@@ -712,7 +714,7 @@ type ListWorkflowRunEventsV4Params = ListEventsV4Params &
  * exact shape.
  */
 export interface DecodedEventFrame {
-  event: z.infer<typeof EventFrameMetaSchema>;
+  event: Event;
   /** Resolved payload bytes. Empty for events without a payload. */
   body: Uint8Array;
 }
@@ -756,7 +758,7 @@ async function consumeEventFrameStream(
       throw new Error(`v4 ${opName}: unexpected control frame`);
     }
     events.push({
-      event: EventFrameMetaSchema.parse(frame.meta),
+      event: EventSchema.parse(frame.meta),
       body: frame.body,
     });
   }
