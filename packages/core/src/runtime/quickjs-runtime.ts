@@ -32,6 +32,7 @@ import * as nanoid from 'nanoid';
 import { JSException, QuickJS, type WasiOptions } from 'quickjs-wasi';
 import seedrandom from 'seedrandom';
 import { runtimeLogger } from '../logger.js';
+import { getReplayTimeoutMs } from './constants.js';
 import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
 import { decrypt } from '../serialization/encryption.js';
@@ -1093,8 +1094,10 @@ export async function runQuickJSWorkflow(
       // available. This is the race condition observed during the fib
       // incident — silently dropping arguments would turn `n` into
       // `undefined` and, for recursive workflows, cause exponential
-      // fan-out. Fail loud: the throw propagates to the entrypoint's
-      // catch, which records run_failed. A visible terminal failure is
+      // fan-out. Fail loud: the throw escapes the entrypoint into the
+      // replay loop's catch in runtime.ts (the QuickJS dispatch runs
+      // inside that loop's try), which records run_failed. A visible
+      // terminal failure is
       // preferred over silently executing with undefined arguments — the
       // queue-provided runInput fallback above makes this path rare.
       // Empty `events` is allowed because tests that bootstrap a workflow
@@ -1898,6 +1901,12 @@ function extractError(
 
 function createInterruptHandler(): () => boolean {
   const start = Date.now();
-  const timeout = 30_000;
+  // Same configurable budget as the node engine's ReplayBudget
+  // (REPLAY_TIMEOUT_MS, default 240s): a workflow whose replay the node
+  // engine handles fine must not be interrupted here by a lower
+  // hardcoded ceiling. The interrupt error escapes runQuickJSWorkflow
+  // and reaches the replay loop's catch in runtime.ts, which records
+  // run_failed.
+  const timeout = getReplayTimeoutMs();
   return () => Date.now() - start > timeout;
 }

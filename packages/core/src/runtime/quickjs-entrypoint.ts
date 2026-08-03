@@ -110,13 +110,31 @@ async function dispatchPendingOps(params: {
   encryptionKey: RunPayloadKeys | undefined;
   pendingOperations: PendingOperation[];
   queueSteps: boolean;
+  /** Queue namespace for all message publishes (see runtime.ts). */
+  namespace: string | undefined;
+  /**
+   * Run-origin trace carrier accessor from runtime.ts. In the default
+   * `linked` trace mode this returns the carrier of the run's ORIGIN
+   * context (workflow.start), so every invocation links back to the
+   * start in a star — capturing the current context here instead would
+   * chain invocations to each other and fragment the run view on async
+   * queues.
+   */
+  nextTraceCarrier: () => Promise<Record<string, string>>;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<{
   createdAttributeEvent: boolean;
   createdGetConflictHook: boolean;
 }> {
-  const { world, runId, workflowRun, encryptionKey, pendingOperations } =
-    params;
+  const {
+    world,
+    runId,
+    workflowRun,
+    encryptionKey,
+    pendingOperations,
+    namespace,
+    nextTraceCarrier,
+  } = params;
   const wfdiag = params.wfdiag;
   // Set when a hook with a parked getConflict() awaiter had its
   // hook_created written this invocation. The workflow must be re-invoked
@@ -181,9 +199,11 @@ async function dispatchPendingOps(params: {
         if (result.event?.eventType === 'hook_conflict') {
           await queueMessage(
             world,
-            getWorkflowQueueName(workflowRun.workflowName),
+            getWorkflowQueueName(workflowRun.workflowName, namespace),
             {
               runId,
+              traceCarrier: await nextTraceCarrier(),
+              requestedAt: new Date(),
             },
             { idempotencyKey: `hook_conflict_${hook.correlationId}` }
           );
@@ -353,10 +373,10 @@ async function dispatchPendingOps(params: {
           // terminal-drain mode (the workflow already finished; the
           // event is the durable record, matching the node:vm drain).
           if (params.queueSteps) {
-            const traceCarrier = await serializeTraceCarrier();
+            const traceCarrier = await nextTraceCarrier();
             await queueMessage(
               world,
-              getWorkflowQueueName(workflowRun.workflowName),
+              getWorkflowQueueName(workflowRun.workflowName, namespace),
               {
                 runId,
                 stepId: step.correlationId,
@@ -475,10 +495,27 @@ export async function runWorkflowWithQuickJS(params: {
    * Server-supplied per-run event ceiling from the run_started response
    * (undefined ⇒ no enforcement). Mirrors the node:vm engine's guard:
    * a runaway run is failed once its log reaches the ceiling. The throw
-   * propagates to the queue handler's catch, which records run_failed
-   * with MAX_EVENTS_EXCEEDED.
+   * propagates to the replay loop's catch in runtime.ts (the QuickJS
+   * dispatch runs inside that loop's try), which classifies it and
+   * records run_failed with MAX_EVENTS_EXCEEDED.
    */
   maxEventsLimit?: number;
+  /**
+   * Queue namespace resolved at route registration (runtime.ts). Must be
+   * threaded into every message publish: the builders bake the namespace
+   * into generated routes, so consumers listen on `__<ns>_wkf_workflow_*`
+   * — a publish without it lands on `__wkf_workflow_*` and is never
+   * picked up.
+   */
+  namespace?: string;
+  /**
+   * Run-origin trace carrier accessor from runtime.ts
+   * (getNextTraceCarrier). In the default `linked` trace mode every
+   * invocation must link back to the run's origin (workflow.start) in a
+   * star; capturing the current invocation context instead would chain
+   * invocations to each other and fragment the run view on async queues.
+   */
+  nextTraceCarrier?: () => Promise<Record<string, string>>;
 }): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
@@ -488,7 +525,12 @@ export async function runWorkflowWithQuickJS(params: {
     runInput,
     parentSpan,
     maxEventsLimit,
+    namespace,
   } = params;
+  // Standalone-caller fallback (tests): without a runtime.ts carrier
+  // accessor, fall back to the current invocation context.
+  const nextTraceCarrier =
+    params.nextTraceCarrier ?? (() => serializeTraceCarrier());
   const world = await getWorld();
   const runId = workflowRun.runId;
   const invocationStart = tick();
@@ -714,6 +756,8 @@ export async function runWorkflowWithQuickJS(params: {
           runId,
           workflowRun,
           encryptionKey,
+          namespace,
+          nextTraceCarrier,
           pendingOperations: result.completed.drainOperations,
           queueSteps: false,
           wfdiag,
@@ -799,6 +843,8 @@ export async function runWorkflowWithQuickJS(params: {
         runId,
         workflowRun,
         encryptionKey,
+        namespace,
+        nextTraceCarrier,
         pendingOperations,
         queueSteps: true,
         wfdiag,
@@ -874,10 +920,10 @@ export async function runWorkflowWithQuickJS(params: {
       });
       await queueMessage(
         world,
-        getWorkflowQueueName(workflowRun.workflowName),
+        getWorkflowQueueName(workflowRun.workflowName, namespace),
         {
           runId,
-          traceCarrier: await serializeTraceCarrier(),
+          traceCarrier: await nextTraceCarrier(),
           requestedAt: new Date(),
         }
       );
@@ -896,10 +942,10 @@ export async function runWorkflowWithQuickJS(params: {
       });
       await queueMessage(
         world,
-        getWorkflowQueueName(workflowRun.workflowName),
+        getWorkflowQueueName(workflowRun.workflowName, namespace),
         {
           runId,
-          traceCarrier: await serializeTraceCarrier(),
+          traceCarrier: await nextTraceCarrier(),
           requestedAt: new Date(),
         },
         getWaitContinuationDispatch(
@@ -961,6 +1007,8 @@ export async function runWorkflowWithQuickJS(params: {
           runId,
           workflowRun,
           encryptionKey,
+          namespace,
+          nextTraceCarrier,
           pendingOperations: result.failed.drainOperations,
           queueSteps: false,
           wfdiag,
