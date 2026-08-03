@@ -2206,7 +2206,8 @@ describe('Storage', () => {
         ).rejects.toMatchObject({
           name: 'WorkflowWorldError',
           status: 400,
-          message: "Hook minimum retention exceeds this World's 30-day limit.",
+          message:
+            'Hook minimum retention cannot exceed 30 days in the Local World.',
         });
 
         await expect(storage.hooks.get(hookId)).rejects.toMatchObject({
