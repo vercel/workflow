@@ -3,6 +3,7 @@ import {
   SerializationError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import { once } from '@workflow/utils';
 import { envNumber } from '@workflow/world';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
@@ -1592,6 +1593,10 @@ import type {
 function getAllBaseReducers(
   global: Record<string, any> = globalThis
 ): Partial<Reducers> {
+  const requestPrototype = once(() => getHostClassPrototype(global, 'Request'));
+  const responsePrototype = once(() =>
+    getHostClassPrototype(global, 'Response')
+  );
   // Class/Instance MUST come before Error so that custom Error subclasses
   // with WORKFLOW_SERIALIZE take precedence (devalue uses first-match-wins).
   return {
@@ -1604,10 +1609,7 @@ function getAllBaseReducers(
       // Chain walk rather than `instanceof global.Request`: see the
       // ReadableStream reducer in getWorkflowReducers for why. Reads go
       // through descriptors so a getter cannot run unreported.
-      if (
-        !isInstanceOfPrototype(value, getHostClassPrototype(global, 'Request'))
-      )
-        return false;
+      if (!isInstanceOfPrototype(value, requestPrototype.value)) return false;
       const data: SerializableSpecial['Request'] = {
         method: readProperty(value, 'method') as string,
         url: readProperty(value, 'url') as string,
@@ -1642,10 +1644,7 @@ function getAllBaseReducers(
     },
     Response: (value) => {
       // See the Request reducer above.
-      if (
-        !isInstanceOfPrototype(value, getHostClassPrototype(global, 'Response'))
-      )
-        return false;
+      if (!isInstanceOfPrototype(value, responsePrototype.value)) return false;
       return {
         type: readProperty(value, 'type') as Response['type'],
         url: readProperty(value, 'url') as string,
@@ -1992,13 +1991,6 @@ export function getExternalReducers(
  * class. `undefined` when the runtime lacks the class, in which case
  * identification falls back to the infrastructure symbols alone.
  */
-function getStreamPrototype(
-  global: Record<string, any>,
-  kind: 'Readable' | 'Writable'
-): object | undefined {
-  return getHostClassPrototype(global, `${kind}Stream`);
-}
-
 /**
  * The prototype of a host class that may also be injected into the sandbox.
  * Prefers the sandbox binding (the same host class object in practice) and
@@ -2009,28 +2001,32 @@ function getHostClassPrototype(
   global: Record<string, any>,
   name: string
 ): object | undefined {
-  const ctor =
-    global[name] ?? (globalThis as Record<string, any>)[name] ?? undefined;
-  return typeof ctor === 'function' ? ctor.prototype : undefined;
-}
-
-function getAbortControllerPrototype(
-  global: Record<string, any>
-): object | undefined {
-  const ctor = global.AbortController ?? globalThis.AbortController;
-  return typeof ctor === 'function' ? ctor.prototype : undefined;
-}
-
-function getAbortSignalPrototype(
-  global: Record<string, any>
-): object | undefined {
-  const ctor = global.AbortSignal ?? globalThis.AbortSignal;
-  return typeof ctor === 'function' ? ctor.prototype : undefined;
+  // Descriptor reads (`readProperty`), not bare gets: an accessor or Proxy
+  // planted on the sandbox global (or the constructor) must be recorded in
+  // the guest-code sink — it gates VM retention — not silently executed.
+  // Callers wrap this in `once(...)` per reducer set, so the read happens
+  // exactly once per serialize pass, on the first guard invocation — inside
+  // the pass's sink scope, never per value.
+  const ctor = readProperty(global, name) ?? readProperty(globalThis, name);
+  if (typeof ctor !== 'function') return undefined;
+  return readProperty(ctor, 'prototype') as object | undefined;
 }
 
 export function getWorkflowReducers(
   global: Record<string, any> = globalThis
 ): Partial<Reducers> {
+  const readableStreamPrototype = once(() =>
+    getHostClassPrototype(global, 'ReadableStream')
+  );
+  const writableStreamPrototype = once(() =>
+    getHostClassPrototype(global, 'WritableStream')
+  );
+  const abortControllerPrototype = once(() =>
+    getHostClassPrototype(global, 'AbortController')
+  );
+  const abortSignalPrototype = once(() =>
+    getHostClassPrototype(global, 'AbortSignal')
+  );
   return {
     ...getAllBaseReducers(global),
 
@@ -2045,7 +2041,7 @@ export function getWorkflowReducers(
       // the sandbox can define and which ran for every value the earlier
       // reducers did not claim. Reads below go through descriptors so a
       // getter on a step argument cannot run unreported.
-      if (!isInstanceOfPrototype(value, getStreamPrototype(global, 'Readable')))
+      if (!isInstanceOfPrototype(value, readableStreamPrototype.value))
         return false;
 
       // Check if this is a fake stream storing BodyInit from Request/Response constructor
@@ -2076,7 +2072,7 @@ export function getWorkflowReducers(
     },
     WritableStream: (value) => {
       // See the ReadableStream reducer above for why this walks the chain.
-      if (!isInstanceOfPrototype(value, getStreamPrototype(global, 'Writable')))
+      if (!isInstanceOfPrototype(value, writableStreamPrototype.value))
         return false;
       const name = readProperty(value, STREAM_NAME_SYMBOL) as string;
       if (!name) {
@@ -2118,7 +2114,7 @@ export function getWorkflowReducers(
       const ownSymbol = readProperty(value, ABORT_STREAM_NAME);
       const isNativeAbortController = isInstanceOfPrototype(
         value,
-        getAbortControllerPrototype(global)
+        abortControllerPrototype.value
       );
       if (ownSymbol === undefined && !isNativeAbortController) {
         // Not ours and not a native controller — but a foreign controller
@@ -2142,7 +2138,7 @@ export function getWorkflowReducers(
         readProperty(value, ABORT_STREAM_NAME) !== undefined;
       const isNativeAbortSignal = isInstanceOfPrototype(
         value,
-        getAbortSignalPrototype(global)
+        abortSignalPrototype.value
       );
       if (!hasAbortSymbol && !isNativeAbortSignal) return false;
       return reduceAbortBySymbol(value as AbortSignal, value as AbortHolder);
@@ -3556,7 +3552,8 @@ export async function dehydrateWorkflowReturnValue(
    * not avoid, for callers that need them programmatically (e.g. a
    * retained-VM gate deciding whether the VM is still reusable). The
    * executions are emitted as span attributes either way, so omitting this
-   * loses nothing observability-wise. No runtime caller passes one yet.
+   * loses nothing observability-wise. The retained-VM gate in
+   * runtime/suspension-handler.ts passes one for step-input dehydration.
    */
   guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {

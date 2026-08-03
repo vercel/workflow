@@ -43,6 +43,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   // silently dropping them.
   const ctxRef: { current?: WorkflowOrchestratorContext } = {};
   const ctx: WorkflowOrchestratorContext = {
+    suspensionGeneration: 0,
     runId: 'wrun_test',
     encryptionKey: undefined,
     replayPayloadCache: new ReplayPayloadCache(undefined),

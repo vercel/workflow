@@ -6,6 +6,7 @@ import { decodeTime, monotonicFactory } from 'ulid';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 import { DEFERRED_CHECK_DELAY_MS } from './events-consumer.js';
 import type { WorkflowSuspension } from './global.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { setWorld } from './runtime/world.js';
 import {
   dehydrateStepReturnValue,
@@ -14,7 +15,7 @@ import {
 } from './serialization.js';
 import { pinSharedCorrelationIds } from './test-support/correlation-id-scheme.js';
 import { createContext } from './vm/index.js';
-import { runWorkflow } from './workflow.js';
+import { replayWorkflow, resumeWorkflow, runWorkflow } from './workflow.js';
 
 // No encryption key = encryption disabled
 const noEncryptionKey = undefined;
@@ -222,6 +223,183 @@ describe('runWorkflow', () => {
         ops
       )
     ).toEqual(3);
+  });
+
+  describe('workflow sessions (retained VM)', () => {
+    const sessionRun = async (runId: string): Promise<WorkflowRun> => ({
+      runId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments([], runId, noEncryptionKey, []),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    });
+
+    const replay = (
+      workflowRun: WorkflowRun,
+      workflowCode: string,
+      events: Event[]
+    ) =>
+      replayWorkflow({
+        workflowCode,
+        workflowRun,
+        events,
+        encryptionKey: noEncryptionKey,
+        replayPayloadCache: new ReplayPayloadCache(noEncryptionKey),
+      });
+
+    // Append the step_created/started/completed triplet for the suspension's
+    // single pending step, as the runtime's inline execution would.
+    let eventCounter = 0;
+    const completeStep = async (
+      run: WorkflowRun,
+      events: Event[],
+      suspension: WorkflowSuspension,
+      result: number
+    ): Promise<void> => {
+      const step = suspension.steps[0];
+      assert(step?.type === 'step');
+      const base = {
+        runId: run.runId,
+        correlationId: step.correlationId,
+        createdAt: new Date(Date.UTC(2024, 0, 1, 0, 0, ++eventCounter)),
+      };
+      events.push(
+        {
+          ...base,
+          eventId: `event-${eventCounter}-created`,
+          eventType: 'step_created',
+          eventData: { stepName: 'add' },
+        } as Event,
+        {
+          ...base,
+          eventId: `event-${eventCounter}-started`,
+          eventType: 'step_started',
+          eventData: { stepName: 'add' },
+        } as Event,
+        {
+          ...base,
+          eventId: `event-${eventCounter}-completed`,
+          eventType: 'step_completed',
+          eventData: {
+            stepName: 'add',
+            result: await dehydrateStepReturnValue(
+              result,
+              run.runId,
+              noEncryptionKey,
+              []
+            ),
+          },
+        } as Event
+      );
+    };
+
+    it('resumes one VM across sequential step boundaries', async () => {
+      const run = await sessionRun('wrun_retained');
+      const workflowCode = `
+        const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+        async function workflow() {
+          console.log("retained:entered");
+          const first = await add(1, 2);
+          console.log("retained:continued");
+          return await add(first, 3);
+        }
+        ${getWorkflowTransformCode('workflow')}`;
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      const events: Event[] = [];
+
+      const first = await replay(run, workflowCode, events);
+      assert(first.type === 'suspended');
+      await completeStep(run, events, first.suspension, 3);
+
+      const second = await resumeWorkflow(first.session, events);
+      assert(second.type === 'suspended');
+      expect(second.session).toBe(first.session);
+      await completeStep(run, events, second.suspension, 6);
+
+      const completed = await resumeWorkflow(second.session, events);
+      assert(completed.type === 'completed');
+      expect(
+        await hydrateWorkflowReturnValue(
+          completed.output as any,
+          run.runId,
+          noEncryptionKey,
+          []
+        )
+      ).toBe(6);
+      // The body ran straight through exactly once — never re-entered.
+      expect(
+        log.mock.calls
+          .map(([message]) => message)
+          .filter((message) => String(message).startsWith('retained:'))
+      ).toEqual(['retained:entered', 'retained:continued']);
+      log.mockRestore();
+    });
+
+    it('declines resume permanently when the event prefix diverges', async () => {
+      const run = await sessionRun('wrun_retained_divergence');
+      const workflowCode = `
+        const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step");
+        async function workflow() { await step(); }
+        ${getWorkflowTransformCode('workflow')}`;
+      const events: Event[] = [
+        {
+          eventId: 'event-run-created',
+          runId: run.runId,
+          eventType: 'run_created',
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        } as Event,
+      ];
+
+      const suspended = await replay(run, workflowCode, events);
+      assert(suspended.type === 'suspended');
+
+      // A log whose consumed prefix was rewritten is not a strict extension.
+      const rewritten = [
+        { ...events[0], eventId: 'rewritten-event' } as Event,
+        { ...events[0], eventId: 'new-event' } as Event,
+      ];
+      expect(await resumeWorkflow(suspended.session, rewritten)).toEqual({
+        type: 'replay',
+      });
+
+      // The fallback is permanent, even for a well-formed extension.
+      expect(await resumeWorkflow(suspended.session, events)).toEqual({
+        type: 'replay',
+      });
+    });
+
+    it('demotes to replay (not failure) after mid-execution divergence', async () => {
+      const run = await sessionRun('wrun_retained_mid_divergence');
+      const workflowCode = `
+        const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step");
+        async function workflow() { await step(); }
+        ${getWorkflowTransformCode('workflow')}`;
+
+      const suspended = await replay(run, workflowCode, []);
+      assert(suspended.type === 'suspended');
+
+      // A strict extension whose appended suffix the VM cannot consume: the
+      // resume starts, then diverges mid-execution.
+      const alien = {
+        eventId: 'event-alien',
+        runId: run.runId,
+        eventType: 'hook_received',
+        correlationId: 'hook_unknown',
+        eventData: {},
+        createdAt: new Date('2024-01-01T00:00:01.000Z'),
+      } as Event;
+      await expect(resumeWorkflow(suspended.session, [alien])).rejects.toThrow(
+        /could not consume event/
+      );
+
+      // The session demotes to replay — resume() must not throw.
+      expect(await resumeWorkflow(suspended.session, [])).toEqual({
+        type: 'replay',
+      });
+    });
   });
 
   it('regenerates step correlation IDs independent of startedAt (turbo replay-stability)', async () => {
