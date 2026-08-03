@@ -36,6 +36,21 @@ import {
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 
+// Serializing a primitive executes no code of any kind. BigInt is excluded:
+// its encoding calls a prototype method. Widened to plain data and standard
+// built-ins by the retained-input walker in a follow-up. (Distinct from
+// replay-payload-cache's `isMemoizablePrimitive`, a size-gated memoization
+// filter — do not merge them.)
+function isPrimitiveStepArgument(value: unknown): boolean {
+  return (
+    value === null ||
+    value === undefined ||
+    typeof value === 'boolean' ||
+    typeof value === 'number' ||
+    typeof value === 'string'
+  );
+}
+
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
   world: World;
@@ -129,6 +144,8 @@ export interface SuspensionHandlerResult {
    * durably creating the user's hooks doesn't count as runtime overhead.
    */
   hookCreationMs: number;
+  /** Whether every newly serialized step input was passive retained-VM data. */
+  retainedStepInputsSafe: boolean;
 }
 
 async function createHookEvent({
@@ -528,6 +545,23 @@ export async function handleSuspension({
   // racing with concurrent handlers on step execution.
   const createdStepCorrelationIds = new Set<string>();
 
+  // Serialization always runs through the one ordinary path below, so the
+  // durable bytes cannot depend on retention. What retention needs to know is
+  // whether that serialization will execute workflow code (getters, hooks,
+  // patched prototype members) — side effects a cold replay would not repeat.
+  // For now only primitive arguments are provably passive (serializing them
+  // executes no code at all); a follow-up widens this to plain data and the
+  // standard built-ins. If any input in the batch is not provably passive,
+  // the caller demotes the session so the side effects land in a VM that is
+  // about to be discarded, exactly like the pre-retention runtime.
+  const retainedStepInputsSafe = stepItems.every(
+    (item) =>
+      !stepsNeedingCreation.has(item.correlationId) ||
+      (item.thisVal === undefined &&
+        item.closureVars === undefined &&
+        item.args.every(isPrimitiveStepArgument))
+  );
+
   // Lazy inline start: defer the step_created write for up to
   // `getMaxInlineSteps()` steps the caller will run inline (in parallel). Each
   // step is created on the fly by the lazy `step_started` executeStep sends
@@ -761,6 +795,7 @@ export async function handleSuspension({
     hasAttributeEvents: attributeItems.length > 0,
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,
+    retainedStepInputsSafe,
   };
 }
 
