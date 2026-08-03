@@ -664,7 +664,7 @@ export function TimelineHeader({
         {markers.map((m) => (
           <span
             key={String(m.value)}
-            className="absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap"
+            className="absolute bottom-1 text-label-12-mono text-gray-900 whitespace-nowrap"
             style={{ left: `${m.position * 100}%` }}
           >
             {m.label}
