@@ -2508,6 +2508,7 @@ describe('Storage (Postgres integration)', () => {
 
     it('should retain a hook until its deadline after the run completes', async () => {
       const token = 'retained-token';
+      const tokenRetentionUntil = new Date(Date.now() + 60_000);
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
@@ -2516,16 +2517,27 @@ describe('Storage (Postgres integration)', () => {
       const hook = await createHook(events, run.runId, {
         hookId: 'hook_retained',
         token,
-        tokenRetentionUntil: new Date(Date.now() + 60_000),
+        tokenRetentionUntil,
       });
+      expect(hook.tokenRetentionUntil).toEqual(tokenRetentionUntil);
 
       await updateRun(events, run.runId, 'run_completed', {
         output: new Uint8Array(),
       });
 
       expect((await hooks.get(hook.hookId)).runId).toBe(run.runId);
-      expect((await hooks.getByToken(token)).runId).toBe(run.runId);
+      expect(await hooks.getByToken(token)).toMatchObject({
+        runId: run.runId,
+        tokenRetentionUntil,
+      });
       expect((await hooks.list({ runId: run.runId })).data).toHaveLength(1);
+      await expect(
+        events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
 
       const duplicateRun = await createRun(events, {
         deploymentId: 'deployment-456',
@@ -2573,6 +2585,9 @@ describe('Storage (Postgres integration)', () => {
         .update(DrizzleSchema.hooks)
         .set({ tokenRetentionUntil: new Date(Date.now() - 1) })
         .where(eq(DrizzleSchema.hooks.hookId, hook.hookId));
+      await expect(hooks.get(hook.hookId)).rejects.toMatchObject({
+        name: 'HookNotFoundError',
+      });
       await expect(hooks.getByToken(token)).rejects.toMatchObject({
         name: 'HookNotFoundError',
       });

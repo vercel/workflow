@@ -101,6 +101,9 @@ export const HookSchema = z.object({
   environment: z.string(),
   metadata: SerializedDataSchema.optional(),
   createdAt: z.coerce.date(),
+  // Earliest time the token can become available after the owning run ends.
+  // An active run keeps the token beyond this deadline.
+  tokenRetentionUntil: z.coerce.date().optional(),
   // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
   specVersion: z.number().optional(),
   isWebhook: z.boolean().optional(),

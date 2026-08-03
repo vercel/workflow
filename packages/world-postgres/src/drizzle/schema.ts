@@ -238,9 +238,7 @@ export const hooks = schema.table(
     // `resumeCapabilities` is deliberately response-only — attested fresh on
     // each by-token lookup, never persisted — so it must not become a column.
   } satisfies DrizzlishOfType<
-    Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'> & {
-      tokenRetentionUntil?: Date;
-    }
+    Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'>
   >,
   (tb) => [index().on(tb.runId), index().on(tb.token)]
 );

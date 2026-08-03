@@ -162,6 +162,13 @@ import * as schema from '@workflow/world-postgres/schema';
 
 Make sure your PostgreSQL database is accessible and the user has sufficient permissions to create tables and manage jobs.
 
+### Data Retention
+
+Postgres World does not yet perform general workflow-run cleanup. After a
+retained Hook's run ends and its deadline passes, reads treat the Hook as absent
+and its token can be reused. If the token is never reused, the expired
+`workflow_hooks` row remains until broader workflow-run cleanup removes it.
+
 ## Features
 
 - **Durable Storage**: Stores workflow runs, events, steps, hooks, and webhooks in PostgreSQL
