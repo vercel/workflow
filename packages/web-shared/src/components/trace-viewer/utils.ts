@@ -1,9 +1,9 @@
+import type { Span, SpanEvent } from './types';
 import {
   formatDuration,
   formatDurationPrecise,
   getHighResInMs,
-} from '../trace-viewer/util/timing';
-import type { Span, SpanEvent } from './types';
+} from './util/timing';
 
 // ---------------------------------------------------------------------------
 // Root bounds

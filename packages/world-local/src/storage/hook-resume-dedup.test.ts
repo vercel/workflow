@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { SPEC_VERSION_CURRENT, type Storage } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createHook, createRun } from '../test-helpers.js';
+import { createHook, createRun, disposeHook } from '../test-helpers.js';
 import { createStorage } from './index.js';
 
 // When a run carries the `hookResumeInputVersion` marker, the parallel resume
@@ -116,6 +116,36 @@ describe('world-local hook_received resume dedup', () => {
       resume(runId, hook, 'resume_1', 'digest_2', new Uint8Array([2]))
     ).rejects.toThrow();
     expect(await countHookReceived(runId)).toBe(1);
+  });
+
+  it('converges a committed resume re-ensured AFTER the hook was disposed', async () => {
+    const { runId, hook } = await setup();
+    const payload = new Uint8Array([1, 2, 3]);
+
+    // Delivery 1: the consumer's re-ensure commits the resume while the
+    // hook is alive.
+    const first = await resume(runId, hook, 'resume_1', 'digest_1', payload);
+
+    // The workflow receives the payload and disposes the hook (e.g. the
+    // dispose → sleep pattern), releasing its token.
+    await disposeHook(storage, runId, hook.hookId);
+
+    // Delivery 2: the SAME message is redelivered (queue retry, or a
+    // visibility-timeout continuation riding the resume message) and
+    // re-ensures the same (resumeId, digest). The resume is already
+    // committed — this must converge on the existing event as success, NOT
+    // reject with HookNotFound. A rejection makes the consumer ack the
+    // message as "nothing left to resume", silently dropping whatever
+    // continuation it carried and wedging the run.
+    const second = await resume(runId, hook, 'resume_1', 'digest_1', payload);
+
+    expect(second.event.eventId).toBe(first.event.eventId);
+    expect(await countHookReceived(runId)).toBe(1);
+
+    // A genuinely NEW resume after disposal is still rejected.
+    await expect(
+      resume(runId, hook, 'resume_2', 'digest_2', new Uint8Array([9]))
+    ).rejects.toThrow();
   });
 
   it('rejects a reused resumeId + digest that belongs to a DIFFERENT hook', async () => {
