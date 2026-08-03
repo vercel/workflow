@@ -1431,14 +1431,19 @@ async function processEvents(
         // EventsConsumer in workflow/hook.ts): two hook_received rows for
         // ONE resume attempt share a client-minted `resumeId` (a duplicate
         // can be committed when the materialization fallback races a
-        // delayed direct write — hook_received has no storage uniqueness
-        // constraint). Deliver only the first-in-log occurrence. The seen
-        // set lives in the VM heap so it is deterministic per replay and
-        // survives event re-scans within the invocation. Events without a
-        // resumeId (older SDKs) are never deduped.
+        // delayed direct write on a World that does not enforce the
+        // `(runId, resumeId)` constraint). Deliver only the first-in-log
+        // occurrence. The seen set lives in the VM heap so it is
+        // deterministic per replay and survives event re-scans within the
+        // invocation. Events without a resumeId (older SDKs) are never
+        // deduped. Post-#3230 writers surface `resumeId` as a top-level
+        // event field; pre-claim materialized events carried it inside
+        // `eventData` — honor both so a mixed pair still collapses.
         {
-          const resumeId = (eventData as { resumeId?: unknown } | undefined)
-            ?.resumeId;
+          const resumeId =
+            typeof event.resumeId === 'string'
+              ? event.resumeId
+              : (eventData as { resumeId?: unknown } | undefined)?.resumeId;
           if (typeof resumeId === 'string') {
             const resumeIdJs = JSON.stringify(resumeId);
             const duplicate = vm.dump(

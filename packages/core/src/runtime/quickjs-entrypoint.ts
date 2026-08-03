@@ -24,7 +24,7 @@ import {
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
-  type HookInput,
+  type HookResumeInput,
   type RunInput,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
@@ -487,7 +487,7 @@ export async function runWorkflowWithQuickJS(params: {
    * event is materialized from this payload before replay so the workflow
    * still receives it. See the same-named field in `QueueMessageSchema`.
    */
-  hookInput?: HookInput;
+  hookInput?: HookResumeInput;
 }): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
@@ -593,20 +593,27 @@ export async function runWorkflowWithQuickJS(params: {
   }
 
   // --- Resilient resume: materialize missing hook_received ---
-  // `resumeHook()` writes `hook_received` first and only enqueues a resume
-  // carrying `hookInput` if that direct write fails with a retryable error
-  // (transient 429/5xx). In that recovery path, materialize the event here
-  // so replay can see the payload — the exact mirror of the node:vm
-  // engine's block in runtime.ts (see there for the full dedup / conflict
-  // semantics rationale; the replay-side resumeId dedup lives in
-  // processEvents' hook_received handling for this engine).
+  // The engine-agnostic lazy-hook-resume ensure in runtime.ts runs before
+  // this entrypoint is dispatched and idempotently materializes the
+  // `hook_received` for `hookInput` (keyed by the `(runId, resumeId)`
+  // claim — see the node block there for the full convergence rationale).
+  // This block is a dormant backstop: when the event is already visible in
+  // `events` (spliced preload or fresh list) it does nothing. It matters
+  // only if this entrypoint is ever dispatched on a path that skipped the
+  // ensure; it uses the same claim options so both writers converge on
+  // exactly one event. The replay-side resumeId dedup lives in
+  // processEvents' hook_received handling for this engine.
   if (hookInput) {
     const alreadyMaterialized = events.some(
       (e) =>
         e.eventType === 'hook_received' &&
         e.correlationId === hookInput.hookId &&
-        (e.eventData as { resumeId?: string } | undefined)?.resumeId ===
-          hookInput.resumeId
+        // Post-#3230 writers surface `resumeId` as a top-level event field
+        // (create option); events materialized by pre-claim SDK builds
+        // carried it inside `eventData`. Honor both.
+        (e.resumeId === hookInput.resumeId ||
+          (e.eventData as { resumeId?: string } | undefined)?.resumeId ===
+            hookInput.resumeId)
     );
     if (!alreadyMaterialized) {
       // The resumeId is a ULID minted in resumeHook() at resume time, so
@@ -625,13 +632,22 @@ export async function runWorkflowWithQuickJS(params: {
             eventType: 'hook_received',
             specVersion: workflowRun.specVersion ?? SPEC_VERSION_CURRENT,
             correlationId: hookInput.hookId,
+            // `resumeId` intentionally does NOT ride in eventData: post-#3230
+            // it is a first-class create param (below) surfaced as a
+            // top-level field on the committed event.
             eventData: {
               ...(hookInput.token ? { token: hookInput.token } : {}),
               payload: hookInput.payload as never,
-              resumeId: hookInput.resumeId,
             },
           },
-          { occurredAt }
+          {
+            occurredAt,
+            // Join the producer's parallel direct write on the backend's
+            // `(runId, resumeId)` constraint so a race converges on exactly
+            // one event instead of committing a duplicate row.
+            resumeId: hookInput.resumeId,
+            resumePayloadDigest: hookInput.payloadDigest,
+          }
         );
         if (result.event) {
           // The server returns a "lazy" response for hook_received — the
@@ -644,7 +660,6 @@ export async function runWorkflowWithQuickJS(params: {
             eventData: {
               ...(hookInput.token ? { token: hookInput.token } : {}),
               payload: hookInput.payload as never,
-              resumeId: hookInput.resumeId,
             },
           } as Event);
         }
@@ -661,17 +676,14 @@ export async function runWorkflowWithQuickJS(params: {
         });
       } catch (err) {
         if (EntityConflictError.is(err)) {
-          // Defensive only today — no World enforces uniqueness on
-          // hook_received; the duplicate-row case is neutralized by the
-          // replay-side resumeId dedup. Same contract as the node engine.
-          runtimeLogger.info(
-            'Hook resilient-resume materialization skipped (already exists)',
-            {
-              workflowRunId: runId,
-              hookId: hookInput.hookId,
-              resumeId: hookInput.resumeId,
-            }
-          );
+          // The `(runId, resumeId)` constraint exists but the matching
+          // event is not yet observable — the producer's parallel write is
+          // still in flight, or a redrive raced the claim. Transient:
+          // rethrow so the queue redelivers and a later attempt converges
+          // on the committed event instead of replaying (and acking)
+          // without the payload. Mirrors the node engine's ensure block in
+          // runtime.ts.
+          throw err;
         } else if (HookNotFoundError.is(err)) {
           // The hook was disposed between resumeHook() and this delivery —
           // no active awaiter to deliver to. Drop the resume.
