@@ -616,7 +616,7 @@ export function createEventsStorage(
           Date.now() + hookRetentionLimitMs
       ) {
         throw new WorkflowWorldError(
-          `Hook minimum retention exceeds this World's ${hookRetentionLimitMs / DAY_MS}-day limit.`,
+          `Hook minimum retention cannot exceed ${hookRetentionLimitMs / DAY_MS} days in the Local World.`,
           { status: 400 }
         );
       }
