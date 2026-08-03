@@ -449,7 +449,6 @@ const attributeToDisplayFn: Record<
   receivedCount: (value: unknown) => String(value),
   lastReceivedAt: localMillisecondTimeOrNull,
   disposedAt: localMillisecondTimeOrNull,
-  tokenRetentionUntil: timestampWithTooltipOrNull,
   // Internal resume plumbing — not surfaced in the UI
   resumeContext: (_value: unknown) => null,
   resumeId: (_value: unknown) => null,
