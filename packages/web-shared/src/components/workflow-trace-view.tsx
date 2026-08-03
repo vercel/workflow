@@ -728,7 +728,7 @@ function TraceViewerFooter({
   if (hasMore || isInitialLoading) {
     return (
       <div
-        className="flex items-center justify-center gap-2 py-3 text-xs"
+        className="flex items-center justify-center gap-2 py-3 text-label-12"
         style={style}
       >
         <Spinner size={14} />
@@ -739,7 +739,7 @@ function TraceViewerFooter({
   if (isLive) {
     return (
       <div
-        className="flex items-center justify-center py-3 text-xs"
+        className="flex items-center justify-center py-3 text-label-12"
         style={style}
       >
         Waiting for more events…
@@ -748,7 +748,7 @@ function TraceViewerFooter({
   }
   return (
     <div
-      className="flex items-center justify-center py-3 text-xs"
+      className="flex items-center justify-center py-3 text-label-12"
       style={style}
     >
       End of run
@@ -1027,7 +1027,7 @@ export const WorkflowTraceViewer = ({
           >
             <div className="min-w-0 flex-1">
               <div
-                className="text-sm font-medium truncate"
+                className="text-label-14 font-medium truncate"
                 style={{ color: 'var(--ds-gray-1000)' }}
                 title={selectedSpanName}
               >

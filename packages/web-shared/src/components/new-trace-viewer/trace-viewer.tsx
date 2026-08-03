@@ -527,14 +527,14 @@ function NewTraceViewerContent({
                 }}
                 placeholder="Search spans..."
                 aria-label="Search spans"
-                className="flex-1 min-w-0 bg-transparent text-sm text-gray-1000 placeholder:text-gray-800 outline-none"
+                className="flex-1 min-w-0 bg-transparent text-label-14 text-gray-1000 placeholder:text-gray-800 outline-none"
               />
               {searchQuery && (
                 <button
                   type="button"
                   aria-label="Clear search"
                   onClick={() => setSearchQuery('')}
-                  className="-mr-2 hidden h-full max-w-full shrink-0 cursor-pointer items-center rounded-r-md border-0 bg-transparent px-2.5 font-inherit text-base text-gray-900 no-underline transition-colors duration-150 ease-in hover:text-gray-1000 focus-visible:-outline-offset-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ds-focus-color)] min-[961px]:flex"
+                  className="-mr-2 hidden h-full max-w-full shrink-0 cursor-pointer items-center rounded-r-md border-0 bg-transparent px-2.5 font-inherit text-label-16 text-gray-900 no-underline transition-colors duration-150 ease-in hover:text-gray-1000 focus-visible:-outline-offset-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ds-focus-color)] min-[961px]:flex"
                 >
                   <Kbd variant="outline" size="search">
                     Esc
@@ -556,7 +556,7 @@ function NewTraceViewerContent({
             />
             <div ref={loadMoreSentinelRef} className="flex justify-center">
               {isLoadingMore ? (
-                <div className="flex items-center justify-center gap-2 py-3 text-sm text-gray-800">
+                <div className="flex items-center justify-center gap-2 py-3 text-label-14 text-gray-800">
                   <Spinner size={14} />
                   <span>Loading spans…</span>
                 </div>
