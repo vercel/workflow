@@ -247,7 +247,9 @@ describe('hardened serialization: patched prototypes are never executed', () => 
     expect(wire).toContain('boom');
     expect(wire).not.toContain('hacked');
     expect(vm.evaluate('globalThis.sideEffects')).toBe(0);
-    expect(stats.executions).toEqual([]);
+    // The only recorded execution is the lazy stack materialization — an
+    // engine-internal format-and-cache the retained-VM gate must see.
+    expect(stats.executions).toEqual([{ kind: 'getter', detail: 'stack' }]);
   });
 });
 
@@ -268,6 +270,26 @@ describe('hardened serialization: unavoidable guest code is recorded', () => {
     expect(wire).toContain('from getter');
     expect(vm.evaluate('globalThis.getterRuns')).toBe(1);
     expect(stats.executions).toEqual([{ kind: 'getter', detail: 'computed' }]);
+  });
+
+  it('records a bound-function getter (native-looking, but runs guest code)', () => {
+    // `fn.bind()` stringifies as `function bound fn() { [native code] }`, so
+    // a nativeness check alone would cache it as engine-provided and let
+    // workflow code launder a side-effectful getter past the report.
+    const vm = makeVm();
+    const value = vm.evaluate(`(() => {
+      globalThis.boundRuns = 0;
+      const spy = function () { globalThis.boundRuns++; return 'laundered'; };
+      const o = {};
+      Object.defineProperty(o, 'x', { enumerable: true, get: spy.bind(null) });
+      return o;
+    })()`);
+
+    const { wire, stats } = vm.serialize(value);
+
+    expect(wire).toContain('laundered');
+    expect(vm.evaluate('globalThis.boundRuns')).toBe(1);
+    expect(stats.executions).toEqual([{ kind: 'getter', detail: 'x' }]);
   });
 
   it('still identifies a proxied host class, and reports the traps', async () => {
@@ -421,9 +443,10 @@ describe('hardened serialization: unavoidable guest code is recorded', () => {
       bytes: new Uint8Array([1, 2, 3]),
       buffer: new ArrayBuffer(4),
       url: new URL('https://example.com/'),
-      error: new Error('boom'),
       sparse: [1, , 3],
     })`);
+    // (No Error in this set: serializing a native error reads its lazy
+    // `stack` accessor, which is recorded — see readErrorStack.)
 
     const { stats } = vm.serialize(value);
 
@@ -566,7 +589,7 @@ describe('hardened serialization: wire-format parity', () => {
     );
 
     expect(wire).toContain('DOMException');
-    expect(stats.executions).toEqual([]);
+    expect(stats.executions).toEqual([{ kind: 'getter', detail: 'stack' }]);
 
     const revived = devalueCodec.deserialize(
       new TextEncoder().encode(wire),
@@ -586,7 +609,11 @@ describe('hardened serialization: wire-format parity', () => {
     );
 
     expect(wire).toContain('AggregateError');
-    expect(stats.executions).toEqual([]);
+    expect(stats.executions).toEqual([
+      { kind: 'getter', detail: 'stack' },
+      { kind: 'getter', detail: 'stack' },
+      { kind: 'getter', detail: 'stack' },
+    ]);
 
     const revived = devalueCodec.deserialize(
       new TextEncoder().encode(wire),
@@ -652,7 +679,10 @@ describe('hardened serialization: wire-format parity', () => {
 
     expect(wire).toContain('RetryableError');
     expect(wire).toContain('1700000000000');
-    expect(stats.executions).toEqual([{ kind: 'method', detail: 'getTime' }]);
+    expect(stats.executions).toEqual([
+      { kind: 'getter', detail: 'stack' },
+      { kind: 'method', detail: 'getTime' },
+    ]);
   });
 
   it('reads a real Date retryAfter without reporting anything', () => {
@@ -667,7 +697,9 @@ describe('hardened serialization: wire-format parity', () => {
     const { wire, stats } = vm.serialize(error);
 
     expect(wire).toContain('1700000000000');
-    expect(stats.executions).toEqual([]);
+    // Only the error's own lazy-stack read is recorded; the genuine Date
+    // reads through captured intrinsics.
+    expect(stats.executions).toEqual([{ kind: 'getter', detail: 'stack' }]);
   });
 
   it('reports an accessor-valued Symbol.toStringTag', () => {

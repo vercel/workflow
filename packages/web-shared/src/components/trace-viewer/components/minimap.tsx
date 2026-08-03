@@ -10,11 +10,8 @@ import {
   useState,
 } from 'react';
 import { cn } from '../../../lib/cn';
-import {
-  formatDurationPrecise,
-  getHighResInMs,
-} from '../../trace-viewer/util/timing';
 import type { Span } from '../types';
+import { formatDurationPrecise, getHighResInMs } from '../util/timing';
 import {
   clampViewportToRoot,
   isSpanErrored,
