@@ -193,6 +193,9 @@ interface StreamIterationResult {
 
 interface SequentialIterationResult {
   runId: string;
+  /** Datadog trace id for the `/api/bench` request that started this run, when
+   * the deployment's route reports one (older deployments won't). */
+  traceId?: string;
   /** STSO gaps preceding an 'inline' step (same warm process as the step
    * before it) — the framework's pure step-to-step overhead. */
   stsoInlineMs: number[];
@@ -221,6 +224,8 @@ interface BenchTriggerResponse {
   runId: string;
   /** Date.now() stamped in the route immediately before start(). */
   clientStart: number;
+  /** Datadog trace id for this request, when the route reports one. */
+  traceId?: string;
 }
 
 function withTimeout<T>(
@@ -272,7 +277,13 @@ async function triggerBenchRun(
       `bench trigger for ${workflowFn} returned malformed body: ${JSON.stringify(data)?.slice(0, 200)}`
     );
   }
-  return { runId: data.runId, clientStart: data.clientStart };
+  return {
+    runId: data.runId,
+    clientStart: data.clientStart,
+    // Optional: a deployment built before the route reported it simply logs
+    // the run id without a trace link.
+    traceId: typeof data.traceId === 'string' ? data.traceId : undefined,
+  };
 }
 
 /** Poll a run's return value to completion (the handle polls internally). */
@@ -340,7 +351,7 @@ async function runStreamIteration(
 async function runSequentialIteration(
   stepCount: number
 ): Promise<SequentialIterationResult> {
-  const { runId, clientStart } = await triggerBenchRun(
+  const { runId, clientStart, traceId } = await triggerBenchRun(
     'benchSequentialStepsWorkflow',
     [stepCount]
   );
@@ -366,6 +377,7 @@ async function runSequentialIteration(
 
     return {
       runId,
+      traceId,
       stsoInlineMs,
       stsoQueueHopMs,
       woMs: workflowOverheadMs(clientStart, steps),
@@ -636,6 +648,29 @@ const SCENARIO_DESCRIPTIONS = [
   },
 ];
 
+// Datadog APM permalink for a trace id. The benchmark deployment exports its
+// OTel spans to Datadog, and `/api/bench` returns the trace id of the request
+// that started each run.
+const DATADOG_TRACE_URL = 'https://app.datadoghq.com/apm/trace/';
+
+/**
+ * Datadog APM search for the spans tagged with a given `workflow.run.id`.
+ *
+ * The permalink above opens the *trigger's* trace, which under the default
+ * `WORKFLOW_TRACE_MODE=linked` holds only `workflow.start` plus span links out
+ * to the per-invocation trace roots — an entry point to the run rather than the
+ * run itself. This search lands straight on the execution spans, which is where
+ * an STSO investigation actually goes, so both are logged.
+ *
+ * Depends on `workflow.run.id` being an indexed span tag in the Datadog org. If
+ * it isn't, this returns an empty search and the trace permalink stays the way
+ * in; neither link is load-bearing for the benchmark itself.
+ */
+function datadogRunSearchUrl(runId: string): string {
+  const query = encodeURIComponent(`@workflow.run.id:${runId}`);
+  return `https://app.datadoghq.com/apm/traces?query=${query}`;
+}
+
 describe('workflow benchmarks', () => {
   // Preflight: prove the deployment executes workflows (and the trigger route
   // works) before any scenario spends its attempt budget. Without this, a
@@ -777,6 +812,19 @@ describe('workflow benchmarks', () => {
         extraAttempts: Math.max(2, Math.ceil(SEQUENTIAL_ITERATIONS * 0.5)),
       }
     );
+    // Name the runs behind the STSO histograms in this job's own log, right
+    // where they were produced. When a bucket looks wrong the investigation
+    // starts in APM, and this saves the usual hunt by deployment id + time
+    // window. Logged rather than rendered into the PR comment so it is also
+    // there for a local `pnpm bench` and for a run whose comment step never
+    // gets to execute.
+    for (const { runId, traceId } of results) {
+      console.log(
+        `[bench] ${SCENARIO_SEQUENTIAL} run ${runId}` +
+          (traceId ? ` — trace ${DATADOG_TRACE_URL}${traceId}` : '') +
+          ` — spans ${datadogRunSearchUrl(runId)}`
+      );
+    }
     // Report STSO split by whether the step that ends the gap was 'inline'
     // (same warm process as the step before it — pure framework overhead) or
     // a 'queue-hop' (first step of a fresh process — dispatch + reinit cost).

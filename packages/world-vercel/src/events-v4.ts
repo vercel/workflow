@@ -138,10 +138,11 @@ export interface CreateEventV4Input {
   hookTokenRetentionUntil?: Date;
   hookIsWebhook?: boolean;
   hookIsSystem?: boolean;
-  /** hook_received's resilient-resume idempotency key (see
-   *  `HookReceivedEventSchema.eventData.resumeId` in @workflow/world).
-   *  Needs server-side support to be persisted; forwarded for
-   *  forward-compatibility. */
+  /** Lazy hook resume idempotency key. Set only on a `hook_received` written
+   *  by `resumeHook()`'s parallel fast path; routes the event through the
+   *  server's `(runId, resumeId)` constraint so the direct write and the
+   *  queue consumer's re-ensure converge on one event. Older servers ignore
+   *  it (the deduplication then falls to the sequential path). */
   resumeId?: string;
   errorCode?: string;
   /** run_cancelled's optional free-text cancellation reason. Small plaintext
@@ -233,6 +234,11 @@ export interface CreateEventV4Input {
   stateCursor?: string;
   /** Number of consecutive replay divergences resolved by this write. */
   replayDivergenceCount?: number;
+  /** Content digest of the serialized resume payload. Forwarded alongside
+   *  `resumeId` so the direct write and the queue re-ensure record an identical
+   *  digest on the server's `(runId, resumeId)` constraint (the v4 payload ref
+   *  is not content-stable server-side). Older servers ignore it. */
+  resumePayloadDigest?: string;
 }
 
 /**
@@ -380,6 +386,9 @@ function buildPostFrameMeta(
   if (input.stateCursor !== undefined) meta.stateCursor = input.stateCursor;
   if (input.replayDivergenceCount !== undefined) {
     meta.replayDivergenceCount = input.replayDivergenceCount;
+  }
+  if (input.resumePayloadDigest !== undefined) {
+    meta.resumePayloadDigest = input.resumePayloadDigest;
   }
   return meta;
 }

@@ -132,16 +132,6 @@ interface SplitEventData {
     hookTokenRetentionUntil?: Date;
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
-    /**
-     * Resilient-resume idempotency key on hook_received (see
-     * `HookReceivedEventSchema` in @workflow/world). NOTE: current
-     * workflow-server builds persisted eventData from an explicit meta
-     * allowlist that does not yet include this key, so until server support
-     * lands the persisted event won't carry it and the runtime's
-     * resilient-resume dedup is effective only within a single invocation
-     * (its locally pushed copy). Forwarding it now is forward-compatible.
-     */
-    resumeId?: string;
     errorCode?: string;
     cancelReason?: string;
     /** Inline-ownership stamp on step_started (owning queue message ID). */
@@ -201,7 +191,6 @@ type MetaSourceField =
   | 'tokenRetentionUntil'
   | 'isWebhook'
   | 'isSystem'
-  | 'resumeId'
   | 'errorCode'
   | 'cancelReason'
   | 'ownerMessageId'
@@ -313,13 +302,6 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.isSystem === 'boolean') {
     meta.hookIsSystem = eventData.isSystem;
-  }
-  // hook_received's resilient-resume idempotency key. Requires server-side
-  // support to be persisted onto the event row (see the note on
-  // SplitEventData.meta.resumeId); forwarded unconditionally so it starts
-  // working as soon as the server learns the key.
-  if (typeof eventData.resumeId === 'string') {
-    meta.resumeId = eventData.resumeId;
   }
   if (typeof eventData.errorCode === 'string') {
     meta.errorCode = eventData.errorCode;
@@ -686,6 +668,15 @@ async function createWorkflowRunEventInner(
       // skip the list+resolve. The server only acts on it for run_started;
       // older servers ignore it and simply preload as before.
       ...(params?.skipPreload ? { skipPreload: true } : {}),
+      // Lazy hook resume idempotency key (hook_received only). Routes the
+      // write through the server's (runId, resumeId) constraint so a
+      // concurrent queue-consumer re-ensure deduplicates to one event.
+      ...(params?.resumeId ? { resumeId: params.resumeId } : {}),
+      // Content digest forwarded alongside resumeId so the direct write and the
+      // queue re-ensure record an identical digest on the server constraint.
+      ...(params?.resumePayloadDigest
+        ? { resumePayloadDigest: params.resumePayloadDigest }
+        : {}),
       remoteRefBehavior,
       payload,
       ...meta,
