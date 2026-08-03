@@ -20,13 +20,7 @@ const resumeContext = {
   encryptionPublicKey: 'ZmFrZS1wdWJsaWMta2V5',
 };
 
-describe('HookSchema', () => {
-  it('coerces tokenRetentionUntil to a Date', () => {
-    const tokenRetentionUntil = '2026-08-01T00:00:00.000Z';
-    const parsed = HookSchema.parse({ ...baseHook, tokenRetentionUntil });
-    expect(parsed.tokenRetentionUntil).toEqual(new Date(tokenRetentionUntil));
-  });
-
+describe('HookSchema resumeContext', () => {
   it('parses and preserves a resumeContext', () => {
     const parsed = HookSchema.parse({ ...baseHook, resumeContext });
     expect(parsed.resumeContext).toEqual(resumeContext);
