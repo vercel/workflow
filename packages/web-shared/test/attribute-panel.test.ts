@@ -58,3 +58,44 @@ describe('AttributePanel request id', () => {
     expect(markup).toContain('step_1');
   });
 });
+
+/**
+ * Rows are ordered by their position in the panel's explicit `attributeOrder`
+ * list. Keys missing from that list sorted ahead of every listed key, because
+ * `indexOf`'s `-1` miss is truthy and so defeated the `|| 0` fallback meant to
+ * catch it — which put a failed step's Error Code above its own name.
+ */
+describe('AttributePanel row ordering', () => {
+  it("keeps a failed step's Error Code below its identity rows", () => {
+    const markup = render({
+      stepId: 'step_1',
+      stepName: 'step//./src/workflows/order//processPayment',
+      status: 'failed',
+      errorCode: 'USER_ERROR',
+    });
+
+    expect(markup).toContain('Error Code');
+    expect(markup.indexOf('Error Code')).toBeGreaterThan(
+      markup.indexOf('Module')
+    );
+    expect(markup.indexOf('Error Code')).toBeGreaterThan(
+      markup.indexOf('Step ID')
+    );
+  });
+
+  it('keeps a hook’s classification flags below its token', () => {
+    const markup = render({
+      hookId: 'hook_1',
+      token: 'tok_1',
+      isWebhook: true,
+      isSystem: false,
+    });
+
+    expect(markup.indexOf('isWebhook')).toBeGreaterThan(
+      markup.indexOf('Token')
+    );
+    expect(markup.indexOf('isWebhook')).toBeGreaterThan(
+      markup.indexOf('Hook ID')
+    );
+  });
+});

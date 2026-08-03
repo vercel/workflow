@@ -263,6 +263,8 @@ const attributeOrder: AttributeKey[] = [
   'runId',
   'attempt',
   'token',
+  'isWebhook',
+  'isSystem',
   'receivedCount',
   'lastReceivedAt',
   'disposedAt',
@@ -284,6 +286,7 @@ const attributeOrder: AttributeKey[] = [
   'completedAt',
   'expiredAt',
   'retryAfter',
+  'errorCode',
   'error',
   'metadata',
   'eventData',
@@ -293,11 +296,18 @@ const attributeOrder: AttributeKey[] = [
   'resumeAt',
 ];
 
-const sortByAttributeOrder = (a: string, b: string): number => {
-  const aIndex = attributeOrder.indexOf(a as AttributeKey) || 0;
-  const bIndex = attributeOrder.indexOf(b as AttributeKey) || 0;
-  return aIndex - bIndex;
+/**
+ * Rank of an attribute in {@link attributeOrder}. Keys absent from that list
+ * sort after every listed one rather than before them — `indexOf` reports a
+ * miss as `-1`, which is truthy, so a `|| 0` fallback never fires.
+ */
+const attributeOrderIndex = (attribute: string): number => {
+  const index = attributeOrder.indexOf(attribute as AttributeKey);
+  return index === -1 ? attributeOrder.length : index;
 };
+
+const sortByAttributeOrder = (a: string, b: string): number =>
+  attributeOrderIndex(a) - attributeOrderIndex(b);
 
 /**
  * Display names for attributes that should render differently from their key.
