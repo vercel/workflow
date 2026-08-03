@@ -208,6 +208,27 @@ async function auditTypography(): Promise<TypographyAudit> {
 }
 
 describe('typography tokens', () => {
+  it('detects raw, arbitrary, and undefined typography utilities', () => {
+    const file = 'fixture.tsx';
+    const source =
+      '<div className="text-sm md:text-[13px] text-copy-12">Example</div>';
+    const violations = [
+      ...findRawTailwindSizeViolations(file, source),
+      ...auditArbitraryTextSizes(file, source, {}),
+      ...findUndefinedSystemTokenViolations(
+        file,
+        source,
+        new Set(['text-label-12'])
+      ),
+    ];
+
+    expect(violations.map(({ utility }) => utility)).toEqual([
+      'text-sm',
+      'text-[13px]',
+      'text-copy-12',
+    ]);
+  });
+
   it('rejects raw Tailwind sizes and undefined system tokens', async () => {
     const { violations } = await auditTypography();
     expect(violations).toEqual([]);
