@@ -280,8 +280,13 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // and blocking a queue slot on that would deadlock the queue (the
           // same constraint sleep.ts and hook.ts document). `pendingDeliveries`
           // is likewise released inside the slot, before the detached defer, so
-          // `scheduleWhenIdle` can still reach idle and retire the barriers
-          // this deferral may be waiting on.
+          // idle stays reachable for the one barrier this deferral can be
+          // parked on that has no chain of its own: an unclaimed buffered hook
+          // payload. Neither idle nor the abandon deadline retires an armed
+          // barrier — doing so retired deliveries that were still in flight and
+          // handed their ordering back to the microtask race — so an armed
+          // barrier leaves the registry only from its own delivery chain. See
+          // `scheduleBarrierRetirement` in private.ts.
           const completedEventId = event.eventId;
           const serializedResult = event.eventData.result;
           const eventIndex = ctx.eventsConsumer.eventIndex;

@@ -315,8 +315,15 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // it (see `awaitEarlierDeliveries`).
         const eventIndex = ctx.eventsConsumer.eventIndex;
         const hasWaitingConsumer = promises.length > 0;
+        // Resolved by the buffered branch below once this payload has
+        // hydrated. That is the earliest a `claim()` could have handed it
+        // over, and so the earliest at which "no consumer has claimed it"
+        // means anything — which is what the abandon deadline infers from.
+        // The waiting-consumer branch registers armed and never needs it.
+        const hydrated = withResolvers<void>();
         const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook', {
           armed: hasWaitingConsumer,
+          abandonableAfter: hasWaitingConsumer ? undefined : hydrated.promise,
         });
 
         if (hasWaitingConsumer) {
@@ -395,7 +402,6 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             | { ok: true; value: T }
             | { ok: false; error: unknown }
             | undefined;
-          const hydrated = withResolvers<void>();
 
           const claim = (): Promise<T> => {
             // A consumer has taken this payload, so its delivery no longer

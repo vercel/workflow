@@ -232,6 +232,9 @@ export async function runWorkflow(
       },
       pendingDeliveries: 0,
       pendingDeliveryBarriers: new Map(),
+      recentlyDeliveredBarriers: new Map(),
+      pendingOrderedDeliveries: 0,
+      deliveryProgress: 0,
       replayPayloadCache,
     };
 

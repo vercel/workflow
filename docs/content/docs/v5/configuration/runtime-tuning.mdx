@@ -216,6 +216,24 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - Delay before the unconsumed-event check fires.
 - Minimum: `10`.
 
+### `WORKFLOW_BARRIER_ABANDON_DEADLINE_TICKS`
+
+- Default: `32`
+- Minimum: `1`
+- How long a buffered hook payload that no consumer has claimed may hold up deliveries ordered after it, counted in event-loop ticks.
+- Workflow delivers hook payloads, wait completions, and step results in event log order, so a later delivery waits for an earlier one. A payload the workflow never reads has nothing to wait for, so this deadline releases it. The normal release happens as soon as data delivery goes quiet; the deadline only matters when a continuous stream of deliveries means it never does.
+- Raise it if slow payload hydration is releasing payloads a workflow was about to read. Lower it to shorten the stall a never-read hook can cause.
+
+### `WORKFLOW_IDLE_POLL_DEADLINE_ROUNDS`
+
+- Default: `16`
+- Minimum: `1`
+- How many polling rounds Workflow waits for in-flight deliveries to finish before suspending a run anyway.
+- Each round waits out a full pass of the internal promise queue, and the count restarts whenever a delivery reaches workflow code. Only rounds in which nothing was delivered count against the budget, so a wide batch of deliveries is not cut short.
+- Raise it if runs are suspending while deliveries are still landing. Lower it to shorten how long a run waits before suspending under sustained delivery traffic.
+
+Both deadlines interact: the round budget must outlast the abandon deadline, or a run can suspend while a delivery is still waiting for a payload to be released. Change them together, or leave them alone.
+
 ### `WORKFLOW_LOCK_POLL_INTERVAL_MS`
 
 - Default: `10`
