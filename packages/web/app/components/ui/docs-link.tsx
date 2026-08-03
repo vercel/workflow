@@ -23,9 +23,12 @@ const DocsLink = React.forwardRef<HTMLAnchorElement, DocsLinkProps>(
       <Link
         href={fullHref}
         className={cn(
-          'font-medium text-blue-600 underline underline-offset-4 transition-colors',
+          'font-medium underline underline-offset-4 transition-colors',
           className
         )}
+        style={{
+          color: 'var(--ds-blue-600)',
+        }}
         target="_blank"
         rel="noopener noreferrer"
         ref={ref}

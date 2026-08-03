@@ -279,41 +279,55 @@ export function computeSpanDelta(
 // Resource colors
 // ---------------------------------------------------------------------------
 
-export const RESOURCE_CLASS_NAMES: Record<
+export const RESOURCE_COLORS: Record<
   string,
   {
-    className: string;
-    errorClassName?: string;
+    bg: string;
+    border: string;
+    errorBg?: string;
+    errorBorder?: string;
   }
 > = {
   run: {
-    className: 'border-blue-500 bg-blue-200',
-    errorClassName: 'border-red-500 bg-red-200',
+    bg: 'var(--ds-blue-200)',
+    border: 'var(--ds-blue-500)',
+    errorBg: 'var(--ds-red-200)',
+    errorBorder: 'var(--ds-red-500)',
   },
   step: {
-    className: 'border-green-500 bg-green-200',
-    errorClassName: 'border-red-500 bg-red-200',
+    bg: 'var(--ds-green-200)',
+    border: 'var(--ds-green-500)',
+    errorBg: 'var(--ds-red-200)',
+    errorBorder: 'var(--ds-red-500)',
   },
   // Passive spans (hooks) stay gray — matches event-list icons and the minimap.
   hook: {
-    className: 'border-gray-500 bg-gray-200',
-    errorClassName: 'border-red-500 bg-red-200',
+    bg: 'var(--ds-gray-200)',
+    border: 'var(--ds-gray-500)',
+    errorBg: 'var(--ds-red-200)',
+    errorBorder: 'var(--ds-red-500)',
   },
   sleep: {
-    className: 'border-purple-500 bg-purple-200',
-    errorClassName: 'border-red-500 bg-red-200',
+    bg: 'var(--ds-purple-200)',
+    border: 'var(--ds-purple-500)',
+    errorBg: 'var(--ds-red-200)',
+    errorBorder: 'var(--ds-red-500)',
   },
   default: {
-    className: 'border-gray-500 bg-gray-200',
-    errorClassName: 'border-red-500 bg-red-200',
+    bg: 'var(--ds-gray-200)',
+    border: 'var(--ds-gray-500)',
+    errorBg: 'var(--ds-red-200)',
+    errorBorder: 'var(--ds-red-500)',
   },
 };
 
-export function getResourceClassNames(resource: string): {
-  className: string;
-  errorClassName?: string;
+export function getResourceColor(resource: string): {
+  bg: string;
+  border: string;
+  errorBg?: string;
+  errorBorder?: string;
 } {
-  return RESOURCE_CLASS_NAMES[resource] ?? RESOURCE_CLASS_NAMES.default;
+  return RESOURCE_COLORS[resource] ?? RESOURCE_COLORS.default;
 }
 
 // ---------------------------------------------------------------------------

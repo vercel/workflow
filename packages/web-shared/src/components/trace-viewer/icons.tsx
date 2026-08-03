@@ -1,10 +1,10 @@
 const WorkflowIcon = () => {
   return (
     <svg
-      aria-hidden="true"
       data-testid="geist-icon"
       height="16"
       strokeLinejoin="round"
+      style={{ color: 'currentColor' }}
       viewBox="0 0 16 16"
       width="16"
     >
@@ -19,12 +19,12 @@ const WorkflowIcon = () => {
 const WebhookIcon = () => {
   return (
     <svg
-      aria-hidden="true"
       data-testid="geist-icon"
       height="16"
       strokeLinejoin="round"
       viewBox="0 0 16 16"
       width="16"
+      style={{ color: 'currentColor' }}
     >
       <path
         fillRule="evenodd"
@@ -39,12 +39,12 @@ const WebhookIcon = () => {
 const SleepIcon = () => {
   return (
     <svg
-      aria-hidden="true"
       data-testid="geist-icon"
       height="16"
       strokeLinejoin="round"
       viewBox="0 0 16 16"
       width="16"
+      style={{ color: 'currentColor' }}
     >
       <path
         fillRule="evenodd"
@@ -59,12 +59,12 @@ const SleepIcon = () => {
 const StepForwardIcon = () => {
   return (
     <svg
-      aria-hidden="true"
       data-testid="geist-icon"
       height="16"
       strokeLinejoin="round"
       viewBox="0 0 16 16"
       width="16"
+      style={{ color: 'currentColor' }}
     >
       <path
         fillRule="evenodd"

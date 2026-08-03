@@ -1,7 +1,7 @@
 'use client';
 
 import { ArrowLeft, ArrowRight } from 'lucide-react';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import {
   Fragment,
   memo,
@@ -28,7 +28,7 @@ import {
   computeSpanGaps,
   computeSpanMarkers,
   computeSpanSegments,
-  getResourceClassNames,
+  getResourceColor,
   getSpanDurationMs,
   isSpanErrored,
 } from '../utils';
@@ -60,6 +60,11 @@ const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
   succeeded: 'bg-green-200 border border-green-500',
   sleeping: 'bg-gray-400 border border-gray-500',
   received: 'bg-blue-200 border border-blue-500',
+};
+
+const TIMELINE_INSET_STYLE: CSSProperties = {
+  left: TIMELINE_PADDING_PX,
+  right: TIMELINE_PADDING_PX,
 };
 
 const STRIPED_SEGMENT_STATUSES: ReadonlySet<SegmentStatus> = new Set([
@@ -255,18 +260,18 @@ function BoundaryArrow({
 }
 
 function PlainBar({
-  className,
+  bg,
+  border,
   label,
 }: {
-  className: string;
+  bg: string;
+  border: string;
   label: string | null;
 }): ReactNode {
   return (
     <div
-      className={cn(
-        'relative h-6 w-full min-w-1 rounded-[0.25rem] border',
-        className
-      )}
+      className="relative h-6 w-full min-w-1 rounded-[0.25rem] border"
+      style={{ background: bg, borderColor: border }}
     >
       {label ? <DurationLabel label={label} /> : null}
     </div>
@@ -347,13 +352,14 @@ function SegmentBar({
           <div
             key={i}
             className={cn(
-              'absolute h-full min-w-px overflow-hidden rounded-[0.25rem]',
+              'absolute h-full overflow-hidden rounded-[0.25rem]',
               SEGMENT_CLASSES[seg.status]
             )}
             style={{
               // 1px gap between adjacent segments, distributed equally.
               left: `calc(${seg.leftPct}% + 0.5px)`,
               width: `calc(${seg.widthPct}% - 1px)`,
+              minWidth: 1,
             }}
           >
             {STRIPED_SEGMENT_STATUSES.has(seg.status) ? (
@@ -451,10 +457,13 @@ const TimelineBar = memo(function TimelineBar({
     markers.length > 0 || offscreen.left !== null || offscreen.right !== null;
 
   const isErrored = isSpanErrored(span);
-  const colors = getResourceClassNames(span.resource);
-  const fallbackClassName = isErrored
-    ? (colors.errorClassName ?? 'border-red-500 bg-red-200')
-    : colors.className;
+  const colors = getResourceColor(span.resource);
+  const fallbackBg = isErrored
+    ? (colors.errorBg ?? 'var(--ds-red-200)')
+    : colors.bg;
+  const fallbackBorder = isErrored
+    ? (colors.errorBorder ?? 'var(--ds-red-500)')
+    : colors.border;
 
   const totalLabel = formatDurationPrecise(totalDurationMs);
   const showTotalLabel =
@@ -477,7 +486,7 @@ const TimelineBar = memo(function TimelineBar({
       )}
       onClick={handleClick}
     >
-      <div className="absolute inset-x-4 inset-y-0">
+      <div className="absolute inset-y-0" style={TIMELINE_INSET_STYLE}>
         <div
           className="absolute top-1/2 h-6 -translate-y-1/2 overflow-hidden rounded-[0.25rem]"
           style={getBarPositionStyle(geometry)}
@@ -486,13 +495,15 @@ const TimelineBar = memo(function TimelineBar({
             <BoundaryArrow direction={geometry.mode.direction} />
           ) : geometry.mode.kind === 'tiny' ? (
             <div
-              className={cn('h-6 rounded-[0.25rem] border', fallbackClassName)}
+              className="h-6 rounded-[0.25rem] border"
+              style={{ background: fallbackBg, borderColor: fallbackBorder }}
             />
           ) : segments.length > 0 ? (
             <SegmentBar segments={segments} showLabels={!hasMarkers} />
           ) : (
             <PlainBar
-              className={fallbackClassName}
+              bg={fallbackBg}
+              border={fallbackBorder}
               label={showTotalLabel ? totalLabel : null}
             />
           )}
@@ -601,9 +612,10 @@ const DeltaMeasureLine = memo(function DeltaMeasureLine({
   return (
     <>
       <div
-        className="absolute h-px w-1 bg-amber-800"
+        className="absolute h-px bg-amber-800"
         style={{
           left: Math.min(anchorX, guideX),
+          width: MEASURE_GUIDE_OUTSET_PX,
           top: anchorCenterY,
         }}
       />
@@ -769,7 +781,8 @@ export function Timeline({
     >
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-x-4 inset-y-0"
+        className="absolute inset-y-0 pointer-events-none"
+        style={TIMELINE_INSET_STYLE}
       >
         {markers.map((marker) =>
           // Skip the "0s" origin marker since the left edge already implies it.
@@ -783,7 +796,10 @@ export function Timeline({
         )}
       </div>
       {hover != null && (
-        <div className="pointer-events-none absolute inset-x-4 inset-y-0 z-10">
+        <div
+          className="absolute inset-y-0 pointer-events-none z-10"
+          style={TIMELINE_INSET_STYLE}
+        >
           <div
             className="absolute top-0 bottom-0 w-px bg-gray-alpha-500"
             style={{ left: `${hover.fraction * 100}%` }}
@@ -808,7 +824,8 @@ export function Timeline({
       {altHeld && anchorIndex < 0 && (
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-x-4 inset-y-0"
+          className="absolute inset-y-0 pointer-events-none"
+          style={TIMELINE_INSET_STYLE}
         >
           {gapMeasurements.map((gap) => (
             <DeltaMeasureLine
@@ -822,7 +839,8 @@ export function Timeline({
       {measurement && (
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-x-4 inset-y-0 z-20"
+          className="absolute inset-y-0 pointer-events-none z-20"
+          style={TIMELINE_INSET_STYLE}
         >
           <DeltaMeasureLine {...measurement} timelineWidth={timelineWidth} />
         </div>

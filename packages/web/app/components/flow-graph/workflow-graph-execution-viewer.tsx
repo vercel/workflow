@@ -26,7 +26,6 @@ import type {
   WorkflowRunExecution,
 } from '~/lib/flow-graph/workflow-graph-types';
 import type { EnvMap } from '~/lib/types';
-import { cn } from '~/lib/utils';
 import { useWorkflowResourceData } from '~/lib/workflow-api-client';
 import {
   type ConsolidatedEdge,
@@ -37,7 +36,7 @@ import {
   type EnhancedLayoutResult,
   executionSelfLoopStyle,
   // Utilities
-  getNodeClassName,
+  getNodeBackgroundColor,
   getNodeIcon,
   // Constants
   LAYOUT,
@@ -83,12 +82,18 @@ function ExecutionLoopNodeComponent({ data, selected }: NodeProps) {
 
   return (
     <div
-      className={cn(
-        'relative w-[220px] rounded-lg border-2 border-gray-400 border-solid p-3',
-        nodeData.nodeStyleClassName,
-        selected && 'ring-2 ring-purple-500/50',
-        nodeData.className
-      )}
+      className={`relative ${nodeData.className || ''}`}
+      style={{
+        borderWidth: nodeData.nodeStyle?.borderWidth ?? 2,
+        borderRadius: 8,
+        padding: 12,
+        width: 220,
+        borderStyle: 'solid',
+        backgroundColor: nodeData.nodeStyle?.backgroundColor,
+        borderColor: nodeData.nodeStyle?.borderColor ?? '#9ca3af',
+        opacity: nodeData.nodeStyle?.opacity,
+        boxShadow: selected ? '0 0 0 2px rgba(168, 85, 247, 0.5)' : undefined,
+      }}
     >
       {/* Node content */}
       {nodeData.label}
@@ -110,13 +115,15 @@ function ExecutionLoopNodeComponent({ data, selected }: NodeProps) {
         type="source"
         position={Position.Left}
         id="loop-out"
-        className="!-left-1 !top-[30%] !h-[6px] !min-h-0 !w-[6px] !min-w-0 !bg-purple-500"
+        className="!bg-purple-500 !-left-1 !w-[6px] !h-[6px] !min-w-0 !min-h-0"
+        style={{ top: '30%' }}
       />
       <Handle
         type="target"
         position={Position.Left}
         id="loop-in"
-        className="!-left-1 !top-[70%] !h-[6px] !min-h-0 !w-[6px] !min-w-0 !bg-purple-500"
+        className="!bg-purple-500 !-left-1 !w-[6px] !h-[6px] !min-w-0 !min-h-0"
+        style={{ top: '70%' }}
       />
     </div>
   );
@@ -131,12 +138,18 @@ function ExecutionNodeComponent({ data, selected }: NodeProps) {
 
   return (
     <div
-      className={cn(
-        'relative w-[220px] rounded-lg border-2 border-gray-400 border-solid p-3',
-        nodeData.nodeStyleClassName,
-        selected && 'ring-2 ring-blue-500/35',
-        nodeData.className
-      )}
+      className={`relative ${nodeData.className || ''}`}
+      style={{
+        borderWidth: nodeData.nodeStyle?.borderWidth ?? 2,
+        borderRadius: 8,
+        padding: 12,
+        width: 220,
+        borderStyle: 'solid',
+        backgroundColor: nodeData.nodeStyle?.backgroundColor,
+        borderColor: nodeData.nodeStyle?.borderColor ?? '#9ca3af',
+        opacity: nodeData.nodeStyle?.opacity,
+        boxShadow: selected ? '0 0 0 2px rgba(59, 130, 246, 0.35)' : undefined,
+      }}
     >
       {nodeData.label}
 
@@ -159,24 +172,40 @@ function ExecutionNodeComponent({ data, selected }: NodeProps) {
 function ExecutionDiamondNodeComponent({ data, selected }: NodeProps) {
   const nodeData = data as DiamondNodeData;
 
+  // Diamond size
+  const size = 160;
+
   return (
     <div
-      className={cn(
-        'relative flex size-40 items-center justify-center',
-        nodeData.className
-      )}
+      className={`relative flex items-center justify-center ${nodeData.className || ''}`}
+      style={{
+        width: size,
+        height: size,
+      }}
     >
       {/* Diamond shape */}
       <div
-        className={cn(
-          'size-28 rotate-45 rounded border-2 border-red-500 border-solid',
-          nodeData.nodeStyleClassName,
-          selected && 'ring-2 ring-red-500/50'
-        )}
+        style={{
+          width: size * 0.7,
+          height: size * 0.7,
+          transform: 'rotate(45deg)',
+          borderWidth: 2,
+          borderStyle: 'solid',
+          borderRadius: 4,
+          backgroundColor: nodeData.nodeStyle?.backgroundColor,
+          borderColor: nodeData.nodeStyle?.borderColor ?? '#ef4444',
+          opacity: nodeData.nodeStyle?.opacity,
+          boxShadow: selected ? '0 0 0 2px rgba(239, 68, 68, 0.5)' : undefined,
+        }}
       />
       {/* Label overlay (not rotated) */}
       <div
-        className="pointer-events-auto absolute inset-0 flex items-center justify-center p-10 font-semibold text-[11px]"
+        className="absolute inset-0 flex items-center justify-center pointer-events-auto"
+        style={{
+          fontSize: 11,
+          fontWeight: 600,
+          padding: size * 0.25, // Keep text within the diamond's inscribed area
+        }}
         title={typeof nodeData.label === 'string' ? nodeData.label : undefined}
       >
         <span className="text-center line-clamp-3 overflow-hidden">
@@ -220,46 +249,55 @@ const nodeTypes = {
 // Custom edge types using purple styling for execution view
 const edgeTypes = createEdgeTypes(executionSelfLoopStyle);
 
-// Get node styling based on node kind and execution status.
-function getExecutionNodeClassName(
-  nodeKind: string,
-  executions?: StepExecution[]
-): string {
-  const nodeClassName = getNodeClassName(nodeKind);
+// Get node styling based on node kind and execution status (border color indicates status)
+function getExecutionNodeStyle(nodeKind: string, executions?: StepExecution[]) {
+  const backgroundColor = getNodeBackgroundColor(nodeKind);
+
   // If no execution data, show faded state with gray border
   if (!executions || executions.length === 0) {
-    return cn(nodeClassName, '!border-gray-400 opacity-40');
+    return {
+      color: 'var(--card-foreground)',
+      backgroundColor,
+      borderColor: '#9ca3af', // gray-400
+      opacity: 0.4,
+    };
   }
 
   const latestExecution = executions[executions.length - 1];
 
-  let executionClassName: string;
+  // Border color based on execution status
+  let borderColor = '#9ca3af'; // gray-400 (default)
+  let borderWidth = 2;
+
   switch (latestExecution.status) {
     case 'completed':
-      executionClassName = '!border-green-500';
+      borderColor = '#22c55e'; // green-500
       break;
     case 'failed':
-      executionClassName = '!border-red-500 !border-[3px]';
+      borderColor = '#ef4444'; // red-500
+      borderWidth = 3;
       break;
     case 'running':
-      executionClassName = '!border-blue-500';
+      borderColor = '#3b82f6'; // blue-500
+      borderWidth = 2;
       break;
     case 'retrying':
-      executionClassName = '!border-amber-600';
+      borderColor = '#f97316'; // orange-500
       break;
     case 'cancelled':
-      executionClassName = '!border-amber-500';
+      borderColor = '#eab308'; // yellow-500
       break;
     case 'pending':
-      executionClassName = '!border-gray-400';
+      borderColor = '#9ca3af'; // gray-400
       break;
-    default: {
-      const exhaustiveStatus: never = latestExecution.status;
-      throw new Error(`Unknown execution status: ${exhaustiveStatus}`);
-    }
   }
 
-  return cn(nodeClassName, executionClassName);
+  return {
+    color: 'var(--card-foreground)',
+    backgroundColor,
+    borderColor,
+    borderWidth,
+  };
 }
 
 // getNodeIcon is imported from workflow-graph-viewer
@@ -381,10 +419,10 @@ function convertToReactFlowNodes(
       type: 'parallelGroup',
       position: group.position,
       style: {
-        width: group.data.groupWidth,
-        height: group.data.groupHeight,
+        ...group.style,
+        cursor: 'grab',
+        zIndex: -1,
       },
-      zIndex: -1,
       data: group.data,
       selectable: true,
       draggable: true,
@@ -394,10 +432,7 @@ function convertToReactFlowNodes(
   // Add regular nodes
   for (const node of nodes) {
     const executions = execution?.nodeExecutions.get(node.id);
-    const nodeStyleClassName = getExecutionNodeClassName(
-      node.data.nodeKind,
-      executions
-    );
+    const styles = getExecutionNodeStyle(node.data.nodeKind, executions);
     const isCurrentNode = execution?.currentNode === node.id;
     const isLoopNode = !!node.metadata?.loopId;
     const isAwaitLoop = !!node.metadata?.loopIsAwait;
@@ -444,7 +479,7 @@ function convertToReactFlowNodes(
           executions,
           isLoopNode: true,
           isAwaitLoop,
-          nodeStyleClassName,
+          nodeStyle: styles,
           className: nodeClassName,
         },
       });
@@ -461,7 +496,7 @@ function convertToReactFlowNodes(
           ...node.data,
           label: node.data.label, // Show the conditional expression
           executions,
-          nodeStyleClassName,
+          nodeStyle: styles,
           className: nodeClassName,
         },
       });
@@ -477,9 +512,11 @@ function convertToReactFlowNodes(
           ...node.data,
           label: renderNodeLabel(node.data, node.metadata, executions),
           executions,
-          nodeStyleClassName,
+          nodeStyle: styles,
           className: nodeClassName,
         },
+        // Styling is handled by ExecutionNodeComponent (keeps running animation behind background)
+        style: { width: 220 },
       });
     }
   }
@@ -536,7 +573,7 @@ function convertToReactFlowEdges(
           type: MarkerType.ArrowClosed,
           width: 12,
           height: 12,
-          color: executionSelfLoopStyle.markerColor,
+          color: '#a855f7',
         },
       };
     }
@@ -592,10 +629,8 @@ function convertToReactFlowEdges(
     }
 
     // Simple color scheme: gray for non-executed, dark green for executed
-    const baseStrokeColor = 'var(--ds-gray-500)';
-    const finalStrokeColor = isTraversed
-      ? 'var(--ds-green-500)'
-      : baseStrokeColor;
+    const baseStrokeColor = '#6b7280'; // gray-500
+    const finalStrokeColor = isTraversed ? '#22c55e' : baseStrokeColor;
     const finalDasharray = isTraversed ? undefined : strokeDasharray;
 
     // Make non-traversed edges subtle when there's execution data
@@ -603,15 +638,9 @@ function convertToReactFlowEdges(
     const strokeWidth = isTraversed ? 2.5 : 1;
 
     // Label styling - conditional edges get dark bg with white text
-    const labelTextColor = isConditional
-      ? 'var(--conditional-label-text)'
-      : 'var(--ds-gray-700)';
-    const labelBgColor = isConditional
-      ? 'var(--conditional-label-bg)'
-      : 'var(--ds-gray-100)';
-    const labelBorderColor = isConditional
-      ? 'var(--conditional-label-border)'
-      : 'var(--ds-gray-300)';
+    const labelTextColor = isConditional ? '#ffffff' : '#6b7280';
+    const labelBgColor = isConditional ? '#374151' : '#f3f4f6'; // gray-700 : gray-100
+    const labelBorderColor = isConditional ? '#4b5563' : '#d1d5db'; // gray-600 : gray-300
 
     return {
       id: edge.id,

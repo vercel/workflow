@@ -1,62 +1,19 @@
 import { Skeleton } from '../../ui/skeleton';
+import { DEFAULT_START_PX, paneColTemplate } from './pane-constants';
 
-const ROWS = [
-  {
-    id: 'r0',
-    nameClassName: 'w-[62%]',
-    offsetClassName: 'left-0',
-    barClassName: 'w-[72%]',
-    topClassName: 'top-0',
-  },
-  {
-    id: 'r1',
-    nameClassName: 'w-[78%]',
-    offsetClassName: 'left-[6%]',
-    barClassName: 'w-[48%]',
-    topClassName: 'top-[3.5px]',
-  },
-  {
-    id: 'r2',
-    nameClassName: 'w-1/2',
-    offsetClassName: 'left-[10%]',
-    barClassName: 'w-[55%]',
-    topClassName: 'top-[7px]',
-  },
-  {
-    id: 'r3',
-    nameClassName: 'w-[84%]',
-    offsetClassName: 'left-[18%]',
-    barClassName: 'w-[30%]',
-    topClassName: 'top-[10.5px]',
-  },
-  {
-    id: 'r4',
-    nameClassName: 'w-[45%]',
-    offsetClassName: 'left-[18%]',
-    barClassName: 'w-[42%]',
-    topClassName: 'top-[14px]',
-  },
-  {
-    id: 'r5',
-    nameClassName: 'w-[66%]',
-    offsetClassName: 'left-[34%]',
-    barClassName: 'w-[38%]',
-    topClassName: 'top-[17.5px]',
-  },
-  {
-    id: 'r6',
-    nameClassName: 'w-[55%]',
-    offsetClassName: 'left-[41%]',
-    barClassName: 'w-1/4',
-    topClassName: 'top-[21px]',
-  },
-  {
-    id: 'r7',
-    nameClassName: 'w-2/5',
-    offsetClassName: 'left-1/2',
-    barClassName: 'w-[30%]',
-    topClassName: 'top-[24.5px]',
-  },
+// Mirrors SplitPane's initial column template so the skeleton lines up with
+// the real viewer's first paint.
+const COL_TEMPLATE = paneColTemplate(DEFAULT_START_PX);
+
+const ROWS: { id: string; name: number; off: number; bar: number }[] = [
+  { id: 'r0', name: 62, off: 0, bar: 72 },
+  { id: 'r1', name: 78, off: 6, bar: 48 },
+  { id: 'r2', name: 50, off: 10, bar: 55 },
+  { id: 'r3', name: 84, off: 18, bar: 30 },
+  { id: 'r4', name: 45, off: 18, bar: 42 },
+  { id: 'r5', name: 66, off: 34, bar: 38 },
+  { id: 'r6', name: 55, off: 41, bar: 25 },
+  { id: 'r7', name: 40, off: 50, bar: 30 },
 ];
 
 const HEADER_MARKERS = ['m0', 'm1', 'm2', 'm3'];
@@ -79,17 +36,25 @@ export function TraceViewerSkeleton() {
       {/* Minimap strip: thin density lines tracing the same shape as the bars */}
       <div className="relative h-10 min-h-10 shrink-0 border-b border-gray-alpha-400">
         <div className="absolute inset-x-4 top-[6px]">
-          {ROWS.map((row) => (
+          {ROWS.map((row, index) => (
             <Skeleton
               key={row.id}
-              className={`absolute h-[3px] rounded-full ${row.offsetClassName} ${row.barClassName} ${row.topClassName}`}
+              className="absolute h-[3px] rounded-full"
+              style={{
+                left: `${row.off}%`,
+                width: `${row.bar}%`,
+                top: index * 3.5,
+              }}
             />
           ))}
         </div>
       </div>
 
       {/* Header row: search header | divider | timeline header */}
-      <div className="grid shrink-0 grid-cols-[340px_1px_minmax(50px,1fr)]">
+      <div
+        className="shrink-0 grid"
+        style={{ gridTemplateColumns: COL_TEMPLATE }}
+      >
         <div className="h-10 min-h-10 flex items-center border-b border-gray-alpha-400 pl-4 pr-2 gap-1.5">
           <Skeleton className="w-3.5 h-3.5 shrink-0 rounded-sm" />
           <Skeleton className="h-3.5 w-40" />
@@ -105,7 +70,10 @@ export function TraceViewerSkeleton() {
       </div>
 
       {/* Content row: event list | gutter | timeline */}
-      <div className="grid min-h-0 flex-1 grid-cols-[340px_1px_minmax(50px,1fr)] overflow-hidden">
+      <div
+        className="grid flex-1 min-h-0 overflow-hidden"
+        style={{ gridTemplateColumns: COL_TEMPLATE }}
+      >
         {/* Sidebar event rows */}
         <div className="block overflow-visible">
           <ul className="block divide-y divide-gray-alpha-400 border-b border-gray-alpha-400">
@@ -113,7 +81,10 @@ export function TraceViewerSkeleton() {
               <li key={row.id} className="h-10 flex items-center pl-4 pr-2">
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   <Skeleton className="w-4 h-4 shrink-0 rounded-sm" />
-                  <Skeleton className={`h-3.5 ${row.nameClassName}`} />
+                  <Skeleton
+                    className="h-3.5"
+                    style={{ width: `${row.name}%` }}
+                  />
                 </div>
                 <Skeleton className="ml-2 h-3.5 w-10 shrink-0" />
               </li>
@@ -130,7 +101,8 @@ export function TraceViewerSkeleton() {
             <div key={row.id} className="relative h-10">
               <div className="absolute inset-x-4 inset-y-0">
                 <Skeleton
-                  className={`absolute top-1/2 h-6 -translate-y-1/2 rounded-[0.25rem] ${row.offsetClassName} ${row.barClassName}`}
+                  className="absolute top-1/2 -translate-y-1/2 h-6 rounded-[0.25rem]"
+                  style={{ left: `${row.off}%`, width: `${row.bar}%` }}
                 />
               </div>
             </div>
