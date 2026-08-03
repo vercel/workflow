@@ -270,6 +270,26 @@ describe('hardened serialization: unavoidable guest code is recorded', () => {
     expect(stats.executions).toEqual([{ kind: 'getter', detail: 'computed' }]);
   });
 
+  it('records a bound-function getter (native-looking, but runs guest code)', () => {
+    // `fn.bind()` stringifies as `function bound fn() { [native code] }`, so
+    // a nativeness check alone would cache it as engine-provided and let
+    // workflow code launder a side-effectful getter past the report.
+    const vm = makeVm();
+    const value = vm.evaluate(`(() => {
+      globalThis.boundRuns = 0;
+      const spy = function () { globalThis.boundRuns++; return 'laundered'; };
+      const o = {};
+      Object.defineProperty(o, 'x', { enumerable: true, get: spy.bind(null) });
+      return o;
+    })()`);
+
+    const { wire, stats } = vm.serialize(value);
+
+    expect(wire).toContain('laundered');
+    expect(vm.evaluate('globalThis.boundRuns')).toBe(1);
+    expect(stats.executions).toEqual([{ kind: 'getter', detail: 'x' }]);
+  });
+
   it('still identifies a proxied host class, and reports the traps', async () => {
     // Next.js hands the runtime a proxied `NextRequest`. `instanceof`
     // forwards through the `getPrototypeOf` trap, and the Request reducer

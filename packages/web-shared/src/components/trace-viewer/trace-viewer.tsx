@@ -1,582 +1,629 @@
 'use client';
 
-import { clsx } from 'clsx';
-import type { CSSProperties, MouseEventHandler, ReactNode } from 'react';
-import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
-import { MiniMap } from './components/map';
-import { CursorMarker, EventMarkers, Markers } from './components/markers';
-import { SpanNodes } from './components/node';
-import { SearchBar } from './components/search';
-import { SpanDetailPanel } from './components/span-detail-panel';
-import { ZoomButton } from './components/zoom-button';
-import { TraceViewerContextProvider, useTraceViewer } from './context';
-import styles from './trace-viewer.module.css';
-import type { GetQuickLinks, Trace } from './types';
+import { RotateCcw, Search, ZoomIn, ZoomOut } from 'lucide-react';
 import {
-  MAP_HEIGHT,
-  MARKER_HEIGHT,
-  MARKER_NOTCH_HEIGHT,
-  ROW_HEIGHT,
-  ROW_PADDING,
-  SEARCH_GAP,
-  SEARCH_HEIGHT,
-  TIMELINE_PADDING,
-} from './util/constants';
-import { parseTrace } from './util/tree';
-import { useStreamingSpans } from './util/use-streaming-spans';
+  type ReactNode,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
+import { useReducedMotion } from '../../hooks/use-reduced-motion';
+import { IconButton } from '../ui/icon-button';
+import { Kbd } from '../ui/kbd';
+import { Spinner } from '../ui/spinner';
+import { TooltipProvider } from '../ui/tooltip';
+import { TraceDetailPanel } from './components/detail-panel';
+import EventList from './components/event-list';
+import { Minimap } from './components/minimap';
+import { SplitPane } from './components/split-pane';
+import {
+  TIMELINE_PADDING_PX,
+  Timeline,
+  TimelineHeader,
+  type TimelineHover,
+} from './components/timeline';
+import { TraceShortcutHelper } from './components/trace-shortcut-helper';
+import { ROW_HEIGHT_PX, scrollRowIntoView } from './components/use-row-window';
+import { ActiveSpanProvider, useActiveSpan } from './context';
+import { searchSpans } from './search';
+import type { TraceWithMeta } from './types';
+import { formatDurationPrecise, getHighResInMs } from './util/timing';
+import {
+  clampViewportToRoot,
+  computeRootBounds,
+  computeTimeMarkers,
+  type ViewportRange,
+  wheelDeltaToPixels,
+  wheelZoomScaleFactor,
+} from './utils';
 
 interface TraceViewerProps {
-  trace?: Trace;
-  className?: string;
-  scrollLock?: boolean;
-  height?: string | number;
-  withPanel?: boolean;
-  getQuickLinks?: GetQuickLinks;
-  highlightedSpans?: string[];
-  /** Render all spans immediately (no progressive streaming). */
-  eagerRender?: boolean;
-  /** Whether the trace is live (for continuous tick updates). */
-  isLive?: boolean;
+  trace: TraceWithMeta;
+  onLoadMore?: () => void | Promise<void>;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
 }
 
-export function TraceViewerProvider({
-  getQuickLinks,
-  children,
-}: Pick<TraceViewerProps, 'getQuickLinks'> & {
-  children: ReactNode;
-}): ReactNode {
-  return (
-    <TraceViewerContextProvider getQuickLinks={getQuickLinks}>
-      {children}
-    </TraceViewerContextProvider>
-  );
-}
+const MIN_VIEWPORT_MS = 0.001;
 
-interface LastClickRef {
-  x: number;
-  y: number;
-  t: number;
-  spanId: string;
-}
+const ZOOM_DEBOUNCE_MS = 150;
 
-const skeletonTrace: Trace = {
-  traceId: 'skeleton',
-  spans: [
-    {
-      parentSpanId: '',
-      spanId: 'root',
-      name: 'root span',
-      kind: 1,
-      resource: 'vercel.runtime',
-      startTime: [5000, 0],
-      endTime: [6000, 0],
-      duration: [1000, 0],
-      library: {
-        name: 'vercel-site',
-      },
-      status: {
-        code: 1,
-      },
-      attributes: {
-        'vercel.ownerId': 'team_abc',
-      },
-      traceFlags: 1,
-      events: [],
-      links: [],
-    },
-  ],
-  resources: [
-    {
-      name: 'vercel.runtime',
-      attributes: {},
-    },
-  ],
-  rootSpanId: 'root',
-};
+function useAnimatedViewport(initial: ViewportRange) {
+  const [viewport, setViewportState] = useState<ViewportRange>(initial);
+  const animRef = useRef<{
+    raf: number;
+    from: ViewportRange;
+    to: ViewportRange;
+    start: number;
+  } | null>(null);
+  const currentRef = useRef(initial);
+  currentRef.current = viewport;
+  const reducedMotion = useReducedMotion();
 
-export function TraceViewerTimeline({
-  trace = skeletonTrace,
-  className = '',
-  scrollLock = false,
-  height,
-  withPanel = false,
-  highlightedSpans,
-  eagerRender = false,
-  isLive = false,
-  footer,
-  knownDurationMs,
-  hasMoreData = false,
-}: Omit<TraceViewerProps, 'getQuickLinks'> & {
-  footer?: ReactNode;
-  /** Duration in ms from trace start to the latest known event. Used to render the unknown-time overlay. */
-  knownDurationMs?: number;
-  /** Whether more data pages are expected. Controls the unknown-data overlay visibility. */
-  hasMoreData?: boolean;
-}): ReactNode {
-  const isSkeleton = trace === skeletonTrace;
-  const { state, dispatch } = useTraceViewer();
-  const { timelineRef, scrollSnapshotRef } = state;
-  const memoCache = state.memoCacheRef.current;
-  const hideSearchBar = (highlightedSpans?.length ?? 0) > 0;
-
-  const hasInitializedRef = useRef(false);
-  const prevSpanKeyRef = useRef('');
-  const prevRootRef = useRef<ReturnType<typeof parseTrace>['root'] | null>(
-    null
-  );
-  const prevSpanMapRef = useRef<ReturnType<typeof parseTrace>['map']>({});
-  const prevSizeRef = useRef<{ width: number; height: number } | null>(null);
-
-  useEffect(() => {
-    const { root: newRoot, map: newSpanMap } = parseTrace(trace);
-    const isInitial = !hasInitializedRef.current;
-    hasInitializedRef.current = true;
-
-    // Build a structural key from span IDs + lightweight event signatures.
-    // When only timing changes (same spans and boundary events), we can skip the
-    // worker restart. When events change (step completed, etc.) we need a
-    // full update because the VisibleSpan objects rendered by React hold
-    // copies of the events from the worker — in-place mutation won't reach them.
-    const spanKey = Object.keys(newSpanMap)
-      .sort()
-      .map((id) => {
-        const events = newSpanMap[id].events;
-        const count = events?.length ?? 0;
-        const first = count ? events?.[0] : undefined;
-        const last = count ? events?.[count - 1] : undefined;
-        const eventSignature = `${first?.event.name ?? 'none'}@${first?.timestamp ?? 0}|${last?.event.name ?? 'none'}@${last?.timestamp ?? 0}`;
-        return `${id}:${count}:${eventSignature}`;
-      })
-      .join(',');
-
-    if (
-      !isInitial &&
-      spanKey === prevSpanKeyRef.current &&
-      prevRootRef.current
-    ) {
-      // Same span set, same event counts — only timing changed.
-      // Mutate in-place so the worker effect (which depends on root/spanMap
-      // references) does NOT restart.
-      const oldRoot = prevRootRef.current;
-      const oldSpanMap = prevSpanMapRef.current;
-      let didChange = false;
-
-      if (
-        oldRoot.endTime !== newRoot.endTime ||
-        oldRoot.duration !== newRoot.duration
-      ) {
-        oldRoot.endTime = newRoot.endTime;
-        oldRoot.duration = newRoot.duration;
-        didChange = true;
-      }
-
-      for (const [id, newNode] of Object.entries(newSpanMap)) {
-        const oldNode = oldSpanMap[id];
-        if (oldNode) {
-          if (
-            oldNode.endTime !== newNode.endTime ||
-            oldNode.duration !== newNode.duration
-          ) {
-            oldNode.endTime = newNode.endTime;
-            oldNode.duration = newNode.duration;
-            didChange = true;
-          }
-          Object.assign(oldNode.span, newNode.span);
-        }
-      }
-
-      if (!didChange) {
-        return;
-      }
-
-      // Trigger re-render (scale/markers) without restarting the worker.
-      // useLiveTick handles continuous scale recalculation for live runs.
-      dispatch({ type: 'forceRender' });
-      return;
+  const cancel = useCallback(() => {
+    if (animRef.current) {
+      cancelAnimationFrame(animRef.current.raf);
+      animRef.current = null;
     }
+  }, []);
 
-    // Structure changed or initial load — full dispatch (worker computes new rows)
-    prevSpanKeyRef.current = spanKey;
-    prevRootRef.current = newRoot;
-    prevSpanMapRef.current = newSpanMap;
-    dispatch({
-      type: isInitial ? 'setRoot' : 'updateRoot',
-      root: newRoot,
-      spanMap: newSpanMap,
-      resources: trace.resources || [],
-    });
-  }, [dispatch, trace]);
+  const animateTo = useCallback(
+    (target: ViewportRange) => {
+      cancel();
 
-  const { rows, spans, events, scale } = useStreamingSpans(
-    highlightedSpans,
-    eagerRender
-  );
-
-  const ref = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const $el = ref.current;
-    if (!$el) return;
-
-    const onResize = (): void => {
-      const padding = 2 * TIMELINE_PADDING;
-      const rect = $el.getBoundingClientRect();
-      const nextWidth = rect.width - padding;
-      const nextHeight = rect.height;
-      const prevSize = prevSizeRef.current;
-
-      if (
-        prevSize &&
-        prevSize.width === nextWidth &&
-        prevSize.height === nextHeight
-      ) {
+      if (reducedMotion) {
+        currentRef.current = target;
+        setViewportState(target);
         return;
       }
-      prevSizeRef.current = { width: nextWidth, height: nextHeight };
 
-      dispatch({
-        type: 'setSize',
-        width: nextWidth,
-        height: nextHeight,
-      });
-    };
+      const from = currentRef.current;
+      const anim = { raf: 0, from, to: target, start: performance.now() };
 
-    onResize();
-
-    const observer = new ResizeObserver(onResize);
-    observer.observe($el);
-    window.addEventListener('resize', onResize);
-
-    return () => {
-      observer.disconnect();
-      window.removeEventListener('resize', onResize);
-    };
-  }, [dispatch]);
-
-  const lastClickRef = useRef<LastClickRef>({
-    t: 0,
-    x: -1,
-    y: -1,
-    spanId: '',
-  });
-  const onClick: MouseEventHandler = useCallback(
-    (event) => {
-      // NOTE(wits): We manually implement double-click logic here so that we can support double
-      // clicking a span even if the first click moves the span that the user is clicking on due
-      // to the panel opening. If we used a regular double click listener we would need to delay
-      // the opening of the panel artificially. This implementation allows us to always be
-      // FAST while also avoiding a FRUSTRATING situation.
-      const prev = lastClickRef.current;
-      const t = Date.now();
-      const { clientX: x, clientY: y } = event;
-      const d = Math.sqrt((x - prev.x) ** 2 + (y - prev.y) ** 2);
-      // double click
-      if (t - prev.t <= 500 && d <= 8) {
-        event.stopPropagation();
-        event.preventDefault();
-        if (!prev.spanId) {
-          dispatch({
-            type: 'resetScale',
-          });
-          return;
-        }
-        dispatch({
-          type: 'select',
-          id: prev.spanId,
+      const tick = () => {
+        const t = Math.min((performance.now() - anim.start) / 240, 1);
+        const e = t < 0.5 ? 8 * t * t * t * t : 1 - (-2 * t + 2) ** 4 / 2;
+        setViewportState({
+          start: anim.from.start + (anim.to.start - anim.from.start) * e,
+          end: anim.from.end + (anim.to.end - anim.from.end) * e,
         });
-        dispatch({
-          type: 'scaleToNode',
-          id: prev.spanId,
-        });
-        return;
-      }
-      const target = event.target as HTMLElement;
-      if (!target.closest(`.${String(styles.timeline)}`)) return;
-      const $button = target.closest<HTMLButtonElement>('[data-span-id]');
-      const spanId = $button?.dataset.spanId || '';
-      lastClickRef.current = {
-        x,
-        y,
-        t,
-        spanId,
+        if (t < 1) anim.raf = requestAnimationFrame(tick);
+        else animRef.current = null;
       };
-      if (!spanId) return;
-      dispatch({
-        type: 'toggleSelection',
-        id: spanId,
-      });
-      event.stopPropagation();
+
+      animRef.current = anim;
+      anim.raf = requestAnimationFrame(tick);
     },
-    [dispatch]
+    [cancel, reducedMotion]
   );
 
-  // Zoom helper — apply the scroll snapshot once after a zoom operation so
-  // the anchor point stays at the same screen position, then clear it.
-  // Without clearing, live runs (where scale changes every frame via
-  // detectBaseScale) would continuously reset scrollLeft and prevent the
-  // user from scrolling horizontally.
-  useLayoutEffect(() => {
-    const $timeline = timelineRef.current;
-    if (!$timeline) return;
-
-    const snapshot = scrollSnapshotRef.current;
-    if (snapshot) {
-      $timeline.scrollLeft = snapshot.anchorT * scale - snapshot.anchorX;
-      scrollSnapshotRef.current = undefined;
-    }
-  }, [scrollSnapshotRef, timelineRef, scale]);
-
-  // Selection helper
-  useEffect(() => {
-    const spanId = state.selected?.span.spanId;
-    if (!spanId) return;
-
-    const timeout = setTimeout(() => {
-      const $timeline = state.timelineRef.current;
-      const $span = $timeline?.querySelector(`[data-span-id="${spanId}"]`);
-      if (!$timeline || !$span) return;
-
-      const viewRect = $timeline.getBoundingClientRect();
-      const spanRect = $span.getBoundingClientRect();
-
-      // If the selected span is narrower than the timeline, scroll it into view
-      if (
-        spanRect.width < viewRect.width &&
-        (spanRect.left < viewRect.left ||
-          spanRect.right > viewRect.right ||
-          spanRect.top < viewRect.top ||
-          spanRect.bottom > viewRect.bottom)
-      ) {
-        $span.scrollIntoView({
-          block: 'nearest',
-          inline: 'center',
-          behavior: 'smooth',
+  const setViewport = useCallback(
+    (update: ViewportRange | ((prev: ViewportRange) => ViewportRange)) => {
+      cancel();
+      if (typeof update === 'function') {
+        setViewportState((prev) => {
+          const next = update(prev);
+          currentRef.current = next;
+          return next;
         });
+      } else {
+        currentRef.current = update;
+        setViewportState(update);
       }
-    }, 500);
+    },
+    [cancel]
+  );
 
-    return () => {
-      clearTimeout(timeout);
-    };
-  }, [state.selected, state.timelineRef]);
+  useEffect(() => cancel, [cancel]);
 
-  // Global keyboard shortcuts
+  return { viewport, setViewport, animateTo };
+}
+
+// ---------------------------------------------------------------------------
+// Root component
+// ---------------------------------------------------------------------------
+
+export function TraceViewer({
+  trace,
+  onLoadMore,
+  hasMore,
+  isLoadingMore,
+}: TraceViewerProps): ReactNode {
+  return (
+    <TooltipProvider delayDuration={300}>
+      <ActiveSpanProvider spans={trace.spans}>
+        <TraceViewerContent
+          trace={trace}
+          onLoadMore={onLoadMore}
+          hasMore={hasMore}
+          isLoadingMore={isLoadingMore}
+        />
+      </ActiveSpanProvider>
+    </TooltipProvider>
+  );
+}
+
+function TraceViewerContent({
+  trace,
+  onLoadMore,
+  hasMore,
+  isLoadingMore,
+}: TraceViewerProps): ReactNode {
+  const { activeSpanId, setActiveSpan, clearActiveSpan } = useActiveSpan();
+
+  const reducedMotion = useReducedMotion();
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+
+  const paneRootRef = useRef<HTMLDivElement>(null);
+
+  const searchResult = useMemo(
+    () => searchSpans(trace.spans, deferredSearchQuery),
+    [trace.spans, deferredSearchQuery]
+  );
+
+  const root = useMemo(() => computeRootBounds(trace.spans), [trace.spans]);
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const loadMore = useCallback(() => {
+    void onLoadMore?.();
+  }, [onLoadMore]);
+  const loadMoreSentinelRef = useLoadMoreOnScroll(loadMore, {
+    hasMore: Boolean(onLoadMore && hasMore),
+    isLoadingMore: Boolean(isLoadingMore),
+    rootRef: scrollContainerRef,
+  });
+
+  const { viewport, setViewport, animateTo } = useAnimatedViewport({
+    start: root.startTime,
+    end: root.startTime + root.duration,
+  });
+
+  const prevRootRef = useRef<ViewportRange>({
+    start: root.startTime,
+    end: root.startTime + root.duration,
+  });
+
+  useEffect(() => {
+    const prevRoot = prevRootRef.current;
+    const newStart = root.startTime;
+    const newEnd = root.startTime + root.duration;
+
+    setViewport((prev) => {
+      const wasAtFullExtent =
+        Math.abs(prev.start - prevRoot.start) < 0.01 &&
+        Math.abs(prev.end - prevRoot.end) < 0.01;
+
+      if (wasAtFullExtent) {
+        return { start: newStart, end: newEnd };
+      }
+      return prev;
+    });
+
+    prevRootRef.current = { start: newStart, end: newEnd };
+  }, [root.startTime, root.duration, setViewport]);
+
+  const viewDuration = viewport.end - viewport.start;
+
+  // Keep a ref to the live viewport so zoom callbacks can read the current
+  // range without being recreated on every pan (which would bust TimelineBar's
+  // memo and re-render every row each animation frame).
+  const viewportRef = useRef(viewport);
+  viewportRef.current = viewport;
+
+  const timeMarkers = useMemo(
+    () => computeTimeMarkers(viewDuration, viewport.start - root.startTime),
+    [viewDuration, viewport.start, root.startTime]
+  );
+
+  const resetZoom = useCallback(() => {
+    animateTo({ start: root.startTime, end: root.startTime + root.duration });
+  }, [animateTo, root.startTime, root.duration]);
+
+  const clampToRoot = useCallback(
+    (next: ViewportRange): ViewportRange =>
+      clampViewportToRoot(next, root.startTime, root.endTime, MIN_VIEWPORT_MS),
+    [root.startTime, root.endTime]
+  );
+
+  // Pan (keeping the current zoom) so `timeMs` is centered in view — used by the
+  // off-screen marker indicators to scroll their marker into view.
+  const handleRevealTime = useCallback(
+    (timeMs: number) => {
+      const { start, end } = viewportRef.current;
+      const duration = end - start;
+      animateTo(
+        clampToRoot({
+          start: timeMs - duration / 2,
+          end: timeMs + duration / 2,
+        })
+      );
+    },
+    [animateTo, clampToRoot]
+  );
+
+  const ZOOM_FACTOR = 0.5;
+
+  const zoomBy = useCallback(
+    (factor: number) => {
+      const { start, end } = viewportRef.current;
+      const center = (start + end) / 2;
+      const newDuration = Math.max(MIN_VIEWPORT_MS, (end - start) * factor);
+      animateTo(
+        clampToRoot({
+          start: center - newDuration / 2,
+          end: center + newDuration / 2,
+        })
+      );
+    },
+    [animateTo, clampToRoot]
+  );
+
+  const zoomIn = useCallback(() => zoomBy(ZOOM_FACTOR), [zoomBy]);
+  const zoomOut = useCallback(() => zoomBy(1 / ZOOM_FACTOR), [zoomBy]);
+  const isAtMinZoom = viewDuration >= root.duration;
+  const isAtMaxZoom = viewDuration <= MIN_VIEWPORT_MS;
+
+  const focusViewportOnSpan = useCallback(
+    (spanId: string) => {
+      const span = trace.spans.find((s) => s.spanId === spanId);
+      if (!span) return;
+
+      const spanStart = getHighResInMs(span.startTime);
+      const spanEnd = getHighResInMs(span.endTime);
+      const spanDuration = spanEnd - spanStart;
+
+      if (spanDuration > root.duration * 0.8) {
+        animateTo({ start: root.startTime, end: root.endTime });
+        return;
+      }
+
+      const padding = Math.max(spanDuration * 0.2, MIN_VIEWPORT_MS / 2);
+      let newStart = spanStart - padding;
+      let newEnd = spanEnd + padding;
+
+      if (newEnd - newStart < MIN_VIEWPORT_MS) {
+        const center = (spanStart + spanEnd) / 2;
+        newStart = center - MIN_VIEWPORT_MS / 2;
+        newEnd = center + MIN_VIEWPORT_MS / 2;
+      }
+
+      animateTo(clampToRoot({ start: newStart, end: newEnd }));
+    },
+    [
+      animateTo,
+      trace.spans,
+      root.startTime,
+      root.endTime,
+      root.duration,
+      clampToRoot,
+    ]
+  );
+
+  // Bring a row into view when keyboard/button navigation lands on a span that
+  // sits outside the shared scroll container's visible area. The list is
+  // windowed, so an off-screen row has no DOM node to `scrollIntoView` —
+  // `scrollRowIntoView` computes the target offset from the span's index.
+  const scrollSpanIntoView = useCallback(
+    (spanId: string) => {
+      const index = trace.spans.findIndex((s) => s.spanId === spanId);
+      if (index === -1) return;
+
+      const list =
+        scrollContainerRef.current?.querySelector<HTMLElement>('#event-list') ??
+        null;
+      scrollRowIntoView(list, index, ROW_HEIGHT_PX, {
+        behavior: reducedMotion ? 'auto' : 'smooth',
+      });
+    },
+    [trace.spans, reducedMotion]
+  );
+
+  const zoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelPendingZoom = useCallback(() => {
+    if (zoomTimerRef.current !== null) {
+      clearTimeout(zoomTimerRef.current);
+      zoomTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => cancelPendingZoom, [cancelPendingZoom]);
+
+  const handleClearActiveSpan = useCallback(() => {
+    cancelPendingZoom();
+    clearActiveSpan();
+  }, [cancelPendingZoom, clearActiveSpan]);
+
+  const handleSelectSpan = useCallback(
+    (spanId: string) => {
+      cancelPendingZoom();
+      if (spanId === activeSpanId) {
+        clearActiveSpan();
+        return;
+      }
+      setActiveSpan(spanId);
+      focusViewportOnSpan(spanId);
+    },
+    [
+      cancelPendingZoom,
+      activeSpanId,
+      clearActiveSpan,
+      setActiveSpan,
+      focusViewportOnSpan,
+    ]
+  );
+
+  const navigateToSpan = useCallback(
+    (spanId: string) => {
+      setActiveSpan(spanId);
+      scrollSpanIntoView(spanId);
+      cancelPendingZoom();
+      zoomTimerRef.current = setTimeout(() => {
+        zoomTimerRef.current = null;
+        focusViewportOnSpan(spanId);
+      }, ZOOM_DEBOUNCE_MS);
+    },
+    [setActiveSpan, scrollSpanIntoView, cancelPendingZoom, focusViewportOnSpan]
+  );
+
+  const [altHeld, setAltHeld] = useState(false);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
-        dispatch({
-          type: 'escape',
-        });
+        handleClearActiveSpan();
+      } else if (e.key === 'Alt') {
+        setAltHeld(true);
       }
     };
-    window.addEventListener('keydown', onKeyDown);
+    const onKeyUp = (e: KeyboardEvent): void => {
+      if (e.key === 'Alt') setAltHeld(false);
+    };
+    const onBlur = (): void => setAltHeld(false);
 
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
     };
-  }, [dispatch]);
+  }, [handleClearActiveSpan]);
 
-  // Scroll locking
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const [hover, setHover] = useState<TimelineHover | null>(null);
+
+  const hoverInfo = useMemo(() => {
+    if (hover == null) return null;
+    const absTime = viewport.start + hover.fraction * viewDuration;
+    const offset = absTime - root.startTime;
+    return { fraction: hover.fraction, label: formatDurationPrecise(offset) };
+  }, [hover, viewport.start, viewDuration, root.startTime]);
+
+  const handleTimelineMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const el = timelineRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const contentWidth = rect.width - TIMELINE_PADDING_PX * 2;
+      if (contentWidth <= 0) return;
+      const fraction = Math.max(
+        0,
+        Math.min(
+          1,
+          (e.clientX - rect.left - TIMELINE_PADDING_PX) / contentWidth
+        )
+      );
+      setHover({
+        fraction,
+        rowIndex: Math.floor((e.clientY - rect.top) / ROW_HEIGHT_PX),
+      });
+    },
+    []
+  );
+
+  const handleTimelineMouseLeave = useCallback(() => {
+    setHover(null);
+  }, []);
+
   useEffect(() => {
-    if (!scrollLock) return;
+    const el = timelineRef.current;
+    if (!el || root.duration <= 0) return;
 
-    const $html = document.documentElement;
-    const $body = document.body;
+    const onWheel = (e: WheelEvent): void => {
+      const isZoomGesture = e.ctrlKey || e.metaKey;
+      const hasDeltaX = Math.abs(e.deltaX) > Math.abs(e.deltaY);
 
-    $html.style.overflow = 'clip';
-    $body.style.overflow = 'clip';
+      if (!isZoomGesture && !hasDeltaX) return;
+      e.preventDefault();
 
-    const onScroll = (event?: Event): void => {
-      if (event?.cancelable) {
-        event.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const contentWidth = rect.width - TIMELINE_PADDING_PX * 2;
+      if (contentWidth <= 0) return;
+
+      if (isZoomGesture) {
+        const cursorFraction = Math.max(
+          0,
+          Math.min(
+            1,
+            (e.clientX - rect.left - TIMELINE_PADDING_PX) / contentWidth
+          )
+        );
+        const scaleFactor = wheelZoomScaleFactor(e);
+
+        setViewport((prev) => {
+          const prevDuration = prev.end - prev.start;
+          const cursorTime = prev.start + cursorFraction * prevDuration;
+          // Clamp the duration before anchoring so the cursor keeps its
+          // fraction even when the zoom hits the min/max bounds.
+          const newDuration = Math.max(
+            MIN_VIEWPORT_MS,
+            Math.min(root.duration, prevDuration * scaleFactor)
+          );
+          return clampToRoot({
+            start: cursorTime - cursorFraction * newDuration,
+            end: cursorTime + (1 - cursorFraction) * newDuration,
+          });
+        });
       } else {
-        window.scrollTo({
-          left: 0,
-          top: 0,
-          behavior: 'instant',
+        const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
+        setViewport((prev) => {
+          const panAmount = (dx / contentWidth) * (prev.end - prev.start);
+          return clampToRoot({
+            start: prev.start + panAmount,
+            end: prev.end + panAmount,
+          });
         });
       }
     };
-    onScroll();
-    window.addEventListener('scroll', onScroll, {
-      passive: false,
-    });
 
-    return () => {
-      $html.style.overflow = '';
-      $body.style.overflow = '';
-      window.removeEventListener('scroll', onScroll);
-    };
-  }, [scrollLock]);
-
-  const timelineHeight = Math.max(
-    state.timelineHeight - state.scrollbarWidth,
-    MARKER_HEIGHT +
-      ROW_PADDING +
-      rows.length * (ROW_HEIGHT + ROW_PADDING) -
-      ROW_PADDING +
-      // When there are enough spans to be near the bottom edge, add some extra padding
-      // to avoid overlapping with the zoom buttons, etc.
-      84
-  );
-
-  const inert = Boolean(state.isMobile && state.selected);
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [root.duration, setViewport, clampToRoot]);
 
   return (
     <div
-      className={clsx(
-        styles.traceViewer,
-        isSkeleton && styles.skeleton,
-        className
-      )}
-      onClickCapture={onClick}
-      ref={ref}
-      style={
-        {
-          height,
-          '--timeline-padding': `${TIMELINE_PADDING}px`,
-          '--row-height': `${ROW_HEIGHT}px`,
-          '--row-padding': `${ROW_PADDING}px`,
-          '--search-height': `${!hideSearchBar ? SEARCH_HEIGHT : 0}px`,
-          '--search-gap': `${!hideSearchBar ? SEARCH_GAP : 2}px`,
-          '--map-height': `${MAP_HEIGHT}px`,
-          '--timeline-width': `${state.timelineWidth}px`,
-          '--timeline-height': `${state.timelineHeight}px`,
-          '--timeline-scroll-width': `${Math.round(state.root.duration * state.scale)}px`,
-          '--panel-width': `${state.panelWidth}px`,
-          '--panel-height': `${state.panelHeight}px`,
-          '--height': `${state.height}px`,
-          '--scrollbar-width': `${state.scrollbarWidth}px`,
-          '--marker-height': `${MARKER_HEIGHT}px`,
-          '--marker-notch-height': `${MARKER_NOTCH_HEIGHT}px`,
-        } as CSSProperties
-      }
+      ref={paneRootRef}
+      data-pane="pane-root"
+      className="relative flex w-full h-full max-h-full"
     >
-      {!hideSearchBar ? <SearchBar /> : null}
-      <MiniMap rows={rows} scale={scale} timelineRef={timelineRef} />
-      <div className={clsx(styles.traceViewerContent, inert && styles.inert)}>
-        <div className={styles.timeline} ref={timelineRef}>
-          <div
-            className="relative p-2 pb-0"
-            style={{
-              width: state.timelineWidth,
-              minHeight: state.timelineHeight - TIMELINE_PADDING * 2,
-            }}
-          >
-            <div
-              className={styles.traceNode}
-              style={{
-                width: state.root.duration * scale || undefined,
-                height: timelineHeight - TIMELINE_PADDING * 2,
-              }}
-            >
-              <Markers scale={scale} isLive={isLive} />
-              <EventMarkers events={events} root={state.root} scale={scale} />
-              <CursorMarker
-                dispatch={dispatch}
-                events={events}
-                memoCacheRef={state.memoCacheRef}
-                root={state.root}
-                scale={scale}
-                scrollSnapshotRef={scrollSnapshotRef}
-                spans={spans}
-                timelineRef={timelineRef}
+      <div
+        id="trace-parent"
+        className="@container flex-1 min-w-0 grid grid-rows-[auto_1fr] h-full min-h-0 overflow-hidden relative bg-background-100"
+      >
+        <Minimap
+          spans={trace.spans}
+          root={root}
+          viewport={viewport}
+          minViewportMs={MIN_VIEWPORT_MS}
+          onViewportChange={setViewport}
+          onAnimateTo={animateTo}
+        />
+        <SplitPane
+          scrollContainerRef={scrollContainerRef}
+          startHeader={
+            <div className="bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-center pl-4 pr-2 gap-1.5">
+              <Search className="w-3.5 h-3.5 shrink-0 text-gray-800" />
+              <input
+                id="trace-viewer-search"
+                name="trace-viewer-search"
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape' && searchQuery) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setSearchQuery('');
+                  }
+                }}
+                placeholder="Search spans..."
+                aria-label="Search spans"
+                className="flex-1 min-w-0 bg-transparent text-label-14 text-gray-1000 placeholder:text-gray-800 outline-none"
               />
-              <SpanNodes
-                cacheKey={memoCache.get('')}
-                cache={memoCache}
-                customSpanClassNameFunc={state.customSpanClassNameFunc}
-                customSpanEventClassNameFunc={
-                  state.customSpanEventClassNameFunc
-                }
-                isLive={isLive}
-                root={state.root}
-                scale={scale}
-                scrollSnapshotRef={scrollSnapshotRef}
-                spans={spans}
-              />
-              {/* Horizontal "unknown time" overlay — covers the region to the
-                  right of the latest known event, indicating data beyond this
-                  point hasn't been loaded yet. */}
-              {knownDurationMs != null &&
-                knownDurationMs > 0 &&
-                (hasMoreData || isLive) &&
-                state.root.duration > 0 &&
-                (() => {
-                  const knownPx = knownDurationMs * scale;
-                  const totalPx = state.root.duration * scale;
-                  const unknownWidth = totalPx - knownPx;
-                  // Only show if the unknown region is meaningfully wide
-                  if (unknownWidth < 4) return null;
-                  // Offset ~5% into the unknown region so it doesn't touch spans
-                  const insetPx = Math.min(unknownWidth * 0.05, 20);
-                  return (
-                    <div
-                      className="pointer-events-none absolute top-0 z-[1] h-full bg-[repeating-linear-gradient(-45deg,var(--ds-background-200)_0,var(--ds-background-200)_11px,var(--ds-gray-200)_11px,var(--ds-gray-200)_12px)] [mask-image:linear-gradient(to_right,transparent_1%,black_3%)] [-webkit-mask-image:linear-gradient(to_right,transparent_1%,black_3%)]"
-                      style={{
-                        left: knownPx + insetPx,
-                        width: unknownWidth - insetPx,
-                      }}
-                    />
-                  );
-                })()}
+              {searchQuery && (
+                <button
+                  type="button"
+                  aria-label="Clear search"
+                  onClick={() => setSearchQuery('')}
+                  className="-mr-2 hidden h-full max-w-full shrink-0 cursor-pointer items-center rounded-r-md border-0 bg-transparent px-2.5 font-inherit text-label-16 text-gray-900 no-underline transition-colors duration-150 ease-in hover:text-gray-1000 focus-visible:-outline-offset-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ds-focus-color)] min-[961px]:flex"
+                >
+                  <Kbd variant="outline" size="search">
+                    Esc
+                  </Kbd>
+                </button>
+              )}
+            </div>
+          }
+          endHeader={
+            <TimelineHeader markers={timeMarkers} hoverInfo={hoverInfo} />
+          }
+        >
+          <div className="block overflow-visible">
+            <EventList
+              spans={trace.spans}
+              activeSpanId={activeSpanId}
+              searchResult={searchResult}
+              onSelectSpan={handleSelectSpan}
+            />
+            <div ref={loadMoreSentinelRef} className="flex justify-center">
+              {isLoadingMore ? (
+                <div className="flex items-center justify-center gap-2 py-3 text-label-14 text-gray-800">
+                  <Spinner size={14} />
+                  <span>Loading spans…</span>
+                </div>
+              ) : null}
             </div>
           </div>
-          {footer}
-        </div>
-        <div className={styles.zoomButtonTraceViewer}>
-          <ZoomButton />
-        </div>
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: timeline hover and wheel gestures are pointer-only annotations */}
+          <div
+            ref={timelineRef}
+            id="trace-timeline"
+            className="@container block min-h-0 overflow-visible relative"
+            onDoubleClick={resetZoom}
+            onMouseMove={handleTimelineMouseMove}
+            onMouseLeave={handleTimelineMouseLeave}
+          >
+            <Timeline
+              spans={trace.spans}
+              viewStart={viewport.start}
+              viewEnd={viewport.end}
+              markers={timeMarkers}
+              selectedId={activeSpanId}
+              searchResult={searchResult}
+              onSelect={handleSelectSpan}
+              onRevealTime={handleRevealTime}
+              hover={hover}
+              altHeld={altHeld}
+            />
+          </div>
+          <>
+            <TraceShortcutHelper
+              hasMultipleSpans={trace.spans.length > 1}
+              reducedMotion={reducedMotion}
+            />
+            <div className="pointer-events-auto flex items-center border border-gray-alpha-400 rounded-md bg-background-100 shadow-sm overflow-hidden divide-x divide-gray-alpha-400">
+              <IconButton
+                variant="muted"
+                size="small"
+                onClick={zoomOut}
+                disabled={isAtMinZoom}
+                aria-label="Zoom out"
+              >
+                <ZoomOut className="w-4 h-4" />
+              </IconButton>
+              <IconButton
+                variant="muted"
+                size="small"
+                onClick={resetZoom}
+                aria-label="Reset zoom"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+              </IconButton>
+              <IconButton
+                variant="muted"
+                size="small"
+                onClick={zoomIn}
+                disabled={isAtMaxZoom}
+                aria-label="Zoom in"
+              >
+                <ZoomIn className="w-4 h-4" />
+              </IconButton>
+            </div>
+          </>
+        </SplitPane>
       </div>
-      {withPanel ? (
-        <div
-          className={clsx(
-            styles.spanDetailPanelTraceViewer,
-            !state.selected && styles.hidden,
-            state.isMobile && styles.mobile
-          )}
-        >
-          <SpanDetailPanel attached />
-        </div>
-      ) : null}
+
+      <TraceDetailPanel
+        containerRef={paneRootRef}
+        onNavigateToSpan={navigateToSpan}
+        onClose={handleClearActiveSpan}
+      />
     </div>
-  );
-}
-
-export function TraceViewerPanel({
-  className = '',
-  children = null,
-}: {
-  className?: string;
-  children?: ReactNode;
-}): ReactNode {
-  const { state } = useTraceViewer();
-
-  if (!state.selected) {
-    return children;
-  }
-
-  return (
-    <div
-      className={clsx(
-        styles.spanDetailPanelTraceViewer,
-        'relative [--height:100%] [--map-height:0] [--panel-height:100%] [--panel-width:100%] [--search-gap:0] [--search-height:0]',
-        className
-      )}
-      style={
-        {
-          '--scrollbar-width': `${state.scrollbarWidth}px`,
-        } as CSSProperties
-      }
-    >
-      <SpanDetailPanel />
-    </div>
-  );
-}
-
-export function TraceViewer(props: TraceViewerProps): ReactNode {
-  return (
-    <TraceViewerContextProvider getQuickLinks={props.getQuickLinks} withPanel>
-      <TraceViewerTimeline withPanel {...props} />
-    </TraceViewerContextProvider>
   );
 }
