@@ -37,8 +37,11 @@
  *   which a run only carries if the deployment that created it could also
  *   open `encp`. The entry exists so the capability set stays a complete,
  *   auditable description of a run's decoding ability.
- * - `supportsQueueHookInput` (`hookInput` on the workflow queue payload for
- *   resilient `resumeHook()`): added in `5.0.0-beta.39`.
+ * - Lazy hook resume ("consumer re-ensures `hook_received` from `hookInput`"):
+ *   deliberately NOT tracked here. Rather than predict a release cutoff, the
+ *   run's creating deployment stamps an explicit `hookResumeInputVersion`
+ *   execution-context marker; `resumeHook()` gates the parallel fast path on
+ *   that marker (mirrored onto the hook's resumeContext by the server).
  */
 
 import semver from 'semver';
@@ -67,16 +70,6 @@ export interface RunCapabilities {
    * raw bytes (the legacy format) for compatibility with older runs.
    */
   framedByteStreams: boolean;
-
-  /**
-   * Whether the target run's deployment understands `hookInput` on the
-   * workflow queue payload (resilient `resumeHook()`). Older runtimes parse
-   * the queue message with a schema that silently strips unknown fields, so
-   * sending `hookInput` to them would silently drop the resume payload —
-   * `resumeHook()` must fail fast (propagate the original event-write error)
-   * instead of taking the resilient path for such runs.
-   */
-  supportsQueueHookInput: boolean;
 }
 
 /**
@@ -109,32 +102,6 @@ const FORMAT_VERSION_TABLE: ReadonlyArray<{
 ];
 
 /**
- * The first published `@workflow/core` version that understands `hookInput`
- * on the workflow queue payload (resilient `resumeHook()`).
- *
- * TODO(release): verify this matches the actual first published version that
- * ships resilient `resumeHook()`. The latest published beta at the time this
- * was last verified is `5.0.0-beta.38`, which does NOT contain this feature —
- * so the next release, `5.0.0-beta.39`, is the earliest possible carrier. If
- * a "Version Packages (beta)" PR merges before this change, bump to the next
- * beta. A too-low cutoff silently loses resume payloads on older deployments
- * (their queue-payload schema strips `hookInput`); too-high only disables the
- * resilient path (fail-fast, today's behavior), which is safe.
- *
- * This MUST be re-verified at the actual combined SDK RELEASE, not at
- * source-merge time: this PR (#1834) merges source-only, and per the agreed
- * release gate no SDK is published from it alone — the successor
- * parallel-resume work (#3230) must first be rebased onto this, reviewed,
- * and merged, with its server-side atomic dedup support deployed. Every
- * "Version Packages (beta)" merge between now and that release moves the
- * earliest possible carrier, so the release that finally ships the feature
- * must confirm this constant names its own version (or bump it).
- *
- * Exported for tests so the boundary is defined in exactly one place.
- */
-export const QUEUE_HOOK_INPUT_MIN_VERSION = '5.0.0-beta.39';
-
-/**
  * Maps non-format capability flags (booleans on `RunCapabilities`) to the
  * minimum `@workflow/core` version that introduced support for them.
  */
@@ -148,20 +115,12 @@ const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
   // consumers that cannot unframe them (silent corruption); too-high merely
   // delays the optimization (safe).
   { capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' },
-  // See QUEUE_HOOK_INPUT_MIN_VERSION above for the TODO(release) note.
-  //
-  // Deliberately NO own-version escape hatch: a published deployment can
-  // share a version string with an unpublished build that has different
-  // contents (e.g. `5.0.0-beta.38` is published without this feature, while
-  // a main-built tarball reporting the same version contains it). Version
-  // strings do not identify builds, so runs recorded below this cutoff are
-  // always gated off — pre-release builds simply fall back to fail-fast
-  // until the version is bumped past the cutoff, which is the safe
-  // direction (a resume never reports success it cannot deliver).
-  {
-    capability: 'supportsQueueHookInput',
-    minVersion: QUEUE_HOOK_INPUT_MIN_VERSION,
-  },
+  // NOTE: lazy hook resume ("does the consumer re-ensure `hook_received` from
+  // the queue message's `hookInput`?") is intentionally NOT gated here. A
+  // version-compare against a predicted release cutoff is a guess; instead the
+  // run's creating deployment stamps an explicit `hookResumeInputVersion`
+  // marker into its execution context, which the server mirrors onto the hook's
+  // resumeContext. `resumeHook()` gates the parallel fast path on that marker.
 ];
 
 /**
@@ -189,7 +148,6 @@ export function getRunCapabilities(
     return {
       supportedFormats: BASELINE_FORMATS,
       framedByteStreams: false,
-      supportsQueueHookInput: false,
     };
   }
 
@@ -204,7 +162,6 @@ export function getRunCapabilities(
   const result: RunCapabilities = {
     supportedFormats: formats,
     framedByteStreams: false,
-    supportsQueueHookInput: false,
   };
 
   for (const { capability, minVersion } of CAPABILITY_VERSION_TABLE) {
