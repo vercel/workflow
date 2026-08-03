@@ -109,13 +109,16 @@ async function queueStepMessage(params: {
   workflowRun: WorkflowRun;
   step: PendingStep;
   delaySeconds?: number;
+  /** Queue namespace of the incoming delivery (multi-tenant queue prefix). */
+  namespace?: string;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<void> {
-  const { world, runId, workflowRun, step, delaySeconds, wfdiag } = params;
+  const { world, runId, workflowRun, step, delaySeconds, namespace, wfdiag } =
+    params;
   const traceCarrier = await serializeTraceCarrier();
   await queueMessage(
     world,
-    getWorkflowQueueName(workflowRun.workflowName),
+    getWorkflowQueueName(workflowRun.workflowName, namespace),
     {
       runId,
       stepId: step.correlationId,
@@ -159,6 +162,8 @@ async function dispatchPendingOps(params: {
    * instead of both invocations bare-starting the same step.
    */
   skipStepCreation?: Set<string>;
+  /** Queue namespace of the incoming delivery (multi-tenant queue prefix). */
+  namespace?: string;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<{
   createdAttributeEvent: boolean;
@@ -167,6 +172,7 @@ async function dispatchPendingOps(params: {
   const { world, runId, workflowRun, encryptionKey, pendingOperations } =
     params;
   const skipStepCreation = params.skipStepCreation;
+  const namespace = params.namespace;
   const wfdiag = params.wfdiag;
   // Set when a hook with a parked getConflict() awaiter had its
   // hook_created written this invocation. The workflow must be re-invoked
@@ -231,7 +237,7 @@ async function dispatchPendingOps(params: {
         if (result.event?.eventType === 'hook_conflict') {
           await queueMessage(
             world,
-            getWorkflowQueueName(workflowRun.workflowName),
+            getWorkflowQueueName(workflowRun.workflowName, namespace),
             {
               runId,
             },
@@ -528,6 +534,15 @@ export async function runWorkflowWithQuickJS(params: {
    * the in-flight body instead of requeueing the step.
    */
   ownerMessageId?: string;
+  /**
+   * Queue namespace of the incoming delivery (multi-tenant queue prefix).
+   * Threaded into every queue name this invocation derives — step
+   * dispatch, retry/throttle requeues, hook_conflict requeues, and wait
+   * continuations — so namespaced deployments publish to the queue their
+   * consumer actually reads (parity with the node engine's `namespace`
+   * plumbing in runtime.ts).
+   */
+  namespace?: string;
 }): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
@@ -540,6 +555,7 @@ export async function runWorkflowWithQuickJS(params: {
     hookInput,
     deliveryAttempt,
     ownerMessageId,
+    namespace,
   } = params;
   const world = await getWorld();
   const runId = workflowRun.runId;
@@ -990,6 +1006,7 @@ export async function runWorkflowWithQuickJS(params: {
         encryptionKey,
         pendingOperations: opsToDispatch,
         skipStepCreation: inlineClaimCids,
+        namespace,
         wfdiag,
       });
       if (
@@ -997,6 +1014,30 @@ export async function runWorkflowWithQuickJS(params: {
         dispatched.createdGetConflictHook
       ) {
         pendingRequeueSignal = true;
+      }
+
+      // Steps beyond the inline cap: their step_created was written by
+      // dispatch above (they are not in the lazy-claim set) — hand them to
+      // the queue NOW, before the cheap-progress feed below can `continue`
+      // this loop. Those step_created writes are themselves "unseen events"
+      // to the feed, and on the next iteration these steps are no longer
+      // fresh (`hasCreatedEvent` filters them out of `freshSteps`), so an
+      // enqueue placed after the feed is silently skipped forever: the step
+      // keeps a step_created with no step_started and the run wedges. (With
+      // WORKFLOW_MAX_INLINE_STEPS=0 every step is overflow, so a post-feed
+      // enqueue wedged every multi-step run under the kill-switch too.)
+      // `queuedStepIds` keeps this idempotent across iterations.
+      const overflowSteps = freshSteps.slice(inlineCandidates.length);
+      for (const step of overflowSteps) {
+        queuedStepIds.add(step.correlationId);
+        await queueStepMessage({
+          world,
+          runId,
+          workflowRun,
+          step,
+          namespace,
+          wfdiag,
+        });
       }
 
       // Complete elapsed waits so their wait_completed events are picked
@@ -1070,17 +1111,15 @@ export async function runWorkflowWithQuickJS(params: {
           if (executedStepIds.has(step.correlationId)) continue;
           if (queuedStepIds.has(step.correlationId)) continue;
           queuedStepIds.add(step.correlationId);
-          await queueStepMessage({ world, runId, workflowRun, step, wfdiag });
+          await queueStepMessage({
+            world,
+            runId,
+            workflowRun,
+            step,
+            namespace,
+            wfdiag,
+          });
         }
-      }
-
-      // Steps beyond the inline cap: their step_created was written by
-      // dispatch above (they are not in the lazy-claim set), so hand them
-      // to the queue.
-      const overflowSteps = freshSteps.slice(inlineCandidates.length);
-      for (const step of overflowSteps) {
-        queuedStepIds.add(step.correlationId);
-        await queueStepMessage({ world, runId, workflowRun, step, wfdiag });
       }
 
       if (inlineCandidates.length === 0) {
@@ -1110,7 +1149,7 @@ export async function runWorkflowWithQuickJS(params: {
         scheduledWaitContinuations.add(soonestWait.correlationId);
         await queueMessage(
           world,
-          getWorkflowQueueName(workflowRun.workflowName),
+          getWorkflowQueueName(workflowRun.workflowName, namespace),
           {
             runId,
             traceCarrier: await serializeTraceCarrier(),
@@ -1194,6 +1233,7 @@ export async function runWorkflowWithQuickJS(params: {
             workflowRun,
             step,
             delaySeconds: outcome.timeoutSeconds,
+            namespace,
             wfdiag,
           });
         } else if (outcome.type === 'gone') {
@@ -1257,6 +1297,7 @@ export async function runWorkflowWithQuickJS(params: {
           workflowRun,
           encryptionKey,
           pendingOperations: result.completed.drainOperations,
+          namespace,
           wfdiag,
         });
       } catch (err) {
@@ -1448,6 +1489,7 @@ export async function runWorkflowWithQuickJS(params: {
           workflowRun,
           encryptionKey,
           pendingOperations: result.failed.drainOperations,
+          namespace,
           wfdiag,
         });
       } catch (err) {

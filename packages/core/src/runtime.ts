@@ -1649,6 +1649,11 @@ export function workflowEntrypoint(
                         maxEventsLimit,
                         deliveryAttempt: metadata.attempt,
                         ownerMessageId: metadata.messageId,
+                        // Multi-tenant queue prefix of THIS delivery — the
+                        // entrypoint derives every queue name it publishes
+                        // to (step dispatch, requeues, wait continuations)
+                        // from it, matching the node paths below.
+                        namespace,
                         // Resilient resume (see the node block below): the
                         // QuickJS entrypoint materializes the missing
                         // hook_received from this payload itself.
