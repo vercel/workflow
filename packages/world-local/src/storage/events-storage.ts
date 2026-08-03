@@ -2485,7 +2485,7 @@ export function createEventsStorage(
               : delta;
         }
 
-        const result = {
+        const result: EventResult = {
           event: filteredEvent,
           run,
           step,

@@ -1847,7 +1847,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         };
       }
 
-      const eventResult = {
+      const eventResult: EventResult = {
         event: stripEventDataRefs(parsed, resolveData),
         run,
         step,
