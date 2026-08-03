@@ -79,6 +79,29 @@ describe('wire parity: guest serialize matches the reference codec', () => {
     ['NaN', 'NaN', () => Number.NaN],
     ['Infinity', 'Infinity', () => Number.POSITIVE_INFINITY],
     ['string', '"hello \\u2028 world"', () => 'hello \u2028 world'],
+    // JS_ToCString is NUL-terminated \u2014 an embedded U+0000 must survive the
+    // guest\u2192host read (guestString's length-checked fallback), not truncate.
+    [
+      'string with embedded NUL',
+      '"null byte \\u0000 end"',
+      () => 'null byte \u0000 end',
+    ],
+    [
+      'NUL in object key and value',
+      '({["a\\u0000b"]: "c\\u0000d"})',
+      () => ({ ['a\u0000b']: 'c\u0000d' }),
+    ],
+    [
+      'RegExp with embedded NUL in source',
+      'new RegExp("a\\u0000b")',
+      () => new RegExp('a\u0000b'),
+    ],
+    // quickjs-wasi's UTF-8 read turns one lone surrogate into THREE U+FFFD
+    // (WTF-8 bytes decoded non-fatally) — guestString's length check catches
+    // the expansion and the JSON fallback revives the surrogate exactly
+    // (QuickJS implements well-formed JSON.stringify, escaping \ud800).
+    ['lone surrogate', '"x\\uD800y"', () => 'x\uD800y'],
+    ['astral pair', '"x\\uD83D\\uDE00y"', () => 'x\uD83D\uDE00y'],
     ['boolean', 'true', () => true],
     [
       'bigint',

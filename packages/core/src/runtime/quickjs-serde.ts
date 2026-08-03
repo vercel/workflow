@@ -119,6 +119,8 @@ const CAPTURE_INTRINSICS = `(() => {
 
   return {
     // --- reading (stringify) ---
+    jsonStringify: JSON.stringify,
+    objectKeys: Object.keys,
     dateGetTime: Date.prototype.getTime,
     dateToISOString: Date.prototype.toISOString,
     regExpSource: getter(RegExp.prototype, 'source'),
@@ -272,6 +274,8 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
   };
 
   const i = {
+    jsonStringify: at('jsonStringify'),
+    objectKeys: at('objectKeys'),
     dateGetTime: at('dateGetTime'),
     dateToISOString: at('dateToISOString'),
     regExpSource: at('regExpSource'),
@@ -380,6 +384,34 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     vm.callFunction(fn, vm.undefined, ...args);
 
   /**
+   * NUL-safe guest→host string extraction.
+   *
+   * `JSValueHandle.toString()` routes through `JS_ToCString`, which
+   * returns a NUL-terminated C string: a guest string containing U+0000
+   * comes back silently truncated at the first NUL (e2e
+   * `nullByteWorkflow`). The fast path stays `toString()`, validated
+   * against the guest string's own `.length` — an own data property of
+   * the primitive's wrapper, so reading it runs no guest code, and
+   * truncation strictly shortens, so equal lengths prove the fast path
+   * was exact. On mismatch the string is re-read through the
+   * boot-captured `JSON.stringify`, whose output escapes every control
+   * character (`\u0000`) and is NUL-free by construction, then revived
+   * with host `JSON.parse`. (Verified against quickjs-wasi 3.3.0:
+   * `newString` — the host→VM direction — is length-carrying and needs
+   * no counterpart.)
+   */
+  const guestString = (handle: JSValueHandle): string => {
+    const fast = handle.toString();
+    const length = handle
+      .getProp('length')
+      .consume((h) => (h.isNumber ? h.toNumber() : Number.NaN));
+    if (fast.length === length) return fast;
+    return JSON.parse(
+      invoke(i.jsonStringify, handle).consume((h) => h.toString())
+    ) as string;
+  };
+
+  /**
    * Guest own-property check through the handle's introspection method.
    * MUST NOT be replaced with `Object.hasOwn`, which would interrogate the
    * host JSValueHandle wrapper object (always false) instead of the guest
@@ -445,7 +477,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
   ): string | undefined => {
     const handle = chained(target, key);
     if (!handle) return undefined;
-    const result = handle.isString ? handle.toString() : undefined;
+    const result = handle.isString ? guestString(handle) : undefined;
     handle.dispose();
     return result;
   };
@@ -456,7 +488,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
   ): string | undefined => {
     const handle = own(target, key);
     if (!handle) return undefined;
-    const result = handle.isString ? handle.toString() : undefined;
+    const result = handle.isString ? guestString(handle) : undefined;
     handle.dispose();
     return result;
   };
@@ -588,7 +620,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     if (handle.isBool) return handle.toBoolean();
     if (handle.isNumber) return handle.toNumber();
     if (handle.isBigInt) return guestBigInt(handle);
-    return handle.toString();
+    return guestString(handle);
   };
 
   /**
@@ -661,7 +693,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     regExpInfo: (value) => {
       if (!isHandle(value)) return d.regExpInfo(value);
       return {
-        source: call(i.regExpSource, value).consume((h) => h.toString()),
+        source: call(i.regExpSource, value).consume(guestString),
         flags: call(i.regExpFlags, value).consume((h) => h.toString()),
       };
     },
@@ -714,16 +746,36 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
         const isPlain =
           prototype.isNull || prototype.identity === i.objectPrototype.identity;
         if (!isPlain) return { kind: 'not-plain' as const };
-        const keys: string[] = [];
+        // Symbol keys come back as handles and are unaffected by the
+        // C-string path; only their enumerability matters here.
         for (const key of value.getOwnPropertyKeys()) {
           if (typeof key !== 'string') {
             const enumerable =
               value.getOwnPropertyDescriptor(key)?.enumerable ?? false;
             key.dispose();
             if (enumerable) return { kind: 'symbol-keys' as const };
-            continue;
           }
-          if (value.propertyIsEnumerable(key)) keys.push(key);
+        }
+        // String keys are enumerated INSIDE the VM (boot-captured
+        // `Object.keys` — own enumerable string keys, same set and order
+        // as the filtered host-side iteration it replaces) and read
+        // through guestString: the host-string `getOwnPropertyKeys()` /
+        // `propertyIsEnumerable()` APIs route through JS_ToCString, so a
+        // key containing U+0000 came back truncated and the property was
+        // silently dropped from serialization.
+        const keys: string[] = [];
+        const keysArray = invoke(i.objectKeys, value);
+        try {
+          const count = keysArray
+            .getProp('length')
+            .consume((h) => h.toNumber());
+          for (let idx = 0; idx < count; idx++) {
+            keysArray
+              .getProp(String(idx))
+              .consume((h) => keys.push(guestString(h)));
+          }
+        } finally {
+          keysArray.dispose();
         }
         return {
           kind: prototype.isNull ? ('null-proto' as const) : ('plain' as const),
@@ -783,7 +835,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
   ): string | undefined => {
     const handle = own(value, sym(name));
     if (!handle) return undefined;
-    const result = handle.isString ? handle.toString() : undefined;
+    const result = handle.isString ? guestString(handle) : undefined;
     handle.dispose();
     return result;
   };
@@ -1069,7 +1121,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     RegExp: (value) => {
       if (!isHandle(value) || tagOfHandle(value) !== 'RegExp') return false;
       return {
-        source: call(i.regExpSource, value).consume((h) => h.toString()),
+        source: call(i.regExpSource, value).consume(guestString),
         flags: call(i.regExpFlags, value).consume((h) => h.toString()),
       };
     },
