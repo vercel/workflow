@@ -13,7 +13,6 @@ import {
   isWaitEventType,
   type WorkflowRun,
 } from '@workflow/world';
-import type { Span } from '../components/trace-viewer/types';
 import {
   getEventTimestamp,
   hookToSpan,
@@ -23,6 +22,7 @@ import {
   waitToSpan,
 } from '../components/workflow-traces/trace-span-construction';
 import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
+import type { Span } from './trace-types';
 
 /**
  * Events that belong to the run root span rather than a child entity span.

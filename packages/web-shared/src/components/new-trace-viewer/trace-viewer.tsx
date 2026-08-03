@@ -12,10 +12,6 @@ import {
 } from 'react';
 import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
-import {
-  formatDurationPrecise,
-  getHighResInMs,
-} from '../trace-viewer/util/timing';
 import { IconButton } from '../ui/icon-button';
 import { Kbd } from '../ui/kbd';
 import { Spinner } from '../ui/spinner';
@@ -35,6 +31,7 @@ import { ROW_HEIGHT_PX, scrollRowIntoView } from './components/use-row-window';
 import { ActiveSpanProvider, useActiveSpan } from './context';
 import { searchSpans } from './search';
 import type { TraceWithMeta } from './types';
+import { formatDurationPrecise, getHighResInMs } from './util/timing';
 import {
   clampViewportToRoot,
   computeRootBounds,

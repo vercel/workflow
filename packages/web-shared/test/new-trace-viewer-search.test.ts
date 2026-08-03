@@ -3,7 +3,7 @@ import {
   parseSpanSearchQuery,
   searchSpans,
 } from '../src/components/new-trace-viewer/search.js';
-import type { Span } from '../src/components/trace-viewer/types.js';
+import type { Span } from '../src/lib/trace-types.js';
 
 function makeSpan(overrides: Partial<Span> = {}): Span {
   return {
