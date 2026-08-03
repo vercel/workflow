@@ -8,7 +8,7 @@ import {
   isTerminalStepEventType,
   type WorkflowRun,
 } from '@workflow/world';
-import type { Span, SpanEvent } from '../trace-viewer/types';
+import type { Span, SpanEvent } from '../../lib/trace-types';
 import { shouldShowVerticalLine } from './event-colors';
 import { calculateDuration, dateToOtelTime } from './trace-time-utils';
 
