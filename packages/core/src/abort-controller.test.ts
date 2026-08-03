@@ -11,11 +11,11 @@ import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createCorrelationIdGenerator,
   isPerKindCorrelationIdsEnabled,
 } from './correlation-id.js';
-import { describe, expect, it, vi } from 'vitest';
 import { DEFERRED_CHECK_DELAY_MS, EventsConsumer } from './events-consumer.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';

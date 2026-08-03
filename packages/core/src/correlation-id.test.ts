@@ -134,11 +134,11 @@ describe('createCorrelationIdGenerator', () => {
 });
 
 describe('isPerKindCorrelationIdsEnabled', () => {
-  it('reads WORKFLOW_PER_KIND_CORRELATION_IDS, defaulting to enabled', () => {
+  it('reads WORKFLOW_PER_KIND_CORRELATION_IDS, defaulting to disabled', () => {
     const original = process.env.WORKFLOW_PER_KIND_CORRELATION_IDS;
     try {
       delete process.env.WORKFLOW_PER_KIND_CORRELATION_IDS;
-      expect(isPerKindCorrelationIdsEnabled()).toBe(true);
+      expect(isPerKindCorrelationIdsEnabled()).toBe(false);
       process.env.WORKFLOW_PER_KIND_CORRELATION_IDS = '1';
       expect(isPerKindCorrelationIdsEnabled()).toBe(true);
       process.env.WORKFLOW_PER_KIND_CORRELATION_IDS = '0';

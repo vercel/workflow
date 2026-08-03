@@ -2,7 +2,7 @@ import { types } from 'node:util';
 import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
-import { monotonicFactory } from 'ulid';
+import { decodeTime, monotonicFactory } from 'ulid';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 import { DEFERRED_CHECK_DELAY_MS } from './events-consumer.js';
 import type { WorkflowSuspension } from './global.js';
@@ -301,6 +301,99 @@ describe('runWorkflow', () => {
         ops
       )
     ).toEqual(3);
+  });
+
+  it('keeps IDs minted through STABLE_ULID on the run clock', async () => {
+    // Serialization mints stream names (and an abort holder's identity) through
+    // the STABLE_ULID global, calling it with no seed time. `monotonicFactory`
+    // returns `encodeTime(lastTime)` on its increment branch, so binding the raw
+    // factory there let one such call latch the *host* wall clock into
+    // `lastTime`: the stream ID and every correlation ID drawn after it carried a
+    // timestamp that differs on every replay. This drives the binding through
+    // `runWorkflow` rather than the generator, so reverting the binding site to
+    // the raw factory fails here.
+    const ops: Promise<any>[] = [];
+    const workflowRunId = 'wrun_stable_ulid';
+    const startedAt = new Date('2024-01-01T00:00:00.000Z');
+    const workflowRun: WorkflowRun = {
+      runId: workflowRunId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        workflowRunId,
+        noEncryptionKey,
+        ops
+      ),
+      createdAt: startedAt,
+      updatedAt: startedAt,
+      startedAt,
+      deploymentId: 'test-deployment',
+    };
+
+    // Derive the IDs the run should mint, in draw order, with the same seeded
+    // factory runWorkflow uses: the stream draw first, then the step that
+    // follows it. The step's recorded event only matches if the stream draw left
+    // the sequence on `fixedTimestamp`.
+    const seed = `${workflowRunId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`;
+    const fixedTimestamp = +startedAt;
+    const vm = createContext({ seed, fixedTimestamp });
+    const ulid = monotonicFactory(() => vm.globalThis.Math.random());
+    const expectedStreamId = ulid(fixedTimestamp);
+    const stepCorr = `step_${ulid(fixedTimestamp)}`;
+
+    const events: Event[] = [
+      {
+        eventId: 'event-0',
+        runId: workflowRunId,
+        eventType: 'step_started',
+        correlationId: stepCorr,
+        eventData: { stepName: 'add' },
+        createdAt: startedAt,
+      },
+      {
+        eventId: 'event-1',
+        runId: workflowRunId,
+        eventType: 'step_completed',
+        correlationId: stepCorr,
+        eventData: {
+          stepName: 'add',
+          result: await dehydrateStepReturnValue(
+            3,
+            workflowRunId,
+            noEncryptionKey,
+            ops
+          ),
+        },
+        createdAt: startedAt,
+      },
+    ];
+
+    const result = await runWorkflow(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+          async function workflow() {
+            // Stands in for serialization, which is what actually calls this.
+            const streamId = globalThis[Symbol.for("WORKFLOW_STABLE_ULID")]();
+            const a = await add(1, 2);
+            return { streamId, a };
+          }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      events,
+      noEncryptionKey
+    );
+
+    const returned = (await hydrateWorkflowReturnValue(
+      result as any,
+      workflowRunId,
+      noEncryptionKey,
+      ops
+    )) as { streamId: string; a: number };
+
+    expect(decodeTime(returned.streamId)).toBe(fixedTimestamp);
+    expect(returned.streamId).toBe(expectedStreamId);
+    // Consuming the recorded completion is the other half: a stream draw that
+    // moved the clock would have renamed this step out of its own event log.
+    expect(returned.a).toBe(3);
   });
 
   // Test that timestamps update correctly as events are consumed

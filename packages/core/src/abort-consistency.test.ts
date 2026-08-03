@@ -10,11 +10,11 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createCorrelationIdGenerator,
   isPerKindCorrelationIdsEnabled,
 } from './correlation-id.js';
-import { describe, expect, it, vi } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
 import type { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';

@@ -27,6 +27,13 @@ import { encodeTime, incrementBase32 } from 'ulid';
  * prefixed 26-char ULIDs by the backend, and they stay monotonic *within* a
  * kind, because `hooks.list` is ordered by hook id.
  *
+ * Monotonicity is per kind, and two kinds mint `hook_` ids (`hook` and
+ * `abortHook`), so listing order is only creation order *within* each of them.
+ * No world filters system hooks out of a listing, so a run that constructs an
+ * abort controller and also creates its own hooks lists that system hook at a
+ * position decided by its kind's hash rather than at its creation position.
+ * Order among the user's own hooks is unaffected.
+ *
  * This does not make ids independent of *ordinal position within their own
  * kind*: two replays that disagree about how many steps ran still mint
  * different ids for the next step. That is a narrower failure than the shared
@@ -52,9 +59,12 @@ export type CorrelationIdKind =
   /** `hook_` ids for the internal system hook backing an abort controller. */
   | 'abortHook'
   /**
-   * Stream ids minted during serialization (`STABLE_ULID`). Not a correlation
-   * id, but it drew from the same shared sequence, so a workflow that
-   * serialized a stream renumbered every entity created after it.
+   * Ids minted during serialization (`STABLE_ULID`): stream names, and an abort
+   * holder's stream name and `abrt_` hook token when it reaches serialization
+   * without an identity yet (`reduceAbortWithListener`), which is why `abort`
+   * above is not the only mint path for an abort identity. Not correlation ids,
+   * but they drew from the same shared sequence, so a workflow that serialized
+   * a stream renumbered every entity created after it.
    */
   | 'stream';
 
@@ -202,13 +212,23 @@ export const CORRELATION_ID_LENGTH = TIME_CHARS + BODY_CHARS;
 
 /**
  * Whether each entity family draws correlation ids from its own sequence rather
- * than from one sequence shared by the whole run.
+ * than from one sequence shared by the whole run. Off unless opted in, so an SDK
+ * upgrade alone never moves a run between schemes.
  *
- * A run cannot change scheme mid-flight: a replay under the other scheme mints
- * ids its own earlier events do not carry, so it can consume none of them. On
- * Vercel, skew protection keeps a run on the deployment that started it, which
- * makes the flag safe to flip there.
+ * The invariant either way: a run must replay under the scheme that minted its
+ * ids. A replay under the other scheme mints ids its own earlier events do not
+ * carry, so it can consume none of them and fails the run. Two things can break
+ * it, and both are about turning the flag on rather than about upgrading:
+ *
+ * - Enabling it while runs are in flight. On Vercel, skew protection keeps a run
+ *   on the deployment that started it, so a run only ever sees the value baked
+ *   into its own deployment. Elsewhere (world-postgres, world-local, a
+ *   self-hosted process) nothing pins a run to the code that started it, so
+ *   enable it during a quiet window.
+ * - A rolling deploy that leaves both values live, which puts two schemes on one
+ *   run concurrently — the side-by-side append this whole mechanism exists to
+ *   avoid. Roll the value out to the whole fleet at once.
  */
 export function isPerKindCorrelationIdsEnabled(): boolean {
-  return process.env.WORKFLOW_PER_KIND_CORRELATION_IDS !== '0';
+  return process.env.WORKFLOW_PER_KIND_CORRELATION_IDS === '1';
 }
