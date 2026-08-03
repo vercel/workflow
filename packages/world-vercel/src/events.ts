@@ -659,20 +659,10 @@ async function createWorkflowRunEventInner(
     ...(params?.computeInstanceId
       ? { computeInstanceId: params.computeInstanceId }
       : {}),
-    // Precondition snapshot. The three fields describe one snapshot and the
-    // runtime always sends them together (or not at all); each is spread
-    // independently only so an older server that knows one but not the
-    // others still gets what it understands.
-    ...(params?.stateUpdatedAt !== undefined
-      ? { stateUpdatedAt: params.stateUpdatedAt }
-      : {}),
-    ...(params?.stateEventCount !== undefined
-      ? { stateEventCount: params.stateEventCount }
-      : {}),
+    stateUpdatedAt: params?.stateUpdatedAt,
+    stateEventCount: params?.stateEventCount,
     ...(params?.stateCursor ? { stateCursor: params.stateCursor } : {}),
-    ...(params?.replayDivergenceCount !== undefined
-      ? { replayDivergenceCount: params.replayDivergenceCount }
-      : {}),
+    replayDivergenceCount: params?.replayDivergenceCount,
     occurredAt: params?.occurredAt ?? new Date(),
     // Opt-in inline-delta: forward the cursor the runtime held before
     // this write so the server can return the authoritative event-log

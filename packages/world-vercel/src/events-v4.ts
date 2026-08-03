@@ -270,9 +270,9 @@ const CreateEventV4PageSchema = z.union([
     hasMore: z.boolean(),
   }),
   z.object({
-    events: z.undefined().optional(),
-    cursor: z.undefined().optional(),
-    hasMore: z.undefined().optional(),
+    events: z.undefined(),
+    cursor: z.undefined(),
+    hasMore: z.undefined(),
   }),
 ]);
 
