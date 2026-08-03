@@ -2485,23 +2485,24 @@ export function createEventsStorage(
               : delta;
         }
 
-        // Return EventResult with event and any created/updated entity
-        return {
+        const result = {
           event: filteredEvent,
           run,
           step,
           hook,
           wait,
-          ...(eventPage
-            ? {
-                events: eventPage.data,
-                cursor: eventPage.cursor,
-                hasMore: eventPage.hasMore,
-              }
-            : {}),
           ...(stepCreatedLazily ? { stepCreated: true } : {}),
           // Per-run event ceiling (mirrors the Vercel World).
           ...(run ? { maxEvents: getMaxEventsPerRun() } : {}),
+        };
+
+        if (!eventPage) return result;
+
+        return {
+          ...result,
+          events: eventPage.data,
+          cursor: eventPage.cursor,
+          hasMore: eventPage.hasMore,
         };
       } // end createImpl
     },
