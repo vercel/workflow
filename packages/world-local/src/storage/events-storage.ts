@@ -204,6 +204,19 @@ const HookResumeClaimSchema = z.object({
   payloadDigest: z.string().optional(),
 });
 
+/**
+ * How long a writer that adopted a claim's pinned event id waits for that event
+ * to become reader-visible.
+ *
+ * It is waiting on the other writer of the same resume, which holds the position
+ * staged under `.locks` while it re-checks the run's terminal marker and links
+ * the file into `events/`: two filesystem operations, so the window is short and
+ * the wait almost always ends on the first look. The bound exists for the one
+ * case that never ends — a writer that died between staging and promoting, whose
+ * staged file no one will ever promote or clean up.
+ */
+const PINNED_EVENT_WAIT_MS = 2_000;
+
 async function readHookTokenClaim(
   constraintPath: string
 ): Promise<z.infer<typeof HookTokenClaimSchema> | null> {
@@ -304,6 +317,34 @@ async function findExistingHookCreatedEventId(
     getId: (event) => event.eventId,
   });
   return result.data[0]?.eventId ?? null;
+}
+
+/**
+ * The run's committed `hook_received` for one resume, if it has one.
+ *
+ * The resume claim records where the event is going to be published, and in a
+ * slot-numbered run that is only a hint: another instance can allocate the same
+ * position for an unrelated event from its own book, and then the claim points
+ * at a stranger. The key the event itself carries is the durable identity, so
+ * this scan is what decides whether a resume has already been recorded.
+ */
+async function findCommittedResumeEvent(
+  basedir: string,
+  runId: string,
+  resumeId: string
+): Promise<Event | null> {
+  const result = await paginatedFileSystemQuery({
+    directory: path.join(basedir, 'events'),
+    schema: EventSchema,
+    filePrefix: `${runId}-`,
+    filter: (event) =>
+      event.eventType === 'hook_received' && event.resumeId === resumeId,
+    limit: 1,
+    getCreatedAt: getObjectCreatedAt('evnt'),
+    getOrderTime: eventOrderTime,
+    getId: (event) => event.eventId,
+  });
+  return result.data[0] ?? null;
 }
 
 /**
@@ -754,9 +795,10 @@ export function createEventsStorage(
 
       // A slot-numbered create reserves its position before running the
       // validation and materialization that may still reject it. Handing the
-      // reservation back on the way out is what keeps the log dense: an
-      // abandoned slot below a sibling's published one is a hole that can never
-      // be filled, and a log with a hole can no longer prove it is complete.
+      // reservation back on the way out — whether the create throws or returns
+      // another writer's event — is what keeps the log dense: an abandoned slot
+      // below a sibling's published one is a hole that can never be filled, and
+      // a log with a hole can no longer prove it is complete.
       const reserved = new Set<number>();
       let reservedRunId: string | undefined;
       /**
@@ -774,9 +816,14 @@ export function createEventsStorage(
        */
       let eventCommitted = false;
       /**
-       * Hands the slots of a create that never published back to the allocator,
-       * so an abandoned reservation below a sibling's published slot does not
-       * become a hole the run can never fill.
+       * Hands the slots of a create that never published back to the allocator.
+       *
+       * The allocator recycles a returned position only while it is still the
+       * top of the book, which is the case that keeps a run dense: a create that
+       * takes the next position and then publishes nothing would otherwise leave
+       * the log one short forever. A position that already sits below a
+       * sibling's published event stays empty by design — reusing it there would
+       * put a later event below an earlier one.
        */
       async function releasingSlots(
         result: Promise<EventResult>
@@ -784,11 +831,6 @@ export function createEventsStorage(
         try {
           return await result;
         } catch (error) {
-          if (reservedRunId !== undefined) {
-            for (const slot of reserved) {
-              slots.release(reservedRunId, slot);
-            }
-          }
           if (!eventCommitted) {
             for (const undo of abandonedClaims.reverse()) {
               // Best effort: the throw the caller sees is the one that matters,
@@ -798,6 +840,19 @@ export function createEventsStorage(
             }
           }
           throw error;
+        } finally {
+          // Every reservation this create still holds goes back, including on
+          // the paths that succeed without publishing anything: a create that
+          // converged on another writer's event returns a result and leaves its
+          // own position untouched, and keeping it reserved would stop the next
+          // event of the run from taking it. Handing back a position that *was*
+          // published is a no-op — the publish recorded it as written, so it
+          // cannot be handed out again.
+          if (reservedRunId !== undefined) {
+            for (const slot of reserved) {
+              slots.release(reservedRunId, slot);
+            }
+          }
         }
       }
 
@@ -854,6 +909,16 @@ export function createEventsStorage(
         // so concurrent / cross-process workers converge on a single
         // event in the log.
         let eventId = `evnt_${monotonicUlid()}`;
+        // Set when a resume claim names `eventId` — either this write reserved
+        // the claim, or it adopted the position another writer of the same resume
+        // pinned. Losing the publish at a pinned position is resolved against
+        // that other writer instead of by moving to a free position, which would
+        // give one resume two events.
+        let pinnedEventId: string | undefined;
+        // Whether this write is the one that reserved the resume claim. The
+        // claim's owner is the only writer allowed to move off the pinned
+        // position while the resume is still unrecorded.
+        let ownsResumeClaim = false;
         const now = new Date();
 
         // For run_created events, use client-provided runId or generate one server-side
@@ -1364,10 +1429,11 @@ export function createEventsStorage(
           // converges too. Gated on `resumeId` so the historical single-write
           // path is untouched.
           if (data.eventType === 'hook_received' && params?.resumeId) {
+            const resumeId = params.resumeId;
             const claimPath = hookResumeClaimPath(
               basedir,
               effectiveRunId,
-              params.resumeId
+              resumeId
             );
             const converge = async (
               claim: z.infer<typeof HookResumeClaimSchema>
@@ -1396,20 +1462,35 @@ export function createEventsStorage(
                   `hook_received resumeId "${params.resumeId}" already recorded with a different payload`
                 );
               }
-              const existing = await readJSONWithFallback(
+              const pinned = await readJSONWithFallback(
                 basedir,
                 'events',
                 `${effectiveRunId}-${claim.eventId}`,
                 EventSchema,
                 tag
               );
-              if (existing) {
-                return { event: existing };
+              // The event the claim points at answers for this resume only if it
+              // is this resume's. In a slot-numbered run the pinned position can
+              // hold an unrelated event another instance allocated it for, and
+              // returning that would report a step's event as the resume's.
+              if (pinned?.resumeId === resumeId) {
+                return { event: pinned };
               }
-              // Claim exists but its event is not yet visible (a crash between
-              // the claim write and the append). Adopt the pinned eventId and
-              // fall through to (re)write the event idempotently at that path.
+              const committed = await findCommittedResumeEvent(
+                basedir,
+                effectiveRunId,
+                resumeId
+              );
+              if (committed) {
+                return { event: committed };
+              }
+              // The resume has no event yet: the pinning writer is mid-publish
+              // (its event is staged, not yet linked into `events/`), or it
+              // crashed between the claim write and the append. Adopt the pinned
+              // position and fall through to (re)write the event there, so the
+              // two writers of this resume still contend for one position.
               eventId = claim.eventId;
+              pinnedEventId = claim.eventId;
               return null;
             };
 
@@ -1438,7 +1519,15 @@ export function createEventsStorage(
                     : {}),
                 } satisfies z.infer<typeof HookResumeClaimSchema>)
               );
-              if (!won) {
+              if (won) {
+                // The claim now names this position for this resume, and the
+                // other writer is on its way to adopting it. Losing the publish
+                // here therefore has to be resolved against that writer rather
+                // than by moving to a free position, which would give one resume
+                // two events.
+                pinnedEventId = eventId;
+                ownsResumeClaim = true;
+              } else {
                 const winner = await readJSON(claimPath, HookResumeClaimSchema);
                 if (winner) {
                   const converged = await converge(winner);
@@ -2435,10 +2524,15 @@ export function createEventsStorage(
               // Rebuild `event` with the canonical eventId and a
               // deterministic `createdAt` derived from the eventId
               // (a ULID) so two workers writing the same event
-              // produce byte-identical content.
+              // produce byte-identical content. A slot id carries no
+              // time, and reading one as a ULID yields the epoch —
+              // so a slot-numbered run keeps the wall clock, and the
+              // two workers converge on one event through the
+              // position instead of through the bytes.
               eventId = canonicalEventId;
-              const canonicalCreatedAt =
-                ulidToDate(eventId.replace(/^evnt_/, '')) ?? now;
+              const canonicalCreatedAt = slotMode
+                ? now
+                : (ulidToDate(eventId.replace(/^evnt_/, '')) ?? now);
               event = {
                 ...data,
                 runId: effectiveRunId,
@@ -2871,6 +2965,7 @@ export function createEventsStorage(
         const reallocatesSlot =
           slotMode && params?.eventId === undefined && !ownsFirstSlot;
         const slotDeadline = Date.now() + SLOT_RETRY_BUDGET_MS;
+        const pinnedDeadline = Date.now() + PINNED_EVENT_WAIT_MS;
         let compositeKey = '';
         let eventPath = '';
         let serializedEvent = '';
@@ -2886,6 +2981,64 @@ export function createEventsStorage(
           eventPublished = await publishOnce();
           if (eventPublished) {
             break;
+          }
+          if (pinnedEventId === eventId && params?.resumeId) {
+            // This resume's claim names this position and something else holds
+            // it. Taking a free position on the strength of that alone would
+            // publish a second event for one resume — the duplicate the claim
+            // exists to prevent, and one the log can never be rid of. So find out
+            // who holds it first.
+            const occupant = await readJSONWithFallback(
+              basedir,
+              'events',
+              compositeKey,
+              EventSchema,
+              tag
+            );
+            if (occupant?.resumeId === params.resumeId) {
+              // The other writer of this same resume got there first; its event
+              // is this write's answer.
+              return { event: occupant };
+            }
+            const committed = await findCommittedResumeEvent(
+              basedir,
+              effectiveRunId,
+              params.resumeId
+            );
+            if (committed) {
+              // The other writer published elsewhere: it reallocated around a
+              // stranger sitting on the pinned position.
+              return { event: committed };
+            }
+            // Nobody has recorded this resume yet, so both of its writers are
+            // still live candidates and only one of them may leave the pinned
+            // position: if both moved, they could publish two events for one
+            // resume. That one is the writer that owns the claim, and only once
+            // it can see a stranger on the position — an unrelated event another
+            // instance allocated it for, which will never become this resume's.
+            // Anyone else waits for the owner's event to show up anywhere in the
+            // log, which the scan above will find.
+            const strangerHoldsPosition = occupant !== null;
+            if (
+              !(ownsResumeClaim && strangerHoldsPosition) &&
+              Date.now() < pinnedDeadline
+            ) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, slotRetryDelay(round))
+              );
+              continue;
+            }
+            // Out of patience. Placing the resume's event somewhere beats leaving
+            // it unrecorded: an owner that died between staging and promoting, or
+            // between the claim and the append, is never coming back, and a resume
+            // with no event hangs the run for good. The claim keeps pointing where
+            // it always did, which costs nothing — a recorded resume is found by
+            // the scan above, keyed on the resume itself.
+            if (!reallocatesSlot) {
+              throw new EntityConflictError(
+                `Event "${eventId}" already exists for run "${effectiveRunId}"`
+              );
+            }
           }
           if (reallocatesSlot && Date.now() < slotDeadline) {
             // The position is someone else's — either published there or

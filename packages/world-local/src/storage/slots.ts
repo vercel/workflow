@@ -9,26 +9,34 @@
  *
  * Filling a hole is what that rules out, and it is worth naming why, because the
  * alternative looks appealing (it keeps the log dense). A position left unwritten
- * by an abandoned reservation sits below events that are already published. Hand
- * it to the next caller and a `step_completed` lands below its own
+ * by an abandoned reservation can sit below events that are already published.
+ * Hand it to the next caller and a `step_completed` lands below its own
  * `step_started`; the replay reaches a completion for a step it has not started
  * and diverges, and every later replay diverges the same way. A hole costs a
  * reader the ability to prove its copy of the log is complete. An inversion
  * costs the run.
  *
+ * An abandoned reservation is recycled in the one case where it provably sits
+ * below nothing: it was the top of the book when it was released, so no sibling
+ * was ever handed a position above it and none was read from disk above it. That
+ * keeps the common abandonment (a create that converged on another writer's event
+ * before publishing anything) from leaving the log permanently un-provable.
+ *
  * Three properties do the work:
  *
- *   - Handing out a slot is a *synchronous* set operation, so concurrent
- *     callers in one process get distinct slots with no lock. The only await is
- *     seeding from disk, which is memoized per run.
- *   - An allocation picks the position above the highest one the book knows of,
- *     written or outstanding, and that ceiling never descends. A reservation that
- *     is abandoned (its create threw a validation error) leaves its position
- *     unused rather than being recycled below a sibling that already published.
- *   - The event publish is `writeExclusive`, which is the authority. The book is
- *     a hint: when it turns out to be stale (another process wrote the slot),
- *     the publish fails and the caller is told so, rather than a duplicate being
- *     written or a slot being skipped.
+ *   - An allocation reads the log's tail from disk and picks the position above
+ *     both it and the highest one the book knows of, written or outstanding.
+ *     Reading disk every time is what makes the order safe across storage
+ *     instances: a book that has not seen another instance's writes would
+ *     otherwise hand out a position *below* them, and that inversion is silent
+ *     because the position is genuinely free (see below for what it costs).
+ *   - Once the tail is in hand, handing out a slot is a *synchronous* set
+ *     operation, so concurrent callers in one process get distinct slots with no
+ *     lock: each bumps the ceiling before the next one reads it.
+ *   - The event publish is `writeExclusive`, which is the authority. The tail
+ *     read is a hint: when it turns out to be stale (another process wrote the
+ *     slot between the read and the publish), the publish fails and the caller is
+ *     told so, rather than a duplicate being written or a slot being skipped.
  *
  * The book is per storage instance, and two instances may share a data
  * directory (the cross-process convergence tests rely on exactly that). Their
@@ -70,9 +78,9 @@ export interface SlotBook {
    */
   usesSlots(runId: string): Promise<boolean>;
   /**
-   * Reserves the position above every one this book knows of for `runId`, and at
-   * or above `minSlot`. Distinct for every concurrent caller; the publish still
-   * has to prove the position was actually free.
+   * Reserves the position above the run's tail on disk and above every one this
+   * book knows of, and at or above `minSlot`. Distinct for every concurrent
+   * caller; the publish still has to prove the position was actually free.
    *
    * `minSlot` defaults to the position above the run's first slot, which is
    * reserved for its own `run_created`: that event needs no allocation, and it
@@ -88,8 +96,8 @@ export interface SlotBook {
    */
   claim(runId: string, slot: number): void;
   /**
-   * The highest position this run has published, seeding from disk if the run
-   * has not been read yet, or `FIRST_SLOT - 1` for a log with no events.
+   * The highest position this run has published, read from the log, or
+   * `FIRST_SLOT - 1` for a log with no events.
    *
    * This is the tail a claim has to clear. "Free" is not the property a claim
    * needs: allocation is append-only, so a position left unwritten by an
@@ -113,9 +121,12 @@ export interface SlotBook {
   highestWritten(runId: string): Promise<number>;
   /**
    * Forgets a reserved or claimed slot whose publish is never going to happen,
-   * so nothing waits on it. The position itself is not handed out again: it may
-   * already sit below a sibling that published, and recycling it there would put
-   * a later event below an earlier one.
+   * so nothing waits on it.
+   *
+   * The position is handed out again only if it is still the highest one this
+   * book knows of, where it provably sits below nothing. Anywhere else it stays
+   * empty: it may already sit below a sibling that published, and recycling it
+   * there would put a later event below an earlier one.
    */
   release(runId: string, slot: number): void;
   /** Records a published event id, so it is never handed out again. */
@@ -142,6 +153,8 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
   const books = new Map<string, RunSlots>();
   /** runId → in-flight seed scan, so concurrent first callers share one scan. */
   const seeds = new Map<string, Promise<RunSlots>>();
+  /** runId → in-flight tail read, so a burst of writers shares one scan. */
+  const syncs = new Map<string, Promise<RunSlots>>();
   /**
    * runId → slots claimed while the run had no book yet, so the book the next
    * allocation seeds starts out holding them. A claim is synchronous and a seed
@@ -179,6 +192,47 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
     };
     books.set(runId, book);
     return book;
+  }
+
+  /** Folds the run's published positions on disk into the book kept for it. */
+  async function merge(runId: string, book: RunSlots): Promise<RunSlots> {
+    for (const eventId of await listRunEventIds(basedir, runId, tag)) {
+      const slot = slotFromId(eventId);
+      if (slot !== undefined) {
+        book.written.add(slot);
+        book.outstanding.delete(slot);
+        book.ceiling = Math.max(book.ceiling, slot);
+      }
+    }
+    return book;
+  }
+
+  /**
+   * The run's book with the log's current tail folded in.
+   *
+   * Every allocation and every tail read goes through this, because the book on
+   * its own only knows what *this* instance did: another instance sharing the
+   * data directory publishes without touching it. One scan is shared by all
+   * callers waiting on it, so a burst of concurrent writers pays for one readdir
+   * and still leaves with distinct positions (the scan resolves first, the
+   * synchronous takes follow).
+   */
+  function synced(runId: string): Promise<RunSlots> {
+    const inFlight = syncs.get(runId);
+    if (inFlight) {
+      return inFlight;
+    }
+    // Seeding reads the log itself, so a book being opened for the first time is
+    // already current and a second scan would buy nothing.
+    const seeding = !books.has(runId);
+    const opened = open(runId);
+    const scan =
+      seeding && opened instanceof Promise
+        ? opened
+        : Promise.resolve(opened).then((book) => merge(runId, book));
+    const pending = scan.finally(() => syncs.delete(runId));
+    syncs.set(runId, pending);
+    return pending;
   }
 
   /** The run's book, seeding it from disk once for all concurrent callers. */
@@ -234,10 +288,9 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
     },
 
     async reserve(runId, minSlot = RUN_CREATED_SLOT + 1) {
-      const opened = open(runId);
-      // Awaiting a book that is already in hand would yield to the microtask
-      // queue and let a concurrent caller take the same slot.
-      return take(opened instanceof Promise ? await opened : opened, minSlot);
+      // The take is synchronous once the scan resolves, so two concurrent
+      // callers sharing one scan still leave with different positions.
+      return take(await synced(runId), minSlot);
     },
 
     claim(runId, slot) {
@@ -255,7 +308,7 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
     },
 
     async highestWritten(runId) {
-      const book = await open(runId);
+      const book = await synced(runId);
       return Math.max(FIRST_SLOT - 1, ...book.written);
     },
 
@@ -265,10 +318,18 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
       if (!book) {
         return;
       }
-      // The ceiling stays where it is: this position may already sit below one a
-      // sibling published, and handing it out again would order a later event
-      // before an earlier one.
       book.outstanding.delete(slot);
+      // The position is handed out again only while it is still the top of the
+      // book: nothing was handed out above it and nothing was read from disk
+      // above it, so it cannot land below an event that already exists. Below
+      // the top the ceiling stays where it is, and the position stays a hole.
+      if (book.ceiling === slot) {
+        book.ceiling = Math.max(
+          FIRST_SLOT - 1,
+          ...book.written,
+          ...book.outstanding
+        );
+      }
     },
 
     observe(runId, eventId) {
@@ -294,14 +355,7 @@ export function createSlotBook(basedir: string, tag?: string): SlotBook {
         // Nothing cached to correct; the next reservation seeds from disk.
         return;
       }
-      for (const eventId of await listRunEventIds(basedir, runId, tag)) {
-        const slot = slotFromId(eventId);
-        if (slot !== undefined) {
-          book.written.add(slot);
-          book.outstanding.delete(slot);
-          book.ceiling = Math.max(book.ceiling, slot);
-        }
-      }
+      await merge(runId, book);
     },
 
     forget(runId) {

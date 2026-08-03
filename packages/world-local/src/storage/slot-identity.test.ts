@@ -178,32 +178,22 @@ describe('numbering', () => {
     expect(maxSlotOf(data)).toBe(data.length);
   });
 
-  it('leaves a rejected write’s position unused instead of recycling it', async () => {
-    // The rejected op's position sits below its concurrent sibling's, so handing
-    // it to the next writer would order that writer's event below one that
-    // already published. The hole costs a reader nothing it was promised; the
-    // inversion would cost the run.
+  it('reuses a rejected write’s position when nothing published above it', async () => {
+    // The rejected op took a position and gave it back with nothing above it, so
+    // the next write lands there and the log stays dense. Below a published
+    // event the position stays a hole instead: see the SlotBook's own tests,
+    // where the ordering can be forced.
     const runId = await newSlotRun();
-    const [rejected, accepted] = await Promise.allSettled([
+    await expect(
       storage.events.create(runId, {
         eventType: 'step_completed',
         specVersion: SPEC_VERSION_SLOT_IDENTITY,
         correlationId: 'step_never_created',
         eventData: { output: new Uint8Array() },
-      }),
-      createStep(runId, 'step_a'),
-    ]);
-    expect(rejected.status).toBe('rejected');
-    expect(accepted.status).toBe('fulfilled');
-    await createStep(runId, 'step_b');
-    const slots = await slotsOf(runId);
-    expect(slots).toHaveLength(3);
-    expect(slots[0]).toBe(FIRST_SLOT);
-    // Both concurrent writers took a position, one abandoned its own, and the
-    // third write went above them both.
-    expect(slots[2]).toBe(FIRST_SLOT + 3);
-    expect(slots[1]).toBeGreaterThan(slots[0]);
-    expect(slots[1]).toBeLessThan(slots[2]);
+      })
+    ).rejects.toThrow();
+    await createStep(runId, 'step_a');
+    await expect(slotsOf(runId)).resolves.toEqual([FIRST_SLOT, FIRST_SLOT + 1]);
   });
 });
 
@@ -480,5 +470,106 @@ describe('conflict', () => {
       'fulfilled',
     ]);
     await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
+  });
+});
+
+async function createHook(runId: string, hookId: string, token: string) {
+  await storage.events.create(runId, {
+    eventType: 'hook_created',
+    specVersion: SPEC_VERSION_SLOT_IDENTITY,
+    correlationId: hookId,
+    eventData: { token, hookId },
+  });
+  return { hookId, token };
+}
+
+/**
+ * One writer of a resume. A resume has two of these — `resumeHook`'s direct
+ * write and the queue consumer's re-ensure — and they are byte-for-byte
+ * identical, which is what makes them converge on one event.
+ */
+function resume(
+  from: Storage,
+  runId: string,
+  hook: { hookId: string; token: string },
+  resumeId: string,
+  payload = new Uint8Array([1, 2, 3])
+) {
+  return from.events.create(
+    runId,
+    {
+      eventType: 'hook_received',
+      specVersion: SPEC_VERSION_SLOT_IDENTITY,
+      correlationId: hook.hookId,
+      eventData: { token: hook.token, payload },
+    },
+    { resumeId, resumePayloadDigest: `digest_${resumeId}` }
+  );
+}
+
+async function hookReceivedCount(runId: string): Promise<number> {
+  const { data } = await eventsOf(runId);
+  return data.filter((event) => event.eventType === 'hook_received').length;
+}
+
+describe('a resume with two writers', () => {
+  it('leaves no hole behind a converged redelivery', async () => {
+    const runId = await newSlotRun();
+    const hook = await createHook(runId, 'hook_a', 'tok:1');
+
+    const first = await resume(storage, runId, hook, 'resume_1');
+    const second = await resume(storage, runId, hook, 'resume_1');
+    expect(second.event.eventId).toBe(first.event.eventId);
+
+    // The redelivery took a position to write at and then converged on the
+    // event that already existed, so it published nothing. Unless it hands that
+    // position back, the next event lands above a hole and the run can no longer
+    // prove its log is complete.
+    await resume(storage, runId, hook, 'resume_2');
+    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3, 4]);
+  });
+
+  it('commits one event when both writers race across instances', async () => {
+    // The two writers of a resume are usually two processes: the request that
+    // resumed the hook and the queue consumer that replays the run. They share
+    // the data directory and nothing else, so the claim on disk is the only
+    // thing that can converge them.
+    const runId = await newSlotRun();
+    const hook = await createHook(runId, 'hook_a', 'tok:1');
+    const other = createStorage(testDir);
+
+    const [a, b] = await Promise.all([
+      resume(storage, runId, hook, 'resume_1'),
+      resume(other, runId, hook, 'resume_1'),
+    ]);
+
+    expect(b.event.eventId).toBe(a.event.eventId);
+    await expect(hookReceivedCount(runId)).resolves.toBe(1);
+    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
+  });
+
+  it('numbers distinct resumes of one hook densely under load', async () => {
+    const runId = await newSlotRun();
+    const hook = await createHook(runId, 'hook_a', 'tok:1');
+    const other = createStorage(testDir);
+    const resumeIds = ['r_0', 'r_1', 'r_2', 'r_3', 'r_4'];
+
+    const results = await Promise.all(
+      resumeIds.flatMap((resumeId, index) => {
+        const payload = new Uint8Array([index]);
+        return [
+          resume(storage, runId, hook, resumeId, payload),
+          resume(other, runId, hook, resumeId, payload),
+        ];
+      })
+    );
+
+    // Each resume's pair shares one event; the five resumes are distinct and sit
+    // in the five positions above the hook.
+    expect(new Set(results.map((r) => r.event.eventId)).size).toBe(
+      resumeIds.length
+    );
+    await expect(hookReceivedCount(runId)).resolves.toBe(resumeIds.length);
+    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 });

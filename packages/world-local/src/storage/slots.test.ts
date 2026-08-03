@@ -145,6 +145,20 @@ describe('reserve', () => {
     expect([...slots].sort((a, b) => a - b)).toEqual([2, 3]);
   });
 
+  it('clears events another instance published after this book was read', async () => {
+    // The inversion this rules out, and the reason every allocation re-reads the
+    // log: a second storage instance over the same data directory publishes
+    // without touching this book, so a book that trusted itself would hand out a
+    // position below events that already exist. The publish cannot catch it —
+    // the position is genuinely free — and the replay that reads a completion
+    // before its own start diverges for good.
+    await writeEvents(1);
+    const book = createSlotBook(basedir);
+    await expect(book.reserve(RUN_ID)).resolves.toBe(2);
+    await writeEvents(2, 3, 4);
+    await expect(book.reserve(RUN_ID)).resolves.toBe(5);
+  });
+
   it('honours a floor above where the book has reached', async () => {
     // start() publishes the run entity before its `run_created` event and issues
     // the queue send in parallel, so the delivery's `run_started` can allocate
@@ -176,6 +190,26 @@ describe('release', () => {
     ]);
     book.release(RUN_ID, first);
     await expect(book.reserve(RUN_ID)).resolves.toBe(second + 1);
+  });
+
+  it('recycles the top slot, so an abandoned write leaves no hole', async () => {
+    // Nothing was handed out above it and nothing on disk sits above it, so the
+    // position provably precedes no event and can be handed out again. The common
+    // abandonment is a create that converged on another writer's event before
+    // publishing anything, and leaving those behind would make a log that lost
+    // nothing unable to prove it.
+    const book = createSlotBook(basedir);
+    const abandoned = await book.reserve(RUN_ID);
+    book.release(RUN_ID, abandoned);
+    await expect(book.reserve(RUN_ID)).resolves.toBe(abandoned);
+  });
+
+  it('does not recycle the top slot once the log has moved above it', async () => {
+    const book = createSlotBook(basedir);
+    const abandoned = await book.reserve(RUN_ID);
+    await writeEvents(1, abandoned, abandoned + 1);
+    book.release(RUN_ID, abandoned);
+    await expect(book.reserve(RUN_ID)).resolves.toBe(abandoned + 2);
   });
 
   it('does not resurrect a slot that was published', async () => {
