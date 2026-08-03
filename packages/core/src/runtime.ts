@@ -1894,6 +1894,10 @@ export function workflowEntrypoint(
                           // requeues) from it, matching the node paths
                           // below.
                           namespace,
+                          // Run-origin-preserving carrier for everything
+                          // the entrypoint enqueues (linked-mode star
+                          // topology — see getNextTraceCarrier).
+                          nextTraceCarrier,
                           // The lazy-hook-resume ensure above already
                           // materialized the `hook_received` for this payload
                           // (keyed by resumeId); the entrypoint's own

@@ -113,6 +113,8 @@ async function dispatchPendingOps(params: {
   queueSteps: boolean;
   /** Queue namespace of the incoming delivery (multi-tenant queue prefix). */
   namespace?: string;
+  /** Run-origin-preserving carrier for enqueued messages (see caller). */
+  nextTraceCarrier: () => Promise<Record<string, string>>;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<{
   createdAttributeEvent: boolean;
@@ -121,6 +123,7 @@ async function dispatchPendingOps(params: {
   const { world, runId, workflowRun, encryptionKey, pendingOperations } =
     params;
   const namespace = params.namespace;
+  const nextTraceCarrier = params.nextTraceCarrier;
   const wfdiag = params.wfdiag;
   // Set when a hook with a parked getConflict() awaiter had its
   // hook_created written this invocation. The workflow must be re-invoked
@@ -188,10 +191,12 @@ async function dispatchPendingOps(params: {
             getWorkflowQueueName(workflowRun.workflowName, namespace),
             {
               runId,
-              // Link the conflict re-invocation to this trace — parity
-              // with the node engine's reinvoke(), which always carries
-              // a trace carrier on its continuations.
-              traceCarrier: await serializeTraceCarrier(),
+              // Link the conflict re-invocation to the run's trace —
+              // parity with the node engine's reinvoke(), which always
+              // carries the run-origin-preserving carrier and a
+              // requestedAt on its continuations.
+              traceCarrier: await nextTraceCarrier(),
+              requestedAt: new Date(),
             },
             { idempotencyKey: `hook_conflict_${hook.correlationId}` }
           );
@@ -361,7 +366,7 @@ async function dispatchPendingOps(params: {
           // terminal-drain mode (the workflow already finished; the
           // event is the durable record, matching the node:vm drain).
           if (params.queueSteps) {
-            const traceCarrier = await serializeTraceCarrier();
+            const traceCarrier = await nextTraceCarrier();
             await queueMessage(
               world,
               getWorkflowQueueName(workflowRun.workflowName, namespace),
@@ -503,6 +508,15 @@ export async function runWorkflowWithQuickJS(params: {
    * `namespace` plumbing in runtime.ts).
    */
   namespace?: string;
+  /**
+   * Carrier to attach to messages this invocation enqueues. In the default
+   * `linked` trace mode this forwards the RUN-ORIGIN carrier unchanged (see
+   * getNextTraceCarrier), so every invocation links back to workflow.start
+   * in a star — NOT `serializeTraceCarrier()`, which captures the current
+   * context and chains invocations to each other instead. Falls back to
+   * `serializeTraceCarrier()` when absent.
+   */
+  nextTraceCarrier?: () => Promise<Record<string, string>>;
 }): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
@@ -515,6 +529,8 @@ export async function runWorkflowWithQuickJS(params: {
     hookInput,
     namespace,
   } = params;
+  const nextTraceCarrier =
+    params.nextTraceCarrier ?? (() => serializeTraceCarrier());
   const world = await getWorld();
   const runId = workflowRun.runId;
   const invocationStart = tick();
@@ -853,6 +869,7 @@ export async function runWorkflowWithQuickJS(params: {
           pendingOperations: result.completed.drainOperations,
           queueSteps: false,
           namespace,
+          nextTraceCarrier,
           wfdiag,
         });
       } catch (err) {
@@ -939,6 +956,7 @@ export async function runWorkflowWithQuickJS(params: {
         pendingOperations,
         queueSteps: true,
         namespace,
+        nextTraceCarrier,
         wfdiag,
       });
 
@@ -1061,6 +1079,7 @@ export async function runWorkflowWithQuickJS(params: {
           pendingOperations: result.failed.drainOperations,
           queueSteps: false,
           namespace,
+          nextTraceCarrier,
           wfdiag,
         });
       } catch (err) {
