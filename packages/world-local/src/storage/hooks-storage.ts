@@ -30,7 +30,6 @@ import {
 } from '../fs.js';
 import { filterHookData } from './filters.js';
 import {
-  hashToken,
   hookRecoveryMarkerPath,
   hookTokenClaimPath,
   isHookDisposalCommitted,
@@ -38,7 +37,6 @@ import {
   releaseHookTokenClaimIfOwnedBy,
 } from './helpers.js';
 import {
-  deleteHookByRunMarker,
   deleteHookByRunMarkerFile,
   ensureHookIndexes,
   findNewestIndexedHookCreatedEvent,
@@ -52,8 +50,9 @@ function getHookCreatedToken(event: Event): string | undefined {
   return typeof token === 'string' ? token : undefined;
 }
 
-function hookFromCreatedEvent(event: HookCreatedEvent): Hook {
-  const { token, metadata, isWebhook, isSystem } = event.eventData;
+export function hookFromCreatedEvent(event: HookCreatedEvent): Hook {
+  const { token, metadata, isWebhook, isSystem, tokenRetentionUntil } =
+    event.eventData;
   return {
     runId: event.runId,
     hookId: event.correlationId,
@@ -66,6 +65,7 @@ function hookFromCreatedEvent(event: HookCreatedEvent): Hook {
     specVersion: event.specVersion,
     isWebhook: isWebhook ?? true,
     isSystem: isSystem ?? false,
+    tokenRetentionUntil,
   };
 }
 
@@ -147,12 +147,7 @@ async function restoreHookCachesFromEvent(
 ): Promise<Hook> {
   const hook = hookFromCreatedEvent(event);
 
-  const claimPath = path.join(
-    basedir,
-    'hooks',
-    'tokens',
-    `${hashToken(hook.token)}.json`
-  );
+  const claimPath = hookTokenClaimPath(basedir, hook.token);
   await writeExclusive(
     claimPath,
     JSON.stringify({
@@ -209,37 +204,17 @@ export function createHooksStorage(
   basedir: string,
   tag?: string
 ): Storage['hooks'] {
-  async function ensureHookAvailable(hook: Hook): Promise<boolean> {
+  async function isHookAvailable(hook: Hook): Promise<boolean> {
     if (await isHookDisposalCommitted(basedir, hook.hookId, tag)) {
       return false;
     }
-    if (!(await isTerminalRunCache(basedir, hook.runId, tag))) {
+    if (
+      hook.tokenRetentionUntil &&
+      hook.tokenRetentionUntil.getTime() > Date.now()
+    ) {
       return true;
     }
-    const claim = await readHookTokenClaim(
-      hookTokenClaimPath(basedir, hook.token)
-    );
-    const retained =
-      claim?.runId === hook.runId &&
-      claim.hookId === hook.hookId &&
-      claim.tokenRetentionUntil &&
-      claim.tokenRetentionUntil.getTime() > Date.now();
-    if (retained) {
-      return true;
-    }
-
-    await releaseHookTokenClaimIfOwnedBy(
-      basedir,
-      hook.token,
-      hook.runId,
-      hook.hookId
-    );
-    await deleteJSON(taggedPath(basedir, 'hooks', hook.hookId, tag));
-    await deleteJSON(
-      hookRecoveryMarkerPath(basedir, hook.token, hook.runId, hook.hookId)
-    );
-    await deleteHookByRunMarker(basedir, hook.runId, hook.hookId, tag);
-    return false;
+    return !(await isTerminalRunCache(basedir, hook.runId, tag));
   }
 
   async function findHookByToken(token: string): Promise<Hook | null> {
@@ -254,7 +229,10 @@ export function createHooksStorage(
           HookSchema,
           tag
         );
-        if (hook && hook.token === token && (await ensureHookAvailable(hook))) {
+        if (hook?.token === token) {
+          if (!(await isHookAvailable(hook))) {
+            throw new HookNotFoundError(token);
+          }
           return { ...hook, isWebhook: hook.isWebhook ?? true };
         }
       } catch (error) {
@@ -273,7 +251,10 @@ export function createHooksStorage(
     for (const file of files) {
       const hookPath = path.join(hooksDir, `${file}.json`);
       const hook = await readJSON(hookPath, HookSchema);
-      if (hook && hook.token === token && (await ensureHookAvailable(hook))) {
+      if (hook?.token === token) {
+        if (!(await isHookAvailable(hook))) {
+          throw new HookNotFoundError(token);
+        }
         return { ...hook, isWebhook: hook.isWebhook ?? true };
       }
     }
@@ -283,27 +264,20 @@ export function createHooksStorage(
 
   async function get(hookId: string, params?: GetHookParams): Promise<Hook> {
     assertSafeEntityId('hookId', hookId);
-    const hook = await readJSONWithFallback(
+    const stored = await readJSONWithFallback(
       basedir,
       'hooks',
       hookId,
       HookSchema,
       tag
     );
-    if (!hook || !(await ensureHookAvailable(hook))) {
-      const rebuilt = await rebuildLiveHookByIdFromEventLog(
-        basedir,
-        hookId,
-        tag
-      );
-      if (!rebuilt) {
-        throw new HookNotFoundError(hookId);
-      }
-      const resolveData = params?.resolveData || DEFAULT_RESOLVE_DATA_OPTION;
-      return filterHookData(
-        { ...rebuilt, isWebhook: rebuilt.isWebhook ?? true },
-        resolveData
-      );
+    if (stored && !(await isHookAvailable(stored))) {
+      throw new HookNotFoundError(hookId);
+    }
+    const hook =
+      stored ?? (await rebuildLiveHookByIdFromEventLog(basedir, hookId, tag));
+    if (!hook) {
+      throw new HookNotFoundError(hookId);
     }
     const resolveData = params?.resolveData || DEFAULT_RESOLVE_DATA_OPTION;
     return filterHookData(
@@ -340,7 +314,7 @@ export function createHooksStorage(
         if (params.runId && hook.runId !== params.runId) {
           return false;
         }
-        return ensureHookAvailable(hook);
+        return isHookAvailable(hook);
       },
       getCreatedAt: () => {
         // Hook files don't have ULID timestamps in filename, so return null
@@ -362,8 +336,7 @@ export function createHooksStorage(
 }
 
 /**
- * Helper function to delete all hooks associated with a workflow run.
- * Called when a run reaches a terminal state.
+ * Cleans up a terminal run's Hooks while preserving active retention.
  */
 export async function deleteAllHooksForRun(
   basedir: string,
@@ -389,14 +362,9 @@ export async function deleteAllHooksForRun(
         }
       }
       if (hook && hookPath && hook.runId === runId) {
-        const claim = await readHookTokenClaim(
-          hookTokenClaimPath(basedir, hook.token)
-        );
         if (
-          claim?.runId === hook.runId &&
-          claim.hookId === hook.hookId &&
-          claim.tokenRetentionUntil &&
-          claim.tokenRetentionUntil.getTime() > Date.now()
+          hook.tokenRetentionUntil &&
+          hook.tokenRetentionUntil.getTime() > Date.now()
         ) {
           continue;
         }

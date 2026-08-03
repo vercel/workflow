@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { WorkflowWorldError } from '@workflow/errors';
 import { lock } from 'proper-lockfile';
 import { decodeTime, monotonicFactory } from 'ulid';
 import { z } from 'zod';
 import {
+  deleteJSON,
   hasTag,
   isUntagged,
   readJSON,
@@ -315,28 +317,63 @@ export async function readHookTokenClaim(
   }
 }
 
-/** Serializes Hook token handoffs across processes sharing a data directory. */
+/**
+ * Serializes claim handoffs. Exclusive writes admit the first owner, but
+ * cannot atomically replace a stale owner across local-world processes.
+ */
 export async function withHookTokenClaimLock<T>(
   basedir: string,
   token: string,
-  fn: () => Promise<T>
+  fn: (signal: AbortSignal) => Promise<T>
 ): Promise<T> {
   const claimPath = hookTokenClaimPath(basedir, token);
   await fs.mkdir(path.dirname(claimPath), { recursive: true });
-  const release = await lock(claimPath, {
-    realpath: false,
-    stale: 30_000,
-    retries: {
-      forever: true,
-      minTimeout: 10,
-      maxTimeout: 100,
-    },
-  });
+  const controller = new AbortController();
+  let release: () => Promise<void>;
   try {
-    return await fn();
-  } finally {
-    await release();
+    release = await lock(claimPath, {
+      realpath: false,
+      stale: 30_000,
+      update: 1_000,
+      retries: {
+        retries: 350,
+        factor: 1,
+        minTimeout: 100,
+        maxTimeout: 100,
+      },
+      onCompromised(error) {
+        controller.abort(
+          new WorkflowWorldError('Hook token claim lock was compromised', {
+            cause: error,
+          })
+        );
+      },
+    });
+  } catch (error) {
+    throw new WorkflowWorldError('Could not acquire Hook token claim lock', {
+      cause: error,
+    });
   }
+
+  let result: T;
+  try {
+    result = await fn(controller.signal);
+    controller.signal.throwIfAborted();
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      await release().catch(() => {});
+    }
+    throw error;
+  }
+
+  try {
+    await release();
+  } catch (error) {
+    throw new WorkflowWorldError('Could not release Hook token claim lock', {
+      cause: error,
+    });
+  }
+  return result;
 }
 
 /**
@@ -363,40 +400,20 @@ export function hookResumeClaimPath(
   return path.join(basedir, 'hooks', 'resumes', `${key}.json`);
 }
 
-/**
- * Release (delete) a token claim only if it still points at the releasing
- * hook's own `(runId, hookId)`.
- *
- * Both in-flight releasers — the `hook_disposed` handler and the
- * terminal-run `deleteAllHooksForRun` cleanup — read the hook entity and
- * then delete the claim file. Deleting unconditionally is unsafe across
- * processes: a releaser that stalls between those two operations can
- * outlive a force-release of its stale claim (see
- * `isHookTokenClaimReleasable`) and then delete the NEXT claimant's live
- * claim, transiently breaking token uniqueness. Re-reading the claim and
- * matching its identity here shrinks that window from "a stall of any
- * length" to the adjacent read/delete file ops.
- *
- * A claim that is missing, unreadable, or owned by someone else is left
- * alone — if it is genuinely stale debris, the claimant-side force-release
- * path reaps it.
- */
+/** Deletes a claim only while it still belongs to this Hook. */
 export async function releaseHookTokenClaimIfOwnedBy(
   basedir: string,
   token: string,
   runId: string,
   hookId: string
 ): Promise<void> {
-  await withHookTokenClaimLock(basedir, token, async () => {
+  await withHookTokenClaimLock(basedir, token, async (signal) => {
     const claimPath = hookTokenClaimPath(basedir, token);
-    let claim: { runId?: unknown; hookId?: unknown };
-    try {
-      claim = JSON.parse(await fs.readFile(claimPath, 'utf8'));
-    } catch {
-      return;
-    }
+    const claim = await readHookTokenClaim(claimPath);
+    if (!claim) return;
     if (claim.runId === runId && claim.hookId === hookId) {
-      await fs.unlink(claimPath).catch(() => {});
+      signal.throwIfAborted();
+      await deleteJSON(claimPath);
     }
   });
 }

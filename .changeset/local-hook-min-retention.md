@@ -1,4 +1,5 @@
 ---
+'@workflow/world': minor
 '@workflow/world-local': minor
 ---
 

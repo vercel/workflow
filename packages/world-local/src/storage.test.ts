@@ -12,7 +12,9 @@ import * as helpers from './storage/helpers.js';
 import {
   hashToken,
   hookDisposeLockPath,
+  hookTokenClaimPath,
   runTerminalMarkerPath,
+  withHookTokenClaimLock,
 } from './storage/helpers.js';
 import { createStorage } from './storage.js';
 import {
@@ -2150,6 +2152,31 @@ describe('Storage', () => {
     });
   });
 
+  it('fails an operation when its Hook token lock is compromised', async () => {
+    const token = 'compromised-lock';
+    let started!: () => void;
+    const lockAcquired = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const operation = withHookTokenClaimLock(testDir, token, async (signal) => {
+      started();
+      await new Promise<void>((resolve) => {
+        signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      signal.throwIfAborted();
+    });
+
+    await lockAcquired;
+    await fs.rm(`${hookTokenClaimPath(testDir, token)}.lock`, {
+      recursive: true,
+    });
+
+    await expect(operation).rejects.toMatchObject({
+      name: 'WorkflowWorldError',
+      message: 'Hook token claim lock was compromised',
+    });
+  });
+
   describe('hooks', () => {
     let testRunId: string;
 
@@ -2337,7 +2364,11 @@ describe('Storage', () => {
         expect(hook2.hookId).toBe('hook_2');
       });
 
-      it('keeps a retained Hook available after its run ends', async () => {
+      it.each([
+        ['run_completed', { output: new Uint8Array() }],
+        ['run_failed', { error: new Uint8Array() }],
+        ['run_cancelled', undefined],
+      ] as const)('keeps a retained Hook available after %s', async (terminalEvent, terminalData) => {
         const token = 'retained-token';
         const hookId = 'hook_retained';
         const retainedUntil = new Date(Date.now() + 60_000);
@@ -2346,47 +2377,39 @@ describe('Storage', () => {
           token,
           tokenRetentionUntil: retainedUntil,
         });
+        await fs.rm(hookTokenClaimPath(testDir, token));
         await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, terminalEvent, terminalData);
+
+        // Terminal cleanup reads retention from the Hook, not the lost claim.
+        await expect(storage.hooks.list({})).resolves.toMatchObject({
+          data: [
+            expect.objectContaining({
+              hookId,
+              tokenRetentionUntil: retainedUntil,
+            }),
+          ],
+        });
+      });
+
+      it('does not delete expired Hooks while reading', async () => {
+        const tokenRetentionUntil = new Date(Date.now() + 60_000);
+        await createHook(storage, testRunId, {
+          hookId: 'hook_expired',
+          token: 'expired-hook',
+          tokenRetentionUntil,
+        });
         await updateRun(storage, testRunId, 'run_completed', {
           output: new Uint8Array(),
         });
 
-        // The event log can rebuild both caches without losing retention.
-        await fs.rm(
-          path.join(testDir, 'hooks', 'tokens', `${hashToken(token)}.json`)
-        );
-        await fs.rm(path.join(testDir, 'hooks', `${hookId}.json`));
-
-        await expect(storage.hooks.getByToken(token)).resolves.toMatchObject({
-          hookId,
-          runId: testRunId,
-        });
+        vi.spyOn(Date, 'now').mockReturnValue(tokenRetentionUntil.getTime());
         await expect(storage.hooks.list({})).resolves.toMatchObject({
-          data: [expect.objectContaining({ hookId })],
-        });
-
-        const duplicate = await createRun(storage, {
-          deploymentId: 'deployment-retained',
-          workflowName: 'retained-duplicate',
-          input: new Uint8Array(),
-        });
-        const result = await storage.events.create(duplicate.runId, {
-          eventType: 'hook_created',
-          correlationId: 'hook_duplicate',
-          eventData: { token },
-        });
-        expect(result.event).toMatchObject({
-          eventType: 'hook_conflict',
-          eventData: { token, conflictingRunId: testRunId },
-        });
-
-        vi.spyOn(Date, 'now').mockReturnValue(retainedUntil.getTime());
-        await expect(storage.hooks.getByToken(token)).rejects.toMatchObject({
-          name: 'HookNotFoundError',
+          data: [],
         });
         await expect(
-          fs.access(path.join(testDir, 'hooks', `${hookId}.json`))
-        ).rejects.toThrow();
+          fs.access(path.join(testDir, 'hooks', 'hook_expired.json'))
+        ).resolves.toBeUndefined();
       });
 
       it('releases retention only after both its deadline and run end', async () => {
@@ -2418,6 +2441,9 @@ describe('Storage', () => {
         });
         await expect(storage.hooks.getByToken(token)).rejects.toMatchObject({
           name: 'HookNotFoundError',
+        });
+        await expect(storage.hooks.list({})).resolves.toMatchObject({
+          data: [],
         });
         await expect(
           createHook(storage, replacement.runId, {
@@ -3815,11 +3841,12 @@ describe('Storage', () => {
       const metadata = new Uint8Array([0xee]);
       const hookId = 'hook_event_log_rebuild';
       const token = 'event-log-rebuild-token';
+      const tokenRetentionUntil = new Date(Date.now() + 60_000);
 
       const created = await storage.events.create(testRunId, {
         eventType: 'hook_created',
         correlationId: hookId,
-        eventData: { token, metadata, isWebhook: true },
+        eventData: { token, metadata, isWebhook: true, tokenRetentionUntil },
       });
       expect(created.event.eventType).toBe('hook_created');
 
@@ -3856,6 +3883,7 @@ describe('Storage', () => {
         token,
         metadata,
         isWebhook: true,
+        tokenRetentionUntil,
       });
 
       const claim = JSON.parse(await fs.readFile(tokenClaimPath, 'utf8'));
