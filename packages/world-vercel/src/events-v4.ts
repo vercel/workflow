@@ -588,7 +588,10 @@ export async function createWorkflowRunEventV4<T extends EventType>(
   }
   const schema: z.ZodType<EventResult<T> & { event: Event }> =
     CreateEventV4BodySchemas[input.eventType].refine(
-      ({ event }) => event.eventType === input.eventType,
+      ({ event }) =>
+        event.eventType === input.eventType ||
+        (input.eventType === 'hook_created' &&
+          event.eventType === 'hook_conflict'),
       { path: ['event', 'eventType'] }
     );
   const parsedBody = schema.safeParse(decode(bodyBytes));
