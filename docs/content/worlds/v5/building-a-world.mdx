@@ -241,7 +241,9 @@ Streams are identified by a combination of `runId` and `name`. Each workflow run
 
 ## Analytics Interface (Optional)
 
-The optional `analytics` namespace serves observability surfaces — dashboards, `workflow inspect`, the local web UI — with **metadata-only** listings that can scan large numbers of runs without touching payload data. Tooling feature-detects it: when `world.analytics` is present it is preferred for listings and attribute search, and when it is absent, tooling falls back to the Storage APIs. Of the first-party Worlds, only the [Vercel World](/worlds/vercel) implements it (backed by the observability data pipeline); the Local and Postgres Worlds leave it `undefined`.
+The optional `analytics` namespace provides **metadata-only** access to runs and their related records. It is intended for observability and discovery surfaces such as dashboards, `workflow inspect`, and the local web UI. Implementations can optimize these queries independently of payload storage.
+
+Tooling feature-detects this namespace. When `world.analytics` is available, tooling prefers it for listings and attribute search; otherwise, it uses the Storage APIs. Among the first-party Worlds, only the [Vercel World](/worlds/vercel) currently implements it. The Local and Postgres Worlds leave it `undefined`.
 
 {/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
@@ -275,12 +277,12 @@ interface Analytics {
 }
 ```
 
-If you implement it, honor the contract that makes the namespace safe to expose broadly:
+If you implement this namespace, observe the following requirements:
 
-- **Metadata only.** Rows must never include run inputs/outputs, step data, or hook tokens — the `Analytics*` row schemas in `@workflow/world` define exactly which fields are allowed. There is no `resolveData` escape hatch here; payload access stays on the Storage APIs.
-- **Attribute filtering is latest-write-wins.** `runs.list({ attributes })` matches a run's most recent value for each key (up to 8 pairs), and reserved `$`-prefixed keys are valid in filters even though user writes to them are rejected.
-- **Time windows are the query contract.** `startTime`/`endTime` must be provided together; a bounded window lets the backend prune its scan. Responses may carry an optional `pageInfo` describing the scannable window (lookback days, window starts, upgrade availability) — return it if your backend has retention limits so tools can size date pickers.
-- **Eventual consistency is acceptable.** Analytics data may trail live state by a few seconds; tools treat it as a listing surface, not a source of truth.
+- **Metadata only.** Analytics responses must not include run inputs or outputs, step data, hook tokens, or other payload data. The `Analytics*` schemas exported by `@workflow/world` define the complete set of permitted fields. Payload retrieval remains exclusively available through the Storage APIs.
+- **Attribute filters use the latest value.** `runs.list({ attributes })` evaluates each filter against the run's most recently written value for that key. A request may contain up to eight key-value pairs. Reserved `$`-prefixed attributes are valid filters, although users cannot write them directly.
+- **Time boundaries must be paired.** `startTime` and `endTime` may either both be omitted or both be supplied. Responses may include `pageInfo` describing retention and the available query window. Implementations with retention limits should return this information so tooling can present valid date ranges.
+- **Results may be eventually consistent.** Analytics records may lag live workflow state. Consumers use this namespace for discovery and listing; Storage remains the authoritative interface for current workflow state and payload access.
 
 See the [Analytics API reference](/docs/api-reference/workflow-runtime/world/analytics) for per-method parameters, row shapes, and `pageInfo` semantics.
 
