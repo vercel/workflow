@@ -423,6 +423,8 @@ const attributeToDisplayFn: Record<
   disposedAt: localMillisecondTimeOrNull,
   // Internal resume plumbing — not surfaced in the UI
   resumeContext: (_value: unknown) => null,
+  resumeId: (_value: unknown) => null,
+  resumeCapabilities: (_value: unknown) => null,
   // Event details
   eventType: (value: unknown) => String(value),
   correlationId: (value: unknown) => String(value),
