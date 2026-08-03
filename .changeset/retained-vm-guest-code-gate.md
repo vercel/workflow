@@ -3,4 +3,4 @@
 'workflow': minor
 ---
 
-Retained-VM boundaries now accept plain data and standard built-ins (`Map`, `Set`, `Date`, typed arrays, `URL`, `Headers`, …) as step inputs. The suspension handler gates retention on the hardened serializer's guest-code report: boundaries whose serialization executed workflow code or observable engine state (getters, proxies, custom serializers, `Error` stack materialization) fall back to ordinary replay.
+Retained workflow VMs now keep the fast path when step arguments are plain data or standard built-ins (`Map`, `Set`, `Date`, typed arrays, `URL`, `Headers`, …), not just primitives. A boundary falls back to a normal replay only when serializing its arguments ran code the workflow controls — a getter, a proxy, a custom serializer — or computed an `Error`'s stack trace.
