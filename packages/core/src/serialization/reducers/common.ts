@@ -108,6 +108,29 @@ type SimpleErrorSubclassKey = {
 }[keyof SerializableSpecial];
 
 /**
+ * Reads `error.stack` for serialization. A natural V8 error carries `stack`
+ * as an own *accessor* whose first invocation formats and caches the trace.
+ * That read is not passive: it executes `Error.prepareStackTrace` when the
+ * realm has one installed, and the format-and-cache itself is
+ * workflow-visible (a formatter installed later never runs for an
+ * already-materialized error). A cold replay repeats neither — it skips
+ * dehydration entirely — so the read is recorded as guest code. A
+ * data-property `stack` (rehydrated errors, workflow-assigned strings)
+ * reads passively.
+ */
+function readErrorStack(value: unknown): string | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(value as object, 'stack');
+  if (descriptor && 'value' in descriptor) {
+    return descriptor.value as string | undefined;
+  }
+  recordGuestCode('getter', 'stack');
+  if (descriptor?.get) {
+    return descriptor.get.call(value) as string | undefined;
+  }
+  return readProperty(value, 'stack') as string | undefined;
+}
+
+/**
  * Reduces any native Error instance to the shared `BaseErrorPayload` shape,
  * preserving `cause` only when present (to distinguish "no cause" from
  * "cause is undefined"). Used directly by reducers for subclasses that need
@@ -119,12 +142,12 @@ type SimpleErrorSubclassKey = {
  */
 function reduceErrorBase(value: unknown): BaseErrorPayload | false {
   if (!types.isNativeError(value)) return false;
-  // `message`/`stack`/`cause` are own data properties on natural errors, so
-  // the descriptor-based reads cost nothing; a sandbox-defined accessor
+  // `message`/`cause` are own data properties on natural errors, so the
+  // descriptor-based reads cost nothing; a sandbox-defined accessor
   // (e.g. a getter on an Error subclass) is still invoked but recorded.
   const reduced: BaseErrorPayload = {
     message: readProperty(value, 'message') as string,
-    stack: readProperty(value, 'stack') as string | undefined,
+    stack: readErrorStack(value),
   };
   if (hasProperty(value, 'cause')) reduced.cause = readProperty(value, 'cause');
   return reduced;
@@ -236,7 +259,7 @@ export function getCommonReducers(
       const reduced: SerializableSpecial['DOMException'] = {
         message: readProperty(value, 'message') as string,
         name: readProperty(value, 'name') as string,
-        stack: readProperty(value, 'stack') as string | undefined,
+        stack: readErrorStack(value),
       };
       if (hasProperty(value, 'cause')) {
         reduced.cause = readProperty(value, 'cause');
@@ -346,7 +369,7 @@ export function getCommonReducers(
       const reduced: SerializableSpecial['Error'] = {
         name: readProperty(value, 'name') as string,
         message: readProperty(value, 'message') as string,
-        stack: readProperty(value, 'stack') as string | undefined,
+        stack: readErrorStack(value),
       };
       if (hasProperty(value, 'cause')) {
         reduced.cause = readProperty(value, 'cause');
