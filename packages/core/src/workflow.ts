@@ -10,6 +10,10 @@ import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
+import {
+  createCorrelationIdGenerator,
+  isPerKindCorrelationIdsEnabled,
+} from './correlation-id.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
@@ -174,18 +178,28 @@ export async function runWorkflow(
         : `http://localhost:${(await getPortLazy()) ?? 3000}`
     );
 
+    const seed = `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`;
+
     const {
       context,
       globalThis: vmGlobalThis,
       updateTimestamp,
     } = createContext({
-      seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
+      seed,
       fixedTimestamp,
     });
 
     const workflowDiscontinuation = withResolvers<void>();
 
     const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
+    const generateCorrelationId = createCorrelationIdGenerator({
+      seed,
+      fixedTimestamp,
+      // Correlation IDs must be replay-stable. `startedAt` differs between a
+      // turbo delivery and a later server-backed replay, so use fixedTimestamp.
+      positional: () => ulid(fixedTimestamp),
+      perKind: isPerKindCorrelationIdsEnabled(),
+    });
     const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
     );
@@ -217,9 +231,7 @@ export async function runWorkflow(
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
       eventsConsumer,
-      // Correlation IDs must be replay-stable. `startedAt` differs between a
-      // turbo delivery and a later server-backed replay, so use fixedTimestamp.
-      generateUlid: () => ulid(fixedTimestamp),
+      generateCorrelationId,
       generateNanoid,
       invocationsQueue: new Map(),
       // Use getter/setter so the EventsConsumer's getPromiseQueue() always
@@ -294,8 +306,14 @@ export async function runWorkflow(
 
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_CONTEXT_SYMBOL] = ctx;
+    // Serialization mints stream ids through this symbol, and calls it with no
+    // seed time. `monotonicFactory` returns `encodeTime(lastTime)` on its
+    // increment branch, so one such call latches the *host* wall clock into
+    // `lastTime` and every id the run mints afterwards carries that timestamp
+    // instead of `fixedTimestamp` — a value that differs on every replay.
+    // Binding the seed time here keeps the whole run on one replay-stable clock.
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
-    vmGlobalThis[STABLE_ULID] = ulid;
+    vmGlobalThis[STABLE_ULID] = () => generateCorrelationId('stream');
 
     // Workflow code must import the deterministic `fetch` step from `workflow`.
     vmGlobalThis.fetch = () => {

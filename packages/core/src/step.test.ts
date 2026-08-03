@@ -7,6 +7,10 @@ import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
+import {
+  createCorrelationIdGenerator,
+  isPerKindCorrelationIdsEnabled,
+} from './correlation-id.js';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { EventsConsumer } from './events-consumer.js';
@@ -61,7 +65,12 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
-    generateUlid: () => ulid(workflowStartedAt), // All generated ulids use the workflow's started at time
+    generateCorrelationId: createCorrelationIdGenerator({
+      seed: 'test',
+      fixedTimestamp: workflowStartedAt,
+      positional: () => ulid(workflowStartedAt),
+      perKind: isPerKindCorrelationIdsEnabled(),
+    }),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),

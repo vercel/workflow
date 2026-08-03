@@ -225,11 +225,11 @@ describe('runWorkflow', () => {
     // Turbo's first delivery synthesizes `startedAt` from the local clock,
     // while later (non-turbo) deliveries load the server-canonical `startedAt`.
     // Replay matching must NOT depend on `startedAt`: correlation IDs come from
-    // `generateUlid`, keyed off the run-ID-recovered `fixedTimestamp`, not
+    // `generateCorrelationId`, keyed off the run-ID-recovered `fixedTimestamp`, not
     // `startedAt`. Here the recorded `add` event uses the createdAt-derived
     // correlation ID, but `startedAt` is months away — replay must still
     // regenerate the same ID and consume the completion rather than throwing
-    // ReplayDivergenceError. Reverting `generateUlid` to `ulid(+startedAt)`
+    // ReplayDivergenceError. Keying the generator off `+startedAt` instead
     // fails this test.
     const ops: Promise<any>[] = [];
     const workflowRunId = 'wrun_123';
