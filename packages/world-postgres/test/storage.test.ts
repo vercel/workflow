@@ -13,6 +13,7 @@ import { Pool } from 'pg';
 import { decodeTime, ulid } from 'ulid';
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -170,6 +171,10 @@ describe('Storage (Postgres integration)', () => {
 
   beforeEach(async () => {
     await truncateTables();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   afterAll(async () => {
@@ -2563,6 +2568,59 @@ describe('Storage (Postgres integration)', () => {
           })
         ).runId
       ).toBe(duplicateRun.runId);
+    });
+
+    it('rejects retention beyond the 30-day default before writing Hook state', async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hookId = 'hook_over_retention_limit';
+
+      await expect(
+        createHook(events, run.runId, {
+          hookId,
+          token: 'over-retention-limit',
+          tokenRetentionUntil: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000),
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        status: 400,
+        message:
+          'Hook minimum retention cannot exceed 30 days in the Postgres World.',
+      });
+
+      await expect(
+        drizzle
+          .select()
+          .from(DrizzleSchema.hooks)
+          .where(eq(DrizzleSchema.hooks.hookId, hookId))
+      ).resolves.toEqual([]);
+      await expect(
+        drizzle
+          .select()
+          .from(DrizzleSchema.events)
+          .where(eq(DrizzleSchema.events.correlationId, hookId))
+      ).resolves.toEqual([]);
+    });
+
+    it('accepts retention within the configured Postgres limit', async () => {
+      vi.stubEnv('WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS', '60');
+      const configuredEvents = createEventsStorage(drizzle);
+      const run = await createRun(configuredEvents, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+
+      await expect(
+        createHook(configuredEvents, run.runId, {
+          hookId: 'hook_custom_retention_limit',
+          token: 'custom-retention-limit',
+          tokenRetentionUntil: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000),
+        })
+      ).resolves.toMatchObject({ hookId: 'hook_custom_retention_limit' });
     });
 
     it('should release a retained hook after its deadline', async () => {

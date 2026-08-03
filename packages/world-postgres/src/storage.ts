@@ -69,6 +69,21 @@ import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
 import { compact } from './util.js';
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function getHookRetentionLimitMs(): number {
+  const days = Number(
+    process.env.WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS ?? 30
+  );
+  if (!Number.isFinite(days) || days <= 0) {
+    throw new WorkflowWorldError(
+      'WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS must be a positive number',
+      { status: 400 }
+    );
+  }
+  return days * DAY_MS;
+}
+
 /**
  * Read helper for the deprecated `error` text column (legacy: JSON-stringified
  * `StructuredError`). In the current event-sourced model, the `error` field on
@@ -406,6 +421,7 @@ async function handleLegacyEventPostgres(
 }
 
 export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
+  const hookRetentionLimitMs = getHookRetentionLimitMs();
   const ulid = monotonicFactory();
   const { events } = Schema;
   const ownerRunIsTerminal = drizzle
@@ -492,6 +508,18 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
   return {
     async create(runId, data, params): Promise<EventResult> {
+      if (
+        data.eventType === 'hook_created' &&
+        data.eventData.tokenRetentionUntil !== undefined &&
+        data.eventData.tokenRetentionUntil.getTime() >
+          Date.now() + hookRetentionLimitMs
+      ) {
+        throw new WorkflowWorldError(
+          `Hook minimum retention cannot exceed ${hookRetentionLimitMs / DAY_MS} days in the Postgres World.`,
+          { status: 400 }
+        );
+      }
+
       let eventId: string | undefined;
       const getEventId = () => (eventId ??= `wevt_${ulid()}`);
 
