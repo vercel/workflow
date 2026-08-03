@@ -5,11 +5,11 @@ import {
   ErrorBoundary,
   EventListView,
   hydrateResourceIOAsync,
-  TraceViewer,
   type SidebarDataContextValue,
   StreamViewer,
   StreamViewerSkeleton,
   stepEventsToStepEntity,
+  TraceViewer,
 } from '@workflow/web-shared';
 import { type Event, isStepEventType, type WorkflowRun } from '@workflow/world';
 import {
