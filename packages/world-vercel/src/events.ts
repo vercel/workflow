@@ -509,14 +509,9 @@ export async function getWorkflowRunEvents(
   // full bodies regardless; buildEventFromV4 still strips them when
   // resolveData is 'none', so this is purely a bandwidth optimization and is
   // safe against an older backend.
-  const wirePagination = {
-    cursor: pagination?.cursor ?? undefined,
-    limit: pagination?.limit,
-    sortOrder: pagination?.sortOrder,
-    remoteRefBehavior: (resolveData === 'none' ? 'lazy' : 'resolve') as
-      | 'lazy'
-      | 'resolve',
-  };
+  const remoteRefBehavior: 'lazy' | 'resolve' =
+    resolveData === 'none' ? 'lazy' : 'resolve';
+  const wirePagination = { ...pagination, remoteRefBehavior };
 
   const result = await ('correlationId' in params
     ? getEventsByCorrelationIdV4(params.correlationId, wirePagination, config)
@@ -702,22 +697,5 @@ async function createWorkflowRunEventInner(
   // EventSchema validates the response and converts stored ISO timestamps
   // back into the Date instances promised by the World interface.
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  return {
-    event: stripEventDataRefs(body.event, resolveData),
-    run: body.run,
-    step: body.step,
-    hook: body.hook,
-    wait: body.wait,
-    events: body.events,
-    cursor: body.cursor ?? undefined,
-    hasMore: body.hasMore,
-    // Lazy step start: thread the server's "I created the step on this call"
-    // signal through so the owned-inline runtime path can gate body execution
-    // on it. Absent from older servers → undefined → safe default.
-    ...(body.stepCreated ? { stepCreated: true } : {}),
-    // Server-supplied per-run event ceiling; absent from older servers.
-    ...(typeof body.maxEvents === 'number'
-      ? { maxEvents: body.maxEvents }
-      : {}),
-  };
+  return { ...body, event: stripEventDataRefs(body.event, resolveData) };
 }
