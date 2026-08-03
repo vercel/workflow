@@ -204,7 +204,7 @@ function EncryptedFieldBlock() {
 function ExpiredFieldBlock() {
   return (
     <div
-      className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs"
+      className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-label-12"
       style={{
         borderColor: 'var(--ds-gray-300)',
         backgroundColor: 'var(--ds-gray-100)',
@@ -263,6 +263,7 @@ const attributeOrder: AttributeKey[] = [
   'runId',
   'attempt',
   'token',
+  'tokenRetentionUntil',
   'isWebhook',
   'isSystem',
   'receivedCount',
@@ -322,6 +323,7 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   eventId: 'Event ID',
   runId: 'Run ID',
   token: 'Token',
+  tokenRetentionUntil: 'Minimum Retention Until',
   eventType: 'Event Type',
   errorCode: 'Error Code',
   correlationId: 'Correlation ID',
@@ -441,6 +443,7 @@ const attributeToDisplayFn: Record<
   attempt: (value: unknown) => String(value),
   // Hook details
   token: (value: unknown) => String(value),
+  tokenRetentionUntil: timestampWithTooltipOrNull,
   isWebhook: (value: unknown) => String(value),
   isSystem: (value: unknown) => String(value),
   receivedCount: (value: unknown) => String(value),
@@ -702,7 +705,7 @@ const selfHeaderedAttributes = new Set([
 
 const ExpiredDataMessage = () => (
   <div
-    className="text-copy-12 rounded-md border p-4 my-2"
+    className="text-label-12 rounded-md border p-4 my-2"
     style={{
       borderColor: 'var(--ds-gray-300)',
       backgroundColor: 'var(--ds-gray-100)',
@@ -812,7 +815,10 @@ export const AttributeBlock = ({
         <span className="text-label-14 text-gray-1000 font-medium first-letter:uppercase">
           {attribute}
         </span>
-        <span className="text-xs" style={{ color: 'var(--ds-gray-1000)' }}>
+        <span
+          className="text-label-12"
+          style={{ color: 'var(--ds-gray-1000)' }}
+        >
           {displayValue}
         </span>
       </div>

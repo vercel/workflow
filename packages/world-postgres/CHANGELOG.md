@@ -1,5 +1,16 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.31
+
+### Patch Changes
+
+- [#3230](https://github.com/vercel/workflow/pull/3230) [`31f92df`](https://github.com/vercel/workflow/commit/31f92df10d295cf09c93aadd35380209c137326c) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Lazy hook resumption: on a fast path, `resumeHook()` writes the `hook_received` event and dispatches the workflow queue message concurrently instead of sequentially, cutting a round trip off resume latency. A `(runId, resumeId)` dedup constraint keeps the two writers converging on exactly one event; the runtime falls back to the sequential path when dedup support is unavailable or when `WORKFLOW_DISABLE_LAZY_HOOK_RESUME=1`. `resumeHook()` resolves to a `ResumedHook` (a `Hook` plus an optional `resilientResume: true` flag, set only when the direct write failed transiently and the resume was recovered via the queue consumer's re-ensure) — preserving the contract introduced alongside the resilient-resume work.
+
+- Updated dependencies [[`4a9d26b`](https://github.com/vercel/workflow/commit/4a9d26b1cb807a9e31489350b468db42a8c13ef3), [`1471f25`](https://github.com/vercel/workflow/commit/1471f252fa18024695f1bf149f5bee4876ab149e), [`31f92df`](https://github.com/vercel/workflow/commit/31f92df10d295cf09c93aadd35380209c137326c), [`4017597`](https://github.com/vercel/workflow/commit/4017597a5f6a54da7ea3bf467c8c63b3bf3bc845), [`438eaa6`](https://github.com/vercel/workflow/commit/438eaa6a595811e6d6942ba679e831d25e6cbfbe), [`ee944d2`](https://github.com/vercel/workflow/commit/ee944d2476daca81b89ba545b522385a7902ec03), [`2677653`](https://github.com/vercel/workflow/commit/2677653759aa34c5c9fe28950fe1a02cec294551), [`aa78a7e`](https://github.com/vercel/workflow/commit/aa78a7e63c73e170f32143b22e01e796a537c405), [`f05f642`](https://github.com/vercel/workflow/commit/f05f642e89d7fe0af6e3d007621b0aa05f996a5b)]:
+  - @workflow/world@5.0.0-beta.24
+  - @workflow/errors@5.0.0-beta.15
+  - @workflow/world-local@5.0.0-beta.33
+
 ## 5.0.0-beta.30
 
 ### Patch Changes

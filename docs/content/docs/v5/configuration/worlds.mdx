@@ -104,6 +104,13 @@ The Local World is the default outside Vercel and is intended for development.
 - Default: `true`
 - Re-enqueues pending and running local runs when the World starts. Set the environment variable to `0` or `false` to skip recovery; the factory option wins when both are set.
 
+### `WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`
+
+- Factory option: none
+- Default: `30`
+- Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Local World, in days.
+- Set this to the same limit as your production World so oversized values fail during local development.
+
 ### `tag`
 
 - Environment variable: none
