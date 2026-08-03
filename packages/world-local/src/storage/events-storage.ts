@@ -1026,33 +1026,6 @@ export function createEventsStorage(
           isHookEventRequiringExistence(data.eventType) &&
           data.correlationId
         ) {
-          // A resume must never be journaled after the hook's disposal.
-          // The disposer's durable order is: dispose lock → claim/entity
-          // delete → `hook_disposed` append, so the hook entity can still
-          // exist (or the disposer may have crashed mid-teardown) while
-          // disposal is already committed. Re-validate the dispose lock
-          // here — under the per-hook in-process lock taken above — so
-          // acceptance observes the same order replay will: once disposal
-          // has committed, the resume is rejected exactly like one that
-          // arrived after teardown finished.
-          if (
-            data.eventType === 'hook_received' &&
-            (await isHookDisposalCommitted(basedir, data.correlationId, tag))
-          ) {
-            throw new HookNotFoundError(data.correlationId);
-          }
-          const existingHook = await readJSONWithFallback(
-            basedir,
-            'hooks',
-            data.correlationId,
-            HookSchema,
-            tag
-          );
-
-          if (!existingHook) {
-            throw new HookNotFoundError(data.correlationId);
-          }
-
           // Lazy hook resume idempotency: the parallel fast path writes this
           // `hook_received` directly AND has the queue consumer re-ensure it,
           // both carrying the same `resumeId`, so both may reach here under the
@@ -1063,6 +1036,28 @@ export function createEventsStorage(
           // the canonical eventId BEFORE the append so a cross-process writer
           // converges too. Gated on `resumeId` so the historical single-write
           // path is untouched.
+          //
+          // Convergence runs BEFORE the disposal / existence validation
+          // below: a committed claim whose event is already visible must
+          // resolve as success even when the hook has since been disposed.
+          // That resume already happened — this create is a redelivered
+          // re-ensure — and the consumer contract ("a matching claim is
+          // resolved as success, not an error") must hold, or the consumer
+          // misreads HookNotFound as "nothing left to resume" and consumes
+          // a delivery that may also be the run's only wake vehicle (the
+          // `{ timeoutSeconds }` visibility-timeout redelivery reuses the
+          // hookInput-carrying message). Only a claim with a visible event
+          // short-circuits here; a claim whose append crashed still falls
+          // through to the disposal and existence checks before completing
+          // the write, so a resume is never first journaled after disposal.
+          let hookResumeClaim: z.infer<typeof HookResumeClaimSchema> | null =
+            null;
+          let hookResumeClaimFile: string | undefined;
+          let convergeHookResume:
+            | ((
+                claim: z.infer<typeof HookResumeClaimSchema>
+              ) => Promise<EventResult | null>)
+            | undefined;
           if (data.eventType === 'hook_received' && params?.resumeId) {
             const claimPath = hookResumeClaimPath(
               basedir,
@@ -1113,38 +1108,81 @@ export function createEventsStorage(
               return null;
             };
 
-            const existingClaim = await readJSON(
-              claimPath,
-              HookResumeClaimSchema
-            );
-            if (existingClaim) {
-              const converged = await converge(existingClaim);
+            hookResumeClaimFile = claimPath;
+            convergeHookResume = converge;
+            hookResumeClaim = await readJSON(claimPath, HookResumeClaimSchema);
+            if (hookResumeClaim) {
+              const converged = await converge(hookResumeClaim);
               if (converged) {
                 return converged;
               }
-            } else {
-              // Reserve the claim (pinning this candidate eventId) before the
-              // append. If a concurrent/cross-process writer reserved it first,
-              // converge on their pinned event instead.
-              const won = await writeExclusive(
-                claimPath,
-                JSON.stringify({
-                  runId: effectiveRunId,
-                  resumeId: params.resumeId,
-                  hookId: data.correlationId,
-                  eventId,
-                  ...(params.resumePayloadDigest
-                    ? { payloadDigest: params.resumePayloadDigest }
-                    : {}),
-                } satisfies z.infer<typeof HookResumeClaimSchema>)
+              // Claim adopted its pinned eventId (crash between the claim
+              // write and the append). Fall through to the disposal and
+              // existence validation below before completing the append.
+            }
+          }
+
+          // A resume must never be journaled after the hook's disposal.
+          // The disposer's durable order is: dispose lock → claim/entity
+          // delete → `hook_disposed` append, so the hook entity can still
+          // exist (or the disposer may have crashed mid-teardown) while
+          // disposal is already committed. Re-validate the dispose lock
+          // here — under the per-hook in-process lock taken above — so
+          // acceptance observes the same order replay will: once disposal
+          // has committed, the resume is rejected exactly like one that
+          // arrived after teardown finished. (An already-converged resume —
+          // claim + visible event — returned above and never reaches this
+          // check.)
+          if (
+            data.eventType === 'hook_received' &&
+            (await isHookDisposalCommitted(basedir, data.correlationId, tag))
+          ) {
+            throw new HookNotFoundError(data.correlationId);
+          }
+          const existingHook = await readJSONWithFallback(
+            basedir,
+            'hooks',
+            data.correlationId,
+            HookSchema,
+            tag
+          );
+
+          if (!existingHook) {
+            throw new HookNotFoundError(data.correlationId);
+          }
+
+          // Reserve the `(runId, resumeId)` claim for a NEW resume (no claim
+          // observed above), pinning this candidate eventId before the
+          // append. If a concurrent/cross-process writer reserved it first,
+          // converge on their pinned event instead.
+          if (
+            data.eventType === 'hook_received' &&
+            params?.resumeId &&
+            !hookResumeClaim &&
+            hookResumeClaimFile &&
+            convergeHookResume
+          ) {
+            const won = await writeExclusive(
+              hookResumeClaimFile,
+              JSON.stringify({
+                runId: effectiveRunId,
+                resumeId: params.resumeId,
+                hookId: data.correlationId,
+                eventId,
+                ...(params.resumePayloadDigest
+                  ? { payloadDigest: params.resumePayloadDigest }
+                  : {}),
+              } satisfies z.infer<typeof HookResumeClaimSchema>)
+            );
+            if (!won) {
+              const winner = await readJSON(
+                hookResumeClaimFile,
+                HookResumeClaimSchema
               );
-              if (!won) {
-                const winner = await readJSON(claimPath, HookResumeClaimSchema);
-                if (winner) {
-                  const converged = await converge(winner);
-                  if (converged) {
-                    return converged;
-                  }
+              if (winner) {
+                const converged = await convergeHookResume(winner);
+                if (converged) {
+                  return converged;
                 }
               }
             }

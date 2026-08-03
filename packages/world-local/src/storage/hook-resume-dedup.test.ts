@@ -118,6 +118,42 @@ describe('world-local hook_received resume dedup', () => {
     expect(await countHookReceived(runId)).toBe(1);
   });
 
+  it('converges a redelivered re-ensure even after the hook was disposed', async () => {
+    const { runId, hook } = await setup();
+    const payload = new Uint8Array([1, 2, 3]);
+
+    // The resume lands and the workflow subsequently disposes the hook.
+    const first = await resume(runId, hook, 'resume_1', 'digest_1', payload);
+    await storage.events.create(runId, {
+      eventType: 'hook_disposed',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: hook.hookId,
+      eventData: {},
+    });
+
+    // A redelivery of the consumer's re-ensure for that SAME resume (the
+    // `{ timeoutSeconds }` visibility-timeout redelivery reuses the
+    // hookInput-carrying message as the run's wake vehicle) must resolve as
+    // success on the committed claim — NOT throw HookNotFound. The consumer
+    // treats HookNotFound as "nothing left to resume" and consumes the
+    // delivery, which would destroy the run's only wake.
+    const reEnsured = await resume(
+      runId,
+      hook,
+      'resume_1',
+      'digest_1',
+      payload
+    );
+    expect(reEnsured.event.eventId).toBe(first.event.eventId);
+    expect(await countHookReceived(runId)).toBe(1);
+
+    // A genuinely NEW resume after disposal is still rejected.
+    await expect(
+      resume(runId, hook, 'resume_2', 'digest_2', new Uint8Array([9]))
+    ).rejects.toThrow();
+    expect(await countHookReceived(runId)).toBe(1);
+  });
+
   it('rejects a reused resumeId + digest that belongs to a DIFFERENT hook', async () => {
     const { runId, hook } = await setup();
     const otherHook = await createHook(storage, runId, {
