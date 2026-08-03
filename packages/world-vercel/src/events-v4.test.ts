@@ -159,7 +159,11 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
           runId: 'wrun_1',
           eventType: 'run_created',
           createdAt: '2026-06-10T00:00:00.000Z',
-          eventData: {},
+          eventData: {
+            deploymentId: 'dpl_1',
+            workflowName: 'workflow',
+            input: null,
+          },
         },
         body
       ),
@@ -232,7 +236,11 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
           runId: 'wrun_1',
           eventType: 'run_created',
           createdAt: '2026-06-10T00:00:00.000Z',
-          eventData: {},
+          eventData: {
+            deploymentId: 'dpl_1',
+            workflowName: 'workflow',
+            input: null,
+          },
         },
         new Uint8Array(0)
       ),
@@ -302,7 +310,11 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         runId: 'wrun_1',
         eventType: 'run_created',
         createdAt: '2026-06-10T00:00:00.000Z',
-        eventData: {},
+        eventData: {
+          deploymentId: 'dpl_1',
+          workflowName: 'workflow',
+          input: null,
+        },
       },
       new Uint8Array(0)
     );
@@ -344,7 +356,11 @@ describe('getEventV4 over HTTP', () => {
           runId: 'wrun_1',
           eventType: 'run_created',
           createdAt: '2026-06-10T00:00:00.000Z',
-          eventData: {},
+          eventData: {
+            deploymentId: 'dpl_1',
+            workflowName: 'workflow',
+            input: null,
+          },
         },
         body
       ),

@@ -465,20 +465,22 @@ function decodeLegacyStructuredError(payload: Uint8Array): unknown {
  * exception.
  */
 function decodeEventFrame({ event, body }: DecodedEventFrame): Event {
-  const eventData = { ...event.eventData };
-
   if (body.byteLength > 0) {
     const payloadField = getEventDataPayloadField(event.eventType);
     if (payloadField) {
-      eventData[payloadField] = legacyStructuredErrorEventTypes.has(
-        event.eventType
-      )
-        ? decodeLegacyStructuredError(body)
-        : body;
+      return EventSchema.parse({
+        ...event,
+        eventData: {
+          ...event.eventData,
+          [payloadField]: legacyStructuredErrorEventTypes.has(event.eventType)
+            ? decodeLegacyStructuredError(body)
+            : body,
+        },
+      });
     }
   }
 
-  return EventSchema.parse({ ...event, eventData });
+  return event;
 }
 
 // =============================================================================
