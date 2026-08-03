@@ -1277,7 +1277,7 @@ describe('Storage', () => {
         expect(fileExists).toBe(true);
       });
 
-      it('returns a resumable partial preload when run_started is retried', async () => {
+      it('returns the complete preload when run_started is retried', async () => {
         await storage.events.create(testRunId, {
           eventType: 'run_started',
           specVersion: SPEC_VERSION_CURRENT,
@@ -1300,22 +1300,15 @@ describe('Storage', () => {
         });
         assert(preloaded.events);
         assert(preloaded.cursor);
-        expect(preloaded.events).toHaveLength(1000);
-        expect(preloaded.hasMore).toBe(true);
+        expect(preloaded.events).toHaveLength(1001);
+        expect(preloaded.hasMore).toBe(false);
 
-        const suffix = await storage.events.list({
-          runId: testRunId,
-          pagination: {
-            sortOrder: 'asc',
-            cursor: preloaded.cursor,
-          },
-        });
         const all = await storage.events.list({
           runId: testRunId,
           pagination: { sortOrder: 'asc', limit: 2000 },
         });
 
-        expect([...preloaded.events, ...suffix.data]).toEqual(all.data);
+        expect(preloaded.events).toEqual(all.data);
       }, 120_000);
 
       it('skips the run_started preload when requested', async () => {

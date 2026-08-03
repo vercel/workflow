@@ -1209,7 +1209,7 @@ export function createEventsStorage(
                 };
               }
               const preloaded = await queryRunEvents(effectiveRunId, {
-                limit: 1000,
+                limit: getMaxEventsPerRun(),
               });
               return {
                 run: currentRun,
@@ -2414,14 +2414,14 @@ export function createEventsStorage(
         const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
         const filteredEvent = stripEventDataRefs(event, resolveData);
 
-        // For run_started: preload one page of events so the runtime can skip
-        // the initial events.list call when hasMore is false.
+        // For run_started: preload the event log so the runtime can skip
+        // the initial events.list call.
         let events: Event[] | undefined;
         let cursor: string | null | undefined;
         let hasMore: boolean | undefined;
         if (data.eventType === 'run_started' && run && !params?.skipPreload) {
           const preloaded = await queryRunEvents(effectiveRunId, {
-            limit: 1000,
+            limit: getMaxEventsPerRun(),
           });
           events = preloaded.data;
           cursor = preloaded.cursor;
