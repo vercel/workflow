@@ -691,31 +691,25 @@ async function createWorkflowRunEventInner(
   if (data.eventType === 'run_started' && !params?.skipPreload) {
     const result = await createWorkflowRunStartedEventV4(input, config);
     const replayEvents = result.events.map(decodeEventFrame);
-    const runCreated = replayEvents.find(
-      (event) => event.eventType === 'run_created'
-    );
-    const runStarted = replayEvents.find(
-      (event) => event.eventType === 'run_started'
-    );
-    if (!runCreated) {
+    const [runCreated, runStarted] = replayEvents;
+    if (
+      runCreated?.eventType !== 'run_created' ||
+      runStarted?.eventType !== 'run_started'
+    ) {
       throw new Error(
-        'v4 createEvent: run_started stream is missing run_created'
-      );
-    }
-    if (!runStarted) {
-      throw new Error(
-        'v4 createEvent: run_started stream is missing run_started'
+        'v4 createEvent: run_started stream must begin with run_created and run_started'
       );
     }
 
     let attributes = runCreated.eventData.attributes ?? {};
     let updatedAt = runStarted.createdAt;
-    for (const event of replayEvents) {
+    const events = replayEvents.map((event) => {
       if (event.eventType === 'attr_set') {
         attributes = applyAttributeChanges(attributes, event.eventData.changes);
         updatedAt = event.createdAt;
       }
-    }
+      return stripEventDataRefs(event, resolveData);
+    });
 
     return {
       event: stripEventDataRefs(runStarted, resolveData),
@@ -733,10 +727,8 @@ async function createWorkflowRunEventInner(
         createdAt: runCreated.createdAt,
         updatedAt,
       },
-      events: replayEvents.map((event) =>
-        stripEventDataRefs(event, resolveData)
-      ),
-      cursor: result.cursor,
+      events,
+      cursor: result.next,
       hasMore: result.hasMore,
       maxEvents: result.maxEvents,
     };
