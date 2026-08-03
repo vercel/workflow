@@ -512,12 +512,7 @@ export async function getWorkflowRunEvents(
   // safe against an older backend.
   const remoteRefBehavior: 'lazy' | 'resolve' =
     resolveData === 'none' ? 'lazy' : 'resolve';
-  const wirePagination = {
-    cursor: pagination?.cursor,
-    limit: pagination?.limit,
-    sortOrder: pagination?.sortOrder,
-    remoteRefBehavior,
-  };
+  const wirePagination = { ...pagination, remoteRefBehavior };
 
   const result = await ('correlationId' in params
     ? getEventsByCorrelationIdV4(params.correlationId, wirePagination, config)
@@ -695,31 +690,25 @@ async function createWorkflowRunEventInner(
   if (data.eventType === 'run_started' && !params?.skipPreload) {
     const result = await createWorkflowRunStartedEventV4(input, config);
     const replayEvents = result.events.map(decodeEventFrame);
-    const runCreated = replayEvents.find(
-      (event) => event.eventType === 'run_created'
-    );
-    const runStarted = replayEvents.find(
-      (event) => event.eventType === 'run_started'
-    );
-    if (!runCreated) {
+    const [runCreated, runStarted] = replayEvents;
+    if (
+      runCreated?.eventType !== 'run_created' ||
+      runStarted?.eventType !== 'run_started'
+    ) {
       throw new Error(
-        'v4 createEvent: run_started stream is missing run_created'
-      );
-    }
-    if (!runStarted) {
-      throw new Error(
-        'v4 createEvent: run_started stream is missing run_started'
+        'v4 createEvent: run_started stream must begin with run_created and run_started'
       );
     }
 
     let attributes = runCreated.eventData.attributes ?? {};
     let updatedAt = runStarted.createdAt;
-    for (const event of replayEvents) {
+    const events = replayEvents.map((event) => {
       if (event.eventType === 'attr_set') {
         attributes = applyAttributeChanges(attributes, event.eventData.changes);
         updatedAt = event.createdAt;
       }
-    }
+      return stripEventDataRefs(event, resolveData);
+    });
 
     return {
       event: stripEventDataRefs(runStarted, resolveData),
@@ -737,10 +726,8 @@ async function createWorkflowRunEventInner(
         createdAt: runCreated.createdAt,
         updatedAt,
       },
-      events: replayEvents.map((event) =>
-        stripEventDataRefs(event, resolveData)
-      ),
-      cursor: result.cursor,
+      events,
+      cursor: result.next,
       hasMore: result.hasMore,
       maxEvents: result.maxEvents,
     };
@@ -752,18 +739,5 @@ async function createWorkflowRunEventInner(
       : { ...input, eventType: data.eventType },
     config
   );
-  return {
-    event: stripEventDataRefs(body.event, resolveData),
-    run: body.run,
-    step: body.step,
-    hook: body.hook,
-    wait: body.wait,
-    events: body.events,
-    cursor: body.cursor ?? undefined,
-    hasMore: body.hasMore,
-    ...(body.stepCreated ? { stepCreated: true } : {}),
-    ...(typeof body.maxEvents === 'number'
-      ? { maxEvents: body.maxEvents }
-      : {}),
-  };
+  return { ...body, event: stripEventDataRefs(body.event, resolveData) };
 }

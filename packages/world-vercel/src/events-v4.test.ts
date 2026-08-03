@@ -566,7 +566,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     expect(result.maxEvents).toBe(10000);
     expect(result.events).toHaveLength(2);
     expect(result.events[0]?.body).toEqual(input);
-    expect(result.cursor).toBe('eid:evnt_2');
+    expect(result.next).toBe('eid:evnt_2');
     expect(result.hasMore).toBe(false);
     agent.assertNoPendingInterceptors();
   });

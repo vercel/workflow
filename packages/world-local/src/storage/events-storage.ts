@@ -15,6 +15,7 @@ import type {
   Event,
   EventResult,
   Hook,
+  PaginatedResponse,
   PaginationOptions,
   SerializedData,
   Step,
@@ -2416,16 +2417,11 @@ export function createEventsStorage(
 
         // For run_started: preload the event log so the runtime can skip
         // the initial events.list call.
-        let events: Event[] | undefined;
-        let cursor: string | null | undefined;
-        let hasMore: boolean | undefined;
+        let eventPage: PaginatedResponse<Event> | undefined;
         if (data.eventType === 'run_started' && run && !params?.skipPreload) {
-          const preloaded = await queryRunEvents(effectiveRunId, {
+          eventPage = await queryRunEvents(effectiveRunId, {
             limit: getMaxEventsPerRun(),
           });
-          events = preloaded.data;
-          cursor = preloaded.cursor;
-          hasMore = preloaded.hasMore;
         }
 
         // Inline-delta optimization: on a step-terminal write the inline
@@ -2462,21 +2458,19 @@ export function createEventsStorage(
           // consume side (runtime.ts) only stashes the delta when `!hasMore`
           // and otherwise falls back to the exhaustive `events.list` loop, so a
           // truncated page is never consumed as if it were the full delta.
-          const delta = await paginatedFileSystemQuery({
-            directory: path.join(basedir, 'events'),
-            schema: EventSchema,
-            filePrefix: `${effectiveRunId}-`,
+          const delta = await queryRunEvents(effectiveRunId, {
             sortOrder: 'asc',
             cursor: params.sinceCursor,
-            getCreatedAt: getObjectCreatedAt('evnt'),
-            getId: (e) => e.eventId,
           });
-          events =
+          eventPage =
             resolveData === 'none'
-              ? delta.data.map((e) => stripEventDataRefs(e, resolveData))
-              : delta.data;
-          cursor = delta.cursor;
-          hasMore = delta.hasMore;
+              ? {
+                  ...delta,
+                  data: delta.data.map((event) =>
+                    stripEventDataRefs(event, resolveData)
+                  ),
+                }
+              : delta;
         }
 
         // Return EventResult with event and any created/updated entity
@@ -2486,9 +2480,13 @@ export function createEventsStorage(
           step,
           hook,
           wait,
-          events,
-          cursor,
-          hasMore,
+          ...(eventPage
+            ? {
+                events: eventPage.data,
+                cursor: eventPage.cursor,
+                hasMore: eventPage.hasMore,
+              }
+            : {}),
           ...(stepCreatedLazily ? { stepCreated: true } : {}),
           // Per-run event ceiling (mirrors the Vercel World).
           ...(run ? { maxEvents: getMaxEventsPerRun() } : {}),

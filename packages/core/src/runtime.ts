@@ -450,31 +450,25 @@ function openHookAndWaitState(events: Event[]): {
   openHook: boolean;
   openWait: boolean;
 } {
-  const disposedHookIds = new Set<string | undefined>();
-  const completedWaitIds = new Set<string | undefined>();
-  for (const e of events) {
-    if (e.eventType === 'hook_disposed') disposedHookIds.add(e.correlationId);
-    else if (e.eventType === 'wait_completed') {
-      completedWaitIds.add(e.correlationId);
+  const hooks = new Set<string>();
+  const waits = new Set<string>();
+  for (const event of events) {
+    switch (event.eventType) {
+      case 'hook_created':
+        hooks.add(event.correlationId);
+        break;
+      case 'hook_disposed':
+        hooks.delete(event.correlationId);
+        break;
+      case 'wait_created':
+        waits.add(event.correlationId);
+        break;
+      case 'wait_completed':
+        waits.delete(event.correlationId);
+        break;
     }
   }
-  let openHook = false;
-  let openWait = false;
-  for (const e of events) {
-    if (
-      e.eventType === 'hook_created' &&
-      !disposedHookIds.has(e.correlationId)
-    ) {
-      openHook = true;
-    } else if (
-      e.eventType === 'wait_created' &&
-      !completedWaitIds.has(e.correlationId)
-    ) {
-      openWait = true;
-    }
-    if (openHook && openWait) break;
-  }
-  return { openHook, openWait };
+  return { openHook: hooks.size > 0, openWait: waits.size > 0 };
 }
 
 type ReplayEventLog =

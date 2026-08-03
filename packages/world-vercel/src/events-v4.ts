@@ -239,8 +239,6 @@ export type CreateEventV4Input = CreateEventV4InputBase &
     | { eventType: 'run_started'; skipPreload: true }
   );
 
-type CreateRunStartedEventV4Input = CreateEventV4InputBase;
-
 /**
  * Shape the v4 client attaches to `PreconditionFailedError.details` when a
  * rejecting server returned the missing events inline. `@workflow/errors`
@@ -317,12 +315,6 @@ const CreateEventV4BodySchemas: {
 
 const MaxEventsHeaderSchema = z.coerce.number().int().positive();
 
-export interface RunStartedEventStreamV4Result {
-  maxEvents: number;
-  events: DecodedEventFrame[];
-  cursor: string;
-  hasMore: boolean;
-}
 /** Build the CBOR meta map for a v4 POST frame. Drops undefined entries
  *  so the wire shape matches what the server expects to see. */
 function buildPostFrameMeta(
@@ -610,9 +602,9 @@ export async function createWorkflowRunEventV4<T extends EventType>(
 }
 
 export async function createWorkflowRunStartedEventV4(
-  input: CreateRunStartedEventV4Input,
+  input: CreateEventV4InputBase,
   config?: APIConfig
-): Promise<RunStartedEventStreamV4Result> {
+) {
   const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'run_started' },
     'event-stream',
@@ -633,10 +625,9 @@ export async function createWorkflowRunStartedEventV4(
   }
 
   return {
+    ...page,
+    next: page.next,
     maxEvents: maxEvents.data,
-    events: page.events,
-    cursor: page.next,
-    hasMore: page.hasMore,
   };
 }
 
