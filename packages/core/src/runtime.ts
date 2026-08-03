@@ -1654,6 +1654,10 @@ export function workflowEntrypoint(
                         // to (step dispatch, requeues, wait continuations)
                         // from it, matching the node paths below.
                         namespace,
+                        // Run-origin-preserving carrier for everything the
+                        // entrypoint enqueues (linked-mode star topology —
+                        // see getNextTraceCarrier).
+                        nextTraceCarrier,
                         // Resilient resume (see the node block below): the
                         // QuickJS entrypoint materializes the missing
                         // hook_received from this payload itself.

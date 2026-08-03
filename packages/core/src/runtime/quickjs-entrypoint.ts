@@ -111,11 +111,19 @@ async function queueStepMessage(params: {
   delaySeconds?: number;
   /** Queue namespace of the incoming delivery (multi-tenant queue prefix). */
   namespace?: string;
+  /**
+   * Run-origin-preserving carrier (getNextTraceCarrier semantics). In the
+   * default `linked` trace mode this forwards the RUN-ORIGIN carrier
+   * unchanged so every invocation links back to workflow.start in a star —
+   * NOT `serializeTraceCarrier()`, which captures the current context and
+   * chains invocations to each other instead.
+   */
+  nextTraceCarrier: () => Promise<Record<string, string>>;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<void> {
   const { world, runId, workflowRun, step, delaySeconds, namespace, wfdiag } =
     params;
-  const traceCarrier = await serializeTraceCarrier();
+  const traceCarrier = await params.nextTraceCarrier();
   await queueMessage(
     world,
     getWorkflowQueueName(workflowRun.workflowName, namespace),
@@ -164,6 +172,8 @@ async function dispatchPendingOps(params: {
   skipStepCreation?: Set<string>;
   /** Queue namespace of the incoming delivery (multi-tenant queue prefix). */
   namespace?: string;
+  /** Run-origin-preserving carrier for enqueued messages (see queueStepMessage). */
+  nextTraceCarrier: () => Promise<Record<string, string>>;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<{
   createdAttributeEvent: boolean;
@@ -173,6 +183,7 @@ async function dispatchPendingOps(params: {
     params;
   const skipStepCreation = params.skipStepCreation;
   const namespace = params.namespace;
+  const nextTraceCarrier = params.nextTraceCarrier;
   const wfdiag = params.wfdiag;
   // Set when a hook with a parked getConflict() awaiter had its
   // hook_created written this invocation. The workflow must be re-invoked
@@ -240,10 +251,12 @@ async function dispatchPendingOps(params: {
             getWorkflowQueueName(workflowRun.workflowName, namespace),
             {
               runId,
-              // Link the conflict re-invocation to this trace — parity
-              // with the node engine's reinvoke(), which always carries
-              // a trace carrier on its continuations.
-              traceCarrier: await serializeTraceCarrier(),
+              // Link the conflict re-invocation to the run's trace —
+              // parity with the node engine's reinvoke(), which always
+              // carries the run-origin-preserving carrier and a
+              // requestedAt on its continuations.
+              traceCarrier: await nextTraceCarrier(),
+              requestedAt: new Date(),
             },
             { idempotencyKey: `hook_conflict_${hook.correlationId}` }
           );
@@ -547,6 +560,8 @@ export async function runWorkflowWithQuickJS(params: {
    * plumbing in runtime.ts).
    */
   namespace?: string;
+  /** See queueStepMessage — run-origin-preserving carrier factory. */
+  nextTraceCarrier?: () => Promise<Record<string, string>>;
 }): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
@@ -561,6 +576,8 @@ export async function runWorkflowWithQuickJS(params: {
     ownerMessageId,
     namespace,
   } = params;
+  const nextTraceCarrier =
+    params.nextTraceCarrier ?? (() => serializeTraceCarrier());
   const world = await getWorld();
   const runId = workflowRun.runId;
   const invocationStart = tick();
@@ -1011,6 +1028,7 @@ export async function runWorkflowWithQuickJS(params: {
         pendingOperations: opsToDispatch,
         skipStepCreation: inlineClaimCids,
         namespace,
+        nextTraceCarrier,
         wfdiag,
       });
       if (
@@ -1040,6 +1058,7 @@ export async function runWorkflowWithQuickJS(params: {
           workflowRun,
           step,
           namespace,
+          nextTraceCarrier,
           wfdiag,
         });
       }
@@ -1121,6 +1140,7 @@ export async function runWorkflowWithQuickJS(params: {
             workflowRun,
             step,
             namespace,
+            nextTraceCarrier,
             wfdiag,
           });
         }
@@ -1156,7 +1176,7 @@ export async function runWorkflowWithQuickJS(params: {
           getWorkflowQueueName(workflowRun.workflowName, namespace),
           {
             runId,
-            traceCarrier: await serializeTraceCarrier(),
+            traceCarrier: await nextTraceCarrier(),
             requestedAt: new Date(),
           },
           getWaitContinuationDispatch(
@@ -1238,6 +1258,7 @@ export async function runWorkflowWithQuickJS(params: {
             step,
             delaySeconds: outcome.timeoutSeconds,
             namespace,
+            nextTraceCarrier,
             wfdiag,
           });
         } else if (outcome.type === 'gone') {
@@ -1302,6 +1323,7 @@ export async function runWorkflowWithQuickJS(params: {
           encryptionKey,
           pendingOperations: result.completed.drainOperations,
           namespace,
+          nextTraceCarrier,
           wfdiag,
         });
       } catch (err) {
@@ -1494,6 +1516,7 @@ export async function runWorkflowWithQuickJS(params: {
           encryptionKey,
           pendingOperations: result.failed.drainOperations,
           namespace,
+          nextTraceCarrier,
           wfdiag,
         });
       } catch (err) {
