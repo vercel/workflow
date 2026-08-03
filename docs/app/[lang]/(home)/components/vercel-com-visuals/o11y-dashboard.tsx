@@ -16,7 +16,7 @@ export const O11yDashboard = ({
       <title>o11y dashboard of Vercel</title>
       <g
         filter={`url(#a-${svgId})`}
-        className="[&_[data-hoverable='fill']]:fill-transparent [&_[data-hoverable]]:pointer-events-auto [&_[data-hoverable]]:cursor-pointer [&_[data-hoverable='fill']:hover]:fill-gray-200 [&_*:not([data-hoverable])]:pointer-events-none [&_[data-hoverable='text']:hover]:underline"
+        className="[&_text]:whitespace-pre [&_[data-hoverable='fill']]:fill-transparent [&_[data-hoverable]]:pointer-events-auto [&_[data-hoverable]]:cursor-pointer [&_[data-hoverable='fill']:hover]:fill-gray-200 [&_*:not([data-hoverable])]:pointer-events-none [&_[data-hoverable='text']:hover]:underline"
       >
         <g clipPath={`url(#b-${svgId})`}>
           <path
@@ -84,9 +84,6 @@ export const O11yDashboard = ({
               fontSize={11.652}
               fontWeight={500}
               letterSpacing="0em"
-              style={{
-                whiteSpace: 'pre',
-              }}
             >
               <tspan x={43.533} y={72.427}>
                 Acme
@@ -103,9 +100,6 @@ export const O11yDashboard = ({
               fontSize={9.155}
               fontWeight={500}
               letterSpacing="0em"
-              style={{
-                whiteSpace: 'pre',
-              }}
             >
               <tspan x={87.359} y={71.388}>
                 Pro
@@ -140,9 +134,6 @@ export const O11yDashboard = ({
               fontFamily="Geist"
               fontSize={11.652}
               letterSpacing="0em"
-              style={{
-                whiteSpace: 'pre',
-              }}
             >
               <tspan x={43.532} y={112.378}>
                 Find...
@@ -164,9 +155,6 @@ export const O11yDashboard = ({
               fontSize={9.988}
               fontWeight={500}
               letterSpacing="0em"
-              style={{
-                whiteSpace: 'pre',
-              }}
             >
               <tspan x={190.562} y={111.63}>
                 F
@@ -197,7 +185,6 @@ export const O11yDashboard = ({
                 fontFamily="Geist"
                 fontSize={11.652}
                 letterSpacing="0em"
-                style={{ whiteSpace: 'pre' }}
               >
                 <tspan x={43.533} y={318.791}>
                   Workflows
@@ -224,7 +211,6 @@ export const O11yDashboard = ({
                 fontFamily="Geist"
                 fontSize={11.652}
                 letterSpacing="0em"
-                style={{ whiteSpace: 'pre' }}
               >
                 <tspan x={43.533} y={352.083}>
                   Sandboxes
@@ -253,7 +239,6 @@ export const O11yDashboard = ({
                 fontFamily="Geist"
                 fontSize={11.652}
                 letterSpacing="0em"
-                style={{ whiteSpace: 'pre' }}
               >
                 <tspan x={43.533} y={385.376}>
                   AI Gateway
@@ -286,7 +271,6 @@ export const O11yDashboard = ({
                 fontFamily="Geist"
                 fontSize={11.652}
                 letterSpacing="0em"
-                style={{ whiteSpace: 'pre' }}
               >
                 <tspan x={43.533} y={418.669}>
                   Storage
@@ -320,9 +304,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist"
                   fontSize={11.652}
                   letterSpacing="0em"
-                  style={{
-                    whiteSpace: 'pre',
-                  }}
                 >
                   <tspan x={43.533} y={395.364}>
                     Usage
@@ -354,9 +335,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist"
                   fontSize={11.652}
                   letterSpacing="0em"
-                  style={{
-                    whiteSpace: 'pre',
-                  }}
                 >
                   <tspan x={43.533} y={428.656}>
                     Support
@@ -384,9 +362,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist"
                   fontSize={11.652}
                   letterSpacing="0em"
-                  style={{
-                    whiteSpace: 'pre',
-                  }}
                 >
                   <tspan x={43.533} y={461.949}>
                     Settings
@@ -431,9 +406,6 @@ export const O11yDashboard = ({
                 fontSize={11.652}
                 fontWeight={500}
                 letterSpacing="0em"
-                style={{
-                  whiteSpace: 'pre',
-                }}
               >
                 <tspan x={257} y={72.396}>
                   acme-store
@@ -450,9 +422,6 @@ export const O11yDashboard = ({
                 fontSize={11.652}
                 fontWeight={500}
                 letterSpacing="0em"
-                style={{
-                  whiteSpace: 'pre',
-                }}
               >
                 <tspan x={500.744} y={72.396}>
                   Workflows
@@ -501,7 +470,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist"
                   fontSize={9.5}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={246} y={119}>
                     Status
@@ -515,7 +483,6 @@ export const O11yDashboard = ({
                   fontSize={9.5}
                   fontWeight={500}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={257} y={134}>
                     Completed
@@ -527,7 +494,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist"
                   fontSize={9.5}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={330} y={119}>
                     Run ID
@@ -540,7 +506,6 @@ export const O11yDashboard = ({
                   fontSize={9.5}
                   fontWeight={500}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={330} y={134}>
                     wrun_02456KXR
@@ -552,7 +517,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist"
                   fontSize={9.5}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={800} y={119} textAnchor="end">
                     Duration
@@ -565,7 +529,6 @@ export const O11yDashboard = ({
                   fontSize={9.5}
                   fontWeight={500}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={800} y={134} textAnchor="end">
                     925ms
@@ -588,7 +551,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist Mono"
                   fontSize={9.5}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={245} y={170}>
                     workflow()
@@ -600,7 +562,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist Mono"
                   fontSize={9.5}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={799} y={170} textAnchor="end">
                     925ms
@@ -623,7 +584,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist Mono"
                   fontSize={9.5}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={245} y={199}>
                     fetchOrder()
@@ -635,7 +595,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist Mono"
                   fontSize={9.5}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={377} y={199} textAnchor="end">
                     230ms
@@ -658,7 +617,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist Mono"
                   fontSize={9.5}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={388} y={228}>
                     validate()
@@ -670,7 +628,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist Mono"
                   fontSize={9.5}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={492} y={228} textAnchor="end">
                     155ms
@@ -693,7 +650,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist Mono"
                   fontSize={9.5}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={503} y={257}>
                     enrichWithPricing()
@@ -705,7 +661,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist Mono"
                   fontSize={9.5}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={652} y={257} textAnchor="end">
                     230ms
@@ -728,7 +683,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist Mono"
                   fontSize={9.5}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={663} y={286}>
                     saveOrder()
@@ -740,7 +694,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist Mono"
                   fontSize={9.5}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={767} y={286} textAnchor="end">
                     155ms
@@ -763,7 +716,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist Mono"
                   fontSize={9.5}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={698} y={315}>
                     sendEmail()
@@ -775,7 +727,6 @@ export const O11yDashboard = ({
                   fontFamily="Geist Mono"
                   fontSize={9.5}
                   letterSpacing="0em"
-                  style={{ whiteSpace: 'pre' }}
                 >
                   <tspan x={799} y={315} textAnchor="end">
                     155ms
@@ -799,9 +750,6 @@ export const O11yDashboard = ({
             fontFamily="Geist"
             fontSize={12}
             letterSpacing="0em"
-            style={{
-              whiteSpace: 'pre',
-            }}
           >
             <tspan x={391.327} y={28.328}>
               vercel.com

@@ -194,22 +194,21 @@ export const MiniMap = memo(function MiniMap({
 
   return (
     <div
-      className={styles.mapContainer}
+      className={`${styles.mapContainer} h-14`}
       ref={containerRef}
       style={{
         width: thumbWidth > 0 ? mapWidth : '100%',
-        height: MAP_HEIGHT,
       }}
     >
       <canvas
-        className={styles.mapCanvas}
+        className={`${styles.mapCanvas} h-14`}
         height={MAP_HEIGHT * dpi}
         ref={canvasRef}
-        style={{ width: mapWidth, height: MAP_HEIGHT }}
+        style={{ width: mapWidth }}
         width={mapWidth * dpi}
       />
       <div
-        className={styles.mapThumb}
+        className={`${styles.mapThumb} !top-0.5 !h-13`}
         ref={thumbRef}
         style={{
           transform: thumbStyle.transform,
@@ -217,8 +216,6 @@ export const MiniMap = memo(function MiniMap({
             thumbWidth > 0
               ? thumbWidth
               : `calc(100% - ${TIMELINE_PADDING * 2}px)`,
-          top: 2,
-          height: MAP_HEIGHT - 4,
         }}
       />
     </div>

@@ -14,7 +14,7 @@ export function InfraVisual(): JSX.Element {
         <rect width="444" height="264" fill="var(--ds-background-200)" />
         <mask
           id="mask0_3882_8500"
-          style={{ maskType: 'alpha' }}
+          className="[mask-type:alpha]"
           maskUnits="userSpaceOnUse"
           x="-36"
           y="-20"

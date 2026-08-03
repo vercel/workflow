@@ -12,7 +12,7 @@ export function PlainGlobe(): JSX.Element {
       half
       latitudeDivisions={8}
       longitudeDivisions={8}
-      style={{ overflow: 'visible' }}
+      className="overflow-visible"
     >
       {IDLE_PATHS.map((path, i) => {
         const key = `idle-path-plain-globe-${path.directions}-${path.origin.x}-${path.origin.y}`;

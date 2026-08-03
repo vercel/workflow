@@ -371,13 +371,7 @@ export function BenchmarkHistoryChart({
                               </div>
                               <div className="flex flex-col gap-1">
                                 <div className="flex items-center gap-2">
-                                  <div
-                                    className="h-2.5 w-2.5 rounded-[2px]"
-                                    style={{
-                                      backgroundColor:
-                                        'var(--color-workflowTime)',
-                                    }}
-                                  />
+                                  <div className="h-2.5 w-2.5 rounded-[2px] bg-[var(--color-workflowTime)]" />
                                   <span className="text-xs text-muted-foreground">
                                     Time:
                                   </span>
@@ -389,12 +383,7 @@ export function BenchmarkHistoryChart({
                                 </div>
                                 {point.ttfb !== undefined && (
                                   <div className="flex items-center gap-2">
-                                    <div
-                                      className="h-2.5 w-2.5 rounded-[2px]"
-                                      style={{
-                                        backgroundColor: 'var(--color-ttfb)',
-                                      }}
-                                    />
+                                    <div className="h-2.5 w-2.5 rounded-[2px] bg-[var(--color-ttfb)]" />
                                     <span className="text-xs text-muted-foreground">
                                       TTFB:
                                     </span>
@@ -405,12 +394,7 @@ export function BenchmarkHistoryChart({
                                 )}
                                 {point.slurp !== undefined && (
                                   <div className="flex items-center gap-2">
-                                    <div
-                                      className="h-2.5 w-2.5 rounded-[2px]"
-                                      style={{
-                                        backgroundColor: 'var(--color-slurp)',
-                                      }}
-                                    />
+                                    <div className="h-2.5 w-2.5 rounded-[2px] bg-[var(--color-slurp)]" />
                                     <span className="text-xs text-muted-foreground">
                                       Slurp:
                                     </span>

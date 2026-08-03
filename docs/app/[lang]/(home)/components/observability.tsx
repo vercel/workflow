@@ -6,44 +6,38 @@ import { cn } from '@/lib/utils';
 const rows = [
   {
     label: 'workflow()',
-    className:
-      'bg-[#E1F0FF] dark:bg-[#00254D] border-[#99CEFF] text-[#0070F3] dark:border-[#0067D6] dark:text-[#52AEFF]',
-    start: 0,
+    className: 'border-blue-400 bg-blue-100 text-blue-700',
+    layoutClassName: 'ml-0 w-full',
     duration: 100,
   },
   {
     label: 'process()',
-    className:
-      'bg-[#DCF6DC] dark:bg-[#1B311E] border-[#99E59F] text-[#46A758] dark:border-[#297C3B] dark:text-[#6CDA76]',
-    start: 0,
+    className: 'border-green-400 bg-green-100 text-green-700',
+    layoutClassName: 'ml-0 w-1/5',
     duration: 20,
   },
   {
     label: 'parse()',
-    className:
-      'bg-[#DCF6DC] dark:bg-[#1B311E] border-[#99E59F] text-[#46A758] dark:border-[#297C3B] dark:text-[#6CDA76]',
-    start: 20,
+    className: 'border-green-400 bg-green-100 text-green-700',
+    layoutClassName: 'ml-[20%] w-1/4',
     duration: 25,
   },
   {
     label: 'transform()',
-    className:
-      'bg-[#DCF6DC] dark:bg-[#1B311E] border-[#99E59F] text-[#46A758] dark:border-[#297C3B] dark:text-[#6CDA76]',
-    start: 45,
+    className: 'border-green-400 bg-green-100 text-green-700',
+    layoutClassName: 'ml-[45%] w-1/5',
     duration: 20,
   },
   {
     label: 'enrich()',
-    className:
-      'bg-[#DCF6DC] dark:bg-[#1B311E] border-[#99E59F] text-[#46A758] dark:border-[#297C3B] dark:text-[#6CDA76]',
-    start: 65,
+    className: 'border-green-400 bg-green-100 text-green-700',
+    layoutClassName: 'ml-[65%] w-[15%]',
     duration: 15,
   },
   {
     label: 'validate()',
-    className:
-      'bg-[#DCF6DC] dark:bg-[#1B311E] border-[#99E59F] text-[#46A758] dark:border-[#297C3B] dark:text-[#6CDA76]',
-    start: 80,
+    className: 'border-green-400 bg-green-100 text-green-700',
+    layoutClassName: 'ml-[80%] w-1/5',
     duration: 20,
   },
 ];
@@ -60,11 +54,7 @@ export const Observability = () => (
         {rows.map((row, index) => (
           <div
             key={row.label}
-            className="flex flex-col overflow-hidden"
-            style={{
-              marginLeft: `${row.start}%`,
-              width: `${row.duration}%`,
-            }}
+            className={`flex flex-col overflow-hidden ${row.layoutClassName}`}
           >
             <div className="relative h-6.5 w-full">
               <motion.div

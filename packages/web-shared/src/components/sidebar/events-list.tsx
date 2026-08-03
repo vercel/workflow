@@ -237,14 +237,7 @@ function EventDataBlock({
   // since the server stubs each ref field independently.
   if (isExpiredMarker(data) || hasOnlyExpiredFields(data, eventType)) {
     return (
-      <div
-        className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs"
-        style={{
-          borderColor: 'var(--ds-gray-300)',
-          backgroundColor: 'var(--ds-gray-100)',
-          color: 'var(--ds-gray-700)',
-        }}
-      >
+      <div className="flex items-center gap-1.5 rounded-md border border-gray-300 bg-gray-100 px-3 py-2 text-gray-700 text-xs">
         <span className="font-medium">Data expired</span>
       </div>
     );

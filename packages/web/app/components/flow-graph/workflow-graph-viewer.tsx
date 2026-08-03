@@ -23,25 +23,18 @@ import type {
   GraphNode,
   WorkflowGraph,
 } from '~/lib/flow-graph/workflow-graph-types';
+import { cn } from '~/lib/utils';
 
 // ============================================================================
 // SHARED TYPES
 // ============================================================================
-
-export interface NodeStyleResult {
-  color: string;
-  backgroundColor: string;
-  borderColor: string;
-  borderWidth?: number;
-  opacity?: number;
-}
 
 export interface LoopNodeData {
   label: React.ReactNode;
   nodeKind: string;
   isLoopNode?: boolean;
   isAwaitLoop?: boolean;
-  nodeStyle?: React.CSSProperties;
+  nodeStyleClassName?: string;
   className?: string;
   [key: string]: unknown;
 }
@@ -49,7 +42,7 @@ export interface LoopNodeData {
 export interface DiamondNodeData {
   label: React.ReactNode;
   nodeKind: string;
-  nodeStyle?: React.CSSProperties;
+  nodeStyleClassName?: string;
   className?: string;
   [key: string]: unknown;
 }
@@ -103,18 +96,12 @@ export function LoopNodeComponent({ data, selected }: NodeProps) {
 
   return (
     <div
-      className={`relative ${nodeData.className || ''}`}
-      style={{
-        borderWidth: nodeData.nodeStyle?.borderWidth ?? 1,
-        borderRadius: 8,
-        padding: 12,
-        width: 220,
-        borderStyle: 'solid',
-        backgroundColor: nodeData.nodeStyle?.backgroundColor,
-        borderColor: nodeData.nodeStyle?.borderColor ?? '#9ca3af',
-        opacity: nodeData.nodeStyle?.opacity,
-        boxShadow: selected ? '0 0 0 2px rgba(168, 85, 247, 0.5)' : undefined,
-      }}
+      className={cn(
+        'relative w-[220px] rounded-lg border border-gray-400 border-solid p-3',
+        nodeData.nodeStyleClassName,
+        selected && 'ring-2 ring-purple-500/50',
+        nodeData.className
+      )}
     >
       {/* Node content */}
       {nodeData.label}
@@ -136,15 +123,13 @@ export function LoopNodeComponent({ data, selected }: NodeProps) {
         type="source"
         position={Position.Left}
         id="loop-out"
-        className="!bg-purple-500 !-left-1 !w-[6px] !h-[6px] !min-w-0 !min-h-0"
-        style={{ top: '30%' }}
+        className="!-left-1 !top-[30%] !h-[6px] !min-h-0 !w-[6px] !min-w-0 !bg-purple-500"
       />
       <Handle
         type="target"
         position={Position.Left}
         id="loop-in"
-        className="!bg-purple-500 !-left-1 !w-[6px] !h-[6px] !min-w-0 !min-h-0"
-        style={{ top: '70%' }}
+        className="!-left-1 !top-[70%] !h-[6px] !min-h-0 !w-[6px] !min-w-0 !bg-purple-500"
       />
     </div>
   );
@@ -154,25 +139,13 @@ export function LoopNodeComponent({ data, selected }: NodeProps) {
 export function ParallelGroupComponent({ data }: { data: ParallelGroupData }) {
   return (
     <div
+      className="relative h-[100px] w-[200px] cursor-grab rounded-xl border-2 border-blue-500/30 border-dashed bg-blue-500/5"
       style={{
-        width: data.groupWidth || 200,
-        height: data.groupHeight || 100,
-        position: 'relative',
+        width: data.groupWidth,
+        height: data.groupHeight,
       }}
     >
-      <span
-        style={{
-          position: 'absolute',
-          top: 8,
-          left: 12,
-          fontSize: 11,
-          fontWeight: 600,
-          color: 'rgba(59, 130, 246, 0.8)',
-          textTransform: 'uppercase',
-          letterSpacing: '0.5px',
-          pointerEvents: 'none',
-        }}
-      >
+      <span className="pointer-events-none absolute top-2 left-3 font-semibold text-[11px] text-blue-600/80 uppercase tracking-[0.5px]">
         {data.label}
       </span>
     </div>
@@ -183,40 +156,24 @@ export function ParallelGroupComponent({ data }: { data: ParallelGroupData }) {
 export function DiamondNodeComponent({ data, selected }: NodeProps) {
   const nodeData = data as DiamondNodeData;
 
-  // Diamond size
-  const size = 160;
-
   return (
     <div
-      className={`relative flex items-center justify-center ${nodeData.className || ''}`}
-      style={{
-        width: size,
-        height: size,
-      }}
+      className={cn(
+        'relative flex size-40 items-center justify-center',
+        nodeData.className
+      )}
     >
       {/* Diamond shape */}
       <div
-        style={{
-          width: size * 0.7,
-          height: size * 0.7,
-          transform: 'rotate(45deg)',
-          borderWidth: 2,
-          borderStyle: 'solid',
-          borderRadius: 4,
-          backgroundColor: nodeData.nodeStyle?.backgroundColor,
-          borderColor: nodeData.nodeStyle?.borderColor ?? '#ef4444',
-          opacity: nodeData.nodeStyle?.opacity,
-          boxShadow: selected ? '0 0 0 2px rgba(239, 68, 68, 0.5)' : undefined,
-        }}
+        className={cn(
+          'size-28 rotate-45 rounded border-2 border-red-500 border-solid',
+          nodeData.nodeStyleClassName,
+          selected && 'ring-2 ring-red-500/50'
+        )}
       />
       {/* Label overlay (not rotated) */}
       <div
-        className="absolute inset-0 flex items-center justify-center pointer-events-auto"
-        style={{
-          fontSize: 11,
-          fontWeight: 600,
-          padding: size * 0.25, // Keep text within the diamond's inscribed area
-        }}
+        className="pointer-events-auto absolute inset-0 flex items-center justify-center p-10 font-semibold text-[11px]"
         title={typeof nodeData.label === 'string' ? nodeData.label : undefined}
       >
         <span className="text-center line-clamp-3 overflow-hidden">
@@ -261,20 +218,23 @@ const nodeTypes = baseNodeTypes;
 
 // Self-loop edge styling options
 export interface SelfLoopEdgeStyle {
-  strokeColor?: string;
+  edgeClassName?: string;
+  markerColor?: string;
   labelBgClass?: string;
 }
 
 // Default self-loop edge style (gray for static view)
 export const defaultSelfLoopStyle: SelfLoopEdgeStyle = {
-  strokeColor: '#6b7280', // gray-500
+  edgeClassName: 'stroke-gray-500',
+  markerColor: 'var(--ds-gray-500)',
   labelBgClass:
     'bg-gray-200 dark:bg-gray-700 text-black dark:text-gray-200 border-gray-400 dark:border-gray-500',
 };
 
 // Execution self-loop edge style (purple for execution view)
 export const executionSelfLoopStyle: SelfLoopEdgeStyle = {
-  strokeColor: '#a855f7', // purple-500
+  edgeClassName: 'stroke-purple-500',
+  markerColor: 'var(--ds-purple-500)',
   labelBgClass:
     'bg-purple-200 dark:bg-purple-900/50 text-black dark:text-purple-200 border-purple-400 dark:border-purple-600',
 };
@@ -314,20 +274,15 @@ export function createSelfLoopEdge(
           id={id}
           path={path}
           markerEnd={markerEnd}
-          style={{
-            stroke: style.strokeColor,
-            strokeWidth: 2,
-          }}
+          className={cn('stroke-2', style.edgeClassName)}
         />
         {label && (
           <EdgeLabelRenderer>
             <div
+              className="nodrag nopan pointer-events-auto absolute"
               style={{
-                position: 'absolute',
                 transform: `translate(-100%, -50%) translate(${labelX}px, ${labelY}px)`,
-                pointerEvents: 'all',
               }}
-              className="nodrag nopan"
             >
               <span
                 className={`px-1.5 py-0.5 text-[9px] font-bold rounded border whitespace-nowrap ${style.labelBgClass}`}
@@ -363,55 +318,25 @@ export function createEdgeTypes(
 // SHARED UTILITIES
 // ============================================================================
 
-// Get base node background color based on node kind
-export function getNodeBackgroundColor(nodeKind: string): string {
+// Get theme-aware node colors based on node kind.
+export function getNodeClassName(nodeKind: string): string {
   if (nodeKind === 'workflow_start' || nodeKind === 'workflow_end') {
-    return 'var(--node-bg-start)'; // blue
+    return '!border-blue-400 !bg-[var(--node-bg-start)] !text-card-foreground';
   }
   if (nodeKind === 'primitive') {
-    return 'var(--node-bg-primitive)'; // orange
+    return '!border-amber-600 !bg-[var(--node-bg-primitive)] !text-card-foreground';
   }
   if (nodeKind === 'agent') {
-    return 'var(--node-bg-agent)'; // pink
+    return '!border-pink-600 !bg-[var(--node-bg-agent)] !text-card-foreground';
   }
   if (nodeKind === 'tool') {
-    return 'var(--node-bg-tool)'; // purple
+    return '!border-purple-500 !bg-[var(--node-bg-tool)] !text-card-foreground';
   }
   if (nodeKind === 'conditional') {
-    return 'var(--node-bg-conditional)'; // red
+    return '!border-red-500 !bg-[var(--node-bg-conditional)] !text-card-foreground';
   }
   // Default for steps - green
-  return 'var(--node-bg-step)';
-}
-
-// Get default border color for a node kind
-export function getNodeBorderColor(nodeKind: string): string {
-  if (nodeKind === 'workflow_start' || nodeKind === 'workflow_end') {
-    return '#60a5fa'; // blue-400
-  }
-  if (nodeKind === 'primitive') {
-    return '#f97316'; // orange-500
-  }
-  if (nodeKind === 'agent') {
-    return '#ec4899'; // pink-500
-  }
-  if (nodeKind === 'tool') {
-    return '#a855f7'; // purple-500
-  }
-  if (nodeKind === 'conditional') {
-    return '#ef4444'; // red-500
-  }
-  // Default for steps - green
-  return '#22c55e'; // green-500
-}
-
-// Get node styling based on node kind - theme-aware colors using CSS variables
-export function getNodeStyle(nodeKind: string): NodeStyleResult {
-  return {
-    color: 'var(--card-foreground)',
-    backgroundColor: getNodeBackgroundColor(nodeKind),
-    borderColor: getNodeBorderColor(nodeKind),
-  };
+  return '!border-green-500 !bg-[var(--node-bg-step)] !text-card-foreground';
 }
 
 // Get node icon based on node kind
@@ -473,7 +398,6 @@ export interface EnhancedLayoutResult {
     id: string;
     type: 'group';
     position: { x: number; y: number };
-    style: React.CSSProperties;
     data: ParallelGroupData;
   }>;
   additionalEdges: Array<{
@@ -585,13 +509,6 @@ export function calculateEnhancedLayout(
       position: {
         x: minX - layoutConfig.PARALLEL_GROUP_PADDING,
         y: baseY - layoutConfig.PARALLEL_GROUP_PADDING,
-      },
-      style: {
-        width: groupWidth,
-        height: groupHeight,
-        backgroundColor: 'rgba(59, 130, 246, 0.05)',
-        border: '2px dashed rgba(59, 130, 246, 0.3)',
-        borderRadius: 12,
       },
       data: { label: methodLabel, groupWidth, groupHeight },
     });
@@ -756,10 +673,10 @@ function convertToReactFlowNodes(workflow: WorkflowGraph): Node[] {
       type: 'parallelGroup',
       position: group.position,
       style: {
-        ...group.style,
-        cursor: 'grab',
-        zIndex: -1,
+        width: group.data.groupWidth,
+        height: group.data.groupHeight,
       },
+      zIndex: -1,
       data: group.data,
       draggable: true,
       selectable: true,
@@ -768,7 +685,7 @@ function convertToReactFlowNodes(workflow: WorkflowGraph): Node[] {
 
   // Add regular nodes
   nodes.forEach((node) => {
-    const styles = getNodeStyle(node.data.nodeKind);
+    const nodeStyleClassName = getNodeClassName(node.data.nodeKind);
     const metadata = node.metadata;
     const isLoopNode = !!metadata?.loopId;
     const isAwaitLoop = !!metadata?.loopIsAwait;
@@ -834,7 +751,7 @@ function convertToReactFlowNodes(workflow: WorkflowGraph): Node[] {
           label: nodeLabel,
           isLoopNode: true,
           isAwaitLoop,
-          nodeStyle: styles,
+          nodeStyleClassName,
         },
       });
     } else if (isConditionalNode) {
@@ -849,7 +766,7 @@ function convertToReactFlowNodes(workflow: WorkflowGraph): Node[] {
         data: {
           ...node.data,
           label: node.data.label, // Show the conditional expression
-          nodeStyle: styles,
+          nodeStyleClassName,
         },
       });
     } else {
@@ -864,13 +781,10 @@ function convertToReactFlowNodes(workflow: WorkflowGraph): Node[] {
           ...node.data,
           label: nodeLabel,
         },
-        style: {
-          borderWidth: 1,
-          borderRadius: 8,
-          padding: 12,
-          width: 220,
-          ...styles,
-        },
+        className: cn(
+          '!w-[220px] !rounded-lg !border !p-3',
+          nodeStyleClassName
+        ),
       });
     }
   });
@@ -919,13 +833,13 @@ function convertToReactFlowEdges(workflow: WorkflowGraph): Edge[] {
           type: MarkerType.ArrowClosed,
           width: 12,
           height: 12,
-          color: '#6b7280', // gray-500
+          color: defaultSelfLoopStyle.markerColor,
         },
       };
     }
 
     // Simple edge styling - neutral color that works in both light/dark modes
-    const strokeColor = '#6b7280'; // gray-500 - visible in both modes
+    const strokeColor = 'var(--ds-gray-500)';
     let strokeWidth = 1;
     let strokeDasharray: string | undefined;
     const animated = false;
@@ -960,9 +874,15 @@ function convertToReactFlowEdges(workflow: WorkflowGraph): Edge[] {
     }
 
     // Label styling - conditional edges get dark bg with white text
-    const labelTextColor = isConditional ? '#ffffff' : '#6b7280';
-    const labelBgColor = isConditional ? '#374151' : '#f3f4f6'; // gray-700 : gray-100
-    const labelBorderColor = isConditional ? '#4b5563' : '#d1d5db'; // gray-600 : gray-300
+    const labelTextColor = isConditional
+      ? 'var(--conditional-label-text)'
+      : 'var(--ds-gray-700)';
+    const labelBgColor = isConditional
+      ? 'var(--conditional-label-bg)'
+      : 'var(--ds-gray-100)';
+    const labelBorderColor = isConditional
+      ? 'var(--conditional-label-border)'
+      : 'var(--ds-gray-300)';
 
     return {
       id: edge.id,
@@ -1073,13 +993,7 @@ export function WorkflowGraphViewer({ workflow }: WorkflowGraphViewerProps) {
                 <span>Sequential</span>
               </div>
               <div className="flex items-center gap-2">
-                <div
-                  className="w-8 h-0.5"
-                  style={{
-                    backgroundImage:
-                      'repeating-linear-gradient(90deg, #6b7280, #6b7280 4px, transparent 4px, transparent 8px)',
-                  }}
-                />
+                <div className="h-0.5 w-8 bg-[repeating-linear-gradient(90deg,var(--ds-gray-500),var(--ds-gray-500)_4px,transparent_4px,transparent_8px)]" />
                 <span>Parallel / Loop / Conditional</span>
               </div>
             </div>

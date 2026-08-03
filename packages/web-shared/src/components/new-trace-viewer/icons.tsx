@@ -4,7 +4,6 @@ const WorkflowIcon = () => {
       data-testid="geist-icon"
       height="16"
       strokeLinejoin="round"
-      style={{ color: 'currentColor' }}
       viewBox="0 0 16 16"
       width="16"
     >
@@ -24,7 +23,6 @@ const WebhookIcon = () => {
       strokeLinejoin="round"
       viewBox="0 0 16 16"
       width="16"
-      style={{ color: 'currentColor' }}
     >
       <path
         fillRule="evenodd"
@@ -44,7 +42,6 @@ const SleepIcon = () => {
       strokeLinejoin="round"
       viewBox="0 0 16 16"
       width="16"
-      style={{ color: 'currentColor' }}
     >
       <path
         fillRule="evenodd"
@@ -64,7 +61,6 @@ const StepForwardIcon = () => {
       strokeLinejoin="round"
       viewBox="0 0 16 16"
       width="16"
-      style={{ color: 'currentColor' }}
     >
       <path
         fillRule="evenodd"

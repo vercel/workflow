@@ -7,6 +7,7 @@ import { format } from 'date-fns';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
+import { cn } from '../../lib/cn';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import {
   Collapsible,
@@ -51,21 +52,14 @@ function TabButton({
       aria-selected={active}
       tabIndex={active ? 0 : -1}
       onClick={onClick}
-      className="px-3 py-1.5 text-[11px] font-medium transition-colors -mb-px"
-      style={{
-        // Explicit styles to prevent app-level button overrides when web-shared
-        // is embedded in a self-hosted app.
-        backgroundColor: 'transparent',
-        borderTop: 'none',
-        borderLeft: 'none',
-        borderRight: 'none',
-        borderBottom: `2px solid ${active ? 'var(--ds-blue-600)' : 'transparent'}`,
-        borderRadius: 0,
-        outline: 'none',
-        boxShadow: 'none',
-        cursor: 'pointer',
-        color: active ? 'var(--ds-gray-1000)' : 'var(--ds-gray-600)',
-      }}
+      className={cn(
+        // Important modifiers prevent app-level button styles from leaking into
+        // web-shared when it is embedded in a self-hosted app.
+        '-mb-px cursor-pointer !rounded-none !border-t-0 !border-r-0 !border-b-2 !border-l-0 !bg-transparent px-3 py-1.5 font-medium text-[11px] !shadow-none !outline-none transition-colors',
+        active
+          ? '!border-blue-600 !text-gray-1000'
+          : '!border-transparent !text-gray-600'
+      )}
     >
       {children}
     </button>
@@ -104,22 +98,12 @@ function TabbedContainer<T extends string>({
   );
 
   return (
-    <div
-      className="rounded-md border"
-      style={{
-        borderColor: 'var(--ds-gray-300)',
-        backgroundColor: 'transparent',
-      }}
-    >
+    <div className="rounded-md border border-gray-300 bg-transparent">
       <div
-        className="flex gap-1 border-b"
+        className="flex gap-1 border-gray-300 border-b bg-transparent"
         role="tablist"
         aria-label={ariaLabel}
         onKeyDown={handleKeyDown}
-        style={{
-          borderColor: 'var(--ds-gray-300)',
-          backgroundColor: 'transparent',
-        }}
       >
         {tabs.map((tab) => (
           <TabButton
@@ -203,14 +187,7 @@ function EncryptedFieldBlock() {
  */
 function ExpiredFieldBlock() {
   return (
-    <div
-      className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs"
-      style={{
-        borderColor: 'var(--ds-gray-300)',
-        backgroundColor: 'var(--ds-gray-100)',
-        color: 'var(--ds-gray-700)',
-      }}
-    >
+    <div className="flex items-center gap-1.5 rounded-md border border-gray-300 bg-gray-100 px-3 py-2 text-gray-700 text-xs">
       <span className="font-medium">Data expired</span>
     </div>
   );
@@ -674,14 +651,7 @@ const selfHeaderedAttributes = new Set([
 ]);
 
 const ExpiredDataMessage = () => (
-  <div
-    className="text-copy-12 rounded-md border p-4 my-2"
-    style={{
-      borderColor: 'var(--ds-gray-300)',
-      backgroundColor: 'var(--ds-gray-100)',
-      color: 'var(--ds-gray-700)',
-    }}
-  >
+  <div className="my-2 rounded-md border border-gray-300 bg-gray-100 p-4 text-gray-700 text-label-12">
     <span>The data for this run has expired and is no longer available.</span>
   </div>
 );
@@ -753,15 +723,10 @@ export const AttributeBlock = ({
   if (inline) {
     return (
       <div className="flex items-center gap-1.5">
-        <span
-          className="text-[11px] font-medium"
-          style={{ color: 'var(--ds-gray-700)' }}
-        >
+        <span className="font-medium text-[11px] text-gray-700">
           {attribute}
         </span>
-        <span className="text-[11px]" style={{ color: 'var(--ds-gray-1000)' }}>
-          {displayValue}
-        </span>
+        <span className="text-[11px] text-gray-1000">{displayValue}</span>
       </div>
     );
   }
@@ -774,19 +739,14 @@ export const AttributeBlock = ({
     <div className="relative">
       {typeof isLoading === 'boolean' && isLoading && (
         <div className="absolute top-9 right-4">
-          <div
-            className="animate-spin rounded-full h-4 w-4 border-b-2"
-            style={{ borderColor: 'var(--ds-gray-900)' }}
-          />
+          <div className="h-4 w-4 animate-spin rounded-full border-gray-900 border-b-2" />
         </div>
       )}
       <div key={attribute} className="my-2 flex flex-col gap-0">
         <span className="text-label-14 text-gray-1000 font-medium first-letter:uppercase">
           {attribute}
         </span>
-        <span className="text-xs" style={{ color: 'var(--ds-gray-1000)' }}>
-          {displayValue}
-        </span>
+        <span className="text-gray-1000 text-xs">{displayValue}</span>
       </div>
     </div>
   );
