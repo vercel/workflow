@@ -120,6 +120,68 @@ function incrementLegacyCount(
   counts[file][utility] = (counts[file][utility] ?? 0) + 1;
 }
 
+function createViolation(
+  file: string,
+  source: string,
+  match: RegExpMatchArray,
+  reason: string
+): TypographyViolation {
+  return {
+    file,
+    line: lineNumberAt(source, match.index ?? 0),
+    utility: match[0],
+    reason,
+  };
+}
+
+function findRawTailwindSizeViolations(
+  file: string,
+  source: string
+): TypographyViolation[] {
+  return Array.from(source.matchAll(RAW_TAILWIND_SIZE_PATTERN), (match) =>
+    createViolation(file, source, match, 'use a defined typography token')
+  );
+}
+
+function auditArbitraryTextSizes(
+  file: string,
+  source: string,
+  legacySizeCounts: LegacySizeCounts
+): TypographyViolation[] {
+  const violations: TypographyViolation[] = [];
+  for (const match of source.matchAll(ARBITRARY_TEXT_PATTERN)) {
+    const value = match[1];
+    if (!isArbitraryFontSize(value)) continue;
+
+    const legacy = legacyUtility(value);
+    if (legacy) {
+      incrementLegacyCount(legacySizeCounts, file, legacy);
+    } else {
+      violations.push(
+        createViolation(file, source, match, 'use a defined typography token')
+      );
+    }
+  }
+  return violations;
+}
+
+function findUndefinedSystemTokenViolations(
+  file: string,
+  source: string,
+  definedSystemTokens: ReadonlySet<string>
+): TypographyViolation[] {
+  return Array.from(source.matchAll(SYSTEM_TOKEN_PATTERN))
+    .filter((match) => !definedSystemTokens.has(match[0]))
+    .map((match) =>
+      createViolation(
+        file,
+        source,
+        match,
+        'typography token is not defined in src/styles.css'
+      )
+    );
+}
+
 async function auditTypography(): Promise<TypographyAudit> {
   const styles = await readFile(STYLES_PATH, 'utf8');
   const definedSystemTokens = new Set(
@@ -135,43 +197,11 @@ async function auditTypography(): Promise<TypographyAudit> {
   for (const path of files) {
     const file = relativeSourcePath(path);
     const source = await readFile(path, 'utf8');
-
-    for (const match of source.matchAll(RAW_TAILWIND_SIZE_PATTERN)) {
-      violations.push({
-        file,
-        line: lineNumberAt(source, match.index),
-        utility: match[0],
-        reason: 'use a defined typography token',
-      });
-    }
-
-    for (const match of source.matchAll(ARBITRARY_TEXT_PATTERN)) {
-      const value = match[1];
-      if (!isArbitraryFontSize(value)) continue;
-
-      const legacy = legacyUtility(value);
-      if (legacy) {
-        incrementLegacyCount(legacySizeCounts, file, legacy);
-        continue;
-      }
-
-      violations.push({
-        file,
-        line: lineNumberAt(source, match.index),
-        utility: match[0],
-        reason: 'use a defined typography token',
-      });
-    }
-
-    for (const match of source.matchAll(SYSTEM_TOKEN_PATTERN)) {
-      if (definedSystemTokens.has(match[0])) continue;
-      violations.push({
-        file,
-        line: lineNumberAt(source, match.index),
-        utility: match[0],
-        reason: 'typography token is not defined in src/styles.css',
-      });
-    }
+    violations.push(...findRawTailwindSizeViolations(file, source));
+    violations.push(...auditArbitraryTextSizes(file, source, legacySizeCounts));
+    violations.push(
+      ...findUndefinedSystemTokenViolations(file, source, definedSystemTokens)
+    );
   }
 
   return { legacySizeCounts, violations };
