@@ -1600,11 +1600,10 @@ export function workflowEntrypoint(
                     // hook_received). Best-effort: the win lands only when the
                     // producer's write beat this consumer's load; otherwise we
                     // fall through to the idempotent re-ensure below.
-                    const preloadedLog =
-                      eventLog.type === 'loadAll' ? undefined : eventLog.log;
                     const alreadyPreloaded =
                       hookInput.resumeId !== undefined &&
-                      preloadedLog?.events.some(
+                      eventLog.type !== 'loadAll' &&
+                      eventLog.log.events.some(
                         (e) =>
                           e.eventType === 'hook_received' &&
                           e.resumeId === hookInput.resumeId
@@ -1720,8 +1719,8 @@ export function workflowEntrypoint(
                       // it in ascending eventId order and is idempotent if a later
                       // list re-observes it. Only when the World returns no event
                       // do we fall back to reloading the complete log.
-                      if (preloadedLog && ensuredEvent) {
-                        insertEventByEventId(preloadedLog.events, ensuredEvent);
+                      if (eventLog.type !== 'loadAll' && ensuredEvent) {
+                        insertEventByEventId(eventLog.log.events, ensuredEvent);
                       } else {
                         eventLog = { type: 'loadAll' };
                       }
