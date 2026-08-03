@@ -1437,8 +1437,13 @@ async function processEvents(
         // survives event re-scans within the invocation. Events without a
         // resumeId (older SDKs) are never deduped.
         {
-          const resumeId = (eventData as { resumeId?: unknown } | undefined)
-            ?.resumeId;
+          // Top-level event.resumeId is the canonical location (the backend
+          // hoists it to a first-class column); the nested
+          // eventData.resumeId form is a deprecated legacy fallback —
+          // mirrors the node engine's dedup in workflow/hook.ts.
+          const resumeId =
+            (event as { resumeId?: unknown }).resumeId ??
+            (eventData as { resumeId?: unknown } | undefined)?.resumeId;
           if (typeof resumeId === 'string') {
             const resumeIdJs = JSON.stringify(resumeId);
             const duplicate = vm.dump(

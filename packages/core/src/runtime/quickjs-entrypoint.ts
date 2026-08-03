@@ -24,12 +24,10 @@ import {
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
-  type HookInput,
   type RunInput,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
 } from '@workflow/world';
-import { decodeTime } from 'ulid';
 import { classifyRunError } from '../classify-error.js';
 import { runtimeLogger } from '../logger.js';
 import {
@@ -47,6 +45,7 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { getWorkflowQueueName, queueMessage } from './helpers.js';
+import { getWaitContinuationDispatch } from './wait-continuation.js';
 import {
   type PendingAttribute,
   type PendingHook,
@@ -480,14 +479,6 @@ export async function runWorkflowWithQuickJS(params: {
    * with MAX_EVENTS_EXCEEDED.
    */
   maxEventsLimit?: number;
-  /**
-   * Resilient-resume payload from the queue message (present only on the
-   * delivery triggered by a `resumeHook()` whose direct `hook_received`
-   * write failed transiently). Mirrors the node:vm engine: the missing
-   * event is materialized from this payload before replay so the workflow
-   * still receives it. See the same-named field in `QueueMessageSchema`.
-   */
-  hookInput?: HookInput;
 }): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
@@ -497,7 +488,6 @@ export async function runWorkflowWithQuickJS(params: {
     runInput,
     parentSpan,
     maxEventsLimit,
-    hookInput,
   } = params;
   const world = await getWorld();
   const runId = workflowRun.runId;
@@ -590,104 +580,6 @@ export async function runWorkflowWithQuickJS(params: {
     }
 
     events = allEvents;
-  }
-
-  // --- Resilient resume: materialize missing hook_received ---
-  // `resumeHook()` writes `hook_received` first and only enqueues a resume
-  // carrying `hookInput` if that direct write fails with a retryable error
-  // (transient 429/5xx). In that recovery path, materialize the event here
-  // so replay can see the payload — the exact mirror of the node:vm
-  // engine's block in runtime.ts (see there for the full dedup / conflict
-  // semantics rationale; the replay-side resumeId dedup lives in
-  // processEvents' hook_received handling for this engine).
-  if (hookInput) {
-    const alreadyMaterialized = events.some(
-      (e) =>
-        e.eventType === 'hook_received' &&
-        e.correlationId === hookInput.hookId &&
-        (e.eventData as { resumeId?: string } | undefined)?.resumeId ===
-          hookInput.resumeId
-    );
-    if (!alreadyMaterialized) {
-      // The resumeId is a ULID minted in resumeHook() at resume time, so
-      // its embedded timestamp dates the materialized event to when the
-      // resume actually happened rather than after the queue round-trip.
-      let occurredAt: Date | undefined;
-      try {
-        occurredAt = new Date(decodeTime(hookInput.resumeId));
-      } catch {
-        occurredAt = undefined;
-      }
-      try {
-        const result = await world.events.create(
-          runId,
-          {
-            eventType: 'hook_received',
-            specVersion: workflowRun.specVersion ?? SPEC_VERSION_CURRENT,
-            correlationId: hookInput.hookId,
-            eventData: {
-              ...(hookInput.token ? { token: hookInput.token } : {}),
-              payload: hookInput.payload as never,
-              resumeId: hookInput.resumeId,
-            },
-          },
-          { occurredAt }
-        );
-        if (result.event) {
-          // The server returns a "lazy" response for hook_received — the
-          // payload on result.event.eventData may be a RefDescriptor when
-          // offloaded to blob storage. Substitute the eventData we already
-          // have locally so the in-memory event matches what
-          // getWorkflowRunEvents would return after ref hydration.
-          events.push({
-            ...result.event,
-            eventData: {
-              ...(hookInput.token ? { token: hookInput.token } : {}),
-              payload: hookInput.payload as never,
-              resumeId: hookInput.resumeId,
-            },
-          } as Event);
-        }
-        runtimeLogger.warn(
-          'Materialized hook_received event from queue payload (resilient resume)',
-          {
-            workflowRunId: runId,
-            hookId: hookInput.hookId,
-            resumeId: hookInput.resumeId,
-          }
-        );
-        parentSpan?.setAttributes({
-          ...Attribute.HookResilientResumeMaterialized(true),
-        });
-      } catch (err) {
-        if (EntityConflictError.is(err)) {
-          // Defensive only today — no World enforces uniqueness on
-          // hook_received; the duplicate-row case is neutralized by the
-          // replay-side resumeId dedup. Same contract as the node engine.
-          runtimeLogger.info(
-            'Hook resilient-resume materialization skipped (already exists)',
-            {
-              workflowRunId: runId,
-              hookId: hookInput.hookId,
-              resumeId: hookInput.resumeId,
-            }
-          );
-        } else if (HookNotFoundError.is(err)) {
-          // The hook was disposed between resumeHook() and this delivery —
-          // no active awaiter to deliver to. Drop the resume.
-          runtimeLogger.warn(
-            'Hook was disposed before resilient resume could materialize — dropping payload',
-            {
-              workflowRunId: runId,
-              hookId: hookInput.hookId,
-              resumeId: hookInput.resumeId,
-            }
-          );
-        } else {
-          throw err;
-        }
-      }
-    }
   }
 
   // Event-limit guard: fail a runaway run once its log reaches the
@@ -900,7 +792,7 @@ export async function runWorkflowWithQuickJS(params: {
     // suspension-handler.ts and significantly reduces wall-clock time
     // on cloud worlds (e.g. Vercel) where each storage call is a
     // network round-trip.
-    let minTimeoutSeconds: number | undefined;
+    let soonestWait: { seconds: number; correlationId: string } | undefined;
     const { createdAttributeEvent, createdGetConflictHook } =
       await dispatchPendingOps({
         world,
@@ -914,7 +806,8 @@ export async function runWorkflowWithQuickJS(params: {
 
     // Handle pending waits — both newly created and still-pending from
     // earlier invocations. For each wait, either create a wait_completed
-    // event (if elapsed) or schedule a timeout for re-queuing.
+    // event (if elapsed) or track the soonest pending wait so a delayed
+    // continuation can be enqueued below.
     let needsRequeue = false;
     const waitCompletePromises: Promise<void>[] = [];
     for (const op of pendingOperations) {
@@ -940,13 +833,13 @@ export async function runWorkflowWithQuickJS(params: {
           })()
         );
       } else {
-        // Wait hasn't elapsed yet — schedule a timeout
+        // Wait hasn't elapsed yet — track the soonest one.
         const timeoutSeconds = Math.max(1, Math.ceil(resumeMs / 1000));
-        if (
-          minTimeoutSeconds === undefined ||
-          timeoutSeconds < minTimeoutSeconds
-        ) {
-          minTimeoutSeconds = timeoutSeconds;
+        if (!soonestWait || timeoutSeconds < soonestWait.seconds) {
+          soonestWait = {
+            seconds: timeoutSeconds,
+            correlationId: wait.correlationId,
+          };
         }
       }
     }
@@ -954,6 +847,19 @@ export async function runWorkflowWithQuickJS(params: {
       await Promise.all(waitCompletePromises);
     }
 
+    // Progress and wait continuations are enqueued as FRESH messages
+    // rather than returned as `{ timeoutSeconds }` visibility-redelivery
+    // of the current message (which is what the node engine's suspension
+    // handler does too — see the wait-continuation dispatch in
+    // runtime.ts). Redelivering the CURRENT message is a trap: a
+    // hook-resume delivery carries `hookInput`, and its redelivery
+    // re-runs the lazy-resume re-ensure in the handler prologue. If the
+    // workflow disposed that hook during this invocation (dispose →
+    // sleep), the re-ensure gets HookNotFound, the prologue acks the
+    // message as "nothing left to resume", and the wait timer it was
+    // carrying is silently lost — the run wedges. A fresh continuation
+    // message carries only `runId`, so its delivery always reaches
+    // replay.
     if (needsRequeue || createdAttributeEvent || createdGetConflictHook) {
       // An elapsed wait was completed, a new attr_set event was written,
       // or a getConflict()-awaited hook was created — re-queue immediately
@@ -966,15 +872,42 @@ export async function runWorkflowWithQuickJS(params: {
             : 'get_conflict_requeue',
         timeoutSeconds: 0,
       });
-      return { timeoutSeconds: 0 };
+      await queueMessage(
+        world,
+        getWorkflowQueueName(workflowRun.workflowName),
+        {
+          runId,
+          traceCarrier: await serializeTraceCarrier(),
+          requestedAt: new Date(),
+        }
+      );
+      return;
     }
 
-    if (minTimeoutSeconds !== undefined) {
+    if (soonestWait) {
+      // Delayed continuation for the soonest pending wait. The dispatch
+      // helper handles delay clamping (long waits chain across hops) and
+      // idempotency-key dedup of re-observations of the same pending
+      // wait — see runtime/wait-continuation.ts.
       wfdiag('exit_suspended', {
         action: 'schedule_wait_timeout',
-        timeoutSeconds: minTimeoutSeconds,
+        timeoutSeconds: soonestWait.seconds,
+        waitCorrelationId: soonestWait.correlationId,
       });
-      return { timeoutSeconds: minTimeoutSeconds };
+      await queueMessage(
+        world,
+        getWorkflowQueueName(workflowRun.workflowName),
+        {
+          runId,
+          traceCarrier: await serializeTraceCarrier(),
+          requestedAt: new Date(),
+        },
+        getWaitContinuationDispatch(
+          soonestWait.seconds,
+          soonestWait.correlationId
+        )
+      );
+      return;
     }
 
     wfdiag('exit_suspended', {
