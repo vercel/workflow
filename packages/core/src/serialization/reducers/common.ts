@@ -16,6 +16,24 @@ import {
   RetryableError,
   RuntimeDecryptionError,
 } from '@workflow/errors';
+import {
+  arrayBufferByteLength,
+  dateGetDate,
+  dateGetTime,
+  dateToISOString,
+  hasProperty,
+  headersToEntries,
+  isInstanceOfPrototype,
+  mapToEntries,
+  readProperty,
+  recordGuestCode,
+  regExpFlags,
+  regExpSource,
+  setToValues,
+  urlHref,
+  urlSearchParamsToString,
+  viewInfo,
+} from '../hardened.js';
 import type { Reducers, Revivers, SerializableSpecial } from '../types.js';
 
 // ---- Base64 helpers ----
@@ -33,7 +51,12 @@ function arrayBufferToBase64(
 }
 
 function viewToBase64(value: ArrayBufferView): string {
-  return arrayBufferToBase64(value.buffer, value.byteOffset, value.byteLength);
+  // Read the view's range through internal-slot getters (see hardened.ts):
+  // own properties shadowing `buffer`/`byteOffset`/`byteLength` — or patched
+  // prototype getters in the sandbox realm — cannot change which bytes are
+  // serialized.
+  const info = viewInfo(value);
+  return arrayBufferToBase64(info.buffer, info.byteOffset, info.byteLength);
 }
 
 function reviveArrayBuffer(
@@ -96,11 +119,14 @@ type SimpleErrorSubclassKey = {
  */
 function reduceErrorBase(value: unknown): BaseErrorPayload | false {
   if (!types.isNativeError(value)) return false;
+  // `message`/`stack`/`cause` are own data properties on natural errors, so
+  // the descriptor-based reads cost nothing; a sandbox-defined accessor
+  // (e.g. a getter on an Error subclass) is still invoked but recorded.
   const reduced: BaseErrorPayload = {
-    message: value.message,
-    stack: value.stack,
+    message: readProperty(value, 'message') as string,
+    stack: readProperty(value, 'stack') as string | undefined,
   };
-  if ('cause' in value) reduced.cause = (value as { cause: unknown }).cause;
+  if (hasProperty(value, 'cause')) reduced.cause = readProperty(value, 'cause');
   return reduced;
 }
 
@@ -127,7 +153,7 @@ function reduceNamedErrorSubclassBase(
   value: unknown
 ): BaseErrorPayload | false {
   if (!types.isNativeError(value)) return false;
-  if (value.name !== subclassName) return false;
+  if (readProperty(value, 'name') !== subclassName) return false;
   return reduceErrorBase(value);
 }
 
@@ -170,21 +196,32 @@ function makeErrorSubclassReviver<K extends keyof SerializableSpecial>(
 // ---- Reducers ----
 
 export function getCommonReducers(
-  global: Record<string, any> = globalThis
+  // The `global` parameter is retained for API compatibility, but the
+  // reducers no longer perform `instanceof global.X` checks: classification
+  // is done with engine-level brand checks (realm-agnostic, immune to
+  // reassigned sandbox globals and `Symbol.hasInstance`), and extraction
+  // goes through intrinsics captured at host boot. See ../hardened.ts.
+  _global: Record<string, any> = globalThis
 ): Partial<Reducers> {
   return {
     ArrayBuffer: (value) =>
-      value instanceof global.ArrayBuffer &&
-      arrayBufferToBase64(value, 0, value.byteLength),
-    BigInt: (value) => typeof value === 'bigint' && value.toString(),
+      types.isArrayBuffer(value) &&
+      arrayBufferToBase64(value, 0, arrayBufferByteLength(value)),
+    BigInt: (value) =>
+      // String(bigint) is a spec-internal numeric conversion — unlike
+      // `value.toString()`, it never consults BigInt.prototype.
+      typeof value === 'bigint' && String(value),
     BigInt64Array: (value) =>
-      value instanceof global.BigInt64Array && viewToBase64(value),
+      types.isBigInt64Array(value) && viewToBase64(value),
     BigUint64Array: (value) =>
-      value instanceof global.BigUint64Array && viewToBase64(value),
+      types.isBigUint64Array(value) && viewToBase64(value),
     Date: (value) => {
-      if (!(value instanceof global.Date)) return false;
-      const valid = !Number.isNaN(value.getDate());
-      return valid ? value.toISOString() : '.';
+      // Brand check + captured intrinsics: a sandbox-side patch of
+      // `Date.prototype.toISOString` (e.g. a Temporal polyfill wrapping it)
+      // is never executed, and cannot perturb VM state during serialization.
+      if (!types.isDate(value)) return false;
+      const valid = !Number.isNaN(dateGetDate(value));
+      return valid ? dateToISOString(value) : '.';
     },
     // DOMException is a special case: it `instanceof Error` is true in Node,
     // but `types.isNativeError()` returns FALSE for it, so the generic Error
@@ -194,18 +231,16 @@ export function getCommonReducers(
     // for instances minted in another context).
     DOMException: (value) => {
       if (value === null || typeof value !== 'object') return false;
-      if (
-        (value as { constructor?: { name?: string } }).constructor?.name !==
-        'DOMException'
-      )
-        return false;
-      const e = value as Error & { cause?: unknown };
+      const ctor = readProperty(value, 'constructor');
+      if (!ctor || readProperty(ctor, 'name') !== 'DOMException') return false;
       const reduced: SerializableSpecial['DOMException'] = {
-        message: e.message,
-        name: e.name,
-        stack: e.stack,
+        message: readProperty(value, 'message') as string,
+        name: readProperty(value, 'name') as string,
+        stack: readProperty(value, 'stack') as string | undefined,
       };
-      if ('cause' in e) reduced.cause = e.cause;
+      if (hasProperty(value, 'cause')) {
+        reduced.cause = readProperty(value, 'cause');
+      }
       return reduced;
     },
     // Error subclass reducers are intentionally placed before the base Error
@@ -218,13 +253,15 @@ export function getCommonReducers(
     HookConflictError: (value) => {
       const base = reduceNamedErrorSubclassBase('HookConflictError', value);
       if (!base) return false;
-      const error = value as HookConflictError;
       const reduced: SerializableSpecial['HookConflictError'] = {
         ...base,
-        token: error.token,
+        token: readProperty(value, 'token') as HookConflictError['token'],
       };
-      if (error.conflictingRunId !== undefined) {
-        reduced.conflictingRunId = error.conflictingRunId;
+      const conflictingRunId = readProperty(value, 'conflictingRunId') as
+        | HookConflictError['conflictingRunId']
+        | undefined;
+      if (conflictingRunId !== undefined) {
+        reduced.conflictingRunId = conflictingRunId;
       }
       return reduced;
     },
@@ -237,15 +274,22 @@ export function getCommonReducers(
     RetryableError: (value) => {
       const base = reduceNamedErrorSubclassBase('RetryableError', value);
       if (!base) return false;
-      const retryAfterRaw = (value as RetryableError).retryAfter as unknown;
+      const retryAfterRaw = readProperty(value, 'retryAfter');
       let retryAfter: number;
-      if (
-        retryAfterRaw &&
-        typeof retryAfterRaw === 'object' &&
-        typeof (retryAfterRaw as { getTime?: unknown }).getTime === 'function'
-      ) {
-        const t = (retryAfterRaw as Date).getTime();
+      if (types.isDate(retryAfterRaw)) {
+        // Genuine Date (any realm): read the epoch through the intrinsic.
+        const t = dateGetTime(retryAfterRaw);
         retryAfter = Number.isNaN(t) ? Date.now() + 1000 : t;
+      } else if (retryAfterRaw && typeof retryAfterRaw === 'object') {
+        // Duck-typed date-like: invoking its getTime() runs workflow code.
+        const getTime = readProperty(retryAfterRaw, 'getTime');
+        if (typeof getTime === 'function') {
+          recordGuestCode('method', 'getTime');
+          const t = (getTime as (this: unknown) => number).call(retryAfterRaw);
+          retryAfter = Number.isNaN(t) ? Date.now() + 1000 : t;
+        } else {
+          retryAfter = Date.now() + 1000;
+        }
       } else if (
         typeof retryAfterRaw === 'string' ||
         typeof retryAfterRaw === 'number'
@@ -272,7 +316,9 @@ export function getCommonReducers(
       const reduced: SerializableSpecial['RuntimeDecryptionError'] = {
         ...base,
       };
-      const context = (value as RuntimeDecryptionError).context;
+      const context = readProperty(value, 'context') as
+        | RuntimeDecryptionError['context']
+        | undefined;
       if (context !== undefined) {
         reduced.context = context;
       }
@@ -288,7 +334,7 @@ export function getCommonReducers(
       if (!base) return false;
       return {
         ...base,
-        errors: (value as AggregateError).errors,
+        errors: readProperty(value, 'errors') as AggregateError['errors'],
       } satisfies SerializableSpecial['AggregateError'];
     },
     // Base Error reducer — catch-all for any Error instance not matched by a
@@ -298,59 +344,64 @@ export function getCommonReducers(
     Error: (value) => {
       if (!types.isNativeError(value)) return false;
       const reduced: SerializableSpecial['Error'] = {
-        name: value.name,
-        message: value.message,
-        stack: value.stack,
+        name: readProperty(value, 'name') as string,
+        message: readProperty(value, 'message') as string,
+        stack: readProperty(value, 'stack') as string | undefined,
       };
-      if ('cause' in value) reduced.cause = value.cause;
+      if (hasProperty(value, 'cause')) {
+        reduced.cause = readProperty(value, 'cause');
+      }
       return reduced;
     },
-    Float32Array: (value) =>
-      value instanceof global.Float32Array && viewToBase64(value),
-    Float64Array: (value) =>
-      value instanceof global.Float64Array && viewToBase64(value),
-    Headers: (value) => value instanceof global.Headers && Array.from(value),
-    Int8Array: (value) =>
-      value instanceof global.Int8Array && viewToBase64(value),
-    Int16Array: (value) =>
-      value instanceof global.Int16Array && viewToBase64(value),
-    Int32Array: (value) =>
-      value instanceof global.Int32Array && viewToBase64(value),
-    Map: (value) => value instanceof global.Map && Array.from(value),
+    Float32Array: (value) => types.isFloat32Array(value) && viewToBase64(value),
+    Float64Array: (value) => types.isFloat64Array(value) && viewToBase64(value),
+    // Headers is a host class injected into the sandbox, so its (shared)
+    // prototype is reachable from workflow code — iterate through the
+    // boot-captured iterator instead of a live Symbol.iterator lookup.
+    Headers: (value) =>
+      isInstanceOfPrototype(value, Headers.prototype) &&
+      headersToEntries(value as Headers),
+    Int8Array: (value) => types.isInt8Array(value) && viewToBase64(value),
+    Int16Array: (value) => types.isInt16Array(value) && viewToBase64(value),
+    Int32Array: (value) => types.isInt32Array(value) && viewToBase64(value),
+    // Engine brand check + host-realm iteration: a patched
+    // `Map.prototype[Symbol.iterator]` in the sandbox is never consulted.
+    Map: (value) =>
+      types.isMap(value) && mapToEntries(value as Map<unknown, unknown>),
     RegExp: (value) =>
-      value instanceof global.RegExp && {
-        source: value.source,
-        flags: value.flags,
+      types.isRegExp(value) && {
+        source: regExpSource(value),
+        flags: regExpFlags(value),
       },
     // Request and Response are intentionally NOT in common reducers.
     // They require mode-specific revivers (stream handling, etc.) and
     // including them here without matching revivers would cause them
     // to deserialize as plain objects.
-    Set: (value) => value instanceof global.Set && Array.from(value),
-    URL: (value) => value instanceof global.URL && value.href,
+    Set: (value) => types.isSet(value) && setToValues(value as Set<unknown>),
+    URL: (value) =>
+      isInstanceOfPrototype(value, URL.prototype) && urlHref(value as URL),
     WorkflowFunction: (value) => {
       // Only match function references with a workflowId property (set by
       // the SWC compiler on workflow functions). Plain { workflowId } objects
       // are NOT matched — this prevents infinite recursion since the reduced
       // form { workflowId } is a plain object, not a function.
       if (typeof value !== 'function') return false;
-      const workflowId = (value as any).workflowId;
+      const workflowId = readProperty(value, 'workflowId');
       if (typeof workflowId !== 'string') return false;
       return { workflowId };
     },
     URLSearchParams: (value) => {
-      if (!(value instanceof global.URLSearchParams)) return false;
-      if (value.size === 0) return '.';
-      return String(value);
+      if (!isInstanceOfPrototype(value, URLSearchParams.prototype)) {
+        return false;
+      }
+      const text = urlSearchParamsToString(value as URLSearchParams);
+      return text === '' ? '.' : text;
     },
-    Uint8Array: (value) =>
-      value instanceof global.Uint8Array && viewToBase64(value),
+    Uint8Array: (value) => types.isUint8Array(value) && viewToBase64(value),
     Uint8ClampedArray: (value) =>
-      value instanceof global.Uint8ClampedArray && viewToBase64(value),
-    Uint16Array: (value) =>
-      value instanceof global.Uint16Array && viewToBase64(value),
-    Uint32Array: (value) =>
-      value instanceof global.Uint32Array && viewToBase64(value),
+      types.isUint8ClampedArray(value) && viewToBase64(value),
+    Uint16Array: (value) => types.isUint16Array(value) && viewToBase64(value),
+    Uint32Array: (value) => types.isUint32Array(value) && viewToBase64(value),
   };
 }
 

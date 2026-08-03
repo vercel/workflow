@@ -1,3 +1,4 @@
+import { trace } from '@opentelemetry/api';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { start } from 'workflow/api';
@@ -57,7 +58,19 @@ export async function POST(request: NextRequest) {
     const clientStart = Date.now();
     // @ts-expect-error - arbitrary call to a dynamically resolved workflow
     const run = await start(fn, args);
-    return NextResponse.json({ runId: run.runId, clientStart });
+    // Surface this request's trace id so the runner can log a benchmark run's
+    // Datadog trace next to its run id, instead of anyone having to hunt for it
+    // by deployment id / time window. The span is the one @vercel/otel opened
+    // for this route invocation (see instrumentation.ts).
+    //
+    // Under the default WORKFLOW_TRACE_MODE=linked -- which is what this
+    // deployment runs, since nothing sets the mode -- that trace is NOT the
+    // whole run: each workflow/step invocation is its own trace root, and this
+    // one holds the `workflow.start` span plus span links out to those roots.
+    // So it is an entry point to the run (one hop through the links, which
+    // Datadog renders), not a single trace containing every step's spans.
+    const traceId = trace.getActiveSpan()?.spanContext().traceId;
+    return NextResponse.json({ runId: run.runId, clientStart, traceId });
   } catch (error) {
     return NextResponse.json(
       {
