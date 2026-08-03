@@ -60,7 +60,12 @@ export {
   WAIT_EVENT_TYPES,
 } from './events.js';
 export type * from './hooks.js';
-export { HookSchema } from './hooks.js';
+export {
+  HOOK_RESUME_DEDUP_VERSION,
+  HOOK_RESUME_INPUT_VERSION,
+  HookResumeCapabilitiesSchema,
+  HookSchema,
+} from './hooks.js';
 export type * from './interfaces.js';
 export type * from './queue.js';
 export {
