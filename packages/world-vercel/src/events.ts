@@ -602,13 +602,20 @@ async function createWorkflowRunEventInner(
 
   if (data.eventType === 'run_started' && !params?.skipPreload) {
     const result = await createWorkflowRunStartedEventV4(input, config);
-    const [runCreated, runStarted] = result.events;
-    if (
-      runCreated?.eventType !== 'run_created' ||
-      runStarted?.eventType !== 'run_started'
-    ) {
+    const runCreated = result.events.find(
+      (event) => event.eventType === 'run_created'
+    );
+    const runStarted = result.events.find(
+      (event) => event.eventType === 'run_started'
+    );
+    if (!runCreated) {
       throw new Error(
-        'v4 createEvent: run_started stream must begin with run_created and run_started'
+        'v4 createEvent: run_started stream is missing run_created'
+      );
+    }
+    if (!runStarted) {
+      throw new Error(
+        'v4 createEvent: run_started stream is missing run_started'
       );
     }
 
