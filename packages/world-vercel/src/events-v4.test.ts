@@ -161,7 +161,11 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
           runId: 'wrun_1',
           eventType: 'run_created',
           createdAt: '2026-06-10T00:00:00.000Z',
-          eventData: {},
+          eventData: {
+            deploymentId: 'dpl_1',
+            workflowName: 'workflow',
+            input: null,
+          },
         },
         body
       ),
@@ -237,7 +241,11 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
           runId: 'wrun_1',
           eventType: 'run_created',
           createdAt: '2026-06-10T00:00:00.000Z',
-          eventData: {},
+          eventData: {
+            deploymentId: 'dpl_1',
+            workflowName: 'workflow',
+            input: null,
+          },
         },
         new Uint8Array(0)
       ),
@@ -306,7 +314,11 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         runId: 'wrun_1',
         eventType: 'run_created',
         createdAt: '2026-06-10T00:00:00.000Z',
-        eventData: {},
+        eventData: {
+          deploymentId: 'dpl_1',
+          workflowName: 'workflow',
+          input: null,
+        },
       },
       new Uint8Array(0)
     );
@@ -348,7 +360,11 @@ describe('getEventV4 over HTTP', () => {
           runId: 'wrun_1',
           eventType: 'run_created',
           createdAt: '2026-06-10T00:00:00.000Z',
-          eventData: {},
+          eventData: {
+            deploymentId: 'dpl_1',
+            workflowName: 'workflow',
+            input: null,
+          },
         },
         body
       ),
@@ -505,6 +521,12 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
               eventId: 'evnt_1',
               runId: 'wrun_1',
               eventType: 'run_created',
+              createdAt: CREATED_AT,
+              eventData: {
+                deploymentId: 'dpl_1',
+                workflowName: 'workflow',
+                input: new Uint8Array(),
+              },
             },
             input
           ),
@@ -513,6 +535,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
               eventId: 'evnt_2',
               runId: 'wrun_1',
               eventType: 'run_started',
+              createdAt: CREATED_AT,
             },
             new Uint8Array()
           ),
@@ -1168,7 +1191,12 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
                 eventId: 'evnt_0',
                 runId: 'wrun_1',
                 eventType: 'run_created',
-                eventData: {},
+                createdAt: CREATED_AT,
+                eventData: {
+                  deploymentId: 'dpl_1',
+                  workflowName: 'workflow',
+                  input: new Uint8Array(),
+                },
               },
               new Uint8Array()
             ),
@@ -1177,6 +1205,7 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
                 eventId: 'evnt_1',
                 runId: 'wrun_1',
                 eventType: 'run_started',
+                createdAt: CREATED_AT,
                 eventData: {},
               },
               new Uint8Array()
