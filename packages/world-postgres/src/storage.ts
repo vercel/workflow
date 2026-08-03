@@ -1848,20 +1848,22 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         };
       }
 
-      return {
+      const eventResult = {
         event: stripEventDataRefs(parsed, resolveData),
         run,
         step,
         hook,
         wait,
-        ...(eventPage
-          ? {
-              events: eventPage.data,
-              cursor: eventPage.cursor,
-              hasMore: eventPage.hasMore,
-            }
-          : {}),
         ...(stepCreatedLazily ? { stepCreated: true } : {}),
+      };
+
+      if (!eventPage) return eventResult;
+
+      return {
+        ...eventResult,
+        events: eventPage.data,
+        cursor: eventPage.cursor,
+        hasMore: eventPage.hasMore,
       };
     },
     async get(
