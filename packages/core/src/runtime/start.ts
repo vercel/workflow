@@ -36,6 +36,7 @@ import { version as workflowCoreVersion } from '../version.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName, healthCheck } from './helpers.js';
 import { Run } from './run.js';
+import { getWorkflowVmFromEnv } from './vm-mode.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
 import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
 
@@ -541,6 +542,13 @@ export async function start<TArgs extends unknown[], TResult>(
       // is simply absent.
       const creatorEnvironment = world.getEnvironment?.();
 
+      // If WORKFLOW_VM is set on the client starting the run, stamp the
+      // engine choice into the run's executionContext so the run keeps
+      // executing on the engine it started on (the same deployment can
+      // serve both VM engines). Unknown values throw — see
+      // getWorkflowVmFromEnv().
+      const workflowVm = getWorkflowVmFromEnv();
+
       const executionContext = {
         traceCarrier,
         workflowCoreVersion,
@@ -557,6 +565,7 @@ export async function start<TArgs extends unknown[], TResult>(
         ...(targetHookResumeInputVersion !== undefined
           ? { hookResumeInputVersion: targetHookResumeInputVersion }
           : {}),
+        ...(workflowVm ? { workflowVm } : {}),
         ...(opts.replayedFromRunId
           ? { replayedFromRunId: opts.replayedFromRunId }
           : {}),
