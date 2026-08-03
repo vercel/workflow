@@ -238,7 +238,7 @@ function EventDataBlock({
   if (isExpiredMarker(data) || hasOnlyExpiredFields(data, eventType)) {
     return (
       <div
-        className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs"
+        className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-label-12"
         style={{
           borderColor: 'var(--ds-gray-300)',
           backgroundColor: 'var(--ds-gray-100)',
