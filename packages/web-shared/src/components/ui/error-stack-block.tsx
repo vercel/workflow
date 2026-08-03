@@ -1,7 +1,7 @@
 'use client';
 
 import { AlertCircle } from 'lucide-react';
-import { CopyButton } from '../new-trace-viewer/components/copy-button';
+import { CopyButton } from '../trace-viewer/components/copy-button';
 
 export type StructuredErrorRecord = Record<string, unknown> & {
   message?: string;

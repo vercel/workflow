@@ -41,7 +41,7 @@ import {
   wheelZoomScaleFactor,
 } from './utils';
 
-interface NewTraceViewerProps {
+interface TraceViewerProps {
   trace: TraceWithMeta;
   onLoadMore?: () => void | Promise<void>;
   hasMore?: boolean;
@@ -127,16 +127,16 @@ function useAnimatedViewport(initial: ViewportRange) {
 // Root component
 // ---------------------------------------------------------------------------
 
-export function NewTraceViewer({
+export function TraceViewer({
   trace,
   onLoadMore,
   hasMore,
   isLoadingMore,
-}: NewTraceViewerProps): ReactNode {
+}: TraceViewerProps): ReactNode {
   return (
     <TooltipProvider delayDuration={300}>
       <ActiveSpanProvider spans={trace.spans}>
-        <NewTraceViewerContent
+        <TraceViewerContent
           trace={trace}
           onLoadMore={onLoadMore}
           hasMore={hasMore}
@@ -147,12 +147,12 @@ export function NewTraceViewer({
   );
 }
 
-function NewTraceViewerContent({
+function TraceViewerContent({
   trace,
   onLoadMore,
   hasMore,
   isLoadingMore,
-}: NewTraceViewerProps): ReactNode {
+}: TraceViewerProps): ReactNode {
   const { activeSpanId, setActiveSpan, clearActiveSpan } = useActiveSpan();
 
   const reducedMotion = useReducedMotion();
