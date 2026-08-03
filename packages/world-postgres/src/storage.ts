@@ -1828,22 +1828,23 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       // For run_started: include all events so the runtime can skip
       // the initial events.list call and reduce TTFB.
-      let allEvents: Event[] | undefined;
-      let cursor: string | null | undefined;
-      let hasMore: boolean | undefined;
+      let eventPage: PaginatedResponse<Event> | undefined;
       if (data.eventType === 'run_started' && run && !params?.skipPreload) {
         const eventRows = await drizzle
           .select()
           .from(Schema.events)
           .where(eq(Schema.events.runId, effectiveRunId))
           .orderBy(Schema.events.eventId);
-        allEvents = eventRows.map((e) => {
+        const data = eventRows.map((e) => {
           e.eventData ||= e.eventDataJson;
           const parsed = EventSchema.parse(compact(e));
           return stripEventDataRefs(parsed, resolveData);
         });
-        cursor = allEvents.at(-1)?.eventId ?? null;
-        hasMore = false;
+        eventPage = {
+          data,
+          cursor: data.at(-1)?.eventId ?? null,
+          hasMore: false,
+        };
       }
 
       return {
@@ -1852,9 +1853,13 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         step,
         hook,
         wait,
-        events: allEvents,
-        cursor,
-        hasMore,
+        ...(eventPage
+          ? {
+              events: eventPage.data,
+              cursor: eventPage.cursor,
+              hasMore: eventPage.hasMore,
+            }
+          : {}),
         ...(stepCreatedLazily ? { stepCreated: true } : {}),
       };
     },

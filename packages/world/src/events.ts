@@ -873,21 +873,6 @@ export type EventResult<T extends EventType = EventType> = {
   /** The wait entity (for wait_created/wait_completed events) */
   wait?: Wait;
   /**
-   * Events with data resolved. Two producers populate this:
-   *
-   * - On a `run_started` response: the first replay page. Partial pages
-   *   continue after {@link EventResult.cursor}.
-   * - On a step-terminal write (`step_completed` / `step_failed`) when
-   *   the caller passed {@link CreateEventParams.sinceCursor}: the delta
-   *   of events written strictly after that cursor, so the inline loop
-   *   can skip the per-step incremental `events.list` round-trip.
-   */
-  events?: Event[];
-  /** Pagination cursor for `events`, matching events.list semantics. */
-  cursor?: string | null;
-  /** Whether additional event pages are available for `events`. */
-  hasMore?: boolean;
-  /**
    * Lazy step start: set to `true` only when a `step_started` event with
    * step-creation data atomically *created* the step on this call (the
    * caller won the create-claim), as opposed to transitioning a step that
@@ -898,16 +883,31 @@ export type EventResult<T extends EventType = EventType> = {
    * (undefined) on the legacy path and from older servers/worlds, which is
    * the safe default (treated as "not the lazy creator").
    */
-  stepCreated?: boolean;
+  stepCreated?: true;
   /** Server-owned max event count for the run (run-lifecycle responses); the runtime enforces it. */
   maxEvents?: number;
-} & (T extends 'run_created'
-  ? { run: WorkflowRun }
-  : T extends 'run_started'
-    ? { run: StartedWorkflowRun }
-    : T extends 'step_started'
-      ? { step: StartedStep }
-      : unknown);
+} & (
+  | {
+      /** Events returned with this write. */
+      events: Event[];
+      /** Pagination cursor for `events`, matching events.list semantics. */
+      cursor: string | null;
+      /** Whether additional event pages are available for `events`. */
+      hasMore: boolean;
+    }
+  | {
+      events?: undefined;
+      cursor?: undefined;
+      hasMore?: undefined;
+    }
+) &
+  (T extends 'run_created'
+    ? { run: WorkflowRun }
+    : T extends 'run_started'
+      ? { run: StartedWorkflowRun }
+      : T extends 'step_started'
+        ? { step: StartedStep }
+        : unknown);
 
 export interface GetEventParams {
   resolveData?: ResolveData;

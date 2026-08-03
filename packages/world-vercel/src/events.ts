@@ -512,12 +512,7 @@ export async function getWorkflowRunEvents(
   // safe against an older backend.
   const remoteRefBehavior: 'lazy' | 'resolve' =
     resolveData === 'none' ? 'lazy' : 'resolve';
-  const wirePagination = {
-    cursor: pagination?.cursor,
-    limit: pagination?.limit,
-    sortOrder: pagination?.sortOrder,
-    remoteRefBehavior,
-  };
+  const wirePagination = { ...pagination, remoteRefBehavior };
 
   const result = await ('correlationId' in params
     ? getEventsByCorrelationIdV4(params.correlationId, wirePagination, config)
@@ -740,18 +735,5 @@ async function createWorkflowRunEventInner(
       : { ...input, eventType: data.eventType },
     config
   );
-  return {
-    event: stripEventDataRefs(body.event, resolveData),
-    run: body.run,
-    step: body.step,
-    hook: body.hook,
-    wait: body.wait,
-    events: body.events,
-    cursor: body.cursor ?? undefined,
-    hasMore: body.hasMore,
-    ...(body.stepCreated ? { stepCreated: true } : {}),
-    ...(typeof body.maxEvents === 'number'
-      ? { maxEvents: body.maxEvents }
-      : {}),
-  };
+  return { ...body, event: stripEventDataRefs(body.event, resolveData) };
 }
