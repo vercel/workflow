@@ -194,7 +194,6 @@ const WORLD_ENV_ALLOWLIST_BY_TARGET_WORLD: Record<string, string[]> = {
     'WORKFLOW_VERCEL_PROJECT',
     'WORKFLOW_VERCEL_PROJECT_NAME',
     'WORKFLOW_VERCEL_AUTH_TOKEN',
-    'VERCEL_WORKFLOW_SERVER_URL',
   ],
   '@workflow/world-vercel': [
     'WORKFLOW_TARGET_WORLD',
@@ -203,7 +202,6 @@ const WORLD_ENV_ALLOWLIST_BY_TARGET_WORLD: Record<string, string[]> = {
     'WORKFLOW_VERCEL_PROJECT',
     'WORKFLOW_VERCEL_PROJECT_NAME',
     'WORKFLOW_VERCEL_AUTH_TOKEN',
-    'VERCEL_WORKFLOW_SERVER_URL',
   ],
 
   // Community (from worlds-manifest.json)
