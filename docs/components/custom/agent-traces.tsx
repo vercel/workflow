@@ -5,17 +5,21 @@ import { cn } from '@/lib/utils';
 
 // Color presets for trace rows
 const colors = {
-  workflow: 'border-blue-400 bg-blue-100 text-blue-700',
-  stream: 'border-green-400 bg-green-100 text-green-700',
-  tool: 'border-amber-400 bg-amber-100 text-amber-700',
-  approval: 'border-pink-400 bg-pink-100 text-pink-700',
-  webhook: 'border-purple-400 bg-purple-100 text-purple-700',
+  workflow:
+    'bg-[#E1F0FF] dark:bg-[#00254D] border-[#99CEFF] text-[#0070F3] dark:border-[#0067D6] dark:text-[#52AEFF]',
+  stream:
+    'bg-[#DCF6DC] dark:bg-[#1B311E] border-[#99E59F] text-[#46A758] dark:border-[#297C3B] dark:text-[#6CDA76]',
+  tool: 'bg-[#FFF4E5] dark:bg-[#3D2800] border-[#FFCC80] text-[#F5A623] dark:border-[#9A6700] dark:text-[#FFCA28]',
+  approval:
+    'bg-[#FCE7F3] dark:bg-[#4A1D34] border-[#F9A8D4] text-[#EC4899] dark:border-[#BE185D] dark:text-[#F472B6]',
+  webhook:
+    'bg-[#EDE9FE] dark:bg-[#2E1065] border-[#C4B5FD] text-[#7C3AED] dark:border-[#6D28D9] dark:text-[#A78BFA]',
 };
 
 type TraceRow = {
   label: string;
   className: string;
-  layoutClassName: string;
+  start: number;
   duration: number;
 };
 
@@ -23,90 +27,55 @@ const defaultRows: TraceRow[] = [
   {
     label: 'chatWorkflow',
     className: colors.workflow,
-    layoutClassName: 'ml-0 w-full',
+    start: 0,
     duration: 100,
   },
-  {
-    label: 'agent.stream',
-    className: colors.stream,
-    layoutClassName: 'ml-[2%] w-[16%]',
-    duration: 16,
-  },
-  {
-    label: 'searchWeb',
-    className: colors.tool,
-    layoutClassName: 'ml-[20%] w-[13%]',
-    duration: 13,
-  },
-  {
-    label: 'agent.stream',
-    className: colors.stream,
-    layoutClassName: 'ml-[37%] w-[16%]',
-    duration: 16,
-  },
+  { label: 'agent.stream', className: colors.stream, start: 2, duration: 16 },
+  { label: 'searchWeb', className: colors.tool, start: 20, duration: 13 },
+  { label: 'agent.stream', className: colors.stream, start: 37, duration: 16 },
   {
     label: 'waitForHumanApproval',
     className: colors.approval,
-    layoutClassName: 'ml-[57%] w-[24%]',
+    start: 57,
     duration: 24,
   },
-  {
-    label: 'agent.stream',
-    className: colors.stream,
-    layoutClassName: 'ml-[84%] w-[16%]',
-    duration: 16,
-  },
+  { label: 'agent.stream', className: colors.stream, start: 84, duration: 16 },
 ];
 
 const messageQueueRows: TraceRow[] = [
   {
     label: 'chatWorkflow',
     className: colors.workflow,
-    layoutClassName: 'ml-0 w-full',
+    start: 0,
     duration: 100,
   },
-  {
-    label: 'agent.stream',
-    className: colors.stream,
-    layoutClassName: 'ml-[2%] w-[16%]',
-    duration: 16,
-  },
+  { label: 'agent.stream', className: colors.stream, start: 2, duration: 16 },
   {
     label: 'hook.enqueue()',
     className: colors.webhook,
-    layoutClassName: 'ml-[12%] w-[24%]',
+    start: 12,
     duration: 24,
   },
   {
     label: 'tool.checkDB()',
     className: colors.tool,
-    layoutClassName: 'ml-[18%] w-[18%]',
+    start: 18,
     duration: 18,
   },
-  {
-    label: 'agent.stream',
-    className: colors.stream,
-    layoutClassName: 'ml-[36%] w-[16%]',
-    duration: 16,
-  },
+  { label: 'agent.stream', className: colors.stream, start: 36, duration: 16 },
   {
     label: 'hook.enqueue()',
     className: colors.webhook,
-    layoutClassName: 'ml-[46%] w-[24%]',
+    start: 46,
     duration: 24,
   },
   {
     label: 'tool.search()',
     className: colors.tool,
-    layoutClassName: 'ml-[52%] w-[18%]',
+    start: 52,
     duration: 18,
   },
-  {
-    label: 'agent.stream',
-    className: colors.stream,
-    layoutClassName: 'ml-[70%] w-[16%]',
-    duration: 16,
-  },
+  { label: 'agent.stream', className: colors.stream, start: 70, duration: 16 },
 ];
 
 const variants = {
@@ -129,7 +98,11 @@ export const AgentTraces = ({ variant = 'default' }: AgentTracesProps) => {
         {rows.map((row, index) => (
           <div
             key={`${row.label}-${index}`}
-            className={`flex flex-col overflow-hidden ${row.layoutClassName}`}
+            className="flex flex-col overflow-hidden"
+            style={{
+              marginLeft: `${row.start}%`,
+              width: `${row.duration}%`,
+            }}
           >
             <div className="relative h-6 w-full">
               <motion.div

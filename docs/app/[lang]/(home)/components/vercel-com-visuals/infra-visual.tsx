@@ -3,7 +3,6 @@ import type { JSX } from 'react';
 export function InfraVisual(): JSX.Element {
   return (
     <svg
-      aria-hidden="true"
       width="444"
       height="264"
       viewBox="0 0 444 264"
@@ -15,7 +14,7 @@ export function InfraVisual(): JSX.Element {
         <rect width="444" height="264" fill="var(--ds-background-200)" />
         <mask
           id="mask0_3882_8500"
-          className="[mask-type:alpha]"
+          style={{ maskType: 'alpha' }}
           maskUnits="userSpaceOnUse"
           x="-36"
           y="-20"

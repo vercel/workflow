@@ -49,7 +49,7 @@ export const createOgImage = async ({
   ]);
 
   return new ImageResponse(
-    <div tw="flex h-full w-full [font-family:Geist]">
+    <div style={{ fontFamily: 'Geist' }} tw="flex h-full w-full">
       {/** biome-ignore lint/performance/noImgElement: Required for Satori */}
       <img
         alt="Background"
@@ -67,12 +67,20 @@ export const createOgImage = async ({
           </div>
         )}
         {/* Non-breaking spaces to match "Workflow: " width, then title flows naturally */}
-        <div tw="text-[72px] font-semibold leading-[1.15] tracking-tight text-[#888888]">
+        <div
+          style={{ letterSpacing: '-0.025em' }}
+          tw="text-[72px] font-semibold leading-[1.15] text-[#888888]"
+        >
           {`\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0 ${title}`}
           {/* {`Workflow: ${title}`} */}
         </div>
         {description && (
-          <div tw="mt-5 text-[20px] text-[#666666] leading-[30px]">
+          <div
+            style={{
+              lineHeight: '30px',
+            }}
+            tw="text-[20px] text-[#666666] mt-5"
+          >
             {description}
           </div>
         )}

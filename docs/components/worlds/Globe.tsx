@@ -3,7 +3,6 @@
 import createGlobe, { type COBEOptions } from 'cobe';
 import { useTheme } from 'next-themes';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { cn } from '@/lib/utils';
 
 interface GlobeProps {
   className?: string;
@@ -100,7 +99,7 @@ export function Globe({ className }: GlobeProps) {
   }, [size, resolvedTheme, mounted]);
 
   return (
-    <div ref={containerRef} className={cn('aspect-square', className)}>
+    <div ref={containerRef} className={className} style={{ aspectRatio: '1' }}>
       <canvas
         ref={canvasRef}
         className="w-full h-full opacity-0 transition-opacity duration-500 cursor-grab"
