@@ -9,6 +9,7 @@
  */
 
 import { decode, encode } from 'cbor-x';
+import { z } from 'zod';
 
 export const V4_FRAME_CONTENT_TYPE = 'application/vnd.workflow.v4-frames';
 
@@ -16,6 +17,8 @@ export interface DecodedFrame {
   meta: Record<string, unknown>;
   body: Uint8Array;
 }
+
+const FrameMetaSchema = z.record(z.string(), z.unknown());
 
 /** Test/utility: encode a complete frame. Production server uses prefix
  *  + streaming body. */
@@ -92,7 +95,7 @@ export async function* decodeFrames(
       if (!(await refill(metaLen))) {
         throw new Error('decodeFrames: truncated meta block');
       }
-      const meta = decode(take(metaLen)) as Record<string, unknown>;
+      const meta = FrameMetaSchema.parse(decode(take(metaLen)));
 
       if (!(await refill(4))) {
         throw new Error('decodeFrames: truncated body length');
