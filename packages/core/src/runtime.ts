@@ -97,6 +97,7 @@ import {
 } from './runtime/step-ownership.js';
 import { runStepSingleFlight } from './runtime/step-single-flight.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
+import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import {
   getWorld,
@@ -2004,6 +2005,73 @@ export function workflowEntrypoint(
                     // as the `sinceCursor` for the inline-delta optimization.
                     let preInlineWriteCursor: string | null = null;
                     try {
+                      // --- QuickJS VM engine dispatch ---
+                      // The QuickJS engine (opt-in via WORKFLOW_VM=quickjs
+                      // or executionContext.workflowVm) is a self-contained
+                      // alternative to the node:vm inline-replay logic
+                      // below. It performs the same full event replay, but
+                      // runs the workflow code in a QuickJS WASM VM, queues
+                      // steps via the same combined route (so they hit
+                      // executeStep below on re-entry), and manages its own
+                      // run_completed / run_failed lifecycle for workflow
+                      // outcomes. When the QuickJS engine is in effect,
+                      // return immediately after dispatch.
+                      //
+                      // Deliberately INSIDE this try: engine failures that
+                      // escape the entrypoint (MaxEventsExceededError, a
+                      // WASM OOM at the memory ceiling, a bundle-eval
+                      // failure) must reach this loop's catch so they are
+                      // classified and recorded as run_failed — outside the
+                      // try they would nack the message and burn all queue
+                      // redeliveries before dying as
+                      // MAX_DELIVERIES_EXCEEDED. Transient world errors
+                      // still rethrow out of the catch for redelivery, same
+                      // as node-engine replay failures.
+                      if (useQuickJSVm(workflowRun)) {
+                        runtimeLogger.debug('Using QuickJS VM engine', {
+                          workflowRunId: runId,
+                          loopIteration,
+                        });
+                        // Under turbo, run_started is backgrounded. The
+                        // QuickJS entrypoint fetches the event log and
+                        // writes events directly, so wait for the run to be
+                        // durably started first — it does not thread the
+                        // turbo runReadyBarrier the way handleSuspension
+                        // does.
+                        await awaitRunReady();
+                        // Lazy import: the QuickJS entrypoint's import chain
+                        // embeds the base64 WASM binary + extensions
+                        // (~1.3 MB decoded at module scope). Loading it here
+                        // keeps that out of node-engine deployments entirely
+                        // — only the opt-in path pays, on first dispatch.
+                        const { runWorkflowWithQuickJS } = await import(
+                          './runtime/quickjs-entrypoint.js'
+                        );
+                        const quickjsResult = await runWorkflowWithQuickJS({
+                          workflowCode,
+                          workflowName,
+                          workflowRun,
+                          preloadedEvents,
+                          runInput,
+                          parentSpan: span,
+                          maxEventsLimit,
+                          namespace,
+                          nextTraceCarrier,
+                        });
+                        if (quickjsResult?.timeoutSeconds !== undefined) {
+                          // Use `reinvoke` rather than returning
+                          // `{ timeoutSeconds }` directly: under turbo the
+                          // current message carries `runInput` and a
+                          // reschedule would re-engage turbo on redelivery
+                          // (replaying against a stale preloaded log and
+                          // wedging the run — see the reinvoke() docs
+                          // above). reinvoke enqueues an explicit
+                          // continuation without `runInput` in that case.
+                          return await reinvoke(quickjsResult.timeoutSeconds);
+                        }
+                        return;
+                      }
+
                       // Load events — use cached events with incremental fetch on subsequent iterations.
                       // The server always returns a cursor when there are events (even on the
                       // final page), so we can reliably use it for incremental loading.

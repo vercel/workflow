@@ -138,6 +138,23 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - How long after an inline step's latest `step_started` other invocations assume its owner may still be executing the body. Within the lease they defer the step's backstop message; past it they enqueue immediately.
 - Raise this on self-hosted multi-instance deployments whose inline steps run longer than the default (the default is sized for Vercel's function duration ceiling).
 
+## Workflow VM engine
+
+### `WORKFLOW_VM`
+
+- Default: `node`
+- Values: `node` or `quickjs`
+- Selects the sandboxed VM engine that executes workflow functions (`"use workflow"`). Step functions are unaffected — they always run with full Node.js access.
+- `node` (default) runs workflow code in a [`node:vm`](https://nodejs.org/api/vm.html) context.
+- `quickjs` (experimental) runs workflow code in a [QuickJS](https://github.com/quickjs-ng/quickjs) VM compiled to WebAssembly (via [`quickjs-wasi`](https://github.com/vercel-labs/quickjs-wasi)). Both engines implement the same event-replay execution model (seeded PRNG, deterministic clock, and correlation-ID sequences are identical), but the **global surface is not identical** — see the differences below before switching an existing deployment. The QuickJS engine is intended for platforms that do not implement `node:vm`, and is the foundation for future VM-memory snapshotting.
+- Global-surface differences under `quickjs` (workflow functions only — step functions always have full Node.js):
+  - `crypto.getRandomValues()` and `crypto.randomUUID()` are provided and deterministic (seeded like the node engine's). All `crypto.subtle.*` methods throw with guidance to move to a step function — including `digest`, which the node engine supports.
+  - `Intl` is not available (QuickJS has no ICU). The `Intl.*` constructors throw, and `toLocaleString`-family methods (including `localeCompare`) throw when called **with an explicit locale** — calling them without arguments keeps the engine default. Perform locale-sensitive formatting in a step function.
+  - `WebAssembly` and `Atomics` are not available.
+  - `process` exposes only a frozen copy of `env`, matching the node engine.
+- The engine choice is stamped into the run's `executionContext` when the run starts, so a run keeps executing on the engine it started on even if the deployment's `WORKFLOW_VM` changes. Runs without a stamped engine use the handler's `WORKFLOW_VM` value.
+- Unknown values throw at startup.
+
 ## Compression and tracing
 
 ### `WORKFLOW_DISABLE_COMPRESSION`
