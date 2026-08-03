@@ -674,6 +674,9 @@ async function createWorkflowRunEventInner(
       specVersion: data.specVersion ?? 2,
       ...(data.correlationId ? { correlationId: data.correlationId } : {}),
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      ...(params?.computeInstanceId
+        ? { computeInstanceId: params.computeInstanceId }
+        : {}),
       // Precondition snapshot. The three fields describe one snapshot and the
       // runtime always sends them together (or not at all); each is spread
       // independently only so an older server that knows one but not the
@@ -685,6 +688,9 @@ async function createWorkflowRunEventInner(
         ? { stateEventCount: params.stateEventCount }
         : {}),
       ...(params?.stateCursor ? { stateCursor: params.stateCursor } : {}),
+      ...(params?.replayDivergenceCount !== undefined
+        ? { replayDivergenceCount: params.replayDivergenceCount }
+        : {}),
       occurredAt: params?.occurredAt ?? new Date(),
       // Opt-in inline-delta: forward the cursor the runtime held before
       // this write so the server can return the authoritative event-log
@@ -698,6 +704,15 @@ async function createWorkflowRunEventInner(
       // skip the list+resolve. The server only acts on it for run_started;
       // older servers ignore it and simply preload as before.
       ...(params?.skipPreload ? { skipPreload: true } : {}),
+      // Lazy hook resume idempotency key (hook_received only). Routes the
+      // write through the server's (runId, resumeId) constraint so a
+      // concurrent queue-consumer re-ensure deduplicates to one event.
+      ...(params?.resumeId ? { resumeId: params.resumeId } : {}),
+      // Content digest forwarded alongside resumeId so the direct write and the
+      // queue re-ensure record an identical digest on the server constraint.
+      ...(params?.resumePayloadDigest
+        ? { resumePayloadDigest: params.resumePayloadDigest }
+        : {}),
       remoteRefBehavior,
       payload,
       ...meta,

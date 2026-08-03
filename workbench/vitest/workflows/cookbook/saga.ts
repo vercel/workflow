@@ -38,7 +38,7 @@ export async function sagaWorkflow(orderId: string) {
     compensations.push(() => refundPayment(invoiceId));
 
     // This step throws FatalError, triggering rollback
-    const entitlementId = await provisionAccess(orderId);
+    const _entitlementId = await provisionAccess(orderId);
 
     return { status: 'completed' };
   } catch (error) {

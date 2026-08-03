@@ -21,7 +21,7 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
-import type { Event } from '@workflow/world';
+import { type Event, getEventDataPayloadField } from '@workflow/world';
 import { decode } from 'cbor-x';
 import { coerceEventDates } from './event-coerce.js';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
@@ -111,6 +111,8 @@ export interface CreateEventV4Input {
   specVersion: number;
   correlationId?: string;
   vercelId?: string;
+  /** Compute instance that wrote this event; rides the frame meta by `vercelId`. */
+  computeInstanceId?: string;
   /** Client-side time at which the event occurred. */
   occurredAt?: Date;
   remoteRefBehavior?: 'resolve' | 'lazy';
@@ -135,6 +137,12 @@ export interface CreateEventV4Input {
   hookTokenRetentionUntil?: Date;
   hookIsWebhook?: boolean;
   hookIsSystem?: boolean;
+  /** Lazy hook resume idempotency key. Set only on a `hook_received` written
+   *  by `resumeHook()`'s parallel fast path; routes the event through the
+   *  server's `(runId, resumeId)` constraint so the direct write and the
+   *  queue consumer's re-ensure converge on one event. Older servers ignore
+   *  it (the deduplication then falls to the sequential path). */
+  resumeId?: string;
   errorCode?: string;
   /** run_cancelled's optional free-text cancellation reason. Small plaintext
    *  metadata, capped at 512 chars by the @workflow/world schema. */
@@ -223,6 +231,13 @@ export interface CreateEventV4Input {
    * on for the *accepted* path.
    */
   stateCursor?: string;
+  /** Number of consecutive replay divergences resolved by this write. */
+  replayDivergenceCount?: number;
+  /** Content digest of the serialized resume payload. Forwarded alongside
+   *  `resumeId` so the direct write and the queue re-ensure record an identical
+   *  digest on the server's `(runId, resumeId)` constraint (the v4 payload ref
+   *  is not content-stable server-side). Older servers ignore it. */
+  resumePayloadDigest?: string;
 }
 
 /**
@@ -285,6 +300,8 @@ function buildPostFrameMeta(
   if (input.correlationId !== undefined)
     meta.correlationId = input.correlationId;
   if (input.vercelId !== undefined) meta.vercelId = input.vercelId;
+  if (input.computeInstanceId !== undefined)
+    meta.computeInstanceId = input.computeInstanceId;
   if (input.occurredAt !== undefined) meta.occurredAt = input.occurredAt;
   if (input.remoteRefBehavior !== undefined) {
     meta.remoteRefBehavior = input.remoteRefBehavior;
@@ -302,6 +319,7 @@ function buildPostFrameMeta(
   if (input.hookIsWebhook !== undefined)
     meta.hookIsWebhook = input.hookIsWebhook;
   if (input.hookIsSystem !== undefined) meta.hookIsSystem = input.hookIsSystem;
+  if (input.resumeId !== undefined) meta.resumeId = input.resumeId;
   if (input.errorCode !== undefined) meta.errorCode = input.errorCode;
   if (input.cancelReason !== undefined) meta.cancelReason = input.cancelReason;
   if (input.ownerMessageId !== undefined) {
@@ -339,6 +357,12 @@ function buildPostFrameMeta(
     meta.stateEventCount = input.stateEventCount;
   }
   if (input.stateCursor !== undefined) meta.stateCursor = input.stateCursor;
+  if (input.replayDivergenceCount !== undefined) {
+    meta.replayDivergenceCount = input.replayDivergenceCount;
+  }
+  if (input.resumePayloadDigest !== undefined) {
+    meta.resumePayloadDigest = input.resumePayloadDigest;
+  }
   return meta;
 }
 
@@ -415,6 +439,7 @@ function decodePreconditionDetails(json: {
     if (typeof raw !== 'object' || raw === null) return undefined;
     const candidate = raw as Record<string, unknown>;
     if (typeof candidate.eventId !== 'string') return undefined;
+    if (hasUnusablePayload(candidate)) return undefined;
     // Same decoder the success-path delta uses: the JSON body carries nested
     // eventData dates as ISO strings and the runtime calls .getTime() on them.
     events.push(coerceEventDates(candidate));
@@ -423,6 +448,39 @@ function decodePreconditionDetails(json: {
     events,
     ...(typeof json.cursor === 'string' ? { cursor: json.cursor } : {}),
   };
+}
+
+/**
+ * True when an event carries a user payload that this JSON body cannot
+ * represent, which disqualifies the whole delta.
+ *
+ * Payload fields (input / output / result / error / payload / metadata) are
+ * `Uint8Array` everywhere else in this client — the runtime dehydrates before
+ * writing and rehydrates after reading, and the write path throws on anything
+ * else. A 412 body is JSON, though: the request carries no
+ * `Accept: application/cbor`, so resolved bytes serialize to
+ * `{"type":"Buffer","data":[…]}` or an index-keyed object depending on the
+ * backend's serializer. `EventSchema` accepts either — its payload fields are
+ * unions that bottom out in `z.any()` — so nothing downstream would flag the
+ * mangled value; the runtime would hydrate garbage from it instead.
+ *
+ * Refusing the delta is one-sided safe: the fallback full reload goes over a
+ * frame-encoded path that returns real bytes. Deltas made only of
+ * payload-less events (waits, hook disposal, attribute writes) keep the fast
+ * path.
+ */
+function hasUnusablePayload(candidate: Record<string, unknown>): boolean {
+  const eventType = candidate.eventType;
+  if (typeof eventType !== 'string') return false;
+  const payloadField = getEventDataPayloadField(eventType);
+  if (!payloadField) return false;
+  const eventData = candidate.eventData;
+  if (typeof eventData !== 'object' || eventData === null) return false;
+  const value = (eventData as Record<string, unknown>)[payloadField];
+  // An absent/undefined payload is legitimate (a void step result, a workflow
+  // returning nothing) and needs no bytes to be correct.
+  if (value === undefined) return false;
+  return !(value instanceof Uint8Array);
 }
 
 /**

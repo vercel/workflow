@@ -3,14 +3,13 @@ import {
   EntityConflictError,
   FatalError,
   HookNotFoundError,
+  PreconditionFailedError,
   RunExpiredError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
   AttributeValidationError,
-  type CreateEventParams,
   type CreateEventRequest,
-  type EventResult,
   type SerializedData,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -30,7 +29,12 @@ import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import { getMaxInlineSteps } from './constants.js';
-import { type LoadedEventLog, preconditionSnapshotParams } from './helpers.js';
+import {
+  type EventCreator,
+  type LoadedEventLog,
+  preconditionSnapshotParams,
+} from './helpers.js';
+import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -58,6 +62,8 @@ export interface SuspensionHandlerParams {
    * where `run_started` was already awaited up front.
    */
   runReadyBarrier?: Promise<unknown>;
+  /** One-shot telemetry reporter, activated only after replay has recovered. */
+  replayRecoveryReporter?: ReplayRecoveryReporter;
 }
 
 /**
@@ -136,10 +142,7 @@ async function createHookEvent({
   hookEvent: CreateEventRequest;
   queueItem: HookInvocationQueueItem;
   requestId?: string;
-  createEvent: (
-    data: CreateEventRequest,
-    params?: CreateEventParams
-  ) => Promise<EventResult>;
+  createEvent: EventCreator;
 }): Promise<{
   hasHookConflict: boolean;
   hasAwaitedHookCreation: boolean;
@@ -207,6 +210,7 @@ export async function handleSuspension({
   requestId,
   eventLog,
   runReadyBarrier,
+  replayRecoveryReporter,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -228,23 +232,56 @@ export async function handleSuspension({
     }
   };
 
-  // Create an event with the optimistic-concurrency guard when the caller
-  // supplied a loaded event log; otherwise create it directly (callers without
-  // a replay snapshot, e.g. tests). A stale (412) rejection propagates to the
-  // caller, which restarts the replay from a corrected log. All suspension
-  // events are non-run_created events on this run's `runId`.
-  const createGuarded = (
-    data: CreateEventRequest,
-    params?: CreateEventParams
-  ): Promise<EventResult> => {
-    if (!eventLog) {
-      return world.events.create(runId, data, params);
-    }
-    return world.events.create(runId, data, {
-      ...params,
-      ...preconditionSnapshotParams(eventLog.events, eventLog.cursor),
-    });
+  /**
+   * Await every operation in a suspension phase before letting a failure
+   * escape, preferring a stale-snapshot (412) rejection when one occurred.
+   *
+   * `Promise.all` rejects as soon as one operation does and leaves its siblings
+   * in flight. That matters for a 412: the caller reacts by reloading the event
+   * log and restarting the replay, so a sibling create that lands after the
+   * rejection escaped commits an event whose correlation id came from the
+   * abandoned replay's seeded sequence — an event the fresh replay never
+   * produces — and it races the restart's reload while doing so. Settling first
+   * makes this phase's write set final before the caller acts on the failure.
+   * It mirrors the runtime's inline step claim, which settles the in-flight
+   * step executions before escalating a 412.
+   *
+   * A 412 is preferred over any other rejection in the same phase because it
+   * has a defined, cheap recovery (replay from a corrected log) while the
+   * others do not. A deterministic failure such as an attribute-validation
+   * `FatalError` recurs on the restart and fails the run then, at the cost of
+   * one extra replay.
+   */
+  const settlePhase = async (ops: Promise<unknown>[]): Promise<void> => {
+    const reasons = (await Promise.allSettled(ops))
+      .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+      .map((r) => r.reason);
+    if (reasons.length === 0) return;
+    throw reasons.find((r) => PreconditionFailedError.is(r)) ?? reasons[0];
   };
+
+  // Every suspension write carries replay-recovery telemetry on the first one
+  // that commits after replay recovered. All suspension events are
+  // non-run_created events on this run's `runId`.
+  const reporter = replayRecoveryReporter ?? ReplayRecoveryReporter.inert();
+  const createEvent: EventCreator = (data, params) =>
+    reporter.withEventCreate(params, (p) =>
+      world.events.create(runId, data, p)
+    );
+  // Adds the optimistic-concurrency guard when the caller supplied a loaded
+  // event log; without one it creates directly (callers with no replay
+  // snapshot, e.g. tests). A stale (412) rejection propagates to the caller,
+  // which restarts the replay from a corrected log — it is not retried here,
+  // because the event's correlation id was minted by *this* replay's seeded
+  // sequence, so re-committing it against a corrected log would persist an
+  // event no correct replay produces.
+  const createGuarded: EventCreator = (data, params) =>
+    eventLog
+      ? createEvent(data, {
+          ...params,
+          ...preconditionSnapshotParams(eventLog.events, eventLog.cursor),
+        })
+      : createEvent(data, params);
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
@@ -348,7 +385,7 @@ export async function handleSuspension({
   if (hookItemsByToken.size > 0) {
     const hookPhaseStart = Date.now();
     await ensureRunReady();
-    await Promise.all(
+    await settlePhase(
       [...hookItemsByToken.values()].map(async (items) => {
         for (const queueItem of items) {
           let creationConflicted = false;
@@ -408,7 +445,7 @@ export async function handleSuspension({
 
   if (hooksNeedingAbort.length > 0) {
     await ensureRunReady();
-    await Promise.all(
+    await settlePhase(
       hooksNeedingAbort.map(async (queueItem) => {
         try {
           // Dehydrate the abort payload for storage
@@ -679,7 +716,7 @@ export async function handleSuspension({
   // all before ack. If the process crashes before this resolves, the orchestrator
   // message is not acked and VQS redelivers, re-creates the (idempotent)
   // step_created and re-dispatches, and recovers the run instead of orphaning it.
-  await Promise.all(ops);
+  await settlePhase(ops);
 
   // Rebuild the inline batch in deterministic order. `lazyInlineCorrelationIds`
   // is a Set seeded from the ordered first-N slice, so iterating it preserves

@@ -111,8 +111,66 @@ export const RunInputSchema = z.object({
    * the original `run_created` attempt.
    */
   allowReservedAttributes: z.literal(true).optional(),
+  /**
+   * The environment the creating client's writes are attributed to, as
+   * reported by {@link World.getEnvironment} at `start()` time (on Vercel:
+   * `'production' | 'preview' | 'development'`).
+   *
+   * This exists so the resilient-start path can be checked for a tenant
+   * mismatch. `start()` writes `run_created` under the caller's own
+   * credentials while pinning the queue message to a deployment, and those
+   * two can disagree: if the message is consumed by a deployment in a
+   * DIFFERENT environment, that consumer's `run_started` re-creates the run
+   * under ITS tenant, so the same client-minted `wrun_` id ends up existing
+   * in two environments — one stuck pending forever, the other executing.
+   * Carrying the creator's environment lets the consumer compare it against
+   * its own and refuse the delivery instead of forking the run.
+   *
+   * Absent for worlds with no environment dimension (local, Postgres), and
+   * for older SDKs — consumers must treat it as advisory and skip the check
+   * when it is missing.
+   */
+  environment: z.string().optional(),
 });
 export type RunInput = z.infer<typeof RunInputSchema>;
+
+/**
+ * Lazy hook resume data carried through the queue alongside a workflow
+ * invocation. Present only when `resumeHook()` takes the parallel fast path:
+ * the producer persists the `hook_received` event and publishes this invocation
+ * concurrently. On receipt, a consumer that understands `hookInput` idempotently
+ * ensures the `hook_received` event exists — keyed by `resumeId` — before
+ * replaying, so the two concurrent writes converge on exactly one event.
+ *
+ * The `payload` is the already-serialized (and possibly encrypted) resume
+ * payload — the identical bytes the producer also sent on the direct
+ * `events.create`, so both server receipts hash to the same digest under the
+ * `(runId, resumeId)` constraint.
+ */
+export const HookResumeInputSchema = z.object({
+  /** Stable idempotency key minted once per `resumeHook()` call. */
+  resumeId: z.string(),
+  /** The hook being resumed. */
+  hookId: z.string(),
+  /**
+   * The hook's token, written into the `hook_received` event's `eventData` so
+   * the consumer's re-ensured event carries the same token the producer would
+   * — replay validates `eventData.token` against the `createHook` token.
+   */
+  token: z.string(),
+  /** The serialized resume payload, reused verbatim from the direct write. */
+  payload: z.unknown(),
+  /**
+   * Content digest of `payload`, computed once by the producer over the
+   * serialized bytes and forwarded verbatim on both the direct `events.create`
+   * and this queue message. The consumer forwards it back to the server so both
+   * writers of the same `resumeId` record an identical digest on the
+   * `(runId, resumeId)` constraint — required because the v4 payload ref is not
+   * content-stable server-side.
+   */
+  payloadDigest: z.string(),
+});
+export type HookResumeInput = z.infer<typeof HookResumeInputSchema>;
 
 export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
@@ -125,6 +183,14 @@ export const WorkflowInvokePayloadSchema = z.object({
       count: z.number().int().positive(),
     })
     .optional(),
+  /**
+   * Re-invocations so far in this chain of stale-snapshot (precondition)
+   * rejections. Counted on the message because the in-process restart budget
+   * lives in the invocation closure and the queue's delivery count resets on
+   * every fresh enqueue, so without this a permanently fenced run would cycle
+   * forever instead of failing.
+   */
+  preconditionReinvocations: z.number().int().positive().optional(),
   /** Number of times this message has been re-enqueued due to server errors (5xx) */
   serverErrorRetryCount: z.number().int().optional(),
   /** Step ID for inline step execution in combined handler. If provided, the flow execution
@@ -134,6 +200,12 @@ export const WorkflowInvokePayloadSchema = z.object({
   stepName: z.string().optional(),
   /** Run creation data, only present on the first queue delivery from start() */
   runInput: RunInputSchema.optional(),
+  /**
+   * Lazy hook resume data, only present when `resumeHook()` takes the parallel
+   * fast path. A consumer that understands this field idempotently ensures the
+   * `hook_received` event exists (keyed by `resumeId`) before replaying.
+   */
+  hookInput: HookResumeInputSchema.optional(),
 });
 
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;

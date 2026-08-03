@@ -243,7 +243,9 @@ type AttributeKey =
   | 'lastReceivedAt'
   | 'disposedAt'
   | 'isSystem'
-  | 'errorCode';
+  | 'errorCode'
+  // Analytics-only provenance (AnalyticsEvent / AnalyticsStep), not on Event.
+  | 'computeInstanceId';
 
 const attributeOrder: AttributeKey[] = [
   'workflowName',
@@ -262,6 +264,7 @@ const attributeOrder: AttributeKey[] = [
   'correlationId',
   'eventType',
   'deploymentId',
+  'computeInstanceId',
   'specVersion',
   'workflowCoreVersion',
   'ownerId',
@@ -307,6 +310,7 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   errorCode: 'Error Code',
   correlationId: 'Correlation ID',
   deploymentId: 'Deployment ID',
+  computeInstanceId: 'Compute Instance ID',
   specVersion: 'Spec Version',
   workflowCoreVersion: '@workflow/core version',
   occurredAt: 'Occurred',
@@ -419,11 +423,14 @@ const attributeToDisplayFn: Record<
   disposedAt: localMillisecondTimeOrNull,
   // Internal resume plumbing — not surfaced in the UI
   resumeContext: (_value: unknown) => null,
+  resumeId: (_value: unknown) => null,
+  resumeCapabilities: (_value: unknown) => null,
   // Event details
   eventType: (value: unknown) => String(value),
   correlationId: (value: unknown) => String(value),
   // Project details
   deploymentId: (value: unknown) => String(value),
+  computeInstanceId: (value: unknown) => String(value),
   specVersion: (value: unknown) => String(value),
   workflowCoreVersion: (value: unknown) => String(value),
   // Tenancy (we don't show these)
@@ -684,6 +691,7 @@ const copyableBasicAttributes = new Set<AttributeKey>([
   'hookId',
   'eventId',
   'deploymentId',
+  'computeInstanceId',
   'moduleSpecifier',
   'token',
 ]);

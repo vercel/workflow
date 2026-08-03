@@ -11,9 +11,10 @@
  * - DurableAgent model is `string | () => Promise<CompatibleLanguageModel>` instead of direct LanguageModel
  * - DurableAgent returns DurableAgentStreamResult (not StreamTextResult with consumeStream())
  */
-import { tool } from 'ai';
+
 import type { UIMessageChunk } from 'ai';
-import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
+import { tool } from 'ai';
+import { convertArrayToReadableStream, MockLanguageModelV3 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { DurableAgent } from './durable-agent.js';
@@ -1728,7 +1729,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           },
         });
 
-        const { writable, chunks } = createMockWritable();
+        const { writable } = createMockWritable();
         const result = await agent.stream({
           messages: [{ role: 'user' as const, content: 'test' }],
           writable,

@@ -2079,6 +2079,114 @@ describe('runWorkflow', () => {
       ).toEqual(['First payload', 'Second payload']);
     });
 
+    it('should deliver "hook_received" events sharing a resumeId only once', async () => {
+      // `hook_received` has no storage-level uniqueness constraint, so the
+      // lazy-resume path can commit the same resume attempt twice when the
+      // same queue message is redelivered concurrently (both deliveries pass
+      // the runtime's snapshot dedup check before either write lands). Both
+      // rows carry the resume attempt's client-minted `resumeId`; replay must
+      // deliver the payload exactly once. Events without a `resumeId` are
+      // never deduped (distinct resume attempts).
+      //
+      // The backend hoists `resumeId` to a top-level event column, and replay
+      // keys its dedup set off that column. Below: event-0 and event-1 carry
+      // the SAME top-level `resumeId` (event-1 must dedup against event-0), and
+      // event-2 a distinct top-level id (must deliver).
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        ),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const firstPayload = await dehydrateStepReturnValue(
+        { message: 'First payload' },
+        'wrun_123',
+        noEncryptionKey,
+        ops
+      );
+      const events: Event[] = [
+        {
+          // New top-level form: the backend hoists `resumeId` to a first-class
+          // event column. Delivers "First payload".
+          eventId: 'event-0',
+          runId: workflowRun.runId,
+          eventType: 'hook_received',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
+          resumeId: '01JXAMPLE0000000000000RSMA',
+          eventData: {
+            token: 'test-token',
+            payload: firstPayload,
+          },
+          createdAt: new Date(),
+        },
+        {
+          // Duplicate materialization of the SAME resume attempt (same
+          // top-level `resumeId` as event-0), so it must be skipped by replay.
+          eventId: 'event-1',
+          runId: workflowRun.runId,
+          eventType: 'hook_received',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
+          resumeId: '01JXAMPLE0000000000000RSMA',
+          eventData: {
+            token: 'test-token',
+            payload: firstPayload,
+          },
+          createdAt: new Date(),
+        },
+        {
+          // A distinct resume attempt (different resumeId, top-level form) —
+          // must deliver "Second payload".
+          eventId: 'event-2',
+          runId: workflowRun.runId,
+          eventType: 'hook_received',
+          correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
+          resumeId: '01JXAMPLE0000000000000RSMB',
+          eventData: {
+            token: 'test-token',
+            payload: await dehydrateStepReturnValue(
+              { message: 'Second payload' },
+              'wrun_123',
+              noEncryptionKey,
+              ops
+            ),
+          },
+          createdAt: new Date(),
+        },
+      ];
+
+      const result = await runWorkflow(
+        `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+      async function workflow() {
+        const hook = createHook({ token: 'test-token' });
+        const payload1 = await hook;
+        const payload2 = await hook;
+        return [payload1.message, payload2.message];
+      }${getWorkflowTransformCode('workflow')}`,
+        workflowRun,
+        events,
+        noEncryptionKey
+      );
+      expect(
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        )
+      ).toEqual(['First payload', 'Second payload']);
+    });
+
     it('should support `for await` loops with `createHook`', async () => {
       const ops: Promise<any>[] = [];
       const workflowRun: WorkflowRun = {

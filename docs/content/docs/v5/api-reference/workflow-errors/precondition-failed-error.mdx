@@ -12,6 +12,8 @@ related:
 
 This only occurs while the optimistic-concurrency guard is enabled (`WORKFLOW_PRECONDITION_GUARD`, on by default — see [Runtime Tuning](/docs/configuration/runtime-tuning)); event creations that carry no snapshot are never rejected with this error.
 
+A world rejects only on evidence and accepts the creation whenever it cannot decide, so this error always means the snapshot really was stale — but not receiving it does not prove the snapshot was current.
+
 <Callout>
 The Workflow runtime handles this error automatically: it restarts the replay in the same invocation from a corrected event log, and re-invokes the run for a fresh replay only once its in-process restart budget is spent. It never retries the rejected creation as-is, because a replay working from a corrected log derives different events. You will only encounter it when interacting with world storage APIs directly.
 </Callout>

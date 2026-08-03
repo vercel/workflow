@@ -393,8 +393,8 @@ export function getReplayDivergenceMaxRetries(): number {
 // event the World had already recorded, so the replay is re-derived from a
 // corrected log inside the same invocation. Bounded because a persistently
 // rejected write should escalate rather than spin: after this many restarts the
-// run is re-invoked (a new invocation, possibly in a different region), and from
-// there the queue's delivery limit applies.
+// run is re-invoked (a new invocation, possibly in a different region), and the
+// run-level budget below then applies.
 export const PRECONDITION_MAX_INPROCESS_RESTARTS = 3;
 
 /**
@@ -405,6 +405,45 @@ export function getPreconditionMaxInProcessRestarts(): number {
   return envNumber(
     'WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS',
     PRECONDITION_MAX_INPROCESS_RESTARTS,
+    { integer: true }
+  );
+}
+
+// The in-process budget above is per-invocation, and a re-invocation that
+// enqueues a fresh message also restarts the queue's delivery count, so without
+// a counter carried on the message a permanently fenced run has no run-level
+// bound at all. It can stay fenced without any permanent fault — a full reload
+// is not atomic across pages, so a busy run can acquire a new hole on every
+// reload — so the chain is counted and the run fails once this many
+// re-invocations have been spent on stale-snapshot rejections.
+export const PRECONDITION_MAX_REINVOCATIONS = 5;
+
+/**
+ * Effective per-run budget for re-invocations caused by stale-snapshot
+ * rejections. Override via `WORKFLOW_PRECONDITION_MAX_REINVOCATIONS`.
+ */
+export function getPreconditionMaxReinvocations(): number {
+  return envNumber(
+    'WORKFLOW_PRECONDITION_MAX_REINVOCATIONS',
+    PRECONDITION_MAX_REINVOCATIONS,
+    { integer: true }
+  );
+}
+
+// Backoff before a precondition re-invocation. Unlike the in-process restart
+// (where the point is to re-read immediately), a re-invocation only happens
+// after the in-process budget failed to catch up, so the log is being extended
+// faster than this replay can follow it. Waiting lets the writers quiesce.
+export const PRECONDITION_REINVOKE_DELAY_SECONDS = 2;
+
+/**
+ * Effective delay before a precondition re-invocation. Override via
+ * `WORKFLOW_PRECONDITION_REINVOKE_DELAY_SECONDS`.
+ */
+export function getPreconditionReinvokeDelaySeconds(): number {
+  return envNumber(
+    'WORKFLOW_PRECONDITION_REINVOKE_DELAY_SECONDS',
+    PRECONDITION_REINVOKE_DELAY_SECONDS,
     { integer: true }
   );
 }

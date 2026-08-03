@@ -152,6 +152,27 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // repeated awaits observe the same instance deterministically.
     let conflictRunRef: Run<unknown> | null = null;
 
+    // Lazy-resume dedup: `resumeHook()` mints a `resumeId` per resume
+    // attempt and stamps it on the `hook_received` event. When the direct
+    // event write fails transiently, the runtime materializes the event from
+    // the queue payload instead — and because `hook_received` has no
+    // storage-level uniqueness constraint, concurrent redelivery of the same
+    // queue message can commit that materialization twice. Two rows for ONE
+    // resume attempt then share a `resumeId` (distinct resume attempts never
+    // do), so replay delivers only the first-in-log occurrence. This is a
+    // pure function of the persisted event log, keeping replay deterministic.
+    //
+    // Scope: this is defense-in-depth over the persisted log, not a
+    // cross-invocation exactly-once guarantee — an invocation replaying a
+    // snapshot taken before the duplicate row committed only sees one row,
+    // so two CONCURRENT invocations can each deliver from their own
+    // snapshot. Every replay from a log containing both rows (i.e. all
+    // subsequent deliveries) dedups. The correctness boundary that closes
+    // the concurrent window is the storage-level (runId, resumeId)
+    // constraint arriving with the parallel-resume successor work; this set
+    // stays useful after that lands, for logs written before it deployed.
+    const seenResumeIds = new Set<string>();
+
     webhookLogger.debug('Hook consumer setup', { correlationId, token });
     ctx.eventsConsumer.subscribe((event) => {
       // If there are no events and there are promises waiting,
@@ -267,6 +288,24 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       if (event.eventType === 'hook_received') {
+        // Drop duplicate deliveries of the same resume attempt (same
+        // `resumeId` — see `seenResumeIds` above). Events without a
+        // `resumeId` (older SDKs, legacy spec versions) are never deduped.
+        //
+        // Dedup off the top-level `resumeId` the backend hoists onto the event
+        // as a first-class column. An earlier unreleased build additionally
+        // wrote it nested under `eventData`, but that form never shipped and is
+        // stripped by `EventSchema` parsing (the `hook_received` eventData
+        // schema does not declare it), so there is no persisted nested form to
+        // fall back to.
+        const resumeId = event.resumeId;
+        if (typeof resumeId === 'string') {
+          if (seenResumeIds.has(resumeId)) {
+            return EventConsumerResult.Consumed;
+          }
+          seenResumeIds.add(resumeId);
+        }
+
         // Register a 'hook' delivery barrier at this event's log index so a
         // later-in-log `wait_completed` or step result is delivered only after
         // this hook, and so this hook is delivered only after every

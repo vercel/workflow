@@ -2,6 +2,7 @@ import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
+  HOOK_RESUME_INPUT_VERSION,
   isLegacySpecVersion,
   PARENT_RUN_ID_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
@@ -25,8 +26,8 @@ import {
 import {
   dehydrateWorkflowArguments,
   type PayloadKey,
-  sealTo,
   SerializationFormat,
+  sealTo,
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -338,15 +339,26 @@ export async function start<TArgs extends unknown[], TResult>(
 
       let framedByteStreams: boolean;
       let targetSupportsCompression: boolean;
+      // The consumer's hook-resume protocol version, stamped onto the new run
+      // so a later `resumeHook()` gates its parallel path on the deployment
+      // that will actually consume the queue message. `undefined` means "could
+      // not attest" and fails the gate closed.
+      let targetHookResumeInputVersion: number | undefined;
       // Public key of the target run, when the capability probe was able to
       // supply one (cross-deployment only).
       let probedRunPublicKey: string | undefined;
       if (deploymentId === currentDeploymentId) {
         framedByteStreams = true;
         targetSupportsCompression = true;
+        // Same deployment: this process is the consumer, so its own constant
+        // is authoritative.
+        targetHookResumeInputVersion = HOOK_RESUME_INPUT_VERSION;
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
         targetSupportsCompression = false;
+        // No probe channel to the target — cannot attest the consumer honors
+        // `hookInput`, so leave the marker off (fail closed to sequential).
+        targetHookResumeInputVersion = undefined;
       } else {
         // Ask for this run's public key while we're here. The probe already
         // blocks `start()` on every cross-deployment call, and the responder
@@ -367,6 +379,10 @@ export async function start<TArgs extends unknown[], TResult>(
         targetSupportsCompression = capabilities.supportedFormats.has(
           SerializationFormat.GZIP
         );
+        // The responder runs inside the target deployment, so its
+        // `hookResumeInputVersion` reflects the consumer. Undefined on an
+        // older target or a probe timeout — leaving the marker off.
+        targetHookResumeInputVersion = probe?.hookResumeInputVersion;
       }
 
       const ops: Promise<void>[] = [];
@@ -507,10 +523,40 @@ export async function start<TArgs extends unknown[], TResult>(
         compression
       );
 
+      // The environment this caller's own `run_created` write is attributed
+      // to. Stamped into the queue message's `runInput` (NOT into
+      // `run_created`, whose tenant the backend already knows) so the
+      // deployment that consumes the message can tell whether the run it is
+      // being asked to resiliently create was created against a different
+      // environment than its own.
+      //
+      // The two writes below go to different places by different routes:
+      // `events.create` is attributed to THIS client's tenant, while the queue
+      // message is pinned to a deploymentId. When those disagree — a
+      // production-credentialed client pinning a preview deployment — the
+      // preview consumer can't find the run in its own tenant, falls back to
+      // resilient start, and re-creates it: one client-minted run id, two
+      // environments, the production copy pending forever and the preview copy
+      // executing. Worlds with a single tenant return undefined and the field
+      // is simply absent.
+      const creatorEnvironment = world.getEnvironment?.();
+
       const executionContext = {
         traceCarrier,
         workflowCoreVersion,
         features: { encryption: !!encryptionKey },
+        // Attest that the *consumer* deployment's runtime re-ensures a
+        // `hook_received` event from a queue message's `hookInput` on replay.
+        // A resume of this run reads the marker (mirrored onto the hook's
+        // resumeContext by the server) to decide whether the parallel fast
+        // path is safe. For a cross-deployment start the consumer is the
+        // target deployment, so we stamp the *target's* value carried back on
+        // the health-check probe — never the caller's. Omitted when we could
+        // not attest the target (older target, timeout, or no probe channel),
+        // which fails the resume gate closed to the sequential path.
+        ...(targetHookResumeInputVersion !== undefined
+          ? { hookResumeInputVersion: targetHookResumeInputVersion }
+          : {}),
         ...(opts.replayedFromRunId
           ? { replayedFromRunId: opts.replayedFromRunId }
           : {}),
@@ -550,6 +596,9 @@ export async function start<TArgs extends unknown[], TResult>(
                     specVersion,
                     executionContext,
                     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+                    ...(creatorEnvironment !== undefined
+                      ? { environment: creatorEnvironment }
+                      : {}),
                     ...attributeSeed,
                   },
                 }

@@ -152,6 +152,33 @@ describe('ReplayPayloadCache', () => {
     expect(second.count).toBe(0);
   });
 
+  it('rescans a log whose missing events were filled in below the scanned prefix', async () => {
+    // A stale-snapshot (412) restart replaces the log with a corrected one, so
+    // the events it was missing appear BELOW the length already scanned and
+    // shift every later position. Resuming from that length skips exactly the
+    // events the reload was for, which is what `resetScan` exists to prevent.
+    const payloads = [0, 1, 2].map((value) => new Uint8Array([value]));
+    const preparer = vi.fn<ReplayPayloadPreparer>((value) => ({ data: value }));
+    const cache = new ReplayPayloadCache(undefined, preparer);
+    const run = makeRun(undefined);
+    const [first, missing, second] = makeEvents(payloads);
+
+    await cache.prewarm(run, [first, second]);
+    expect(preparer).toHaveBeenCalledTimes(2);
+
+    // Positional resume: `missing` sits inside the scanned prefix, so it is
+    // skipped and its payload is only prepared on demand.
+    await cache.prewarm(run, [first, missing, second]);
+    expect(preparer).toHaveBeenCalledTimes(2);
+
+    cache.resetScan();
+    await cache.prewarm(run, [first, missing, second]);
+    // Only the inserted event is new: the other two are keyed by event id and
+    // stay prepared across the rescan.
+    expect(preparer).toHaveBeenCalledTimes(3);
+    expect(preparer).toHaveBeenLastCalledWith(payloads[1], undefined);
+  });
+
   it('bypasses legacy values and ignores missing event data during prewarm', async () => {
     const legacy = [0, { value: 1 }];
     const preparer = vi.fn<ReplayPayloadPreparer>((value) => ({ data: value }));

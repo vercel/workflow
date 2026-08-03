@@ -4,7 +4,10 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  CreateEventParams,
+  CreateEventRequest,
   Event,
+  EventResult,
   HealthCheckPayload,
   ValidQueueName,
   WorkflowRun,
@@ -13,6 +16,7 @@ import type {
 import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
+  HOOK_RESUME_INPUT_VERSION,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
@@ -98,6 +102,18 @@ export interface HealthCheckResult {
    * key-lookup request.
    */
   encryptionPublicKey?: string;
+  /**
+   * The responding deployment's `HOOK_RESUME_INPUT_VERSION` — the protocol
+   * version at which the *consumer* (queue-message target) re-ensures the
+   * `hook_received` event from `hookInput` on replay. A cross-deployment
+   * `start()` stamps the *target's* value (not the caller's) into the new
+   * run's `executionContext.hookResumeInputVersion` so that `resumeHook()`
+   * only takes the parallel path when the deployment that will actually
+   * consume the queue message is known to honor `hookInput`. Omitted when the
+   * responding deployment predates this field (an older consumer that ignores
+   * `hookInput`), which fails the gate closed.
+   */
+  hookResumeInputVersion?: number;
 }
 
 /**
@@ -172,6 +188,10 @@ export async function handleHealthCheckMessage(
     correlationId: healthCheck.correlationId,
     specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
     workflowCoreVersion,
+    // We are executing inside the target deployment, so this constant reflects
+    // the *consumer's* hook-resume protocol version — exactly what a
+    // cross-deployment caller needs to gate its parallel resume path on.
+    hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION,
     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
     timestamp: Date.now(),
   });
@@ -324,6 +344,7 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
     specVersion?: number;
     workflowCoreVersion?: string;
     encryptionPublicKey?: string;
+    hookResumeInputVersion?: number;
   } = {
     healthy: r.healthy as boolean,
   };
@@ -335,6 +356,9 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
   }
   if (typeof r.encryptionPublicKey === 'string') {
     parsed.encryptionPublicKey = r.encryptionPublicKey;
+  }
+  if (typeof r.hookResumeInputVersion === 'number') {
+    parsed.hookResumeInputVersion = r.hookResumeInputVersion;
   }
   return parsed;
 }
@@ -458,24 +482,19 @@ function recordRequestedEventCursor(
 }
 
 /**
- * Appends events whose IDs are not already present in `target`, keeping
- * `target` sorted by event id.
+ * Appends events whose IDs are not already present in `target`.
  *
  * Pass the IDs currently present in `target` when appending repeatedly to the
  * same array. The set is updated alongside `target`.
  *
- * Sort order matters beyond tidiness: the runtime treats the last element as
- * the newest event (it is the precondition snapshot's watermark, see
- * {@link latestEventStateUpdatedAt}) and the replay consumes the log as an
- * ordered sequence. Event ids are unprefixed 26-character ULIDs, so
- * lexicographic id order *is* canonical backend order, including within a
- * single millisecond — re-sorting reproduces exactly the order a fresh ordered
- * load would return.
- *
- * Every append source should already be strictly above the tail (a
- * cursor-delimited page, or a write-response delta). The re-sort is therefore
- * defence in depth, and the warning is the point: it turns "this can't happen"
- * into a signal. Cost in the normal case is one string comparison per event.
+ * Events are appended in the order the World returned them, and are not
+ * re-sorted: a World's canonical order is its own, and the runtime cannot
+ * reproduce it from event ids alone. `world-vercel` orders by event id, while
+ * `world-local` orders by `(createdAt, eventId)` and deliberately re-mints keys
+ * so that the two diverge. Every append source is already in canonical order
+ * relative to the tail (a cursor-delimited page, or a write-response delta), so
+ * receipt order is the order to keep. Nothing downstream may assume the tail is
+ * the newest event — see {@link latestEventStateUpdatedAt}.
  */
 export function appendUniqueEvents(
   target: Event[],
@@ -487,24 +506,43 @@ export function appendUniqueEvents(
   }
 
   const ids = targetIds ?? new Set(target.map((event) => event.eventId));
-  let outOfOrder = false;
   for (const event of events) {
     if (ids.has(event.eventId)) {
       continue;
     }
     ids.add(event.eventId);
-    const tail = target[target.length - 1];
-    if (tail && event.eventId < tail.eventId) {
-      outOfOrder = true;
-    }
     target.push(event);
   }
-  if (outOfOrder) {
-    target.sort((a, b) => (a.eventId < b.eventId ? -1 : 1));
-    runtimeLogger.warn('Event log merged out of order; re-sorted by eventId', {
-      eventCount: target.length,
-    });
+}
+
+/**
+ * Inserts `event` into `target` at the position that keeps `target` ordered by
+ * ascending `eventId`, or no-ops if an event with the same `eventId` is already
+ * present (idempotent).
+ *
+ * `preloadedEvents` is loaded `sortOrder: 'asc'` and is never re-sorted
+ * client-side, so a `hook_received` spliced in by the lazy-resume consumer must
+ * land in `eventId` order — a plain `push` would place a late-committing
+ * earlier event after events that sort before it, corrupting replay. Event IDs
+ * are ULIDs, so lexicographic string order matches commit order.
+ */
+export function insertEventByEventId(target: Event[], event: Event): void {
+  // Linear scan from the end: the spliced event is almost always the newest
+  // (it sorts at or near the tail), so this finds the slot in O(1)–O(k) for the
+  // common case while still handling an out-of-order late arrival correctly.
+  let i = target.length;
+  while (i > 0) {
+    const existing = target[i - 1];
+    if (existing.eventId === event.eventId) {
+      // Already present — keep the splice idempotent.
+      return;
+    }
+    if (existing.eventId < event.eventId) {
+      break;
+    }
+    i--;
   }
+  target.splice(i, 0, event);
 }
 
 function assertEventPaginationProgress(
@@ -684,11 +722,20 @@ export function isPreconditionGuardEnabled(): boolean {
 
 /**
  * The `stateUpdatedAt` value to send with a replay-context event creation: the
- * ULID time (epoch ms) of the latest event the runtime has loaded. The log is
- * kept sorted by event id (see {@link appendUniqueEvents}), so its tail *is*
- * its maximum ULID time — which is what lets the count sent alongside it be
- * read as "events at or below this watermark". Returns `undefined` when there
- * are no events or the latest id is not a decodable ULID.
+ * *maximum* ULID time (epoch ms) over the events the runtime has loaded. Returns
+ * `undefined` when there are no events or that id is not a decodable ULID.
+ *
+ * It is the maximum rather than the tail's because the loaded log is in the
+ * World's canonical order, which is not necessarily event-id order (see
+ * {@link appendUniqueEvents}). The maximum is what lets the count sent alongside
+ * it be read as "events at or below this watermark": every loaded event is at or
+ * below it, so the count is exactly `events.length`. Reading the tail instead
+ * would understate the watermark on a World whose order is not id-ordered, which
+ * is safe (it can only weaken detection) but needlessly imprecise.
+ *
+ * The maximum is found by lexicographic id comparison, decoding only once: the
+ * 26-character Crockford ULID encodes its timestamp in the leading 10
+ * characters, so the greatest id also carries the greatest time.
  *
  * Granularity: snapshots are epoch-milliseconds, and the backend allows an
  * equal-timestamp snapshot (an up-to-date client must not be rejected). Two
@@ -698,13 +745,18 @@ export function isPreconditionGuardEnabled(): boolean {
  * watermark differs even when the watermarks are equal.
  */
 export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
-  const last = events[events.length - 1];
-  if (!last) {
+  let latest: string | undefined;
+  for (const event of events) {
+    if (latest === undefined || event.eventId > latest) {
+      latest = event.eventId;
+    }
+  }
+  if (latest === undefined) {
     return undefined;
   }
   // Event IDs are prefixed ULIDs (e.g. `evnt_01ARYZ...`); ulidToDate only
   // decodes the bare 26-char ULID, so strip the prefix first.
-  const eventId = last.eventId;
+  const eventId = latest;
   const underscore = eventId.lastIndexOf('_');
   const rawUlid = underscore === -1 ? eventId : eventId.slice(underscore + 1);
   const time = ulidToDate(rawUlid)?.getTime();
@@ -744,7 +796,14 @@ export interface PreconditionSnapshotParams {
  * a cursor without either would invite a delta nobody asked for.
  *
  * `stateEventCount` is `events.length` because the watermark is the log's
- * *maximum* ULID time, so every loaded event is at or below it.
+ * *maximum* ULID time, so every loaded event is at or below it regardless of the
+ * order the World returned them in.
+ *
+ * Both fields are therefore invariant under permutation of the log: a maximum is
+ * order-independent, and the length is set cardinality once `appendUniqueEvents`
+ * has deduped by event id. Two replays that consume the same events in different
+ * orders send an identical snapshot, so this guard detects that a log is missing
+ * an event and can never detect that a replay consumed one in a different order.
  */
 export function preconditionSnapshotParams(
   events: Event[],
@@ -772,9 +831,15 @@ export function preconditionSnapshotParams(
  * this, or a payload that does not narrow cleanly. Callers fall back to
  * reloading the event log, which is always correct; this is untrusted-shaped
  * data on a failure path, so nothing here is repaired.
+ *
+ * `runId` is the caller's run. Every event must belong to it: the delta is
+ * merged straight into the replay's log, and one foreign event there is a
+ * corrupt log rather than a corrected one — the replay would consume a
+ * correlation id for an event that does not exist on this run.
  */
 export function preconditionEventDelta(
-  error: unknown
+  error: unknown,
+  runId: string
 ): { events: Event[]; cursor: string | null } | null {
   if (!PreconditionFailedError.is(error)) {
     return null;
@@ -791,7 +856,8 @@ export function preconditionEventDelta(
     if (
       typeof event !== 'object' ||
       event === null ||
-      typeof (event as { eventId?: unknown }).eventId !== 'string'
+      typeof (event as { eventId?: unknown }).eventId !== 'string' ||
+      (event as { runId?: unknown }).runId !== runId
     ) {
       return null;
     }
@@ -801,6 +867,12 @@ export function preconditionEventDelta(
     cursor: typeof cursor === 'string' ? cursor : null,
   };
 }
+
+/** Creates one event on a bound run, carrying replay-recovery telemetry. */
+export type EventCreator = (
+  data: CreateEventRequest,
+  params?: CreateEventParams
+) => Promise<EventResult>;
 
 /**
  * CORS headers for health check responses.

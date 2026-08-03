@@ -37,6 +37,11 @@
  *   which a run only carries if the deployment that created it could also
  *   open `encp`. The entry exists so the capability set stays a complete,
  *   auditable description of a run's decoding ability.
+ * - Lazy hook resume ("consumer re-ensures `hook_received` from `hookInput`"):
+ *   deliberately NOT tracked here. Rather than predict a release cutoff, the
+ *   run's creating deployment stamps an explicit `hookResumeInputVersion`
+ *   execution-context marker; `resumeHook()` gates the parallel fast path on
+ *   that marker (mirrored onto the hook's resumeContext by the server).
  */
 
 import semver from 'semver';
@@ -103,12 +108,20 @@ const FORMAT_VERSION_TABLE: ReadonlyArray<{
 const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
   capability: keyof Omit<RunCapabilities, 'supportedFormats'>;
   minVersion: string;
+}> = [
   // TODO(release): verify this matches the actual version that ships byte-stream
   // framing. If a "Version Packages (beta)" PR merges before this change, bump
   // to the next beta. A too-low cutoff makes new producers write framed bytes to
   // consumers that cannot unframe them (silent corruption); too-high merely
   // delays the optimization (safe).
-}> = [{ capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' }];
+  { capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' },
+  // NOTE: lazy hook resume ("does the consumer re-ensure `hook_received` from
+  // the queue message's `hookInput`?") is intentionally NOT gated here. A
+  // version-compare against a predicted release cutoff is a guess; instead the
+  // run's creating deployment stamps an explicit `hookResumeInputVersion`
+  // marker into its execution context, which the server mirrors onto the hook's
+  // resumeContext. `resumeHook()` gates the parallel fast path on that marker.
+];
 
 /**
  * The set of formats supported by all specVersion 2 runs, regardless of

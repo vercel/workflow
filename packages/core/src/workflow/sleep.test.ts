@@ -221,7 +221,7 @@ describe('createSleep', () => {
     const sleep = createSleep(ctx);
 
     // Start the sleep - it will process events asynchronously
-    const sleepPromise = sleep('1s');
+    const _sleepPromise = sleep('1s');
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
@@ -250,7 +250,7 @@ describe('createSleep', () => {
     const sleep = createSleep(ctx);
 
     // Start the sleep - it will process events asynchronously
-    const sleepPromise = sleep('5s');
+    const _sleepPromise = sleep('5s');
 
     const workflowError = await errorReceived.promise;
 
@@ -288,7 +288,7 @@ describe('createSleep', () => {
     ctx.onWorkflowError = errorReceived.resolve;
 
     const sleep = createSleep(ctx);
-    const sleepPromise = sleep('1s');
+    const _sleepPromise = sleep('1s');
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
@@ -314,7 +314,7 @@ describe('createSleep', () => {
     ctx.onWorkflowError = errorReceived.resolve;
 
     const sleep = createSleep(ctx);
-    const sleepPromise = sleep('5s');
+    const _sleepPromise = sleep('5s');
 
     const workflowError = await errorReceived.promise;
 
