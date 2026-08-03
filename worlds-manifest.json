@@ -130,6 +130,48 @@
       ]
     },
     {
+      "id": "surrealdb",
+      "type": "community",
+      "package": "workflow-world-surrealdb",
+      "name": "SurrealDB",
+      "description": "SurrealDB world using LIVE SELECT for queueing and real-time streaming",
+      "repository": "https://github.com/sepcnt/workflow-world-surrealdb",
+      "docs": "/worlds/surrealdb",
+      "features": [],
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "workflow-world-surrealdb",
+        "WORKFLOW_SURREAL_URL": "ws://127.0.0.1:8000/rpc",
+        "WORKFLOW_SURREAL_NAMESPACE": "workflow",
+        "WORKFLOW_SURREAL_DATABASE": "workflow",
+        "WORKFLOW_SURREAL_USERNAME": "root",
+        "WORKFLOW_SURREAL_PASSWORD": "root"
+      },
+      "services": [
+        {
+          "name": "surrealdb",
+          "image": "surrealdb/surrealdb:v3",
+          "ports": ["8000:8000"],
+          "command": [
+            "start",
+            "--user",
+            "root",
+            "--pass",
+            "root",
+            "--bind",
+            "0.0.0.0:8000",
+            "memory"
+          ],
+          "healthCheck": {
+            "cmd": "curl -sf http://localhost:8000/health || exit 1",
+            "interval": "5s",
+            "timeout": "3s",
+            "retries": 10
+          }
+        }
+      ],
+      "setup": "pnpm exec workflow-surreal-setup"
+    },
+    {
       "id": "jazz",
       "type": "community",
       "package": "workflow-world-jazz",

@@ -125,6 +125,16 @@ jobs:
             fi
             args+=("$image")
 
+            # Optional container command. Images whose entrypoint needs a
+            # subcommand (e.g. `surreal start ...`) declare it as a JSON array
+            # of already-split words, so no shell word-splitting is involved.
+            cmd_words=$(echo "$svc" | jq -r '.command // [] | .[]')
+            if [ -n "$cmd_words" ]; then
+              while IFS= read -r word; do
+                args+=("$word")
+              done <<< "$cmd_words"
+            fi
+
             echo "Starting $name ($image)..."
             "${args[@]}"
 
@@ -188,6 +198,7 @@ jobs:
           cd "workbench/$APP_NAME"
           case "$WORLD_ID" in
             turso) pnpm exec workflow-turso-setup ;;
+            surrealdb) pnpm exec workflow-surreal-setup ;;
             *) echo "No setup required for $WORLD_ID" ;;
           esac
 
