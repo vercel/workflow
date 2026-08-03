@@ -1,0 +1,854 @@
+[
+  {
+    "testName": "addTenWorkflow",
+    "runId": "wrun_01KZ4KTGWFBTC9P5GAVV9PNCJ0",
+    "timestamp": "2026-08-03T20:07:43.256Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "addTenWorkflow",
+    "runId": "wrun_01KZ4KTK0YGTYMFG8TC905T4PF",
+    "timestamp": "2026-08-03T20:07:45.441Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "deploymentId: 'latest' is a no-op in non-Vercel worlds",
+    "runId": "wrun_01KZ4KTN01FB6DYA8TYJEQK7AN",
+    "timestamp": "2026-08-03T20:07:47.460Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "wellKnownAgentWorkflow (.well-known/agent)",
+    "runId": "wrun_01KZ4KTPZ64H5ZJPQH9ZSWEC8M",
+    "timestamp": "2026-08-03T20:07:49.482Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "should work with react rendering in step",
+    "runId": "wrun_01KZ4KTQYP925MN6V2C54G11XZ",
+    "timestamp": "2026-08-03T20:07:50.491Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "promiseAllWorkflow",
+    "runId": "wrun_01KZ4KTRY5FM7Y1WG9JTHNX3EE",
+    "timestamp": "2026-08-03T20:07:51.495Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "promiseRaceWorkflow",
+    "runId": "wrun_01KZ4KTWVP5Y81E34MRZ0F9BP0",
+    "timestamp": "2026-08-03T20:07:55.524Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "promiseAnyWorkflow",
+    "runId": "wrun_01KZ4KVHDTE0D74CHJKB3YZW5R",
+    "timestamp": "2026-08-03T20:08:16.572Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "importedStepOnlyWorkflow",
+    "runId": "wrun_01KZ4KVR8YZ13803HWS5H8WXGW",
+    "timestamp": "2026-08-03T20:08:23.587Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "readableStreamWorkflow",
+    "runId": "wrun_01KZ4KVS8DTFE9BRXEGBCTZVNK",
+    "timestamp": "2026-08-03T20:08:24.591Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookWorkflow",
+    "runId": "wrun_01KZ4KW26KJWHPX8ACNYM6TGB0",
+    "timestamp": "2026-08-03T20:08:33.752Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookWorkflow is not resumable via public webhook endpoint",
+    "runId": "wrun_01KZ4KW3EJV9EPSXAF1BEBXX7P",
+    "timestamp": "2026-08-03T20:08:35.028Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "webhookWorkflow",
+    "runId": "wrun_01KZ4KW6MV0GE16RJCMS5MED3A",
+    "timestamp": "2026-08-03T20:08:38.311Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "parallelStepsThenWebhookWorkflow - no hook_conflict from same-tick replay race",
+    "runId": "wrun_01KZ4KW93ZP0Y9WDQVA3EZ37QG",
+    "timestamp": "2026-08-03T20:08:40.838Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "sleepingWorkflow",
+    "runId": "wrun_01KZ4KWEBYSFW3YRSA7Y2KR18S",
+    "timestamp": "2026-08-03T20:08:46.208Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "parallelSleepWorkflow",
+    "runId": "wrun_01KZ4KWS4ET994WQ9TGF1TV84Q",
+    "timestamp": "2026-08-03T20:08:57.237Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "sleepWinsRaceWorkflow",
+    "runId": "wrun_01KZ4KWV3BQV175DACQWX1DSRK",
+    "timestamp": "2026-08-03T20:08:59.245Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "stepWinsRaceWorkflow",
+    "runId": "wrun_01KZ4KWX21KZRZ0B5VV47GAJRK",
+    "timestamp": "2026-08-03T20:09:01.254Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "nullByteWorkflow",
+    "runId": "wrun_01KZ4KWZ0S2G75Q91VYEGBGQAT",
+    "timestamp": "2026-08-03T20:09:03.258Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "workflowAndStepMetadataWorkflow",
+    "runId": "wrun_01KZ4KX005AMVYJZ4GCVDAF3P7",
+    "timestamp": "2026-08-03T20:09:04.263Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "no startIndex (reads all chunks)",
+    "runId": "wrun_01KZ4KX0ZJ0JJJT26EM7DCR8QV",
+    "timestamp": "2026-08-03T20:09:05.270Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "positive startIndex (skips first chunk)",
+    "runId": "wrun_01KZ4KX6WDC0ZN8R3BGE39AC0D",
+    "timestamp": "2026-08-03T20:09:11.310Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "negative startIndex (reads from end)",
+    "runId": "wrun_01KZ4KXDQR115T7GG7GJY9ZJRW",
+    "timestamp": "2026-08-03T20:09:18.334Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "getTailIndex returns correct index after stream completes",
+    "runId": "wrun_01KZ4KXKKTKN2KA2WWJ563DR7P",
+    "timestamp": "2026-08-03T20:09:24.348Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "getTailIndex returns -1 before any chunks are written",
+    "runId": "wrun_01KZ4KXSFQT134ZXEFRX0AB7KG",
+    "timestamp": "2026-08-03T20:09:30.361Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "getChunks returns same content as reading the stream",
+    "runId": "wrun_01KZ4KXSFT0408J8JWH1Z0NP95",
+    "timestamp": "2026-08-03T20:09:30.363Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "outputStreamInsideStepWorkflow - getWritable() called inside step functions",
+    "runId": "wrun_01KZ4KY0B7DBNZ46N8RT3191C0",
+    "timestamp": "2026-08-03T20:09:37.385Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "utf8StreamWorkflow",
+    "runId": "wrun_01KZ4KY6AR2TPP52ENPKKB9PXS",
+    "timestamp": "2026-08-03T20:09:43.514Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "writableForwardedFromWorkflowWorkflow",
+    "runId": "wrun_01KZ4KY7PYAKQQT5BVBTR2RYAF",
+    "timestamp": "2026-08-03T20:09:44.928Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "writableForwardedFromStepWorkflow",
+    "runId": "wrun_01KZ4KY8WNFRVN3DD1GSJSW0WD",
+    "timestamp": "2026-08-03T20:09:46.135Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "fetchWorkflow",
+    "runId": "wrun_01KZ4KYA2ETSXF8NB7R7CEHX64",
+    "timestamp": "2026-08-03T20:09:47.345Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "promiseRaceStressTestWorkflow",
+    "runId": "wrun_01KZ4KYB1VJBCM9AHQVDXMHHFA",
+    "timestamp": "2026-08-03T20:09:48.349Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "nested function calls preserve message and stack trace",
+    "runId": "wrun_01KZ4KYZK43X30TDJ8Y91WN0NR",
+    "timestamp": "2026-08-03T20:10:09.382Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "cross-file imports preserve message and stack trace",
+    "runId": "wrun_01KZ4KZ2AEJKR86WQ2RDEH5HK5",
+    "timestamp": "2026-08-03T20:10:12.176Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "basic step error preserves message and stack trace",
+    "runId": "wrun_01KZ4KZ4G9YVJ370S73M4QHPQ0",
+    "timestamp": "2026-08-03T20:10:14.411Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "cross-file step error preserves message and function names in stack",
+    "runId": "wrun_01KZ4KZ7RZEJY5RKBPJVJEH9YJ",
+    "timestamp": "2026-08-03T20:10:17.762Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "regular Error retries until success",
+    "runId": "wrun_01KZ4KZB9RCRF1K51CYMFV5VYG",
+    "timestamp": "2026-08-03T20:10:21.371Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "FatalError fails immediately without retries",
+    "runId": "wrun_01KZ4KZFHSJ5BBJEFPS8VXTQ8E",
+    "timestamp": "2026-08-03T20:10:25.725Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "RetryableError respects custom retryAfter delay",
+    "runId": "wrun_01KZ4KZHTAP1GK54QQJEVBXYS1",
+    "timestamp": "2026-08-03T20:10:28.044Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "maxRetries=0 disables retries",
+    "runId": "wrun_01KZ4KZWJMPJ4V164GXS5WDKDW",
+    "timestamp": "2026-08-03T20:10:39.071Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "FatalError can be caught and detected with FatalError.is()",
+    "runId": "wrun_01KZ4KZXJA30SZBW34V9TZQZ3A",
+    "timestamp": "2026-08-03T20:10:40.084Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "step throw round-trips FatalError with cause chain to workflow catch",
+    "runId": "wrun_01KZ4KZZPQGYMTVVQEMNE8PN8J",
+    "timestamp": "2026-08-03T20:10:42.265Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "workflow throw round-trips FatalError + cause through run_failed event",
+    "runId": "wrun_01KZ4M01PV1FDQT98D47PFJ0Q4",
+    "timestamp": "2026-08-03T20:10:44.317Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "workflow throw of a non-Error value round-trips verbatim as cause",
+    "runId": "wrun_01KZ4M03QX58P4B8AMXNRAD3MK",
+    "timestamp": "2026-08-03T20:10:46.399Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "step throw of a non-Error value preserves it as cause on the wrapping FatalError",
+    "runId": "wrun_01KZ4M05RVVV57QAQB9G4QGB0P",
+    "timestamp": "2026-08-03T20:10:48.477Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "WorkflowNotRegisteredError fails the run when workflow does not exist",
+    "runId": "wrun_01KZ4M07T9A7HDXG5HW27NYCKX",
+    "timestamp": "2026-08-03T20:10:50.570Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "StepNotRegisteredError fails the step but workflow can catch it",
+    "runId": "wrun_01KZ4M09YHPGS6KP35TPJJ7FPR",
+    "timestamp": "2026-08-03T20:10:52.755Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "StepNotRegisteredError fails the run when not caught in workflow",
+    "runId": "wrun_01KZ4M0CZ8VHMM4F25HA29MDW3",
+    "timestamp": "2026-08-03T20:10:55.850Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookCleanupTestWorkflow - hook token reuse after workflow completion",
+    "runId": "wrun_01KZ4M0E76J37DS4YCTG08KRQ0",
+    "timestamp": "2026-08-03T20:10:57.128Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookCleanupTestWorkflow - hook token reuse after workflow completion",
+    "runId": "wrun_01KZ4M0FEHEGZ5X4ZM3SBC6RZK",
+    "timestamp": "2026-08-03T20:10:58.391Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "concurrent hook token conflict - two workflows cannot use the same hook token simultaneously",
+    "runId": "wrun_01KZ4M0JQN6XDPCCQ6VXCPC664",
+    "timestamp": "2026-08-03T20:11:01.751Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "concurrent hook token conflict - two workflows cannot use the same hook token simultaneously",
+    "runId": "wrun_01KZ4M0JZKPX7K2VEE8T8CS7CY",
+    "timestamp": "2026-08-03T20:11:02.005Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookGetConflictWorkflow - awaiting hook.getConflict() registers hook without payload",
+    "runId": "wrun_01KZ4M0PZ05VMMXB0H37DN1JBM",
+    "timestamp": "2026-08-03T20:11:06.081Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "'hookGetConflictWithPriorStepWorkflow' - hook.getConflict() does not block step execution",
+    "runId": "wrun_01KZ4M0QYFHZS24V7790FNBSV6",
+    "timestamp": "2026-08-03T20:11:07.098Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "'hookGetConflictWithParallelStepWorkfl…' - hook.getConflict() does not block step execution",
+    "runId": "wrun_01KZ4M0RYBZVX9VMVWX3JQHV01",
+    "timestamp": "2026-08-03T20:11:08.111Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookGetConflictThenStepParallelWorkflow - hook.getConflict() continuation step runs alongside other steps",
+    "runId": "wrun_01KZ4M0SXZ7AVJD7ZJH2XRB8EM",
+    "timestamp": "2026-08-03T20:11:09.123Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookGetConflictWorkflow - hook.getConflict() resolves with the conflicting run when token is already registered",
+    "runId": "wrun_01KZ4M14PCFPKX0BW2Z08CHKBQ",
+    "timestamp": "2026-08-03T20:11:20.149Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookGetConflictWorkflow - hook.getConflict() resolves with the conflicting run when token is already registered",
+    "runId": "wrun_01KZ4M14YG9H0WQFAGC90XJSQX",
+    "timestamp": "2026-08-03T20:11:20.402Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookClaimOnlyMutexWorkflow - hook works as a pure run mutex without payload data",
+    "runId": "wrun_01KZ4M17WGJDGS3H8RZNJ8QN1Y",
+    "timestamp": "2026-08-03T20:11:23.410Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookClaimOnlyMutexWorkflow - hook works as a pure run mutex without payload data",
+    "runId": "wrun_01KZ4M184DPP48JCBBQB9PX2JF",
+    "timestamp": "2026-08-03T20:11:23.663Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookClaimOnlyMutexWorkflow - hook works as a pure run mutex without payload data",
+    "runId": "wrun_01KZ4M1PT9KDJY8M7M7P5X08GF",
+    "timestamp": "2026-08-03T20:11:38.700Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookAdoptOwnerResultWorkflow - duplicate adopts the owner result via conflict.returnValue",
+    "runId": "wrun_01KZ4M1QSQNH7BQSBYC1MFGK2Z",
+    "timestamp": "2026-08-03T20:11:39.707Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookAdoptOwnerResultWorkflow - duplicate adopts the owner result via conflict.returnValue",
+    "runId": "wrun_01KZ4M1R1QHN37H91X6GM8KVSY",
+    "timestamp": "2026-08-03T20:11:39.967Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookSignalOwnerWorkflow - duplicate forwards its payload to the owner via resumeHook",
+    "runId": "wrun_01KZ4M1SH4SR99D94CX3BGXXNT",
+    "timestamp": "2026-08-03T20:11:41.478Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookSignalOwnerWorkflow - duplicate forwards its payload to the owner via resumeHook",
+    "runId": "wrun_01KZ4M1SS23B7WXX7ZT85C3HR8",
+    "timestamp": "2026-08-03T20:11:41.732Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookSupersedeOwnerWorkflow - duplicate cancels the owner and claims the released token",
+    "runId": "wrun_01KZ4M1TRFMRQR6DCGE6E6KVWB",
+    "timestamp": "2026-08-03T20:11:42.736Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookSupersedeOwnerWorkflow - duplicate cancels the owner and claims the released token",
+    "runId": "wrun_01KZ4M1V0B6VRMRH87PP9ZQBJ9",
+    "timestamp": "2026-08-03T20:11:42.989Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "resume-or-start route pattern - resumeHook retried after start() reaches the new run",
+    "runId": "wrun_01KZ4M1X7M58949CBJ5E7VFK6B",
+    "timestamp": "2026-08-03T20:11:45.270Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookDisposeTestWorkflow - hook token reuse after explicit disposal while workflow still running",
+    "runId": "wrun_01KZ4M1YEZG4M1FFGEF8RTA7SA",
+    "timestamp": "2026-08-03T20:11:46.533Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookDisposeTestWorkflow - hook token reuse after explicit disposal while workflow still running",
+    "runId": "wrun_01KZ4M1ZPJEP1Y1R8DD2QMT5GT",
+    "timestamp": "2026-08-03T20:11:47.802Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookTokenReuseLoopWorkflow - same run recreates a hook with the same token after dispose()",
+    "runId": "wrun_01KZ4M27RZDJCG5RYETMGV94K4",
+    "timestamp": "2026-08-03T20:11:56.065Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "stepFunctionPassingWorkflow - step function references can be passed as arguments (without closure vars)",
+    "runId": "wrun_01KZ4M2AF7BWWH7X4R1J82603Q",
+    "timestamp": "2026-08-03T20:11:58.826Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "stepFunctionWithClosureWorkflow - step function with closure variables passed as argument",
+    "runId": "wrun_01KZ4M2DE0SGNTV1J1GTGCW05C",
+    "timestamp": "2026-08-03T20:12:01.858Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "closureVariableWorkflow - nested step functions with closure variables",
+    "runId": "wrun_01KZ4M2FD80ZWMTVFMFGET2E5G",
+    "timestamp": "2026-08-03T20:12:03.882Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "spawnWorkflowFromStepWorkflow - spawning a child workflow using start() inside a step",
+    "runId": "wrun_01KZ4M2GCMXM98M5W3AK7HQ1BE",
+    "timestamp": "2026-08-03T20:12:04.885Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "runClassSerializationWorkflow - Run instances serialize across workflow/step boundaries",
+    "runId": "wrun_01KZ4M2MCHMGSGTXV0HT82P71F",
+    "timestamp": "2026-08-03T20:12:08.979Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "startFromWorkflow - calling start() directly inside a workflow function with hook communication",
+    "runId": "wrun_01KZ4M2QAG0SFWDYP6JXVQ65N2",
+    "timestamp": "2026-08-03T20:12:11.986Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "startFromWorkflow - calling start() directly inside a workflow function with hook communication",
+    "runId": "wrun_01KZ4M2QAG0SFWDYP6JXVQ65N2",
+    "timestamp": "2026-08-03T20:12:11.986Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "startFromWorkflow - calling start() directly inside a workflow function with hook communication",
+    "runId": "wrun_01KZ4M2QEGQQM3EE40Z2JXRDS4",
+    "timestamp": "2026-08-03T20:12:12.988Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "fibonacciWorkflow - recursive workflow composition via start()",
+    "runId": "wrun_01KZ4M2R9YC2H95SF3V228DAYM",
+    "timestamp": "2026-08-03T20:12:12.997Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "fibonacciWorkflow - recursive workflow composition via start()",
+    "runId": "wrun_01KZ4M2R9YC2H95SF3V228DAYM",
+    "timestamp": "2026-08-03T20:12:12.997Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "pathsAliasWorkflow - TypeScript path aliases resolve correctly",
+    "runId": "wrun_01KZ4M2YEP14H0R06QMSHFCJK9",
+    "timestamp": "2026-08-03T20:12:19.288Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "Calculator.calculate - static workflow method using static step methods from another class",
+    "runId": "wrun_01KZ4M30E39NQD8RA36YC7SGH9",
+    "timestamp": "2026-08-03T20:12:21.318Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "AllInOneService.processNumber - static workflow method using sibling static step methods",
+    "runId": "wrun_01KZ4M32E01K3HJSQ67RM97FZE",
+    "timestamp": "2026-08-03T20:12:23.362Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "ChainableService.processWithThis - static step methods using `this` to reference the class",
+    "runId": "wrun_01KZ4M34D3A00E3QQFJWADAD9P",
+    "timestamp": "2026-08-03T20:12:25.380Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "thisSerializationWorkflow - step function invoked with .call() and .apply()",
+    "runId": "wrun_01KZ4M36BKVVKD72PM0FM6Z595",
+    "timestamp": "2026-08-03T20:12:27.381Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "customSerializationWorkflow - custom class serialization with WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE",
+    "runId": "wrun_01KZ4M38ASCXJ9XRT3GFN6NN4Z",
+    "timestamp": "2026-08-03T20:12:29.402Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "instanceMethodStepWorkflow - instance methods with \"use step\" directive",
+    "runId": "wrun_01KZ4M3A9EAV8BQW400GVR6F8S",
+    "timestamp": "2026-08-03T20:12:31.408Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "crossContextSerdeWorkflow - classes defined in step code are deserializable in workflow context",
+    "runId": "wrun_01KZ4M3D9BA6KNJBGJ3BA0TB35",
+    "timestamp": "2026-08-03T20:12:34.477Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "errorSubclassRoundTripWorkflow - first-class Error subclasses survive every serialization boundary",
+    "runId": "wrun_01KZ4M3F9Y17HZH0B81H9MHHRB",
+    "timestamp": "2026-08-03T20:12:36.546Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "stepFunctionAsStartArgWorkflow - step function reference passed as start() argument",
+    "runId": "wrun_01KZ4M3G9JCW5Y7BTE6MK0VDWT",
+    "timestamp": "2026-08-03T20:12:37.566Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "cancelRun - cancelling a running workflow",
+    "runId": "wrun_01KZ4M3JD0BDRBXNYNYDXC4Q96",
+    "timestamp": "2026-08-03T20:12:39.713Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "cancelRun via CLI - cancelling a running workflow",
+    "runId": "wrun_01KZ4M3KNA5ADDQ0YMHPMM8QBC",
+    "timestamp": "2026-08-03T20:12:41.004Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "addTenWorkflow via pages router",
+    "runId": "wrun_01KZ4M3PS1SE70VBN7HPY6NRZX",
+    "timestamp": "2026-08-03T20:12:44.205Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "promiseAllWorkflow via pages router",
+    "runId": "wrun_01KZ4M3QRXK0KTVTBNE6RFTWGP",
+    "timestamp": "2026-08-03T20:12:45.221Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "sleepingWorkflow via pages router",
+    "runId": "wrun_01KZ4M3TQB56WFJM9EXWMX0YD8",
+    "timestamp": "2026-08-03T20:12:48.240Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "plainModuleDoneHook resumed via plain API route (o2flow shape)",
+    "runId": "wrun_01KZ4M45FRHC93W06PXTM5VP3Z",
+    "timestamp": "2026-08-03T20:12:59.262Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookWithSleepWorkflow - hook payloads delivered correctly with concurrent sleep",
+    "runId": "wrun_01KZ4M46W9C8EBY3KDCDP79H7Z",
+    "timestamp": "2026-08-03T20:13:00.683Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "hookWithSleepFinalStepWorkflow - step only on final payload",
+    "runId": "wrun_01KZ4M49MKM7DNPD56XVB8NS58",
+    "timestamp": "2026-08-03T20:13:03.509Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "sleepInLoopWorkflow - sleep inside loop with steps actually delays each iteration",
+    "runId": "wrun_01KZ4M4BWD01B0SG7V1A5BKAGE",
+    "timestamp": "2026-08-03T20:13:05.807Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "sleepWithSequentialStepsWorkflow - sequential steps work with concurrent sleep (control)",
+    "runId": "wrun_01KZ4M4JQKW3H0VT9RGTBCMN3V",
+    "timestamp": "2026-08-03T20:13:12.821Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortTimeoutWorkflow: timeout cancels long-running step",
+    "runId": "wrun_01KZ4M4MQ6H41KHTSRA42XWWNB",
+    "timestamp": "2026-08-03T20:13:14.856Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortParallelWorkflow: abort cancels all parallel steps",
+    "runId": "wrun_01KZ4M4RMNQJHXQKX5VF66J0NQ",
+    "timestamp": "2026-08-03T20:13:18.873Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortFromStepWorkflow: step abort cancels an in-flight sibling step",
+    "runId": "wrun_01KZ4M4WJ4PXXTY23WE91X7WRY",
+    "timestamp": "2026-08-03T20:13:22.888Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortAlreadyAbortedWorkflow: pre-aborted signal seen by step",
+    "runId": "wrun_01KZ4M4YGWCD01R5E9VGQAKVVQ",
+    "timestamp": "2026-08-03T20:13:24.896Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortReasonWorkflow: abort reason preserved across boundaries",
+    "runId": "wrun_01KZ4M4ZGBYN99RXXTWYJRDQS5",
+    "timestamp": "2026-08-03T20:13:25.905Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortAfterCompletionWorkflow: abort after step completes is a no-op",
+    "runId": "wrun_01KZ4M52EJ5WZECVXQBBF8H0DR",
+    "timestamp": "2026-08-03T20:13:28.919Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortViaHookWorkflow: external hook triggers abort on in-flight step",
+    "runId": "wrun_01KZ4M53E80DGP08TC0Q84YSC6",
+    "timestamp": "2026-08-03T20:13:29.934Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortExternalSignalWorkflow: signal passed as workflow input",
+    "runId": "wrun_01KZ4M54NPQX63JEZ875FMFWAA",
+    "timestamp": "2026-08-03T20:13:31.200Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortExternalSignalInFlightWorkflow: external abort fires mid-flight, propagates to nested steps",
+    "runId": "wrun_01KZ4M55NDPW7P6P1AG035TWC3",
+    "timestamp": "2026-08-03T20:13:32.210Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortAnyInWorkflowWorkflow: AbortSignal.any composes signals inside the workflow VM",
+    "runId": "wrun_01KZ4M57M6D62V539Q7EGTG9SS",
+    "timestamp": "2026-08-03T20:13:34.217Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortAnyInStepWorkflow: AbortSignal.any inside a step composes deserialized signals",
+    "runId": "wrun_01KZ4M58KM3F85SC3AY82NQT2W",
+    "timestamp": "2026-08-03T20:13:35.226Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortSurvivesReplayWorkflow: controller state consistent across replay",
+    "runId": "wrun_01KZ4M5AJHRZHWXRW0GR39GCRF",
+    "timestamp": "2026-08-03T20:13:37.242Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortThrowIfAbortedWorkflow: throwIfAborted causes FatalError, no retries",
+    "runId": "wrun_01KZ4M5CHGG0VSXG09HM8T350B",
+    "timestamp": "2026-08-03T20:13:39.259Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortReasonTypesWorkflow: various abort reason types propagate correctly",
+    "runId": "wrun_01KZ4M5GF3VXYTDFFKGAPHQBN3",
+    "timestamp": "2026-08-03T20:13:43.275Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortFetchUncaughtWorkflow: uncaught fetch AbortError is FatalError, no retries",
+    "runId": "wrun_01KZ4M5HEQSK6VD3NG3SCJ9CX8",
+    "timestamp": "2026-08-03T20:13:44.284Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortFetchInFlightWorkflow: aborting cancels an in-flight fetch",
+    "runId": "wrun_01KZ4M5JEM00G4BNTXC02DZWSZ",
+    "timestamp": "2026-08-03T20:13:45.308Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortVoidSleepTimeoutWorkflow: documented `void sleep().then(abort)` pattern works",
+    "runId": "wrun_01KZ4M5NCV5VGSMTK9HQM6FT44",
+    "timestamp": "2026-08-03T20:13:48.320Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortDeterministicBranchWorkflow: if-check takes same path on first-run and replay",
+    "runId": "wrun_01KZ4M5RB0M9PYMPPV73MV7YFX",
+    "timestamp": "2026-08-03T20:13:51.336Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortListenerWorkflow: signal.addEventListener fires on the deserialized step signal",
+    "runId": "wrun_01KZ4M5SAS18XKVBAMSE57B5JV",
+    "timestamp": "2026-08-03T20:13:52.351Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortThrowIfAbortedMidFlightWorkflow: throwIfAborted in a polling loop bails when abort fires",
+    "runId": "wrun_01KZ4M5V9NCX2F0W0WDHA0SDQ5",
+    "timestamp": "2026-08-03T20:13:54.362Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortDeterministicBranchFromStepWorkflow: branches stay consistent when abort comes from a step",
+    "runId": "wrun_01KZ4M6252Z2JSPDK3DQCS1K6Q",
+    "timestamp": "2026-08-03T20:14:01.382Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortHookOrderingWorkflow [listener-first-abort-first]: addEventListener → hook.then → abort() → resumeHook",
+    "runId": "wrun_01KZ4M643WN6VEJAKV6QQ24K3K",
+    "timestamp": "2026-08-03T20:14:03.395Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortHookOrderingWorkflow [listener-first-hook-first]: addEventListener → hook.then → resumeHook → abort()",
+    "runId": "wrun_01KZ4M6F4ETKWDMHAQAJM5TMQ3",
+    "timestamp": "2026-08-03T20:14:14.678Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortHookOrderingWorkflow [hook-first-abort-first]: hook.then → addEventListener → abort() → resumeHook",
+    "runId": "wrun_01KZ4M6T4XQM13HPMS2BXVQH9N",
+    "timestamp": "2026-08-03T20:14:25.962Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "abortHookOrderingWorkflow [hook-first-hook-first]: hook.then → addEventListener → resumeHook → abort()",
+    "runId": "wrun_01KZ4M755KDTBAB61DVR47C88F",
+    "timestamp": "2026-08-03T20:14:37.245Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "importMetaUrlWorkflow - import.meta.url is available in step bundles",
+    "runId": "wrun_01KZ4M7G67D636XBWR7MPY6F3R",
+    "timestamp": "2026-08-03T20:14:48.521Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "metadataFromHelperWorkflow - getWorkflowMetadata/getStepMetadata work from module-level helper (#1577)",
+    "runId": "wrun_01KZ4M7H5NXVXC2JEAHQ8NBZW7",
+    "timestamp": "2026-08-03T20:14:49.531Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "resilient start: addTenWorkflow completes when run_created returns 500",
+    "runId": "wrun_01KZ4M7J5QJRZWMHWESWM85NFV",
+    "timestamp": "2026-08-03T20:14:50.552Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "resilient resume: hookWorkflow receives payload when hook_received returns 500",
+    "runId": "wrun_01KZ4M7K53TTENV3K0VN6GHVME",
+    "timestamp": "2026-08-03T20:14:51.560Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "getterStepWorkflow - getter functions with \"use step\" directive",
+    "runId": "wrun_01KZ4M7S13F9JFJFEKJVQECY2D",
+    "timestamp": "2026-08-03T20:14:57.575Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "distributedAbortController - manual abort triggers signal",
+    "runId": "wrun_01KZ4M7V7XGTXND5BHQY6P2X90",
+    "timestamp": "2026-08-03T20:14:59.838Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "distributedAbortController - TTL expiration triggers signal",
+    "runId": "wrun_01KZ4M7VP5V6ZTFP6PPV264YGQ",
+    "timestamp": "2026-08-03T20:15:00.295Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "distributedAbortController - reconnect to existing controller",
+    "runId": "wrun_01KZ4M7YYK9A5VZTJXWQYEED6T",
+    "timestamp": "2026-08-03T20:15:03.636Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "start: initial attributes are seeded on run creation",
+    "runId": "wrun_01KZ4M805YCZ1F9981J27HJSWF",
+    "timestamp": "2026-08-03T20:15:04.896Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "start: reserved-prefix initial attributes are seeded with allowReservedAttributes",
+    "runId": "wrun_01KZ4M815BMKCMGA7CQK0V79GN",
+    "timestamp": "2026-08-03T20:15:05.914Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "setAttributesWorkflow: workflow-body calls append native attr_set events and merge correctly",
+    "runId": "wrun_01KZ4M8256RH5CK11FW1VXZRS3",
+    "timestamp": "2026-08-03T20:15:06.925Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "setAttributesInsideStepWorkflow: step-body calls append attributed native events",
+    "runId": "wrun_01KZ4M8356BPX3B1TW68WT0XDM",
+    "timestamp": "2026-08-03T20:15:07.946Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "fire-and-forget: void setAttributes lands without awaiting",
+    "runId": "wrun_01KZ4M8450PJKCXW8NXT26YRBS",
+    "timestamp": "2026-08-03T20:15:08.964Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "Promise.all of disjoint-key writes: every key lands",
+    "runId": "wrun_01KZ4M863VR81WDH41NGQFKGRH",
+    "timestamp": "2026-08-03T20:15:10.978Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "workflow throws after awaited setAttributes: attribute still persists on the failed run",
+    "runId": "wrun_01KZ4M873GVWH67P8DP96SBKAF",
+    "timestamp": "2026-08-03T20:15:11.989Z",
+    "dashboardUrl": null
+  },
+  {
+    "testName": "validation DX: invalid writes throw catchable FatalErrors naming rule and limit",
+    "runId": "wrun_01KZ4M8832FS78FV98Y7SXX5VF",
+    "timestamp": "2026-08-03T20:15:12.998Z",
+    "dashboardUrl": null
+  }
+]

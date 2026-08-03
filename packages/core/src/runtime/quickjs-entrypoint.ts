@@ -240,6 +240,10 @@ async function dispatchPendingOps(params: {
             getWorkflowQueueName(workflowRun.workflowName, namespace),
             {
               runId,
+              // Link the conflict re-invocation to this trace — parity
+              // with the node engine's reinvoke(), which always carries
+              // a trace carrier on its continuations.
+              traceCarrier: await serializeTraceCarrier(),
             },
             { idempotencyKey: `hook_conflict_${hook.correlationId}` }
           );
