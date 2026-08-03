@@ -99,7 +99,7 @@ export interface EventsConsumerOptions {
 
 export class EventsConsumer {
   eventIndex: number;
-  readonly events: Event[] = [];
+  readonly events: Event[];
   readonly callbacks: EventConsumerCallback[] = [];
   private onConsumedEvent?: (event: Event) => void;
   private onUnconsumedEvent: (event: Event) => void;
@@ -110,12 +110,20 @@ export class EventsConsumer {
   private unconsumedCheckVersion = 0;
 
   constructor(events: Event[], options: EventsConsumerOptions) {
-    this.events = events;
+    // Own copy: the runtime mutates its event array in place, and a retained
+    // session must only observe new events through append() so resume()'s
+    // strict-extension check stays meaningful.
+    this.events = [...events];
     this.eventIndex = 0;
     this.onConsumedEvent = options.onConsumedEvent;
     this.onUnconsumedEvent = options.onUnconsumedEvent;
     this.getPromiseQueue = options.getPromiseQueue;
     this.isDeliveryInFlight = options.isDeliveryInFlight ?? (() => false);
+  }
+
+  append(events: Event[]): void {
+    for (const event of events) this.events.push(event);
+    process.nextTick(this.consume);
   }
 
   /**

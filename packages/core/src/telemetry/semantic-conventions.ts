@@ -77,6 +77,11 @@ export const WorkflowEventsCount = SemanticConvention<number>(
   'workflow.events.count'
 );
 
+/** Whether workflow execution starts with replay or resumes a retained VM */
+export const WorkflowExecutionMode = SemanticConvention<'replay' | 'retained'>(
+  'workflow.execution.mode'
+);
+
 /** Number of arguments passed to the workflow */
 export const WorkflowArgumentsCount = SemanticConvention<number>(
   'workflow.arguments.count'

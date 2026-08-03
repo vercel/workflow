@@ -11,7 +11,7 @@ import {
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { setWorkflowBasePath } from '@workflow/utils';
+import { once, setWorkflowBasePath } from '@workflow/utils';
 import {
   parseWorkflowName,
   workflowDisplayName,
@@ -55,6 +55,7 @@ import {
   getReplayDivergenceMaxRetries,
   isInlineOwnershipEnabled,
   isTurboEnabled,
+  isVmRetentionEnabled,
   preconditionRestartBackoffMs,
 } from './runtime/constants.js';
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
@@ -117,7 +118,12 @@ import {
 } from './telemetry.js';
 import { getErrorName, getErrorStack, normalizeUnknownError } from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
-import { runWorkflow } from './workflow.js';
+import {
+  replayWorkflow,
+  resumeWorkflow,
+  type WorkflowResumeResult,
+  type WorkflowSession,
+} from './workflow.js';
 
 export type { Event, WorkflowRun };
 export { WorkflowSuspension } from './global.js';
@@ -442,10 +448,11 @@ function rootRunIdFrom(
  * `wait_completed`, which the wait timer can resolve with
  * `wait_completed`).
  *
- * This gates the inline-delta fast path and turbo's forced optimistic start.
- * A terminal-step delta can omit an event appended concurrently after that
- * write. With no open hook or wait, only cancellation can do so, and observing
- * it one replay late is safe because the next entity write is rejected.
+ * This gates VM retention, the inline-delta fast path, and turbo's forced
+ * optimistic start. A terminal-step delta can omit an event appended
+ * concurrently after that write. With no open hook or wait, only cancellation
+ * can do so, and observing it one replay late is safe because the next entity
+ * write is rejected.
  *
  * Step-body `attr_set` writes are NOT a concern: they land before the
  * step's terminal write and are therefore already inside the returned
@@ -480,6 +487,47 @@ function openHookAndWaitState(events: Event[]): {
     if (openHook && openWait) break;
   }
   return { openHook, openWait };
+}
+
+/**
+ * The whole retention predicate: keep the session only for a pure step
+ * boundary (every suspension item is a step — any other item type, present
+ * or future, is unretainable by default) whose new step inputs serialized
+ * without executing workflow code, with no out-of-band continuation source:
+ * attributes require replay; hooks and waits can wake another invocation.
+ * `WORKFLOW_RETAINED_VM=0` disables retention entirely.
+ *
+ * The open hook/wait scan is O(events), so it is taken through a lazy getter
+ * and consulted last, after every cheap check has passed.
+ *
+ * INVARIANT this predicate leans on: every suspension signaler that does NOT
+ * carry the step-consumer generation guard (sleep, hook, attribute — see
+ * `suspensionGeneration` in private.ts) must be unretainable here, either via
+ * a non-step queue item or the open hook/wait scan. A new signaler that
+ * satisfies neither would let a stale signal be accepted as a fresh
+ * suspension on a resumed session.
+ *
+ * Quiescence assumes workflow code stays inside the sandbox's determinism
+ * contract. Escaping to the host realm (e.g. recovering the host `Function`
+ * constructor from an exposed host class to schedule real timers) makes a
+ * workflow nondeterministic under ordinary replay too, and is not defended
+ * here.
+ */
+function canRetainWorkflowSession(
+  suspension: WorkflowSuspension,
+  stepInputsSafe: boolean,
+  openHookWait: { value: ReturnType<typeof openHookAndWaitState> }
+): boolean {
+  if (
+    !isVmRetentionEnabled() ||
+    !stepInputsSafe ||
+    suspension.steps.length === 0 ||
+    !suspension.steps.every((item) => item.type === 'step')
+  ) {
+    return false;
+  }
+  const { openHook, openWait } = openHookWait.value;
+  return !openHook && !openWait;
 }
 
 /**
@@ -1035,6 +1083,14 @@ export function workflowEntrypoint(
                       return false;
                     }
                     preconditionRestarts++;
+                    // Every stale-snapshot restart invalidates the parked VM:
+                    // the log it consumed was missing events, so only a fresh
+                    // replay over the corrected log is authoritative. This
+                    // also covers the suspension-create rejection, which fires
+                    // before the retention decision (kill switch + step-input
+                    // gate) ever ran, and the run_completed rejection, where a
+                    // completed session must not be resumed again.
+                    retainedSession = null;
                     // A World MAY return the events we were missing on the
                     // rejection.
                     // Trust it only on the FIRST restart: its completeness proof
@@ -1854,7 +1910,7 @@ export function workflowEntrypoint(
                   }
 
                   // Resolve the encryption key for this run's deployment.
-                  // Used eagerly here since both runWorkflow (input
+                  // Used eagerly here since both workflow execution (input
                   // hydration / hook payload decryption) and the run_failed
                   // dehydrate path below need it. Memoized accessor: first
                   // call triggers the actual fetch / HKDF derivation,
@@ -1872,6 +1928,11 @@ export function workflowEntrypoint(
                   const replayPayloadCache = new ReplayPayloadCache(
                     encryptionKey
                   );
+
+                  // The live VM parked at the previous boundary, when the
+                  // retention decision kept it. null → this iteration cold-
+                  // replays. Invocation-scoped: dies with this delivery.
+                  let retainedSession: WorkflowSession | null = null;
 
                   // Main replay loop
                   // biome-ignore lint/correctness/noConstantCondition: intentional loop
@@ -2231,39 +2292,62 @@ export function workflowEntrypoint(
                         knownSlotFloor
                       );
 
-                      // Replay workflow
-                      runtimeLogger.debug('Starting workflow replay', {
+                      runtimeLogger.debug('Starting workflow execution', {
                         workflowRunId: runId,
                         loopIteration,
                         eventCount: events.length,
+                        executionMode: retainedSession ? 'retained' : 'replay',
                       });
                       replayStart = Date.now();
-                      // Start every missing decrypt/decompress operation before
-                      // VM setup. Web Crypto work can overlap bundle evaluation;
+                      // Start every missing decrypt/decompress operation up
+                      // front (already-prepared payloads are skipped). Web
+                      // Crypto work overlaps VM setup on the replay path and
+                      // the appended events' consumption on the resume path;
                       // consumers still deserialize and resolve in event order.
                       const payloadPrewarm = replayPayloadCache.prewarm(
                         workflowRun,
                         events
                       );
-                      const result = await runWorkflow(
-                        workflowCode,
-                        workflowRun,
-                        events,
-                        encryptionKey,
-                        replayPayloadCache,
-                        // Turbo: the end-of-run drain inside runWorkflow commits
-                        // fire-and-forget `*_created` events before the terminal
-                        // `awaitRunReady()` below, so gate those writes on the
-                        // backgrounded run_started too. Undefined outside turbo.
-                        runReadyBarrier,
-                        world.capabilities,
-                        replayWriteLog
-                      );
+                      let workflowResult: WorkflowResumeResult = retainedSession
+                        ? await resumeWorkflow(
+                            retainedSession,
+                            events,
+                            replayWriteLog
+                          )
+                        : { type: 'replay' };
+
+                      if (workflowResult.type === 'replay') {
+                        retainedSession = null;
+                        workflowResult = await replayWorkflow({
+                          workflowCode,
+                          workflowRun,
+                          events,
+                          encryptionKey,
+                          replayPayloadCache,
+                          // Turbo: the end-of-run drain inside workflow
+                          // execution commits fire-and-forget `*_created`
+                          // events before the terminal `awaitRunReady()` below.
+                          runReadyBarrier,
+                          worldCapabilities: world.capabilities,
+                          eventLog: replayWriteLog,
+                        });
+                      }
                       await payloadPrewarm;
-                      runtimeLogger.debug('Workflow replay completed', {
+
+                      if (workflowResult.type === 'suspended') {
+                        // Park the live session; the suspension catch below
+                        // makes the one retention decision — keep it for the
+                        // next iteration or discard it for a fresh replay.
+                        retainedSession = workflowResult.session;
+                        throw workflowResult.suspension;
+                      }
+
+                      const result = workflowResult.output;
+                      runtimeLogger.debug('Workflow execution completed', {
                         workflowRunId: runId,
                         loopIteration,
                         replayMs: Date.now() - replayStart,
+                        executionMode: retainedSession ? 'retained' : 'replay',
                       });
                       replayRecoveryReporter.activate();
 
@@ -2315,7 +2399,7 @@ export function workflowEntrypoint(
                     } catch (err) {
                       if (WorkflowSuspension.is(err)) {
                         replayRecoveryReporter.activate();
-                        // Synchronous `runWorkflow` duration for THIS
+                        // Synchronous workflow-execution duration for THIS
                         // suspension only — anchors the `finalSchedulingReplay`
                         // telemetry field below (see
                         // StepLatencyTracking.replayMs). This is the FINAL
@@ -2339,7 +2423,10 @@ export function workflowEntrypoint(
                         // server spans are heavily sampled in production
                         // (~7%), and client spans can't be filtered by SDK
                         // version, so neither can serve as the dashboard's
-                        // exact TTFS decomposition.
+                        // exact TTFS decomposition. On a retained-VM
+                        // resume this measures the resume (typically ~0ms),
+                        // not a replay, so the field's distribution is
+                        // bimodal once retention is active.
                         const replayDurationMs = Date.now() - replayStart;
                         runtimeLogger.debug('Workflow suspended', {
                           workflowRunId: runId,
@@ -2501,6 +2588,41 @@ export function workflowEntrypoint(
                           return;
                         }
                         eventsCursor = suspensionLog.cursor;
+
+                        // Open hooks/waits in the log as loaded for this
+                        // replay. This suspension's own hook/wait writes are
+                        // NOT in it — they never reach retention anyway,
+                        // because a suspension containing a non-step item
+                        // fails canRetainWorkflowSession's type check before
+                        // the scan is consulted. Computed
+                        // lazily, at most once, and shared between the
+                        // retention decision here and the delta/turbo gates
+                        // below — the attr-detour and hook-conflict paths
+                        // return/continue before the gates and usually
+                        // short-circuit before ever scanning the log.
+                        // Narrowed alias: the closure below would otherwise
+                        // lose `cachedEvents`'s non-null narrowing. Nothing in
+                        // this catch scope reassigns the array.
+                        const suspensionEvents = cachedEvents;
+                        const openHookWait = once(() =>
+                          openHookAndWaitState(suspensionEvents)
+                        );
+
+                        // The single retention decision: keep the parked
+                        // session only across a pure step boundary with no
+                        // out-of-band continuation source and provably
+                        // passive step inputs.
+                        if (
+                          retainedSession &&
+                          !canRetainWorkflowSession(
+                            err,
+                            suspensionResult.retainedStepInputsSafe,
+                            openHookWait
+                          )
+                        ) {
+                          retainedSession = null;
+                        }
+
                         preStepBlockingMs += suspensionResult.hookCreationMs;
                         if (
                           suspensionResult.hasAttributeEvents &&
@@ -2818,18 +2940,9 @@ export function workflowEntrypoint(
                           return;
                         }
 
-                        // Execute inline step. Pause the replay budget
-                        // for the duration of the step body — step
-                        // duration is bounded by the platform's function
-                        // maxDuration, not by the replay timeout. Without
-                        // this the replay-budget check at the top of the
-                        // next loop iteration would (incorrectly) charge
-                        // the step body against the budget.
-                        // Open hooks/waits in the cumulative log, computed
-                        // once for the two gates below.
-                        const openHookWaitState = openHookAndWaitState(
-                          cachedEvents ?? []
-                        );
+                        // Open hooks/waits are consulted by all three gates
+                        // below; resolve the memoized scan once here.
+                        const openHookWaitState = openHookWait.value;
 
                         // Inline-delta fast path gate. We request the delta —
                         // and on the next iteration consume it in place of the
@@ -3000,7 +3113,7 @@ export function workflowEntrypoint(
                         // snapshot has a local-clock createdAt, so under
                         // turbo only the run-id ULID timestamp is trusted.
                         const latencyTracking = computeStepLatencyTracking({
-                          events: cachedEvents ?? [],
+                          events: cachedEvents,
                           invocationStartedClean:
                             invocationStartedClean === true,
                           runCreatedAtMs:
