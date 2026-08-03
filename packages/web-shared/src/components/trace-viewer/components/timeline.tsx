@@ -12,12 +12,9 @@ import {
   useState,
 } from 'react';
 import { cn } from '../../../lib/cn';
-import {
-  formatDurationPrecise,
-  getHighResInMs,
-} from '../../trace-viewer/util/timing';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import type { Span } from '../types';
+import { formatDurationPrecise, getHighResInMs } from '../util/timing';
 import type {
   OffscreenMarkers,
   Segment,
@@ -652,7 +649,7 @@ export function TimelineHeader({
         {markers.map((m) => (
           <span
             key={String(m.value)}
-            className="absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap"
+            className="absolute bottom-1 text-label-12-mono text-gray-900 whitespace-nowrap"
             style={{ left: `${m.position * 100}%` }}
           >
             {m.label}

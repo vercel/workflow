@@ -10,7 +10,6 @@ import type {
 } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { cn } from '../lib/cn';
 import {
   type ExactIdSearchResult,
   type ExactWorkflowSearchIdKind,
@@ -43,6 +42,15 @@ const ERROR_EVENT_TYPES = new Set([
   'run_failed',
   'workflow_failed',
 ]);
+
+const BUTTON_RESET_STYLE: React.CSSProperties = {
+  appearance: 'none',
+  WebkitAppearance: 'none',
+  border: 'none',
+  background: 'transparent',
+};
+const DOT_PULSE_ANIMATION =
+  'workflow-dot-pulse 1.25s cubic-bezier(0, 0, 0.2, 1) infinite';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -91,27 +99,27 @@ function formatEventType(eventType: Event['eventType']): string {
 // Event type → status color (small dot only)
 // ──────────────────────────────────────────────────────────────────────────
 
-/** Returns a Geist theme utility for the status dot. */
-function getStatusDotClassName(eventType: string): string {
+/** Returns a CSS color using Geist design tokens for the status dot. */
+function getStatusDotColor(eventType: string): string {
   // Failed → red
   if (
     eventType === 'step_failed' ||
     eventType === 'run_failed' ||
     eventType === 'workflow_failed'
   ) {
-    return 'bg-red-700';
+    return 'var(--ds-red-700)';
   }
   // Cancelled → amber
   if (eventType === 'run_cancelled') {
-    return 'bg-amber-700';
+    return 'var(--ds-amber-700)';
   }
   // Retrying → amber
   if (eventType === 'step_retrying') {
-    return 'bg-amber-700';
+    return 'var(--ds-amber-700)';
   }
   // Attribute changes → teal
   if (eventType === 'attr_set') {
-    return 'bg-teal-900';
+    return 'var(--ds-teal-900)';
   }
   // Completed/succeeded → green
   if (
@@ -121,7 +129,7 @@ function getStatusDotClassName(eventType: string): string {
     eventType === 'hook_disposed' ||
     eventType === 'wait_completed'
   ) {
-    return 'bg-green-700';
+    return 'var(--ds-green-700)';
   }
   // Started/running → blue
   if (
@@ -130,10 +138,10 @@ function getStatusDotClassName(eventType: string): string {
     eventType === 'workflow_started' ||
     eventType === 'hook_received'
   ) {
-    return 'bg-blue-700';
+    return 'var(--ds-blue-700)';
   }
   // Created/pending → gray
-  return 'bg-gray-600';
+  return 'var(--ds-gray-600)';
 }
 
 /**
@@ -286,11 +294,17 @@ function isRunLevel(eventType: string): boolean {
 // Tree gutter — fixed-width, shows branch lines only for the selected group
 // ──────────────────────────────────────────────────────────────────────────
 
+/** Fixed gutter width: 20px root area + 16px for one branch lane */
+const GUTTER_WIDTH = 36;
+/** X position of the single branch lane line */
+const LANE_X = 20;
+const ROOT_LINE_COLOR = 'var(--ds-gray-500)';
+
 function TreeGutter({
   isFirst,
   isLast,
   isRunLevel: isRun,
-  statusDotClassName,
+  statusDotColor,
   pulse = false,
   hasSelection,
   showBranch,
@@ -302,7 +316,7 @@ function TreeGutter({
   isFirst: boolean;
   isLast: boolean;
   isRunLevel: boolean;
-  statusDotClassName?: string;
+  statusDotColor?: string;
   pulse?: boolean;
   /** Whether any group is currently active (selected or hovered) */
   hasSelection: boolean;
@@ -316,60 +330,95 @@ function TreeGutter({
   isLaneEnd: boolean;
   continuationOnly?: boolean;
 }) {
-  const isDotDimmed = hasSelection && !showBranch && !isRun;
+  const dotSize = isRun ? 8 : 6;
+  const dotLeft = isRun ? 5 : 6;
+  const dotOpacity = hasSelection && !showBranch && !isRun ? 0.3 : 1;
 
   return (
     <div
-      className={cn(
-        'relative w-9 flex-shrink-0 self-stretch',
-        continuationOnly && 'min-h-0'
-      )}
+      className="relative flex-shrink-0 self-stretch"
+      style={{
+        width: GUTTER_WIDTH,
+        minHeight: continuationOnly ? 0 : undefined,
+      }}
     >
       {/* Root vertical line (leftmost, always visible) */}
       <div
-        className={cn(
-          'absolute left-2 z-0 w-0.5 bg-gray-500',
-          continuationOnly
-            ? 'inset-y-0'
-            : [
-                isFirst ? 'top-1/2' : 'top-0',
-                isLast ? 'bottom-1/2' : 'bottom-0',
-              ]
-        )}
+        style={{
+          position: 'absolute',
+          left: 8,
+          top: continuationOnly ? 0 : isFirst ? '50%' : 0,
+          bottom: continuationOnly ? 0 : isLast ? '50%' : 0,
+          width: 2,
+          backgroundColor: ROOT_LINE_COLOR,
+          zIndex: 0,
+        }}
       />
 
       {!continuationOnly && (
         <>
           {/* Status dot on the root line for every event */}
           <div
-            className={cn(
-              'absolute top-1/2 z-[2] -translate-y-1/2',
-              isRun ? 'left-[5px] size-2' : 'left-1.5 size-1.5'
-            )}
+            style={{
+              position: 'absolute',
+              left: dotLeft,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              width: dotSize,
+              height: dotSize,
+              zIndex: 2,
+            }}
           >
             {/* Opaque backdrop ensures gutter lines never visually cut through dots */}
-            <div className="absolute inset-0 z-0 rounded-full bg-background-100" />
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                borderRadius: '50%',
+                backgroundColor: 'var(--ds-background-100)',
+                zIndex: 0,
+              }}
+            />
             {pulse && (
               <div
-                className={cn(
-                  'absolute inset-0 z-[1] animate-[workflow-dot-pulse_1.25s_cubic-bezier(0,0,0.2,1)_infinite] rounded-full',
-                  statusDotClassName,
-                  isDotDimmed ? 'opacity-[0.225]' : 'opacity-75'
-                )}
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  borderRadius: '50%',
+                  backgroundColor: statusDotColor,
+                  opacity: 0.75 * dotOpacity,
+                  animation: DOT_PULSE_ANIMATION,
+                  zIndex: 1,
+                }}
               />
             )}
             <div
-              className={cn(
-                'relative z-[2] size-full rounded-full transition-opacity duration-150',
-                statusDotClassName,
-                isDotDimmed ? 'opacity-30' : 'opacity-100'
-              )}
+              style={{
+                position: 'relative',
+                width: '100%',
+                height: '100%',
+                borderRadius: '50%',
+                backgroundColor: statusDotColor,
+                opacity: dotOpacity,
+                transition: 'opacity 150ms',
+                zIndex: 2,
+              }}
             />
           </div>
 
           {/* Horizontal branch from root to gutter edge (selected group events only) */}
           {showBranch && (
-            <div className="absolute top-1/2 left-[9px] z-0 h-0.5 w-[27px] bg-gray-500" />
+            <div
+              style={{
+                position: 'absolute',
+                left: 9,
+                top: '50%',
+                width: GUTTER_WIDTH - 9,
+                height: 2,
+                backgroundColor: ROOT_LINE_COLOR,
+                zIndex: 0,
+              }}
+            />
           )}
         </>
       )}
@@ -377,15 +426,15 @@ function TreeGutter({
       {/* Vertical lane line connecting the selected group's events */}
       {showLaneLine && (
         <div
-          className={cn(
-            'absolute left-5 z-0 w-0.5 bg-gray-500',
-            continuationOnly
-              ? 'inset-y-0'
-              : [
-                  isLaneStart ? 'top-1/2' : 'top-0',
-                  isLaneEnd ? 'bottom-1/2' : 'bottom-0',
-                ]
-          )}
+          style={{
+            position: 'absolute',
+            left: LANE_X,
+            top: continuationOnly ? 0 : isLaneStart ? '50%' : 0,
+            bottom: continuationOnly ? 0 : isLaneEnd ? '50%' : 0,
+            width: 2,
+            backgroundColor: ROOT_LINE_COLOR,
+            zIndex: 0,
+          }}
         />
       )}
     </div>
@@ -399,9 +448,11 @@ function TreeGutter({
 function CopyableCell({
   value,
   className,
+  style: styleProp,
 }: {
   value: string;
   className?: string;
+  style?: React.CSSProperties;
 }): ReactNode {
   const [copied, setCopied] = useState(false);
   const resetCopiedTimeoutRef = useRef<number | null>(null);
@@ -433,7 +484,8 @@ function CopyableCell({
 
   return (
     <div
-      className={`group/copy flex min-w-0 items-center gap-1 px-4 ${className ?? ''}`}
+      className={`group/copy flex items-center gap-1 min-w-0 px-4 ${className ?? ''}`}
+      style={styleProp}
     >
       <span className="overflow-hidden text-ellipsis whitespace-nowrap">
         {value || '-'}
@@ -442,13 +494,17 @@ function CopyableCell({
         <button
           type="button"
           onClick={handleCopy}
-          className="flex-shrink-0 appearance-none rounded !border-none !bg-transparent p-0.5 opacity-0 transition-opacity hover:!bg-gray-alpha-200 group-hover/copy:opacity-100"
+          className="flex-shrink-0 opacity-0 group-hover/copy:opacity-100 transition-opacity p-0.5 rounded hover:bg-[var(--ds-gray-alpha-200)]"
+          style={BUTTON_RESET_STYLE}
           aria-label={`Copy ${value}`}
         >
           {copied ? (
-            <Check className="h-3 w-3 text-green-700" />
+            <Check
+              className="h-3 w-3"
+              style={{ color: 'var(--ds-green-700)' }}
+            />
           ) : (
-            <Copy className="h-3 w-3 text-gray-700" />
+            <Copy className="h-3 w-3" style={{ color: 'var(--ds-gray-700)' }} />
           )}
         </button>
       ) : null}
@@ -583,8 +639,11 @@ function PayloadBlock({
         : null;
     if (cancelReason) {
       return (
-        <div className="p-2 text-gray-1000 text-xs">
-          <span className="text-gray-900">Reason: </span>
+        <div
+          className="p-2 text-label-12"
+          style={{ color: 'var(--ds-gray-1000)' }}
+        >
+          <span style={{ color: 'var(--ds-gray-900)' }}>Reason: </span>
           <span className="whitespace-pre-wrap break-words">
             {cancelReason}
           </span>
@@ -595,19 +654,26 @@ function PayloadBlock({
 
   return (
     <div className="relative group/payload">
-      <div className="overflow-x-auto p-2 text-[11px] text-gray-1000">
+      <div
+        className="overflow-x-auto p-2 text-[11px]"
+        style={{ color: 'var(--ds-gray-1000)' }}
+      >
         <DataInspector data={cleaned} expandLevel={2} />
       </div>
       <button
         type="button"
         onClick={handleCopy}
-        className="absolute right-2 bottom-2 flex appearance-none items-center gap-1 rounded-md !border-none !bg-transparent px-2 py-1 text-gray-700 text-xs opacity-0 transition-opacity hover:!bg-gray-alpha-200 group-hover/payload:opacity-100"
+        className="absolute bottom-2 right-2 opacity-0 group-hover/payload:opacity-100 transition-opacity flex items-center gap-1 px-2 py-1 rounded-md text-button-12 hover:bg-[var(--ds-gray-alpha-200)]"
+        style={{ ...BUTTON_RESET_STYLE, color: 'var(--ds-gray-700)' }}
         aria-label="Copy payload"
       >
         {copied ? (
           <>
-            <Check className="h-3 w-3 text-green-700" />
-            <span className="text-green-700">Copied</span>
+            <Check
+              className="h-3 w-3"
+              style={{ color: 'var(--ds-green-700)' }}
+            />
+            <span style={{ color: 'var(--ds-green-700)' }}>Copied</span>
           </>
         ) : (
           <>
@@ -637,55 +703,70 @@ function RowsSkeleton({
   return (
     <div className="flex-1 overflow-hidden">
       {Array.from({ length: 16 }, (_, i) => (
-        <div key={i} className="flex h-10 items-center gap-0">
+        <div key={i} className="flex items-center gap-0" style={{ height: 40 }}>
           {/* Gutter area */}
-          <div className="relative flex w-9 flex-shrink-0 items-center self-stretch">
+          <div
+            className="relative flex-shrink-0 self-stretch flex items-center"
+            style={{ width: GUTTER_WIDTH }}
+          >
             {/* Vertical line skeleton */}
             <div
-              className={cn(
-                'absolute bottom-0 left-2 w-0.5',
-                i === 0 ? 'top-1/2' : 'top-0'
-              )}
+              style={{
+                position: 'absolute',
+                left: 8,
+                top: i === 0 ? '50%' : 0,
+                bottom: 0,
+                width: 2,
+              }}
             >
-              <Skeleton className="h-full w-full rounded-[1px]" />
+              <Skeleton className="w-full h-full" style={{ borderRadius: 1 }} />
             </div>
             {/* Dot skeleton */}
             <Skeleton
-              className={cn(
-                'flex-shrink-0 rounded-full',
-                i % 4 === 0 ? 'ml-[5px] size-2' : 'ml-1.5 size-1.5'
-              )}
+              className="flex-shrink-0"
+              style={{
+                width: i % 4 === 0 ? 8 : 6,
+                height: i % 4 === 0 ? 8 : 6,
+                borderRadius: '50%',
+                marginLeft: i % 4 === 0 ? 5 : 6,
+              }}
             />
           </div>
           {/* Chevron placeholder */}
           <div className="w-5 flex-shrink-0 flex items-center justify-center">
-            <Skeleton className="h-5 w-5 rounded" />
+            <Skeleton className="w-5 h-5" style={{ borderRadius: 4 }} />
           </div>
           {showSeparateEventOccurrenceTimestamps && (
-            <div className="min-w-0 flex-[2_1_0%] px-4">
-              <Skeleton className="h-3 w-[70%]" />
+            <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+              <Skeleton className="h-3" style={{ width: '70%' }} />
             </div>
           )}
           {/* Created */}
-          <div className="min-w-0 flex-[2_1_0%] px-4">
-            <Skeleton className="h-3 w-[70%]" />
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: '70%' }} />
           </div>
           {/* Event Type */}
-          <div className="flex min-w-0 flex-[2_1_0%] items-center gap-1.5 px-4">
-            <Skeleton className="size-1.5 flex-shrink-0 rounded-full" />
-            <Skeleton className="h-3 w-[60%]" />
+          <div
+            className="min-w-0 px-4 flex items-center gap-1.5"
+            style={{ flex: '2 1 0%' }}
+          >
+            <Skeleton
+              className="flex-shrink-0"
+              style={{ width: 6, height: 6, borderRadius: '50%' }}
+            />
+            <Skeleton className="h-3" style={{ width: '60%' }} />
           </div>
           {/* Name */}
-          <div className="min-w-0 flex-[2_1_0%] px-4">
-            <Skeleton className="h-3 w-1/2" />
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: '50%' }} />
           </div>
           {/* Correlation ID */}
-          <div className="min-w-0 flex-[3_1_0%] px-4">
-            <Skeleton className="h-3 w-3/4" />
+          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: '75%' }} />
           </div>
           {/* Event ID */}
-          <div className="min-w-0 flex-[3_1_0%] px-4">
-            <Skeleton className="h-3 w-3/4" />
+          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: '75%' }} />
           </div>
         </div>
       ))}
@@ -801,7 +882,7 @@ export function EventRow({
     ? '__run__'
     : (event.correlationId ?? undefined);
 
-  const statusDotClassName = getStatusDotClassName(event.eventType);
+  const statusDotColor = getStatusDotColor(event.eventType);
   const createdAt = new Date(event.createdAt);
   const occurredAt = parseEventDate(event.occurredAt);
   const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
@@ -934,6 +1015,8 @@ export function EventRow({
 
   const displayPayload = isLoading ? loadedEventData : mergedEventData;
 
+  const contentOpacity = isDimmed ? 0.3 : 1;
+
   return (
     <div
       data-event-id={event.eventId}
@@ -948,13 +1031,14 @@ export function EventRow({
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') handleRowClick();
         }}
-        className="flex min-h-10 w-full cursor-pointer items-center gap-0 text-left text-[13px] transition-colors hover:bg-gray-alpha-100"
+        className="w-full text-left flex items-center gap-0 text-label-13 hover:bg-[var(--ds-gray-alpha-100)] transition-colors cursor-pointer"
+        style={{ minHeight: 40 }}
       >
         <TreeGutter
           isFirst={isFirst}
           isLast={isLast && !isExpanded}
           isRunLevel={isRun}
-          statusDotClassName={statusDotClassName}
+          statusDotColor={statusDotColor}
           pulse={isPulsing}
           hasSelection={hasActive}
           showBranch={showBranch}
@@ -965,23 +1049,30 @@ export function EventRow({
 
         {/* Content area — dims when unrelated */}
         <div
-          className={cn(
-            'flex min-w-0 flex-1 items-center transition-opacity duration-150',
-            isDimmed ? 'opacity-30' : 'opacity-100'
-          )}
+          className="flex items-center flex-1 min-w-0"
+          style={{ opacity: contentOpacity, transition: 'opacity 150ms' }}
         >
           {/* Expand chevron indicator */}
-          <div className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border border-gray-400">
+          <div
+            className="flex items-center justify-center w-5 h-5 flex-shrink-0 rounded"
+            style={{
+              border: '1px solid var(--ds-gray-400)',
+            }}
+          >
             <ChevronRight
-              className={cn(
-                'h-3 w-3 text-gray-900 transition-transform',
-                isExpanded && 'rotate-90'
-              )}
+              className="h-3 w-3 transition-transform"
+              style={{
+                color: 'var(--ds-gray-900)',
+                transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+              }}
             />
           </div>
 
           {showSeparateEventOccurrenceTimestamps && (
-            <div className="min-w-0 flex-[2_1_0%] px-4 text-gray-900 tabular-nums">
+            <div
+              className="tabular-nums min-w-0 px-4"
+              style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
+            >
               {occurredAt ? (
                 <TimestampTooltip date={occurredAt}>
                   <span>{formatEventTime(occurredAt)}</span>
@@ -993,29 +1084,50 @@ export function EventRow({
           )}
 
           {/* Created */}
-          <div className="min-w-0 flex-[2_1_0%] px-4 text-gray-900 tabular-nums">
+          <div
+            className="tabular-nums min-w-0 px-4"
+            style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
+          >
             <TimestampTooltip date={displayedCreatedAt}>
               <span>{formatEventTime(displayedCreatedAt)}</span>
             </TimestampTooltip>
           </div>
 
           {/* Event Type */}
-          <div className="min-w-0 flex-[2_1_0%] px-4 font-medium">
-            <span className="inline-flex items-center gap-1.5 text-gray-900">
-              <span className="relative inline-flex size-1.5 flex-shrink-0">
+          <div className="font-medium min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <span
+              className="inline-flex items-center gap-1.5"
+              style={{ color: 'var(--ds-gray-900)' }}
+            >
+              <span
+                style={{
+                  position: 'relative',
+                  display: 'inline-flex',
+                  width: 6,
+                  height: 6,
+                  flexShrink: 0,
+                }}
+              >
                 {isPulsing && (
                   <span
-                    className={cn(
-                      'absolute inset-0 animate-[workflow-dot-pulse_1.25s_cubic-bezier(0,0,0.2,1)_infinite] rounded-full opacity-75',
-                      statusDotClassName
-                    )}
+                    style={{
+                      position: 'absolute',
+                      inset: 0,
+                      borderRadius: '50%',
+                      backgroundColor: statusDotColor,
+                      opacity: 0.75,
+                      animation: DOT_PULSE_ANIMATION,
+                    }}
                   />
                 )}
                 <span
-                  className={cn(
-                    'relative size-1.5 rounded-full',
-                    statusDotClassName
-                  )}
+                  style={{
+                    position: 'relative',
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    backgroundColor: statusDotColor,
+                  }}
                 />
               </span>
               {formatEventType(event.eventType)}
@@ -1024,7 +1136,8 @@ export function EventRow({
 
           {/* Name */}
           <div
-            className="min-w-0 flex-[2_1_0%] overflow-hidden text-ellipsis whitespace-nowrap px-4"
+            className="min-w-0 px-4 overflow-hidden text-ellipsis whitespace-nowrap"
+            style={{ flex: '2 1 0%' }}
             title={eventName !== '-' ? eventName : undefined}
           >
             {eventName}
@@ -1033,13 +1146,15 @@ export function EventRow({
           {/* Correlation ID */}
           <CopyableCell
             value={event.correlationId || ''}
-            className="flex-[3_1_0%] font-mono"
+            className="font-mono"
+            style={{ flex: '3 1 0%' }}
           />
 
           {/* Event ID */}
           <CopyableCell
             value={event.eventId}
-            className="flex-[3_1_0%] font-mono"
+            className="font-mono"
+            style={{ flex: '3 1 0%' }}
           />
         </div>
       </div>
@@ -1062,15 +1177,20 @@ export function EventRow({
           {/* Spacer for chevron column */}
           <div className="w-5 flex-shrink-0" />
           <div
-            className={cn(
-              'my-1.5 mr-3 ml-2 flex-1 overflow-hidden rounded-md border border-gray-alpha-200 py-2 transition-opacity duration-150',
-              isDimmed ? 'opacity-30' : 'opacity-100'
-            )}
+            className="flex-1 my-1.5 mr-3 ml-2 py-2 rounded-md border overflow-hidden"
+            style={{
+              borderColor: 'var(--ds-gray-alpha-200)',
+              opacity: contentOpacity,
+              transition: 'opacity 150ms',
+            }}
           >
             {/* Duration info */}
             {(durationInfo?.queued !== undefined ||
               durationInfo?.ran !== undefined) && (
-              <div className="flex gap-3 px-2 pb-1.5 text-gray-900 text-xs">
+              <div
+                className="px-2 pb-1.5 text-label-12 flex gap-3"
+                style={{ color: 'var(--ds-gray-900)' }}
+              >
                 {durationInfo.queued !== undefined &&
                   durationInfo.queued > 0 && (
                     <span>
@@ -1095,7 +1215,14 @@ export function EventRow({
             {displayPayload != null ? (
               <PayloadBlock data={displayPayload} eventType={event.eventType} />
             ) : loadError ? (
-              <div className="rounded-md border border-red-400 bg-red-100 p-3 text-red-900 text-xs">
+              <div
+                className="rounded-md border p-3 text-label-12"
+                style={{
+                  borderColor: 'var(--ds-red-400)',
+                  backgroundColor: 'var(--ds-red-100)',
+                  color: 'var(--ds-red-900)',
+                }}
+              >
                 {loadError}
               </div>
             ) : isLoading ||
@@ -1103,12 +1230,17 @@ export function EventRow({
                 !hasAttemptedLoad &&
                 event.correlationId) ? (
               <div className="flex flex-col gap-2 p-3">
-                <Skeleton className="h-3 w-3/4" />
-                <Skeleton className="h-3 w-1/2" />
-                <Skeleton className="h-3 w-[60%]" />
+                <Skeleton className="h-3" style={{ width: '75%' }} />
+                <Skeleton className="h-3" style={{ width: '50%' }} />
+                <Skeleton className="h-3" style={{ width: '60%' }} />
               </div>
             ) : (
-              <div className="p-2 text-gray-900 text-xs">No data</div>
+              <div
+                className="p-2 text-label-12"
+                style={{ color: 'var(--ds-gray-900)' }}
+              >
+                No data
+              </div>
             )}
           </div>
         </div>
@@ -1443,27 +1575,30 @@ function EventListViewInner({
     return (
       <div className="h-full flex flex-col overflow-hidden">
         {/* Skeleton search bar */}
-        <div className="p-1.5">
-          <Skeleton className="h-10 rounded-md" />
+        <div style={{ padding: 6 }}>
+          <Skeleton style={{ height: 40, borderRadius: 6 }} />
         </div>
         {/* Skeleton header */}
-        <div className="flex h-10 flex-shrink-0 items-center gap-0 border-gray-alpha-200 border-b">
-          <div className="w-9 flex-shrink-0" />
+        <div
+          className="flex items-center gap-0 h-10 border-b flex-shrink-0"
+          style={{ borderColor: 'var(--ds-gray-alpha-200)' }}
+        >
+          <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
           <div className="w-5 flex-shrink-0" />
-          <div className="min-w-0 flex-[2_1_0%] px-4">
-            <Skeleton className="h-3 w-10" />
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: 40 }} />
           </div>
-          <div className="min-w-0 flex-[2_1_0%] px-4">
-            <Skeleton className="h-3 w-[72px]" />
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: 72 }} />
           </div>
-          <div className="min-w-0 flex-[2_1_0%] px-4">
-            <Skeleton className="h-3 w-11" />
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: 44 }} />
           </div>
-          <div className="min-w-0 flex-[3_1_0%] px-4">
-            <Skeleton className="h-3 w-[92px]" />
+          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: 92 }} />
           </div>
-          <div className="min-w-0 flex-[3_1_0%] px-4">
-            <Skeleton className="h-3 w-[60px]" />
+          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: 60 }} />
           </div>
         </div>
         <RowsSkeleton />
@@ -1478,9 +1613,38 @@ function EventListViewInner({
       <div className="h-full flex flex-col overflow-hidden">
         <style>{`@keyframes workflow-dot-pulse{0%{transform:scale(1);opacity:.7}70%,100%{transform:scale(2.2);opacity:0}}`}</style>
         {/* Search bar + sort */}
-        <div className="flex gap-1.5 bg-background-100 p-1.5">
-          <label className="flex h-10 min-w-0 flex-1 items-center justify-center rounded-md bg-background-100 shadow-[0_0_0_1px_var(--ds-gray-alpha-400)]">
-            <div className="flex size-10 flex-shrink-0 items-center justify-center text-gray-800">
+        <div
+          style={{
+            padding: 6,
+            backgroundColor: 'var(--ds-background-100)',
+            display: 'flex',
+            gap: 6,
+          }}
+        >
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderRadius: 6,
+              boxShadow: '0 0 0 1px var(--ds-gray-alpha-400)',
+              background: 'var(--ds-background-100)',
+              height: 40,
+              flex: 1,
+              minWidth: 0,
+            }}
+          >
+            <div
+              style={{
+                width: 40,
+                height: 40,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--ds-gray-800)',
+                flexShrink: 0,
+              }}
+            >
               <svg
                 width={16}
                 height={16}
@@ -1516,12 +1680,19 @@ function EventListViewInner({
                   ? undefined
                   : 'Exact ID search is unavailable in this view.'
               }
-              className={cn(
-                '-ml-4 h-10 w-full !border-none !bg-transparent px-3 text-sm outline-none [font-family:inherit]',
-                onExactIdSearch
-                  ? 'cursor-text opacity-100'
-                  : 'cursor-not-allowed opacity-50'
-              )}
+              style={{
+                marginLeft: -16,
+                paddingInline: 12,
+                fontFamily: 'inherit',
+                fontSize: 14,
+                background: 'transparent',
+                border: 'none',
+                outline: 'none',
+                height: 40,
+                width: '100%',
+                opacity: onExactIdSearch ? 1 : 0.5,
+                cursor: onExactIdSearch ? 'text' : 'not-allowed',
+              }}
             />
           </label>
           <MenuDropdown
@@ -1539,17 +1710,36 @@ function EventListViewInner({
         </div>
 
         {/* Header */}
-        <div className="flex h-10 flex-shrink-0 items-center gap-0 border-gray-alpha-200 border-b bg-background-100 font-medium text-[13px] text-gray-900">
-          <div className="w-9 flex-shrink-0" />
+        <div
+          className="flex items-center gap-0 text-label-13 font-medium h-10 border-b flex-shrink-0"
+          style={{
+            borderColor: 'var(--ds-gray-alpha-200)',
+            color: 'var(--ds-gray-900)',
+            backgroundColor: 'var(--ds-background-100)',
+          }}
+        >
+          <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
           <div className="w-5 flex-shrink-0" />
           {showSeparateEventOccurrenceTimestamps && (
-            <div className="min-w-0 flex-[2_1_0%] px-4">Occurred</div>
+            <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+              Occurred
+            </div>
           )}
-          <div className="min-w-0 flex-[2_1_0%] px-4">Created</div>
-          <div className="min-w-0 flex-[2_1_0%] px-4">Event Type</div>
-          <div className="min-w-0 flex-[2_1_0%] px-4">Name</div>
-          <div className="min-w-0 flex-[3_1_0%] px-4">Correlation ID</div>
-          <div className="min-w-0 flex-[3_1_0%] px-4">Event ID</div>
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            Created
+          </div>
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            Event Type
+          </div>
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            Name
+          </div>
+          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+            Correlation ID
+          </div>
+          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+            Event ID
+          </div>
         </div>
 
         {/* Virtualized event rows or refetching skeleton */}
@@ -1560,7 +1750,10 @@ function EventListViewInner({
             }
           />
         ) : sortedEvents.length === 0 ? (
-          <div className="flex flex-1 items-center justify-center px-6 text-center text-gray-700 text-sm">
+          <div
+            className="flex flex-1 items-center justify-center px-6 text-center text-copy-14"
+            style={{ color: 'var(--ds-gray-700)' }}
+          >
             {searchNotFound && searchQuery.trim()
               ? `No events found for ${searchQuery.trim()}`
               : searchError
@@ -1617,12 +1810,19 @@ function EventListViewInner({
                 />
               );
             }}
-            className="min-h-0 flex-1"
+            style={{ flex: 1, minHeight: 0 }}
           />
         )}
 
         {/* Fixed footer — count + load more */}
-        <div className="relative flex h-10 flex-shrink-0 items-center border-gray-alpha-200 border-t bg-background-100 px-4 text-gray-900 text-xs">
+        <div
+          className="relative flex-shrink-0 flex items-center h-10 border-t px-4 text-label-12"
+          style={{
+            borderColor: 'var(--ds-gray-alpha-200)',
+            color: 'var(--ds-gray-900)',
+            backgroundColor: 'var(--ds-background-100)',
+          }}
+        >
           <span>
             {isExactSearchActive
               ? searchError

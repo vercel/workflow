@@ -315,8 +315,17 @@ export function EntityDetailPanel({
       >
         <div className="flex-1 overflow-y-auto px-4 pb-8">
           {hasPendingActions && (
-            <div className="mb-4 rounded-lg border border-gray-300 bg-gray-100 p-2">
-              <p className="mb-2 px-1 font-medium text-[13px] text-gray-700 uppercase tracking-wide">
+            <div
+              className="mb-4 rounded-lg border p-2"
+              style={{
+                borderColor: 'var(--ds-gray-300)',
+                backgroundColor: 'var(--ds-gray-100)',
+              }}
+            >
+              <p
+                className="mb-2 px-1 text-label-13 font-medium uppercase tracking-wide"
+                style={{ color: 'var(--ds-gray-700)' }}
+              >
                 Actions
               </p>
               <div className="flex flex-col gap-2">
@@ -327,13 +336,16 @@ export function EntityDetailPanel({
                     onClick={handleWakeUp}
                     disabled={stoppingSleep}
                     className={clsx(
-                      'flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium',
+                      'flex items-center justify-center gap-2 rounded-md px-3 py-2 text-button-14',
                       'disabled:opacity-50 disabled:cursor-not-allowed transition-colors',
                       stoppingSleep
                         ? 'opacity-50 cursor-not-allowed'
-                        : 'cursor-pointer',
-                      'bg-amber-200 text-amber-900'
+                        : 'cursor-pointer'
                     )}
+                    style={{
+                      background: 'var(--ds-amber-200)',
+                      color: 'var(--ds-amber-900)',
+                    }}
                   >
                     <Zap className="h-4 w-4" />
                     {stoppingSleep ? 'Waking up...' : 'Wake Up Sleep'}
@@ -347,13 +359,16 @@ export function EntityDetailPanel({
                     onClick={() => setShowResolveHookModal(true)}
                     disabled={resolvingHook}
                     className={clsx(
-                      'flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium',
+                      'flex items-center justify-center gap-2 rounded-md px-3 py-2 text-button-14',
                       'disabled:opacity-50 disabled:cursor-not-allowed transition-colors',
                       resolvingHook
                         ? 'opacity-50 cursor-not-allowed'
-                        : 'cursor-pointer',
-                      'bg-gray-1000 text-background-100'
+                        : 'cursor-pointer'
                     )}
+                    style={{
+                      background: 'var(--ds-gray-1000)',
+                      color: 'var(--ds-background-100)',
+                    }}
                   >
                     <Send className="h-4 w-4" />
                     Resolve Hook

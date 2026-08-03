@@ -1,7 +1,7 @@
 'use client';
 
 import { AlertCircle } from 'lucide-react';
-import { CopyButton } from '../new-trace-viewer/components/copy-button';
+import { CopyButton } from '../trace-viewer/components/copy-button';
 
 export type StructuredErrorRecord = Record<string, unknown> & {
   message?: string;
@@ -70,7 +70,13 @@ export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
       : body;
 
   return (
-    <div className="relative overflow-hidden rounded-md border border-red-400 bg-red-100">
+    <div
+      className="relative overflow-hidden rounded-md border"
+      style={{
+        borderColor: 'var(--ds-red-400)',
+        background: 'var(--ds-red-100)',
+      }}
+    >
       <CopyButton
         copyText={copyText}
         ariaLabel="Copy error"
@@ -78,10 +84,16 @@ export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
       />
 
       {title && (
-        <div className="flex items-center gap-2 border-red-400 border-b px-3 py-2.5 pr-10 text-red-900">
+        <div
+          className="flex items-center gap-2 px-3 py-2.5 pr-10"
+          style={{
+            color: 'var(--ds-red-900)',
+            borderBottom: '1px solid var(--ds-red-400)',
+          }}
+        >
           <AlertCircle className="h-4 w-4 shrink-0" />
           <p
-            className="text-xs font-semibold m-0 truncate"
+            className="text-label-12 font-semibold m-0 truncate"
             // The full message or stack is in the body below; the header just
             // shows the first line, single-line, with overflow
             // ellipsised so a long title doesn't push the copy button or
@@ -93,7 +105,13 @@ export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
         </div>
       )}
       {body && (
-        <pre className="m-0 overflow-auto whitespace-pre-wrap break-words bg-red-200 px-3 py-2.5 font-mono text-red-900 text-xs">
+        <pre
+          className="px-3 py-2.5 text-label-12-mono whitespace-pre-wrap break-words overflow-auto m-0"
+          style={{
+            color: 'var(--ds-red-900)',
+            background: 'var(--ds-red-200)',
+          }}
+        >
           {body}
         </pre>
       )}

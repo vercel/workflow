@@ -6,7 +6,6 @@ import type { ModelMessage } from 'ai';
 import { format } from 'date-fns';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useRef, useState } from 'react';
-import { cn } from '../../lib/cn';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import {
@@ -52,14 +51,21 @@ function TabButton({
       aria-selected={active}
       tabIndex={active ? 0 : -1}
       onClick={onClick}
-      className={cn(
-        // Important modifiers prevent app-level button styles from leaking into
-        // web-shared when it is embedded in a self-hosted app.
-        '-mb-px cursor-pointer !rounded-none !border-t-0 !border-r-0 !border-b-2 !border-l-0 !bg-transparent px-3 py-1.5 font-medium text-[11px] !shadow-none !outline-none transition-colors',
-        active
-          ? '!border-blue-600 !text-gray-1000'
-          : '!border-transparent !text-gray-600'
-      )}
+      className="px-3 py-1.5 text-[11px] font-medium transition-colors -mb-px"
+      style={{
+        // Explicit styles to prevent app-level button overrides when web-shared
+        // is embedded in a self-hosted app.
+        backgroundColor: 'transparent',
+        borderTop: 'none',
+        borderLeft: 'none',
+        borderRight: 'none',
+        borderBottom: `2px solid ${active ? 'var(--ds-blue-600)' : 'transparent'}`,
+        borderRadius: 0,
+        outline: 'none',
+        boxShadow: 'none',
+        cursor: 'pointer',
+        color: active ? 'var(--ds-gray-1000)' : 'var(--ds-gray-600)',
+      }}
     >
       {children}
     </button>
@@ -98,12 +104,22 @@ function TabbedContainer<T extends string>({
   );
 
   return (
-    <div className="rounded-md border border-gray-300 bg-transparent">
+    <div
+      className="rounded-md border"
+      style={{
+        borderColor: 'var(--ds-gray-300)',
+        backgroundColor: 'transparent',
+      }}
+    >
       <div
-        className="flex gap-1 border-gray-300 border-b bg-transparent"
+        className="flex gap-1 border-b"
         role="tablist"
         aria-label={ariaLabel}
         onKeyDown={handleKeyDown}
+        style={{
+          borderColor: 'var(--ds-gray-300)',
+          backgroundColor: 'transparent',
+        }}
       >
         {tabs.map((tab) => (
           <TabButton
@@ -187,7 +203,14 @@ function EncryptedFieldBlock() {
  */
 function ExpiredFieldBlock() {
   return (
-    <div className="flex items-center gap-1.5 rounded-md border border-gray-300 bg-gray-100 px-3 py-2 text-gray-700 text-xs">
+    <div
+      className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-label-12"
+      style={{
+        borderColor: 'var(--ds-gray-300)',
+        backgroundColor: 'var(--ds-gray-100)',
+        color: 'var(--ds-gray-700)',
+      }}
+    >
       <span className="font-medium">Data expired</span>
     </div>
   );
@@ -222,7 +245,12 @@ type AttributeKey =
   | 'isSystem'
   | 'errorCode'
   // Analytics-only provenance (AnalyticsEvent / AnalyticsStep), not on Event.
-  | 'computeInstanceId';
+  | 'computeInstanceId'
+  // Analytics-only, and event-grained: only AnalyticsEvent carries it. The key
+  // is `vercelId` because that is the name the backend stores the SDK's
+  // `requestId` under; AnalyticsEvent's sibling `requestId` column is never
+  // written, so reading that one would always be empty.
+  | 'vercelId';
 
 const attributeOrder: AttributeKey[] = [
   'workflowName',
@@ -235,12 +263,15 @@ const attributeOrder: AttributeKey[] = [
   'runId',
   'attempt',
   'token',
+  'isWebhook',
+  'isSystem',
   'receivedCount',
   'lastReceivedAt',
   'disposedAt',
   'correlationId',
   'eventType',
   'deploymentId',
+  'vercelId',
   'computeInstanceId',
   'specVersion',
   'workflowCoreVersion',
@@ -255,6 +286,7 @@ const attributeOrder: AttributeKey[] = [
   'completedAt',
   'expiredAt',
   'retryAfter',
+  'errorCode',
   'error',
   'metadata',
   'eventData',
@@ -264,11 +296,18 @@ const attributeOrder: AttributeKey[] = [
   'resumeAt',
 ];
 
-const sortByAttributeOrder = (a: string, b: string): number => {
-  const aIndex = attributeOrder.indexOf(a as AttributeKey) || 0;
-  const bIndex = attributeOrder.indexOf(b as AttributeKey) || 0;
-  return aIndex - bIndex;
+/**
+ * Rank of an attribute in {@link attributeOrder}. Keys absent from that list
+ * sort after every listed one rather than before them — `indexOf` reports a
+ * miss as `-1`, which is truthy, so a `|| 0` fallback never fires.
+ */
+const attributeOrderIndex = (attribute: string): number => {
+  const index = attributeOrder.indexOf(attribute as AttributeKey);
+  return index === -1 ? attributeOrder.length : index;
 };
+
+const sortByAttributeOrder = (a: string, b: string): number =>
+  attributeOrderIndex(a) - attributeOrderIndex(b);
 
 /**
  * Display names for attributes that should render differently from their key.
@@ -287,6 +326,7 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   errorCode: 'Error Code',
   correlationId: 'Correlation ID',
   deploymentId: 'Deployment ID',
+  vercelId: 'Request ID',
   computeInstanceId: 'Compute Instance ID',
   specVersion: 'Spec Version',
   workflowCoreVersion: '@workflow/core version',
@@ -369,6 +409,14 @@ const timestampWithTooltipOrNull = (value: unknown): ReactNode | null => {
   );
 };
 
+/**
+ * Renders an opaque provenance id. The analytics read contract types these as
+ * nullable, and only a `null` return is filtered out of the panel, so a bare
+ * `String()` would surface the literal text "null" as the value.
+ */
+const opaqueIdOrNull = (value: unknown): string | null =>
+  hasDisplayContent(value) ? String(value) : null;
+
 interface DisplayContext {
   stepName?: string;
   sectionOpen?: boolean;
@@ -407,7 +455,8 @@ const attributeToDisplayFn: Record<
   correlationId: (value: unknown) => String(value),
   // Project details
   deploymentId: (value: unknown) => String(value),
-  computeInstanceId: (value: unknown) => String(value),
+  vercelId: opaqueIdOrNull,
+  computeInstanceId: opaqueIdOrNull,
   specVersion: (value: unknown) => String(value),
   workflowCoreVersion: (value: unknown) => String(value),
   // Tenancy (we don't show these)
@@ -651,7 +700,14 @@ const selfHeaderedAttributes = new Set([
 ]);
 
 const ExpiredDataMessage = () => (
-  <div className="my-2 rounded-md border border-gray-300 bg-gray-100 p-4 text-gray-700 text-label-12">
+  <div
+    className="text-label-12 rounded-md border p-4 my-2"
+    style={{
+      borderColor: 'var(--ds-gray-300)',
+      backgroundColor: 'var(--ds-gray-100)',
+      color: 'var(--ds-gray-700)',
+    }}
+  >
     <span>The data for this run has expired and is no longer available.</span>
   </div>
 );
@@ -661,6 +717,7 @@ const copyableBasicAttributes = new Set<AttributeKey>([
   'hookId',
   'eventId',
   'deploymentId',
+  'vercelId',
   'computeInstanceId',
   'moduleSpecifier',
   'token',
@@ -723,10 +780,15 @@ export const AttributeBlock = ({
   if (inline) {
     return (
       <div className="flex items-center gap-1.5">
-        <span className="font-medium text-[11px] text-gray-700">
+        <span
+          className="text-[11px] font-medium"
+          style={{ color: 'var(--ds-gray-700)' }}
+        >
           {attribute}
         </span>
-        <span className="text-[11px] text-gray-1000">{displayValue}</span>
+        <span className="text-[11px]" style={{ color: 'var(--ds-gray-1000)' }}>
+          {displayValue}
+        </span>
       </div>
     );
   }
@@ -739,14 +801,22 @@ export const AttributeBlock = ({
     <div className="relative">
       {typeof isLoading === 'boolean' && isLoading && (
         <div className="absolute top-9 right-4">
-          <div className="h-4 w-4 animate-spin rounded-full border-gray-900 border-b-2" />
+          <div
+            className="animate-spin rounded-full h-4 w-4 border-b-2"
+            style={{ borderColor: 'var(--ds-gray-900)' }}
+          />
         </div>
       )}
       <div key={attribute} className="my-2 flex flex-col gap-0">
         <span className="text-label-14 text-gray-1000 font-medium first-letter:uppercase">
           {attribute}
         </span>
-        <span className="text-gray-1000 text-xs">{displayValue}</span>
+        <span
+          className="text-label-12"
+          style={{ color: 'var(--ds-gray-1000)' }}
+        >
+          {displayValue}
+        </span>
       </div>
     </div>
   );

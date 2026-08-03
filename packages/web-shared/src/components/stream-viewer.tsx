@@ -2,9 +2,9 @@
 
 import React, { useEffect, useRef } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { CopyButton } from './new-trace-viewer/components/copy-button';
 import { serializeForClipboard } from './sidebar/copyable-data-block';
 import { StreamViewerSkeleton } from './stream-viewer-skeleton';
+import { CopyButton } from './trace-viewer/components/copy-button';
 import { DataInspector } from './ui/data-inspector';
 
 // ──────────────────────────────────────────────────────────────────────────
