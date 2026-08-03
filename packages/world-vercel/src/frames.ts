@@ -18,7 +18,9 @@ export interface DecodedFrame {
   body: Uint8Array;
 }
 
-const FrameMetaSchema = z.record(z.string(), z.unknown());
+// The protocol consumer validates the event or control-frame shape after the
+// body is available. The byte codec only requires a CBOR object here.
+const CborObjectSchema = z.record(z.string(), z.unknown());
 
 /** Test/utility: encode a complete frame. Production server uses prefix
  *  + streaming body. */
@@ -95,7 +97,7 @@ export async function* decodeFrames(
       if (!(await refill(metaLen))) {
         throw new Error('decodeFrames: truncated meta block');
       }
-      const meta = FrameMetaSchema.parse(decode(take(metaLen)));
+      const meta = CborObjectSchema.parse(decode(take(metaLen)));
 
       if (!(await refill(4))) {
         throw new Error('decodeFrames: truncated body length');
