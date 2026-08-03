@@ -64,6 +64,7 @@ import {
   getObjectCreatedAt,
   hookDisposeLockPath,
   hookRecoveryMarkerPath,
+  hookResumeClaimPath,
   hookTokenClaimPath,
   isHookDisposalCommitted,
   isRunTerminalCommitted,
@@ -161,6 +162,23 @@ const HookTokenClaimSchema = z.object({
  */
 const HookRecoveryMarkerSchema = z.object({
   eventId: z.string(),
+});
+
+/**
+ * Durable `(runId, resumeId)` claim for a lazy hook resume. Written via
+ * `writeExclusive` at {@link hookResumeClaimPath} BEFORE the `hook_received`
+ * event is appended, so the two parallel-path writers (the producer's direct
+ * write and the queue consumer's re-ensure) converge on the one canonical
+ * `eventId` pinned here instead of appending two events. `payloadDigest`
+ * records the content hash so a reused `resumeId` carrying a different payload
+ * can be rejected as a conflict, matching the server's constraint.
+ */
+const HookResumeClaimSchema = z.object({
+  runId: z.string(),
+  resumeId: z.string(),
+  hookId: z.string(),
+  eventId: z.string(),
+  payloadDigest: z.string().optional(),
 });
 
 async function readHookTokenClaim(
@@ -1034,6 +1052,103 @@ export function createEventsStorage(
           if (!existingHook) {
             throw new HookNotFoundError(data.correlationId);
           }
+
+          // Lazy hook resume idempotency: the parallel fast path writes this
+          // `hook_received` directly AND has the queue consumer re-ensure it,
+          // both carrying the same `resumeId`, so both may reach here under the
+          // per-hook lock. They must converge on ONE event. Keyed on
+          // `(runId, resumeId)` — NOT on the hookId — because a reusable hook
+          // receives many distinct resumes and each must record its own event;
+          // only the two writers of a single resume collapse. The claim pins
+          // the canonical eventId BEFORE the append so a cross-process writer
+          // converges too. Gated on `resumeId` so the historical single-write
+          // path is untouched.
+          if (data.eventType === 'hook_received' && params?.resumeId) {
+            const claimPath = hookResumeClaimPath(
+              basedir,
+              effectiveRunId,
+              params.resumeId
+            );
+            const converge = async (
+              claim: z.infer<typeof HookResumeClaimSchema>
+            ): Promise<EventResult | null> => {
+              // A resumeId reused across DIFFERENT hooks is a caller bug (or a
+              // collision), not a benign redelivery of the same resume. Adopting
+              // the first hook's event for a second hook would attribute a
+              // resume to the wrong hook. The two writers of ONE resume always
+              // carry the same hookId, so a mismatch can only mean the claim
+              // belongs to another hook — reject, mirroring the server's
+              // `(runId, resumeId)` constraint identity.
+              if (claim.hookId !== data.correlationId) {
+                throw new EntityConflictError(
+                  `hook_received resumeId "${params.resumeId}" already recorded for a different hook`
+                );
+              }
+              // A reused resumeId carrying a different payload is a caller bug,
+              // not a benign redelivery — reject it exactly like the server's
+              // constraint (which keys the digest into the claim).
+              if (
+                params.resumePayloadDigest &&
+                claim.payloadDigest &&
+                claim.payloadDigest !== params.resumePayloadDigest
+              ) {
+                throw new EntityConflictError(
+                  `hook_received resumeId "${params.resumeId}" already recorded with a different payload`
+                );
+              }
+              const existing = await readJSONWithFallback(
+                basedir,
+                'events',
+                `${effectiveRunId}-${claim.eventId}`,
+                EventSchema,
+                tag
+              );
+              if (existing) {
+                return { event: existing };
+              }
+              // Claim exists but its event is not yet visible (a crash between
+              // the claim write and the append). Adopt the pinned eventId and
+              // fall through to (re)write the event idempotently at that path.
+              eventId = claim.eventId;
+              return null;
+            };
+
+            const existingClaim = await readJSON(
+              claimPath,
+              HookResumeClaimSchema
+            );
+            if (existingClaim) {
+              const converged = await converge(existingClaim);
+              if (converged) {
+                return converged;
+              }
+            } else {
+              // Reserve the claim (pinning this candidate eventId) before the
+              // append. If a concurrent/cross-process writer reserved it first,
+              // converge on their pinned event instead.
+              const won = await writeExclusive(
+                claimPath,
+                JSON.stringify({
+                  runId: effectiveRunId,
+                  resumeId: params.resumeId,
+                  hookId: data.correlationId,
+                  eventId,
+                  ...(params.resumePayloadDigest
+                    ? { payloadDigest: params.resumePayloadDigest }
+                    : {}),
+                } satisfies z.infer<typeof HookResumeClaimSchema>)
+              );
+              if (!won) {
+                const winner = await readJSON(claimPath, HookResumeClaimSchema);
+                if (winner) {
+                  const converged = await converge(winner);
+                  if (converged) {
+                    return converged;
+                  }
+                }
+              }
+            }
+          }
         }
         // `event` may be reassigned later in the `hook_created`
         // dedup-recovery branch to swap in a canonical eventId /
@@ -1046,6 +1161,16 @@ export function createEventsStorage(
           eventId,
           createdAt: now,
           specVersion: effectiveSpecVersion,
+          // Persist the lazy-resume idempotency key on the hook_received event
+          // so the queue consumer can recognize the producer's concurrent
+          // direct write already landed in its run_started preload and skip the
+          // re-ensure. Gated on hook_received (params.resumeId is only set
+          // there); mirrors the server's stored `resumeId` attribute. The
+          // converge path above reads back this same persisted event, so both
+          // writers of one resume return an event carrying the key.
+          ...(data.eventType === 'hook_received' && params?.resumeId
+            ? { resumeId: params.resumeId }
+            : {}),
         };
         // Strip eventData from run_started — it belongs on run_created only.
         if (data.eventType === 'run_started' && 'eventData' in event) {
