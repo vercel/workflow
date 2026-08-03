@@ -1755,74 +1755,6 @@ export function workflowEntrypoint(
                     } // end else (re-ensure needed)
                   }
 
-                  // --- QuickJS VM engine dispatch ---
-                  // The QuickJS engine (opt-in via WORKFLOW_VM=quickjs or
-                  // executionContext.workflowVm) is a self-contained
-                  // alternative to the node:vm inline-replay loop below.
-                  // It performs the same full event replay, but runs the
-                  // workflow code in a QuickJS WASM VM, queues steps via
-                  // the same combined route (so they hit executeStep below
-                  // on re-entry), and manages its own run_completed /
-                  // run_failed lifecycle. When the QuickJS engine is in
-                  // effect, return immediately after dispatch.
-                  //
-                  // Ordering invariant: this dispatch must stay BELOW the
-                  // lazy-hook-resume ensure above. start() stamps
-                  // `hookResumeInputVersion` into executionContext for every
-                  // run regardless of engine, attesting that the consumer
-                  // re-ensures `hook_received` from `hookInput` before
-                  // replay — the ensure block above is what makes that
-                  // attestation true for QuickJS runs. It also splices the
-                  // canonical event into `preloadedEvents` before they are
-                  // handed to the entrypoint.
-                  if (useQuickJSVm(workflowRun)) {
-                    runtimeLogger.debug('Using QuickJS VM engine', {
-                      workflowRunId: runId,
-                      loopIteration,
-                    });
-                    // Under turbo, run_started is backgrounded. The QuickJS
-                    // entrypoint fetches the event log and writes events
-                    // directly, so wait for the run to be durably started
-                    // first — it does not thread the turbo runReadyBarrier
-                    // the way handleSuspension does.
-                    await awaitRunReady();
-                    // Lazy import: the QuickJS entrypoint's import chain
-                    // embeds the base64 WASM binary + extensions (~1.3 MB
-                    // decoded at module scope). Loading it here keeps that
-                    // out of node-engine deployments entirely — only the
-                    // opt-in path pays, on first dispatch.
-                    const { runWorkflowWithQuickJS } = await import(
-                      './runtime/quickjs-entrypoint.js'
-                    );
-                    const quickjsResult = await runWorkflowWithQuickJS({
-                      workflowCode,
-                      workflowName,
-                      workflowRun,
-                      preloadedEvents,
-                      runInput,
-                      parentSpan: span,
-                      maxEventsLimit,
-                      // The lazy-hook-resume ensure above already
-                      // materialized the `hook_received` for this payload
-                      // (keyed by resumeId); the entrypoint's own
-                      // materialization is a dormant backstop that dedups
-                      // against it.
-                      hookInput,
-                    });
-                    if (quickjsResult?.timeoutSeconds !== undefined) {
-                      // Use `reinvoke` rather than returning
-                      // `{ timeoutSeconds }` directly: under turbo the
-                      // current message carries `runInput` and a reschedule
-                      // would re-engage turbo on redelivery (replaying
-                      // against a stale preloaded log and wedging the run —
-                      // see the reinvoke() docs above). reinvoke enqueues an
-                      // explicit continuation without `runInput` in that
-                      // case.
-                      return await reinvoke(quickjsResult.timeoutSeconds);
-                    }
-                    return;
-                  }
-
                   // Resolve the encryption key for this run's deployment.
                   // Used eagerly here since both runWorkflow (input
                   // hydration / hook payload decryption) and the run_failed
@@ -1900,6 +1832,89 @@ export function workflowEntrypoint(
                     // as the `sinceCursor` for the inline-delta optimization.
                     let preInlineWriteCursor: string | null = null;
                     try {
+                      // --- QuickJS VM engine dispatch ---
+                      // The QuickJS engine (opt-in via WORKFLOW_VM=quickjs or
+                      // executionContext.workflowVm) is a self-contained
+                      // alternative to the node:vm inline-replay loop below.
+                      // It performs the same full event replay, but runs the
+                      // workflow code in a QuickJS WASM VM, queues steps via
+                      // the same combined route (so they hit executeStep below
+                      // on re-entry), and manages its own run_completed /
+                      // run_failed lifecycle for workflow-level outcomes.
+                      // When the QuickJS engine is in effect, return
+                      // immediately after dispatch.
+                      //
+                      // Placement: INSIDE the run-level try so an engine
+                      // failure (event-ceiling MaxEventsExceededError, WASM
+                      // OOM, bundle-eval failure, an escaping JSException)
+                      // flows into the shared catch below and classifies
+                      // into a terminal run_failed exactly like a node:vm
+                      // failure — instead of nacking the message into a
+                      // MAX_QUEUE_DELIVERIES redelivery loop.
+                      //
+                      // Ordering invariant: this dispatch must stay BELOW the
+                      // lazy-hook-resume ensure above. start() stamps
+                      // `hookResumeInputVersion` into executionContext for every
+                      // run regardless of engine, attesting that the consumer
+                      // re-ensures `hook_received` from `hookInput` before
+                      // replay — the ensure block above is what makes that
+                      // attestation true for QuickJS runs. It also splices the
+                      // canonical event into `preloadedEvents` before they are
+                      // handed to the entrypoint.
+                      if (useQuickJSVm(workflowRun)) {
+                        runtimeLogger.debug('Using QuickJS VM engine', {
+                          workflowRunId: runId,
+                          loopIteration,
+                        });
+                        // Under turbo, run_started is backgrounded. The QuickJS
+                        // entrypoint fetches the event log and writes events
+                        // directly, so wait for the run to be durably started
+                        // first — it does not thread the turbo runReadyBarrier
+                        // the way handleSuspension does.
+                        await awaitRunReady();
+                        // Lazy import: the QuickJS entrypoint's import chain
+                        // embeds the base64 WASM binary + extensions (~1.3 MB
+                        // decoded at module scope). Loading it here keeps that
+                        // out of node-engine deployments entirely — only the
+                        // opt-in path pays, on first dispatch.
+                        const { runWorkflowWithQuickJS } = await import(
+                          './runtime/quickjs-entrypoint.js'
+                        );
+                        const quickjsResult = await runWorkflowWithQuickJS({
+                          workflowCode,
+                          workflowName,
+                          workflowRun,
+                          preloadedEvents,
+                          runInput,
+                          parentSpan: span,
+                          maxEventsLimit,
+                          // Multi-tenant queue prefix of THIS delivery —
+                          // the entrypoint derives every queue name it
+                          // publishes to (step dispatch, hook_conflict
+                          // requeues) from it, matching the node paths
+                          // below.
+                          namespace,
+                          // The lazy-hook-resume ensure above already
+                          // materialized the `hook_received` for this payload
+                          // (keyed by resumeId); the entrypoint's own
+                          // materialization is a dormant backstop that dedups
+                          // against it.
+                          hookInput,
+                        });
+                        if (quickjsResult?.timeoutSeconds !== undefined) {
+                          // Use `reinvoke` rather than returning
+                          // `{ timeoutSeconds }` directly: under turbo the
+                          // current message carries `runInput` and a reschedule
+                          // would re-engage turbo on redelivery (replaying
+                          // against a stale preloaded log and wedging the run —
+                          // see the reinvoke() docs above). reinvoke enqueues an
+                          // explicit continuation without `runInput` in that
+                          // case.
+                          return await reinvoke(quickjsResult.timeoutSeconds);
+                        }
+                        return;
+                      }
+
                       // Load events — use cached events with incremental fetch on subsequent iterations.
                       // The server always returns a cursor when there are events (even on the
                       // final page), so we can reliably use it for incremental loading.

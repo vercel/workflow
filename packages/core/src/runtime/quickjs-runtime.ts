@@ -31,6 +31,7 @@ import type { Event, RunInput, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { JSException, QuickJS, type WasiOptions } from 'quickjs-wasi';
 import seedrandom from 'seedrandom';
+import { getReplayTimeoutMs } from './constants.js';
 import { runtimeLogger } from '../logger.js';
 import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
@@ -1898,6 +1899,12 @@ function extractError(
 
 function createInterruptHandler(): () => boolean {
   const start = Date.now();
-  const timeout = 30_000;
+  // Use the same configurable replay budget as the node:vm engine
+  // (REPLAY_TIMEOUT_MS, default 240s) rather than a hardcoded cap: a
+  // workflow whose replay the node engine handles fine must not be
+  // interrupted early just because it runs on the QuickJS engine. The
+  // deadline starts at VM creation, so host-side event fetching before
+  // that is not counted against it.
+  const timeout = getReplayTimeoutMs();
   return () => Date.now() - start > timeout;
 }

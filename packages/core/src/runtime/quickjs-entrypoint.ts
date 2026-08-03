@@ -111,6 +111,8 @@ async function dispatchPendingOps(params: {
   encryptionKey: RunPayloadKeys | undefined;
   pendingOperations: PendingOperation[];
   queueSteps: boolean;
+  /** Queue namespace of the incoming delivery (multi-tenant queue prefix). */
+  namespace?: string;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<{
   createdAttributeEvent: boolean;
@@ -118,6 +120,7 @@ async function dispatchPendingOps(params: {
 }> {
   const { world, runId, workflowRun, encryptionKey, pendingOperations } =
     params;
+  const namespace = params.namespace;
   const wfdiag = params.wfdiag;
   // Set when a hook with a parked getConflict() awaiter had its
   // hook_created written this invocation. The workflow must be re-invoked
@@ -182,7 +185,7 @@ async function dispatchPendingOps(params: {
         if (result.event?.eventType === 'hook_conflict') {
           await queueMessage(
             world,
-            getWorkflowQueueName(workflowRun.workflowName),
+            getWorkflowQueueName(workflowRun.workflowName, namespace),
             {
               runId,
             },
@@ -357,7 +360,7 @@ async function dispatchPendingOps(params: {
             const traceCarrier = await serializeTraceCarrier();
             await queueMessage(
               world,
-              getWorkflowQueueName(workflowRun.workflowName),
+              getWorkflowQueueName(workflowRun.workflowName, namespace),
               {
                 runId,
                 stepId: step.correlationId,
@@ -488,6 +491,14 @@ export async function runWorkflowWithQuickJS(params: {
    * still receives it. See the same-named field in `QueueMessageSchema`.
    */
   hookInput?: HookResumeInput;
+  /**
+   * Queue namespace of the incoming delivery (multi-tenant queue prefix).
+   * Threaded into every queue name this entrypoint derives — step dispatch
+   * and hook_conflict requeues — so namespaced deployments publish to the
+   * queue their consumer actually reads (parity with the node engine's
+   * `namespace` plumbing in runtime.ts).
+   */
+  namespace?: string;
 }): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
@@ -498,6 +509,7 @@ export async function runWorkflowWithQuickJS(params: {
     parentSpan,
     maxEventsLimit,
     hookInput,
+    namespace,
   } = params;
   const world = await getWorld();
   const runId = workflowRun.runId;
@@ -836,6 +848,7 @@ export async function runWorkflowWithQuickJS(params: {
           encryptionKey,
           pendingOperations: result.completed.drainOperations,
           queueSteps: false,
+          namespace,
           wfdiag,
         });
       } catch (err) {
@@ -921,6 +934,7 @@ export async function runWorkflowWithQuickJS(params: {
         encryptionKey,
         pendingOperations,
         queueSteps: true,
+        namespace,
         wfdiag,
       });
 
@@ -1042,6 +1056,7 @@ export async function runWorkflowWithQuickJS(params: {
           encryptionKey,
           pendingOperations: result.failed.drainOperations,
           queueSteps: false,
+          namespace,
           wfdiag,
         });
       } catch (err) {
