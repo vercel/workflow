@@ -10,13 +10,13 @@ import type {
 } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { cn } from '../lib/cn';
 import {
   type ExactIdSearchResult,
   type ExactWorkflowSearchIdKind,
   looksLikeWorkflowIdSearchInput,
   parseExactWorkflowSearchId,
 } from '../lib/exact-event-search-id';
-import { cn } from '../lib/cn';
 import { isEncryptedMarker } from '../lib/hydration';
 import { useToast } from '../lib/toast';
 import { formatDuration } from '../lib/utils';

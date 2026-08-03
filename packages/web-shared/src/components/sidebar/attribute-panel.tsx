@@ -6,8 +6,8 @@ import type { ModelMessage } from 'ai';
 import { format } from 'date-fns';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useRef, useState } from 'react';
-import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { cn } from '../../lib/cn';
+import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import {
   Collapsible,

@@ -166,7 +166,6 @@ export const O11yDashboard = ({
                 className="fill-gray-alpha-200"
                 d="M10.24 303.237a4.994 4.994 0 0 1 4.994-4.994h189.652a4.993 4.993 0 0 1 4.993 4.994v23.305a4.993 4.993 0 0 1-4.993 4.994H15.234a4.994 4.994 0 0 1-4.994-4.994v-23.305Z"
               />
-              {/** biome-ignore lint/a11y/noSvgWithoutTitle: too detailed element of viz */}
               <svg
                 x={20.5}
                 y={307.8}

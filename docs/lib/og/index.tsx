@@ -67,7 +67,7 @@ export const createOgImage = async ({
           </div>
         )}
         {/* Non-breaking spaces to match "Workflow: " width, then title flows naturally */}
-        <div tw="text-[72px] font-semibold leading-[1.15] tracking-[-0.025em] text-[#888888]">
+        <div tw="text-[72px] font-semibold leading-[1.15] tracking-tight text-[#888888]">
           {`\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0 ${title}`}
           {/* {`Workflow: ${title}`} */}
         </div>

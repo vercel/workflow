@@ -3,6 +3,7 @@ import type { JSX } from 'react';
 export function InfraVisual(): JSX.Element {
   return (
     <svg
+      aria-hidden="true"
       width="444"
       height="264"
       viewBox="0 0 444 264"
