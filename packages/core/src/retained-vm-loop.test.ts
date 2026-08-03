@@ -1,3 +1,4 @@
+import { PreconditionFailedError } from '@workflow/errors';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
@@ -131,7 +132,12 @@ registerStepFunction('r_echo', async (value) => value);
 // Drive the full workflow handler over a stateful (dynamic) event log so the
 // inline loop makes real progress across its own writes, exactly like a World.
 // Non-turbo (no runInput, attempt 2) to keep the path simple and deterministic.
-async function drive(runId: string, workflowCode = twoStepWorkflow) {
+async function drive(
+  runId: string,
+  workflowCode = twoStepWorkflow,
+  options: { failEventTypeOnce?: string } = {}
+) {
+  let { failEventTypeOnce } = options;
   const run: WorkflowRun = {
     runId,
     workflowName: 'workflow',
@@ -147,6 +153,10 @@ async function drive(runId: string, workflowCode = twoStepWorkflow) {
   let seq = 0;
 
   const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+    if (data.eventType === failEventTypeOnce) {
+      failEventTypeOnce = undefined;
+      throw new PreconditionFailedError('stale snapshot (test-injected)');
+    }
     createdEvents.push(data);
     if (data.eventType === 'run_started') {
       return { run, events };
@@ -288,6 +298,21 @@ describe('retained VM through the inline replay loop', () => {
     const { vmBuilds, result } = await drive(
       'wrun_retained_mixed_batch',
       mixedBatchWorkflow
+    );
+    expect(result).toBe(30);
+    expect(vmBuilds).toBeGreaterThan(1);
+  });
+
+  it('discards the retained session when a 412 forces an in-process restart', async () => {
+    // A stale-snapshot rejection of run_completed restarts the replay in
+    // process (see restartReplayInProcess). The parked session belongs to the
+    // discarded log — resuming it would replay a completed session (throw →
+    // run_failed) or bypass the retention decision entirely. The restart must
+    // fall back to a fresh replay and still complete the run.
+    const { vmBuilds, result } = await drive(
+      'wrun_retained_412_restart',
+      twoStepWorkflow,
+      { failEventTypeOnce: 'run_completed' }
     );
     expect(result).toBe(30);
     expect(vmBuilds).toBeGreaterThan(1);

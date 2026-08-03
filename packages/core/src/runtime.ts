@@ -1045,6 +1045,14 @@ export function workflowEntrypoint(
                       return false;
                     }
                     preconditionRestarts++;
+                    // Every stale-snapshot restart invalidates the parked VM:
+                    // the log it consumed was missing events, so only a fresh
+                    // replay over the corrected log is authoritative. This
+                    // also covers the suspension-create 412, which fires
+                    // before the retention decision (kill switch + step-input
+                    // gate) ever ran, and the run_completed 412, where a
+                    // completed session must not be resumed again.
+                    retainedSession = null;
                     // A World MAY return the events we were missing on the 412.
                     // Trust it only on the FIRST restart: its completeness proof
                     // leans on the backend's own bookkeeping, so if that
