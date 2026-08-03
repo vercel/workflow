@@ -33,6 +33,7 @@ import {
   HookSchema,
   type ListEventsParams,
   type PaginationOptions,
+  StructuredErrorSchema,
   WaitSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
@@ -50,6 +51,7 @@ import {
   instrumentedFetch,
   parseRetryAfter,
 } from './http-core.js';
+import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
@@ -332,6 +334,44 @@ const EventStreamEndSchema = z.object({
   next: z.string().optional(),
   hasMore: z.boolean(),
 });
+
+// Stable runtimes stored these errors as CBOR StructuredError objects rather
+// than the format-prefixed serialized bytes emitted by current runtimes.
+const legacyStructuredErrorEventTypes = new Set<EventType>([
+  'run_failed',
+  'step_failed',
+  'step_retrying',
+]);
+
+function decodeLegacyStructuredError(payload: Uint8Array): unknown {
+  if (hasSerializedDataFormatPrefix(payload)) return payload;
+
+  try {
+    const parsed = StructuredErrorSchema.safeParse(decode(payload.slice()));
+    return parsed.success ? parsed.data : payload;
+  } catch {
+    return payload;
+  }
+}
+
+function decodeEventFrame({ meta, body }: DecodedFrame): Event {
+  const eventType = EventTypeSchema.parse(meta.eventType);
+  if (body.byteLength === 0) return EventSchema.parse(meta);
+
+  const payloadField = getEventDataPayloadField(eventType);
+  assert(payloadField, `Event type ${eventType} cannot carry a payload body`);
+  assert(meta.eventData && typeof meta.eventData === 'object');
+
+  return EventSchema.parse({
+    ...meta,
+    eventData: {
+      ...meta.eventData,
+      [payloadField]: legacyStructuredErrorEventTypes.has(eventType)
+        ? decodeLegacyStructuredError(body)
+        : body,
+    },
+  });
+}
 
 /** Build the CBOR meta map for a v4 POST frame. Drops undefined entries
  *  so the wire shape matches what the server expects to see. */
@@ -662,20 +702,15 @@ function readHeader(
 /**
  * GET /api/v4/runs/:runId/events/:eventId
  *
- * Returns one v4 frame: the full event entity (CBOR-decoded from the
- * frame meta) plus the resolved payload bytes (frame body, possibly
- * empty). The wire format is identical to a single LIST frame so the
- * server can stream the payload back without buffering — callers
- * are responsible for splicing `body` into `event.eventData[payloadField]`
- * when they need the resolved value. The world-vercel adapter does this
- * in events.ts.
+ * Returns one validated event. The wire format is identical to a single LIST
+ * frame so the server can stream the payload back without buffering.
  */
 export async function getEventV4(
   runId: string,
   eventId: string,
   remoteRefBehavior: 'resolve' | 'lazy',
   config?: APIConfig
-): Promise<DecodedFrame> {
+): Promise<Event> {
   const { baseUrl, headers } = await getHttpConfig(config);
 
   const url =
@@ -705,8 +740,7 @@ export async function getEventV4(
   // GET emits a single frame (no sentinel); decodeFrames returns at EOF
   // after yielding it.
   for await (const frame of decodeFrames(chunks)) {
-    EventTypeSchema.parse(frame.meta.eventType);
-    return frame;
+    return decodeEventFrame(frame);
   }
   throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
 }
@@ -726,7 +760,7 @@ type ListWorkflowRunEventsV4Params = ListEventsV4Params &
   Pick<ListEventsParams, 'returnAll'>;
 
 export interface ListEventsV4Result {
-  events: DecodedFrame[];
+  events: Event[];
   /** Trailing event-log cursor, or null when the stream contained no events. */
   cursor: string | null;
   /** Explicit "another page of results exists" flag from the sentinel. */
@@ -745,7 +779,7 @@ async function consumeEventFrameStream(
   }
 
   const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
-  const events: DecodedFrame[] = [];
+  const events: Event[] = [];
 
   for await (const frame of decodeFrames(chunks)) {
     if (frame.meta._end === 1) {
@@ -755,8 +789,7 @@ async function consumeEventFrameStream(
     if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
       throw new Error(`v4 ${opName}: unexpected control frame`);
     }
-    EventTypeSchema.parse(frame.meta.eventType);
-    events.push(frame);
+    events.push(decodeEventFrame(frame));
   }
 
   throw new Error(
@@ -814,11 +847,8 @@ function paginationToQuery(params: ListWorkflowRunEventsV4Params): string {
 /**
  * GET /api/v4/runs/:runId/events
  *
- * Parses the binary-frame stream into a list of events plus the
- * pagination cursor (from the sentinel frame). Each frame's CBOR meta
- * IS the full event entity, with the payload field still in `eventData`
- * as a `RefDescriptor` (lazy); the resolved payload bytes ride in the
- * frame body. The adapter layer splices them back into eventData.
+ * Parses the binary-frame stream into validated events plus the pagination
+ * cursor from the sentinel frame.
  *
  * Eagerly drains the stream into memory to match the existing
  * `getWorkflowRunEvents` page-at-a-time contract. A streaming variant

@@ -31,7 +31,6 @@
  * the v3 path.
  */
 
-import assert from 'node:assert/strict';
 import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   type AnyEventRequest,
@@ -41,18 +40,15 @@ import {
   type EventDataPayloadField,
   type EventResult,
   EventSchema,
-  EventTypeSchema,
   type GetEventParams,
   getEventDataPayloadField,
   isHookEventRequiringExistence,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   type PaginatedResponse,
-  StructuredErrorSchema,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
-import { decode } from 'cbor-x';
 import { withEventPostRetry } from './event-retry.js';
 import {
   createWorkflowRunEventV4,
@@ -62,10 +58,8 @@ import {
   getWorkflowRunEventsV4,
   type ListEventsV4Params,
 } from './events-v4.js';
-import type { DecodedFrame } from './frames.js';
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
-import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import {
   type APIConfig,
   DEFAULT_RESOLVE_DATA_OPTION,
@@ -105,15 +99,6 @@ const eventsNeedingResolve = new Set<string>([
   'run_created', // runtime reads result.run.runId
   'run_started', // runtime reads result.run (checks startedAt, status)
   'step_started', // runtime reads result.step (checks attempt, state)
-]);
-
-// Stable runtimes stored these errors as backend-materialized
-// StructuredError objects. Their resolved v4 frame bodies are CBOR rather
-// than the format-prefixed serialized data emitted by current runtimes.
-const legacyStructuredErrorEventTypes = new Set<string>([
-  'run_failed',
-  'step_failed',
-  'step_retrying',
 ]);
 
 // =============================================================================
@@ -426,48 +411,6 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   return { payload, meta };
 }
 
-function decodeLegacyStructuredError(payload: Uint8Array): unknown {
-  if (hasSerializedDataFormatPrefix(payload)) {
-    return payload;
-  }
-
-  try {
-    // cbor-x caches decode state on its input, so decode a copy to keep the
-    // raw-byte fallback byte-for-byte and property-for-property unchanged.
-    const parsed = StructuredErrorSchema.safeParse(decode(payload.slice()));
-    return parsed.success ? parsed.data : payload;
-  } catch {
-    return payload;
-  }
-}
-
-/**
- * Turn a v4 frame into the Event shape promised by the World interface.
- *
- * The frame body is opaque serialized data. Keep it byte-for-byte so the
- * runtime and observability hydration layers own decompression. Stable-line
- * structured errors predate the serialized-data format and remain the sole
- * exception.
- */
-function decodeEventFrame({ meta, body }: DecodedFrame): Event {
-  const eventType = EventTypeSchema.parse(meta.eventType);
-  if (body.byteLength === 0) return EventSchema.parse(meta);
-
-  const payloadField = getEventDataPayloadField(eventType);
-  assert(payloadField, `Event type ${eventType} cannot carry a payload body`);
-  assert(meta.eventData && typeof meta.eventData === 'object');
-
-  return EventSchema.parse({
-    ...meta,
-    eventData: {
-      ...meta.eventData,
-      [payloadField]: legacyStructuredErrorEventTypes.has(eventType)
-        ? decodeLegacyStructuredError(body)
-        : body,
-    },
-  });
-}
-
 // =============================================================================
 // Public API
 // =============================================================================
@@ -478,13 +421,11 @@ export async function getEvent(
   params?: GetEventParams,
   config?: APIConfig
 ): Promise<Event> {
-  return decodeEventFrame(
-    await getEventV4(
-      runId,
-      eventId,
-      params?.resolveData === 'none' ? 'lazy' : 'resolve',
-      config
-    )
+  return getEventV4(
+    runId,
+    eventId,
+    params?.resolveData === 'none' ? 'lazy' : 'resolve',
+    config
   );
 }
 
@@ -510,7 +451,7 @@ export async function getWorkflowRunEvents(
       ));
 
   return {
-    data: result.events.map(decodeEventFrame),
+    data: result.events,
     // The cursor is present even on the final page because it is also the
     // incremental-load resume point. `hasMore` is the pagination signal.
     cursor: result.cursor,
@@ -665,8 +606,7 @@ async function createWorkflowRunEventInner(
 
   if (data.eventType === 'run_started' && !params?.skipPreload) {
     const result = await createWorkflowRunStartedEventV4(input, config);
-    const replayEvents = result.events.map(decodeEventFrame);
-    const [runCreated, runStarted] = replayEvents;
+    const [runCreated, runStarted] = result.events;
     if (
       runCreated?.eventType !== 'run_created' ||
       runStarted?.eventType !== 'run_started'
@@ -678,7 +618,7 @@ async function createWorkflowRunEventInner(
 
     let attributes = runCreated.eventData.attributes ?? {};
     let updatedAt = runStarted.createdAt;
-    for (const event of replayEvents) {
+    for (const event of result.events) {
       if (event.eventType === 'attr_set') {
         attributes = applyAttributeChanges(attributes, event.eventData.changes);
         updatedAt = event.createdAt;
@@ -701,7 +641,7 @@ async function createWorkflowRunEventInner(
         createdAt: runCreated.createdAt,
         updatedAt,
       },
-      events: replayEvents,
+      events: result.events,
       cursor: result.cursor,
       hasMore: result.hasMore,
       maxEvents: result.maxEvents,

@@ -189,13 +189,18 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     );
 
     expect(result.events).toHaveLength(1);
-    expect(result.events[0].meta.eventId).toBe('evnt_1');
-    expect(new Uint8Array(result.events[0].body)).toEqual(body);
+    expect(result.events[0]).toMatchObject({
+      eventId: 'evnt_1',
+      eventData: { input: body },
+    });
     expect(result.cursor).toBe('cursor-2');
     agent.assertNoPendingInterceptors();
   });
 
-  it('rejects an unknown event type', async () => {
+  it.each([
+    ['an unknown event type', { eventType: 'future_event', eventData: {} }],
+    ['invalid event metadata', { eventType: 'run_created', eventData: {} }],
+  ])('rejects %s', async (_description, meta) => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -207,10 +212,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
       .reply(
         200,
         Buffer.concat([
-          encodeFrame(
-            { eventType: 'future_event', eventData: {} },
-            new Uint8Array()
-          ),
+          encodeFrame(meta, new Uint8Array()),
           encodeFrame({ _end: 1, hasMore: false }, new Uint8Array()),
         ]),
         { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
@@ -382,16 +384,16 @@ describe('getEventV4 over HTTP', () => {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });
 
-    const { meta, body: returnedBody } = await getEventV4(
-      'wrun_1',
-      'evnt_1',
-      'resolve',
-      { token: 'test-token', dispatcher: agent }
-    );
+    const event = await getEventV4('wrun_1', 'evnt_1', 'resolve', {
+      token: 'test-token',
+      dispatcher: agent,
+    });
 
-    expect(meta.eventId).toBe('evnt_1');
-    expect(meta.eventType).toBe('run_created');
-    expect(new Uint8Array(returnedBody)).toEqual(body);
+    expect(event).toMatchObject({
+      eventId: 'evnt_1',
+      eventType: 'run_created',
+      eventData: { input: body },
+    });
     agent.assertNoPendingInterceptors();
   });
 });
@@ -613,7 +615,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
 
     expect(result.maxEvents).toBe(10000);
     expect(result.events).toHaveLength(2);
-    expect(result.events[0]?.body).toEqual(input);
+    expect(result.events[0]).toMatchObject({ eventData: { input } });
     expect(result.cursor).toBe('eid:evnt_2');
     expect(result.hasMore).toBe(false);
     agent.assertNoPendingInterceptors();
