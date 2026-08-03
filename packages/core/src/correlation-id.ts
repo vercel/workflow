@@ -210,5 +210,5 @@ export const CORRELATION_ID_LENGTH = TIME_CHARS + BODY_CHARS;
  * makes the flag safe to flip there.
  */
 export function isPerKindCorrelationIdsEnabled(): boolean {
-  return process.env.WORKFLOW_PER_KIND_CORRELATION_IDS === '1';
+  return process.env.WORKFLOW_PER_KIND_CORRELATION_IDS !== '0';
 }

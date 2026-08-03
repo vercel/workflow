@@ -12,11 +12,14 @@ import {
   dehydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
 } from './serialization.js';
+import { pinSharedCorrelationIds } from './test-support/correlation-id-scheme.js';
 import { createContext } from './vm/index.js';
 import { runWorkflow } from './workflow.js';
 
 // No encryption key = encryption disabled
 const noEncryptionKey = undefined;
+
+pinSharedCorrelationIds();
 
 describe('runWorkflow', () => {
   const getWorkflowTransformCode = (workflowName?: string) =>

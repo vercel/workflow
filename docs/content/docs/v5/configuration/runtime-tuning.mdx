@@ -77,12 +77,12 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 ### `WORKFLOW_PER_KIND_CORRELATION_IDS`
 
-- Default: disabled
-- Experimental. Gives each kind of entity a workflow creates — steps, waits, hooks, attribute writes, abort controllers, stream IDs — its own sequence of correlation IDs.
+- Default: enabled
+- Gives each kind of entity a workflow creates — steps, waits, hooks, attribute writes, abort controllers, stream IDs — its own sequence of correlation IDs.
 - With one sequence shared by every kind, an ID is an ordinal over the whole run, so a single extra draw of any kind shifts every ID after it. Two concurrent replays of the same run that disagree about one `sleep()` then assign different IDs to every step that follows, and each writes events the other can neither match nor consume, which fails the run with `CORRUPTED_EVENT_LOG`. Per-kind sequences confine that to the kind that actually differs.
 - IDs remain ordered within a kind, so hooks are still listed in creation order.
-- Correlation IDs of runs created before the setting changed are not affected: a run keeps replaying on the deployment it started on. On platforms without that guarantee, only enable it while no runs are in flight — a replay that switches schemes mid-run cannot consume its own earlier events.
-- Set `1` to enable.
+- Correlation IDs of runs created before the setting changed are not affected: a run keeps replaying on the deployment it started on. On platforms without that guarantee, only change it while no runs are in flight — a replay that switches schemes mid-run cannot consume its own earlier events.
+- Set `0` to disable.
 
 ## Inline execution
 
