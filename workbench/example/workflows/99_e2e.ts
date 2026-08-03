@@ -246,6 +246,48 @@ export async function stepWinsRaceWorkflow() {
 
 //////////////////////////////////////////////////////////
 
+// Takes an OBJECT argument: under VM retention (WORKFLOW_RETAINED_VM), a
+// boundary whose new step has a non-primitive input falls back to cold
+// replay instead of resuming the retained VM.
+async function unwrapValue(box: { value: number }) {
+  'use step';
+  return box.value;
+}
+
+/**
+ * Interleaves every retention mode the runtime can hit: retained boundaries
+ * (primitive step args), demoted boundaries (object args), wait boundaries
+ * (sleep, step-vs-sleep race), and a hook awaited in parallel with a step.
+ * The chained arithmetic makes any dropped, duplicated, or misordered
+ * boundary visible in the final output.
+ */
+export async function retainedInterleavingWorkflow(token: string) {
+  'use workflow';
+  // Retained: sequential primitive-arg step.
+  const a = await add(1, 2); // 3
+  // Demoted: object argument.
+  const b = await unwrapValue({ value: a }); // 3
+  // Retained: parallel all-primitive batch.
+  const [c, d] = await Promise.all([add(b, 10), add(b, 20)]); // 13, 23
+  // Demoted: mixed parallel batch (one object arg, one primitive).
+  const [e, f] = await Promise.all([unwrapValue({ value: c }), add(d, 1)]); // 13, 24
+  // Wait boundary: step races (and beats) a sleep.
+  const winner = await Promise.race([
+    delayMsStep(100, 'step'),
+    sleep('30s').then(() => 'sleep'),
+  ]); // 'step'
+  // Wait boundary: plain sleep.
+  await sleep('1s');
+  // Hook boundary: hook payload awaited in parallel with a primitive step.
+  using hook = createHook<{ delta: number }>({ token });
+  const [payload, g] = await Promise.all([hook, add(e + f, 100)]); // _, 137
+  // Retained again after all the demotions.
+  const h = await add(g, payload.delta); // 137 + delta
+  return { a, b, c, d, e, f, winner, g, h };
+}
+
+//////////////////////////////////////////////////////////
+
 async function nullByteStep() {
   'use step';
   return 'null byte \0';

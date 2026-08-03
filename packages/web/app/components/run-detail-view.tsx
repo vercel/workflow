@@ -5,11 +5,11 @@ import {
   ErrorBoundary,
   EventListView,
   hydrateResourceIOAsync,
-  NewTraceViewer,
   type SidebarDataContextValue,
   StreamViewer,
   StreamViewerSkeleton,
   stepEventsToStepEntity,
+  TraceViewer,
 } from '@workflow/web-shared';
 import { type Event, isStepEventType, type WorkflowRun } from '@workflow/world';
 import {
@@ -744,7 +744,7 @@ export function RunDetailView({
             <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load trace viewer">
                 <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
-                  <NewTraceViewer
+                  <TraceViewer
                     run={run}
                     events={allEvents ?? []}
                     loading={loading}
