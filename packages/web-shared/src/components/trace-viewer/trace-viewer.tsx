@@ -456,12 +456,10 @@ export function TraceViewerTimeline({
       <div className={clsx(styles.traceViewerContent, inert && styles.inert)}>
         <div className={styles.timeline} ref={timelineRef}>
           <div
+            className="relative p-2 pb-0"
             style={{
-              position: 'relative',
               width: state.timelineWidth,
               minHeight: state.timelineHeight - TIMELINE_PADDING * 2,
-              padding: TIMELINE_PADDING,
-              paddingBottom: 0,
             }}
           >
             <div
@@ -513,20 +511,10 @@ export function TraceViewerTimeline({
                   const insetPx = Math.min(unknownWidth * 0.05, 20);
                   return (
                     <div
+                      className="pointer-events-none absolute top-0 z-[1] h-full bg-[repeating-linear-gradient(-45deg,var(--ds-background-200)_0,var(--ds-background-200)_11px,var(--ds-gray-200)_11px,var(--ds-gray-200)_12px)] [mask-image:linear-gradient(to_right,transparent_1%,black_3%)] [-webkit-mask-image:linear-gradient(to_right,transparent_1%,black_3%)]"
                       style={{
-                        position: 'absolute',
-                        top: 0,
                         left: knownPx + insetPx,
                         width: unknownWidth - insetPx,
-                        height: '100%',
-                        pointerEvents: 'none',
-                        zIndex: 1,
-                        maskImage:
-                          'linear-gradient(to right, transparent 1%, black 3%)',
-                        WebkitMaskImage:
-                          'linear-gradient(to right, transparent 1%, black 3%)',
-                        background:
-                          'repeating-linear-gradient(-45deg, var(--ds-background-200) 0, var(--ds-background-200) 11px, var(--ds-gray-200) 11px, var(--ds-gray-200) 12px)',
                       }}
                     />
                   );
@@ -569,16 +557,13 @@ export function TraceViewerPanel({
 
   return (
     <div
-      className={clsx(styles.spanDetailPanelTraceViewer, className)}
+      className={clsx(
+        styles.spanDetailPanelTraceViewer,
+        'relative [--height:100%] [--map-height:0] [--panel-height:100%] [--panel-width:100%] [--search-gap:0] [--search-height:0]',
+        className
+      )}
       style={
         {
-          position: 'relative',
-          '--search-height': '0',
-          '--search-gap': '0',
-          '--map-height': '0',
-          '--panel-width': `100%`,
-          '--panel-height': `100%`,
-          '--height': `100%`,
           '--scrollbar-width': `${state.scrollbarWidth}px`,
         } as CSSProperties
       }

@@ -4,10 +4,9 @@ import { clsx } from 'clsx';
 import type { AnchorHTMLAttributes, ReactNode } from 'react';
 import styles from '../trace-viewer.module.css';
 
-// Color token mapping helper
-const colorTokenMap: Record<string, string> = {
-  'gray-700': 'var(--ds-gray-700)',
-  'gray-900': 'var(--ds-gray-900)',
+const colorClassNameMap: Partial<Record<string, string>> = {
+  'gray-700': 'text-gray-700',
+  'gray-900': 'text-gray-900',
 };
 
 export function IconCross({
@@ -17,14 +16,15 @@ export function IconCross({
   size?: number;
   color?: string;
 }): ReactNode {
-  const style = { color: colorTokenMap[color] || color } as const;
+  const colorClassName = colorClassNameMap[color];
   return (
     <svg
       width={size}
       height={size}
       viewBox="0 0 24 24"
       fill="none"
-      style={style}
+      className={colorClassName}
+      style={colorClassName ? undefined : { color }}
       aria-hidden
     >
       <title>Cross</title>
@@ -67,14 +67,15 @@ export function IconExternalSmall({
   size?: number;
   color?: string;
 }): ReactNode {
-  const style = { color: colorTokenMap[color] || color } as const;
+  const colorClassName = colorClassNameMap[color];
   return (
     <svg
       width={size}
       height={size}
       viewBox="0 0 24 24"
       fill="none"
-      style={style}
+      className={colorClassName}
+      style={colorClassName ? undefined : { color }}
       aria-hidden
     >
       <title>External Small</title>

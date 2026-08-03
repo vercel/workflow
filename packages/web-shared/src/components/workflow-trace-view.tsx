@@ -16,6 +16,7 @@ import {
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { cn } from '../lib/cn';
 import { useToast } from '../lib/toast';
 import {
   buildTrace,
@@ -188,72 +189,24 @@ function SpanContextMenu({
   return createPortal(
     <div
       ref={menuRef}
+      className="fixed z-[99999] min-w-[180px] overflow-x-hidden overflow-y-auto bg-background-100 p-1 text-sm material-menu"
       style={{
-        position: 'fixed',
         left: adjustedPos.x,
         top: adjustedPos.y,
-        zIndex: 99999,
-        boxShadow: 'var(--ds-shadow-menu)',
-        borderRadius: 12,
-        background: 'var(--ds-background-100)',
-        padding: 'var(--geist-space-gap-quarter, 4px)',
-        fontSize: 14,
-        minWidth: 180,
-        overflowX: 'hidden',
-        overflowY: 'auto',
       }}
     >
-      <div
-        style={{
-          display: 'block',
-          color: 'var(--ds-gray-900)',
-          fontSize: '0.75rem',
-          padding: 'var(--geist-gap-quarter, 4px) var(--geist-space-2x, 8px)',
-          fontWeight: 500,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          maxWidth: 240,
-          borderBottom: '1px solid var(--ds-gray-alpha-400)',
-          marginBottom: 4,
-        }}
-      >
+      <div className="mb-1 block max-w-60 overflow-hidden text-ellipsis whitespace-nowrap border-gray-alpha-400 border-b px-2 py-1 font-medium text-gray-900 text-xs">
         {menu.spanName}
       </div>
       {items.map((item) => (
         <button
           key={item.label}
           type="button"
-          style={{
-            outline: 'none',
-            cursor: item.disabled ? 'not-allowed' : 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: '0 var(--geist-space-2x, 8px)',
-            height: 40,
-            textDecoration: 'none',
-            borderRadius: 6,
-            color: item.destructive
-              ? 'var(--ds-red-900)'
-              : 'var(--ds-gray-1000)',
-            width: '100%',
-            background: 'transparent',
-            border: 'none',
-            fontSize: 14,
-            textAlign: 'left',
-            opacity: item.disabled ? 0.4 : 1,
-            transition: 'background 0.15s',
-          }}
+          className={cn(
+            'flex h-10 w-full cursor-pointer items-center gap-2 rounded-md !border-none !bg-transparent px-2 text-left text-sm no-underline outline-none transition-colors hover:!bg-gray-alpha-100 disabled:cursor-not-allowed disabled:opacity-40',
+            item.destructive ? 'text-red-900' : 'text-gray-1000'
+          )}
           disabled={item.disabled}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.background =
-              'var(--ds-gray-alpha-100)';
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.background =
-              'transparent';
-          }}
           onClick={() => {
             item.action();
             onClose();
@@ -724,13 +677,9 @@ function TraceViewerFooter({
   isLive: boolean;
   isInitialLoading: boolean;
 }): ReactNode {
-  const style = { color: 'var(--ds-gray-900)' };
   if (hasMore || isInitialLoading) {
     return (
-      <div
-        className="flex items-center justify-center gap-2 py-3 text-xs"
-        style={style}
-      >
+      <div className="flex items-center justify-center gap-2 py-3 text-gray-900 text-xs">
         <Spinner size={14} />
         Loading more events…
       </div>
@@ -738,19 +687,13 @@ function TraceViewerFooter({
   }
   if (isLive) {
     return (
-      <div
-        className="flex items-center justify-center py-3 text-xs"
-        style={style}
-      >
+      <div className="flex items-center justify-center py-3 text-gray-900 text-xs">
         Waiting for more events…
       </div>
     );
   }
   return (
-    <div
-      className="flex items-center justify-center py-3 text-xs"
-      style={style}
-    >
+    <div className="flex items-center justify-center py-3 text-gray-900 text-xs">
       End of run
     </div>
   );
@@ -1012,23 +955,15 @@ export const WorkflowTraceViewer = ({
       {/* Detail panel (rendered outside the context, as a sibling) */}
       {selectedSpan && (
         <div
-          className="relative border-l flex-shrink-0 flex flex-col"
-          style={{
-            width: panelWidth,
-            borderColor: 'var(--ds-gray-200)',
-            backgroundColor: 'var(--ds-background-100)',
-          }}
+          className="relative flex flex-shrink-0 flex-col border-gray-200 border-l bg-background-100"
+          style={{ width: panelWidth }}
         >
           <PanelResizeHandle onResize={handleResize} />
           {/* Panel header */}
-          <div
-            className="flex items-center justify-between px-3 py-2 border-y flex-shrink-0"
-            style={{ borderColor: 'var(--ds-gray-200)' }}
-          >
+          <div className="flex flex-shrink-0 items-center justify-between border-gray-200 border-y px-3 py-2">
             <div className="min-w-0 flex-1">
               <div
-                className="text-sm font-medium truncate"
-                style={{ color: 'var(--ds-gray-1000)' }}
+                className="truncate font-medium text-gray-1000 text-sm"
                 title={selectedSpanName}
               >
                 {selectedSpanName}
@@ -1040,30 +975,7 @@ export const WorkflowTraceViewer = ({
                 aria-label="Previous span"
                 onClick={handleSelectPrevSpan}
                 disabled={!canSelectPrevSpan}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginLeft: 6,
-                  width: 24,
-                  height: 24,
-                  padding: 0,
-                  borderRadius: 6,
-                  border: 'none',
-                  background: 'transparent',
-                  color: 'var(--ds-gray-700)',
-                  cursor: canSelectPrevSpan ? 'pointer' : 'not-allowed',
-                  opacity: canSelectPrevSpan ? 1 : 0.45,
-                  flexShrink: 0,
-                  transition: 'background 0.15s',
-                }}
-                onMouseEnter={(e) => {
-                  if (!canSelectPrevSpan) return;
-                  e.currentTarget.style.background = 'var(--ds-gray-alpha-100)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'transparent';
-                }}
+                className="ml-1.5 flex size-6 flex-shrink-0 cursor-pointer items-center justify-center rounded-md !border-none !bg-transparent p-0 text-gray-700 transition-colors hover:!bg-gray-alpha-100 disabled:cursor-not-allowed disabled:opacity-45"
               >
                 <ChevronUp size={16} />
               </button>
@@ -1072,67 +984,17 @@ export const WorkflowTraceViewer = ({
                 aria-label="Next span"
                 onClick={handleSelectNextSpan}
                 disabled={!canSelectNextSpan}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginLeft: 2,
-                  width: 24,
-                  height: 24,
-                  padding: 0,
-                  borderRadius: 6,
-                  border: 'none',
-                  background: 'transparent',
-                  color: 'var(--ds-gray-700)',
-                  cursor: canSelectNextSpan ? 'pointer' : 'not-allowed',
-                  opacity: canSelectNextSpan ? 1 : 0.45,
-                  flexShrink: 0,
-                  transition: 'background 0.15s',
-                }}
-                onMouseEnter={(e) => {
-                  if (!canSelectNextSpan) return;
-                  e.currentTarget.style.background = 'var(--ds-gray-alpha-100)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'transparent';
-                }}
+                className="ml-0.5 flex size-6 flex-shrink-0 cursor-pointer items-center justify-center rounded-md !border-none !bg-transparent p-0 text-gray-700 transition-colors hover:!bg-gray-alpha-100 disabled:cursor-not-allowed disabled:opacity-45"
               >
                 <ChevronDown size={16} />
               </button>
             </div>
-            <div
-              className="flex items-center"
-              style={{
-                borderLeft: '1px solid var(--ds-gray-300)',
-                marginLeft: 6,
-              }}
-            >
+            <div className="ml-1.5 flex items-center border-gray-300 border-l">
               <button
                 type="button"
                 aria-label="Close panel"
                 onClick={handleClose}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginLeft: 6,
-                  width: 24,
-                  height: 24,
-                  padding: 0,
-                  borderRadius: 6,
-                  border: 'none',
-                  background: 'transparent',
-                  color: 'var(--ds-gray-700)',
-                  cursor: 'pointer',
-                  flexShrink: 0,
-                  transition: 'background 0.15s',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = 'var(--ds-gray-alpha-100)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'transparent';
-                }}
+                className="ml-1.5 flex size-6 flex-shrink-0 cursor-pointer items-center justify-center rounded-md !border-none !bg-transparent p-0 text-gray-700 transition-colors hover:!bg-gray-alpha-100"
               >
                 <X size={16} />
               </button>
