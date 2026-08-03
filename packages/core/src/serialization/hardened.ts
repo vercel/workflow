@@ -19,9 +19,9 @@
  *   — immune to `Symbol.hasInstance`, `Symbol.toStringTag`, and reassigned
  *   globals.
  * - **Extraction** goes through intrinsics captured at module load (host
- *   boot, before any workflow code runs), invoked with an explicit receiver.
- *   Internal slots are realm-agnostic, so host intrinsics operate on
- *   VM-realm objects without touching the sandbox's (patchable) prototypes.
+ *   boot, before any workflow code runs). Internal slots are realm-agnostic,
+ *   so host intrinsics read VM-realm objects without touching the sandbox's
+ *   (patchable) prototypes.
  * - **Property access** reads through descriptors, so plain data never
  *   invokes anything. Where workflow code *must* run because the data itself
  *   lives behind it — getters, proxies, custom `[WORKFLOW_SERIALIZE]`
@@ -35,9 +35,8 @@
  * run's seeded PRNG during serialization, and because serialization happens
  * exactly once and is never replayed, every subsequent draw — including the
  * correlation ids derived from that stream — shifts relative to replay. The
- * report is the only trace of that, which is why the sink exists rather than
- * a bare `console.warn`; acting on it (warning, or refusing to serialize) is
- * left to the caller.
+ * report is the only trace of that; acting on it (warning, demoting a
+ * retained VM to replay) is left to the caller.
  *
  * The recorder is ambient module state, set for the duration of a
  * synchronous `stringify` call via {@link withGuestCodeStats}. devalue's
@@ -110,36 +109,21 @@ export function withGuestCodeStats<T>(
 
 /**
  * Closure-variable functions that arrived through `useStep` when a step
- * proxy was built.
+ * proxy was built. The step-function reducer must invoke `__closureVarsFn`,
+ * and the compiler-generated function is a pure sequence of lexical reads —
+ * but the *property* is reachable from workflow code, which can replace it
+ * with an arbitrary function. The reducer checks membership here instead of
+ * assuming provenance, and reports anything it does not recognize.
  *
- * The step-function reducer must invoke `__closureVarsFn` to read a step's
- * captured closure variables, and the compiler-generated function is a
- * sequence of lexical reads that cannot perturb observable VM state. The
- * *property*, though, is reachable from workflow code, which can replace it
- * with an arbitrary function — so the reducer checks membership here instead
- * of assuming provenance, and reports anything it does not recognize.
- *
- * Be precise about what membership proves: **the function was passed to
- * `useStep`**, not that this package generated it. `useStep` is published on
- * the sandbox global as `Symbol.for('WORKFLOW_USE_STEP')` (see
- * `workflow.ts`), so workflow code can call it directly with a function of
- * its own and have it marked here. That launders a side-effectful function
- * past the report — costing a missing telemetry entry, never incorrect
- * output, and requiring deliberate effort — which is the same trade as the
- * other caveats on {@link isEngineAccessor}. Marking is still worthwhile:
- * closure capture is common, and reporting every step that captures a
- * variable would bury the signal.
- *
- * Closing it properly means branding at the source (a compiler-emitted
- * marker the runtime verifies), which is a compiler change and does not
- * belong here.
+ * Membership proves the function was passed to `useStep`, not that the
+ * compiler generated it — workflow code can call `useStep` directly and
+ * launder a side-effectful function past the report. That costs a missing
+ * report entry, never incorrect output; closing it means branding at the
+ * compiler, which does not belong here.
  */
 const useStepClosureFns = new WeakSet<object>();
 
-/**
- * Marks a function as having been passed to `useStep`. See
- * {@link isUseStepClosureFn} for exactly what that does and does not prove.
- */
+/** Marks a function as having been passed to `useStep`. */
 export function markUseStepClosureFn<T extends object>(fn: T): T {
   useStepClosureFns.add(fn);
   return fn;
@@ -170,9 +154,11 @@ function recordProxy(value: object): void {
 
 // ---- Captured intrinsics ----------------------------------------------------
 //
-// Captured at module load — host boot, before any workflow bundle can run.
-// Invoked with explicit receivers so no property lookup ever resolves
-// through a sandbox-realm prototype chain.
+// Captured at module load — host boot, before any workflow bundle can run —
+// and invoked with explicit receivers, so no lookup ever resolves through a
+// sandbox-reachable prototype. Every member below exists on every supported
+// engine (Node 18+), so a missing one is a bug in this table: fail at import
+// rather than serialize through a live (patchable) lookup later.
 
 const uncurryThis = Function.prototype.bind.bind(Function.prototype.call) as <
   T,
@@ -182,98 +168,89 @@ const uncurryThis = Function.prototype.bind.bind(Function.prototype.call) as <
   fn: (this: T, ...args: A) => R
 ) => (thisArg: T, ...args: A) => R;
 
-/**
- * Captures a prototype accessor, or `undefined` when it is absent.
- *
- * This table is built at module scope, so a hard failure here would be an
- * *import-time* crash of `@workflow/core` rather than a degraded
- * serialization path. Not every member is universally available —
- * `URLSearchParams.prototype.size` landed in Node 19.8 / Safari 17, and the
- * WHATWG classes are host-provided rather than ECMAScript intrinsics — so
- * every capture is optional and each use site falls back to not claiming the
- * value (the reducers already treat "did not match" as ordinary).
- */
-function intrinsicGetter(
-  prototype: object | undefined,
+function protoGetter<T>(
+  prototype: object,
   key: PropertyKey
-): ((value: unknown) => unknown) | undefined {
-  if (!prototype) return undefined;
-  const descriptor = Object.getOwnPropertyDescriptor(prototype, key);
-  if (!descriptor?.get) return undefined;
-  return uncurryThis(descriptor.get as (this: unknown) => unknown);
+): (value: unknown) => T {
+  const getter = Object.getOwnPropertyDescriptor(prototype, key)?.get;
+  if (!getter) {
+    throw new Error(`Missing intrinsic getter: ${String(key)}`);
+  }
+  return uncurryThis(getter) as (value: unknown) => T;
 }
 
-/** See {@link intrinsicGetter} — captures a prototype method, if present. */
-function intrinsicMethod<T, A extends unknown[], R>(
-  method: ((this: T, ...args: A) => R) | undefined
-): ((thisArg: T, ...args: A) => R) | undefined {
-  return typeof method === 'function' ? uncurryThis(method) : undefined;
-}
+// ECMAScript intrinsics. All read internal slots, so they work on values
+// from any realm and are unaffected by prototype patching in any realm.
 
-/** `undefined` when the class itself is absent from the runtime. */
-function prototypeOf(ctor: unknown): object | undefined {
-  return typeof ctor === 'function'
-    ? ((ctor as { prototype?: object }).prototype ?? undefined)
-    : undefined;
-}
+/** `Date.prototype.getDate`, for invalid-date checks. */
+export const dateGetDate = uncurryThis(Date.prototype.getDate);
+/** `Date.prototype.getTime`. */
+export const dateGetTime = uncurryThis(Date.prototype.getTime);
+/** `Date.prototype.toISOString`. */
+export const dateToISOString = uncurryThis(Date.prototype.toISOString);
+/** `RegExp.prototype.source` getter. */
+export const regExpSource = protoGetter<string>(RegExp.prototype, 'source');
+/** `RegExp.prototype.flags` getter. */
+export const regExpFlags = protoGetter<string>(RegExp.prototype, 'flags');
+/** `ArrayBuffer.prototype.byteLength` getter (internal slot read). */
+export const arrayBufferByteLength = protoGetter<number>(
+  ArrayBuffer.prototype,
+  'byteLength'
+);
 
-const TypedArrayPrototype = Object.getPrototypeOf(
-  Uint8Array.prototype
-) as object;
+const mapEntries = uncurryThis(Map.prototype.entries);
+const setValues = uncurryThis(Set.prototype.values);
+const numberValueOf = uncurryThis(Number.prototype.valueOf);
+const stringValueOf = uncurryThis(String.prototype.valueOf);
+const booleanValueOf = uncurryThis(Boolean.prototype.valueOf);
+const bigIntValueOf = uncurryThis(
+  BigInt.prototype.valueOf as (this: unknown) => bigint
+);
 
-const call = {
-  // ECMAScript intrinsics: guaranteed by any engine that can load this
-  // package, so these are captured unconditionally.
-  dateGetDate: uncurryThis(Date.prototype.getDate),
-  dateGetTime: uncurryThis(Date.prototype.getTime),
-  dateToISOString: uncurryThis(Date.prototype.toISOString),
-  mapEntries: uncurryThis(Map.prototype.entries),
-  setValues: uncurryThis(Set.prototype.values),
-  numberValueOf: uncurryThis(Number.prototype.valueOf),
-  stringValueOf: uncurryThis(String.prototype.valueOf),
-  booleanValueOf: uncurryThis(Boolean.prototype.valueOf),
-  bigIntValueOf: uncurryThis(
-    BigInt.prototype.valueOf as (this: unknown) => bigint
-  ),
-  // Host-provided (WHATWG) classes: optional.
-  headersIterator: intrinsicMethod(
-    prototypeOf(globalThis.Headers)?.[Symbol.iterator as never] as
-      | ((this: Headers) => Iterator<unknown>)
-      | undefined
-  ),
-  urlSearchParamsToString: intrinsicMethod(
-    prototypeOf(globalThis.URLSearchParams)?.toString as
-      | ((this: unknown) => string)
-      | undefined
-  ),
-};
+const TypedArrayPrototype: object = Object.getPrototypeOf(Uint8Array.prototype);
+const typedArrayTag = protoGetter<string | undefined>(
+  TypedArrayPrototype,
+  Symbol.toStringTag
+);
+const typedArrayBuffer = protoGetter<ArrayBufferLike>(
+  TypedArrayPrototype,
+  'buffer'
+);
+const typedArrayByteOffset = protoGetter<number>(
+  TypedArrayPrototype,
+  'byteOffset'
+);
+const typedArrayByteLength = protoGetter<number>(
+  TypedArrayPrototype,
+  'byteLength'
+);
+const typedArrayLength = protoGetter<number>(TypedArrayPrototype, 'length');
+const dataViewBuffer = protoGetter<ArrayBufferLike>(
+  DataView.prototype,
+  'buffer'
+);
+const dataViewByteOffset = protoGetter<number>(
+  DataView.prototype,
+  'byteOffset'
+);
+const dataViewByteLength = protoGetter<number>(
+  DataView.prototype,
+  'byteLength'
+);
+const sharedArrayBufferByteLength = protoGetter<number>(
+  SharedArrayBuffer.prototype,
+  'byteLength'
+);
 
-const get = {
-  regExpSource: intrinsicGetter(RegExp.prototype, 'source'),
-  regExpFlags: intrinsicGetter(RegExp.prototype, 'flags'),
-  typedArrayTag: intrinsicGetter(TypedArrayPrototype, Symbol.toStringTag) as
-    | ((value: unknown) => string | undefined)
-    | undefined,
-  typedArrayBuffer: intrinsicGetter(TypedArrayPrototype, 'buffer'),
-  typedArrayByteOffset: intrinsicGetter(TypedArrayPrototype, 'byteOffset'),
-  typedArrayByteLength: intrinsicGetter(TypedArrayPrototype, 'byteLength'),
-  typedArrayLength: intrinsicGetter(TypedArrayPrototype, 'length'),
-  dataViewBuffer: intrinsicGetter(DataView.prototype, 'buffer'),
-  dataViewByteOffset: intrinsicGetter(DataView.prototype, 'byteOffset'),
-  dataViewByteLength: intrinsicGetter(DataView.prototype, 'byteLength'),
-  arrayBufferByteLength: intrinsicGetter(ArrayBuffer.prototype, 'byteLength'),
-  sharedArrayBufferByteLength: intrinsicGetter(
-    prototypeOf(globalThis.SharedArrayBuffer),
-    'byteLength'
-  ),
-  urlHref: intrinsicGetter(prototypeOf(globalThis.URL), 'href'),
-  // `size` landed in Node 19.8 / Safari 17 — newer than some runtimes the
-  // SDK still loads on.
-  urlSearchParamsSize: intrinsicGetter(
-    prototypeOf(globalThis.URLSearchParams),
-    'size'
-  ),
-};
+// Host (WHATWG) classes. Injected into the sandbox by reference, so
+// instances from any realm carry these prototypes — and the shared
+// prototypes are reachable from workflow code, which makes the boot-time
+// capture (rather than a live lookup) load-bearing.
+const headersIterator = uncurryThis(Headers.prototype[Symbol.iterator]);
+const urlHrefGetter = protoGetter<string>(URL.prototype, 'href');
+const urlSearchParamsToStringMethod = uncurryThis(
+  URLSearchParams.prototype.toString
+);
 
 // ---- Safe access primitives -------------------------------------------------
 
@@ -281,63 +258,39 @@ const { isProxy } = types;
 
 const functionToString = uncurryThis(Function.prototype.toString);
 
-/** Memoized nativeness, keyed on the getter function itself. */
-const engineAccessorCache = new WeakMap<object, boolean>();
-
 /**
  * Whether an accessor is provided by the engine or the host, rather than
- * defined by workflow code.
+ * defined by workflow code. Serialization must read some properties that are
+ * accessors by construction (V8 defines `stack` as an own accessor on every
+ * Error instance; Node implements `DOMException.prototype.message` in
+ * JavaScript), and reporting those would drown the signal in noise.
  *
- * Serialization must read some properties that are accessors by construction,
- * and reporting those would drown the signal in noise. Two disjoint cases,
- * both of which occur in practice:
+ * - Engine accessors are native code, detected via the captured host
+ *   `Function.prototype.toString` (cross-realm, uninterceptable). Bound
+ *   functions and callable Proxies also present as native code but run
+ *   workflow code, so both are excluded first.
+ * - Host builtins implemented in JavaScript are ordinary functions, but they
+ *   belong to the host realm — detected by comparing the function's
+ *   prototype against the host `Function.prototype`. Workflow code that
+ *   reaches a host function can `setPrototypeOf` its own getter to
+ *   impersonate this; that costs a missing report entry, never incorrect
+ *   output.
  *
- * - **Engine accessors**, e.g. `stack`, which V8 defines as an *own accessor*
- *   on every Error instance. These are native code, but V8 installs them
- *   per realm, so a VM-realm error's `stack` getter is a VM-realm function.
- *   Detected by nativeness, via the captured host
- *   `Function.prototype.toString` (cross-realm, uninterceptable).
- * - **Host builtins implemented in JavaScript**, e.g. Node's
- *   `DOMException.prototype.message`. These are ordinary functions — so not
- *   native — but they belong to the *host* realm, and workflow code cannot
- *   author a host-realm function. Detected by comparing the function's
- *   prototype against the host `Function.prototype`.
- *
- * Two known limitations, both of which cost a missing telemetry entry rather
- * than incorrect output:
- *
- * - A bound function (`fn.bind(x)`) reports as native code, so
- *   `{ get: sideEffect.bind(null) }` would not be reported.
- * - Workflow code that reaches a host function (any injected global) can read
- *   the host `Function.prototype` off it and `setPrototypeOf` its own getter
- *   to impersonate host provenance.
- *
- * Note also that V8's native `stack` getter can itself invoke a
- * workflow-defined `Error.prepareStackTrace`; that indirection is not
- * detected here.
+ * V8's native `stack` getter can itself invoke a workflow-defined
+ * `Error.prepareStackTrace`; that indirection is not detected here.
  */
 function isEngineAccessor(getter: object): boolean {
-  const cached = engineAccessorCache.get(getter);
-  if (cached !== undefined) return cached;
-
-  let provided = false;
-  // A callable Proxy reports `function () { [native code] }` from
-  // Function.prototype.toString rather than throwing, so it would otherwise
-  // be cached as engine-provided and invoked unreported. Its traps are
-  // workflow code by definition.
-  if (!isProxy(getter)) {
-    try {
-      provided =
-        functionToString(getter as () => unknown).endsWith(
-          '{ [native code] }'
-        ) || Reflect.getPrototypeOf(getter) === Function.prototype;
-    } catch {
-      // Not a plain function — treat as workflow code.
-      provided = false;
-    }
-  }
-  engineAccessorCache.set(getter, provided);
-  return provided;
+  if (isProxy(getter)) return false;
+  // A bound function stringifies as native code but runs its target — the
+  // one passive distinguisher V8 exposes is the `name` own property
+  // (`"bound fn"`). Workflow code can redefine the name to hide it; that
+  // costs a missing report entry, like the other impersonation caveats.
+  const name = Object.getOwnPropertyDescriptor(getter, 'name')?.value;
+  if (typeof name === 'string' && name.startsWith('bound ')) return false;
+  return (
+    functionToString(getter as () => unknown).endsWith('{ [native code] }') ||
+    Reflect.getPrototypeOf(getter) === Function.prototype
+  );
 }
 
 /**
@@ -416,12 +369,11 @@ export function hasProperty(value: unknown, key: PropertyKey): boolean {
  * URLSearchParams, DOMException), where the instances — from any realm the
  * host handed the class to — carry the host prototype in their chain.
  *
- * Proxies are walked rather than rejected: `Reflect.getPrototypeOf` fires the
- * proxy's `getPrototypeOf` trap, matching `instanceof` semantics, so a
- * proxied instance is still identified when the host prototype is found in
- * its chain. Real values depend on that — Next.js hands the runtime a
- * proxied `NextRequest`. Any proxy encountered along the way is recorded,
- * because its traps are guest-observable.
+ * Proxies are walked rather than rejected: `Reflect.getPrototypeOf` fires
+ * the proxy's `getPrototypeOf` trap, matching `instanceof` semantics, and
+ * real values depend on that — Next.js hands the runtime a proxied
+ * `NextRequest`, and answering "not a Request" for it would silently break
+ * webhooks. The traps are guest-observable, so the proxy is recorded.
  */
 export function isInstanceOfPrototype(
   value: unknown,
@@ -429,13 +381,6 @@ export function isInstanceOfPrototype(
 ): boolean {
   if (!prototype) return false;
   if (value === null || typeof value !== 'object') return false;
-  // Proxies are walked rather than rejected. `instanceof` forwards through a
-  // proxy's `getPrototypeOf` trap, and real values rely on that: Next.js
-  // hands the runtime a proxied `NextRequest`, whose reducer reads ordinary
-  // properties and serializes fine through the traps. Answering "not a
-  // Request" for it would silently break webhooks. The traps are
-  // guest-observable, so the proxy is reported — but the answer stays
-  // correct.
   if (isProxy(value)) recordProxy(value);
   let current: object | null = Reflect.getPrototypeOf(value);
   while (current !== null) {
@@ -447,75 +392,41 @@ export function isInstanceOfPrototype(
 }
 
 // ---- Intrinsic-backed extraction helpers (used by the reducers) -------------
+//
+// Intrinsics read internal slots, which a Proxy does not have — invoking one
+// with a proxy receiver throws, where the pre-existing dynamic read forwarded
+// through the trap. For the (rare) proxy case, fall back to the dynamic read
+// so behavior is unchanged, and record that the traps ran.
 
-/** `Date.prototype.getDate`, for invalid-date checks. */
-export const dateGetDate = call.dateGetDate;
-/** `Date.prototype.getTime`. */
-export const dateGetTime = call.dateGetTime;
-/** `Date.prototype.toISOString`. */
-export const dateToISOString = call.dateToISOString;
-/** `RegExp.prototype.source` getter. */
-export const regExpSource = get.regExpSource as (value: unknown) => string;
-/** `RegExp.prototype.flags` getter. */
-export const regExpFlags = get.regExpFlags as (value: unknown) => string;
-
-/**
- * Whether the WHATWG captures a reducer needs are available. When a class or
- * one of its members is missing from the runtime, the corresponding reducer
- * declines to match rather than serializing through a live (patchable)
- * lookup — devalue then treats the value like any other object.
- */
-export const canReadUrl = get.urlHref !== undefined;
-export const canReadUrlSearchParams =
-  get.urlSearchParamsSize !== undefined &&
-  call.urlSearchParamsToString !== undefined;
-export const canReadHeaders = call.headersIterator !== undefined;
-
-/**
- * Intrinsics read internal slots, which a Proxy does not have — invoking one
- * with a proxy receiver throws, where the pre-existing dynamic read forwarded
- * through the trap. For the (rare) proxy case, fall back to the dynamic read
- * so behavior is unchanged, and record that the traps ran.
- */
-function readProxyAware<T>(
-  value: unknown,
-  viaIntrinsic: (v: unknown) => T,
-  viaTrap: (v: unknown) => T
-): T {
+/** `URL.prototype.href` getter. */
+export function urlHref(value: URL): string {
   if (isProxy(value)) {
-    recordProxy(value as object);
-    return viaTrap(value);
+    recordProxy(value);
+    return value.href;
   }
-  return viaIntrinsic(value);
+  return urlHrefGetter(value);
 }
 
-/** `URL.prototype.href` getter. Guard with {@link canReadUrl}. */
-export const urlHref = (value: unknown): string =>
-  readProxyAware(
-    value,
-    get.urlHref as (v: unknown) => string,
-    (v) => (v as URL).href
-  );
+/** `URLSearchParams.prototype.toString` — returns `''` iff empty. */
+export function urlSearchParamsToString(value: URLSearchParams): string {
+  if (isProxy(value)) {
+    recordProxy(value);
+    return String(value);
+  }
+  return urlSearchParamsToStringMethod(value);
+}
+
 /**
- * `URLSearchParams.prototype.size` getter. Guard with
- * {@link canReadUrlSearchParams}.
+ * Iterates a Headers instance through the captured host iterator, so the
+ * iterator object — and its `next` — are host-realm.
  */
-export const urlSearchParamsSize = (value: unknown): number =>
-  readProxyAware(
-    value,
-    get.urlSearchParamsSize as (v: unknown) => number,
-    (v) => (v as URLSearchParams).size
-  );
-/**
- * `URLSearchParams.prototype.toString`. Guard with
- * {@link canReadUrlSearchParams}.
- */
-export const urlSearchParamsToString = (value: unknown): string =>
-  readProxyAware(
-    value,
-    call.urlSearchParamsToString as (v: unknown) => string,
-    (v) => String(v)
-  );
+export function headersToEntries(value: Headers): [string, string][] {
+  if (isProxy(value)) {
+    recordProxy(value);
+    return Array.from(value) as [string, string][];
+  }
+  return [...headersIterator(value)] as [string, string][];
+}
 
 /**
  * Iterates a genuine Map's entries entirely through host intrinsics: the
@@ -525,32 +436,12 @@ export const urlSearchParamsToString = (value: unknown): string =>
 export function mapToEntries(
   value: Map<unknown, unknown>
 ): [unknown, unknown][] {
-  return [...call.mapEntries(value)];
+  return [...mapEntries(value)];
 }
 
 /** See {@link mapToEntries}. */
 export function setToValues(value: Set<unknown>): unknown[] {
-  return [...call.setValues(value)];
-}
-
-/**
- * Iterates a Headers instance through the captured host iterator. Headers
- * is a host class injected into the sandbox, so instances are host-realm —
- * but the shared prototype is reachable from workflow code, which makes the
- * boot-time capture (rather than a live lookup) load-bearing.
- */
-export function headersToEntries(value: Headers): [string, string][] {
-  return readProxyAware(
-    value,
-    (v) => [
-      ...(
-        call.headersIterator as (
-          h: Headers
-        ) => IterableIterator<[string, string]>
-      )(v as Headers),
-    ],
-    (v) => Array.from(v as Headers)
-  );
+  return [...setValues(value)];
 }
 
 /**
@@ -563,27 +454,18 @@ export function viewInfo(value: ArrayBufferView): {
   byteOffset: number;
   byteLength: number;
 } {
-  const isDataView = types.isDataView(value);
-  const read = (
-    dataViewGetter: ((v: unknown) => unknown) | undefined,
-    typedArrayGetter: ((v: unknown) => unknown) | undefined
-  ) => (isDataView ? dataViewGetter : typedArrayGetter)?.(value);
+  if (types.isDataView(value)) {
+    return {
+      buffer: dataViewBuffer(value),
+      byteOffset: dataViewByteOffset(value),
+      byteLength: dataViewByteLength(value),
+    };
+  }
   return {
-    buffer: read(get.dataViewBuffer, get.typedArrayBuffer) as ArrayBufferLike,
-    byteOffset: read(
-      get.dataViewByteOffset,
-      get.typedArrayByteOffset
-    ) as number,
-    byteLength: read(
-      get.dataViewByteLength,
-      get.typedArrayByteLength
-    ) as number,
+    buffer: typedArrayBuffer(value),
+    byteOffset: typedArrayByteOffset(value),
+    byteLength: typedArrayByteLength(value),
   };
-}
-
-/** `ArrayBuffer.prototype.byteLength` getter (internal slot read). */
-export function arrayBufferByteLength(value: ArrayBuffer): number {
-  return (get.arrayBufferByteLength as (v: unknown) => number)(value);
 }
 
 // ---- Hardened devalue operations ---------------------------------------------
@@ -645,7 +527,7 @@ function brandOf(value: object): string | undefined {
   if (types.isSet(value)) return 'Set';
   if (Array.isArray(value)) return 'Array';
   if (types.isTypedArray(value)) {
-    const tag = get.typedArrayTag?.(value);
+    const tag = typedArrayTag(value);
     return tag !== undefined && KNOWN_VIEW_TAGS.has(tag) ? tag : undefined;
   }
   if (types.isDataView(value)) return 'DataView';
@@ -655,11 +537,8 @@ function brandOf(value: object): string | undefined {
   if (types.isStringObject(value)) return 'String';
   if (types.isBooleanObject(value)) return 'Boolean';
   if (types.isBigIntObject(value)) return 'BigInt';
-  if (canReadUrl && isInstanceOfPrototype(value, URL.prototype)) return 'URL';
-  if (
-    canReadUrlSearchParams &&
-    isInstanceOfPrototype(value, URLSearchParams.prototype)
-  ) {
+  if (isInstanceOfPrototype(value, URL.prototype)) return 'URL';
+  if (isInstanceOfPrototype(value, URLSearchParams.prototype)) {
     return 'URLSearchParams';
   }
   return undefined;
@@ -701,28 +580,25 @@ export const hardenedStringifyOperations: Partial<StringifyOperations> = {
   },
 
   unbox: (boxed: object) => {
-    if (types.isNumberObject(boxed)) return call.numberValueOf(boxed);
-    if (types.isStringObject(boxed)) return call.stringValueOf(boxed);
-    if (types.isBooleanObject(boxed)) return call.booleanValueOf(boxed);
-    return call.bigIntValueOf(boxed);
+    if (types.isNumberObject(boxed)) return numberValueOf(boxed);
+    if (types.isStringObject(boxed)) return stringValueOf(boxed);
+    if (types.isBooleanObject(boxed)) return booleanValueOf(boxed);
+    return bigIntValueOf(boxed);
   },
 
   toISOString: (date: Date) =>
-    Number.isNaN(call.dateGetDate(date)) ? '' : call.dateToISOString(date),
+    Number.isNaN(dateGetDate(date)) ? '' : dateToISOString(date),
 
   toStringValue: (value: object) => {
     // Reached for URL / URLSearchParams (when the reducers did not claim
     // them, e.g. instances of a different realm's classes) and for
     // toStringTag-branded objects like Temporal polyfills, whose string
     // form only their own toString() can produce.
-    if (canReadUrl && isInstanceOfPrototype(value, URL.prototype)) {
-      return urlHref(value);
+    if (isInstanceOfPrototype(value, URL.prototype)) {
+      return urlHref(value as URL);
     }
-    if (
-      canReadUrlSearchParams &&
-      isInstanceOfPrototype(value, URLSearchParams.prototype)
-    ) {
-      return urlSearchParamsToString(value);
+    if (isInstanceOfPrototype(value, URLSearchParams.prototype)) {
+      return urlSearchParamsToString(value as URLSearchParams);
     }
     recordGuestCode(
       'method',
@@ -742,15 +618,14 @@ export const hardenedStringifyOperations: Partial<StringifyOperations> = {
 
   viewInfo: (view: ArrayBufferView) => {
     const info = viewInfo(view);
-    const bufferByteLength = types.isSharedArrayBuffer(info.buffer)
-      ? (get.sharedArrayBufferByteLength?.(info.buffer) as number)
-      : arrayBufferByteLength(info.buffer as ArrayBuffer);
     return {
       ...info,
-      length: types.isDataView(view)
-        ? 0
-        : (get.typedArrayLength?.(view) as number),
-      bufferByteLength,
+      // devalue only reads `length` for typed-array subviews; DataView
+      // subviews are encoded from `byteLength`.
+      length: types.isDataView(view) ? 0 : typedArrayLength(view),
+      bufferByteLength: types.isSharedArrayBuffer(info.buffer)
+        ? sharedArrayBufferByteLength(info.buffer)
+        : arrayBufferByteLength(info.buffer),
     };
   },
 

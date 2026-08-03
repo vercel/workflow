@@ -245,11 +245,15 @@ export async function trace<T>(
       span.setStatus({ code: otel.SpanStatusCode.OK });
       return result;
     } catch (e) {
-      span.setStatus({
-        code: otel.SpanStatusCode.ERROR,
-        message: (e as Error).message,
-      });
-      applyWorkflowSuspensionToSpan(e, otel, span);
+      if (WorkflowSuspension.is(e)) {
+        span.setStatus({ code: otel.SpanStatusCode.OK });
+        applyWorkflowSuspensionToSpan(e, span);
+      } else {
+        span.setStatus({
+          code: otel.SpanStatusCode.ERROR,
+          message: (e as Error).message,
+        });
+      }
       throw e;
     } finally {
       span.end();
@@ -275,19 +279,12 @@ export async function recordElapsedSpan(
 }
 
 /**
- * Applies workflow suspension attributes to the given span if the error is a WorkflowSuspension
- * which is technically not an error, but an algebraic effect indicating suspension.
+ * Applies the workflow suspension algebraic effect to an active span.
  */
-function applyWorkflowSuspensionToSpan(
-  error: unknown,
-  otel: typeof api,
+export function applyWorkflowSuspensionToSpan(
+  error: WorkflowSuspension,
   span: api.Span
-) {
-  if (!error || !WorkflowSuspension.is(error)) {
-    return;
-  }
-
-  span.setStatus({ code: otel.SpanStatusCode.OK });
+): void {
   span.setAttributes({
     ...Attr.WorkflowSuspensionState('suspended'),
     ...Attr.WorkflowSuspensionStepCount(error.stepCount),

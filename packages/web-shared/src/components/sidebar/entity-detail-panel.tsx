@@ -323,7 +323,7 @@ export function EntityDetailPanel({
               }}
             >
               <p
-                className="mb-2 px-1 text-[13px] font-medium uppercase tracking-wide"
+                className="mb-2 px-1 text-label-13 font-medium uppercase tracking-wide"
                 style={{ color: 'var(--ds-gray-700)' }}
               >
                 Actions
@@ -336,7 +336,7 @@ export function EntityDetailPanel({
                     onClick={handleWakeUp}
                     disabled={stoppingSleep}
                     className={clsx(
-                      'flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium',
+                      'flex items-center justify-center gap-2 rounded-md px-3 py-2 text-button-14',
                       'disabled:opacity-50 disabled:cursor-not-allowed transition-colors',
                       stoppingSleep
                         ? 'opacity-50 cursor-not-allowed'
@@ -359,7 +359,7 @@ export function EntityDetailPanel({
                     onClick={() => setShowResolveHookModal(true)}
                     disabled={resolvingHook}
                     className={clsx(
-                      'flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium',
+                      'flex items-center justify-center gap-2 rounded-md px-3 py-2 text-button-14',
                       'disabled:opacity-50 disabled:cursor-not-allowed transition-colors',
                       resolvingHook
                         ? 'opacity-50 cursor-not-allowed'

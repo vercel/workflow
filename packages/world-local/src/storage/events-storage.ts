@@ -1045,6 +1045,43 @@ export function createEventsStorage(
           isHookEventRequiringExistence(data.eventType) &&
           data.correlationId
         ) {
+          // Redelivery convergence — checked BEFORE the disposal/existence
+          // rejections below: if this resume's `(runId, resumeId)` claim is
+          // already committed AND its pinned event is journaled, return that
+          // event as success. The claim proves this exact resume was accepted
+          // while the hook was alive, and the event is already in the log, so
+          // replay observes it either way. Without this, a queue redelivery
+          // of the consumer's re-ensure after the workflow disposed the hook
+          // (dispose → sleep) is rejected with HookNotFound — which the
+          // consumer treats as "nothing left to resume" and acks, losing
+          // whatever continuation the message carried. A claim with a
+          // mismatched hookId or payload digest is NOT converged here; it
+          // falls through to the full validation below, which rejects it the
+          // same way it always has.
+          if (data.eventType === 'hook_received' && params?.resumeId) {
+            const committedClaim = await readJSON(
+              hookResumeClaimPath(basedir, effectiveRunId, params.resumeId),
+              HookResumeClaimSchema
+            );
+            if (
+              committedClaim &&
+              committedClaim.hookId === data.correlationId &&
+              (!params.resumePayloadDigest ||
+                !committedClaim.payloadDigest ||
+                committedClaim.payloadDigest === params.resumePayloadDigest)
+            ) {
+              const committedEvent = await readJSONWithFallback(
+                basedir,
+                'events',
+                `${effectiveRunId}-${committedClaim.eventId}`,
+                EventSchema,
+                tag
+              );
+              if (committedEvent) {
+                return { event: committedEvent };
+              }
+            }
+          }
           // A resume must never be journaled after the hook's disposal.
           // The disposer's durable order is: dispose lock → claim/entity
           // delete → `hook_disposed` append, so the hook entity can still

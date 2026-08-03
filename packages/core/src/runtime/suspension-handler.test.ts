@@ -1,3 +1,4 @@
+import { runInNewContext } from 'node:vm';
 import { PreconditionFailedError } from '@workflow/errors';
 import type { WorkflowRun, World } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
@@ -506,5 +507,86 @@ describe('handleSuspension', () => {
         run,
       })
     ).rejects.toBeInstanceOf(PreconditionFailedError);
+  });
+});
+
+describe('retainedStepInputsSafe (serialization passivity gate)', () => {
+  function stepPending(args: unknown[]) {
+    return new Map([
+      [
+        'step_1',
+        {
+          type: 'step' as const,
+          correlationId: 'step_1',
+          stepName: 'someStep',
+          args,
+        },
+      ],
+    ]);
+  }
+
+  /** An object with a VM-realm getter — exactly what the sink records. */
+  function vmGetterObject() {
+    return runInNewContext(
+      `const o = {};
+       Object.defineProperty(o, 'lazy', {
+         enumerable: true,
+         get: () => 'computed',
+       });
+       o`
+    );
+  }
+
+  async function runSuspension(args: unknown[]) {
+    const eventsCreate = vi
+      .fn()
+      .mockImplementation(async (_runId, event) => ({ event }));
+    const world = createWorld(eventsCreate);
+    return handleSuspension({
+      suspension: new WorkflowSuspension(stepPending(args), globalThis),
+      world,
+      run,
+    });
+  }
+
+  it('reports safe for plain data and supported built-ins', async () => {
+    const result = await runSuspension([
+      { nested: [{ ok: true }, 'text', 42n], flag: false },
+      new Map([['k', new Set([1])]]),
+      new Date(1700000000000),
+      new Uint8Array([1, 2, 3]),
+      /pattern/gi,
+      new URL('https://example.com/'),
+    ]);
+    expect(result.retainedStepInputsSafe).toBe(true);
+  });
+
+  it('reports unsafe for an Error argument (stack materialization)', async () => {
+    // Serializing an error reads `stack`, an own engine accessor whose first
+    // invocation formats-and-caches the trace and runs any
+    // `Error.prepareStackTrace` — neither is repeated by a cold replay, so
+    // the boundary must demote.
+    const result = await runSuspension([new Error('lazy stack')]);
+    expect(result.retainedStepInputsSafe).toBe(false);
+  });
+
+  it('reports unsafe when serializing an argument executes a getter', async () => {
+    const value = vmGetterObject();
+    const result = await runSuspension([{ deep: [value] }]);
+    expect(result.retainedStepInputsSafe).toBe(false);
+  });
+
+  it('reports unsafe when an argument is a proxy', async () => {
+    const result = await runSuspension([new Proxy({ a: 1 }, {})]);
+    expect(result.retainedStepInputsSafe).toBe(false);
+  });
+
+  it('still serializes recorded inputs successfully (bytes are unaffected)', async () => {
+    const value = vmGetterObject();
+    const result = await runSuspension([value]);
+    expect(result.retainedStepInputsSafe).toBe(false);
+    // The step is still prepared for execution as usual (a single uncreated
+    // step always lands in the lazy inline slice).
+    expect(result.lazyInlineSteps).toHaveLength(1);
   });
 });
