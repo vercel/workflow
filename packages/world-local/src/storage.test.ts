@@ -160,6 +160,7 @@ describe('Storage', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     // Clean up test dir
     await fs.rm(testDir, { recursive: true, force: true });
   });
@@ -2190,6 +2191,45 @@ describe('Storage', () => {
     });
 
     describe('create', () => {
+      it('rejects retention beyond the 30-day default before writing Hook state', async () => {
+        const hookId = 'hook_over_retention_limit';
+        const before = await storage.events.list({ runId: testRunId });
+
+        await expect(
+          createHook(storage, testRunId, {
+            hookId,
+            token: 'over-retention-limit',
+            tokenRetentionUntil: new Date(
+              Date.now() + 31 * 24 * 60 * 60 * 1000
+            ),
+          })
+        ).rejects.toMatchObject({
+          name: 'WorkflowWorldError',
+          status: 400,
+          message: "Hook minimum retention exceeds this World's 30-day limit.",
+        });
+
+        await expect(storage.hooks.get(hookId)).rejects.toMatchObject({
+          name: 'HookNotFoundError',
+        });
+        expect(await storage.events.list({ runId: testRunId })).toEqual(before);
+      });
+
+      it('accepts retention within the configured Local limit', async () => {
+        vi.stubEnv('WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS', '60');
+        const configuredStorage = createStorage(testDir);
+
+        await expect(
+          createHook(configuredStorage, testRunId, {
+            hookId: 'hook_custom_retention_limit',
+            token: 'custom-retention-limit',
+            tokenRetentionUntil: new Date(
+              Date.now() + 31 * 24 * 60 * 60 * 1000
+            ),
+          })
+        ).resolves.toMatchObject({ hookId: 'hook_custom_retention_limit' });
+      });
+
       it('should create a new hook', async () => {
         const hookData = {
           hookId: 'hook_123',

@@ -106,6 +106,21 @@ function getMaxEventsPerRun(): number {
     : DEFAULT_MAX_EVENTS_PER_RUN;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function getHookRetentionLimitMs(): number {
+  const days = Number(
+    process.env.WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS ?? 30
+  );
+  if (!Number.isFinite(days) || days <= 0) {
+    throw new WorkflowWorldError(
+      'WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS must be a positive number',
+      { status: 400 }
+    );
+  }
+  return days * DAY_MS;
+}
+
 /**
  * Per-step in-process async mutex. Serializes concurrent `events.create` calls
  * that target the same step, so that the "check terminal state, then write step
@@ -462,6 +477,7 @@ export function createEventsStorage(
   basedir: string,
   tag?: string
 ): LocalEventsStorage {
+  const hookRetentionLimitMs = getHookRetentionLimitMs();
   // Events are append-only. Keep a bounded window of locally persisted events
   // available to immediate replay without rereading JSON files. Payload bytes
   // and entry count are both bounded so active/waiting runs cannot retain
@@ -593,6 +609,18 @@ export function createEventsStorage(
   return {
     clearCache,
     async create(runId, data, params): Promise<EventResult> {
+      if (
+        data.eventType === 'hook_created' &&
+        data.eventData.tokenRetentionUntil !== undefined &&
+        data.eventData.tokenRetentionUntil.getTime() >
+          Date.now() + hookRetentionLimitMs
+      ) {
+        throw new WorkflowWorldError(
+          `Hook minimum retention exceeds this World's ${hookRetentionLimitMs / DAY_MS}-day limit.`,
+          { status: 400 }
+        );
+      }
+
       // Validate request-supplied IDs before they're concatenated into
       // filesystem paths. This is the primary defense against path traversal
       // attacks where a client supplies runId / correlationId values like
