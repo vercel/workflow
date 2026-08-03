@@ -2431,8 +2431,12 @@ export function workflowEntrypoint(
                         }
                         eventsCursor = suspensionLog.cursor;
 
-                        // Open hooks/waits in the cumulative log (this
-                        // suspension's writes are already merged in). Computed
+                        // Open hooks/waits in the log as loaded for this
+                        // replay. This suspension's own hook/wait writes are
+                        // NOT in it — they never reach retention anyway,
+                        // because a suspension containing a non-step item
+                        // fails canRetainWorkflowSession's type check before
+                        // the scan is consulted. Computed
                         // lazily, at most once, and shared between the
                         // retention decision here and the delta/turbo gates
                         // below — the attr-detour and hook-conflict paths
