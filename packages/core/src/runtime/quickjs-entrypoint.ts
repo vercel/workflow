@@ -45,7 +45,6 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { getWorkflowQueueName, queueMessage } from './helpers.js';
-import { getWaitContinuationDispatch } from './wait-continuation.js';
 import {
   type PendingAttribute,
   type PendingHook,
@@ -55,6 +54,7 @@ import {
   type PendingWait,
   runQuickJSWorkflow,
 } from './quickjs-runtime.js';
+import { getWaitContinuationDispatch } from './wait-continuation.js';
 import { getWorld } from './world.js';
 
 /** Tiny ms timer using performance.now() — already monotonic on Node. */
