@@ -3,6 +3,7 @@ import {
   getDirective,
   getDirectiveTypo,
   isAsyncFunction,
+  isDirectiveFunctionLike,
 } from './utils';
 
 const BUILTIN_MODULES = new Set<string>();
@@ -47,7 +48,7 @@ export function getCustomDiagnostics(
   const typeChecker = program.getTypeChecker();
 
   // Track function declarations with "use workflow" directive
-  const workflowFunctions = new Map<string, FunctionLikeDeclaration>();
+  const workflowFunctions = new Set<string>();
 
   function addTypoError(node: Node, typo: string, expected: string) {
     const formattedTypo = `'${typo}'`;
@@ -83,9 +84,7 @@ export function getCustomDiagnostics(
 
     // Check if this is the first statement in a function body
     const isFunctionBody =
-      (ts.isFunctionDeclaration(blockParent) ||
-        ts.isArrowFunction(blockParent) ||
-        ts.isFunctionExpression(blockParent)) &&
+      isDirectiveFunctionLike(blockParent, ts) &&
       block.statements[0] === parent;
 
     if (!isFunctionBody) {
@@ -103,19 +102,14 @@ export function getCustomDiagnostics(
     checkDirectiveStringLiteral(node);
 
     // Check function declarations for workflow/step directives
-    if (
-      ts.isFunctionDeclaration(node) ||
-      ts.isArrowFunction(node) ||
-      ts.isFunctionExpression(node)
-    ) {
-      const directive = getDirective(node, sourceFile, ts);
+    if (isDirectiveFunctionLike(node, ts)) {
+      const directive = getDirective(node, ts);
 
       if (directive === 'use workflow') {
         checkWorkflowFunction(node);
         // Track workflow functions by name (for function declarations)
         if (ts.isFunctionDeclaration(node) && node.name) {
-          const functionName = node.name.text;
-          workflowFunctions.set(functionName, node);
+          workflowFunctions.add(node.name.text);
         }
       }
     }
@@ -395,103 +389,87 @@ export function getCustomDiagnostics(
     }
   }
 
-  // Second pass: check all calls in the file for direct workflow function invocations
-  function checkAllCallsForDirectWorkflowInvocation(node: Node) {
-    if (ts.isCallExpression(node)) {
-      if (ts.isIdentifier(node.expression)) {
-        const functionName = node.expression.text;
+  function addDirectWorkflowInvocationDiagnostic(node: CallExpression) {
+    diagnostics.push({
+      file: sourceFile,
+      start: node.getStart(),
+      length: node.getWidth(),
+      messageText: `Workflow functions should not be invoked directly. Use the \`start()\` function from 'workflow/api' to invoke this workflow.`,
+      category: ts.DiagnosticCategory.Warning,
+      code: 9009,
+    });
+  }
 
-        // First check: is it a locally-defined workflow function?
-        if (workflowFunctions.has(functionName)) {
-          diagnostics.push({
-            file: sourceFile,
-            start: node.getStart(),
-            length: node.getWidth(),
-            messageText: `Workflow functions should not be invoked directly. Use the \`start()\` function from 'workflow/api' to invoke this workflow.`,
-            category: ts.DiagnosticCategory.Warning,
-            code: 9009,
-          });
-        } else {
-          // Second check: is it an imported workflow function?
-          let symbolToCheck = typeChecker.getSymbolAtLocation(node.expression);
+  function declarationHasWorkflowDirective(decl: Node): boolean {
+    if (isDirectiveFunctionLike(decl, ts)) {
+      return getDirective(decl, ts) === 'use workflow';
+    }
 
-          // If this is an alias (e.g., from an import), resolve to the actual symbol
-          if (symbolToCheck && symbolToCheck.flags & ts.SymbolFlags.Alias) {
-            const aliasedSymbol = typeChecker.getAliasedSymbol(symbolToCheck);
-            if (aliasedSymbol && aliasedSymbol !== symbolToCheck) {
-              symbolToCheck = aliasedSymbol;
-            }
-          }
+    if (
+      ts.isVariableDeclaration(decl) &&
+      decl.initializer &&
+      isDirectiveFunctionLike(decl.initializer, ts)
+    ) {
+      return getDirective(decl.initializer, ts) === 'use workflow';
+    }
 
-          const declarations = symbolToCheck?.getDeclarations();
-          if (declarations && declarations.length > 0) {
-            for (const decl of declarations) {
-              if (!decl) continue;
+    return false;
+  }
 
-              // Check function declarations directly
-              if (
-                ts.isFunctionDeclaration(decl) ||
-                ts.isArrowFunction(decl) ||
-                ts.isFunctionExpression(decl)
-              ) {
-                // Get the source file from the declaration itself
-                const declSourceFile = decl.getSourceFile?.();
-                if (!declSourceFile) continue;
+  function isDirectWorkflowInvocation(node: CallExpression): boolean {
+    if (!ts.isIdentifier(node.expression)) {
+      return false;
+    }
 
-                const directive = getDirective(
-                  decl as FunctionLikeDeclaration,
-                  declSourceFile,
-                  ts
-                );
+    // First check: is it a locally-defined workflow function?
+    if (workflowFunctions.has(node.expression.text)) {
+      return true;
+    }
 
-                if (directive === 'use workflow') {
-                  diagnostics.push({
-                    file: sourceFile,
-                    start: node.getStart(),
-                    length: node.getWidth(),
-                    messageText: `Workflow functions should not be invoked directly. Use the \`start()\` function from 'workflow/api' to invoke this workflow.`,
-                    category: ts.DiagnosticCategory.Warning,
-                    code: 9009,
-                  });
-                  break;
-                }
-              }
-              // Check variable declarations (e.g., const myWorkflow = async () => { 'use workflow'; })
-              else if (ts.isVariableDeclaration(decl)) {
-                const init = decl.initializer;
-                if (
-                  init &&
-                  (ts.isArrowFunction(init) || ts.isFunctionExpression(init))
-                ) {
-                  const declSourceFile = decl.getSourceFile?.();
-                  if (!declSourceFile) continue;
+    // Second check: is it an imported workflow function?
+    let symbolToCheck = typeChecker.getSymbolAtLocation(node.expression);
 
-                  const directive = getDirective(
-                    init as FunctionLikeDeclaration,
-                    declSourceFile,
-                    ts
-                  );
-
-                  if (directive === 'use workflow') {
-                    diagnostics.push({
-                      file: sourceFile,
-                      start: node.getStart(),
-                      length: node.getWidth(),
-                      messageText: `Workflow functions should not be invoked directly. Use the \`start()\` function from 'workflow/api' to invoke this workflow.`,
-                      category: ts.DiagnosticCategory.Warning,
-                      code: 9009,
-                    });
-                    break;
-                  }
-                }
-              }
-            }
-          }
-        }
+    if (symbolToCheck?.flags & ts.SymbolFlags.Alias) {
+      const aliasedSymbol = typeChecker.getAliasedSymbol(symbolToCheck);
+      if (aliasedSymbol !== symbolToCheck) {
+        symbolToCheck = aliasedSymbol;
       }
     }
 
-    ts.forEachChild(node, checkAllCallsForDirectWorkflowInvocation);
+    return (
+      symbolToCheck?.getDeclarations()?.some(declarationHasWorkflowDirective) ??
+      false
+    );
+  }
+
+  // Second pass: check all calls in the file for direct workflow function invocations
+  function checkAllCallsForDirectWorkflowInvocation(
+    node: Node,
+    allowDirectWorkflowInvocation = false
+  ) {
+    if (isDirectiveFunctionLike(node, ts)) {
+      const directive = getDirective(node, ts);
+      if (directive === 'use workflow') {
+        allowDirectWorkflowInvocation = true;
+      } else if (directive === 'use step') {
+        allowDirectWorkflowInvocation = false;
+      }
+    }
+
+    if (
+      !allowDirectWorkflowInvocation &&
+      ts.isCallExpression(node) &&
+      isDirectWorkflowInvocation(node)
+    ) {
+      addDirectWorkflowInvocationDiagnostic(node);
+    }
+
+    ts.forEachChild(node, (child) =>
+      checkAllCallsForDirectWorkflowInvocation(
+        child,
+        allowDirectWorkflowInvocation
+      )
+    );
   }
 
   visit(sourceFile);

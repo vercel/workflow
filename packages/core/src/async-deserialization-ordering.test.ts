@@ -2,14 +2,27 @@ import { FatalError } from '@workflow/errors';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { registerSerializationClass } from './class-serialization.js';
 import { EventsConsumer } from './events-consumer.js';
 import type { WorkflowOrchestratorContext } from './private.js';
-import { dehydrateStepReturnValue } from './serialization.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
+import {
+  dehydrateStepError,
+  dehydrateStepReturnValue,
+} from './serialization.js';
 import { createUseStep } from './step.js';
+import { WORKFLOW_CLASS_REGISTRY } from './symbols.js';
 import { createContext } from './vm/index.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
+
+// In production, the SWC plugin auto-discovers FatalError (class with
+// WORKFLOW_SERIALIZE/DESERIALIZE) and registers it with a classId. In unit
+// tests we simulate this by manually registering the class.
+beforeAll(() => {
+  registerSerializationClass('@workflow/errors//FatalError', FatalError);
+});
 
 /**
  * These tests verify that when `hydrateStepReturnValue` performs real async
@@ -26,11 +39,18 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     seed: 'test',
     fixedTimestamp: 1753481739458,
   });
+  // Propagate the host class registry to the VM globalThis so that
+  // hydrateStepError can reconstruct FatalError inside the VM realm.
+  const hostRegistry = (globalThis as any)[WORKFLOW_CLASS_REGISTRY];
+  if (hostRegistry) {
+    (context.globalThis as any)[WORKFLOW_CLASS_REGISTRY] = hostRegistry;
+  }
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   return {
     runId: 'wrun_test',
     encryptionKey: undefined,
+    replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent: () => {},
@@ -44,6 +64,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     onWorkflowError: vi.fn(),
     promiseQueue: Promise.resolve(),
     pendingDeliveries: 0,
+    pendingDeliveryBarriers: new Map(),
   };
 }
 
@@ -72,7 +93,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: { result: resultA },
+        eventData: {
+          stepName: 'stepA',
+          result: resultA,
+        },
         createdAt: new Date(),
       },
       {
@@ -80,7 +104,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
-        eventData: { result: resultB },
+        eventData: {
+          stepName: 'stepB',
+          result: resultB,
+        },
         createdAt: new Date(),
       },
     ]);
@@ -142,7 +169,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: { result: results[0] },
+        eventData: {
+          stepName: 'step1',
+          result: results[0],
+        },
         createdAt: new Date(),
       },
       {
@@ -150,7 +180,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
-        eventData: { result: results[1] },
+        eventData: {
+          stepName: 'step2',
+          result: results[1],
+        },
         createdAt: new Date(),
       },
       {
@@ -158,7 +191,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCX',
-        eventData: { result: results[2] },
+        eventData: {
+          stepName: 'step3',
+          result: results[2],
+        },
         createdAt: new Date(),
       },
     ]);
@@ -228,7 +264,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'hook_received',
         correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: { payload: payloadA },
+        eventData: {
+          token: 'test-token',
+          payload: payloadA,
+        },
         createdAt: new Date(),
       },
       {
@@ -236,7 +275,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'hook_received',
         correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: { payload: payloadB },
+        eventData: {
+          token: 'test-token',
+          payload: payloadB,
+        },
         createdAt: new Date(),
       },
       {
@@ -244,6 +286,9 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'hook_disposed',
         correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          token: 'test-token',
+        },
         createdAt: new Date(),
       },
     ]);
@@ -264,7 +309,7 @@ describe('async deserialization ordering', () => {
     );
 
     const createHook = createCreateHook(ctx);
-    const hook = createHook();
+    const hook = createHook({ token: 'test-token' });
 
     // Await two payloads from the hook
     const resolveOrder: string[] = [];
@@ -299,6 +344,11 @@ describe('async deserialization ordering', () => {
       'wrun_test',
       undefined
     );
+    const errorB = await dehydrateStepError(
+      new FatalError('step B failed'),
+      'wrun_test',
+      undefined
+    );
 
     const ctx = setupWorkflowContext([
       {
@@ -306,7 +356,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: { result: resultA },
+        eventData: {
+          stepName: 'stepA',
+          result: resultA,
+        },
         createdAt: new Date(),
       },
       {
@@ -314,7 +367,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_failed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
-        eventData: { error: 'step B failed' },
+        eventData: {
+          stepName: 'stepB',
+          error: errorB,
+        },
         createdAt: new Date(),
       },
       {
@@ -322,7 +378,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCX',
-        eventData: { result: resultC },
+        eventData: {
+          stepName: 'stepC',
+          result: resultC,
+        },
         createdAt: new Date(),
       },
     ]);
@@ -458,7 +517,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: { result: resultA },
+        eventData: {
+          stepName: 'stepA',
+          result: resultA,
+        },
         createdAt: new Date(),
       },
       {
@@ -474,6 +536,9 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'wait_completed',
         correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCW',
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:05.000Z'),
+        },
         createdAt: new Date(),
       },
       {
@@ -481,7 +546,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCX',
-        eventData: { result: resultC },
+        eventData: {
+          stepName: 'stepC',
+          result: resultC,
+        },
         createdAt: new Date(),
       },
     ]);
@@ -544,7 +612,9 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_started',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: {},
+        eventData: {
+          stepName: 'stepA',
+        },
         createdAt: new Date(),
       },
       {
@@ -552,7 +622,9 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_started',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
-        eventData: {},
+        eventData: {
+          stepName: 'stepB',
+        },
         createdAt: new Date(),
       },
       {
@@ -560,7 +632,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: { result: resultA },
+        eventData: {
+          stepName: 'stepA',
+          result: resultA,
+        },
         createdAt: new Date(),
       },
       {
@@ -568,7 +643,10 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
-        eventData: { result: resultB },
+        eventData: {
+          stepName: 'stepB',
+          result: resultB,
+        },
         createdAt: new Date(),
       },
     ]);
@@ -606,5 +684,82 @@ describe('async deserialization ordering', () => {
 
     // Step A must resolve before step B (event log order)
     expect(resolveOrder).toEqual(['A:value_A', 'B:value_B']);
+  });
+
+  // Regression for the buffered-hook delivery rework: a buffered payload's
+  // hydration outcome is captured and only turned into a resolved/rejected
+  // promise when a consumer claims it. It must never reject a promise that no
+  // consumer has attached a handler to (which would surface as an unhandled
+  // rejection and crash the process).
+  it('should not emit an unhandled rejection before a buffered hook payload is claimed', async () => {
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandledRejection);
+
+    try {
+      const ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+          eventData: {
+            payload: new Uint8Array([101, 110, 99, 114]), // "encr" without a key
+          },
+          createdAt: new Date(),
+        },
+      ]);
+
+      const createHook = createCreateHook(ctx);
+      const hook = createHook();
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandledRejections).toEqual([]);
+      await expect(hook).rejects.toThrow(
+        'Encrypted data encountered but no encryption key'
+      );
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+    }
+  });
+
+  // Regression for the delivery-barrier registry: when a buffered hook is
+  // never claimed because another branch wins, its barrier must still be
+  // retired (at idle) so `pendingDeliveryBarriers` does not retain one entry
+  // per abandoned payload.
+  it('should discard an unclaimed hook delivery barrier after a later wait proceeds', async () => {
+    const payload = await dehydrateStepReturnValue(
+      'unused',
+      'wrun_test',
+      undefined
+    );
+    const resumeAt = new Date('2024-01-01T00:00:05.000Z');
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_test',
+        eventType: 'hook_received',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: { payload },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_test',
+        eventType: 'wait_completed',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCW',
+        eventData: { resumeAt },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const createHook = createCreateHook(ctx);
+    const sleep = createSleep(ctx);
+    createHook();
+    await sleep(resumeAt);
+
+    expect(ctx.pendingDeliveryBarriers?.size).toBe(0);
   });
 });

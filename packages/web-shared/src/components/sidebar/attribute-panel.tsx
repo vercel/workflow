@@ -3,28 +3,34 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
-import { Lock } from 'lucide-react';
+import { format } from 'date-fns';
 import type { KeyboardEvent, ReactNode } from 'react';
-import { useCallback, useContext, useMemo, useState } from 'react';
+import { useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
-import { useToast } from '../../lib/toast';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleRoot,
+  CollapsibleTrigger,
+} from '../ui/collapsible';
+import { ContextCardProvider } from '../ui/context-card';
 import {
   DecryptClickContext,
   RunClickContext,
   StreamClickContext,
 } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
-import {
-  ErrorStackBlock,
-  isStructuredErrorWithStack,
-} from '../ui/error-stack-block';
+import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
-import { Spinner } from '../ui/spinner';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
+import {
+  DetailMonoKeyValueRow,
+  RunAttributesCard,
+  RunMetadataCard,
+} from './attributes-block';
 import { ConversationView } from './conversation-view';
-import { CopyableDataBlock } from './copyable-data-block';
-import { DetailCard } from './detail-card';
+import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 
 /**
  * Tab button for conversation/JSON toggle
@@ -142,16 +148,24 @@ const conversationTabs = [
 function ConversationWithTabs({
   conversation,
   args,
+  defaultOpen,
+  onOpenChange,
 }: {
   conversation: ModelMessage[];
   args: unknown[];
+  defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [activeTab, setActiveTab] = useState<'conversation' | 'json'>(
     'conversation'
   );
 
   return (
-    <DetailCard summary={`Input (${conversation.length} messages)`}>
+    <Collapsible
+      label="Input"
+      defaultOpen={defaultOpen}
+      onOpenChange={onOpenChange}
+    >
       <TabbedContainer
         tabs={conversationTabs}
         activeTab={activeTab}
@@ -172,7 +186,7 @@ function ConversationWithTabs({
           </div>
         )}
       </TabbedContainer>
-    </DetailCard>
+    </Collapsible>
   );
 }
 
@@ -180,51 +194,8 @@ function ConversationWithTabs({
  * Render a value with the shared DataInspector (ObjectInspector with
  * custom theming, nodeRenderer for StreamRef/ClassInstanceRef, etc.)
  */
-/**
- * Inline display for an encrypted field — no expand, just a flat label
- * with the lucide Lock icon matching the title bar Decrypt button.
- */
 function EncryptedFieldBlock() {
-  const ctx = useContext(DecryptClickContext);
-  if (ctx) {
-    return (
-      <button
-        type="button"
-        onClick={ctx.onDecrypt}
-        disabled={ctx.isDecrypting}
-        className="flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs cursor-pointer transition-colors"
-        style={{
-          borderColor: 'var(--ds-gray-400)',
-          backgroundColor: 'var(--ds-gray-100)',
-          color: 'var(--ds-gray-700)',
-          opacity: ctx.isDecrypting ? 0.6 : 1,
-        }}
-        title="Click to decrypt"
-      >
-        {ctx.isDecrypting ? (
-          <Spinner size={12} />
-        ) : (
-          <Lock className="h-3 w-3" />
-        )}
-        <span className="font-medium">
-          {ctx.isDecrypting ? 'Decrypting…' : 'Decrypt'}
-        </span>
-      </button>
-    );
-  }
-  return (
-    <div
-      className="flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs"
-      style={{
-        borderColor: 'var(--ds-gray-300)',
-        backgroundColor: 'var(--ds-gray-100)',
-        color: 'var(--ds-gray-700)',
-      }}
-    >
-      <Lock className="h-3 w-3" />
-      <span className="font-medium">Encrypted</span>
-    </div>
-  );
+  return <EncryptedDataBlock />;
 }
 
 /**
@@ -233,7 +204,7 @@ function EncryptedFieldBlock() {
 function ExpiredFieldBlock() {
   return (
     <div
-      className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs"
+      className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-label-12"
       style={{
         borderColor: 'var(--ds-gray-300)',
         backgroundColor: 'var(--ds-gray-100)',
@@ -262,6 +233,7 @@ type AttributeKey =
   | keyof WorkflowRun
   | keyof Hook
   | keyof Event
+  | 'occurredAt'
   | 'moduleSpecifier'
   | 'eventData'
   | 'resumeAt'
@@ -269,7 +241,16 @@ type AttributeKey =
   | 'workflowCoreVersion'
   | 'receivedCount'
   | 'lastReceivedAt'
-  | 'disposedAt';
+  | 'disposedAt'
+  | 'isSystem'
+  | 'errorCode'
+  // Analytics-only provenance (AnalyticsEvent / AnalyticsStep), not on Event.
+  | 'computeInstanceId'
+  // Analytics-only, and event-grained: only AnalyticsEvent carries it. The key
+  // is `vercelId` because that is the name the backend stores the SDK's
+  // `requestId` under; AnalyticsEvent's sibling `requestId` column is never
+  // written, so reading that one would always be empty.
+  | 'vercelId';
 
 const attributeOrder: AttributeKey[] = [
   'workflowName',
@@ -282,44 +263,84 @@ const attributeOrder: AttributeKey[] = [
   'runId',
   'attempt',
   'token',
+  'isWebhook',
+  'isSystem',
   'receivedCount',
   'lastReceivedAt',
   'disposedAt',
   'correlationId',
   'eventType',
   'deploymentId',
+  'vercelId',
+  'computeInstanceId',
   'specVersion',
   'workflowCoreVersion',
   'ownerId',
   'projectId',
   'environment',
   'executionContext',
+  'occurredAt',
   'createdAt',
   'startedAt',
   'updatedAt',
   'completedAt',
   'expiredAt',
   'retryAfter',
+  'errorCode',
   'error',
   'metadata',
   'eventData',
   'input',
   'output',
+  'attributes',
   'resumeAt',
 ];
 
-const sortByAttributeOrder = (a: string, b: string): number => {
-  const aIndex = attributeOrder.indexOf(a as AttributeKey) || 0;
-  const bIndex = attributeOrder.indexOf(b as AttributeKey) || 0;
-  return aIndex - bIndex;
+/**
+ * Rank of an attribute in {@link attributeOrder}. Keys absent from that list
+ * sort after every listed one rather than before them — `indexOf` reports a
+ * miss as `-1`, which is truthy, so a `|| 0` fallback never fires.
+ */
+const attributeOrderIndex = (attribute: string): number => {
+  const index = attributeOrder.indexOf(attribute as AttributeKey);
+  return index === -1 ? attributeOrder.length : index;
 };
+
+const sortByAttributeOrder = (a: string, b: string): number =>
+  attributeOrderIndex(a) - attributeOrderIndex(b);
 
 /**
  * Display names for attributes that should render differently from their key.
  */
 const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
+  moduleSpecifier: 'Module',
+  workflowName: 'Workflow Name',
+  stepName: 'Step Name',
+  stepId: 'Step ID',
+  hookId: 'Hook ID',
+  attempt: 'Attempts',
+  eventId: 'Event ID',
+  runId: 'Run ID',
+  token: 'Token',
+  eventType: 'Event Type',
+  errorCode: 'Error Code',
+  correlationId: 'Correlation ID',
+  deploymentId: 'Deployment ID',
+  vercelId: 'Request ID',
+  computeInstanceId: 'Compute Instance ID',
+  specVersion: 'Spec Version',
   workflowCoreVersion: '@workflow/core version',
-  receivedCount: 'times resolved',
+  occurredAt: 'Occurred',
+  createdAt: 'Created',
+  startedAt: 'Started',
+  updatedAt: 'Updated',
+  completedAt: 'Completed',
+  expiredAt: 'Expired',
+  retryAfter: 'Retry After',
+  resumeAt: 'Resume',
+  lastReceivedAt: 'Last Received',
+  disposedAt: 'Disposed',
+  receivedCount: 'Times Resolved',
 };
 
 /**
@@ -359,15 +380,7 @@ const parseDateValue = (value: unknown): Date | null => {
 };
 
 const formatLocalMillisecondTime = (date: Date): string =>
-  date.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: 'numeric',
-    second: 'numeric',
-    fractionalSecondDigits: 3,
-  });
+  format(date, 'MMM dd HH:mm:ss.SS OO').toUpperCase();
 
 export const localMillisecondTime = (value: unknown): string => {
   const date = parseDateValue(value);
@@ -375,7 +388,6 @@ export const localMillisecondTime = (value: unknown): string => {
     return '-';
   }
 
-  // e.g. 12/17/2025, 9:08:55.182 AM
   return formatLocalMillisecondTime(date);
 };
 
@@ -397,8 +409,18 @@ const timestampWithTooltipOrNull = (value: unknown): ReactNode | null => {
   );
 };
 
+/**
+ * Renders an opaque provenance id. The analytics read contract types these as
+ * nullable, and only a `null` return is filtered out of the panel, so a bare
+ * `String()` would surface the literal text "null" as the value.
+ */
+const opaqueIdOrNull = (value: unknown): string | null =>
+  hasDisplayContent(value) ? String(value) : null;
+
 interface DisplayContext {
   stepName?: string;
+  sectionOpen?: boolean;
+  onSectionOpenChange?: (open: boolean) => void;
 }
 
 const attributeToDisplayFn: Record<
@@ -406,30 +428,35 @@ const attributeToDisplayFn: Record<
   (value: unknown, context?: DisplayContext) => null | string | ReactNode
 > = {
   // Names that need pretty-printing
-  workflowName: (value: unknown) =>
-    parseWorkflowName(String(value))?.shortName ?? '?',
+  workflowName: (_value: unknown) => null,
   moduleSpecifier: (value: unknown) => getModuleSpecifierFromName(value),
-  stepName: (value: unknown) =>
-    parseStepName(String(value))?.shortName ?? String(value),
+  stepName: (_value: unknown) => null,
   // IDs
-  runId: (value: unknown) => String(value),
+  runId: (_value: unknown) => null,
   stepId: (value: unknown) => String(value),
   hookId: (value: unknown) => String(value),
   eventId: (value: unknown) => String(value),
   // Run/step details
-  status: (value: unknown) => String(value),
+  status: (_value: unknown) => null,
   attempt: (value: unknown) => String(value),
   // Hook details
   token: (value: unknown) => String(value),
   isWebhook: (value: unknown) => String(value),
+  isSystem: (value: unknown) => String(value),
   receivedCount: (value: unknown) => String(value),
   lastReceivedAt: localMillisecondTimeOrNull,
   disposedAt: localMillisecondTimeOrNull,
+  // Internal resume plumbing — not surfaced in the UI
+  resumeContext: (_value: unknown) => null,
+  resumeId: (_value: unknown) => null,
+  resumeCapabilities: (_value: unknown) => null,
   // Event details
   eventType: (value: unknown) => String(value),
   correlationId: (value: unknown) => String(value),
   // Project details
   deploymentId: (value: unknown) => String(value),
+  vercelId: opaqueIdOrNull,
+  computeInstanceId: opaqueIdOrNull,
   specVersion: (value: unknown) => String(value),
   workflowCoreVersion: (value: unknown) => String(value),
   // Tenancy (we don't show these)
@@ -437,23 +464,53 @@ const attributeToDisplayFn: Record<
   projectId: (_value: unknown) => null,
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
+  // Attributes — string-string metadata attached to the run.
+  // Rendered as key-value rows in its own collapsible section;
+  // if empty/missing, hidden by the hasDisplayContent gate.
+  attributes: (value: unknown) => {
+    if (!hasDisplayContent(value)) return null;
+    return <RunAttributesCard attributes={value as Record<string, string>} />;
+  },
   // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
+  occurredAt: timestampWithTooltipOrNull,
   createdAt: timestampWithTooltipOrNull,
   startedAt: timestampWithTooltipOrNull,
-  updatedAt: timestampWithTooltipOrNull,
+  updatedAt: (_value: unknown) => null,
   completedAt: timestampWithTooltipOrNull,
-  expiredAt: timestampWithTooltipOrNull,
+  expiredAt: (_value: unknown) => null,
   retryAfter: timestampWithTooltipOrNull,
   resumeAt: timestampWithTooltipOrNull,
   // Resolved attributes, won't actually use this function
   metadata: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
-    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
-    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
-    return JsonBlock(value);
+    if (isEncryptedMarker(value)) {
+      return (
+        <Collapsible label="Metadata">
+          <EncryptedDataBlock />
+        </Collapsible>
+      );
+    }
+    if (isExpiredMarker(value)) {
+      return (
+        <Collapsible label="Metadata">
+          <ExpiredFieldBlock />
+        </Collapsible>
+      );
+    }
+    return <RunMetadataCard metadata={value} />;
   },
   input: (value: unknown, context?: DisplayContext) => {
-    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isEncryptedMarker(value)) {
+      return (
+        <Collapsible
+          label="Input"
+          defaultOpen={context?.sectionOpen}
+          onOpenChange={context?.onSectionOpenChange}
+        >
+          <EncryptedFieldBlock />
+        </Collapsible>
+      );
+    }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     // Check if input has args + closure vars structure
     if (value && typeof value === 'object' && 'args' in value) {
@@ -462,8 +519,6 @@ const attributeToDisplayFn: Record<
         closureVars?: Record<string, unknown>;
         thisVal?: unknown;
       };
-      const argCount = Array.isArray(args) ? args.length : 0;
-      const argLabel = argCount === 1 ? 'argument' : 'arguments';
       const hasClosureVars = hasDisplayContent(closureVars);
       const hasThisVal = hasDisplayContent(thisVal);
       const hasArgs = hasDisplayContent(args);
@@ -474,16 +529,21 @@ const attributeToDisplayFn: Record<
         if (conversation && conversation.length > 0) {
           return (
             <>
-              <ConversationWithTabs conversation={conversation} args={args} />
+              <ConversationWithTabs
+                conversation={conversation}
+                args={args}
+                defaultOpen={context?.sectionOpen}
+                onOpenChange={context?.onSectionOpenChange}
+              />
               {hasClosureVars && (
-                <DetailCard summary="Closure Variables">
+                <Collapsible label="Closure Variables">
                   {JsonBlock(closureVars)}
-                </DetailCard>
+                </Collapsible>
               )}
               {hasThisVal && (
-                <DetailCard summary="This Value">
+                <Collapsible label="This Value">
                   {JsonBlock(thisVal)}
-                </DetailCard>
+                </Collapsible>
               )}
             </>
           );
@@ -492,21 +552,15 @@ const attributeToDisplayFn: Record<
 
       // Don't render an empty "Input (0 arguments)" card when no input exists.
       if (!hasArgs && !hasClosureVars && !hasThisVal) {
-        return (
-          <DetailCard
-            summary="Input (no data)"
-            disabled
-            summaryClassName="text-base py-2"
-          />
-        );
+        return <Collapsible label="Input (no data)" disabled />;
       }
 
       return (
         <>
-          <DetailCard
-            summary={`Input (${argCount} ${argLabel})`}
-            summaryClassName="text-base py-2"
-            contentClassName="mt-0"
+          <Collapsible
+            label="Input"
+            defaultOpen={context?.sectionOpen}
+            onOpenChange={context?.onSectionOpenChange}
           >
             {Array.isArray(args)
               ? args.map((v, i) => (
@@ -515,36 +569,28 @@ const attributeToDisplayFn: Record<
                   </div>
                 ))
               : JsonBlock(args)}
-          </DetailCard>
+          </Collapsible>
           {hasClosureVars && (
-            <DetailCard summary="Closure Variables">
+            <Collapsible label="Closure Variables">
               {JsonBlock(closureVars)}
-            </DetailCard>
+            </Collapsible>
           )}
           {hasThisVal && (
-            <DetailCard summary="this">{JsonBlock(thisVal)}</DetailCard>
+            <Collapsible label="Context">{JsonBlock(thisVal)}</Collapsible>
           )}
         </>
       );
     }
 
     // Fallback: treat as plain array or object
-    const argCount = Array.isArray(value) ? value.length : 0;
-    const argLabel = argCount === 1 ? 'argument' : 'arguments';
     if (!hasDisplayContent(value)) {
-      return (
-        <DetailCard
-          summary="Input (no data)"
-          disabled
-          summaryClassName="text-base py-2"
-        />
-      );
+      return <Collapsible label="Input (no data)" disabled />;
     }
     return (
-      <DetailCard
-        summary={`Input (${argCount} ${argLabel})`}
-        summaryClassName="text-base py-2"
-        contentClassName="mt-0"
+      <Collapsible
+        label="Input"
+        defaultOpen={context?.sectionOpen}
+        onOpenChange={context?.onSectionOpenChange}
       >
         {Array.isArray(value)
           ? value.map((v, i) => (
@@ -553,58 +599,84 @@ const attributeToDisplayFn: Record<
               </div>
             ))
           : JsonBlock(value)}
-      </DetailCard>
+      </Collapsible>
     );
   },
-  output: (value: unknown) => {
+  output: (value: unknown, context?: DisplayContext) => {
+    if (isEncryptedMarker(value)) {
+      return (
+        <Collapsible
+          label="Output"
+          defaultOpen={context?.sectionOpen}
+          onOpenChange={context?.onSectionOpenChange}
+        >
+          <EncryptedFieldBlock />
+        </Collapsible>
+      );
+    }
     if (!hasDisplayContent(value)) return null;
-    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     return (
-      <DetailCard
-        summary="Output"
-        summaryClassName="text-base py-2"
-        contentClassName="mt-0"
+      <Collapsible
+        label="Output"
+        defaultOpen={context?.sectionOpen}
+        onOpenChange={context?.onSectionOpenChange}
       >
         {JsonBlock(value)}
-      </DetailCard>
+      </Collapsible>
     );
   },
   error: (value: unknown) => {
-    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isEncryptedMarker(value)) {
+      return (
+        <Collapsible label="Error" defaultOpen>
+          <EncryptedFieldBlock />
+        </Collapsible>
+      );
+    }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
 
-    // If the error object has a `stack` field, render it as readable
-    // pre-formatted text. Otherwise fall back to the raw JSON viewer.
-    if (isStructuredErrorWithStack(value)) {
+    // Structured workflow errors may be persisted as either `{ message }` or
+    // `{ message, stack }`. Render both with the dedicated error block.
+    if (isStructuredError(value)) {
       return (
-        <DetailCard
-          summary="Error"
-          summaryClassName="text-base py-2"
-          contentClassName="mt-0"
-        >
+        <Collapsible label="Error" defaultOpen>
           <ErrorStackBlock value={value} />
-        </DetailCard>
+        </Collapsible>
       );
     }
 
     return (
-      <DetailCard
-        summary="Error"
-        summaryClassName="text-base py-2"
-        contentClassName="mt-0"
-      >
+      <Collapsible label="Error" defaultOpen>
         {JsonBlock(value)}
-      </DetailCard>
+      </Collapsible>
     );
   },
   eventData: (value: unknown) => {
-    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isEncryptedMarker(value)) {
+      return (
+        <Collapsible label="Event Data" defaultOpen>
+          <EncryptedFieldBlock />
+        </Collapsible>
+      );
+    }
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
-    return <DetailCard summary="Event Data">{JsonBlock(value)}</DetailCard>;
+    return (
+      <Collapsible label="Event Data" defaultOpen>
+        {JsonBlock(value)}
+      </Collapsible>
+    );
   },
+  errorCode: (value: unknown) => {
+    if (typeof value !== 'string' || value.length === 0) return null;
+    return String(value);
+  },
+  // Internal encryption plumbing: the run's X25519 public key, used by
+  // cross-run writers to seal payloads to this run. Not actionable for users
+  // and not secret — hidden rather than rendered as 44 opaque base64 chars.
+  encryptionPublicKey: (_value: unknown) => null,
 };
 
 const resolvableAttributes = [
@@ -612,12 +684,24 @@ const resolvableAttributes = [
   'output',
   'error',
   'metadata',
+  'attributes',
   'eventData',
 ];
 
+// Attributes whose displayFn renders its own section header via Collapsible,
+// so the outer AttributeBlock should not duplicate the label.
+const selfHeaderedAttributes = new Set([
+  'input',
+  'output',
+  'error',
+  'metadata',
+  'attributes',
+  'eventData',
+]);
+
 const ExpiredDataMessage = () => (
   <div
-    className="text-copy-12 rounded-md border p-4 my-2"
+    className="text-label-12 rounded-md border p-4 my-2"
     style={{
       borderColor: 'var(--ds-gray-300)',
       backgroundColor: 'var(--ds-gray-100)',
@@ -627,6 +711,23 @@ const ExpiredDataMessage = () => (
     <span>The data for this run has expired and is no longer available.</span>
   </div>
 );
+
+const copyableBasicAttributes = new Set<AttributeKey>([
+  'stepId',
+  'hookId',
+  'eventId',
+  'deploymentId',
+  'vercelId',
+  'computeInstanceId',
+  'moduleSpecifier',
+  'token',
+]);
+
+const loadingSectionLabels: Partial<Record<AttributeKey, string>> = {
+  input: 'Input',
+  output: 'Output',
+  eventData: 'Event Data',
+};
 
 export const AttributeBlock = ({
   attribute,
@@ -641,24 +742,25 @@ export const AttributeBlock = ({
   inline?: boolean;
   context?: DisplayContext;
 }) => {
-  const isExpandableLoadingTarget =
-    attribute === 'input' ||
-    attribute === 'output' ||
-    attribute === 'eventData';
-  if (isLoading && isExpandableLoadingTarget && !hasDisplayContent(value)) {
-    return (
-      <div
-        className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' ? 'gap-2 my-3.5' : 'gap-0'}`}
-      >
-        <span
-          className={`${attribute === 'input' || attribute === 'output' ? 'text-base' : 'text-xs'} font-medium first-letter:uppercase`}
-          style={{ color: 'var(--ds-gray-700)' }}
+  const decryptCtx = useContext(DecryptClickContext);
+  const sectionOpenRef = useRef(false);
+  const handleSectionOpenChange = useCallback((open: boolean) => {
+    sectionOpenRef.current = open;
+  }, []);
+  const label = loadingSectionLabels[attribute as AttributeKey];
+  if (isLoading && label && !hasDisplayContent(value)) {
+    if (decryptCtx?.hasEncryptedData) {
+      return (
+        <Collapsible
+          label={label}
+          defaultOpen={attribute === 'eventData' || sectionOpenRef.current}
+          onOpenChange={handleSectionOpenChange}
         >
-          {attribute}
-        </span>
-        <Skeleton className="h-9 w-full rounded-md" />
-      </div>
-    );
+          <EncryptedFieldBlock />
+        </Collapsible>
+      );
+    }
+    return <Collapsible label={label} />;
   }
 
   const displayFn =
@@ -666,7 +768,11 @@ export const AttributeBlock = ({
   if (!displayFn) {
     return null;
   }
-  const displayValue = displayFn(value, context);
+  const displayValue = displayFn(value, {
+    ...context,
+    sectionOpen: sectionOpenRef.current,
+    onSectionOpenChange: handleSectionOpenChange,
+  });
   if (!displayValue) {
     return null;
   }
@@ -687,6 +793,10 @@ export const AttributeBlock = ({
     );
   }
 
+  if (selfHeaderedAttributes.has(attribute)) {
+    return <>{displayValue}</>;
+  }
+
   return (
     <div className="relative">
       {typeof isLoading === 'boolean' && isLoading && (
@@ -697,17 +807,14 @@ export const AttributeBlock = ({
           />
         </div>
       )}
-      <div
-        key={attribute}
-        className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' || attribute === 'error' ? 'gap-2 my-3.5' : 'gap-0'}`}
-      >
-        <span
-          className={`${attribute === 'input' || attribute === 'output' || attribute === 'error' ? 'text-base' : 'text-xs'} font-medium first-letter:uppercase`}
-          style={{ color: 'var(--ds-gray-700)' }}
-        >
+      <div key={attribute} className="my-2 flex flex-col gap-0">
+        <span className="text-label-14 text-gray-1000 font-medium first-letter:uppercase">
           {attribute}
         </span>
-        <span className="text-xs" style={{ color: 'var(--ds-gray-1000)' }}>
+        <span
+          className="text-label-12"
+          style={{ color: 'var(--ds-gray-1000)' }}
+        >
           {displayValue}
         </span>
       </div>
@@ -718,6 +825,7 @@ export const AttributeBlock = ({
 export const AttributePanel = ({
   data,
   moduleSpecifier,
+  moduleSourceUrl,
   isLoading,
   error,
   expiredAt,
@@ -729,6 +837,7 @@ export const AttributePanel = ({
 }: {
   data: Record<string, unknown>;
   moduleSpecifier?: string;
+  moduleSourceUrl?: string;
   isLoading?: boolean;
   error?: Error;
   expiredAt?: string | Date;
@@ -743,7 +852,6 @@ export const AttributePanel = ({
   /** Resource type of the selected span — used to show targeted loading skeletons. */
   resource?: string;
 }) => {
-  const toast = useToast();
   // Extract workflowCoreVersion from executionContext for display
   const displayData = useMemo(() => {
     const result = { ...data };
@@ -773,16 +881,16 @@ export const AttributePanel = ({
 
     if (!isLoading) return present;
 
-    // During loading, ensure input/output appear so their skeletons render
-    // in the correct position (above the events section).
-    const loadingDefaults = ['input', 'output'];
-    for (const key of loadingDefaults) {
+    if (resource === 'sleep') return present;
+
+    const loadingPlaceholders = ['input', 'output'];
+    for (const key of loadingPlaceholders) {
       if (!present.includes(key)) {
         present.push(key);
       }
     }
     return present.sort(sortByAttributeOrder);
-  }, [displayData, isLoading]);
+  }, [displayData, isLoading, resource]);
 
   // Filter out attributes that return null
   const visibleBasicAttributes = basicAttributes.filter((attribute) => {
@@ -827,113 +935,64 @@ export const AttributePanel = ({
     }),
     [displayData.stepName]
   );
-  const handleCopyModuleSpecifier = useCallback((value: string) => {
-    navigator.clipboard
-      .writeText(value)
-      .then(() => {
-        toast.success('moduleSpecifier copied');
-      })
-      .catch(() => {
-        toast.error('Failed to copy moduleSpecifier');
-      });
-  }, []);
+  const outerDecryptCtx = useContext(DecryptClickContext);
+  const decryptValue = onDecrypt
+    ? {
+        onDecrypt,
+        isDecrypting,
+        hasEncryptedData: outerDecryptCtx?.hasEncryptedData,
+      }
+    : outerDecryptCtx;
 
   return (
-    <RunClickContext.Provider value={onRunClick}>
-      <StreamClickContext.Provider value={onStreamClick}>
-        <DecryptClickContext.Provider
-          value={onDecrypt ? { onDecrypt, isDecrypting } : undefined}
-        >
-          <div>
-            {/* Basic attributes in a vertical layout with border */}
+    <ContextCardProvider>
+      <RunClickContext.Provider value={onRunClick}>
+        <StreamClickContext.Provider value={onStreamClick}>
+          <DecryptClickContext.Provider value={decryptValue}>
             {visibleBasicAttributes.length > 0 && (
-              <div
-                className="mb-3 flex flex-col overflow-hidden rounded-lg border"
-                style={{
-                  borderColor: 'var(--ds-gray-300)',
-                }}
-              >
-                {orderedBasicAttributes.map((attribute, index) => {
-                  const displayValue = attributeToDisplayFn[
-                    attribute as keyof typeof attributeToDisplayFn
-                  ]?.(displayData[attribute as keyof typeof displayData]);
-                  const isModuleSpecifier = attribute === 'moduleSpecifier';
-                  const moduleSpecifierValue =
-                    typeof displayValue === 'string'
-                      ? displayValue
-                      : String(
-                          displayValue ?? displayData.moduleSpecifier ?? ''
-                        );
-                  const shouldCapitalizeLabel =
-                    attribute !== 'workflowCoreVersion';
-                  const showResumeAtSkeleton =
-                    isLoading && resource === 'sleep' && !displayData.resumeAt;
-                  const showDivider =
-                    index < orderedBasicAttributes.length - 1 ||
-                    showResumeAtSkeleton;
+              <CollapsibleRoot defaultOpen>
+                <CollapsibleTrigger>Metadata</CollapsibleTrigger>
+                <CollapsibleContent className="mt-0 mb-2">
+                  <div className="flex flex-col">
+                    {orderedBasicAttributes.map((attribute) => {
+                      const displayValue = attributeToDisplayFn[
+                        attribute as keyof typeof attributeToDisplayFn
+                      ]?.(displayData[attribute as keyof typeof displayData]);
+                      const isCopyableBasicAttribute =
+                        copyableBasicAttributes.has(
+                          attribute as AttributeKey
+                        ) && typeof displayValue === 'string';
+                      const label = getAttributeDisplayName(attribute);
 
-                  return (
-                    <div key={attribute} className="py-1">
-                      <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
-                        <span
-                          className={
-                            shouldCapitalizeLabel
-                              ? 'text-[14px] first-letter:uppercase'
-                              : 'text-[14px]'
+                      return (
+                        <DetailMonoKeyValueRow
+                          key={attribute}
+                          label={label}
+                          value={displayValue}
+                          copyText={
+                            isCopyableBasicAttribute ? displayValue : undefined
                           }
-                          style={{ color: 'var(--ds-gray-700)' }}
-                        >
-                          {getAttributeDisplayName(attribute)}
-                        </span>
-                        {isModuleSpecifier ? (
-                          <button
-                            type="button"
-                            className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
-                            style={{
-                              color: 'var(--ds-gray-1000)',
-                              background: 'transparent',
-                              border: 'none',
-                              padding: 0,
-                            }}
-                            title={moduleSpecifierValue}
-                            onClick={() =>
-                              handleCopyModuleSpecifier(moduleSpecifierValue)
-                            }
-                          >
-                            {moduleSpecifierValue}
-                          </button>
-                        ) : (
-                          <span
-                            className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
-                            style={{ color: 'var(--ds-gray-1000)' }}
-                          >
-                            {displayValue}
-                          </span>
-                        )}
-                      </div>
-                      {showDivider ? (
-                        <div
-                          className="mx-2.5 border-b"
-                          style={{ borderColor: 'var(--ds-gray-300)' }}
+                          href={
+                            attribute === 'moduleSpecifier'
+                              ? moduleSourceUrl
+                              : undefined
+                          }
                         />
-                      ) : null}
-                    </div>
-                  );
-                })}
-                {isLoading && resource === 'sleep' && !displayData.resumeAt && (
-                  <div className="py-1">
-                    <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
-                      <span
-                        className="text-[14px] first-letter:uppercase"
-                        style={{ color: 'var(--ds-gray-700)' }}
-                      >
-                        resumeAt
-                      </span>
-                      <Skeleton className="h-4 w-[55%]" />
-                    </div>
+                      );
+                    })}
+                    {isLoading &&
+                      resource === 'sleep' &&
+                      !displayData.resumeAt && (
+                        <div className="flex items-center justify-between gap-3 py-0.5">
+                          <span className="text-label-13 text-gray-900">
+                            Resume
+                          </span>
+                          <Skeleton className="h-4 w-[55%]" />
+                        </div>
+                      )}
                   </div>
-                )}
-              </div>
+                </CollapsibleContent>
+              </CollapsibleRoot>
             )}
             {error ? (
               <ErrorCard
@@ -943,22 +1002,20 @@ export const AttributePanel = ({
               />
             ) : hasExpired ? (
               <ExpiredDataMessage />
-            ) : (
-              <>
-                {resolvedAttributes.map((attribute) => (
-                  <AttributeBlock
-                    isLoading={isLoading}
-                    key={attribute}
-                    attribute={attribute}
-                    value={displayData[attribute as keyof typeof displayData]}
-                    context={displayContext}
-                  />
-                ))}
-              </>
-            )}
-          </div>
-        </DecryptClickContext.Provider>
-      </StreamClickContext.Provider>
-    </RunClickContext.Provider>
+            ) : resolvedAttributes.length > 0 ? (
+              resolvedAttributes.map((attribute) => (
+                <AttributeBlock
+                  isLoading={isLoading}
+                  key={attribute}
+                  attribute={attribute}
+                  value={displayData[attribute as keyof typeof displayData]}
+                  context={displayContext}
+                />
+              ))
+            ) : null}
+          </DecryptClickContext.Provider>
+        </StreamClickContext.Provider>
+      </RunClickContext.Provider>
+    </ContextCardProvider>
   );
 };

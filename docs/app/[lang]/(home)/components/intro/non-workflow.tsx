@@ -13,12 +13,12 @@ const Loading = (
   <Loader2Icon className="size-[13px] text-muted-foreground animate-spin" />
 );
 const Success = (
-  <div key="success">
+  <div>
     <CheckIcon className="size-[14px] text-emerald-500" />
   </div>
 );
 const ErrorIndicator = (
-  <div key="error">
+  <div>
     <XIcon className="size-[14px] text-rose-500" />
   </div>
 );
@@ -99,7 +99,7 @@ export const NonWorkflowExample = ({
   };
 
   return (
-    <div className="relative isolate max-w-3xl mx-auto">
+    <div className="relative isolate w-full">
       <div className="bg-background border rounded-md overflow-x-auto pb-[52px]">
         <div className="relative">
           <div className="flex absolute z-10 flex-col left-[18px] top-[69px] pointer-events-none select-none">

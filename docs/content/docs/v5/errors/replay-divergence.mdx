@@ -1,0 +1,27 @@
+---
+title: replay-divergence
+description: A workflow replay temporarily followed a path that did not match its recorded events.
+type: troubleshooting
+summary: Understand automatic recovery when a workflow replay diverges from its event history.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/errors/corrupted-event-log
+  - /docs/foundations/errors-and-retries
+---
+
+A replay divergence occurs when one invocation of a workflow cannot consume the durable event history using the promises, hooks, sleeps, or steps it created during replay.
+
+This is an SDK/runtime signal, not an error thrown by your workflow code. It is not catchable inside a workflow function.
+
+## Automatic Recovery
+
+A single divergent replay does not prove that persisted history is corrupted. For example, asynchronous delivery ordering may cause one invocation to follow the wrong side of a race while another replay can follow the recorded history correctly.
+
+The runtime automatically queues another replay when an invocation reports `REPLAY_DIVERGENCE`. No terminal `run_failed` event is written during these recovery attempts.
+
+If recovery replays continue to diverge after the retry budget is exhausted, the runtime marks the run as failed with `CORRUPTED_EVENT_LOG` and records the latest divergent event for diagnosis.
+
+## What To Do
+
+Most replay divergence signals recover without action. If a run ultimately fails with `CORRUPTED_EVENT_LOG`, update to the latest `workflow` package and report the run ID and error details if the failure persists.

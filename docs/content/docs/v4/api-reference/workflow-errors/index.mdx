@@ -1,0 +1,85 @@
+---
+title: "workflow/errors"
+description: Semantic error types thrown by the Workflow SDK and its storage backends.
+type: overview
+summary: Explore the error classes exported from workflow/errors for handling workflow failures.
+related:
+  - /docs/foundations/errors-and-retries
+---
+
+API reference for the error classes exported from the `workflow/errors` package.
+
+All errors extend [`WorkflowError`](/docs/api-reference/workflow-errors/workflow-error), so you can catch any SDK error with a single `instanceof` check, or narrow to a specific class for fine-grained handling.
+
+## Base Classes
+
+<Cards>
+    <Card href="/docs/api-reference/workflow-errors/workflow-error" title="WorkflowError">
+        Base class for all workflow error types.
+    </Card>
+    <Card href="/docs/api-reference/workflow-errors/workflow-world-error" title="WorkflowWorldError">
+        Base error for failures from workflow storage backends.
+    </Card>
+</Cards>
+
+## Registration Errors
+
+<Cards>
+    <Card href="/docs/api-reference/workflow-errors/workflow-not-registered-error" title="WorkflowNotRegisteredError">
+        Thrown when a workflow function is not registered in the current deployment.
+    </Card>
+    <Card href="/docs/api-reference/workflow-errors/step-not-registered-error" title="StepNotRegisteredError">
+        Thrown when a step function is not registered in the current deployment.
+    </Card>
+</Cards>
+
+## Run Errors
+
+<Cards>
+    <Card href="/docs/api-reference/workflow-errors/workflow-run-not-found-error" title="WorkflowRunNotFoundError">
+        Thrown when operating on a workflow run that does not exist.
+    </Card>
+    <Card href="/docs/api-reference/workflow-errors/workflow-run-failed-error" title="WorkflowRunFailedError">
+        Thrown when awaiting the return value of a failed workflow run.
+    </Card>
+    <Card href="/docs/api-reference/workflow-errors/workflow-run-cancelled-error" title="WorkflowRunCancelledError">
+        Thrown when awaiting the return value of a cancelled workflow run.
+    </Card>
+    <Card href="/docs/api-reference/workflow-errors/workflow-run-not-completed-error" title="WorkflowRunNotCompletedError">
+        Thrown when requesting the result of a workflow run that has not completed yet.
+    </Card>
+    <Card href="/docs/api-reference/workflow-errors/workflow-runtime-error" title="WorkflowRuntimeError">
+        Thrown when the workflow runtime encounters an execution error, such as serialization failures or timeouts.
+    </Card>
+    <Card href="/docs/api-reference/workflow-errors/run-expired-error" title="RunExpiredError">
+        Thrown when a workflow run has expired and can no longer be operated on.
+    </Card>
+    <Card href="/docs/api-reference/workflow-errors/run-not-supported-error" title="RunNotSupportedError">
+        Thrown when a workflow run requires a newer workflow spec version than the installed SDK supports.
+    </Card>
+</Cards>
+
+## Hook Errors
+
+<Cards>
+    <Card href="/docs/api-reference/workflow-errors/hook-not-found-error" title="HookNotFoundError">
+        Thrown when resuming a hook that does not exist.
+    </Card>
+    <Card href="/docs/api-reference/workflow-errors/hook-conflict-error" title="HookConflictError">
+        Thrown when creating a hook with a token that is already in use by another workflow run.
+    </Card>
+</Cards>
+
+## Backend Errors
+
+<Cards>
+    <Card href="/docs/api-reference/workflow-errors/throttle-error" title="ThrottleError">
+        Thrown when a request is rate-limited by the workflow backend.
+    </Card>
+    <Card href="/docs/api-reference/workflow-errors/entity-conflict-error" title="EntityConflictError">
+        Thrown when a storage operation conflicts with the current entity state.
+    </Card>
+    <Card href="/docs/api-reference/workflow-errors/too-early-error" title="TooEarlyError">
+        Thrown when a request is made before the system is ready to process it.
+    </Card>
+</Cards>

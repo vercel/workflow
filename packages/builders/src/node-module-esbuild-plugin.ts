@@ -305,6 +305,15 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
       const packageViolations: PackageViolation[] = [];
       const seenViolations = new Set<string>();
 
+      // Enable the esbuild metafile so we can inspect which Node.js / Bun
+      // built-in imports actually survive tree-shaking. We need this to
+      // suppress false positives where a shared module has a workflow-safe
+      // export alongside a step-only export that references Node.js builtins
+      // — esbuild's tree-shaker can drop the step-only branch, but `onResolve`
+      // fires before tree-shaking, so we defer the final error decision to
+      // `onEnd` (see the metafile-based filter below).
+      build.initialOptions.metafile = true;
+
       // Track ALL import relationships to build the dependency graph.
       // This is necessary to trace transitive dependencies back to user code.
       // Performance impact is minimal as we only store path mappings.
@@ -388,9 +397,14 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
         const workflowFile = filteredChain[0] ?? importerPath;
 
         if (!workflowFile || workflowFile.includes('node_modules')) {
+          // Mark builtin imports as side-effect-free so esbuild can tree-shake
+          // them when they're only referenced by dead (e.g. step-only) code
+          // paths in shared modules. The onEnd filter below uses the metafile
+          // to decide which imports actually survive.
           return {
             path: args.path,
             external: true,
+            sideEffects: false,
           };
         }
 
@@ -422,39 +436,80 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
           }
         }
 
+        // Mark builtin imports as side-effect-free so esbuild can tree-shake
+        // them when they're only referenced by dead (e.g. step-only) code
+        // paths in shared modules. The onEnd filter below uses the metafile
+        // to decide which imports actually survive.
         return {
           path: args.path,
           external: true,
+          sideEffects: false,
         };
       });
 
-      // Report all violations at the end of the build
-      build.onEnd(() => {
-        if (packageViolations.length > 0) {
-          return {
-            errors: packageViolations.map((violation) => {
-              const isBuiltinModule = runtimeModulesRegex.test(
-                violation.packageName
-              );
-              const moduleType = getModuleTypeLabel(violation.path);
+      // Report violations at the end of the build, filtered to only those
+      // whose Node.js / Bun builtin imports actually survived tree-shaking.
+      //
+      // `onResolve` fires during module loading, before esbuild's tree-shaker
+      // runs. That means a shared module whose step-only export references a
+      // builtin will record a violation even if the workflow never touches
+      // that export. By marking builtin imports as `sideEffects: false` in
+      // `onResolve` above, esbuild can drop such imports from the output.
+      // Here we consult the metafile to see which builtin imports remain
+      // in the emitted bundle and only report those.
+      build.onEnd((result) => {
+        if (packageViolations.length === 0) return;
 
-              // Different messages for built-in modules vs npm packages that use them
-              const text = isBuiltinModule
-                ? `You are attempting to use "${violation.packageName}" which is a ${moduleType} module. ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`
-                : `You are attempting to use "${violation.packageName}" which depends on ${moduleType} modules. Packages that depend on ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`;
-
-              return {
-                text,
-                location: violation.location
-                  ? {
-                      ...violation.location,
-                      suggestion: 'Move this function into a step function.',
-                    }
-                  : undefined,
-              };
-            }),
-          };
+        const survivingBuiltins = new Set<string>();
+        const outputs = result.metafile?.outputs;
+        if (outputs) {
+          for (const output of Object.values(outputs)) {
+            for (const imp of output.imports) {
+              // External imports in the metafile are recorded with the path
+              // that was returned from `onResolve` (e.g. "node:fs/promises",
+              // "fs", "bun:sqlite"). Only collect the ones that match
+              // Node.js / Bun builtins.
+              if (imp.external && runtimeModulesRegex.test(imp.path)) {
+                survivingBuiltins.add(imp.path);
+              }
+            }
+          }
         }
+
+        // If the metafile is unavailable for some reason, fall back to
+        // reporting all recorded violations so we never silently suppress
+        // real ones.
+        const liveViolations = outputs
+          ? packageViolations.filter((violation) =>
+              survivingBuiltins.has(violation.path)
+            )
+          : packageViolations;
+
+        if (liveViolations.length === 0) return;
+
+        return {
+          errors: liveViolations.map((violation) => {
+            const isBuiltinModule = runtimeModulesRegex.test(
+              violation.packageName
+            );
+            const moduleType = getModuleTypeLabel(violation.path);
+
+            // Different messages for built-in modules vs npm packages that use them
+            const text = isBuiltinModule
+              ? `You are attempting to use "${violation.packageName}" which is a ${moduleType} module. ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`
+              : `You are attempting to use "${violation.packageName}" which depends on ${moduleType} modules. Packages that depend on ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`;
+
+            return {
+              text,
+              location: violation.location
+                ? {
+                    ...violation.location,
+                    suggestion: 'Move this function into a step function.',
+                  }
+                : undefined,
+            };
+          }),
+        };
       });
     },
   };

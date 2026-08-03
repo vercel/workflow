@@ -7,6 +7,7 @@
 export { LogoAiElements } from './logo-ai-elements';
 export { LogoAiSdk } from './logo-ai-sdk';
 export { LogoChatSdk } from './logo-chat-sdk';
+export { LogoEve } from './logo-eve';
 export { LogoFlagsSdk } from './logo-flags-sdk';
 export { LogoIconVercel } from './logo-icon-vercel';
 export { LogoStreamdown } from './logo-streamdown';

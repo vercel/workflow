@@ -1,12 +1,19 @@
 import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
-import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
+import { createWorkflowUrl } from '@workflow/utils';
+import {
+  MessageId,
+  parseQueueName,
+  type Queue,
+  type QueuePrefix,
+  ValidQueueName,
+} from '@workflow/world';
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
 import { z } from 'zod/v4';
 import type { Config } from './config.js';
-import { resolveBaseUrl } from './config.js';
+import { resolveBaseUrl, resolveDirectBaseUrl } from './config.js';
 import { jsonReplacer, jsonReviver } from './fs.js';
 import { getPackageInfo } from './init.js';
 
@@ -54,45 +61,85 @@ const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
   DEFAULT_CONCURRENCY_LIMIT;
 
+/** Default time-to-first-byte deadline for local queue deliveries. */
+export const DEFAULT_HEADERS_TIMEOUT_MS = 30_000;
+
+/** Default maximum gap between response body chunks for local deliveries. */
+export const DEFAULT_BODY_TIMEOUT_MS = 30_000;
+
+function envTimeoutMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+/**
+ * Bounds a stalled delivery below the queue handler's retry horizon. A
+ * transport timeout is retried by the delivery loop with the same durable
+ * message; `0` remains available for applications that need unbounded calls.
+ */
+export function getQueueAgentOptions() {
+  return {
+    bodyTimeout: envTimeoutMs(
+      'WORKFLOW_LOCAL_BODY_TIMEOUT_MS',
+      DEFAULT_BODY_TIMEOUT_MS
+    ),
+    connections: 1000,
+    headersTimeout: envTimeoutMs(
+      'WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS',
+      DEFAULT_HEADERS_TIMEOUT_MS
+    ),
+    keepAliveTimeout: 30_000,
+  } as const;
+}
+
 export type DirectHandler = (req: Request) => Promise<Response>;
 
 export type LocalQueue = Queue & {
   /** Close the HTTP agent and release resources. */
   close(): Promise<void>;
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
-  registerHandler(
-    prefix: '__wkf_step_' | '__wkf_workflow_',
-    handler: DirectHandler
-  ): void;
+  registerHandler(prefix: QueuePrefix, handler: DirectHandler): void;
 };
 
-function getQueueRoute(queueName: ValidQueueName): {
-  pathname: 'flow' | 'step';
-  prefix: '__wkf_step_' | '__wkf_workflow_';
-} {
-  if (queueName.startsWith('__wkf_step_')) {
-    return { pathname: 'step', prefix: '__wkf_step_' };
+const DETACHED_ARRAYBUFFER_ERROR =
+  'Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer';
+const PROXY_HANDLER_DOCS_URL =
+  'https://workflow-sdk.dev/docs/getting-started/next#configure-proxy-handler';
+
+function isDetachedArrayBufferQueueError(error: unknown): boolean {
+  let current = error;
+  const visited = new Set<unknown>();
+
+  while (current && typeof current === 'object' && !visited.has(current)) {
+    visited.add(current);
+    if (
+      'message' in current &&
+      typeof current.message === 'string' &&
+      current.message.includes(DETACHED_ARRAYBUFFER_ERROR)
+    ) {
+      return true;
+    }
+    current = 'cause' in current ? current.cause : undefined;
   }
-  if (queueName.startsWith('__wkf_workflow_')) {
-    return { pathname: 'flow', prefix: '__wkf_workflow_' };
-  }
-  throw new Error('Unknown queue name prefix');
+
+  return false;
 }
 
 export function createQueue(config: Partial<Config>): LocalQueue {
-  // Create a custom agent optimized for high-concurrency local workflows:
-  // - headersTimeout: 0 allows long-running steps
-  // - connections: 1000 allows many parallel connections to the same host
-  // - pipelining: 1 (default) for HTTP/1.1 compatibility
-  // - keepAliveTimeout: 30s keeps connections warm for rapid step execution
-  const httpAgent = new Agent({
-    headersTimeout: 0,
-    connections: 1000,
-    keepAliveTimeout: 30_000,
-  });
+  const httpAgent = new Agent(getQueueAgentOptions());
   const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
+
+  // Aborted by close(): cancels every pending sleep (delayed deliveries,
+  // timeoutSeconds re-deliveries, retry backoffs) so shutdown isn't held
+  // hostage by a timer and no delivery is attempted against the closed
+  // agent. The resulting AbortError is silently dropped by the
+  // isAbortError check in the delivery catch handler.
+  const closeController = new AbortController();
+  const closeSignal = closeController.signal;
 
   /**
    * holds inflight messages by idempotency key to ensure
@@ -113,15 +160,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     }
 
     const body = transport.serialize(message);
-    const { pathname, prefix } = getQueueRoute(queueName);
+    const { prefix } = parseQueueName(queueName);
     const messageId = MessageId.parse(`msg_${generateId()}`);
 
     // Extract identifiers from the message for structured logging.
-    // Workflow messages have `runId`, step messages have `workflowRunId` + `stepId`.
+    // Combined workflow messages carry `runId` and may include `stepId`.
     const msg = message as Record<string, unknown>;
-    const runId = (msg.runId ?? msg.workflowRunId ?? undefined) as
-      | string
-      | undefined;
+    const runId = (msg.runId ?? undefined) as string | undefined;
     const stepId = (msg.stepId ?? undefined) as string | undefined;
 
     if (opts?.idempotencyKey) {
@@ -133,6 +178,17 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     }
 
     (async () => {
+      // Honor the caller's requested delivery delay before acquiring a queue
+      // slot. Sleeping outside the semaphore so a delayed message doesn't
+      // hold a worker hostage for its delay window — the worker should be
+      // free to process other (immediate) messages until this one is ready.
+      // VQS-side queues honor delaySeconds at the broker, so this brings
+      // world-local in line with production behavior.
+      if (opts?.delaySeconds && opts.delaySeconds > 0) {
+        const delayMs = Math.min(opts.delaySeconds * 1000, MAX_SAFE_TIMEOUT_MS);
+        await setTimeout(delayMs, undefined, { signal: closeSignal });
+      }
+
       const token = semaphore.tryAcquire();
       if (!token) {
         console.warn(
@@ -141,47 +197,85 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         await semaphore.acquire();
       }
       // Safety limit to prevent infinite loops in the local queue.
-      // The actual max delivery enforcement happens in the workflow/step handlers
+      // The actual max delivery enforcement happens in the workflow handler
       // (at MAX_QUEUE_DELIVERIES = 48), so this just needs to be comfortably higher.
       const MAX_LOCAL_SAFETY_LIMIT = 256;
+      // Number of times the message has actually reached a handler (returned
+      // ok, a timeoutSeconds re-delivery, or an HTTP error response). This —
+      // not the loop counter — is the attempt the handler sees via
+      // `x-vqs-message-attempt`, which it counts against MAX_QUEUE_DELIVERIES.
+      // Failures before response headers do not advance this; body failures do,
+      // because the handler has already accepted that delivery.
+      let delivery = 0;
       try {
-        for (let attempt = 0; attempt < MAX_LOCAL_SAFETY_LIMIT; attempt++) {
+        for (let loop = 0; loop < MAX_LOCAL_SAFETY_LIMIT; loop++) {
           const headers: Record<string, string> = {
             ...opts?.headers,
             'content-type': 'application/json',
             'x-vqs-queue-name': queueName,
             'x-vqs-message-id': messageId,
-            'x-vqs-message-attempt': String(attempt + 1),
+            'x-vqs-message-attempt': String(delivery + 1),
           };
           const directHandler = directHandlers.get(prefix);
           let response: Response;
+          let text: string;
 
-          if (directHandler) {
-            const req = new Request(
-              `http://localhost/.well-known/workflow/v1/${pathname}`,
+          try {
+            if (directHandler) {
+              const req = new Request(
+                createWorkflowUrl(resolveDirectBaseUrl(config), {
+                  type: 'flow',
+                }),
+                { method: 'POST', headers, body }
+              );
+              response = await directHandler(req);
+            } else {
+              const baseUrl = await resolveBaseUrl(config);
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+              response = await fetch(
+                createWorkflowUrl(baseUrl, { type: 'flow' }),
+                {
+                  method: 'POST',
+                  duplex: 'half',
+                  dispatcher: httpAgent,
+                  headers,
+                  body,
+                } as any
+              );
+            }
+            delivery++;
+            text = await response.text();
+          } catch (err) {
+            // A transport can fail before response headers or while consuming
+            // the body. Both are transient — back off and retry the same
+            // durable message rather than leaving its run stalled. Two
+            // failures are not retryable:
+            //  - shutdown: close() aborted the agent / the backoff sleep.
+            //  - a detached-ArrayBuffer proxy misconfig, which never succeeds —
+            //    rethrow so the outer catch surfaces the actionable guidance.
+            const name = (err as { name?: string } | undefined)?.name;
+            if (
+              closeSignal.aborted ||
+              name === 'AbortError' ||
+              name === 'ResponseAborted'
+            ) {
+              return;
+            }
+            if (isDetachedArrayBufferQueueError(err)) throw err;
+
+            console.error(
+              `[world-local] Queue delivery failed at the transport (loop ${loop + 1}), retrying`,
               {
-                method: 'POST',
-                headers,
-                body,
+                queueName,
+                messageId,
+                ...(runId && { runId }),
+                ...(stepId && { stepId }),
+                error: String(err),
               }
             );
-            response = await directHandler(req);
-          } else {
-            const baseUrl = await resolveBaseUrl(config);
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-            response = await fetch(
-              `${baseUrl}/.well-known/workflow/v1/${pathname}`,
-              {
-                method: 'POST',
-                duplex: 'half',
-                dispatcher: httpAgent,
-                headers,
-                body,
-              } as any
-            );
+            await setTimeout(5000, undefined, { signal: closeSignal });
+            continue;
           }
-
-          const text = await response.text();
 
           if (response.ok) {
             try {
@@ -195,7 +289,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                     timeoutSeconds * 1000,
                     MAX_SAFE_TIMEOUT_MS
                   );
-                  await setTimeout(timeoutMs);
+                  await setTimeout(timeoutMs, undefined, {
+                    signal: closeSignal,
+                  });
                 }
                 continue;
               }
@@ -204,7 +300,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           }
 
           console.error(
-            `[world-local] Queue message failed (attempt ${attempt + 1}, HTTP ${response.status})`,
+            `[world-local] Queue message failed (attempt ${delivery}, HTTP ${response.status})`,
             {
               queueName,
               messageId,
@@ -218,7 +314,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           // VQS uses 5s linear for attempts 1–32, then exponential, but for
           // local dev linear 5s is sufficient — the handler enforces the real
           // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
-          await setTimeout(5000);
+          await setTimeout(5000, undefined, { signal: closeSignal });
         }
 
         console.error(
@@ -240,7 +336,23 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         const isAbortError =
           err?.name === 'AbortError' || err?.name === 'ResponseAborted';
         if (!isAbortError) {
-          console.error('[local world] Queue operation failed:', err);
+          if (isDetachedArrayBufferQueueError(err)) {
+            console.error(
+              `[local world] Queue operation failed: detected "${DETACHED_ARRAYBUFFER_ERROR}". ` +
+                "This usually means a Next.js proxy/middleware consumed Workflow's internal " +
+                'request before the executor could read it. Exclude `/.well-known/workflow/*` ' +
+                `from your matcher. See ${PROXY_HANDLER_DOCS_URL}`,
+              {
+                queueName,
+                messageId,
+                ...(runId && { runId }),
+                ...(stepId && { stepId }),
+                originalError: err,
+              }
+            );
+          } else {
+            console.error('[local world] Queue operation failed:', err);
+          }
         }
       })
       .finally(() => {
@@ -313,13 +425,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     queue,
     createQueueHandler,
     getDeploymentId,
-    registerHandler(
-      prefix: '__wkf_step_' | '__wkf_workflow_',
-      handler: DirectHandler
-    ) {
+    registerHandler(prefix: QueuePrefix, handler: DirectHandler) {
       directHandlers.set(prefix, handler);
     },
     async close() {
+      // Idempotent: shutdown paths (CLI signal handlers, test teardown)
+      // may close the queue more than once.
+      if (closeSignal.aborted) return;
+      closeController.abort();
       await httpAgent.close();
     },
   };

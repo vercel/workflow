@@ -1,6 +1,6 @@
 {
   "name": "@workflow/builders",
-  "version": "5.0.0-beta.2",
+  "version": "5.0.0-beta.39",
   "description": "Shared builder infrastructure for Workflow SDK",
   "type": "module",
   "main": "./dist/index.js",
@@ -36,7 +36,8 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "@workflow/tsconfig": "workspace:*"
+    "@workflow/tsconfig": "workspace:*",
+    "typescript": "catalog:"
   },
   "dependencies": {
     "@swc/core": "catalog:",
@@ -50,6 +51,6 @@
     "esbuild": "catalog:",
     "find-up": "7.0.0",
     "json5": "2.2.3",
-    "tinyglobby": "0.2.15"
+    "tinyglobby": "0.2.17"
   }
 }

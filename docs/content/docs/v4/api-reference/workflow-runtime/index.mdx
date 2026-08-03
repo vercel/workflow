@@ -1,0 +1,46 @@
+---
+title: "workflow/runtime"
+description: Runtime functions for accessing the World instance and wiring up workflow infrastructure.
+type: overview
+summary: Explore runtime functions for resolving the World instance and configuring workflow infrastructure.
+---
+
+API reference for runtime functions from the `workflow/runtime` package.
+
+The runtime package provides low-level access to the workflow runtime — resolving the [World](/docs/api-reference/workflow-runtime/world) instance that backs storage, queuing, and streaming, and wiring up workflow infrastructure in custom server environments.
+
+## Functions
+
+<Cards>
+    <Card href="/docs/api-reference/workflow-runtime/get-world" title="getWorld()">
+        Async: resolve the World instance for storage, queuing, and streaming backends.
+    </Card>
+    <Card href="/docs/api-reference/workflow-runtime/world" title="World SDK">
+        Low-level API for inspecting runs, steps, events, hooks, streams, and queues.
+    </Card>
+</Cards>
+
+## Infrastructure Functions
+
+These functions are primarily used by framework adapters and custom world setups, and are rarely needed in application code:
+
+<Cards>
+    <Card href="/docs/api-reference/workflow-runtime/create-world" title="createWorld()">
+        Create a World instance from environment configuration.
+    </Card>
+    <Card href="/docs/api-reference/workflow-runtime/set-world" title="setWorld()">
+        Override the cached World instance with a custom World.
+    </Card>
+    <Card href="/docs/api-reference/workflow-runtime/get-world-handlers" title="getWorldHandlers()">
+        Build-time-safe access to the World's queue handlers.
+    </Card>
+    <Card href="/docs/api-reference/workflow-runtime/workflow-entrypoint" title="workflowEntrypoint()">
+        Create the HTTP route handler that executes workflow runs.
+    </Card>
+    <Card href="/docs/api-reference/workflow-runtime/step-entrypoint" title="stepEntrypoint">
+        The HTTP route handler that executes step functions.
+    </Card>
+    <Card href="/docs/api-reference/workflow-runtime/health-check" title="healthCheck()">
+        Check the health of a deployment's workflow infrastructure.
+    </Card>
+</Cards>

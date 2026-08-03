@@ -1,0 +1,10 @@
+{
+  "title": "Internal",
+  "pages": [
+    "index",
+    "nitro-web-ui",
+    "nitro-native-build",
+    "serializable-abort-controller"
+  ],
+  "defaultOpen": false
+}

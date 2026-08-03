@@ -2,7 +2,11 @@ import path from 'node:path';
 import type { StepWithoutData, Storage } from '@workflow/world';
 import { StepSchema } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
-import { paginatedFileSystemQuery, readJSONWithFallback } from '../fs.js';
+import {
+  assertSafeEntityId,
+  paginatedFileSystemQuery,
+  readJSONWithFallback,
+} from '../fs.js';
 import { filterStepData } from './filters.js';
 import { getObjectCreatedAt } from './helpers.js';
 
@@ -16,6 +20,8 @@ export function createStepsStorage(
 ): Storage['steps'] {
   return {
     get: (async (runId: string, stepId: string, params?: any) => {
+      assertSafeEntityId('runId', runId);
+      assertSafeEntityId('stepId', stepId);
       const compositeKey = `${runId}-${stepId}`;
       const step = await readJSONWithFallback(
         basedir,
@@ -32,6 +38,7 @@ export function createStepsStorage(
     }) as Storage['steps']['get'],
 
     list: (async (params: any) => {
+      assertSafeEntityId('runId', params.runId);
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'steps'),

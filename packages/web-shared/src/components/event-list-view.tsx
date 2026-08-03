@@ -3,16 +3,30 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { Check, ChevronRight, Copy } from 'lucide-react';
-import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+} from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import {
+  type ExactIdSearchResult,
+  type ExactWorkflowSearchIdKind,
+  looksLikeWorkflowIdSearchInput,
+  parseExactWorkflowSearchId,
+} from '../lib/exact-event-search-id';
 import { isEncryptedMarker } from '../lib/hydration';
-import { DecryptButton } from './ui/decrypt-button';
+import { useToast } from '../lib/toast';
 import { formatDuration } from '../lib/utils';
+import { AttrSetEventBlock } from './sidebar/attributes-block';
+import { ContextCardProvider } from './ui/context-card';
 import { DataInspector, DecryptClickContext } from './ui/data-inspector';
+import { DecryptButton } from './ui/decrypt-button';
 import {
   ErrorStackBlock,
-  isStructuredErrorWithStack,
+  isStructuredError,
+  type StructuredErrorRecord,
 } from './ui/error-stack-block';
 import { LoadMoreButton } from './ui/load-more-button';
 import { MenuDropdown } from './ui/menu-dropdown';
@@ -55,6 +69,25 @@ function formatEventTime(date: Date): string {
   );
 }
 
+function parseEventDate(value: unknown): Date | null {
+  if (value == null) return null;
+
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getEffectiveEventDate(
+  event: Pick<Event, 'createdAt' | 'occurredAt'>
+): Date {
+  return parseEventDate(event.occurredAt) ?? new Date(event.createdAt);
+}
+
+function getEffectiveEventTime(
+  event: Pick<Event, 'createdAt' | 'occurredAt'>
+): number {
+  return getEffectiveEventDate(event).getTime();
+}
+
 function formatEventType(eventType: Event['eventType']): string {
   return eventType
     .split('_')
@@ -83,6 +116,10 @@ function getStatusDotColor(eventType: string): string {
   // Retrying → amber
   if (eventType === 'step_retrying') {
     return 'var(--ds-amber-700)';
+  }
+  // Attribute changes → teal
+  if (eventType === 'attr_set') {
+    return 'var(--ds-teal-900)';
   }
   // Completed/succeeded → green
   if (
@@ -142,7 +179,7 @@ function buildNameMaps(
   return { correlationNameMap, workflowName };
 }
 
-interface DurationInfo {
+export interface DurationInfo {
   /** Time from created → started (ms) */
   queued?: number;
   /** Time from started → completed/failed/cancelled (ms) */
@@ -154,19 +191,30 @@ interface DurationInfo {
  * created ↔ started (queued) and started ↔ completed/failed/cancelled (ran).
  * Also computes run-level durations under the key '__run__'.
  */
-function buildDurationMap(events: Event[]): Map<string, DurationInfo> {
+export function buildDurationMap(events: Event[]): Map<string, DurationInfo> {
+  // Process events in chronological order so the result doesn't depend on
+  // the caller's sort direction. Retried steps emit multiple `step_started`
+  // events for the same correlationId; the queued duration must be measured
+  // against the first one, not the last.
+  const chronological = [...events].sort(
+    (a, b) => getEffectiveEventTime(a) - getEffectiveEventTime(b)
+  );
+
   const createdTimes = new Map<string, number>();
+  const firstStartedTimes = new Map<string, number>();
   const startedTimes = new Map<string, number>();
   const durations = new Map<string, DurationInfo>();
 
-  for (const event of events) {
-    const ts = new Date(event.createdAt).getTime();
+  for (const event of chronological) {
+    const ts = getEffectiveEventTime(event);
     const key = event.correlationId ?? '__run__';
     const type: string = event.eventType;
 
     // Track created times (first event for each correlation)
     if (type === 'step_created' || type === 'run_created') {
-      createdTimes.set(key, ts);
+      if (!createdTimes.has(key)) {
+        createdTimes.set(key, ts);
+      }
     }
 
     // Track started times & compute queued duration
@@ -176,16 +224,21 @@ function buildDurationMap(events: Event[]): Map<string, DurationInfo> {
       type === 'workflow_started'
     ) {
       startedTimes.set(key, ts);
-      // If no explicit created event was seen, use the started time as created
-      if (!createdTimes.has(key)) {
-        createdTimes.set(key, ts);
+      // The queued duration is anchored on the first start event only —
+      // subsequent step_started events come from retries.
+      if (!firstStartedTimes.has(key)) {
+        firstStartedTimes.set(key, ts);
+        // If no explicit created event was seen, use the started time as created
+        if (!createdTimes.has(key)) {
+          createdTimes.set(key, ts);
+        }
+        const createdAt = createdTimes.get(key);
+        const info = durations.get(key) ?? {};
+        if (createdAt !== undefined) {
+          info.queued = ts - createdAt;
+        }
+        durations.set(key, info);
       }
-      const createdAt = createdTimes.get(key);
-      const info = durations.get(key) ?? {};
-      if (createdAt !== undefined) {
-        info.queued = ts - createdAt;
-      }
-      durations.set(key, info);
     }
 
     // Compute ran duration on terminal events
@@ -230,7 +283,10 @@ function isRunLevel(eventType: string): boolean {
     eventType === 'run_cancelled' ||
     eventType === 'workflow_started' ||
     eventType === 'workflow_completed' ||
-    eventType === 'workflow_failed'
+    eventType === 'workflow_failed' ||
+    // attr_set carries a dedup correlationId rather than a child entity ID,
+    // so it groups and labels with the run itself.
+    eventType === 'attr_set'
   );
 }
 
@@ -492,20 +548,20 @@ function deepParseJson(value: unknown): unknown {
 }
 
 /**
- * Extracts a structured error with a stack trace from event data, if present.
+ * Extracts a structured error from event data, if present.
  * Returns the error object to render with ErrorStackBlock, or null if not applicable.
  */
 function extractStructuredError(
   data: unknown,
   eventType?: string
-): (Record<string, unknown> & { stack: string }) | null {
+): StructuredErrorRecord | null {
   if (!eventType || !ERROR_EVENT_TYPES.has(eventType)) return null;
   if (data == null || typeof data !== 'object') return null;
   const record = data as Record<string, unknown>;
   // Check the nested `error` field first (the StructuredError)
-  if (isStructuredErrorWithStack(record.error)) return record.error;
-  // Some error formats put the stack at the top level of eventData
-  if (isStructuredErrorWithStack(record)) return record;
+  if (isStructuredError(record.error)) return record.error;
+  // Some error formats put the message/stack at the top level of eventData.
+  if (isStructuredError(record)) return record;
   return null;
 }
 
@@ -566,6 +622,36 @@ function PayloadBlock({
     );
   }
 
+  // Attribute changes — render the changed keys and the writer instead of
+  // the raw JSON payload.
+  if (eventType === 'attr_set') {
+    return <AttrSetEventBlock data={cleaned} />;
+  }
+
+  // Cancellation reason — render the free-text reason as a readable line
+  // instead of a raw JSON payload (the only field run_cancelled carries).
+  if (eventType === 'run_cancelled') {
+    const cancelReason =
+      cleaned != null &&
+      typeof cleaned === 'object' &&
+      typeof (cleaned as Record<string, unknown>).cancelReason === 'string'
+        ? ((cleaned as Record<string, unknown>).cancelReason as string)
+        : null;
+    if (cancelReason) {
+      return (
+        <div
+          className="p-2 text-label-12"
+          style={{ color: 'var(--ds-gray-1000)' }}
+        >
+          <span style={{ color: 'var(--ds-gray-900)' }}>Reason: </span>
+          <span className="whitespace-pre-wrap break-words">
+            {cancelReason}
+          </span>
+        </div>
+      );
+    }
+  }
+
   return (
     <div className="relative group/payload">
       <div
@@ -577,7 +663,7 @@ function PayloadBlock({
       <button
         type="button"
         onClick={handleCopy}
-        className="absolute bottom-2 right-2 opacity-0 group-hover/payload:opacity-100 transition-opacity flex items-center gap-1 px-2 py-1 rounded-md text-xs hover:bg-[var(--ds-gray-alpha-200)]"
+        className="absolute bottom-2 right-2 opacity-0 group-hover/payload:opacity-100 transition-opacity flex items-center gap-1 px-2 py-1 rounded-md text-button-12 hover:bg-[var(--ds-gray-alpha-200)]"
         style={{ ...BUTTON_RESET_STYLE, color: 'var(--ds-gray-700)' }}
         aria-label="Copy payload"
       >
@@ -609,7 +695,11 @@ const SORT_OPTIONS = [
   { value: 'asc' as const, label: 'Oldest' },
 ];
 
-function RowsSkeleton() {
+function RowsSkeleton({
+  showSeparateEventOccurrenceTimestamps = false,
+}: {
+  showSeparateEventOccurrenceTimestamps?: boolean;
+}) {
   return (
     <div className="flex-1 overflow-hidden">
       {Array.from({ length: 16 }, (_, i) => (
@@ -646,7 +736,12 @@ function RowsSkeleton() {
           <div className="w-5 flex-shrink-0 flex items-center justify-center">
             <Skeleton className="w-5 h-5" style={{ borderRadius: 4 }} />
           </div>
-          {/* Time */}
+          {showSeparateEventOccurrenceTimestamps && (
+            <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+              <Skeleton className="h-3" style={{ width: '70%' }} />
+            </div>
+          )}
+          {/* Created */}
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
             <Skeleton className="h-3" style={{ width: '70%' }} />
           </div>
@@ -705,9 +800,17 @@ interface EventsListProps {
   isDecrypting?: boolean;
   /** Run-level hint: the run contains encrypted data (from probe). */
   hasEncryptedData?: boolean;
+  /** Fetch events for an exact correlation or event ID. */
+  onExactIdSearch?: (
+    id: string,
+    kind: ExactWorkflowSearchIdKind,
+    signal?: AbortSignal
+  ) => Promise<ExactIdSearchResult>;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }
 
-function EventRow({
+export function EventRow({
   event,
   index,
   isFirst,
@@ -727,6 +830,8 @@ function EventRow({
   onCacheEventData,
   encryptionKey,
   onEncryptedDataDetected,
+  suppressGroupDimming = false,
+  showSeparateEventOccurrenceTimestamps = false,
 }: {
   event: Event;
   index: number;
@@ -747,6 +852,10 @@ function EventRow({
   onCacheEventData: (eventId: string, data: unknown) => void;
   encryptionKey?: Uint8Array;
   onEncryptedDataDetected?: () => void;
+  /** Exact-ID search results should not dim unrelated rows. */
+  suppressGroupDimming?: boolean;
+  /** Show occurredAt separately instead of folding it into the Created timestamp. */
+  showSeparateEventOccurrenceTimestamps?: boolean;
 }) {
   const [isLoading, setIsLoading] = useState(false);
   const [loadedEventData, setLoadedEventData] = useState<unknown | null>(
@@ -775,6 +884,10 @@ function EventRow({
 
   const statusDotColor = getStatusDotColor(event.eventType);
   const createdAt = new Date(event.createdAt);
+  const occurredAt = parseEventDate(event.occurredAt);
+  const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
+    ? createdAt
+    : getEffectiveEventDate(event);
   const hasExistingEventData = 'eventData' in event && event.eventData != null;
   const isRun = isRunLevel(event.eventType);
   const eventName = isRun
@@ -788,7 +901,7 @@ function EventRow({
 
   const hasActive = activeGroupKey !== undefined;
   const isRelated = rowGroupKey !== undefined && rowGroupKey === activeGroupKey;
-  const isDimmed = hasActive && !isRelated;
+  const isDimmed = hasActive && !isRelated && !suppressGroupDimming;
   const isPulsing = hasActive && isRelated;
 
   // Gutter state derived from selectedGroupRange
@@ -918,7 +1031,7 @@ function EventRow({
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') handleRowClick();
         }}
-        className="w-full text-left flex items-center gap-0 text-[13px] hover:bg-[var(--ds-gray-alpha-100)] transition-colors cursor-pointer"
+        className="w-full text-left flex items-center gap-0 text-label-13 hover:bg-[var(--ds-gray-alpha-100)] transition-colors cursor-pointer"
         style={{ minHeight: 40 }}
       >
         <TreeGutter
@@ -955,13 +1068,28 @@ function EventRow({
             />
           </div>
 
-          {/* Time */}
+          {showSeparateEventOccurrenceTimestamps && (
+            <div
+              className="tabular-nums min-w-0 px-4"
+              style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
+            >
+              {occurredAt ? (
+                <TimestampTooltip date={occurredAt}>
+                  <span>{formatEventTime(occurredAt)}</span>
+                </TimestampTooltip>
+              ) : (
+                '-'
+              )}
+            </div>
+          )}
+
+          {/* Created */}
           <div
             className="tabular-nums min-w-0 px-4"
             style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
           >
-            <TimestampTooltip date={createdAt}>
-              <span>{formatEventTime(createdAt)}</span>
+            <TimestampTooltip date={displayedCreatedAt}>
+              <span>{formatEventTime(displayedCreatedAt)}</span>
             </TimestampTooltip>
           </div>
 
@@ -1060,7 +1188,7 @@ function EventRow({
             {(durationInfo?.queued !== undefined ||
               durationInfo?.ran !== undefined) && (
               <div
-                className="px-2 pb-1.5 text-xs flex gap-3"
+                className="px-2 pb-1.5 text-label-12 flex gap-3"
                 style={{ color: 'var(--ds-gray-900)' }}
               >
                 {durationInfo.queued !== undefined &&
@@ -1088,7 +1216,7 @@ function EventRow({
               <PayloadBlock data={displayPayload} eventType={event.eventType} />
             ) : loadError ? (
               <div
-                className="rounded-md border p-3 text-xs"
+                className="rounded-md border p-3 text-label-12"
                 style={{
                   borderColor: 'var(--ds-red-400)',
                   backgroundColor: 'var(--ds-red-100)',
@@ -1108,7 +1236,7 @@ function EventRow({
               </div>
             ) : (
               <div
-                className="p-2 text-xs"
+                className="p-2 text-label-12"
                 style={{ color: 'var(--ds-gray-900)' }}
               >
                 No data
@@ -1125,7 +1253,7 @@ function EventRow({
 // Main component
 // ──────────────────────────────────────────────────────────────────────────
 
-export function EventListView({
+function EventListViewInner({
   events,
   run,
   onLoadEventData,
@@ -1139,7 +1267,10 @@ export function EventListView({
   onDecrypt,
   isDecrypting = false,
   hasEncryptedData: hasEncryptedDataProp = false,
+  onExactIdSearch,
+  showSeparateEventOccurrenceTimestamps = false,
 }: EventsListProps) {
+  const toast = useToast();
   const [internalSortOrder, setInternalSortOrder] = useState<'asc' | 'desc'>(
     'asc'
   );
@@ -1155,25 +1286,40 @@ export function EventListView({
     [onSortOrderChange]
   );
 
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Event[] | null>(null);
+  const [searchResultsTruncated, setSearchResultsTruncated] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchNotFound, setSearchNotFound] = useState(false);
+  const searchRequestRef = useRef(0);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+
+  const parsedSearchId = useMemo(
+    () => parseExactWorkflowSearchId(searchQuery),
+    [searchQuery]
+  );
+  const isExactSearchActive = searchResults !== null;
+
   const sortedEvents = useMemo(() => {
-    if (!events || events.length === 0) return [];
+    const sourceEvents = isExactSearchActive ? searchResults : (events ?? []);
+    if (sourceEvents.length === 0) return [];
     const dir = effectiveSortOrder === 'desc' ? -1 : 1;
-    return [...events].sort(
-      (a, b) =>
-        dir *
-        (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+    return [...sourceEvents].sort(
+      (a, b) => dir * (getEffectiveEventTime(a) - getEffectiveEventTime(b))
     );
-  }, [events, effectiveSortOrder]);
+  }, [events, effectiveSortOrder, isExactSearchActive, searchResults]);
 
   // Detect encrypted fields across all loaded events (inline eventData).
   const hasEncryptedInlineData = useMemo(() => {
-    if (!events) return false;
-    for (const event of events) {
+    const sourceEvents = isExactSearchActive ? searchResults : events;
+    if (!sourceEvents) return false;
+    for (const event of sourceEvents) {
       const ed = (event as Record<string, unknown>).eventData;
       if (hasEncryptedValues(ed)) return true;
     }
     return false;
-  }, [events]);
+  }, [events, isExactSearchActive, searchResults]);
 
   // Tracks whether any expanded row's lazy-loaded data contained encrypted markers.
   // Set to true by EventRow via onEncryptedDataDetected; never reset (sticky).
@@ -1187,8 +1333,12 @@ export function EventListView({
     hasEncryptedDataProp || hasEncryptedInlineData || foundEncryptedInLazyData;
 
   const { correlationNameMap, workflowName } = useMemo(
-    () => buildNameMaps(events ?? null, run ?? null),
-    [events, run]
+    () =>
+      buildNameMaps(
+        isExactSearchActive ? searchResults : (events ?? null),
+        run ?? null
+      ),
+    [events, isExactSearchActive, run, searchResults]
   );
 
   const durationMap = useMemo(
@@ -1278,68 +1428,139 @@ export function EventListView({
     return first >= 0 ? { first, last } : null;
   }, [activeGroupKey, sortedEvents]);
 
-  const [searchQuery, setSearchQuery] = useState('');
-  const virtuosoRef = useRef<VirtuosoHandle>(null);
-
-  const searchIndex = useMemo(() => {
-    const entries: {
-      fields: string[];
-      groupKey?: string;
-      eventId: string;
-      index: number;
-    }[] = [];
-    for (let i = 0; i < sortedEvents.length; i++) {
-      const ev = sortedEvents[i];
-      const isRun = isRunLevel(ev.eventType);
-      const name = isRun
-        ? (workflowName ?? '')
-        : ev.correlationId
-          ? (correlationNameMap.get(ev.correlationId) ?? '')
-          : '';
-      entries.push({
-        fields: [
-          ev.eventId,
-          ev.correlationId ?? '',
-          ev.eventType,
-          formatEventType(ev.eventType),
-          name,
-        ].map((f) => f.toLowerCase()),
-        groupKey: ev.correlationId ?? (isRun ? '__run__' : undefined),
-        eventId: ev.eventId,
-        index: i,
-      });
-    }
-    return entries;
-  }, [sortedEvents, correlationNameMap, workflowName]);
-
   useEffect(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) {
+    const trimmed = searchQuery.trim();
+    if (!trimmed) {
+      searchRequestRef.current += 1;
+      setSearchResults(null);
+      setSearchResultsTruncated(false);
+      setSearchError(null);
+      setSearchLoading(false);
+      setSearchNotFound(false);
       setSelectedGroupKey(undefined);
       return;
     }
-    let bestMatch: (typeof searchIndex)[number] | null = null;
-    let bestScore = 0;
-    for (const entry of searchIndex) {
-      for (const field of entry.fields) {
-        if (field && field.includes(q)) {
-          const score = q.length / field.length;
-          if (score > bestScore) {
-            bestScore = score;
-            bestMatch = entry;
+
+    const parsed = parseExactWorkflowSearchId(trimmed);
+    if (!parsed || !onExactIdSearch) {
+      setSearchResults(null);
+      setSearchLoading(false);
+      setSearchNotFound(false);
+      return;
+    }
+
+    const requestId = ++searchRequestRef.current;
+    setSearchLoading(true);
+    setSearchNotFound(false);
+    setSearchError(null);
+
+    const abortController = new AbortController();
+
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const results = await onExactIdSearch(
+            parsed.id,
+            parsed.kind,
+            abortController.signal
+          );
+          if (
+            abortController.signal.aborted ||
+            searchRequestRef.current !== requestId
+          ) {
+            return;
+          }
+
+          if (results.status === 'error') {
+            setSearchResults([]);
+            setSearchResultsTruncated(false);
+            setSearchNotFound(false);
+            setSearchError(results.message);
+            setSelectedGroupKey(undefined);
+            return;
+          }
+
+          if (
+            results.status === 'not_found' ||
+            (results.status === 'ok' && results.events.length === 0)
+          ) {
+            setSearchResults([]);
+            setSearchResultsTruncated(false);
+            setSearchNotFound(true);
+            setSearchError(null);
+            setSelectedGroupKey(undefined);
+            return;
+          }
+
+          setSearchResults(results.events);
+          setSearchResultsTruncated(Boolean(results.truncated));
+          setSearchNotFound(false);
+          setSearchError(null);
+          setSelectedGroupKey(
+            parsed.kind === 'event'
+              ? (() => {
+                  const first = results.events[0];
+                  if (!first) return undefined;
+                  return isRunLevel(first.eventType)
+                    ? '__run__'
+                    : (first.correlationId ?? undefined);
+                })()
+              : parsed.id
+          );
+          virtuosoRef.current?.scrollToIndex({
+            index: 0,
+            align: 'start',
+            behavior: 'smooth',
+          });
+        } catch {
+          if (
+            abortController.signal.aborted ||
+            searchRequestRef.current !== requestId
+          ) {
+            return;
+          }
+          setSearchResults([]);
+          setSearchResultsTruncated(false);
+          setSearchNotFound(false);
+          setSearchError('Failed to search events. Try again.');
+          setSelectedGroupKey(undefined);
+        } finally {
+          if (
+            searchRequestRef.current === requestId &&
+            !abortController.signal.aborted
+          ) {
+            setSearchLoading(false);
           }
         }
+      })();
+    }, 300);
+
+    return () => {
+      clearTimeout(timer);
+      abortController.abort();
+    };
+  }, [searchQuery, onExactIdSearch]);
+
+  const handleSearchKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (event.key !== 'Enter') {
+        return;
       }
-    }
-    if (bestMatch) {
-      setSelectedGroupKey(bestMatch.groupKey);
-      virtuosoRef.current?.scrollToIndex({
-        index: bestMatch.index,
-        align: 'center',
-        behavior: 'smooth',
-      });
-    }
-  }, [searchQuery, searchIndex]);
+
+      const trimmed = searchQuery.trim();
+      if (
+        !trimmed ||
+        parseExactWorkflowSearchId(trimmed) ||
+        !onExactIdSearch ||
+        !looksLikeWorkflowIdSearchInput(trimmed)
+      ) {
+        return;
+      }
+
+      toast.info('Enter a full step ID, wait ID, hook ID, or event ID');
+    },
+    [searchQuery, onExactIdSearch, toast]
+  );
 
   // Track whether we've ever had events to distinguish initial load from refetch
   const hasHadEventsRef = useRef(false);
@@ -1381,17 +1602,6 @@ export function EventListView({
           </div>
         </div>
         <RowsSkeleton />
-      </div>
-    );
-  }
-
-  if (!isLoading && (!events || events.length === 0)) {
-    return (
-      <div
-        className="flex items-center justify-center h-full text-sm"
-        style={{ color: 'var(--ds-gray-700)' }}
-      >
-        No events found
       </div>
     );
   }
@@ -1460,9 +1670,16 @@ export function EventListView({
             </div>
             <input
               type="search"
-              placeholder="Search by name, event type, or ID…"
+              placeholder="Search by step ID, wait ID, hook ID, or event ID…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={handleSearchKeyDown}
+              disabled={!onExactIdSearch}
+              title={
+                onExactIdSearch
+                  ? undefined
+                  : 'Exact ID search is unavailable in this view.'
+              }
               style={{
                 marginLeft: -16,
                 paddingInline: 12,
@@ -1473,6 +1690,8 @@ export function EventListView({
                 outline: 'none',
                 height: 40,
                 width: '100%',
+                opacity: onExactIdSearch ? 1 : 0.5,
+                cursor: onExactIdSearch ? 'text' : 'not-allowed',
               }}
             />
           </label>
@@ -1492,7 +1711,7 @@ export function EventListView({
 
         {/* Header */}
         <div
-          className="flex items-center gap-0 text-[13px] font-medium h-10 border-b flex-shrink-0"
+          className="flex items-center gap-0 text-label-13 font-medium h-10 border-b flex-shrink-0"
           style={{
             borderColor: 'var(--ds-gray-alpha-200)',
             color: 'var(--ds-gray-900)',
@@ -1501,8 +1720,13 @@ export function EventListView({
         >
           <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
           <div className="w-5 flex-shrink-0" />
+          {showSeparateEventOccurrenceTimestamps && (
+            <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+              Occurred
+            </div>
+          )}
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            Time
+            Created
           </div>
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
             Event Type
@@ -1519,8 +1743,25 @@ export function EventListView({
         </div>
 
         {/* Virtualized event rows or refetching skeleton */}
-        {isRefetching ? (
-          <RowsSkeleton />
+        {isRefetching || searchLoading ? (
+          <RowsSkeleton
+            showSeparateEventOccurrenceTimestamps={
+              showSeparateEventOccurrenceTimestamps
+            }
+          />
+        ) : sortedEvents.length === 0 ? (
+          <div
+            className="flex flex-1 items-center justify-center px-6 text-center text-copy-14"
+            style={{ color: 'var(--ds-gray-700)' }}
+          >
+            {searchNotFound && searchQuery.trim()
+              ? `No events found for ${searchQuery.trim()}`
+              : searchError
+                ? searchError
+                : parsedSearchId && searchQuery.trim() && !onExactIdSearch
+                  ? 'Exact ID search is unavailable in this view.'
+                  : 'No events found'}
+          </div>
         ) : (
           <Virtuoso
             ref={virtuosoRef}
@@ -1528,7 +1769,11 @@ export function EventListView({
             overscan={20}
             defaultItemHeight={40}
             endReached={() => {
-              if (!hasMoreEvents || isLoadingMoreEvents) {
+              if (
+                isExactSearchActive ||
+                !hasMoreEvents ||
+                isLoadingMoreEvents
+              ) {
                 return;
               }
               void onLoadMoreEvents?.();
@@ -1558,6 +1803,10 @@ export function EventListView({
                   onCacheEventData={cacheEventData}
                   encryptionKey={encryptionKey}
                   onEncryptedDataDetected={handleEncryptedDataDetected}
+                  suppressGroupDimming={isExactSearchActive}
+                  showSeparateEventOccurrenceTimestamps={
+                    showSeparateEventOccurrenceTimestamps
+                  }
                 />
               );
             }}
@@ -1567,7 +1816,7 @@ export function EventListView({
 
         {/* Fixed footer — count + load more */}
         <div
-          className="relative flex-shrink-0 flex items-center h-10 border-t px-4 text-xs"
+          className="relative flex-shrink-0 flex items-center h-10 border-t px-4 text-label-12"
           style={{
             borderColor: 'var(--ds-gray-alpha-200)',
             color: 'var(--ds-gray-900)',
@@ -1575,10 +1824,15 @@ export function EventListView({
           }}
         >
           <span>
-            {sortedEvents.length} event
-            {sortedEvents.length !== 1 ? 's' : ''} loaded
+            {isExactSearchActive
+              ? searchError
+                ? searchError
+                : searchNotFound
+                  ? `No events found for ${searchQuery.trim()}`
+                  : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} for ${searchQuery.trim()}${searchResultsTruncated ? ' (results may be truncated)' : ''}`
+              : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} loaded`}
           </span>
-          {hasMoreEvents && (
+          {!isExactSearchActive && hasMoreEvents && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <div className="pointer-events-auto">
                 <LoadMoreButton
@@ -1591,5 +1845,13 @@ export function EventListView({
         </div>
       </div>
     </DecryptClickContext.Provider>
+  );
+}
+
+export function EventListView(props: EventsListProps) {
+  return (
+    <ContextCardProvider>
+      <EventListViewInner {...props} />
+    </ContextCardProvider>
   );
 }

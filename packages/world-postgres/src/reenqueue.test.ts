@@ -1,11 +1,7 @@
 import { getWorkflowPort } from '@workflow/utils/get-port';
-import { createLocalWorld } from '@workflow/world-local';
-import {
-  Logger,
-  makeWorkerUtils,
-  run,
-  type WorkerUtils,
-} from 'graphile-worker';
+import { createWorld as createLocalTestWorld } from '@workflow/world-local';
+import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
+import { Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorld } from './index.js';
 import {
@@ -24,6 +20,15 @@ vi.mock('graphile-worker', () => ({
   run: vi.fn(),
 }));
 
+vi.mock('pg', () => ({
+  Pool: vi.fn(function Pool() {
+    return {
+      query: vi.fn(async () => ({ rows: [{ exists: false }] })),
+      end: vi.fn(),
+    };
+  }),
+}));
+
 vi.mock('@workflow/utils/get-port', () => ({
   getWorkflowPort: vi.fn(),
 }));
@@ -32,7 +37,7 @@ vi.mock('@workflow/world-local', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@workflow/world-local')>();
   return {
     ...actual,
-    createLocalWorld: vi.fn(actual.createLocalWorld),
+    createWorld: vi.fn(actual.createWorld),
   };
 });
 
@@ -64,7 +69,10 @@ describe('re-enqueue active runs on start', () => {
     migrate: vi.fn(),
     release: vi.fn(),
   } as unknown as WorkerUtils;
-  const runnerMock = { stop: vi.fn() };
+  const runnerMock = {
+    stop: vi.fn(),
+    promise: Promise.resolve(),
+  };
   const localWorldClose = vi.fn();
   const wrappedHandler = vi.fn(async () => Response.json({ ok: true }));
   const createQueueHandler = vi.fn(() => wrappedHandler);
@@ -95,10 +103,11 @@ describe('re-enqueue active runs on start', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    runnerMock.promise = Promise.resolve();
     vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
     vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
     vi.mocked(run).mockResolvedValue(runnerMock as any);
-    vi.mocked(createLocalWorld).mockReturnValue({
+    vi.mocked(createLocalTestWorld).mockReturnValue({
       createQueueHandler,
       close: localWorldClose,
     } as any);
@@ -112,7 +121,63 @@ describe('re-enqueue active runs on start', () => {
 
   afterEach(async () => {
     delete process.env.WORKFLOW_LOCAL_BASE_URL;
+    delete process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN;
+    delete process.env.WORKFLOW_POSTGRES_URL;
+    delete process.env.DATABASE_URL;
     delete process.env.PORT;
+  });
+
+  it('falls back to DATABASE_URL when WORKFLOW_POSTGRES_URL is unset', async () => {
+    process.env.DATABASE_URL = 'postgres://database-url';
+
+    const world = createWorld();
+
+    expect(Pool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionString: 'postgres://database-url',
+      })
+    );
+
+    await world.close();
+  });
+
+  it('prefers WORKFLOW_POSTGRES_URL over DATABASE_URL', async () => {
+    process.env.WORKFLOW_POSTGRES_URL = 'postgres://workflow-postgres-url';
+    process.env.DATABASE_URL = 'postgres://database-url';
+
+    const world = createWorld();
+
+    expect(Pool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionString: 'postgres://workflow-postgres-url',
+      })
+    );
+
+    await world.close();
+  });
+
+  it('keeps automatic shutdown in createWorld() by default', async () => {
+    const world = createWorld();
+    await world.start();
+
+    expect(run).toHaveBeenCalledWith(
+      expect.not.objectContaining({ noHandleSignals: true })
+    );
+
+    await world.close();
+  });
+
+  it('lets createWorld() environment configuration use application-managed shutdown', async () => {
+    process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN = '1';
+
+    const world = createWorld();
+    await world.start();
+
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({ noHandleSignals: true })
+    );
+
+    await world.close();
   });
 
   it('re-enqueues active runs via graphile-worker on start', async () => {
@@ -187,5 +252,119 @@ describe('re-enqueue active runs on start', () => {
     expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(2);
 
     await world.close();
+  });
+
+  it('closes owned resources in dependency order', async () => {
+    runnerMock.stop.mockResolvedValueOnce(undefined);
+    let resolveRunnerFinished!: () => void;
+    runnerMock.promise = new Promise<void>((resolve) => {
+      resolveRunnerFinished = resolve;
+    });
+    const world = createWorld({ connectionString: 'postgres://test' });
+    await world.start();
+    const streamer = vi.mocked(createStreamer).mock.results.at(-1)?.value;
+    const internalPool = vi.mocked(Pool).mock.results.at(-1)?.value;
+    let resolveStreamerClose!: () => void;
+    streamer?.close.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveStreamerClose = resolve;
+      })
+    );
+
+    const closePromise = world.close();
+    await vi.waitFor(() => {
+      expect(runnerMock.stop).toHaveBeenCalledOnce();
+    });
+    expect(streamer?.close).not.toHaveBeenCalled();
+
+    resolveRunnerFinished();
+    await vi.waitFor(() => {
+      expect(streamer?.close).toHaveBeenCalledOnce();
+    });
+    expect(internalPool?.end).not.toHaveBeenCalled();
+
+    resolveStreamerClose();
+    await closePromise;
+
+    expect(internalPool?.end).toHaveBeenCalledOnce();
+  });
+
+  it('waits for Graphile-owned shutdown when the runner is already stopped', async () => {
+    runnerMock.stop.mockRejectedValueOnce(
+      new Error('Runner is already stopped')
+    );
+    let resolveRunnerFinished!: () => void;
+    runnerMock.promise = new Promise<void>((resolve) => {
+      resolveRunnerFinished = resolve;
+    });
+    const world = createWorld({ connectionString: 'postgres://test' });
+    await world.start();
+
+    const closePromise = world.close();
+    await vi.waitFor(() => {
+      expect(runnerMock.stop).toHaveBeenCalledOnce();
+    });
+    expect(workerUtilsMock.release).not.toHaveBeenCalled();
+
+    resolveRunnerFinished();
+
+    await expect(closePromise).resolves.toBeUndefined();
+    expect(workerUtilsMock.release).toHaveBeenCalledOnce();
+  });
+
+  it('continues cleanup when the Graphile runner finishes with an error', async () => {
+    runnerMock.stop.mockResolvedValueOnce(undefined);
+    let rejectRunnerFinished!: (error: Error) => void;
+    runnerMock.promise = new Promise<void>((_resolve, reject) => {
+      rejectRunnerFinished = reject;
+    });
+    const world = createWorld({ connectionString: 'postgres://test' });
+    await world.start();
+    const streamer = vi.mocked(createStreamer).mock.results.at(-1)?.value;
+    const internalPool = vi.mocked(Pool).mock.results.at(-1)?.value;
+
+    const closePromise = world.close();
+    await vi.waitFor(() => {
+      expect(runnerMock.stop).toHaveBeenCalledOnce();
+    });
+    rejectRunnerFinished(new Error('worker failed'));
+
+    await expect(closePromise).resolves.toBeUndefined();
+    expect(workerUtilsMock.release).toHaveBeenCalledOnce();
+    expect(localWorldClose).toHaveBeenCalledOnce();
+    expect(streamer?.close).toHaveBeenCalledOnce();
+    expect(internalPool?.end).toHaveBeenCalledOnce();
+  });
+
+  it('allows close to be retried after queue cleanup fails', async () => {
+    localWorldClose
+      .mockRejectedValueOnce(new Error('transient local shutdown error'))
+      .mockResolvedValueOnce(undefined);
+    const world = createWorld({ connectionString: 'postgres://test' });
+    await world.start();
+    const streamer = vi.mocked(createStreamer).mock.results.at(-1)?.value;
+    const internalPool = vi.mocked(Pool).mock.results.at(-1)?.value;
+
+    await expect(world.close()).rejects.toThrow(
+      'transient local shutdown error'
+    );
+    expect(streamer?.close).not.toHaveBeenCalled();
+    expect(internalPool?.end).not.toHaveBeenCalled();
+
+    await expect(world.close()).resolves.toBeUndefined();
+    expect(runnerMock.stop).toHaveBeenCalledOnce();
+    expect(workerUtilsMock.release).toHaveBeenCalledOnce();
+    expect(localWorldClose).toHaveBeenCalledTimes(2);
+    expect(streamer?.close).toHaveBeenCalledOnce();
+    expect(internalPool?.end).toHaveBeenCalledOnce();
+  });
+
+  it('does not close a caller-owned pool', async () => {
+    const world = createWorld({ pool });
+    await world.start();
+
+    await world.close();
+
+    expect(pool.end).not.toHaveBeenCalled();
   });
 });

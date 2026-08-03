@@ -1,0 +1,41 @@
+name: 'Publish to GitHub Pages'
+description: >-
+  Publishes files to a GitHub Pages branch via the GraphQL
+  createCommitOnBranch mutation. GitHub signs the resulting commit with its
+  internal key (the same way web-UI commits are signed), so the push
+  satisfies the repo's required-signatures rule that rejects plain
+  `git push` from CI.
+inputs:
+  source-dir:
+    description: 'Local directory whose contents will be published'
+    required: true
+  destination-dir:
+    description: 'Directory inside the target branch where files are placed'
+    required: true
+  branch:
+    description: 'Target branch'
+    required: false
+    default: 'gh-pages'
+  commit-message:
+    description: 'Commit message headline (body may follow after a blank line)'
+    required: false
+    default: 'deploy: ${{ github.sha }}'
+  github-token:
+    description: 'Token with `contents: write` permission on the target branch'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Publish via createCommitOnBranch
+      uses: actions/github-script@v7
+      env:
+        SOURCE_DIR: ${{ inputs.source-dir }}
+        DEST_DIR: ${{ inputs.destination-dir }}
+        BRANCH: ${{ inputs.branch }}
+        COMMIT_MESSAGE: ${{ inputs.commit-message }}
+        ACTION_PATH: ${{ github.action_path }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const publish = require(`${process.env.ACTION_PATH}/publish.js`);
+          await publish({ github, context, core });

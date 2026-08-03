@@ -1,0 +1,43 @@
+---
+title: createWorld
+description: Create a new World instance from environment configuration.
+type: reference
+summary: Use createWorld to instantiate a World from WORKFLOW_TARGET_WORLD environment configuration, bypassing the cached instance.
+prerequisites:
+  - /docs/api-reference/workflow-runtime/get-world
+related:
+  - /docs/api-reference/workflow-runtime/set-world
+---
+
+Creates a new [World](/docs/api-reference/workflow-runtime/world) instance based on environment configuration. The `WORKFLOW_TARGET_WORLD` environment variable determines which World implementation is instantiated (for example the local development World or the Vercel production World).
+
+Unlike [`getWorld()`](/docs/api-reference/workflow-runtime/get-world), which caches a singleton instance, `createWorld()` constructs a fresh instance on every call. Application code should almost always use `getWorld()` — `createWorld()` is for infrastructure code that manages World lifecycles itself.
+
+```typescript lineNumbers
+import { createWorld } from "workflow/runtime";
+
+const world = await createWorld(); // [!code highlight]
+```
+
+## API Signature
+
+### Parameters
+
+This function does not accept any parameters. Configuration is read from environment variables.
+
+### Returns
+
+Returns a newly constructed `World` instance.
+
+<Callout type="info">
+  In workflow 4.x, `createWorld()` is synchronous and returns `World` directly. It becomes async in 5.x, so writing `await createWorld()` works on both versions.
+</Callout>
+
+<Callout type="info">
+  Tooling that needs to construct a World with explicit (non-environment) configuration should instantiate the specific World implementation directly and register it with [`setWorld()`](/docs/api-reference/workflow-runtime/set-world).
+</Callout>
+
+## Related Functions
+
+- [`getWorld()`](/docs/api-reference/workflow-runtime/get-world) - Resolve the cached World instance (preferred in application code).
+- [`setWorld()`](/docs/api-reference/workflow-runtime/set-world) - Override the cached World instance.

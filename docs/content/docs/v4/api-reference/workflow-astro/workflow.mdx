@@ -1,0 +1,37 @@
+---
+title: workflow
+description: Configure Astro to transform workflow directives.
+type: reference
+summary: Add the workflow integration to your Astro config to enable workflow directive transformation.
+prerequisites:
+  - /docs/getting-started/astro
+---
+
+Returns an Astro integration that transforms workflow code (`"use step"`/`"use workflow"` directives) and builds the workflow bundles.
+
+## Usage
+
+To enable `"use step"` and `"use workflow"` directives while developing locally or deploying to production, add `workflow()` to the `integrations` array of your Astro config.
+
+```typescript title="astro.config.mjs" lineNumbers
+// @ts-check
+import { defineConfig } from "astro/config";
+import { workflow } from "workflow/astro"; // [!code highlight]
+
+// https://astro.build/config
+export default defineConfig({
+  integrations: [workflow()], // [!code highlight]
+});
+```
+
+The integration registers the workflow Vite transform plugins during `astro:config:setup` and builds the workflow bundles — locally during config setup, or via the Vercel builder after `astro:build:done` when deploying to Vercel.
+
+## API Signature
+
+### Parameters
+
+This function does not accept any parameters in workflow 4.x. (5.x adds an options object with a `sourcemap` setting.)
+
+### Returns
+
+Returns an `AstroIntegration` object to include in the `integrations` array of your Astro config.

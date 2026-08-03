@@ -5,14 +5,20 @@ import { Badge } from '@/components/ui/badge';
 import type { World } from './types';
 import { WorldCardSimple } from './WorldCardSimple';
 
-type Filter = 'all' | 'vercel' | 'community' | 'compatible' | 'encrypted';
+type Filter = 'all' | 'vercel' | 'community' | 'encrypted';
 
 interface WorldsFilteredGridProps {
   worlds: [string, World][];
 }
 
 const managedIds = new Set(['vercel']);
-const embeddedIds = new Set(['local', 'redis', 'turso']);
+const embeddedIds = new Set([
+  'local',
+  'redis',
+  'turso',
+  'fantasticfour-redis',
+  'fantasticfour-redis-bullmq',
+]);
 
 const sections = [
   {
@@ -46,8 +52,6 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
         return world.type === 'official';
       case 'community':
         return world.type === 'community';
-      case 'compatible':
-        return world.e2e?.status === 'passing';
       case 'encrypted':
         return world.features?.includes('encryption');
       default:
@@ -59,7 +63,6 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
     all: worlds.length,
     vercel: worlds.filter(([, w]) => w.type === 'official').length,
     community: worlds.filter(([, w]) => w.type === 'community').length,
-    compatible: worlds.filter(([, w]) => w.e2e?.status === 'passing').length,
     encrypted: worlds.filter(([, w]) => w.features.includes('encryption'))
       .length,
   };
@@ -68,7 +71,6 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
     { id: 'all', label: `Show all (${counts.all})` },
     { id: 'vercel', label: `By Vercel (${counts.vercel})` },
     { id: 'community', label: `By Community (${counts.community})` },
-    { id: 'compatible', label: `Fully Compatible (${counts.compatible})` },
     { id: 'encrypted', label: `Encrypted (${counts.encrypted})` },
   ];
 
@@ -113,9 +115,7 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
           return (
             <section key={key} className="px-4 py-8">
               <div className="mb-4">
-                <h2 className="font-semibold text-xl tracking-tight sm:text-2xl">
-                  {title}
-                </h2>
+                <h2 className="text-heading-20 sm:text-heading-24">{title}</h2>
                 <p className="text-sm text-muted-foreground mt-1">
                   {description}
                 </p>

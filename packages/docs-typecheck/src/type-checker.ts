@@ -76,6 +76,16 @@ const compilerOptions: ts.CompilerOptions = {
     'workflow/observability': [
       path.join(repoRoot, 'packages/workflow/dist/observability'),
     ],
+    'workflow/runtime': [path.join(repoRoot, 'packages/workflow/dist/runtime')],
+    'workflow/next': [path.join(repoRoot, 'packages/workflow/dist/next.d.cts')],
+    'workflow/nitro': [path.join(repoRoot, 'packages/workflow/dist/nitro')],
+    'workflow/nuxt': [path.join(repoRoot, 'packages/workflow/dist/nuxt')],
+    'workflow/sveltekit': [
+      path.join(repoRoot, 'packages/workflow/dist/sveltekit'),
+    ],
+    'workflow/astro': [path.join(repoRoot, 'packages/workflow/dist/astro')],
+    'workflow/vite': [path.join(repoRoot, 'packages/workflow/dist/vite')],
+    'workflow/nest': [path.join(repoRoot, 'packages/workflow/dist/nest')],
     '@workflow/core': [path.join(repoRoot, 'packages/core/dist/index')],
     '@workflow/core/serialization-format': [
       path.join(repoRoot, 'packages/core/dist/serialization-format'),
@@ -87,27 +97,45 @@ const compilerOptions: ts.CompilerOptions = {
     ],
     '@workflow/next': [path.join(repoRoot, 'packages/next/dist/index')],
     '@workflow/errors': [path.join(repoRoot, 'packages/errors/dist/index')],
+    '@workflow/serde': [path.join(repoRoot, 'packages/serde/dist/index')],
+    '@workflow/vitest': [path.join(repoRoot, 'packages/vitest/dist/index')],
+    '@workflow/world': [path.join(repoRoot, 'packages/world/dist/index')],
     // Third-party deps available in docs-typecheck/node_modules
     zod: [path.join(__dirname, '../node_modules/zod')],
     ai: [path.join(__dirname, '../node_modules/ai')],
+    // Pin vite/vitest to a single instance. pnpm can materialize multiple
+    // copies of vite (differing only by peer-dep hash), and a docs sample
+    // mixing `vitest/config` with `@workflow/vitest` would otherwise see two
+    // structurally-incompatible `Plugin` types.
+    vite: [path.join(__dirname, '../node_modules/vite')],
+    vitest: [path.join(__dirname, '../node_modules/vitest')],
+    'vitest/config': [path.join(__dirname, '../node_modules/vitest/config')],
+    // Nitro's vite plugin augments vite's UserConfig with a `nitro` key;
+    // resolve it so getting-started samples using `nitro/vite` type-check.
+    'nitro/vite': [
+      path.join(repoRoot, 'packages/nitro/node_modules/nitro/dist/vite.d.mts'),
+    ],
   },
 };
 
 /**
- * Modules that we explicitly resolve via `paths` mappings. A TS2307
- * ("Cannot find module") error for any of these is a real regression and
- * must NOT be silenced.
+ * Modules that we explicitly resolve via `paths` mappings. Missing-module
+ * errors for any of these are real regressions and must NOT be silenced.
  */
 const RESOLVED_MODULES = new Set(Object.keys(compilerOptions.paths ?? {}));
 
 /**
- * Returns true if a TS2307 diagnostic refers to a module we don't expect to
- * resolve (relative imports, framework deps, app aliases, etc.).
+ * Returns true if a missing-module diagnostic refers to a module we don't
+ * expect to resolve (relative imports, framework deps, app aliases, etc.).
  * Returns false for modules in our paths mapping — those failures are real.
  */
 function isExpectedMissingModule(diagnostic: ts.Diagnostic): boolean {
   const msg = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');
-  const match = msg.match(/Cannot find module '([^']+)'/);
+  const match =
+    msg.match(/Cannot find module '([^']+)'/) ??
+    msg.match(
+      /Cannot find module or type declarations for side-effect import of '([^']+)'/
+    );
   if (!match) return false;
   const mod = match[1];
   return !RESOLVED_MODULES.has(mod);
@@ -216,7 +244,7 @@ export function typeCheckBatch(
       (d) =>
         !IGNORED_ERROR_CODES.has(d.code) &&
         !expectedErrorSet.has(d.code) &&
-        !(d.code === 2307 && isExpectedMissingModule(d))
+        !([2307, 2882].includes(d.code) && isExpectedMissingModule(d))
     );
 
     const diagnostics = relevantDiagnostics.map((d) =>

@@ -1,17 +1,20 @@
-import { WorkflowWorldError, WorkflowRunNotFoundError } from '@workflow/errors';
+import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
+  type AttributeChange,
   type CancelWorkflowRunParams,
   type CreateWorkflowRunRequest,
+  type ExperimentalSetAttributesResult,
   type GetWorkflowRunParams,
   type ListWorkflowRunsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
-  StructuredErrorSchema,
+  SerializedDataSchema,
   type WorkflowRun,
   WorkflowRunBaseSchema,
   type WorkflowRunWithoutData,
 } from '@workflow/world';
 import { z } from 'zod';
+import { normalizeWorkflowRunData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
@@ -21,20 +24,20 @@ import {
 
 /**
  * Wire format schema for workflow runs coming from the backend.
- * The backend may return error either as:
- * - A JSON string (legacy format) that needs deserialization
- * - An already structured object (new format) with { message, stack?, code? }
  *
- * This is used for validation in makeRequest(), then deserializeError()
- * normalizes both formats into the expected StructuredError object.
+ * `error` is SerializedData produced by `dehydrateRunError` in the new
+ * (specVersion >= 2) format. For backward compatibility with legacy
+ * records, we also accept any other shape and let `deserializeError`
+ * normalize it.
+ *
+ * `errorCode` is a separate plaintext metadata field used for routing
+ * and classification.
  */
 export const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
   error: true,
+  errorCode: true,
 }).extend({
-  // Backend returns error as either a JSON string or structured object
-  error: z.union([z.string(), StructuredErrorSchema]).optional(),
-  // errorCode is stored inline on the run entity (not inside errorRef).
-  // It's merged into StructuredError.code by deserializeError().
+  error: z.union([SerializedDataSchema, z.any()]).optional(),
   errorCode: z.string().optional(),
   // Not part of the World interface, but passed through for direct consumers and debugging
   blobStorageBytes: z.number().optional(),
@@ -66,21 +69,29 @@ function filterRunData(
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData;
 
-// Implementation
+// Implementation. This is a read/display entry point (getRun/listRuns),
+// so it decompresses gzip/zstd payload wrappers via
+// `normalizeWorkflowRunData`. The runtime write path (events.create)
+// re-hydrates run errors through `hydrateRunError`, which decompresses
+// on its own, so it deliberately does not route through here.
 function filterRunData(
   run: any,
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData {
   if (resolveData === 'none') {
     const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = run;
-    const deserialized = deserializeError<WorkflowRun>(rest);
+    const deserialized = normalizeWorkflowRunData(
+      deserializeError<WorkflowRun>(rest) as unknown as Record<string, unknown>
+    );
     return {
       ...deserialized,
       input: undefined,
       output: undefined,
     } as WorkflowRunWithoutData;
   }
-  return deserializeError<WorkflowRun>(run);
+  return normalizeWorkflowRunData(
+    deserializeError<WorkflowRun>(run) as unknown as Record<string, unknown>
+  ) as unknown as WorkflowRun;
 }
 
 // Functions
@@ -193,6 +204,7 @@ export async function getWorkflowRun(
       endpoint,
       options: { method: 'GET' },
       config,
+      retryConnectTimeout: true,
       schema: (remoteRefBehavior === 'lazy'
         ? WorkflowRunWireWithRefsSchema
         : WorkflowRunWireSchema) as any,
@@ -205,6 +217,47 @@ export async function getWorkflowRun(
     }
     throw error;
   }
+}
+
+/**
+ * Retrieves a snapshot for each requested run ID. Delegates to
+ * `getWorkflowRun` for each ID and returns null for IDs that do not exist.
+ */
+export async function getWorkflowRuns(
+  ids: readonly string[],
+  params: GetWorkflowRunParams & { resolveData: 'none' },
+  config?: APIConfig
+): Promise<(WorkflowRunWithoutData | null)[]>;
+export async function getWorkflowRuns(
+  ids: readonly string[],
+  params?: GetWorkflowRunParams & { resolveData?: 'all' },
+  config?: APIConfig
+): Promise<(WorkflowRun | null)[]>;
+export async function getWorkflowRuns(
+  ids: readonly string[],
+  params?: GetWorkflowRunParams,
+  config?: APIConfig
+): Promise<(WorkflowRun | WorkflowRunWithoutData | null)[]>;
+export async function getWorkflowRuns(
+  ids: readonly string[],
+  params?: GetWorkflowRunParams,
+  config?: APIConfig
+): Promise<(WorkflowRun | WorkflowRunWithoutData | null)[]> {
+  const uniqueIds = [...new Set(ids)];
+  const runs = await Promise.all(
+    uniqueIds.map(async (id) => {
+      try {
+        return await getWorkflowRun(id, params, config);
+      } catch (error) {
+        if (error instanceof WorkflowRunNotFoundError) {
+          return null;
+        }
+        throw error;
+      }
+    })
+  );
+  const runById = new Map(uniqueIds.map((id, i) => [id, runs[i]]));
+  return ids.map((id) => runById.get(id) ?? null);
 }
 
 export async function cancelWorkflowRunV1(
@@ -250,6 +303,53 @@ export async function cancelWorkflowRunV1(
   } catch (error) {
     if (error instanceof WorkflowWorldError && error.status === 404) {
       throw new WorkflowRunNotFoundError(id);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Wire response schema for `experimentalSetAttributes`. The backend
+ * returns the post-merge attribute snapshot so callers don't need to
+ * issue a follow-up read.
+ */
+const ExperimentalSetAttributesResponseSchema = z.object({
+  attributes: z.record(z.string(), z.string()),
+});
+
+/**
+ * Apply attribute changes to a workflow run. The body shape mirrors the
+ * future `attr_set` event's `eventData.changes`, so the wire contract is
+ * forward-compatible with the full 5.0.0 attributes feature — only the
+ * endpoint path changes.
+ *
+ * `options.allowReservedAttributes` opts the request into permitting
+ * `$`-prefixed keys (framework-only — see the SDK helper for details).
+ * The flag is forwarded to the server via the request body.
+ *
+ * EXPERIMENTAL: tied to the MVP write-only attributes API. See
+ * `docs/content/docs/v5/changelog/attributes-mvp.mdx`.
+ */
+export async function experimentalSetAttributes(
+  runId: string,
+  changes: AttributeChange[],
+  options?: { allowReservedAttributes?: boolean },
+  config?: APIConfig
+): Promise<ExperimentalSetAttributesResult> {
+  try {
+    const response = await makeRequest({
+      endpoint: `/v2/runs/${encodeURIComponent(runId)}/attributes`,
+      options: { method: 'POST' },
+      data: options?.allowReservedAttributes
+        ? { changes, allowReservedAttributes: true }
+        : { changes },
+      config,
+      schema: ExperimentalSetAttributesResponseSchema,
+    });
+    return { attributes: response.attributes };
+  } catch (error) {
+    if (error instanceof WorkflowWorldError && error.status === 404) {
+      throw new WorkflowRunNotFoundError(runId);
     }
     throw error;
   }

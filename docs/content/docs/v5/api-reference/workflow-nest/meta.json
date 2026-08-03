@@ -1,0 +1,9 @@
+{
+  "title": "workflow/nest",
+  "pages": [
+    "workflow-module",
+    "nest-local-builder",
+    "workflow-controller",
+    "configure-workflow-controller"
+  ]
+}

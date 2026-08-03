@@ -1,0 +1,123 @@
+---
+title: Workflow SDK vs Temporal
+description: How the Workflow SDK compares to Temporal — execution model, where workers run, versioning, AI agents, pricing, and a concept-mapping migration guide.
+type: conceptual
+summary: Temporal is a mature, language-agnostic durable-execution platform where you run the workers. The Workflow SDK runs in your existing app and pins runs to immutable deployments.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/foundations/hooks
+  - /docs/foundations/streaming
+  - /docs/ai
+  - /worlds/vercel
+---
+
+[Temporal](https://temporal.io) is the most mature durable-execution platform — battle-tested at large scale, with seven language SDKs. It and the Workflow SDK share the same core idea (durable orchestration via event-sourced replay), so the real differences are operational: **where your code runs, how you version it, and how it streams to clients.**
+
+<Callout type="info">
+**Choose the Workflow SDK** when you want durable execution inside your existing TypeScript app with nothing extra to operate, deployment-pinned versioning, and native streaming for AI apps. **Choose Temporal** when you need polyglot SDKs (Go/Java/etc.), want a self-hostable control plane you fully own, or are standardizing a large org on one orchestration backend across many languages.
+</Callout>
+
+## At a glance
+
+| | Workflow SDK | Temporal |
+| --- | --- | --- |
+| **Category** | Open-source durable-functions SDK; managed on Vercel or self-hosted | Durable-execution platform; Temporal Cloud or self-hosted cluster |
+| **Durability model** | Event log + deterministic replay (`"use workflow"` orchestrators, `"use step"` functions) | Event-sourced replay (Workflows + Activities). Same model — `"use workflow"` ≈ Workflow, `"use step"` ≈ Activity |
+| **Languages** | TypeScript / JS (Python beta) | Go, Java, TypeScript, Python, .NET, PHP, Ruby (7 SDKs) |
+| **Where execution runs** | Orchestration + execution + observability co-located on your platform; private networking and E2E encryption out of the box on Vercel | **You run and scale your own Workers.** Temporal Cloud hosts orchestration only; workers connect outbound over the public internet (PrivateLink optional) |
+| **Versioning** | Runs pinned to their immutable deployment — safe by default; opt-in `deploymentId: 'latest'` to upgrade | Editing workflow code can break in-flight runs (non-determinism errors); evolve safely via patch APIs or Worker Versioning (keep old worker fleets draining) |
+| **AI SDK & agents** | `WorkflowAgent` ships in the AI SDK; durable agent loop; **native resumable streaming** (`getWritable`/`getReadable`, `WorkflowChatTransport`) | First-party `@temporalio/ai-sdk` and "Workflow Streams" — both **Public Preview**; streaming rides on Signals/Updates (batched, history-bound) |
+| **Security** | Zero-config per-run AES-256-GCM E2E encryption by default; platform security is per-World (the Vercel World inherits Vercel's security posture) | Workers run your code on your infra (never enters Temporal's plane); client-side E2E via a Codec Server you operate. Cloud: SOC 2 II, HIPAA, GDPR |
+| **Performance** | No-penalty resume; serverless scale-to-zero (true suspension); up to 100K concurrency on Vercel | Self-managed workers are long-running; Cloud namespace default 500 actions/sec (auto-scales) |
+| **Portability** | Apache-2.0 SDK; World abstraction swaps storage/queue/streams independently | MIT server; pluggable persistence (Cassandra/Postgres/MySQL), but an opinionated monolithic backend you run or pay for |
+| **Pricing** | SDK free; pay your platform (Vercel: events + data) or just your infra if self-hosted | Self-host = free software; Temporal Cloud bills per Action (from $50/M) + storage |
+| **Limits** | No run/sleep cap; 10K steps, 50 MB payload, 2 GB/run ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | No run cap (Continue-As-New for long histories); event history capped at 51,200 events / 50 MB; 2 MB payloads |
+
+**What the limits mean in practice:** Temporal caps payloads at 2 MB and event history at 51,200 events, which binds quickly for AI workloads — a large model context, tool transcript, or embedding batch routinely exceeds 2 MB, forcing external blob storage and claim-check plumbing, and long agent loops must be split with Continue-As-New before the history fills. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) (50 MB payloads, 2 GB of state per run, no run or sleep caps) leave room to keep full contexts in the run itself.
+
+## The biggest difference: what you operate
+
+Temporal Cloud manages the durable engine, but **you still build, deploy, and scale a fleet of Workers** that poll task queues and run your Workflow and Activity code. Those workers connect *out* to Temporal Cloud, typically over the public internet (AWS PrivateLink / GCP Private Service Connect are available as same-region options). Readable observability requires you to stand up a **Codec Server** so the Web UI can decrypt payloads your data converter encrypted.
+
+With the Workflow SDK on Vercel, orchestration, execution, and observability are co-located on one platform with internal networking, and per-run E2E encryption is on by default with no codec server to run. There are no workers, task queues, or a control plane to operate. (Self-hosting via the [Postgres World](/worlds/postgres) is the closest analog to running your own Temporal cluster.)
+
+## Versioning
+
+This is where the two differ most in day-to-day risk. Because both replay code against history, *changing* workflow code mid-flight is the hazard.
+
+- **Temporal:** simply editing a workflow can produce a non-determinism error that breaks or stalls open executions. You evolve safely with **patch APIs** (`patched()` / `GetVersion()`, which accumulate branch cruft) or **Worker Versioning** (Build IDs / Worker Deployments pin workflows to a build and keep the old worker fleet running until it drains). It works, but the burden is on you for every long-running workflow.
+- **Workflow SDK:** runs are **pinned to the immutable deployment that started them**. Shipping new code never touches in-flight runs — they keep replaying against the exact code they began on. Upgrading a run is explicit and opt-in (start it with `deploymentId: 'latest'`, or self-restart at a checkpoint). Safe by default, no patch branches, no draining worker fleets.
+
+## AI agents and streaming
+
+Both target AI agents, but the integration depth differs. The Workflow SDK's `WorkflowAgent` is a first-class construct **inside the AI SDK** (`@ai-sdk/workflow`): the agent loop becomes a durable workflow, each tool `execute` marked `"use step"` is an auto-retried durable step, and partial output streams through [durable, resumable streams](/docs/ai/resumable-streams) that survive reconnects and cold starts.
+
+Temporal ships a first-party `@temporalio/ai-sdk` plugin and a "Workflow Streams" library, but both are **Public Preview**, and streaming is built on Signals/Updates — every chunk is written to history, so it's batched rather than per-token.
+
+## Migrating from Temporal
+
+The model maps closely. Keep your orchestration logic; drop the workers, task queues, and activity modules.
+
+| Temporal | Workflow SDK | Note |
+| --- | --- | --- |
+| Workflow Definition / Execution | `"use workflow"` function started with `start()` | Orchestration stays in the workflow function. |
+| Activity | `"use step"` function | Side effects and Node.js access live in steps. |
+| Worker + Task Queue | Managed execution | No worker fleet or polling loop to operate. |
+| Signal | `createHook()` / `createWebhook()` | Hooks for typed resume signals; webhooks for HTTP callbacks. |
+| Query | `getWritable({ namespace: 'status' })` stream | Stream status durably; clients read the stream instead of polling. |
+| Child Workflow | `"use step"` wrapper around `start()` / `getRun()` | Return the `Run` object so observability can deep-link. |
+| Activity retry policy | `maxRetries`, `RetryableError`, `FatalError` | Retries live at the step boundary. |
+| Event History | Workflow event log / run timeline | Same durable replay; built-in observability UI. |
+
+A minimal translation — the orchestrator loses `proxyActivities` and becomes plain TypeScript:
+
+```typescript title="workflows/order.ts"
+export async function processOrder(orderId: string) {
+  'use workflow'; // [!code highlight]
+  await chargePayment(orderId);
+  return { orderId, status: 'completed' };
+}
+
+async function chargePayment(orderId: string) {
+  'use step'; // [!code highlight]
+  await fetch(`https://example.com/api/orders/${orderId}/charge`, { method: 'POST' });
+}
+```
+
+Signals become hooks — one `createHook()` + `await` replaces a signal definition, handler, and `condition()` guard:
+
+```typescript title="workflows/refund.ts"
+import { createHook } from 'workflow';
+
+export async function refundWorkflow(refundId: string) {
+  'use workflow';
+  using approval = createHook<{ approved: boolean }>({
+    token: `refund:${refundId}:approval`, // [!code highlight]
+  });
+  const { approved } = await approval; // suspends durably until resumed
+  return { refundId, approved };
+}
+```
+
+<Callout type="info">
+Install the migration skill to translate a Temporal app automatically:
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
+```
+</Callout>
+
+### Temporal features without a direct Workflow SDK equivalent
+
+Each row is a Temporal capability the Workflow SDK does not replicate one-to-one, paired with how to cover it on the Workflow SDK side:
+
+| Temporal feature | How to cover it with the Workflow SDK |
+| --- | --- |
+| Search attributes / visibility queries | Filter runs by status and timestamps via `getRun()` and the observability UI |
+| Per-activity timeouts (`startToCloseTimeout`, etc.) | Enforce deadlines inside a step with `AbortSignal.timeout(ms)`, or wrap a call in `Promise.race(step(), sleep('5m'))` |
+| Rich retry policy (`backoffCoefficient`, `nonRetryableErrorTypes`) | Only `maxRetries` is configurable; classify with `RetryableError` / `FatalError` and set delay via `new RetryableError(msg, { retryAfter: '5s' })` |
+| Polyglot workers | The Workflow SDK is TypeScript-first (Python in beta); for Go/Java/etc. in the same orchestrator, Temporal remains the better fit |
+
+---
+*Compiled from public documentation. Verify current Temporal pricing, limits, and preview-feature status against [temporal.io/docs](https://docs.temporal.io). Not based on head-to-head benchmarks.*

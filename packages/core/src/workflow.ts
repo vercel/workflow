@@ -1,21 +1,26 @@
-import { runInContext } from 'node:vm';
 import {
   ERROR_SLUGS,
+  ReplayDivergenceError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { withResolvers } from '@workflow/utils';
-import { getPort } from '@workflow/utils/get-port';
+import { createWorkflowBaseUrl, withResolvers } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, WorkflowRun } from '@workflow/world';
+import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
+import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
-import type { CryptoKey } from './encryption.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
+import { getPortLazy } from './runtime/get-port-lazy.js';
+import { runIdCreatedAt } from './runtime/run-id-time.js';
+import { handleSuspension } from './runtime/suspension-handler.js';
+import { getWorld } from './runtime/world.js';
+import type { PayloadKey } from './serialization/encryption.js';
 import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
@@ -26,6 +31,7 @@ import {
   STABLE_ULID,
   WORKFLOW_CREATE_HOOK,
   WORKFLOW_GET_STREAM_ID,
+  WORKFLOW_SET_ATTRIBUTES,
   WORKFLOW_SLEEP,
   WORKFLOW_USE_STEP,
 } from './symbols.js';
@@ -33,54 +39,104 @@ import * as Attribute from './telemetry/semantic-conventions.js';
 import { trace } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
+import { runCachedWorkflowScript } from './vm/script-cache.js';
+import {
+  createAbortSignalStatics,
+  createCreateAbortController,
+} from './workflow/abort-controller.js';
+import { createSetAttributes } from './workflow/attribute-dispatcher.js';
 import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
 /**
- * Logs a warning when a workflow run completes or fails with uncommitted
- * operations still in the invocations queue. This typically indicates the
- * user forgot to `await` a step, hook, or sleep call.
+ * Drain pending queue items at workflow completion (success or failure).
+ *
+ * Treats completion as a final suspension so unawaited hook, wait, and
+ * attribute operations are recorded before the run becomes terminal. This
+ * also lets a final `controller.abort()` reach in-flight steps.
+ *
+ * It records `*_created` and native attribute events, but never executes step
+ * bodies: `step_started` is rejected after the run becomes terminal. A
+ * fire-and-forget step therefore needs a later suspension to be scheduled.
+ *
+ * Drain failures do not change the workflow's terminal outcome.
  */
-function warnPendingQueueItems(
+async function drainPendingQueueItems(
   runId: string,
   pendingQueue: Map<string, QueueItem>,
-  outcome: 'completed' | 'failed'
-): void {
-  // Filter out hooks that are either already created (alive, waiting for payloads)
-  // or explicitly disposed — both are benign since the backend auto-disposes
-  // all hooks when a run reaches a terminal state
-  const items = [...pendingQueue.values()].filter(
-    (item) => !(item.type === 'hook' && (item.hasCreatedEvent || item.disposed))
-  );
-  if (items.length === 0) return;
-
-  const details = items.map((item) => {
-    switch (item.type) {
-      case 'step':
-        return `step "${item.stepName}"`;
-      case 'hook':
-        return `hook "${item.token}"`;
-      case 'wait':
-        return 'sleep';
-      default:
-        return `unknown (${(item as { type: string }).type})`;
+  vmGlobalThis: typeof globalThis,
+  workflowRun: WorkflowRun,
+  outcome: 'completed' | 'failed',
+  /**
+   * In turbo mode, gates final `*_created` writes on backgrounded
+   * `run_started`. Undefined when `run_started` is awaited.
+   */
+  runReadyBarrier?: Promise<unknown>
+): Promise<void> {
+  if (pendingQueue.size === 0) return;
+  // Implicitly dispose any abort hooks (system hooks) that are still alive at
+  // workflow completion so they don't leak rows in the hooks table for the
+  // run's lifetime. Skip hooks that already have an abort in flight — those
+  // will emit hook_received via the abort processing path. User hooks
+  // (isSystem !== true) are intentionally left alone: their lifetime is
+  // managed by the user's code, not the runtime.
+  for (const item of pendingQueue.values()) {
+    if (
+      item.type === 'hook' &&
+      item.isSystem &&
+      !item.disposed &&
+      !item.abortRequested
+    ) {
+      item.disposed = true;
     }
-  });
-
-  runtimeLogger.warn(
-    `Workflow run ${outcome} with ${items.length} uncommitted operation(s): ${details.join(', ')}. ` +
-      'Did you forget to `await` a step, hook, or sleep call?',
-    { workflowRunId: runId }
-  );
+  }
+  try {
+    const world = await getWorld();
+    const synthesized = new WorkflowSuspension(pendingQueue, vmGlobalThis);
+    await handleSuspension({
+      suspension: synthesized,
+      world,
+      run: workflowRun,
+      runReadyBarrier,
+    });
+  } catch (err) {
+    runtimeLogger.warn(
+      `Failed to drain pending queue items for ${outcome} workflow run`,
+      {
+        workflowRunId: runId,
+        message: err instanceof Error ? err.message : String(err),
+      }
+    );
+  }
 }
 
 export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
   events: Event[],
-  encryptionKey: CryptoKey | undefined
+  encryptionKey: PayloadKey | undefined,
+  /**
+   * Optional per-run cache for replay payload preparation and immutable final
+   * values. Owned by the inline replay loop so it survives fresh VM contexts
+   * created by successive iterations of this invocation.
+   */
+  replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache(
+    encryptionKey
+  ),
+  /**
+   * Turbo mode only: resolves once the backgrounded `run_started` has landed.
+   * Threaded into the end-of-run drain so fire-and-forget `*_created` writes
+   * committed at workflow completion order after the run's creation. Undefined
+   * outside turbo, where `run_started` is awaited up front.
+   */
+  runReadyBarrier?: Promise<unknown>,
+  /**
+   * Features supported by the World executing this workflow. Missing
+   * capabilities are treated as unsupported.
+   */
+  worldCapabilities?: WorldCapabilities
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
@@ -92,23 +148,39 @@ export async function runWorkflow(
 
     const startedAt = workflowRun.startedAt;
     if (!startedAt) {
-      throw new Error(
+      throw new WorkflowRuntimeError(
         `Workflow run "${workflowRun.runId}" has no "startedAt" timestamp (should not happen)`
       );
     }
 
-    // Get the port before creating VM context to avoid async operations
-    // affecting the deterministic timestamp
-    const isVercel = process.env.VERCEL_URL !== undefined;
-    const port = isVercel ? undefined : await getPort();
+    // Seed and initial clock must be available before I/O and remain stable on
+    // replay. After the first event, EventsConsumer advances the VM clock from
+    // each event's `createdAt`.
+    const fixedTimestamp =
+      runIdCreatedAt(workflowRun.runId) ?? +workflowRun.createdAt;
+
+    // Truthiness, not presence: `vercel env pull` writes `VERCEL_URL=""` into
+    // `.env.local`, and a framework that loads that file locally would otherwise
+    // put us on the Vercel branch with nothing to build a host from, making
+    // `https://` the base URL of every run.
+    const isVercel = Boolean(process.env.VERCEL_URL);
+    // Load getPort lazily to prevent Turbopack from tracing get-port's
+    // fs ops (readdir, readFile) into the flow route bundle. The resolved
+    // port is cached per process (see get-port-lazy.ts), so this is cheap
+    // on replays after the first.
+    const workflowBaseUrl = createWorkflowBaseUrl(
+      isVercel
+        ? `https://${process.env.VERCEL_URL}`
+        : `http://localhost:${(await getPortLazy()) ?? 3000}`
+    );
 
     const {
       context,
       globalThis: vmGlobalThis,
       updateTimestamp,
     } = createContext({
-      seed: `${workflowRun.runId}:${workflowRun.workflowName}:${+startedAt}`,
-      fixedTimestamp: +startedAt,
+      seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
+      fixedTimestamp,
     });
 
     const workflowDiscontinuation = withResolvers<void>();
@@ -124,11 +196,14 @@ export async function runWorkflow(
     const promiseQueueHolder = { current: Promise.resolve() };
 
     const eventsConsumer = new EventsConsumer(events, {
+      onConsumedEvent: (event) => {
+        updateTimestamp(+event.createdAt);
+      },
       onUnconsumedEvent: (event) => {
         workflowDiscontinuation.reject(
-          new WorkflowRuntimeError(
-            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`,
-            { slug: ERROR_SLUGS.CORRUPTED_EVENT_LOG }
+          new ReplayDivergenceError(
+            `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}.`,
+            { eventId: event.eventId }
           )
         );
       },
@@ -138,10 +213,13 @@ export async function runWorkflow(
     const workflowContext: WorkflowOrchestratorContext = {
       runId: workflowRun.runId,
       encryptionKey,
+      worldCapabilities,
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
       eventsConsumer,
-      generateUlid: () => ulid(+startedAt),
+      // Correlation IDs must be replay-stable. `startedAt` differs between a
+      // turbo delivery and a later server-backed replay, so use fixedTimestamp.
+      generateUlid: () => ulid(fixedTimestamp),
       generateNanoid,
       invocationsQueue: new Map(),
       // Use getter/setter so the EventsConsumer's getPromiseQueue() always
@@ -153,17 +231,9 @@ export async function runWorkflow(
         promiseQueueHolder.current = value;
       },
       pendingDeliveries: 0,
+      pendingDeliveryBarriers: new Map(),
+      replayPayloadCache,
     };
-
-    // Subscribe to the events log to update the timestamp in the vm context
-    workflowContext.eventsConsumer.subscribe((event) => {
-      const createdAt = event?.createdAt;
-      if (createdAt) {
-        updateTimestamp(+createdAt);
-      }
-      // Never consume events - this is only a passive subscriber
-      return EventConsumerResult.NotConsumed;
-    });
 
     // Consume run lifecycle events - these are structural events that don't
     // need special handling in the workflow, but must be consumed to advance
@@ -183,15 +253,28 @@ export async function runWorkflow(
         return EventConsumerResult.Consumed;
       }
 
+      // Attribute writes performed from a step have no workflow-body call to
+      // consume them during replay; they are already reflected in the run
+      // snapshot and remain structural until a read API is introduced.
+      if (
+        event.eventType === 'attr_set' &&
+        event.eventData.writer.type === 'step'
+      ) {
+        return EventConsumerResult.Consumed;
+      }
+
       return EventConsumerResult.NotConsumed;
     });
 
     const useStep = createUseStep(workflowContext);
     const createHook = createCreateHook(workflowContext);
     const sleep = createSleep(workflowContext);
+    const setAttributes = createSetAttributes(workflowContext);
 
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_USE_STEP] = useStep;
+    // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
+    vmGlobalThis[WORKFLOW_SET_ATTRIBUTES] = setAttributes;
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_CREATE_HOOK] = createHook;
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
@@ -200,18 +283,12 @@ export async function runWorkflow(
     vmGlobalThis[WORKFLOW_GET_STREAM_ID] = (namespace?: string) =>
       getWorkflowRunStreamId(workflowRun.runId, namespace);
 
-    // TODO: there should be a getUrl method on the world interface itself. This
-    // solution only works for vercel + local worlds.
-    const url = isVercel
-      ? `https://${process.env.VERCEL_URL}`
-      : `http://localhost:${port ?? 3000}`;
-
     // For the workflow VM, we store the context in a symbol on the `globalThis` object
     const ctx: WorkflowMetadata = {
       workflowName: workflowRun.workflowName,
       workflowRunId: workflowRun.runId,
       workflowStartedAt: new vmGlobalThis.Date(+startedAt),
-      url,
+      url: workflowBaseUrl,
       features: { encryption: !!encryptionKey },
     };
 
@@ -220,8 +297,7 @@ export async function runWorkflow(
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[STABLE_ULID] = ulid;
 
-    // NOTE: Will have a config override to use the custom fetch step.
-    //       For now `fetch` must be explicitly imported from `workflow`.
+    // Workflow code must import the deterministic `fetch` step from `workflow`.
     vmGlobalThis.fetch = () => {
       throw new vmGlobalThis.Error(
         `Global "fetch" is unavailable in workflow functions. Use the "fetch" step function from "workflow" to make HTTP requests.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.FETCH_IN_WORKFLOW_FUNCTION}`
@@ -263,6 +339,18 @@ export async function runWorkflow(
       throw new WorkflowRuntimeError(timeoutErrorMessage, {
         slug: ERROR_SLUGS.TIMEOUT_FUNCTIONS_IN_WORKFLOW,
       });
+    };
+
+    // `AbortController` and `AbortSignal` in the workflow VM are hook-backed
+    // for deterministic replay. The controller's abort() queues a hook resumption,
+    // and signal.aborted is updated when the hook event is processed during replay.
+    (vmGlobalThis as any).AbortController =
+      createCreateAbortController(workflowContext);
+    const abortSignalStatics = createAbortSignalStatics();
+    (vmGlobalThis as any).AbortSignal = {
+      abort: abortSignalStatics.abort,
+      any: abortSignalStatics.any,
+      timeout: abortSignalStatics.timeout,
     };
 
     // `Request` and `Response` are special built-in classes that invoke steps
@@ -685,11 +773,9 @@ export async function runWorkflow(
     }
     vmGlobalThis.TransformStream = TransformStream;
 
-    // Eventually we'll probably want to provide our own `console` object,
-    // but for now we'll just expose the global one.
     vmGlobalThis.console = globalThis.console;
 
-    // HACK: propagate symbol needed for AI gateway usage
+    // Expose the request-context symbol required by AI Gateway.
     const SYMBOL_FOR_REQ_CONTEXT = Symbol.for('@vercel/request-context');
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[SYMBOL_FOR_REQ_CONTEXT] = (globalThis as any)[
@@ -702,10 +788,14 @@ export async function runWorkflow(
     const parsedName = parseWorkflowName(workflowRun.workflowName);
     const filename = parsedName?.moduleSpecifier || workflowRun.workflowName;
 
-    const workflowFn = runInContext(
-      `${workflowCode}; globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
-      context,
-      { filename }
+    // Reuse compiled scripts by `(code, filename)`: compilation is deterministic
+    // and the filename preserves workflow source attribution in stack traces.
+    // The bundle registers workflows on `globalThis.__private_workflows`.
+    runCachedWorkflowScript(workflowCode, filename, context);
+    const workflowFn = runCachedWorkflowScript(
+      `globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
+      filename,
+      context
     );
 
     if (typeof workflowFn !== 'function') {
@@ -719,11 +809,15 @@ export async function runWorkflow(
     let args: unknown[] = [];
     workflowContext.promiseQueue = workflowContext.promiseQueue.then(
       async () => {
+        const prepared =
+          await replayPayloadCache.prepareWorkflowInput(workflowRun);
         args = await hydrateWorkflowArguments(
           workflowRun.input,
           workflowRun.runId,
           encryptionKey,
-          vmGlobalThis
+          vmGlobalThis,
+          {},
+          prepared
         );
       }
     );
@@ -744,30 +838,41 @@ export async function runWorkflow(
         result,
         workflowRun.runId,
         encryptionKey,
-        vmGlobalThis
+        vmGlobalThis,
+        false,
+        // Only compression-capable runs (spec >= 5) may write compressed
+        // payloads. The serializer uses zstd when supported and may use gzip.
+        (workflowRun.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
       );
 
       span?.setAttributes({
         ...Attribute.WorkflowResultType(typeof result),
       });
 
-      warnPendingQueueItems(
+      await drainPendingQueueItems(
         workflowRun.runId,
         workflowContext.invocationsQueue,
-        'completed'
+        vmGlobalThis,
+        workflowRun,
+        'completed',
+        runReadyBarrier
       );
 
       return dehydrated;
     } catch (err) {
-      // Let WorkflowSuspension propagate — handled separately by the runtime
-      if (WorkflowSuspension.is(err)) {
+      // Control-flow signals are handled by the runtime and do not mean the
+      // workflow has terminally failed.
+      if (WorkflowSuspension.is(err) || ReplayDivergenceError.is(err)) {
         throw err;
       }
 
-      warnPendingQueueItems(
+      await drainPendingQueueItems(
         workflowRun.runId,
         workflowContext.invocationsQueue,
-        'failed'
+        vmGlobalThis,
+        workflowRun,
+        'failed',
+        runReadyBarrier
       );
 
       throw err;

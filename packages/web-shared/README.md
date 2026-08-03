@@ -13,22 +13,14 @@ If you want a full observability experience with server actions already wired, t
 It comes with pre-styled UI components that accept data + callbacks:
 
 ```tsx
-import { WorkflowTraceViewer } from '@workflow/web-shared';
+import { TraceViewer } from '@workflow/web-shared';
 
-export default function MyRunDetailView({
-  run,
-  steps,
-  hooks,
-  events,
-  onSpanSelect,
-}) {
+export default function MyRunDetailView({ run, events, fetchSpanDetail }) {
   return (
-    <WorkflowTraceViewer
+    <TraceViewer
       run={run}
-      steps={steps}
-      hooks={hooks}
       events={events}
-      onSpanSelect={onSpanSelect}
+      sidebarData={{ run, events, fetchSpanDetail }}
     />
   );
 }

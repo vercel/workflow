@@ -10,6 +10,7 @@ const LIVE_POLL_LIMIT = 100;
 const INITIAL_PAGE_SIZE = 500;
 const LOAD_MORE_PAGE_SIZE = 100;
 const LIVE_UPDATE_INTERVAL_MS = 5000;
+const AUTO_LOAD_MAX_EVENTS = 500;
 
 /**
  * Returns (and keeps up-to-date) the Run and Events for a workflow run.
@@ -170,6 +171,13 @@ export function useWorkflowTraceViewerData(
     eventsHasMore,
     eventsCursor,
   ]);
+
+  useEffect(() => {
+    if (events.length >= AUTO_LOAD_MAX_EVENTS) {
+      return;
+    }
+    loadMoreTraceData();
+  }, [events.length, loadMoreTraceData]);
 
   const pollRun = useCallback(async (): Promise<boolean> => {
     if (run?.completedAt) {

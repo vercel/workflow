@@ -86,20 +86,11 @@ function getOutDir(): string {
  */
 @Controller('.well-known/workflow/v1')
 export class WorkflowController {
-  @Post('step')
-  async handleStep(@Req() req: any, @Res() res: any) {
-    const outDir = getOutDir();
-    const { POST } = await import(
-      pathToFileURL(join(outDir, 'steps.mjs')).href
-    );
-    const webRequest = toWebRequest(req);
-    const webResponse = await POST(webRequest);
-    await sendWebResponse(res, webResponse);
-  }
-
   @Post('flow')
   async handleFlow(@Req() req: any, @Res() res: any) {
     const outDir = getOutDir();
+    // Import step registrations (side effects) before the combined handler
+    await import(pathToFileURL(join(outDir, 'steps.mjs')).href);
     const { POST } = await import(
       pathToFileURL(join(outDir, 'workflows.mjs')).href
     );

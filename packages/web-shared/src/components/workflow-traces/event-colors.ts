@@ -2,7 +2,7 @@
  * Color utilities for workflow event markers
  */
 
-import type { Event } from '@workflow/world';
+import { type Event, isHookLifecycleEventType } from '@workflow/world';
 
 export interface EventColorPalette {
   /** Color of the diamond/marker itself */
@@ -22,6 +22,7 @@ export interface EventColorPalette {
  * - Red for failures (step_failed, run_failed)
  * - Orange/yellow for retries (step_retrying)
  * - Purple for webhook-related events
+ * - Teal for attribute changes (attr_set)
  * - Blue otherwise (default)
  */
 export function getEventColor(
@@ -50,17 +51,24 @@ export function getEventColor(
   }
 
   // Webhook-related - Purple
-  if (
-    eventType === 'hook_created' ||
-    eventType === 'hook_received' ||
-    eventType === 'hook_disposed'
-  ) {
+  if (isHookLifecycleEventType(eventType)) {
     return {
       color: 'var(--ds-purple-600)',
       background: 'var(--ds-purple-100)',
       border: 'var(--ds-purple-500)',
       text: 'var(--ds-purple-900)',
       secondary: 'var(--ds-purple-700)',
+    };
+  }
+
+  // Attribute changes - Teal
+  if (eventType === 'attr_set') {
+    return {
+      color: 'var(--ds-teal-900)',
+      background: 'var(--ds-teal-200)',
+      border: 'var(--ds-teal-500)',
+      text: 'var(--ds-teal-900)',
+      secondary: 'var(--ds-gray-900)',
     };
   }
 
@@ -81,11 +89,7 @@ export function getEventColor(
  */
 export function shouldShowVerticalLine(eventType: Event['eventType']): boolean {
   // Show vertical lines for hook-related events
-  if (
-    eventType === 'hook_created' ||
-    eventType === 'hook_received' ||
-    eventType === 'hook_disposed'
-  ) {
+  if (isHookLifecycleEventType(eventType)) {
     return true;
   }
 

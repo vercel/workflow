@@ -1,11 +1,15 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { computeSegments } from '../src/components/trace-viewer/components/span-segments.js';
-import { parseTrace } from '../src/components/trace-viewer/util/tree.js';
 import {
   buildTrace,
   groupEventsByCorrelation,
 } from '../src/lib/trace-builder.js';
+import type { Span } from '../src/lib/trace-types.js';
+
+/** Spans carry `[seconds, nanoseconds]`; assertions below are in milliseconds. */
+function durationMs(span: Span): number {
+  return span.duration[0] * 1000 + span.duration[1] / 1_000_000;
+}
 
 const BASE_TIME = new Date('2026-03-16T00:00:00Z');
 const STARTED_TIME = new Date('2026-03-16T00:00:01Z');
@@ -192,134 +196,71 @@ describe('Trace viewer with v1 events (no run lifecycle events)', () => {
       // parseStepName which returns the correlationId as fallback
       expect(stepSpan!.spanId).toBe('step_1');
     });
-  });
 
-  describe('computeSegments for v1 run spans', () => {
-    it('shows "succeeded" segment for a completed v1 run (no run_completed event)', () => {
-      const run = makeV1Run({ status: 'completed' });
-      const events = makeStepEvents('step_1', 'add', 1000, 3000);
-      const trace = buildTrace(run, events, new Date());
-      const { map } = parseTrace(trace);
-
-      const runNode = map[run.runId];
-      expect(runNode).toBeDefined();
-
-      const result = computeSegments('run', runNode);
-      expect(result.segments.length).toBeGreaterThan(0);
-
-      const lastSegment = result.segments[result.segments.length - 1];
-      expect(lastSegment.status).toBe('succeeded');
-      expect(lastSegment.endFraction).toBe(1);
-    });
-
-    it('shows "failed" segment for a failed v1 run (no run_failed event)', () => {
-      const run = makeV1Run({
-        status: 'failed',
-        output: undefined,
-        error: { message: 'boom' },
-      });
-      const events = makeStepEvents('step_1', 'add', 1000, 3000);
-      const trace = buildTrace(run, events, new Date());
-      const { map } = parseTrace(trace);
-
-      const runNode = map[run.runId];
-      const result = computeSegments('run', runNode);
-
-      const lastSegment = result.segments[result.segments.length - 1];
-      expect(lastSegment.status).toBe('failed');
-      expect(lastSegment.endFraction).toBe(1);
-    });
-
-    it('shows "running" segment for an in-progress v1 run', () => {
+    it('uses resumeAt for pending sleep span duration', () => {
       const run = makeV1Run({
         status: 'running',
         completedAt: undefined,
         output: undefined,
       });
-      const events = makeStepEvents('step_1', 'add', 1000, 3000);
-      const now = new Date('2026-03-16T00:01:00Z');
-      const trace = buildTrace(run, events, now);
-      const { map } = parseTrace(trace);
-
-      const runNode = map[run.runId];
-      const result = computeSegments('run', runNode);
-
-      const lastSegment = result.segments[result.segments.length - 1];
-      expect(lastSegment.status).toBe('running');
-    });
-
-    it('shows queued + succeeded for a v1 run with startedAt', () => {
-      const run = makeV1Run({ status: 'completed', startedAt: STARTED_TIME });
-      const trace = buildTrace(run, [], new Date());
-      const { map } = parseTrace(trace);
-
-      const runNode = map[run.runId];
-      const result = computeSegments('run', runNode);
-
-      expect(result.segments.length).toBe(2);
-      expect(result.segments[0].status).toBe('queued');
-      expect(result.segments[1].status).toBe('succeeded');
-    });
-
-    it('v2 baseline: shows "succeeded" from run_completed event', () => {
-      const run = makeV1Run({ specVersion: 2, status: 'completed' });
-      const stepEvents = makeStepEvents('step_1', 'add', 1000, 3000);
-      const runCreatedEvent: Event = {
-        eventId: 'evnt_run_created',
-        runId: 'wrun_v1test',
-        eventType: 'run_created',
-        createdAt: BASE_TIME,
-        specVersion: 2,
-        eventData: {
-          deploymentId: 'dep_1',
-          workflowName: 'v1-workflow',
-          input: {},
+      const waitCreatedAt = new Date(BASE_TIME.getTime() + 1_000);
+      const resumeAt = new Date(BASE_TIME.getTime() + 61_000);
+      const events = [
+        {
+          eventId: 'evnt_wait_created',
+          runId: 'wrun_v1test',
+          eventType: 'wait_created',
+          correlationId: 'wait_1',
+          createdAt: waitCreatedAt,
+          specVersion: 1,
+          eventData: { resumeAt },
         },
-      } as Event;
-      const runCompletedEvent: Event = {
-        eventId: 'evnt_run_completed',
-        runId: 'wrun_v1test',
-        eventType: 'run_completed',
-        createdAt: COMPLETED_TIME,
-        specVersion: 2,
-        eventData: { output: { result: 'ok' } },
-      } as Event;
-      const events = [runCreatedEvent, ...stepEvents, runCompletedEvent];
-      const trace = buildTrace(run, events, new Date());
-      const { map } = parseTrace(trace);
+      ] as Event[];
 
-      const runNode = map[run.runId];
-      const result = computeSegments('run', runNode);
+      const trace = buildTrace(
+        run,
+        events,
+        new Date(BASE_TIME.getTime() + 11_000)
+      );
+      const sleepSpan = trace.spans.find((s) => s.resource === 'sleep');
 
-      const lastSegment = result.segments[result.segments.length - 1];
-      expect(lastSegment.status).toBe('succeeded');
+      expect(sleepSpan).toBeDefined();
+      expect(durationMs(sleepSpan!)).toBe(10_000);
     });
 
-    it('v2 mid-pagination: shows "running" when run_completed has not loaded yet', () => {
-      const run = makeV1Run({ specVersion: 2, status: 'completed' });
-      const stepEvents = makeStepEvents('step_1', 'add', 1000, 3000);
-      const runCreatedEvent: Event = {
-        eventId: 'evnt_run_created',
-        runId: 'wrun_v1test',
-        eventType: 'run_created',
-        createdAt: BASE_TIME,
-        specVersion: 2,
-        eventData: {
-          deploymentId: 'dep_1',
-          workflowName: 'v1-workflow',
-          input: {},
+    it('caps pending sleep spans at the latest known event before resumeAt', () => {
+      const run = makeV1Run({
+        status: 'completed',
+        completedAt: new Date(BASE_TIME.getTime() + 86_400_000),
+      });
+      const waitCreatedAt = new Date(BASE_TIME.getTime() + 1_000);
+      const latestKnownAt = new Date(BASE_TIME.getTime() + 86_401_000);
+      const resumeAt = new Date(BASE_TIME.getTime() + 6 * 86_400_000 + 1_000);
+      const events = [
+        {
+          eventId: 'evnt_wait_created',
+          runId: 'wrun_v1test',
+          eventType: 'wait_created',
+          correlationId: 'wait_1',
+          createdAt: waitCreatedAt,
+          specVersion: 1,
+          eventData: { resumeAt },
         },
-      } as Event;
-      // run_created is present but run_completed hasn't loaded yet
-      const events = [runCreatedEvent, ...stepEvents];
-      const trace = buildTrace(run, events, new Date());
-      const { map } = parseTrace(trace);
+        {
+          eventId: 'evnt_run_completed',
+          runId: 'wrun_v1test',
+          eventType: 'run_completed',
+          createdAt: latestKnownAt,
+          specVersion: 1,
+          eventData: { output: { result: 'ok' } },
+        },
+      ] as Event[];
 
-      const runNode = map[run.runId];
-      const result = computeSegments('run', runNode);
+      const trace = buildTrace(run, events, latestKnownAt);
+      const sleepSpan = trace.spans.find((s) => s.resource === 'sleep');
 
-      const lastSegment = result.segments[result.segments.length - 1];
-      expect(lastSegment.status).toBe('running');
+      expect(sleepSpan).toBeDefined();
+      expect(durationMs(sleepSpan!)).toBe(86_399_000);
     });
   });
 });

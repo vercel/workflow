@@ -1,19 +1,20 @@
 'use client';
 
-import type { ReactNode } from 'react';
-import { useState, useMemo, useCallback } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { WorkflowChatTransport } from '@workflow/ai';
+import type { UIMessage } from 'ai';
 import {
-  MessageSquare,
-  Cloud,
+  AlertTriangle,
   Calculator,
   CheckCircle2,
-  XCircle,
-  AlertTriangle,
-  ExternalLink,
+  Cloud,
   CopyIcon,
+  ExternalLink,
+  MessageSquare,
+  XCircle,
 } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   Conversation,
   ConversationContent,
@@ -22,25 +23,31 @@ import {
 } from '@/components/ai-elements/conversation';
 import {
   Message,
-  MessageActions,
   MessageAction,
+  MessageActions,
   MessageContent,
   MessageResponse,
 } from '@/components/ai-elements/message';
 import {
   PromptInput,
-  type PromptInputMessage,
   PromptInputBody,
   PromptInputFooter,
-  PromptInputTextarea,
-  PromptInputTools,
+  type PromptInputMessage,
   PromptInputSelect,
   PromptInputSelectContent,
   PromptInputSelectItem,
   PromptInputSelectTrigger,
   PromptInputSelectValue,
   PromptInputSubmit,
+  PromptInputTextarea,
+  PromptInputTools,
 } from '@/components/ai-elements/prompt-input';
+import {
+  Reasoning,
+  ReasoningContent,
+  ReasoningTrigger,
+} from '@/components/ai-elements/reasoning';
+import { Suggestion, Suggestions } from '@/components/ai-elements/suggestion';
 import {
   Tool,
   ToolContent,
@@ -48,14 +55,7 @@ import {
   ToolInput,
   ToolOutput,
 } from '@/components/ai-elements/tool';
-import {
-  Reasoning,
-  ReasoningContent,
-  ReasoningTrigger,
-} from '@/components/ai-elements/reasoning';
 import { Spinner } from '@/components/ui/spinner';
-import { Suggestion, Suggestions } from '@/components/ai-elements/suggestion';
-import type { UIMessage } from 'ai';
 
 const SUGGESTIONS = [
   "What's the weather in Tokyo?",
@@ -314,7 +314,7 @@ export function ChatClient() {
           const project = response.headers.get('x-workflow-project-slug');
           if (team && project) {
             setObservabilityBase(
-              `https://vercel.com/${team}/${project}/observability/workflows/runs`
+              `https://vercel.com/${team}/${project}/workflows/runs`
             );
           }
         },

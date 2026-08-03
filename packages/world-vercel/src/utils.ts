@@ -1,71 +1,166 @@
 import os from 'node:os';
 import { inspect } from 'node:util';
 import { getVercelOidcToken } from '@vercel/oidc';
-import {
-  EntityConflictError,
-  RunExpiredError,
-  ThrottleError,
-  TooEarlyError,
-  WorkflowWorldError,
-} from '@workflow/errors';
-import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
+import { WorkflowWorldError } from '@workflow/errors';
+import type { SerializedData } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
 import { getDispatcher } from './http-client.js';
 import {
+  errorForResponse,
+  formatVercelDiagnostics,
+  getRequestTimeoutMs,
+  HTTP_DEBUG_ENABLED,
+  httpClientSpanAttributes,
+  httpLog,
+  logCurlRepro,
+  parseRetryAfter,
+} from './http-core.js';
+
+import {
   ErrorType,
   getSpanKind,
-  HttpRequestMethod,
   HttpResponseStatusCode,
-  PeerService,
-  RpcService,
-  RpcSystem,
-  ServerAddress,
-  ServerPort,
+  injectTraceContextIntoHeaders,
   trace,
-  UrlFull,
   WorldParseFormat,
 } from './telemetry.js';
 import { version } from './version.js';
 
 /**
- * Lightweight debug logger for HTTP requests. Activated when the DEBUG
- * env var contains "workflow:" or is "*".
- *
- * Note: this does not implement full `debug` module semantics (e.g.
- * comma-separated globs, negation with `-`). It is a simple check
- * sufficient for enabling HTTP-level debug output.
+ * Inline workflow-server URL override. Must remain an empty string on
+ * `main` — rewritten by external CI for branch-deployment testing.
+ * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
-const HTTP_DEBUG_ENABLED =
-  typeof process !== 'undefined' &&
-  typeof process.env.DEBUG === 'string' &&
-  (process.env.DEBUG.includes('workflow:') || process.env.DEBUG === '*');
+export const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
-function httpLog(
-  method: string,
-  endpoint: string,
-  status: number,
-  ms: number
-): void {
-  if (HTTP_DEBUG_ENABLED) {
-    console.debug(
-      `[workflow:world-vercel:http] ${method} ${endpoint} -> ${status} (${ms}ms)`
-    );
+/**
+ * HTTP methods that are safe to transparently re-issue inside the adapter.
+ * A retry re-sends the request, so it is only safe for idempotent reads — a
+ * write could be applied twice. Writes rely on the workflow runtime's
+ * idempotent replay (and server-side correlation-id de-duplication) instead.
+ */
+const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD']);
+
+/**
+ * How many extra times to re-issue an idempotent request when reading or
+ * decoding the response body fails transiently — a truncated/terminated
+ * stream, a connection reset mid-body, or a gateway returning a non-CBOR/JSON
+ * body. The shared `RetryAgent` (see `http-client.ts`) already retries
+ * connection and 5xx failures, but body-consumption errors surface *after* it
+ * has handed back the response, so they are never seen by its retry logic and
+ * must be retried here.
+ */
+export const MAX_BODY_PARSE_RETRIES = 2;
+
+/** Base delay for the exponential backoff between body-parse retries. */
+const BODY_PARSE_RETRY_BASE_MS = 100;
+
+/**
+ * Transient transport failure codes. When a request to workflow-server cannot
+ * complete, `fetch()` throws rather than returning a response: the shared
+ * `RetryAgent` exhausted its retries (`UND_ERR_REQ_RETRY` — e.g. the firewall
+ * in front of workflow-server shedding load with sustained 429/503, which the
+ * RetryAgent retries internally and never surfaces to us), the socket dropped,
+ * or connect/DNS failed. These are retryable infrastructure failures, not
+ * contract or user errors, so we map them to a typed `WorkflowWorldError`
+ * (`code: 'TRANSPORT'`) that the runtime recognizes as retryable and bubbles
+ * to the queue for a fast redrive — instead of crashing the invocation or
+ * failing the run.
+ */
+const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
+  'UND_ERR_REQ_RETRY',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_CLOSED',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+]);
+
+/**
+ * Walks the `cause` chain of a thrown value looking for a transient transport
+ * error code. `fetch()` wraps the underlying undici error in a
+ * `TypeError: fetch failed` whose `cause` carries the real `.code`, so the
+ * code we care about is usually one level down (sometimes two). Bounded depth
+ * guards against pathological or cyclic `cause` chains.
+ */
+function getTransientTransportCode(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; current != null && depth < 5; depth++) {
+    if (typeof current === 'object' && 'code' in current) {
+      const code = (current as { code?: unknown }).code;
+      if (
+        typeof code === 'string' &&
+        TRANSIENT_TRANSPORT_ERROR_CODES.has(code)
+      ) {
+        return code;
+      }
+    }
+    current = (current as { cause?: unknown })?.cause;
   }
+  return undefined;
 }
 
 /**
- * Hard-coded workflow-server URL override for testing.
- * Set this to test against a different workflow-server version.
- * Leave empty string for production (uses default vercel-workflow.com).
+ * Effective workflow-server URL override. The inline constant wins when
+ * set; otherwise falls back to the `VERCEL_WORKFLOW_SERVER_URL` env var.
  *
- * Example: 'https://workflow-server-git-branch-name.vercel.sh'
+ * When set, requests bypass the default production host
+ * (`https://vercel-workflow.com`). When using the proxy
+ * (`api.vercel.com/v1/workflow`), this value is forwarded via the
+ * `x-vercel-workflow-api-url` header so the proxy routes the request to
+ * the override URL.
  */
-const WORKFLOW_SERVER_URL_OVERRIDE = '';
+const getWorkflowServerUrlOverride = (): string =>
+  WORKFLOW_SERVER_URL_OVERRIDE || process.env.VERCEL_WORKFLOW_SERVER_URL || '';
+
+/**
+ * Header the server reads to tighten its own limits (stream max-duration,
+ * chunk-batch size, …) per request — only ever to a stricter value than the
+ * deployment default. See `world-vercel`'s server counterpart.
+ */
+const TEST_LIMIT_OVERRIDES_HEADER = 'x-workflow-test-limit-overrides';
+
+/**
+ * Forward server-side limit overrides set via `WORKFLOW_TEST_LIMIT_OVERRIDES`.
+ *
+ * The value is a JSON object of server-constant name → value (e.g.
+ * `{"STREAM_MAX_DURATION_MS":5000}`) sent verbatim as
+ * `x-workflow-test-limit-overrides`. The server validates and clamps it
+ * (stricter-only), so a malformed value is harmlessly ignored there — we don't
+ * parse it here. Intended for a dedicated e2e deployment so the suite exercises
+ * edge paths (stream reconnect, batch splitting) quickly; unset in production.
+ */
+const getTestLimitOverridesHeader = (): string =>
+  process.env.WORKFLOW_TEST_LIMIT_OVERRIDES?.trim() || '';
 
 export interface APIConfig {
   token?: string;
   headers?: RequestInit['headers'];
+  /**
+   * Custom HTTP dispatcher passed to every `fetch()` call (e.g. an undici
+   * `Agent`/`RetryAgent`). Defaults to a shared undici `RetryAgent`.
+   *
+   * Typed as `unknown` on purpose: undici's `Dispatcher` type is nominally
+   * version-specific (it differs across v6/v7/v8 and the `undici-types`
+   * bundled with each `@types/node` major), so a concrete type would reject a
+   * dispatcher from a different undici version. Callers may pass any undici
+   * version's dispatcher, or any object implementing the dispatcher contract.
+   *
+   * Note: when provided, this dispatcher replaces *every* default — including
+   * the one used for stream writes (the `PUT` write/close path). Stream appends
+   * are not idempotent, and undici's `RetryAgent` retries `PUT` on 5xx by
+   * default, which can duplicate a chunk the server already persisted. A custom
+   * dispatcher used with stream writes should therefore not retry `PUT` on 5xx
+   * (the built-in stream dispatcher retries only on transient errors and 429).
+   */
+  dispatcher?: unknown;
   projectConfig?: {
     /** The real Vercel project ID (e.g., prj_xxx) */
     projectId?: string;
@@ -79,102 +174,43 @@ export interface APIConfig {
 export const DEFAULT_RESOLVE_DATA_OPTION = 'all';
 
 /**
- * Helper to serialize error into a JSON string in the error field.
- * The error field can be either:
- * - A plain string (legacy format, just the error message)
- * - A JSON string with { message, stack, code } (new format)
+ * Pass-through helper that preserves the wire-format error field as-is.
+ *
+ * In the current event-sourced model (specVersion >= 2), the `error` field
+ * on run/step entities is `SerializedData` (a Uint8Array) produced by
+ * `dehydrateStepError` / `dehydrateRunError`. Consumers hydrate it via
+ * `hydrateStepError` / `hydrateRunError` to reconstruct the original
+ * thrown value.
+ *
+ * This helper exists for backward compatibility with the old API that
+ * expected a domain-level transformation. New code should treat the
+ * `error` field as opaque `SerializedData`.
  */
-export function serializeError<T extends { error?: StructuredError }>(
-  data: T
-): Omit<T, 'error'> & { error?: string } {
-  const { error, ...rest } = data;
-
-  // If we have an error, serialize as JSON string
-  if (error !== undefined) {
-    return {
-      ...rest,
-      error: JSON.stringify({
-        message: error.message,
-        stack: error.stack,
-        code: error.code,
-      }),
-    } as Omit<T, 'error'> & { error: string };
-  }
-
-  return data as Omit<T, 'error'>;
+export function deserializeError<T extends Record<string, any>>(obj: any): T {
+  return obj as T;
 }
 
 /**
- * Helper to deserialize error field from the backend into a StructuredError object.
- * Handles multiple formats from the backend:
- * - If error is already a structured object → validate and use directly
- * - If error is a JSON string with {message, stack, code} → parse into StructuredError
- * - If error is a plain string → treat as error message with no stack
- * - If no error → undefined
- *
- * This function transforms objects from wire format (where error may be a JSON string
- * or already structured) to domain format (where error is a StructuredError object).
- * The generic type parameter should be the expected output type (WorkflowRun or Step).
- *
- * Note: The type assertion is necessary because the wire format types from Zod schemas
- * have `error?: string | StructuredError` while the domain types have complex error types
- * (e.g., discriminated unions with `error: void` or `error: StructuredError` depending on
- * status), but the transformation preserves all other fields correctly.
+ * Pass-through helper for outgoing update requests. In the current
+ * event-sourced model, the `error` field on `UpdateStepRequest` is
+ * `SerializedData` (Uint8Array) and does not need transformation.
  */
-export function deserializeError<T extends Record<string, any>>(obj: any): T {
-  const { error, errorCode, ...rest } = obj;
-
-  if (!error) {
-    return obj as T;
-  }
-
-  // errorCode is stored as a separate inline field on the run entity (not
-  // inside errorRef). Merge it into StructuredError.code so consumers see it.
-  // If the error already has a code from the ref, errorCode takes precedence.
-
-  // If error is already an object (new format), validate and use directly
-  if (typeof error === 'object' && error !== null) {
-    const result = StructuredErrorSchema.safeParse(error);
-    if (result.success) {
-      return {
-        ...rest,
-        error: {
-          message: result.data.message,
-          stack: result.data.stack,
-          code: errorCode ?? result.data.code,
-        },
-      } as T;
-    }
-    // Fall through to treat as unknown format
-  }
-
-  // If error is a string, try to parse as structured error JSON
-  if (typeof error === 'string') {
-    try {
-      const parsed = StructuredErrorSchema.parse(JSON.parse(error));
-      return {
-        ...rest,
-        error: {
-          message: parsed.message,
-          stack: parsed.stack,
-          code: errorCode ?? parsed.code,
-        },
-      } as T;
-    } catch {
-      // Backwards compatibility: error is just a plain string
-      return {
-        ...rest,
-        error: {
-          message: error,
-          code: errorCode,
-        },
-      } as T;
-    }
-  }
-
-  // Unknown format - return as-is and let downstream handle it
-  return obj as T;
+export function serializeError<T extends { error?: SerializedData }>(
+  data: T
+): T {
+  return data;
 }
+
+/**
+ * Joins User-Agent product tokens with spaces per the RFC 9110 `User-Agent`
+ * grammar (`product *( RWS ( product / comment ) )`), skipping empty parts.
+ * Never join UA products with `Headers.append()` — repeated header values
+ * combine with `", "`, and a comma glued to a product token breaks
+ * whitespace-delimited parsers on the receiving side.
+ */
+const joinUserAgentProducts = (
+  ...products: (string | null | undefined)[]
+): string => products.filter(Boolean).join(' ');
 
 const getUserAgent = () => {
   const deploymentId = process.env.VERCEL_DEPLOYMENT_ID;
@@ -195,7 +231,7 @@ export const getHttpUrl = (
 ): { baseUrl: string; usingProxy: boolean } => {
   const projectConfig = config?.projectConfig;
   const defaultHost =
-    WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    getWorkflowServerUrlOverride() || 'https://vercel-workflow.com';
   const customProxyUrl = process.env.WORKFLOW_VERCEL_BACKEND_URL;
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
   // Use proxy when we have project config (for authentication via Vercel API)
@@ -208,17 +244,75 @@ export const getHttpUrl = (
   return { baseUrl, usingProxy };
 };
 
+/**
+ * The environment this client's writes will be attributed to by the backend.
+ *
+ * Two distinct auth paths, two distinct sources — and this must mirror both
+ * exactly, because callers compare it against the environment a *different*
+ * client reported to detect a cross-tenant fork (see `World.getEnvironment`):
+ *
+ * - **With `projectConfig`** (CLI, CI, the observability dashboard — anything
+ *   going through the api.vercel.com proxy with a Vercel auth token): the proxy
+ *   attributes the write to the `x-vercel-environment` header, so the answer is
+ *   whatever {@link getHeaders} puts there. Both read this one function so they
+ *   cannot drift; the `|| 'production'` default is part of that contract, not
+ *   an incidental fallback.
+ *
+ * - **Without `projectConfig`** (inside a Vercel deployment, authenticating
+ *   with the per-request OIDC token): the backend reads the token's
+ *   `environment` claim, which the platform mints as
+ *   `customEnvironment?.slug ?? envTarget` — and `VERCEL_TARGET_ENV` is
+ *   populated from exactly the same pair (`customEnvironmentSlug ||
+ *   envTarget`), so it matches the claim by construction. `VERCEL_ENV` alone
+ *   would be wrong for Vercel *custom* environments: it reports `preview`
+ *   there while the claim (and therefore the tenant) carries the custom
+ *   environment's slug, which would make the cross-environment guard refuse a
+ *   legitimate delivery. `VERCEL_ENV` remains as the fallback for contexts
+ *   where `VERCEL_TARGET_ENV` isn't injected (e.g. `vercel dev`).
+ *
+ * Note for custom environments on the `projectConfig` path: the proxy accepts
+ * a custom environment's slug **or ID** in `x-vercel-environment` but always
+ * attributes the write to the **slug**. Configure the slug (not the ID) so the
+ * value stamped into `runInput` matches what the consuming deployment sees.
+ *
+ * Returns `undefined` when neither source is available (e.g. a bare Node
+ * process with no Vercel env vars). `undefined` is the honest answer there and
+ * callers skip their checks — guessing `'production'` would fabricate a
+ * mismatch against a genuine preview deployment.
+ */
+export const resolveClientEnvironment = (
+  config: APIConfig | undefined
+): string | undefined => {
+  const projectConfig = config?.projectConfig;
+  if (projectConfig) {
+    return projectConfig.environment || 'production';
+  }
+  return process.env.VERCEL_TARGET_ENV || process.env.VERCEL_ENV || undefined;
+};
+
 export const getHeaders = (
   config: APIConfig | undefined,
   options: { usingProxy: boolean }
 ): Headers => {
   const projectConfig = config?.projectConfig;
   const headers = new Headers(config?.headers);
-  headers.set('User-Agent', getUserAgent());
+  headers.set(
+    'User-Agent',
+    joinUserAgentProducts(getUserAgent(), headers.get('User-Agent'))
+  );
+  const testLimitOverrides = getTestLimitOverridesHeader();
+  if (testLimitOverrides) {
+    headers.set(TEST_LIMIT_OVERRIDES_HEADER, testLimitOverrides);
+  }
   if (projectConfig) {
+    // Derived from the same helper `getEnvironment` uses so the header and the
+    // value stamped into `runInput` can never disagree — a drift between them
+    // would make the cross-environment guard either miss a real fork or
+    // reject a legitimate start.
     headers.set(
       'x-vercel-environment',
-      projectConfig.environment || 'production'
+      // biome-ignore lint/style/noNonNullAssertion: projectConfig is present, so the helper always returns a string
+      resolveClientEnvironment(config)!
     );
     if (projectConfig.projectId) {
       headers.set('x-vercel-project-id', projectConfig.projectId);
@@ -230,8 +324,9 @@ export const getHeaders = (
   // Only set workflow-api-url header when using the proxy, since the proxy
   // forwards it to the workflow-server. When not using proxy, requests go
   // directly to the workflow-server so this header has no effect.
-  if (WORKFLOW_SERVER_URL_OVERRIDE && options.usingProxy) {
-    headers.set('x-vercel-workflow-api-url', WORKFLOW_SERVER_URL_OVERRIDE);
+  const workflowServerUrlOverride = getWorkflowServerUrlOverride();
+  if (workflowServerUrlOverride && options.usingProxy) {
+    headers.set('x-vercel-workflow-api-url', workflowServerUrlOverride);
   }
   return headers;
 };
@@ -239,10 +334,40 @@ export const getHeaders = (
 export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config, { usingProxy });
-  const token = config?.token ?? (await getVercelOidcToken());
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`);
+
+  if (usingProxy) {
+    // The api-workflow proxy authenticates the caller with a regular Vercel
+    // auth token; it does not accept OIDC. Fail loudly instead of letting
+    // an opaque 401 bubble up at request time.
+    if (!config?.token) {
+      throw new Error(
+        'world-vercel: api-workflow proxy requested ' +
+          `(${baseUrl}) but no Vercel auth token was provided. ` +
+          'Pass one as `config.token` (the SDK reads it from ' +
+          '`WORKFLOW_VERCEL_AUTH_TOKEN`).'
+      );
+    }
+    headers.set('Authorization', `Bearer ${config.token}`);
+  } else {
+    // Direct workflow-server path. The bearer prefers an explicit
+    // config.token (CLI / GitHub Actions runner / local dev) and falls
+    // back to the per-request Vercel OIDC token. The trusted-sources
+    // bypass header always uses the per-request OIDC token.
+    let oidcToken: string | undefined;
+    try {
+      oidcToken = await getVercelOidcToken();
+    } catch {
+      // No OIDC available outside a Vercel function context.
+    }
+    const authToken = config?.token ?? oidcToken;
+    if (authToken) {
+      headers.set('Authorization', `Bearer ${authToken}`);
+    }
+    if (oidcToken) {
+      headers.set('x-vercel-trusted-oidc-idp-token', oidcToken);
+    }
   }
+
   return { baseUrl, headers, usingProxy };
 }
 
@@ -253,6 +378,7 @@ export async function makeRequest<T>({
   schema,
   data,
   onResponse,
+  retryConnectTimeout = false,
 }: {
   endpoint: string;
   options?: Omit<RequestInit, 'body'>;
@@ -262,25 +388,12 @@ export async function makeRequest<T>({
   data?: unknown;
   /** Optional callback invoked with the raw Response before body consumption. Use to read response headers. */
   onResponse?: (response: Response) => void;
+  /** Retry an idempotent read once when connecting timed out before a request was sent. */
+  retryConnectTimeout?: boolean;
 }): Promise<T> {
   const method = options.method || 'GET';
   const { baseUrl, headers } = await getHttpConfig(config);
   const url = `${baseUrl}${endpoint}`;
-
-  // Parse server address and port from URL for OTEL attributes
-  let serverAddress: string | undefined;
-  let serverPort: number | undefined;
-  try {
-    const parsedUrl = new URL(url);
-    serverAddress = parsedUrl.hostname;
-    serverPort = parsedUrl.port
-      ? parseInt(parsedUrl.port, 10)
-      : parsedUrl.protocol === 'https:'
-        ? 443
-        : 80;
-  } catch {
-    // URL parsing failed, skip these attributes
-  }
 
   // Standard OTEL span name for HTTP client: "{method}"
   // See: https://opentelemetry.io/docs/specs/semconv/http/http-spans/#name
@@ -289,21 +402,22 @@ export async function makeRequest<T>({
     { kind: await getSpanKind('CLIENT') },
     async (span) => {
       // Set standard OTEL HTTP client attributes
-      span?.setAttributes({
-        ...HttpRequestMethod(method),
-        ...UrlFull(url),
-        ...(serverAddress && ServerAddress(serverAddress)),
-        ...(serverPort && ServerPort(serverPort)),
-        // Peer service for Datadog service maps
-        ...PeerService('workflow-server'),
-        ...RpcSystem('http'),
-        ...RpcService('workflow-server'),
-      });
+      span?.setAttributes(
+        httpClientSpanAttributes({
+          method,
+          url,
+          peerService: 'workflow-server',
+        })
+      );
 
       headers.set('Accept', 'application/cbor');
-      // NOTE: Add a unique header to bypass RSC request memoization.
-      // See: https://github.com/vercel/workflow/issues/618
-      headers.set('X-Request-Time', Date.now().toString());
+
+      // Explicitly propagate the active trace context (traceparent /
+      // tracestate / baggage) onto the outgoing request so workflow-server
+      // can parent its spans to this client span — without relying on the
+      // customer app having undici auto-instrumentation. No-ops when no
+      // OTEL SDK is registered.
+      await injectTraceContextIntoHeaders(headers);
 
       // Encode body as CBOR if data is provided
       let body: Buffer | undefined;
@@ -312,110 +426,169 @@ export async function makeRequest<T>({
         body = encode(data);
       }
 
-      const request = new Request(url, {
-        ...options,
-        body,
-        headers,
-      });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-      const fetchStart = Date.now();
-      const response = await fetch(request, {
-        dispatcher: getDispatcher(),
-      } as any);
-      const fetchMs = Date.now() - fetchStart;
+      // Reading or decoding the response body can fail transiently even on a
+      // successful (2xx) response — a truncated/terminated stream, a
+      // connection reset mid-body, or a gateway returning a non-CBOR/JSON
+      // body. The RetryAgent retries connection/5xx failures, but it has
+      // already handed back the response by the time we consume the body, so
+      // we retry such failures here. Only idempotent reads are re-issued; a
+      // write must not be replayed (it could be applied twice).
+      const canRetryRead = IDEMPOTENT_METHODS.has(method.toUpperCase());
+      let parseResult: ParseResult;
+      let responseDiagnostics = '';
+      for (let attempt = 0; ; attempt++) {
+        // NOTE: Set a unique header on every attempt to bypass RSC request
+        // memoization (and to avoid replaying a memoized truncated body).
+        // See: https://github.com/vercel/workflow/issues/618
+        headers.set('X-Request-Time', Date.now().toString());
 
-      httpLog(method, endpoint, response.status, fetchMs);
-
-      span?.setAttributes({
-        ...HttpResponseStatusCode(response.status),
-      });
-
-      if (!response.ok) {
-        const errorData: { message?: string; code?: string } =
-          await parseResponseBody(response)
-            .then((r) => r.data as { message?: string; code?: string })
-            .catch(() => ({}));
-        if (process.env.DEBUG) {
-          const stringifiedHeaders = Array.from(headers.entries())
-            .filter(([key]) => key.toLowerCase() !== 'authorization')
-            .map(([key, value]: [string, string]) => `-H "${key}: ${value}"`)
-            .join(' ');
-          console.error(
-            `Failed to fetch, reproduce with:\ncurl -X ${request.method} ${stringifiedHeaders} "${url}"`
-          );
-        }
-
-        // Parse Retry-After header (value is in seconds).
-        // Used by both 425 (TooEarlyError) and 429 (ThrottleError).
-        // Note: RetryAgent handles most 429 retries automatically, but this
-        // catches the case where retries are exhausted.
-        let retryAfter: number | undefined;
-        const retryAfterHeader = response.headers.get('Retry-After');
-        if (retryAfterHeader) {
-          const parsed = parseInt(retryAfterHeader, 10);
-          if (!Number.isNaN(parsed)) {
-            retryAfter = parsed;
+        // Compose user-passed abort signal (unused at time of writing)
+        // with the max request timeout
+        const timeoutSignal = AbortSignal.timeout(getRequestTimeoutMs());
+        const signal = options.signal
+          ? AbortSignal.any([options.signal, timeoutSignal])
+          : timeoutSignal;
+        const request = new Request(url, {
+          ...options,
+          body,
+          headers,
+          signal,
+        });
+        const fetchStart = Date.now();
+        let response: Response;
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+          response = await fetch(request, {
+            dispatcher: getDispatcher(config),
+          } as any);
+        } catch (error) {
+          const elapsed = Date.now() - fetchStart;
+          // AbortSignal.timeout() surfaces as a DOMException with name
+          // 'TimeoutError'. Map to WorkflowWorldError so existing catch
+          // sites treat it like any other world transport failure.
+          if (
+            error instanceof Error &&
+            (error.name === 'TimeoutError' || error.name === 'AbortError')
+          ) {
+            const timeoutError = new WorkflowWorldError(
+              `${method} ${endpoint} timed out after ${elapsed}ms`,
+              { url, code: 'TIMEOUT', cause: error }
+            );
+            span?.setAttributes({ ...ErrorType('TIMEOUT') });
+            span?.recordException?.(timeoutError);
+            throw timeoutError;
           }
+          // Transient transport failure (RetryAgent retries exhausted, socket
+          // reset, connect/DNS failure). Surface as a retryable
+          // WorkflowWorldError so the runtime redrives via the queue instead
+          // of failing the run. See TRANSIENT_TRANSPORT_ERROR_CODES.
+          const transportCode = getTransientTransportCode(error);
+          if (transportCode) {
+            if (
+              retryConnectTimeout &&
+              canRetryRead &&
+              transportCode === 'UND_ERR_CONNECT_TIMEOUT' &&
+              attempt === 0
+            ) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, BODY_PARSE_RETRY_BASE_MS)
+              );
+              continue;
+            }
+            const transportError = new WorkflowWorldError(
+              `${method} ${endpoint} transport failure after ${elapsed}ms (${transportCode})`,
+              { url, code: 'TRANSPORT', cause: error }
+            );
+            span?.setAttributes({ ...ErrorType('TRANSPORT') });
+            span?.recordException?.(transportError);
+            throw transportError;
+          }
+          throw error;
         }
+        const fetchMs = Date.now() - fetchStart;
 
-        const defaultMessage =
-          errorData.message ||
-          `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`;
+        responseDiagnostics = formatVercelDiagnostics(response.headers);
+        httpLog(method, endpoint, response, fetchMs);
 
-        // Map specific HTTP status codes to semantic error types
-        const throwWithTrace = (error: Error): never => {
+        span?.setAttributes({
+          ...HttpResponseStatusCode(response.status),
+        });
+
+        if (!response.ok) {
+          const errorData: { message?: string; code?: string; error?: string } =
+            await parseResponseBody(response)
+              .then(
+                (r) =>
+                  r.data as { message?: string; code?: string; error?: string }
+              )
+              .catch(() => ({}));
+          const errorCode = errorData.code ?? errorData.error;
+          logCurlRepro(request.method, url, headers);
+
+          // Used by 425 and 429. The RetryAgent no longer retries 429
+          // in-process (see http-client.ts), so every 429 reaches here.
+          const retryAfter = parseRetryAfter(
+            response.headers.get('Retry-After')
+          );
+
+          const defaultMessage =
+            (errorData.message ||
+              `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`) +
+            responseDiagnostics;
+
+          // Map the status to the typed error the runtime branches on (shared
+          // with the v4 path via errorForResponse). A firewall-challenge 429 is
+          // routed to the retryable transport path via `mitigated`.
+          const error = errorForResponse(response.status, defaultMessage, {
+            url,
+            code: errorCode,
+            retryAfter,
+            mitigated: response.headers.get('x-vercel-mitigated'),
+          });
           span?.setAttributes({
-            ...ErrorType(errorData.code || `HTTP ${response.status}`),
+            ...ErrorType(errorCode || `HTTP ${response.status}`),
           });
           span?.recordException?.(error);
           throw error;
-        };
-
-        if (response.status === 409) {
-          throwWithTrace(new EntityConflictError(defaultMessage));
-        }
-        if (response.status === 410) {
-          throwWithTrace(new RunExpiredError(defaultMessage));
-        }
-        if (response.status === 425) {
-          throwWithTrace(new TooEarlyError(defaultMessage, { retryAfter }));
-        }
-        if (response.status === 429) {
-          throwWithTrace(new ThrottleError(defaultMessage, { retryAfter }));
         }
 
-        throwWithTrace(
-          new WorkflowWorldError(defaultMessage, {
-            url,
-            status: response.status,
-            code: errorData.code,
-            retryAfter,
-          })
-        );
-      }
+        // Expose response headers to caller before consuming the body
+        onResponse?.(response);
 
-      // Expose response headers to caller before consuming the body
-      onResponse?.(response);
-
-      // Parse the response body (CBOR or JSON) with tracing
-      let parseResult: ParseResult;
-      try {
-        parseResult = await trace('world.parse', async (parseSpan) => {
-          const result = await parseResponseBody(response);
-          // Extract format and size from debug context for attributes
-          const contentType = response.headers.get('Content-Type') || '';
-          const isCbor = contentType.includes('application/cbor');
-          parseSpan?.setAttributes({
-            ...WorldParseFormat(isCbor ? 'cbor' : 'json'),
+        // Parse the response body (CBOR or JSON) with tracing
+        try {
+          parseResult = await trace('world.parse', async (parseSpan) => {
+            const result = await parseResponseBody(response);
+            // Extract format and size from debug context for attributes
+            const contentType = response.headers.get('Content-Type') || '';
+            const isCbor = contentType.includes('application/cbor');
+            parseSpan?.setAttributes({
+              ...WorldParseFormat(isCbor ? 'cbor' : 'json'),
+            });
+            return result;
           });
-          return result;
-        });
-      } catch (error) {
-        const contentType = response.headers.get('Content-Type') || 'unknown';
-        throw new WorkflowWorldError(
-          `Failed to parse response body for ${request.method} ${endpoint} (Content-Type: ${contentType}):\n\n${error}`,
-          { url, cause: error }
-        );
+          // Body read and decoded successfully.
+          break;
+        } catch (error) {
+          if (canRetryRead && attempt < MAX_BODY_PARSE_RETRIES) {
+            const backoffMs = BODY_PARSE_RETRY_BASE_MS * 2 ** attempt;
+            span?.setAttributes({
+              ...ErrorType('PARSE_ERROR_RETRYING'),
+            });
+            if (HTTP_DEBUG_ENABLED) {
+              console.debug(
+                `[workflow:world-vercel:http] ${method} ${endpoint} body parse failed (attempt ${attempt + 1}/${MAX_BODY_PARSE_RETRIES + 1}); retrying in ${backoffMs}ms: ${error}`
+              );
+            }
+            await new Promise((resolve) => setTimeout(resolve, backoffMs));
+            continue;
+          }
+          const contentType = response.headers.get('Content-Type') || 'unknown';
+          throw new WorkflowWorldError(
+            `Failed to parse response body for ${method} ${endpoint}${responseDiagnostics} (Content-Type: ${contentType}):\n\n${error}`,
+            { url, code: 'PARSE_ERROR', cause: error }
+          );
+        }
       }
 
       // Validate against the schema with tracing
@@ -432,8 +605,8 @@ export async function makeRequest<T>({
             ? `\n\nResponse context: ${parseResult.getDebugContext()}`
             : '';
           throw new WorkflowWorldError(
-            `Schema validation failed for ${method} ${endpoint}:\n${issues}${debugContext}`,
-            { url, cause: validationResult.error }
+            `Schema validation failed for ${method} ${endpoint}${responseDiagnostics}:\n${issues}${debugContext}`,
+            { url, code: 'SCHEMA_VALIDATION', cause: validationResult.error }
           );
         }
         return validationResult.data;

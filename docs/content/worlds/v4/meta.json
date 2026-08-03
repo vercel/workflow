@@ -1,0 +1,4 @@
+{
+  "title": "Worlds",
+  "pages": ["local", "vercel", "postgres", "building-a-world"]
+}

@@ -1,9 +1,11 @@
-import { WorkflowRuntimeError } from '@workflow/errors';
+import { ReplayDivergenceError } from '@workflow/errors';
 import { parseDurationToDate, withResolvers } from '@workflow/utils';
 import type { StringValue } from 'ms';
 import { EventConsumerResult } from '../events-consumer.js';
 import { type WaitInvocationQueueItem, WorkflowSuspension } from '../global.js';
 import {
+  awaitEarlierDeliveries,
+  registerDeliveryBarrier,
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from '../private.js';
@@ -57,22 +59,84 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
 
       // Check for wait_completed event
       if (event.eventType === 'wait_completed') {
+        const eventResumeAt = event.eventData?.resumeAt;
+        if (eventResumeAt !== undefined) {
+          const queueItem = ctx.invocationsQueue.get(correlationId);
+          const expectedResumeAt =
+            queueItem && queueItem.type === 'wait'
+              ? queueItem.resumeAt
+              : resumeAt;
+          const eventResumeAtDate = new Date(eventResumeAt);
+          const eventResumeAtMs = eventResumeAtDate.getTime();
+          const expectedResumeAtMs = expectedResumeAt.getTime();
+          const eventResumeAtForMessage = Number.isFinite(eventResumeAtMs)
+            ? eventResumeAtDate.toISOString()
+            : String(eventResumeAt);
+
+          if (eventResumeAtMs !== expectedResumeAtMs) {
+            ctx.promiseQueue = ctx.promiseQueue.then(() => {
+              ctx.onWorkflowError(
+                new ReplayDivergenceError(
+                  `Replay divergence: wait_completed event for ${correlationId} has resumeAt "${eventResumeAtForMessage}", but the current wait consumer expects "${expectedResumeAt.toISOString()}"`,
+                  { eventId: event.eventId }
+                )
+              );
+            });
+            return EventConsumerResult.Finished;
+          }
+        }
+
         // Remove this wait from the invocations queue (O(1) delete using Map)
         ctx.invocationsQueue.delete(correlationId);
 
-        // Wait has elapsed - chain through promiseQueue to ensure
-        // deterministic ordering of all promise resolutions.
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
-          resolve();
-        });
+        // This `wait_completed` is a branch-deciding resolution the workflow
+        // may `Promise.race` against a hook payload, or await on a branch
+        // parallel to one awaiting a step. Order it deterministically by
+        // event-log position (see `pendingDeliveryBarriers`):
+        //  - Register a 'wait' barrier at this event's index so a LATER-in-log
+        //    hook payload or step result is delivered only after this wait.
+        //  - Before resolving, defer behind every EARLIER-in-log HOOK and STEP
+        //    delivery so this wait does not preempt one the committed log
+        //    ordered first. Then mark this wait delivered to release the later
+        //    deliveries gated on it.
+        const eventIndex = ctx.eventsConsumer.eventIndex;
+        const barrier = registerDeliveryBarrier(ctx, eventIndex, 'wait');
+        // The deferral is captured HERE, while consuming the event, and not
+        // after the queue tail below — same reasoning as step.ts. An earlier
+        // step or hook whose hydration slot sits in that tail has usually
+        // delivered, and so deregistered its barrier, by the time the tail
+        // resolves. Read then, it would be invisible and this wait would skip
+        // both the gate AND `awaitEarlierDeliveries`' macrotask yield, letting
+        // it overtake the branch that earlier delivery just woke. Every event
+        // in one drain window is consumed before any slot runs, so capturing
+        // at consumption time sees all of them.
+        const earlierDelivered = awaitEarlierDeliveries(
+          ctx,
+          eventIndex,
+          'wait'
+        );
+        // Defer + resolve in a DETACHED promise (not chained onto the serial
+        // `promiseQueue`). `awaitEarlierDeliveries` may wait on an earlier
+        // hook or step delivery whose own resolution is itself driven by the
+        // promiseQueue; blocking a queue slot on it would deadlock the serial
+        // queue. We still anchor to the queue tail first so prior queued
+        // hydration/ordering work runs in event-log order.
+        const queueAtCompletion = ctx.promiseQueue;
+        void queueAtCompletion
+          .then(() => earlierDelivered)
+          .then(() => {
+            barrier.markDelivered();
+            resolve();
+          });
         return EventConsumerResult.Finished;
       }
 
-      // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
+      // This replay installed a different consumer than the stored event needs.
       ctx.promiseQueue = ctx.promiseQueue.then(() => {
         ctx.onWorkflowError(
-          new WorkflowRuntimeError(
-            `Unexpected event type for wait ${correlationId} "${event.eventType}"`
+          new ReplayDivergenceError(
+            `Replay divergence: Unexpected event type for wait ${correlationId} "${event.eventType}"`,
+            { eventId: event.eventId }
           )
         );
       });

@@ -16,18 +16,24 @@ runs:
   steps:
     - id: prepare
       shell: bash
+      env:
+        APP_NAME: ${{ inputs.app-name }}
       run: |
-        if [[ "${{ inputs.app-name }}" == "nextjs-turbopack" || "${{ inputs.app-name }}" == "nextjs-webpack" ]]; then
+        if [[ ! "$APP_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+          echo "Invalid app-name: $APP_NAME" >&2
+          exit 1
+        fi
+        if [[ "$APP_NAME" == "nextjs-turbopack" || "$APP_NAME" == "nextjs-webpack" ]]; then
           STAGE_LOG="$(mktemp)"
-          node scripts/stage-workbench-with-tarballs.mjs "workbench/${{ inputs.app-name }}" | tee "$STAGE_LOG"
+          node scripts/stage-workbench-with-tarballs.mjs "workbench/$APP_NAME" | tee "$STAGE_LOG"
           WORKBENCH_APP_PATH="$(sed -n 's/^Staged workbench: //p' "$STAGE_LOG" | tail -n 1)"
           if [ -z "$WORKBENCH_APP_PATH" ]; then
             echo "Failed to parse staged workbench path from stage-workbench-with-tarballs output"
             exit 1
           fi
         else
-          ./scripts/resolve-symlinks.sh "workbench/${{ inputs.app-name }}"
-          WORKBENCH_APP_PATH="$GITHUB_WORKSPACE/workbench/${{ inputs.app-name }}"
+          ./scripts/resolve-symlinks.sh "workbench/$APP_NAME"
+          WORKBENCH_APP_PATH="$GITHUB_WORKSPACE/workbench/$APP_NAME"
         fi
 
         echo "workbench_app_path=$WORKBENCH_APP_PATH" >> "$GITHUB_OUTPUT"

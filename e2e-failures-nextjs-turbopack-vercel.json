@@ -1,0 +1,890 @@
+[
+  {
+    "testName": "basic text response",
+    "fullName": "DurableAgent e2e > core > basic text response",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "single tool call",
+    "fullName": "DurableAgent e2e > core > single tool call",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "multiple sequential tool calls",
+    "fullName": "DurableAgent e2e > core > multiple sequential tool calls",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "tool error recovery",
+    "fullName": "DurableAgent e2e > core > tool error recovery",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "fires constructor + stream callbacks in order with step data",
+    "fullName": "DurableAgent e2e > onStepFinish > fires constructor + stream callbacks in order with step data",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "fires constructor + stream callbacks in order with event data",
+    "fullName": "DurableAgent e2e > onFinish > fires constructor + stream callbacks in order with event data",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "provider tool identity preserved across step boundaries",
+    "fullName": "DurableAgent e2e > provider tools > provider tool identity preserved across step boundaries",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "mixed provider and function tools",
+    "fullName": "DurableAgent e2e > provider tools > mixed provider and function tools",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "string instructions are passed to the model",
+    "fullName": "DurableAgent e2e > instructions > string instructions are passed to the model",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "completes within timeout",
+    "fullName": "DurableAgent e2e > timeout > completes within timeout",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "completes but callbacks are not called (GAP)",
+    "fullName": "DurableAgent e2e > experimental_onStart (GAP) > completes but callbacks are not called (GAP)",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "completes but callbacks are not called (GAP)",
+    "fullName": "DurableAgent e2e > experimental_onStepStart (GAP) > completes but callbacks are not called (GAP)",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "completes but callbacks are not called (GAP)",
+    "fullName": "DurableAgent e2e > experimental_onToolCallStart (GAP) > completes but callbacks are not called (GAP)",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "completes but callbacks are not called (GAP)",
+    "fullName": "DurableAgent e2e > experimental_onToolCallFinish (GAP) > completes but callbacks are not called (GAP)",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "completes but prepareCall is not applied (GAP)",
+    "fullName": "DurableAgent e2e > prepareCall (GAP) > completes but prepareCall is not applied (GAP)",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "agent-level prepareStep is called for each LLM step",
+    "fullName": "DurableAgent e2e > prepareStep on constructor > agent-level prepareStep is called for each LLM step",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "stream-level prepareStep overrides constructor-level",
+    "fullName": "DurableAgent e2e > prepareStep on constructor > stream-level prepareStep overrides constructor-level",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "passes through LanguageModelV3ToolResultOutput from tools",
+    "fullName": "DurableAgent e2e > multimodal tool results > passes through LanguageModelV3ToolResultOutput from tools",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "completes but needsApproval is not checked (GAP)",
+    "fullName": "DurableAgent e2e > tool approval (GAP) > completes but needsApproval is not checked (GAP)",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e-agent.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "addTenWorkflow",
+    "fullName": "e2e > addTenWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "addTenWorkflow",
+    "fullName": "e2e > addTenWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "wellKnownAgentWorkflow (.well-known/agent)",
+    "fullName": "e2e > wellKnownAgentWorkflow (.well-known/agent)",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "promiseAllWorkflow",
+    "fullName": "e2e > promiseAllWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "promiseRaceWorkflow",
+    "fullName": "e2e > promiseRaceWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "promiseAnyWorkflow",
+    "fullName": "e2e > promiseAnyWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "importedStepOnlyWorkflow",
+    "fullName": "e2e > importedStepOnlyWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "readableStreamWorkflow",
+    "fullName": "e2e > readableStreamWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "hookWorkflow",
+    "fullName": "e2e > hookWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "hookWorkflow is not resumable via public webhook endpoint",
+    "fullName": "e2e > hookWorkflow is not resumable via public webhook endpoint",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "webhookWorkflow",
+    "fullName": "e2e > webhookWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "parallelStepsThenWebhookWorkflow - no hook_conflict from same-tick replay race",
+    "fullName": "e2e > parallelStepsThenWebhookWorkflow - no hook_conflict from same-tick replay race",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "webhook route with invalid token",
+    "fullName": "e2e > webhook route with invalid token",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "expected 401 to be 404 // Object.is equality"
+  },
+  {
+    "testName": "sleepingWorkflow",
+    "fullName": "e2e > sleepingWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "parallelSleepWorkflow",
+    "fullName": "e2e > parallelSleepWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "sleepWinsRaceWorkflow",
+    "fullName": "e2e > sleepWinsRaceWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "stepWinsRaceWorkflow",
+    "fullName": "e2e > stepWinsRaceWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "nullByteWorkflow",
+    "fullName": "e2e > nullByteWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "workflowAndStepMetadataWorkflow",
+    "fullName": "e2e > workflowAndStepMetadataWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "no startIndex (reads all chunks)",
+    "fullName": "e2e > outputStreamWorkflow > no startIndex (reads all chunks)",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "positive startIndex (skips first chunk)",
+    "fullName": "e2e > outputStreamWorkflow > positive startIndex (skips first chunk)",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "negative startIndex (reads from end)",
+    "fullName": "e2e > outputStreamWorkflow > negative startIndex (reads from end)",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "getTailIndex returns correct index after stream completes",
+    "fullName": "e2e > outputStreamWorkflow - getTailIndex and getChunks > getTailIndex returns correct index after stream completes",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "getTailIndex returns -1 before any chunks are written",
+    "fullName": "e2e > outputStreamWorkflow - getTailIndex and getChunks > getTailIndex returns -1 before any chunks are written",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "getChunks returns same content as reading the stream",
+    "fullName": "e2e > outputStreamWorkflow - getTailIndex and getChunks > getChunks returns same content as reading the stream",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "outputStreamInsideStepWorkflow - getWritable() called inside step functions",
+    "fullName": "e2e > outputStreamInsideStepWorkflow - getWritable() called inside step functions",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "utf8StreamWorkflow",
+    "fullName": "e2e > utf8StreamWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "writableForwardedFromWorkflowWorkflow",
+    "fullName": "e2e > writableForwardedFromWorkflowWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "writableForwardedFromStepWorkflow",
+    "fullName": "e2e > writableForwardedFromStepWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "fetchWorkflow",
+    "fullName": "e2e > fetchWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "promiseRaceStressTestWorkflow",
+    "fullName": "e2e > promiseRaceStressTestWorkflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "nested function calls preserve message and stack trace",
+    "fullName": "e2e > error handling > error propagation > workflow errors > nested function calls preserve message and stack trace",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "cross-file imports preserve message and stack trace",
+    "fullName": "e2e > error handling > error propagation > workflow errors > cross-file imports preserve message and stack trace",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "basic step error preserves message and stack trace",
+    "fullName": "e2e > error handling > error propagation > step errors > basic step error preserves message and stack trace",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "cross-file step error preserves message and function names in stack",
+    "fullName": "e2e > error handling > error propagation > step errors > cross-file step error preserves message and function names in stack",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "regular Error retries until success",
+    "fullName": "e2e > error handling > retry behavior > regular Error retries until success",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "FatalError fails immediately without retries",
+    "fullName": "e2e > error handling > retry behavior > FatalError fails immediately without retries",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "RetryableError respects custom retryAfter delay",
+    "fullName": "e2e > error handling > retry behavior > RetryableError respects custom retryAfter delay",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "maxRetries=0 disables retries",
+    "fullName": "e2e > error handling > retry behavior > maxRetries=0 disables retries",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "FatalError can be caught and detected with FatalError.is()",
+    "fullName": "e2e > error handling > catchability > FatalError can be caught and detected with FatalError.is()",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "step throw round-trips FatalError with cause chain to workflow catch",
+    "fullName": "e2e > error handling > catchability > step throw round-trips FatalError with cause chain to workflow catch",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "workflow throw round-trips FatalError + cause through run_failed event",
+    "fullName": "e2e > error handling > catchability > workflow throw round-trips FatalError + cause through run_failed event",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "workflow throw of a non-Error value round-trips verbatim as cause",
+    "fullName": "e2e > error handling > catchability > workflow throw of a non-Error value round-trips verbatim as cause",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "step throw of a non-Error value preserves it as cause on the wrapping FatalError",
+    "fullName": "e2e > error handling > catchability > step throw of a non-Error value preserves it as cause on the wrapping FatalError",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "StepNotRegisteredError fails the step but workflow can catch it",
+    "fullName": "e2e > error handling > not registered > StepNotRegisteredError fails the step but workflow can catch it",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "StepNotRegisteredError fails the run when not caught in workflow",
+    "fullName": "e2e > error handling > not registered > StepNotRegisteredError fails the run when not caught in workflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "stepDirectCallWorkflow - calling step functions directly outside workflow context",
+    "fullName": "e2e > stepDirectCallWorkflow - calling step functions directly outside workflow context",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to call step function directly: https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/api/test-direct-step-call 401: <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel CL"
+  },
+  {
+    "testName": "hookCleanupTestWorkflow - hook token reuse after workflow completion",
+    "fullName": "e2e > hookCleanupTestWorkflow - hook token reuse after workflow completion",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "concurrent hook token conflict - two workflows cannot use the same hook token simultaneously",
+    "fullName": "e2e > concurrent hook token conflict - two workflows cannot use the same hook token simultaneously",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "hookGetConflictWorkflow - awaiting hook.getConflict() registers hook without payload",
+    "fullName": "e2e > hookGetConflictWorkflow - awaiting hook.getConflict() registers hook without payload",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "'hookGetConflictWithPriorStepWorkflow' - hook.getConflict() does not block step execution",
+    "fullName": "e2e > 'hookGetConflictWithPriorStepWorkflow' - hook.getConflict() does not block step execution",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "'hookGetConflictWithParallelStepWorkfl…' - hook.getConflict() does not block step execution",
+    "fullName": "e2e > 'hookGetConflictWithParallelStepWorkfl…' - hook.getConflict() does not block step execution",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "hookGetConflictThenStepParallelWorkflow - hook.getConflict() continuation step runs alongside other steps",
+    "fullName": "e2e > hookGetConflictThenStepParallelWorkflow - hook.getConflict() continuation step runs alongside other steps",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "hookGetConflictWorkflow - hook.getConflict() resolves with the conflicting run when token is already registered",
+    "fullName": "e2e > hookGetConflictWorkflow - hook.getConflict() resolves with the conflicting run when token is already registered",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "hookClaimOnlyMutexWorkflow - hook works as a pure run mutex without payload data",
+    "fullName": "e2e > hookClaimOnlyMutexWorkflow - hook works as a pure run mutex without payload data",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "hookAdoptOwnerResultWorkflow - duplicate adopts the owner result via conflict.returnValue",
+    "fullName": "e2e > hookAdoptOwnerResultWorkflow - duplicate adopts the owner result via conflict.returnValue",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "hookSignalOwnerWorkflow - duplicate forwards its payload to the owner via resumeHook",
+    "fullName": "e2e > hookSignalOwnerWorkflow - duplicate forwards its payload to the owner via resumeHook",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "hookSupersedeOwnerWorkflow - duplicate cancels the owner and claims the released token",
+    "fullName": "e2e > hookSupersedeOwnerWorkflow - duplicate cancels the owner and claims the released token",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "resume-or-start route pattern - resumeHook retried after start() reaches the new run",
+    "fullName": "e2e > resume-or-start route pattern - resumeHook retried after start() reaches the new run",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "hookDisposeTestWorkflow - hook token reuse after explicit disposal while workflow still running",
+    "fullName": "e2e > hookDisposeTestWorkflow - hook token reuse after explicit disposal while workflow still running",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "stepFunctionPassingWorkflow - step function references can be passed as arguments (without closure vars)",
+    "fullName": "e2e > stepFunctionPassingWorkflow - step function references can be passed as arguments (without closure vars)",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "stepFunctionWithClosureWorkflow - step function with closure variables passed as argument",
+    "fullName": "e2e > stepFunctionWithClosureWorkflow - step function with closure variables passed as argument",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "closureVariableWorkflow - nested step functions with closure variables",
+    "fullName": "e2e > closureVariableWorkflow - nested step functions with closure variables",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "spawnWorkflowFromStepWorkflow - spawning a child workflow using start() inside a step",
+    "fullName": "e2e > spawnWorkflowFromStepWorkflow - spawning a child workflow using start() inside a step",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "runClassSerializationWorkflow - Run instances serialize across workflow/step boundaries",
+    "fullName": "e2e > runClassSerializationWorkflow - Run instances serialize across workflow/step boundaries",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "startFromWorkflow - calling start() directly inside a workflow function with hook communication",
+    "fullName": "e2e > startFromWorkflow - calling start() directly inside a workflow function with hook communication",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "fibonacciWorkflow - recursive workflow composition via start()",
+    "fullName": "e2e > fibonacciWorkflow - recursive workflow composition via start()",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "health check (queue-based) - workflow endpoint responds to health check messages",
+    "fullName": "e2e > health check (queue-based) - workflow endpoint responds to health check messages",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Test timed out in 60000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\"."
+  },
+  {
+    "testName": "health check (CLI) - workflow health command reports healthy endpoints",
+    "fullName": "e2e > health check (CLI) - workflow health command reports healthy endpoints",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "CLI command failed (killed by signal SIGTERM): node ./node_modules/workflow/bin/run.js health --json --endpoint=workflow --timeout=30000 --backend vercel --verbose\n--- stderr ---\n[Debug] Skipping update check (WORKFLOW_NO_UPDATE_CHECK=1)\n┌───────────────────────────────────────┐\n│                                       │\n│      Workflow CLI v5.0.0-beta.17      │\n│   Docs at https://workflow-sdk.dev/   │\n│        This is a beta release         │\n│                                       │\n└─────────"
+  },
+  {
+    "testName": "pathsAliasWorkflow - TypeScript path aliases resolve correctly",
+    "fullName": "e2e > pathsAliasWorkflow - TypeScript path aliases resolve correctly",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "Calculator.calculate - static workflow method using static step methods from another class",
+    "fullName": "e2e > Calculator.calculate - static workflow method using static step methods from another class",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "AllInOneService.processNumber - static workflow method using sibling static step methods",
+    "fullName": "e2e > AllInOneService.processNumber - static workflow method using sibling static step methods",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "ChainableService.processWithThis - static step methods using `this` to reference the class",
+    "fullName": "e2e > ChainableService.processWithThis - static step methods using `this` to reference the class",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "thisSerializationWorkflow - step function invoked with .call() and .apply()",
+    "fullName": "e2e > thisSerializationWorkflow - step function invoked with .call() and .apply()",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "customSerializationWorkflow - custom class serialization with WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE",
+    "fullName": "e2e > customSerializationWorkflow - custom class serialization with WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "instanceMethodStepWorkflow - instance methods with \"use step\" directive",
+    "fullName": "e2e > instanceMethodStepWorkflow - instance methods with \"use step\" directive",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "crossContextSerdeWorkflow - classes defined in step code are deserializable in workflow context",
+    "fullName": "e2e > crossContextSerdeWorkflow - classes defined in step code are deserializable in workflow context",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "errorSubclassRoundTripWorkflow - first-class Error subclasses survive every serialization boundary",
+    "fullName": "e2e > errorSubclassRoundTripWorkflow - first-class Error subclasses survive every serialization boundary",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "stepFunctionAsStartArgWorkflow - step function reference passed as start() argument",
+    "fullName": "e2e > stepFunctionAsStartArgWorkflow - step function reference passed as start() argument",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "cancelRun - cancelling a running workflow",
+    "fullName": "e2e > cancelRun - cancelling a running workflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "cancelRun via CLI - cancelling a running workflow",
+    "fullName": "e2e > cancelRun via CLI - cancelling a running workflow",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "addTenWorkflow via pages router",
+    "fullName": "e2e > pages router > addTenWorkflow via pages router",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to trigger workflow: https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/api/trigger-pages?workflowFile=workflows%2F99_e2e.ts&workflowFn=addTenWorkflow&args=123 401: <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Re"
+  },
+  {
+    "testName": "promiseAllWorkflow via pages router",
+    "fullName": "e2e > pages router > promiseAllWorkflow via pages router",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to trigger workflow: https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/api/trigger-pages?workflowFile=workflows%2F99_e2e.ts&workflowFn=promiseAllWorkflow 401: <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recomme"
+  },
+  {
+    "testName": "sleepingWorkflow via pages router",
+    "fullName": "e2e > pages router > sleepingWorkflow via pages router",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to trigger workflow: https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/api/trigger-pages?workflowFile=workflows%2F99_e2e.ts&workflowFn=sleepingWorkflow 401: <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommend"
+  },
+  {
+    "testName": "hookWithSleepWorkflow - hook payloads delivered correctly with concurrent sleep",
+    "fullName": "e2e > hookWithSleepWorkflow - hook payloads delivered correctly with concurrent sleep",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "hookWithSleepFinalStepWorkflow - step only on final payload",
+    "fullName": "e2e > hookWithSleepFinalStepWorkflow - step only on final payload",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "sleepInLoopWorkflow - sleep inside loop with steps actually delays each iteration",
+    "fullName": "e2e > sleepInLoopWorkflow - sleep inside loop with steps actually delays each iteration",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "sleepWithSequentialStepsWorkflow - sequential steps work with concurrent sleep (control)",
+    "fullName": "e2e > sleepWithSequentialStepsWorkflow - sequential steps work with concurrent sleep (control)",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortTimeoutWorkflow: timeout cancels long-running step",
+    "fullName": "e2e > AbortController > abortTimeoutWorkflow: timeout cancels long-running step",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortParallelWorkflow: abort cancels all parallel steps",
+    "fullName": "e2e > AbortController > abortParallelWorkflow: abort cancels all parallel steps",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortFromStepWorkflow: step abort cancels an in-flight sibling step",
+    "fullName": "e2e > AbortController > abortFromStepWorkflow: step abort cancels an in-flight sibling step",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortAlreadyAbortedWorkflow: pre-aborted signal seen by step",
+    "fullName": "e2e > AbortController > abortAlreadyAbortedWorkflow: pre-aborted signal seen by step",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortReasonWorkflow: abort reason preserved across boundaries",
+    "fullName": "e2e > AbortController > abortReasonWorkflow: abort reason preserved across boundaries",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortAfterCompletionWorkflow: abort after step completes is a no-op",
+    "fullName": "e2e > AbortController > abortAfterCompletionWorkflow: abort after step completes is a no-op",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortViaHookWorkflow: external hook triggers abort on in-flight step",
+    "fullName": "e2e > AbortController > abortViaHookWorkflow: external hook triggers abort on in-flight step",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortExternalSignalWorkflow: signal passed as workflow input",
+    "fullName": "e2e > AbortController > abortExternalSignalWorkflow: signal passed as workflow input",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortExternalSignalInFlightWorkflow: external abort fires mid-flight, propagates to nested steps",
+    "fullName": "e2e > AbortController > abortExternalSignalInFlightWorkflow: external abort fires mid-flight, propagates to nested steps",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortAnyInWorkflowWorkflow: AbortSignal.any composes signals inside the workflow VM",
+    "fullName": "e2e > AbortController > abortAnyInWorkflowWorkflow: AbortSignal.any composes signals inside the workflow VM",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortAnyInStepWorkflow: AbortSignal.any inside a step composes deserialized signals",
+    "fullName": "e2e > AbortController > abortAnyInStepWorkflow: AbortSignal.any inside a step composes deserialized signals",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortSurvivesReplayWorkflow: controller state consistent across replay",
+    "fullName": "e2e > AbortController > abortSurvivesReplayWorkflow: controller state consistent across replay",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortThrowIfAbortedWorkflow: throwIfAborted causes FatalError, no retries",
+    "fullName": "e2e > AbortController > abortThrowIfAbortedWorkflow: throwIfAborted causes FatalError, no retries",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortReasonTypesWorkflow: various abort reason types propagate correctly",
+    "fullName": "e2e > AbortController > abortReasonTypesWorkflow: various abort reason types propagate correctly",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortFetchUncaughtWorkflow: uncaught fetch AbortError is FatalError, no retries",
+    "fullName": "e2e > AbortController > abortFetchUncaughtWorkflow: uncaught fetch AbortError is FatalError, no retries",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortFetchInFlightWorkflow: aborting cancels an in-flight fetch",
+    "fullName": "e2e > AbortController > abortFetchInFlightWorkflow: aborting cancels an in-flight fetch",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortVoidSleepTimeoutWorkflow: documented `void sleep().then(abort)` pattern works",
+    "fullName": "e2e > AbortController > abortVoidSleepTimeoutWorkflow: documented `void sleep().then(abort)` pattern works",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortDeterministicBranchWorkflow: if-check takes same path on first-run and replay",
+    "fullName": "e2e > AbortController > abortDeterministicBranchWorkflow: if-check takes same path on first-run and replay",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortListenerWorkflow: signal.addEventListener fires on the deserialized step signal",
+    "fullName": "e2e > AbortController > abortListenerWorkflow: signal.addEventListener fires on the deserialized step signal",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortThrowIfAbortedMidFlightWorkflow: throwIfAborted in a polling loop bails when abort fires",
+    "fullName": "e2e > AbortController > abortThrowIfAbortedMidFlightWorkflow: throwIfAborted in a polling loop bails when abort fires",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortDeterministicBranchFromStepWorkflow: branches stay consistent when abort comes from a step",
+    "fullName": "e2e > AbortController > abortDeterministicBranchFromStepWorkflow: branches stay consistent when abort comes from a step",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortHookOrderingWorkflow [listener-first-abort-first]: addEventListener → hook.then → abort() → resumeHook",
+    "fullName": "e2e > AbortController > abortHookOrderingWorkflow [listener-first-abort-first]: addEventListener → hook.then → abort() → resumeHook",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortHookOrderingWorkflow [listener-first-hook-first]: addEventListener → hook.then → resumeHook → abort()",
+    "fullName": "e2e > AbortController > abortHookOrderingWorkflow [listener-first-hook-first]: addEventListener → hook.then → resumeHook → abort()",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortHookOrderingWorkflow [hook-first-abort-first]: hook.then → addEventListener → abort() → resumeHook",
+    "fullName": "e2e > AbortController > abortHookOrderingWorkflow [hook-first-abort-first]: hook.then → addEventListener → abort() → resumeHook",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "abortHookOrderingWorkflow [hook-first-hook-first]: hook.then → addEventListener → resumeHook → abort()",
+    "fullName": "e2e > AbortController > abortHookOrderingWorkflow [hook-first-hook-first]: hook.then → addEventListener → resumeHook → abort()",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "importMetaUrlWorkflow - import.meta.url is available in step bundles",
+    "fullName": "e2e > importMetaUrlWorkflow - import.meta.url is available in step bundles",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "metadataFromHelperWorkflow - getWorkflowMetadata/getStepMetadata work from module-level helper (#1577)",
+    "fullName": "e2e > metadataFromHelperWorkflow - getWorkflowMetadata/getStepMetadata work from module-level helper (#1577)",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "resilient start: addTenWorkflow completes when run_created returns 500",
+    "fullName": "e2e > resilient start: addTenWorkflow completes when run_created returns 500",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "getterStepWorkflow - getter functions with \"use step\" directive",
+    "fullName": "e2e > getterStepWorkflow - getter functions with \"use step\" directive",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "distributedAbortController - manual abort triggers signal",
+    "fullName": "e2e > distributedAbortController - manual abort triggers signal",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "distributedAbortController - TTL expiration triggers signal",
+    "fullName": "e2e > distributedAbortController - TTL expiration triggers signal",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "distributedAbortController - reconnect to existing controller",
+    "fullName": "e2e > distributedAbortController - reconnect to existing controller",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "start: initial attributes are seeded on run creation",
+    "fullName": "e2e > experimental_setAttributes > start: initial attributes are seeded on run creation",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "start: reserved-prefix initial attributes are seeded with allowReservedAttributes",
+    "fullName": "e2e > experimental_setAttributes > start: reserved-prefix initial attributes are seeded with allowReservedAttributes",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "experimentalSetAttributesWorkflow: workflow-body calls append native attr_set events and merge correctly",
+    "fullName": "e2e > experimental_setAttributes > experimentalSetAttributesWorkflow: workflow-body calls append native attr_set events and merge correctly",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "experimentalSetAttributesInsideStepWorkflow: step-body calls append attributed native events",
+    "fullName": "e2e > experimental_setAttributes > experimentalSetAttributesInsideStepWorkflow: step-body calls append attributed native events",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "fire-and-forget: void experimental_setAttributes lands without awaiting",
+    "fullName": "e2e > experimental_setAttributes > fire-and-forget: void experimental_setAttributes lands without awaiting",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "Promise.all of disjoint-key writes: every key lands",
+    "fullName": "e2e > experimental_setAttributes > Promise.all of disjoint-key writes: every key lands",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "workflow throws after awaited setAttributes: attribute still persists on the failed run",
+    "fullName": "e2e > experimental_setAttributes > workflow throws after awaited setAttributes: attribute still persists on the failed run",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "validation DX: invalid writes throw catchable FatalErrors naming rule and limit",
+    "fullName": "e2e > experimental_setAttributes > validation DX: invalid writes throw catchable FatalErrors naming rule and limit",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  },
+  {
+    "testName": "start: invalid initial attributes are rejected before a run is created",
+    "fullName": "e2e > experimental_setAttributes > start: invalid initial attributes are rejected before a run is created",
+    "file": "/Users/nrajlich/Code/vercel/workflow/packages/core/e2e/e2e.test.ts",
+    "errorMessage": "Failed to fetch manifest from https://example-nextjs-workflow-turbopack-e9v5t8v59.labs.vercel.dev/.well-known/workflow/v1/manifest.json: 401 <!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Authentication Required</title><script type=text/llms.txt>\n## Note to agents accessing this page:\n\nThis page requires Vercel authentication. Here are your options:\n\nOption 1: vercel curl (Recommended if Vercel CLI installed)\nIf the Vercel"
+  }
+]

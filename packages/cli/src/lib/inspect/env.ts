@@ -18,7 +18,7 @@ import {
  * Used by the CLI to configure environment variables that are read by
  * various subsystems (e.g., WORKFLOW_TARGET_WORLD, WORKFLOW_LOCAL_DATA_DIR).
  * Note: WORKFLOW_VERCEL_* env vars are read back via getEnvVars() and passed
- * to createVercelWorld() explicitly — they are NOT read by createWorld().
+ * to @workflow/world-vercel's createWorld() explicitly — they are NOT read by runtime createWorld().
  */
 export const writeEnvVars = (envVars: Record<string, string>) => {
   Object.entries(envVars).forEach(([key, value]) => {

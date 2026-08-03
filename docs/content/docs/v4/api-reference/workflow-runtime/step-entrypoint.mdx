@@ -1,0 +1,39 @@
+---
+title: stepEntrypoint
+description: The HTTP route handler that executes step functions.
+type: reference
+summary: Mount stepEntrypoint as the route that executes step functions in custom server environments.
+prerequisites:
+  - /docs/how-it-works/code-transform
+related:
+  - /docs/api-reference/workflow-runtime/workflow-entrypoint
+---
+
+The HTTP route handler that executes step functions. It receives step execution requests from the queue, routes them to the appropriate step function, and reports results back to the workflow run.
+
+Unlike [`workflowEntrypoint()`](/docs/api-reference/workflow-runtime/workflow-entrypoint), this is the handler itself rather than a factory — step bundles register their step functions globally, and the handler routes by step name.
+
+Framework adapters mount this for you at `/.well-known/workflow/v1/step` — you only need it when wiring workflow support into a custom server environment.
+
+{/* @skip-typecheck: stepEntrypoint exists in workflow@4 only; docs samples are type-checked against the v5 packages on main */}
+
+```typescript lineNumbers
+import { stepEntrypoint } from "workflow/runtime";
+
+// Mount on your server, e.g. a fetch-style route:
+export const POST = stepEntrypoint; // [!code highlight]
+```
+
+## API Signature
+
+{/* @skip-typecheck: type-only signature snippet, not compilable code */}
+
+```typescript
+const stepEntrypoint: (req: Request) => Promise<Response>;
+```
+
+A fetch-style request handler.
+
+<Callout type="info">
+  `stepEntrypoint` exists in workflow 4.x only. In 5.x the combined handler created by [`workflowEntrypoint()`](/docs/api-reference/workflow-runtime/workflow-entrypoint) executes steps inline, and the separate step endpoint was removed.
+</Callout>

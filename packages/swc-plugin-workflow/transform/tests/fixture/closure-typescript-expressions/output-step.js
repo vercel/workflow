@@ -1,4 +1,4 @@
-/**__internal_workflows{"steps":{"input.ts":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//_anonymousStep1"},"_anonymousStep2":{"stepId":"step//./input//_anonymousStep2"},"_anonymousStep3":{"stepId":"step//./input//_anonymousStep3"},"_anonymousStep4":{"stepId":"step//./input//_anonymousStep4"},"_anonymousStep5":{"stepId":"step//./input//_anonymousStep5"}}}}*/;
+/**__internal_workflows{"steps":{"input.ts":{"_anonymousStep0":{"stepId":"step//./input//withTsAs/_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//withTsSatisfies/_anonymousStep1"},"_anonymousStep2":{"stepId":"step//./input//withTsNonNull/_anonymousStep2"},"_anonymousStep3":{"stepId":"step//./input//withTsTypeAssertion/_anonymousStep3"},"_anonymousStep4":{"stepId":"step//./input//withTsConstAssertion/_anonymousStep4"},"_anonymousStep5":{"stepId":"step//./input//withGenericCall/_anonymousStep5"}}}}*/;
 var withTsAs$_anonymousStep0 = async ()=>{
     const { config } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();

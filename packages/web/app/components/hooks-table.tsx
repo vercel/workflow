@@ -3,7 +3,7 @@ import {
   ResolveHookDropdownItem,
   useHookActions,
 } from '@workflow/web-shared';
-import type { Event, Hook } from '@workflow/world';
+import type { Hook } from '@workflow/world';
 import {
   AlertCircle,
   ChevronLeft,
@@ -35,16 +35,19 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '~/components/ui/tooltip';
-import { CopyableText } from './display-utils/copyable-text';
-import { RelativeTime } from './display-utils/relative-time';
-import { TableSkeleton } from './display-utils/table-skeleton';
+import { fetchEvents } from '~/lib/rpc-client';
+import type { EnvMap, HookListItem } from '~/lib/types';
 import {
+  fetchHookToken,
   getErrorMessage,
+  getErrorTitle,
   resumeHook,
   useWorkflowHooks,
 } from '~/lib/workflow-api-client';
-import type { EnvMap } from '~/lib/types';
-import { fetchEvents } from '~/lib/rpc-client';
+import { CopyableText } from './display-utils/copyable-text';
+import { HookTokenCell } from './display-utils/hook-token-cell';
+import { RelativeTime } from './display-utils/relative-time';
+import { TableSkeleton } from './display-utils/table-skeleton';
 
 interface HooksTableProps {
   runId?: string;
@@ -94,7 +97,10 @@ export function HooksTable({
   // Hook actions for resolve functionality
   const hookActions = useHookActions({
     onResolve: async (hook, payload) => {
-      await resumeHook(env, hook.token, payload);
+      // List rows are metadata-only; fetch the secret token on demand just
+      // before resuming, keyed by the hook's run/hook id.
+      const token = await fetchHookToken(env, hook.runId, hook.hookId);
+      await resumeHook(env, token, payload);
     },
     callbacks: {
       onSuccess: refresh,
@@ -201,7 +207,7 @@ export function HooksTable({
   }, [hooks, env, runId]);
 
   // Render invocation count for a hook
-  const renderInvocationCount = (hook: Hook) => {
+  const renderInvocationCount = (hook: HookListItem) => {
     const data = invocationData.get(hook.hookId);
 
     if (!data || data.loading) {
@@ -272,7 +278,7 @@ export function HooksTable({
       {error ? (
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Error loading hooks</AlertTitle>
+          <AlertTitle>{getErrorTitle(error, 'Error loading hooks')}</AlertTitle>
           <AlertDescription>{getErrorMessage(error)}</AlertDescription>
         </Alert>
       ) : !loading && (!hooks || hooks.length === 0) ? (
@@ -328,11 +334,11 @@ export function HooksTable({
                         </CopyableText>
                       </TableCell>
                       <TableCell className="font-mono text-xs py-2">
-                        <CopyableText text={hook.token} overlay>
-                          <span className="text-muted-foreground">
-                            ••••••••••••
-                          </span>
-                        </CopyableText>
+                        <HookTokenCell
+                          env={env}
+                          runId={hook.runId}
+                          hookId={hook.hookId}
+                        />
                       </TableCell>
                       <TableCell className="py-2 text-muted-foreground text-xs">
                         {hook.createdAt ? (
@@ -358,7 +364,11 @@ export function HooksTable({
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
                             <ResolveHookDropdownItem
-                              hook={hook}
+                              // List rows omit the secret token; the resolve
+                              // flow fetches it on demand. The shared component
+                              // only forwards the hook back to onResolve, which
+                              // reads its run/hook id, so this cast is safe.
+                              hook={hook as Hook}
                               stopPropagation
                               onResolveClick={hookActions.openResolveModal}
                               DropdownMenuItem={DropdownMenuItem}

@@ -96,7 +96,7 @@ function findResultFiles(dir, prefix) {
         files.push(fullPath);
       }
     }
-  } catch (e) {
+  } catch (_e) {
     // Directory doesn't exist
   }
   return files;
@@ -144,7 +144,7 @@ function parseE2EResults(files) {
       // Extract framework from filename for detailed breakdown
       const basename = path.basename(file, '.json');
       const frameworkMatch = basename.match(
-        /-(nextjs-turbopack|nextjs-webpack|nitro|nuxt|sveltekit|vite|hono|express|fastify|astro)(?:-(canary|stable))?$/
+        /-(nextjs-turbopack|nextjs-webpack|nitro|nuxt|sveltekit|vite|hono|express|fastify|astro)(?:-(?:canary|stable(?:-lazy-discovery-(?:enabled|disabled))?))?$/
       );
       if (frameworkMatch) {
         const framework = frameworkMatch[1];
@@ -174,7 +174,7 @@ function parseE2EResults(files) {
   }
 
   // Calculate status for each world
-  for (const [worldId, results] of Object.entries(worldResults)) {
+  for (const [_worldId, results] of Object.entries(worldResults)) {
     if (results.total === 0) {
       results.status = 'pending';
     } else if (results.failed > 0) {

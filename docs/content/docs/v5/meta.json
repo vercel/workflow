@@ -1,0 +1,16 @@
+{
+  "pages": [
+    "---",
+    "getting-started",
+    "foundations",
+    "how-it-works",
+    "observability",
+    "ai",
+    "testing",
+    "deploying",
+    "errors",
+    "comparisons",
+    "configuration",
+    "api-reference"
+  ]
+}

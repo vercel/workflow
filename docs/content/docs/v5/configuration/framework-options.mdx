@@ -1,0 +1,165 @@
+---
+title: Framework Options
+description: Build-time and dev-server configuration for Workflow framework integrations.
+type: reference
+summary: Configure Workflow through framework plugins and module options.
+related:
+  - /docs/api-reference/workflow-next/with-workflow
+  - /docs/configuration/build-and-diagnostics
+---
+
+Framework options are read at build or dev-server startup. Use them for settings that belong in source control, such as source-map behavior or framework-specific output paths.
+
+## Next.js
+
+`withWorkflow()` accepts an optional second argument.
+
+### `workflows.local.port`
+
+- Environment override: `PORT`
+- Default: auto-detected
+- Local-only. Sets the application port used by the Local World when queue messages call back into the app.
+- The option writes `PORT` for non-Vercel builds.
+
+### `workflows.sourcemap`
+
+- Environment override: `WORKFLOW_SOURCEMAP`
+- Default: `inline` in development, `false` in production
+- Controls source maps for generated workflow bundles.
+- Explicit config wins over `WORKFLOW_SOURCEMAP`.
+
+```typescript title="next.config.ts" lineNumbers
+import { withWorkflow } from "workflow/next";
+
+export default withWorkflow(
+  {},
+  {
+    workflows: {
+      local: {
+        port: 4000,
+      },
+      sourcemap: false,
+    },
+  }
+);
+```
+
+## Nitro and Nuxt
+
+Configure Workflow through the Nitro `workflow` module options.
+
+### `workflow.dirs`
+
+- Environment override: none
+- Default: `["workflows"]`
+- Directories scanned for workflow files.
+
+### `workflow.typescriptPlugin`
+
+- Environment override: none
+- Default: `false` for raw Nitro, `true` through the Nuxt module
+- Enables the Workflow TypeScript language-service plugin in generated `tsconfig.json`.
+- This affects editor diagnostics and completions. Workflow builds do not require it.
+- Raw Nitro leaves it opt-in because it changes TypeScript editor behavior. Nuxt enables it by default because the Nuxt module owns the generated `tsconfig.json` flow.
+
+### `workflow.runtime`
+
+- Environment override: none
+- Default: framework default
+- Node.js runtime emitted for Vercel Functions, such as `nodejs22.x` or `nodejs24.x`.
+
+### `workflow.sourcemap`
+
+- Environment override: `WORKFLOW_SOURCEMAP`
+- Default: `inline` in development, `false` in production
+- Controls source maps for generated workflow bundles.
+
+## NestJS
+
+Configure Workflow through `WorkflowModule.forRoot()`.
+
+### `workingDir`
+
+- Environment override: none
+- Default: `process.cwd()`
+- Application root used for workflow discovery and bundling.
+
+### `dirs`
+
+- Environment override: none
+- Default: `["src"]`
+- Directories scanned for workflow files.
+
+### `outDir`
+
+- Environment override: none
+- Default: `.nestjs/workflow`
+- Directory for generated workflow bundles.
+
+### `watch`
+
+- Environment override: none
+- Default: `false`
+- Rebuilds workflow bundles during development.
+
+### `moduleType`
+
+- Environment override: none
+- Default: `es6`
+- Set to `commonjs` when the Nest app compiles TypeScript to CJS through SWC.
+
+### `distDir`
+
+- Environment override: none
+- Default: `dist`
+- Compiled JavaScript output directory used by the CJS import rewrite.
+
+### `sourcemap`
+
+- Environment override: `WORKFLOW_SOURCEMAP`
+- Default: `inline` in development, `false` in production
+- Controls source maps for generated workflow bundles.
+
+### `skipBuild`
+
+- Environment override: none
+- Default: `false`
+- Skips bundle generation when bundles are already pre-built.
+
+## Astro
+
+### `sourcemap`
+
+- Environment override: `WORKFLOW_SOURCEMAP`
+- Default: `inline` in development, `false` in production
+- Controls source maps for generated workflow bundles.
+
+## SvelteKit
+
+### `sourcemap`
+
+- Environment override: `WORKFLOW_SOURCEMAP`
+- Default: `inline` in development, `false` in production
+- Controls source maps for generated workflow bundles.
+
+## Rollup
+
+### `exclude`
+
+- Environment override: none
+- Default: `[]`
+- Path prefixes skipped by the directive transform.
+
+## Source-map values
+
+`WORKFLOW_SOURCEMAP` accepts these values:
+
+- `true`, `inline`, or `1` - append an inline base64 source map to each generated bundle.
+- `linked` - write a `.map` file and add a `sourceMappingURL` comment.
+- `external` - write a `.map` file without adding the comment.
+- `both` - emit inline and external source maps.
+- `false` or `0` - omit source maps.
+
+<Callout type="info">
+The legacy `WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING=1` variable still works, but it only affects the final workflow wrapper and webhook bundle. Prefer `WORKFLOW_SOURCEMAP` or a framework `sourcemap` option.
+</Callout>

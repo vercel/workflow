@@ -1,5 +1,103 @@
 # @workflow/ai
 
+## 5.0.0-beta.13
+
+### Patch Changes
+
+- [#2730](https://github.com/vercel/workflow/pull/2730) [`0f02af4`](https://github.com/vercel/workflow/commit/0f02af4cfb1c6529fc9c9d726d720b5d31cc51af) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Continue DurableAgent tool loops whenever a model step contains tool calls, regardless of the reported finish reason.
+
+- [#2699](https://github.com/vercel/workflow/pull/2699) [`654f959`](https://github.com/vercel/workflow/commit/654f95911b6260df56cd77a41ae82864461c7f2c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - DurableAgent now recovers from invalid tool-call input by returning the validation error to the model instead of aborting the stream.
+
+- Updated dependencies [[`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475)]:
+  - workflow@5.0.0-beta.27
+
+## 5.0.0-beta.12
+
+### Minor Changes
+
+- [#1863](https://github.com/vercel/workflow/pull/1863) [`d580326`](https://github.com/vercel/workflow/commit/d5803265d4fa616e61fae960916fe957b0b16ad0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Expose `totalUsage` and `finishReason` on the `DurableAgent.stream()` result, mirroring the AI SDK's `GenerateTextResult`/`StreamTextResult` and the existing `onFinish` event payload.
+
+- [`8cdfd85`](https://github.com/vercel/workflow/commit/8cdfd8591418b1c3e7d294b44f3003cc3fe7552f) - `WorkflowChatTransport` now repairs UI message stream part framing, so duplicated or interleaved durable stream writes no longer crash the AI SDK consumer with `Received text-delta for missing text part`.
+
+### Patch Changes
+
+- [#2082](https://github.com/vercel/workflow/pull/2082) [`eff215c`](https://github.com/vercel/workflow/commit/eff215ceeceaf87cc8704d7cc404b0f427a45b3c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - `WorkflowChatTransport` now drops orphan UI chunks (deltas/ends with no matching `*-start` in the resumed window) when reconnecting with an `initialStartIndex` not matching a UI chunk boundary, instead of throwing.
+
+- [#2635](https://github.com/vercel/workflow/pull/2635) [`aa71766`](https://github.com/vercel/workflow/commit/aa71766bc9fac71d0f38b42f83151952193be579) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Suppress chat transport console errors for intentional AbortError stream closes.
+
+- [`096faf0`](https://github.com/vercel/workflow/commit/096faf0ff6a8106522263971c899a68404f5e406) - Reduce DurableAgent step boundary payload by reconstructing `StepResult` outside the step instead of inside.
+
+- Updated dependencies []:
+  - workflow@5.0.0-beta.25
+
+## 5.0.0-beta.11
+
+### Patch Changes
+
+- Updated dependencies [[`926a5e7`](https://github.com/vercel/workflow/commit/926a5e7c6a50c1e74f2e2cc37324caa0f6442d85)]:
+  - workflow@5.0.0-beta.17
+
+## 5.0.0-beta.10
+
+### Patch Changes
+
+- Updated dependencies [[`628795a`](https://github.com/vercel/workflow/commit/628795aa8729bef442c7a1583cf2f3d986e9e4fc)]:
+  - workflow@5.0.0-beta.16
+
+## 5.0.0-beta.9
+
+### Patch Changes
+
+- Updated dependencies [[`303b6da`](https://github.com/vercel/workflow/commit/303b6da28affe2f6cec8651b3dd11ec922619784), [`01c8c08`](https://github.com/vercel/workflow/commit/01c8c0878a515bec4476ee2bc90b26d914822632), [`ae8d6fe`](https://github.com/vercel/workflow/commit/ae8d6feeda0d1d31da8da70156d6e04ebb0487d0)]:
+  - workflow@5.0.0-beta.15
+
+## 5.0.0-beta.8
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@5.0.0-beta.14
+
+## 5.0.0-beta.7
+
+### Patch Changes
+
+- Updated dependencies [[`8d75491`](https://github.com/vercel/workflow/commit/8d75491a074991dac3c7cf56823feb15354ab0f1), [`aa628b7`](https://github.com/vercel/workflow/commit/aa628b7a8fda1037100c1ac5515c6525f25decb8)]:
+  - workflow@5.0.0-beta.13
+
+## 5.0.0-beta.6
+
+### Patch Changes
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- Updated dependencies [[`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`2050656`](https://github.com/vercel/workflow/commit/2050656099349ededd11b33256e951cf97d88a76), [`62ec537`](https://github.com/vercel/workflow/commit/62ec5372fb7dc0d8d088be0c55db35d14eea5b14), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8)]:
+  - workflow@5.0.0-beta.8
+  - @workflow/serde@5.0.0-beta.2
+
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- Updated dependencies [[`9454151`](https://github.com/vercel/workflow/commit/9454151b0e3b8a4ceeb96de4d41c5937330e16a6), [`49da6c5`](https://github.com/vercel/workflow/commit/49da6c50b3d28f9c533ec0ee28437d7ed3887335)]:
+  - workflow@5.0.0-beta.7
+
+## 5.0.0-beta.4
+
+### Patch Changes
+
+- Updated dependencies [[`aee5699`](https://github.com/vercel/workflow/commit/aee56993c777e6fc8d40af8d90ec3d4fbd86cdfe), [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a), [`72911f7`](https://github.com/vercel/workflow/commit/72911f7356238b0ef803455641f8ef5c9dd1545c)]:
+  - workflow@5.0.0-beta.5
+
+## 5.0.0-beta.3
+
+### Patch Changes
+
+- [#1544](https://github.com/vercel/workflow/pull/1544) [`3f6d98f`](https://github.com/vercel/workflow/commit/3f6d98f3f0b1e18af47a7665fa210d87f99ff979) Thanks [@iNishant](https://github.com/iNishant)! - Forward `strict`, `inputExamples`, and `providerOptions` tool properties to language model providers, and handle `type: 'dynamic'` tools
+
+- Updated dependencies [[`e295bae`](https://github.com/vercel/workflow/commit/e295bae417bd072f8e18e8d07c76d90d40ae7cec)]:
+  - workflow@5.0.0-beta.3
+
 ## 5.0.0-beta.2
 
 ### Patch Changes

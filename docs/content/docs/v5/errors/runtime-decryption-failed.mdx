@@ -1,0 +1,77 @@
+---
+title: runtime-decryption-failed
+description: The SDK's built-in AES-GCM encryption layer failed to encrypt or decrypt a workflow payload.
+type: troubleshooting
+summary: Resolve runtime decryption failures caused by ciphertext corruption, key mismatch, or malformed envelopes.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/foundations/errors-and-retries
+---
+
+This error occurs when the Workflow SDK's built-in AES-GCM encryption layer fails while encrypting or decrypting a workflow payload. The SDK encrypts step inputs, step outputs, hook payloads, and other event-log data with a per-run AES-256 key whenever encryption is configured for the deployment.
+
+This is an **internal SDK failure** — your workflow code never invokes the encryption primitives directly. When this surfaces, it means the ciphertext, nonce, or auth tag the SDK tried to verify is not the bytes that were originally produced. The run is failed with the `RUNTIME_ERROR` classification.
+
+## Error Message
+
+```
+AES-256-GCM decryption failed: The operation failed for an operation-specific reason
+```
+
+The underlying cause is a native Web Crypto [`OperationError`](https://developer.mozilla.org/en-US/docs/Web/API/DOMException#operationerror) — most commonly raised by `AESCipherJob.onDone` in Node's `node:internal/crypto/util` module when the GCM authentication tag does not verify.
+
+The thrown `RuntimeDecryptionError` carries a small `context` object with diagnostic fields to help triangulate the source:
+
+- `operation` — `'encrypt'` or `'decrypt'`
+- `byteLength` — total byte length of the payload at the failure site
+- `formatPrefix` — the first 4 bytes of the input (`'encr'` for a well-formed encrypted envelope, otherwise a hex dump)
+
+## Why This Happens
+
+Common causes, in rough order of likelihood:
+
+1. **Ciphertext mutation or truncation in transit.** The encrypted payload reached the SDK with bytes that differ from what storage holds. Possible sources include a truncated HTTP response from a workflow-server ref endpoint, an edge-cache miss returning a partial 200, or a proxy drop during streaming. A truncated body whose first 4 bytes happen to still spell `encr` produces the exact "auth tag mismatch" symptom.
+2. **Key resolution mismatch.** The key used to decrypt is not the key that was used to encrypt — e.g. the run's `deploymentId` was not threaded through key resolution and the SDK fell back to the wrong deployment's key material.
+3. **Malformed encrypted envelope.** The envelope is too short to contain the GCM nonce (12 bytes) and auth tag (16 bytes), so decryption is rejected before it begins.
+
+## What To Do
+
+This error indicates an SDK or infrastructure problem — not a bug in your workflow code. Your workflow code does not need to change.
+
+### 1. Upgrade to the latest `workflow` package
+
+The underlying issue may have already been identified and fixed:
+
+```bash
+npm install workflow@latest
+```
+
+### 2. Retry the failed run
+
+Since this is a fatal error, the run is automatically marked as `failed`. You can re-run it using the **Re-run** button in the Workflow Dashboard.
+
+### 3. Report the issue
+
+If the error persists after upgrading, please [open an issue on GitHub](https://github.com/vercel/workflow/issues/new) so we can investigate. Include:
+
+- The version of the `workflow` package you are using
+- The run ID(s) of the affected workflow run(s)
+- The full error message, including the `context` fields (`operation`, `byteLength`, `formatPrefix`)
+- Whether the affected workflows make heavy use of large step inputs/outputs (which may indicate the failure is on the lazy-loaded ref read path)
+
+## This Error Cannot Be Caught
+
+Like other `WorkflowRuntimeError` subclasses, a runtime decryption failure is **not catchable** inside your workflow function. The runtime cannot safely continue executing user code when an event-log payload can't be verified, so the entire run fails immediately and is marked as `failed`.
+
+To handle this programmatically from outside the workflow, check the run status:
+
+```typescript lineNumbers
+import { getRun } from "workflow/api";
+
+const run = getRun("wrun_abc123");
+const status = await run.status;
+if (status === "failed") {
+  console.error("Run failed");
+}
+```

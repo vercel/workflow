@@ -1,0 +1,73 @@
+---
+title: WorkflowModule
+description: NestJS module that builds workflow bundles and registers the workflow controller.
+type: reference
+summary: Import WorkflowModule.forRoot() in your AppModule to enable workflows in a NestJS app.
+prerequisites:
+  - /docs/getting-started/nestjs
+---
+
+NestJS module that provides workflow functionality. It builds the workflow bundles on module initialization (`onModuleInit`) and registers the [`WorkflowController`](/docs/api-reference/workflow-nest/workflow-controller) that serves the workflow runtime routes.
+
+## Usage
+
+Add `WorkflowModule.forRoot()` to the `imports` array of your root module.
+
+```typescript title="src/app.module.ts" lineNumbers
+import { Module } from "@nestjs/common";
+import { WorkflowModule } from "workflow/nest"; // [!code highlight]
+
+@Module({
+  imports: [WorkflowModule.forRoot()], // [!code highlight]
+})
+export class AppModule {}
+```
+
+If your NestJS project compiles to CommonJS via SWC, pass `moduleType` and `distDir` so the builder can rewrite imports in the generated bundles:
+
+```typescript title="src/app.module.ts" lineNumbers
+import { Module } from "@nestjs/common";
+import { WorkflowModule } from "workflow/nest";
+
+@Module({
+  imports: [
+    WorkflowModule.forRoot({
+      moduleType: "commonjs", // [!code highlight]
+      distDir: "dist", // [!code highlight]
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+## API Signature
+
+### Static Methods
+
+#### `forRoot(options?)`
+
+Configures the module and returns a NestJS `DynamicModule` registered as `global`. It calls [`configureWorkflowController`](/docs/api-reference/workflow-nest/configure-workflow-controller) with the resolved output directory, and (unless `skipBuild` is set) creates a [`NestLocalBuilder`](/docs/api-reference/workflow-nest/nest-local-builder) that builds the workflow bundles when the module initializes.
+
+### Parameters
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `options` | `WorkflowModuleOptions` | Optional. Configures the workflow build. |
+
+#### WorkflowModuleOptions
+
+Extends [`NestBuilderOptions`](/docs/api-reference/workflow-nest/nest-local-builder#nestbuilderoptions) — all builder options are accepted, plus `skipBuild`:
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `skipBuild` | `boolean` | `false` | Skip building workflow bundles on startup. Useful in production when the bundles are pre-built. |
+| `workingDir` | `string` | `process.cwd()` | Working directory for the NestJS application. |
+| `dirs` | `string[]` | `['src']` | Directories to scan for workflow files. |
+| `outDir` | `string` | `'.nestjs/workflow'` (relative to `workingDir`) | Output directory for generated workflow bundles. |
+| `watch` | `boolean` | `false` | Enable watch mode for development. |
+| `moduleType` | `'es6' \| 'commonjs'` | `'es6'` | SWC module compilation type. Set to `'commonjs'` if your NestJS project compiles to CJS via SWC. |
+| `distDir` | `string` | `'dist'` | Directory where NestJS compiles `.ts` source files to `.js` (relative to `workingDir`). Used when `moduleType` is `'commonjs'`. Should match the `outDir` in your `tsconfig.json`. |
+
+### Returns
+
+`forRoot()` returns a `DynamicModule` to include in the `imports` array of your root module.

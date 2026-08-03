@@ -52,18 +52,31 @@ function showHelp(): void {
 
 Commands:
   init    Generate .swcrc configuration with the workflow plugin
+  build   Build workflow bundles (and the Vercel Build Output when on Vercel)
   help    Show this help message
 
 Usage:
   npx @workflow/nest init [options]
+  npx @workflow/nest build [options]
 
-Options:
+Init options:
   --module <type>  SWC module type: 'es6' (default) or 'commonjs'
   --force          Overwrite existing .swcrc file
 
-This command generates a .swcrc file configured with the Workflow SWC plugin
-for step-mode transformations. The plugin path is resolved from the
-@workflow/nest package, so no additional hoisting configuration is needed.
+Build options:
+  --vercel         Emit a Vercel Build Output API directory (.vercel/output)
+                   with the workflow queue-consumer function so runs are
+                   dispatched on Vercel. Implied when the VERCEL env var is set.
+  --dirs <dirs>    Comma-separated workflow source dirs (default: 'src')
+  --entry <path>   Vercel app entry module that default-exports a Node request
+                   handler (default: auto-detected, e.g. _vercel/entry.js)
+  --out-dir <dir>  Output dir for local dev bundles (default: '.nestjs/workflow')
+  --module <type>  SWC module type: 'es6' (default) or 'commonjs'
+
+'init' generates a .swcrc file configured with the Workflow SWC plugin so the
+NestJS compiler transforms your workflow/step files. 'build' generates the
+workflow bundles for local dev, and on Vercel (or with --vercel) the full
+Build Output including the queue-consumer function VQS discovers.
 `);
 }
 
@@ -134,10 +147,83 @@ function handleInit(args: string[]): void {
   console.log('3. Run: nest build');
 }
 
+function parseArg(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : undefined;
+}
+
+/**
+ * Auto-detect the Vercel app entry module. Prefers a `_vercel/` entry so it
+ * doesn't collide with Vercel's automatic `api/` function detection.
+ */
+function detectEntryPoint(): string | null {
+  const candidates = [
+    '_vercel/entry.js',
+    '_vercel/entry.mjs',
+    '_vercel/entry.ts',
+    'api/index.js',
+    'api/index.ts',
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(resolve(process.cwd(), candidate))) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+async function handleBuild(args: string[]): Promise<void> {
+  const moduleType = parseModuleType(args);
+  const dirs = parseArg(args, '--dirs')?.split(',') ?? ['src'];
+  const outDir = parseArg(args, '--out-dir');
+  const onVercel = args.includes('--vercel') || Boolean(process.env.VERCEL);
+
+  if (onVercel) {
+    const { NestVercelBuilder } = await import('./vercel-builder.js');
+    const entryPoint = parseArg(args, '--entry') ?? detectEntryPoint();
+    if (!entryPoint) {
+      console.error(
+        '[@workflow/nest] Could not find a Vercel app entry point.\n' +
+          'Create a _vercel/entry.js that default-exports a Node request ' +
+          'handler, or pass --entry <path>.'
+      );
+      process.exit(1);
+    }
+    if (!existsSync(resolve(process.cwd(), entryPoint))) {
+      console.error(`[@workflow/nest] Entry point not found: ${entryPoint}`);
+      process.exit(1);
+    }
+    console.log(
+      `[@workflow/nest] Building Vercel output (entry: ${entryPoint}, dirs: ${dirs.join(', ')})`
+    );
+    const builder = new NestVercelBuilder({
+      workingDir: process.cwd(),
+      dirs,
+      entryPoint,
+    });
+    await builder.build();
+    console.log(
+      '[@workflow/nest] Wrote .vercel/output with workflow consumer + app function'
+    );
+    return;
+  }
+
+  // Local dev: build the bundles the WorkflowController serves in-process.
+  const { NestLocalBuilder } = await import('./builder.js');
+  const builder = new NestLocalBuilder({
+    workingDir: process.cwd(),
+    dirs,
+    moduleType,
+    ...(outDir ? { outDir } : {}),
+  });
+  await builder.build();
+  console.log('[@workflow/nest] Built local workflow bundles');
+}
+
 /**
  * Main CLI entry point.
  */
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
 
@@ -156,9 +242,17 @@ function main() {
     process.exit(0);
   }
 
+  if (command === 'build') {
+    await handleBuild(args.slice(1));
+    process.exit(0);
+  }
+
   console.error(`Unknown command: ${command}`);
   console.error('Run with --help for usage information.');
   process.exit(1);
 }
 
-main();
+main().catch((error) => {
+  console.error('[@workflow/nest]', error);
+  process.exit(1);
+});

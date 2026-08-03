@@ -1,4 +1,4 @@
-import ts from 'typescript/lib/tsserverlibrary';
+import type ts from 'typescript/lib/tsserverlibrary';
 import { getCodeFixes } from './code-fixes';
 import { enhanceCompletions } from './completions';
 import { getCustomDiagnostics } from './diagnostics';
@@ -10,9 +10,21 @@ interface PluginConfig {
 }
 
 function init(modules: {
-  typescript: typeof import('typescript/lib/tsserverlibrary');
+  typescript?: typeof import('typescript/lib/tsserverlibrary');
 }) {
   const ts = modules.typescript;
+
+  if (!ts) {
+    return {
+      create(info: ts.server.PluginCreateInfo) {
+        info.project.projectService.logger.info(
+          '@workflow/typescript-plugin: TypeScript could not be loaded. Install "typescript@>=5.0.0" in your project dependencies or devDependencies, then restart the TypeScript server.'
+        );
+
+        return info.languageService;
+      },
+    };
+  }
 
   function create(info: ts.server.PluginCreateInfo) {
     try {

@@ -30,10 +30,6 @@ export function WorldsDashboard({ data }: WorldsDashboardProps) {
     total: worlds.length,
     official: officialWorlds.length,
     community: communityWorlds.length,
-    passing: worlds.filter(([, w]) => w.e2e?.status === 'passing').length,
-    partial: worlds.filter(([, w]) => w.e2e?.status === 'partial').length,
-    withBenchmarks: worlds.filter(([, w]) => w.benchmark?.status === 'measured')
-      .length,
   };
 
   // Get benchmark names for the bar chart
@@ -60,20 +56,6 @@ export function WorldsDashboard({ data }: WorldsDashboardProps) {
         <Badge variant="outline" className="text-sm py-1 px-3">
           🌐 {stats.community} Community
         </Badge>
-        <Badge
-          variant="outline"
-          className="text-sm py-1 px-3 bg-green-300 text-green-900 border-green-500/20"
-        >
-          ✅ {stats.passing} Fully Compatible
-        </Badge>
-        {stats.partial > 0 && (
-          <Badge
-            variant="outline"
-            className="text-sm py-1 px-3 bg-yellow-500/10 text-yellow-600 border-yellow-500/20"
-          >
-            ⚠️ {stats.partial} Partial
-          </Badge>
-        )}
       </div>
 
       {/* Tabs */}
@@ -87,6 +69,7 @@ export function WorldsDashboard({ data }: WorldsDashboardProps) {
           {/* Filter */}
           <div className="flex gap-2">
             <button
+              type="button"
               onClick={() => setFilter('all')}
               className={`px-3 py-1 text-sm rounded-md transition-colors ${
                 filter === 'all'
@@ -97,6 +80,7 @@ export function WorldsDashboard({ data }: WorldsDashboardProps) {
               All ({stats.total})
             </button>
             <button
+              type="button"
               onClick={() => setFilter('official')}
               className={`px-3 py-1 text-sm rounded-md transition-colors ${
                 filter === 'official'
@@ -107,6 +91,7 @@ export function WorldsDashboard({ data }: WorldsDashboardProps) {
               Official ({stats.official})
             </button>
             <button
+              type="button"
               onClick={() => setFilter('community')}
               className={`px-3 py-1 text-sm rounded-md transition-colors ${
                 filter === 'community'
@@ -129,7 +114,7 @@ export function WorldsDashboard({ data }: WorldsDashboardProps) {
         <TabsContent value="benchmarks" className="space-y-8 pt-4">
           {/* Benchmark comparison */}
           <div className="space-y-4">
-            <h3 className="text-lg font-semibold">Performance Comparison</h3>
+            <h3 className="text-heading-20">Performance Comparison</h3>
             <p className="text-sm text-muted-foreground">
               Average workflow execution time across all worlds. Lower is
               better.

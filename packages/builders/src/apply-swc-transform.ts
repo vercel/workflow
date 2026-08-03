@@ -58,15 +58,22 @@ export async function applySwcTransform(
    */
   absolutePath?: string,
   /**
-   * Optional project root used for module specifier resolution.
+   * Optional project root used for transform context such as tsconfig lookup.
    * Defaults to process.cwd() for backwards compatibility.
    */
-  projectRoot?: string
+  projectRoot?: string,
+  /**
+   * Optional project root used for package/workspace module-specifier
+   * resolution. Defaults to projectRoot for backwards compatibility.
+   */
+  moduleSpecifierRoot?: string
 ): Promise<{
   code: string;
   workflowManifest: WorkflowManifest;
 }> {
   const resolvedProjectRoot = projectRoot ?? process.cwd();
+  const resolvedModuleSpecifierRoot =
+    moduleSpecifierRoot ?? resolvedProjectRoot;
   const decoratorOptions = await getDecoratorOptions(resolvedProjectRoot);
 
   const swcPluginPath = require.resolve('@workflow/swc-plugin', {
@@ -88,7 +95,7 @@ export async function applySwcTransform(
       : join(resolvedProjectRoot, filename);
   const { moduleSpecifier } = resolveModuleSpecifier(
     absoluteFilename,
-    resolvedProjectRoot
+    resolvedModuleSpecifierRoot
   );
 
   // Transform with SWC to support syntax esbuild doesn't

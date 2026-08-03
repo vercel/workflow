@@ -1,8 +1,8 @@
+import { Callout } from '@vercel/geistdocs/components/callout';
 import cn from 'clsx';
 import Slugger from 'github-slugger';
 import Link from 'next/link';
 import type { FC, ReactElement, ReactNode } from 'react';
-import { Callout } from '@/components/geistdocs/callout';
 import { generateDefinition } from './base';
 import type { GeneratedFunction, TypeField } from './types';
 
@@ -32,9 +32,20 @@ export const TSDoc: FC<TSDocProps> = ({
   ),
   showSections = ['parameters', 'returns'],
 }) => {
-  const definition = generateDefinition({
-    code: rawDefinition,
-  });
+  let definition: ReturnType<typeof generateDefinition>;
+
+  try {
+    definition = generateDefinition({
+      code: rawDefinition,
+    });
+  } catch (error) {
+    return (
+      <Callout type="warn">
+        Could not generate the API signature for this reference entry.
+        {error instanceof Error ? ` ${error.message}` : null}
+      </Callout>
+    );
+  }
   const showParameters = showSections.includes('parameters');
   const showReturns = showSections.includes('returns');
   const showThrows = showSections.includes('throws');

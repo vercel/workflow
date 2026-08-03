@@ -1,0 +1,42 @@
+---
+title: workflowEntrypoint
+description: Create the HTTP route handler that executes workflow runs from a workflow bundle.
+type: reference
+summary: Use workflowEntrypoint to wire a compiled workflow bundle into an HTTP route in custom server environments.
+prerequisites:
+  - /docs/how-it-works/code-transform
+related:
+  - /docs/api-reference/workflow-runtime/health-check
+---
+
+Creates the HTTP route handler that executes workflow runs. The handler receives queue messages, replays the workflow from its event log, executes steps inline where possible, and suspends when the workflow waits on sleeps or hooks.
+
+Framework adapters (Next.js, Nitro, SvelteKit, etc.) call this for you and mount the result at `/.well-known/workflow/v1/flow` — you only need it when wiring workflow support into a custom server environment.
+
+```typescript lineNumbers
+import { workflowEntrypoint } from "workflow/runtime";
+declare const workflowBundleCode: string; // @setup
+
+const handler = workflowEntrypoint(workflowBundleCode); // [!code highlight]
+
+// Mount on your server, e.g. a fetch-style route:
+export const POST = (req: Request) => handler(req);
+```
+
+## API Signature
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `workflowCode` | `string` | The compiled workflow bundle code containing all workflow functions |
+| `options` | `{ namespace?: string }` | Optional. `namespace` scopes the queue topics this handler consumes. |
+
+### Returns
+
+Returns a fetch-style request handler: `(req: Request) => Promise<Response>`.
+
+## Related Functions
+
+- [`getWorldHandlers()`](/docs/api-reference/workflow-runtime/get-world-handlers) - The build-time World access this handler is built on.
+- [`healthCheck()`](/docs/api-reference/workflow-runtime/health-check) - Verify the entrypoint processes queue messages end-to-end.

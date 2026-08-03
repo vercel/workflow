@@ -1,0 +1,56 @@
+---
+title: WorkflowRunNotFoundError
+description: Thrown when operating on a workflow run that does not exist.
+type: reference
+summary: Catch WorkflowRunNotFoundError when performing operations on a non-existent workflow run.
+related:
+  - /docs/api-reference/workflow-errors/workflow-run-failed-error
+  - /docs/api-reference/workflow-errors/workflow-run-cancelled-error
+---
+
+`WorkflowRunNotFoundError` is thrown when performing operations on a workflow run that does not exist. This includes calling methods like `run.status`, `run.cancel()`, or awaiting `run.returnValue` on a run whose ID does not match any known workflow run.
+
+Note that `getRun(id)` itself is synchronous and will not throw — the error is raised when subsequent operations on the run object discover the run is missing.
+
+```typescript lineNumbers
+import { WorkflowRunNotFoundError } from "workflow/errors"
+declare const run: { status: Promise<string>; returnValue: Promise<any> }; // @setup
+
+try {
+  const status = await run.status;
+} catch (error) {
+  if (WorkflowRunNotFoundError.is(error)) { // [!code highlight]
+    console.error(`Run ${error.runId} does not exist`);
+  }
+}
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface WorkflowRunNotFoundError {
+  /** The ID of the run that was not found. */
+  runId: string;
+  /** The error message. */
+  message: string;
+}
+export default WorkflowRunNotFoundError;`}
+/>
+
+### Static Methods
+
+#### `WorkflowRunNotFoundError.is(value)`
+
+Type-safe check for `WorkflowRunNotFoundError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+```typescript
+import { WorkflowRunNotFoundError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (WorkflowRunNotFoundError.is(error)) {
+  // error is typed as WorkflowRunNotFoundError
+}
+```

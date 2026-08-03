@@ -1,16 +1,17 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
-import type { SpanSelectionInfo } from '@workflow/web-shared';
+import type { FetchSpanDetail } from '@workflow/web-shared';
 import {
   DecryptButton,
   ErrorBoundary,
   EventListView,
-  hydrateResourceIO,
-  hydrateResourceIOWithKey,
+  hydrateResourceIOAsync,
+  type SidebarDataContextValue,
   StreamViewer,
+  StreamViewerSkeleton,
   stepEventsToStepEntity,
-  WorkflowTraceViewer,
+  TraceViewer,
 } from '@workflow/web-shared';
-import type { Event, WorkflowRun } from '@workflow/world';
+import { type Event, isStepEventType, type WorkflowRun } from '@workflow/world';
 import {
   AlertCircle,
   GitBranch,
@@ -18,7 +19,6 @@ import {
   List,
   Loader2,
   Lock,
-  Unlock,
 } from 'lucide-react';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
@@ -42,27 +42,26 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from '~/components/ui/breadcrumb';
-import { Button } from '~/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs';
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '~/components/ui/tooltip';
+import { useEventsListData } from '~/lib/client/hooks/use-events-list-data';
 import { mapRunToExecution } from '~/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '~/lib/flow-graph/use-workflow-graph';
 import { useStreamReader } from '~/lib/hooks/use-stream-reader';
-
 import { fetchEvent, getEncryptionKeyForRun } from '~/lib/rpc-client';
-
-import { useEventsListData } from '~/lib/client/hooks/use-events-list-data';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
+  fetchSpanDetailResource,
+  getErrorMessage,
+  getErrorTitle,
   recreateRun,
   resumeHook,
   unwrapServerActionResult,
-  useWorkflowResourceData,
   useWorkflowStreams,
   useWorkflowTraceViewerData,
   wakeUpRun,
@@ -125,7 +124,7 @@ function GraphTabContent({
     if (!allEvents) return [];
     const stepEventsMap = new Map<string, Event[]>();
     for (const event of allEvents) {
-      if (event.eventType.startsWith('step_') && event.correlationId) {
+      if (isStepEventType(event.eventType) && event.correlationId) {
         const existing = stepEventsMap.get(event.correlationId);
         if (existing) {
           existing.push(event);
@@ -156,7 +155,7 @@ function GraphTabContent({
       <div className="flex items-center justify-center w-full h-full">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         <span className="ml-4 text-muted-foreground">
-          Loading workflow graph...
+          Loading workflow graph…
         </span>
       </div>
     );
@@ -207,7 +206,6 @@ type Tab = 'trace' | 'graph' | 'streams' | 'events';
 
 export function RunDetailView({
   runId,
-  // TODO: This should open the right sidebar within the trace viewer
   selectedId: _selectedId,
 }: RunDetailViewProps) {
   const navigate = useNavigate();
@@ -304,35 +302,16 @@ export function RunDetailView({
       if (error) {
         throw error;
       }
-      const fullEvent = encryptionKeyRef.current
-        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
-        : hydrateResourceIO(result);
+      const fullEvent = await hydrateResourceIOAsync(
+        result,
+        encryptionKeyRef.current ?? undefined
+      );
       if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }
       return null;
     },
     [env]
-  );
-
-  // Callback for sidebar EventsList — takes (correlationId, eventId)
-  const handleLoadSidebarEventData = useCallback(
-    async (_correlationId: string, eventId: string) => {
-      const { error, result } = await unwrapServerActionResult(
-        fetchEvent(env, runId, eventId, 'all')
-      );
-      if (error) {
-        throw error;
-      }
-      const fullEvent = encryptionKeyRef.current
-        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
-        : hydrateResourceIO(result);
-      if ('eventData' in fullEvent) {
-        return fullEvent.eventData;
-      }
-      return null;
-    },
-    [env, runId]
   );
 
   // Only show graph tab for local backend
@@ -347,10 +326,10 @@ export function RunDetailView({
     loading,
     error,
     update,
+    hasEncryptedData,
     loadMoreTraceData,
     hasMoreTraceData,
     isLoadingMoreTraceData,
-    hasEncryptedData,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
 
   const run = runData ?? ({} as WorkflowRun);
@@ -369,40 +348,25 @@ export function RunDetailView({
     hasMore: hasMoreEventsTab,
     loadingMore: loadingMoreEventsTab,
     loadMore: loadMoreEventsTab,
+    searchByExactId,
   } = useEventsListData(env, runId, {
     sortOrder: eventsSortOrder,
     encryptionKey: encryptionKey ?? undefined,
     enabled: activeTab === 'events',
   });
 
-  const [spanSelection, setSpanSelection] = useState<SpanSelectionInfo | null>(
-    null
-  );
-  const {
-    data: spanDetailData,
-    loading: spanDetailLoading,
-    error: spanDetailError,
-    refresh: refreshSpanDetail,
-  } = useWorkflowResourceData(
-    env,
-    spanSelection?.resource ?? 'run',
-    spanSelection?.resourceId ?? '',
-    {
-      runId: spanSelection?.runId,
-      enabled: Boolean(
-        spanSelection?.resource &&
-          spanSelection?.resourceId &&
-          spanSelection.resource !== 'hook'
-      ),
-      encryptionKey: encryptionKey ?? undefined,
-    }
+  const fetchSpanDetail = useCallback<FetchSpanDetail>(
+    (selection) =>
+      fetchSpanDetailResource(env, selection, {
+        encryptionKey: encryptionKey ?? undefined,
+      }),
+    [env, encryptionKey]
   );
 
   const [isDecrypting, setIsDecrypting] = useState(false);
 
   const handleDecrypt = useCallback(async () => {
     if (encryptionKey) {
-      refreshSpanDetail();
       return;
     }
     setIsDecrypting(true);
@@ -418,15 +382,41 @@ export function RunDetailView({
         return;
       }
       setEncryptionKey(keyResult);
-      toast.success('Run data decrypted successfully');
     } finally {
       setIsDecrypting(false);
     }
-  }, [encryptionKey, env, runId, refreshSpanDetail]);
+  }, [encryptionKey, env, runId]);
 
-  const handleSpanSelect = useCallback((info: SpanSelectionInfo) => {
-    setSpanSelection(info);
-  }, []);
+  const sidebarData = useMemo<SidebarDataContextValue>(
+    () => ({
+      run,
+      events: allEvents ?? [],
+      fetchSpanDetail,
+      onStreamClick: handleStreamClick,
+      onRunClick: handleRunRefClick,
+      onWakeUpSleep: handleWakeUpSleep,
+      onLoadEventData: handleLoadEventData,
+      onResolveHook: handleResolveHook,
+      encryptionKey: encryptionKey ?? undefined,
+      onDecrypt: handleDecrypt,
+      isDecrypting,
+      hasEncryptedData,
+    }),
+    [
+      run,
+      allEvents,
+      fetchSpanDetail,
+      handleStreamClick,
+      handleRunRefClick,
+      handleWakeUpSleep,
+      handleLoadEventData,
+      handleResolveHook,
+      encryptionKey,
+      handleDecrypt,
+      isDecrypting,
+      hasEncryptedData,
+    ]
+  );
 
   // Fetch streams for this run
   const {
@@ -438,6 +428,7 @@ export function RunDetailView({
   const {
     chunks: streamChunks,
     isLive: streamIsLive,
+    isInitialLoading: streamIsInitialLoading,
     error: streamError,
   } = useStreamReader(env, selectedStreamId, runId, encryptionKey, run.status);
 
@@ -454,7 +445,7 @@ export function RunDetailView({
       await cancelRun(env, runId);
       // Trigger a refresh of the data
       await update();
-      toast.success('Run cancelled successfully');
+      toast.success('Run cancelled');
     } catch (err) {
       console.error('Failed to cancel run:', err);
       toast.error('Failed to cancel run', {
@@ -478,7 +469,7 @@ export function RunDetailView({
       setShowRerunDialog(false);
       // Start a new run with the same workflow and input arguments
       const newRunId = await recreateRun(env, run.runId);
-      toast.success('New run started successfully', {
+      toast.success('New run started', {
         description: `Run ID: ${newRunId}`,
       });
       // Navigate to the new run
@@ -499,8 +490,10 @@ export function RunDetailView({
     return (
       <Alert variant="destructive" className="m-4">
         <AlertCircle className="h-4 w-4" />
-        <AlertTitle>Error loading workflow run</AlertTitle>
-        <AlertDescription>{error.message}</AlertDescription>
+        <AlertTitle>
+          {getErrorTitle(error, 'Error loading workflow run')}
+        </AlertTitle>
+        <AlertDescription>{getErrorMessage(error)}</AlertDescription>
       </Alert>
     );
   }
@@ -750,28 +743,15 @@ export function RunDetailView({
 
             <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load trace viewer">
-                <div className="h-full">
-                  <WorkflowTraceViewer
-                    error={error}
-                    events={allEvents}
+                <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
+                  <TraceViewer
                     run={run}
-                    isLoading={loading}
-                    spanDetailData={spanDetailData}
-                    spanDetailLoading={spanDetailLoading}
-                    spanDetailError={spanDetailError}
-                    onSpanSelect={handleSpanSelect}
-                    onStreamClick={handleStreamClick}
-                    onRunClick={handleRunRefClick}
-                    onWakeUpSleep={handleWakeUpSleep}
-                    onResolveHook={handleResolveHook}
-                    onLoadEventData={handleLoadSidebarEventData}
-                    onLoadMoreSpans={loadMoreTraceData}
-                    hasMoreSpans={hasMoreTraceData}
-                    isLoadingMoreSpans={isLoadingMoreTraceData}
-                    encryptionKey={encryptionKey ?? undefined}
-                    onDecrypt={handleDecrypt}
-                    isDecrypting={isDecrypting}
-                    hasEncryptedData={hasEncryptedData}
+                    events={allEvents ?? []}
+                    loading={loading}
+                    sidebarData={sidebarData}
+                    onLoadMore={loadMoreTraceData}
+                    hasMore={hasMoreTraceData}
+                    isLoadingMore={isLoadingMoreTraceData}
                   />
                 </div>
               </ErrorBoundary>
@@ -794,6 +774,7 @@ export function RunDetailView({
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
                     hasEncryptedData={hasEncryptedData}
+                    onExactIdSearch={searchByExactId}
                   />
                 </div>
               </ErrorBoundary>
@@ -801,38 +782,32 @@ export function RunDetailView({
 
             <TabsContent value="streams" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load stream data">
-                <div className="h-full flex gap-4">
+                <div className="relative -mx-6 flex h-full min-h-0 overflow-hidden border-t border-gray-alpha-400 bg-background-100">
                   {/* Stream list sidebar */}
-                  <div
-                    className="w-64 flex-shrink-0 border rounded-lg overflow-hidden"
-                    style={{
-                      borderColor: 'var(--ds-gray-300)',
-                      backgroundColor: 'var(--ds-background-100)',
-                    }}
-                  >
+                  <div className="flex w-[340px] shrink-0 flex-col border-r border-gray-alpha-400 bg-background-100">
                     <div
-                      className="px-3 py-2 border-b text-xs font-medium"
-                      style={{
-                        borderColor: 'var(--ds-gray-300)',
-                        color: 'var(--ds-gray-900)',
-                      }}
-                    >
-                      Streams ({streams.length})
-                    </div>
-                    <div className="overflow-auto max-h-[calc(100vh-400px)]">
+                      aria-hidden="true"
+                      className="h-10 min-h-10 border-b border-gray-alpha-400"
+                    />
+                    <div className="min-h-0 flex-1 divide-y divide-gray-400 overflow-y-auto">
                       {streamsLoading ? (
-                        <div className="p-4 flex items-center justify-center">
-                          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                        <div className="flex flex-col divide-y divide-gray-400">
+                          <div className="flex h-10 items-center pl-4 pr-2">
+                            <Skeleton className="h-3.5 w-24" />
+                          </div>
+                          <div className="flex h-10 items-center pl-4 pr-2">
+                            <Skeleton className="h-3.5 w-32" />
+                          </div>
+                          <div className="flex h-10 items-center pl-4 pr-2">
+                            <Skeleton className="h-3.5 w-20" />
+                          </div>
                         </div>
                       ) : streamsError ? (
-                        <div className="p-4 text-xs text-destructive">
+                        <div className="px-4 py-2 text-label-12 text-red-900">
                           {streamsError.message}
                         </div>
                       ) : streams.length === 0 ? (
-                        <div
-                          className="p-4 text-xs"
-                          style={{ color: 'var(--ds-gray-600)' }}
-                        >
+                        <div className="flex h-10 items-center px-4 text-label-12 text-gray-900">
                           No streams found for this run
                         </div>
                       ) : (
@@ -841,14 +816,11 @@ export function RunDetailView({
                             key={streamId}
                             type="button"
                             onClick={() => setSelectedStreamId(streamId)}
-                            className="w-full text-left px-3 py-2 text-xs font-mono truncate hover:bg-accent transition-colors"
-                            style={{
-                              backgroundColor:
-                                selectedStreamId === streamId
-                                  ? 'var(--ds-gray-200)'
-                                  : 'transparent',
-                              color: 'var(--ds-gray-1000)',
-                            }}
+                            className={`flex h-10 w-full min-w-0 items-center truncate pl-4 pr-2 text-left text-label-14 transition-colors ${
+                              selectedStreamId === streamId
+                                ? 'bg-gray-100 text-gray-1000 hover:bg-gray-200 active:bg-gray-200'
+                                : 'bg-transparent text-gray-900 hover:bg-gray-100 hover:text-gray-1000 focus-visible:bg-gray-100 focus-visible:text-gray-1000'
+                            }`}
                             title={streamId}
                           >
                             {streamId}
@@ -859,55 +831,48 @@ export function RunDetailView({
                   </div>
 
                   {/* Stream viewer */}
-                  <div className="flex-1 min-w-0">
-                    {selectedStreamId ? (
+                  <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-background-100">
+                    {streamsLoading ? (
+                      <div className="min-h-0 flex-1">
+                        <StreamViewerSkeleton />
+                      </div>
+                    ) : selectedStreamId ? (
                       streamError?.includes('encrypted') && !encryptionKey ? (
-                        <div
-                          className="h-full flex flex-col items-center justify-center gap-3 rounded-lg border p-4"
-                          style={{
-                            borderColor: 'var(--ds-gray-300)',
-                            backgroundColor: 'var(--ds-gray-100)',
-                          }}
-                        >
-                          <Lock
-                            className="h-6 w-6"
-                            style={{ color: 'var(--ds-gray-700)' }}
-                          />
-                          <div
-                            className="text-sm"
-                            style={{ color: 'var(--ds-gray-900)' }}
-                          >
-                            This stream is encrypted.
+                        <div className="flex h-full items-center justify-center p-4">
+                          <div className="flex flex-col items-center gap-3 text-center">
+                            <Lock className="h-8 w-8 text-gray-700" />
+                            <div className="space-y-1">
+                              <div className="text-label-14 font-medium text-gray-1000">
+                                Encrypted Stream
+                              </div>
+                              <div className="text-label-12 text-gray-900">
+                                Decrypt this stream to view its chunks.
+                              </div>
+                            </div>
+                            <DecryptButton
+                              onClick={handleDecrypt}
+                              loading={isDecrypting}
+                            />
                           </div>
-                          <DecryptButton
-                            onClick={handleDecrypt}
-                            loading={isDecrypting}
-                          />
                         </div>
                       ) : (
-                        <StreamViewer
-                          streamId={selectedStreamId}
-                          chunks={streamChunks}
-                          isLive={streamIsLive}
-                          error={
-                            streamError?.includes('encrypted')
-                              ? null
-                              : streamError
-                          }
-                        />
+                        <div className="min-h-0 flex-1">
+                          <StreamViewer
+                            streamId={selectedStreamId}
+                            chunks={streamChunks}
+                            isLive={streamIsLive}
+                            isLoading={streamIsInitialLoading}
+                            error={
+                              streamError?.includes('encrypted')
+                                ? null
+                                : streamError
+                            }
+                          />
+                        </div>
                       )
                     ) : (
-                      <div
-                        className="h-full flex items-center justify-center rounded-lg border"
-                        style={{
-                          borderColor: 'var(--ds-gray-300)',
-                          backgroundColor: 'var(--ds-gray-100)',
-                        }}
-                      >
-                        <div
-                          className="text-sm"
-                          style={{ color: 'var(--ds-gray-600)' }}
-                        >
+                      <div className="flex h-full items-center justify-center">
+                        <div className="text-label-14 text-gray-600">
                           {streams.length > 0
                             ? 'Select a stream to view its data'
                             : 'No streams available'}

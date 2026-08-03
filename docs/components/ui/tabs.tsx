@@ -1,8 +1,8 @@
 'use client';
 
 import { Tabs as TabsPrimitive } from 'radix-ui';
-import { createContext, use } from 'react';
 import type * as React from 'react';
+import { createContext, use } from 'react';
 
 import { cn } from '@/lib/utils';
 
@@ -14,7 +14,9 @@ function Tabs({
   className,
   variant = 'default',
   ...props
-}: React.ComponentProps<typeof TabsPrimitive.Root> & { variant?: TabsVariant }) {
+}: React.ComponentProps<typeof TabsPrimitive.Root> & {
+  variant?: TabsVariant;
+}) {
   return (
     <TabsVariantContext value={variant}>
       <TabsPrimitive.Root

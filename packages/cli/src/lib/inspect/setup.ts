@@ -1,7 +1,11 @@
-import { createWorld, setWorld } from '@workflow/core/runtime';
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { setWorld } from '@workflow/core/runtime';
 import { isVercelWorldTarget } from '@workflow/utils';
 import type { World } from '@workflow/world';
-import { createVercelWorld } from '@workflow/world-vercel';
+import { createWorld as createLocalCliWorld } from '@workflow/world-local';
+import { createWorld as createVercelCliWorld } from '@workflow/world-vercel';
 import chalk from 'chalk';
 import terminalLink from 'terminal-link';
 import { logger, setJsonMode, setVerboseMode } from '../config/log.js';
@@ -37,7 +41,7 @@ export const setupCliWorld = async (
   // Check for updates
   const updateCheck = await checkForUpdateCached(version);
 
-  const withAnsiLinks = flags.json ? false : true;
+  const withAnsiLinks = !flags.json;
   const docsUrl = withAnsiLinks
     ? terminalLink('https://workflow-sdk.dev/', 'https://workflow-sdk.dev/')
     : 'https://workflow-sdk.dev/';
@@ -118,7 +122,7 @@ export const setupCliWorld = async (
   if (vercelEnvVars) {
     // Build the Vercel world directly from the inferred config, rather than
     // relying on createWorld() reading process.env.
-    world = createVercelWorld({
+    world = createVercelCliWorld({
       token: vercelEnvVars.token,
       projectConfig: {
         environment: vercelEnvVars.environment,
@@ -127,11 +131,51 @@ export const setupCliWorld = async (
         teamId: vercelEnvVars.teamId,
       },
     });
+  } else if (
+    flags.backend === 'local' ||
+    flags.backend === '@workflow/world-local'
+  ) {
+    world = createLocalCliWorld();
   } else {
-    world = await createWorld();
+    world = await createDynamicCliWorld(flags.backend);
   }
 
   // Store in the global cache so BaseCommand.finally() can find and close it.
   setWorld(world);
   return world;
 };
+
+/**
+ * Construct a world from its package (e.g. `@workflow/world-postgres` or a
+ * community world), resolved from the user's project directory. The vercel
+ * and local worlds are direct dependencies and constructed explicitly above;
+ * every other backend is loaded dynamically so third-party worlds keep
+ * working without being dependencies of the CLI.
+ */
+async function createDynamicCliWorld(backendId: string): Promise<World> {
+  const cwd = process.cwd();
+  let worldPath: string;
+  try {
+    worldPath = createRequire(join(cwd, 'package.json')).resolve(backendId, {
+      paths: [cwd],
+    });
+  } catch {
+    throw new Error(
+      `Could not resolve workflow backend package "${backendId}" from "${cwd}". ` +
+        'Make sure the package is installed in your project.'
+    );
+  }
+  const mod = (await import(pathToFileURL(worldPath).href)) as {
+    createWorld?: () => World | Promise<World>;
+    default?: { createWorld?: () => World | Promise<World> };
+  };
+  // Fall back to default.createWorld for CJS packages whose named exports
+  // aren't statically detectable by cjs-module-lexer.
+  const createWorldFn = mod.createWorld ?? mod.default?.createWorld;
+  if (typeof createWorldFn !== 'function') {
+    throw new Error(
+      `Workflow backend package "${backendId}" does not export createWorld().`
+    );
+  }
+  return createWorldFn();
+}

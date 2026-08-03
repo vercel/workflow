@@ -31,17 +31,23 @@ const isPreview = process.env.VERCEL_ENV === 'preview';
 const deploymentUrl = process.env.VERCEL_URL
   ? `https://${process.env.VERCEL_URL}`
   : '';
+const tarballsUrl = process.env.TARBALLS_URL
+  ? `https://${process.env.TARBALLS_URL}`
+  : '';
 
 const Home = () => (
   <div className="[&_h1]:tracking-tighter [&_h2]:tracking-tighter [&_h3]:tracking-tighter [&_h4]:tracking-tighter [&_h5]:tracking-tighter [&_h6]:tracking-tighter">
-    <div className="mx-auto w-full max-w-[1080px]">
+    <div className="mx-auto w-full max-w-[1448px] px-4 sm:px-6">
       <Hero title={title} description={description} />
       {isPreview && deploymentUrl && (
         <div className="fixed bottom-4 right-4 z-50">
-          <PreviewBadge deploymentUrl={deploymentUrl} />
+          <PreviewBadge
+            deploymentUrl={deploymentUrl}
+            tarballsUrl={tarballsUrl}
+          />
         </div>
       )}
-      <div className="grid divide-y border-y sm:border-x">
+      <div className="space-y-12">
         <Intro />
         <Implementation />
         <Frameworks />
