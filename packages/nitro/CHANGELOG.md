@@ -1,5 +1,16 @@
 # @workflow/nitro
 
+## 5.0.0-beta.39
+
+### Patch Changes
+
+- Updated dependencies [[`4a9d26b`](https://github.com/vercel/workflow/commit/4a9d26b1cb807a9e31489350b468db42a8c13ef3), [`ee944d2`](https://github.com/vercel/workflow/commit/ee944d2476daca81b89ba545b522385a7902ec03), [`1471f25`](https://github.com/vercel/workflow/commit/1471f252fa18024695f1bf149f5bee4876ab149e), [`9cc11f5`](https://github.com/vercel/workflow/commit/9cc11f5329fbc9151c2f0ccd0139387c07f2d7ce), [`679dfa9`](https://github.com/vercel/workflow/commit/679dfa9c15e68e841d8c326c716bc14b5997c6c3), [`b732e91`](https://github.com/vercel/workflow/commit/b732e91fac77e0f445349aefa8bdeac5b8b77e20), [`31f92df`](https://github.com/vercel/workflow/commit/31f92df10d295cf09c93aadd35380209c137326c), [`4174a6e`](https://github.com/vercel/workflow/commit/4174a6ea733d61709b5d66d31920badaad6df0a1), [`d06b55e`](https://github.com/vercel/workflow/commit/d06b55e64195d9e4b87521b8010967d16139cabc), [`4017597`](https://github.com/vercel/workflow/commit/4017597a5f6a54da7ea3bf467c8c63b3bf3bc845), [`438eaa6`](https://github.com/vercel/workflow/commit/438eaa6a595811e6d6942ba679e831d25e6cbfbe)]:
+  - @workflow/core@5.0.0-beta.39
+  - @workflow/web@5.0.0-beta.39
+  - @workflow/builders@5.0.0-beta.39
+  - @workflow/rollup@5.0.0-beta.39
+  - @workflow/vite@5.0.0-beta.39
+
 ## 5.0.0-beta.38
 
 ### Minor Changes
