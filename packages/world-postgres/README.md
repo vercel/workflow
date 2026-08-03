@@ -167,7 +167,7 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 Postgres World does not yet perform general workflow-run cleanup. After a
 retained Hook's run ends and its deadline passes, reads treat the Hook as absent
 and its token can be reused. If the token is never reused, the expired
-`workflow_hooks` row remains until broader workflow-run cleanup removes it.
+`workflow_hooks` row remains.
 
 ## Features
 
