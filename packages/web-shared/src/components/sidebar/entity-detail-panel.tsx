@@ -68,7 +68,7 @@ export function EntityDetailPanel({
   isDecrypting = false,
   selectedSpan,
   showSeparateEventOccurrenceTimestamps = false,
-  getModuleSourceUrl,
+  resolveModuleSourceUrl,
 }: {
   run: WorkflowRun;
   /** Callback when a stream reference is clicked */
@@ -99,10 +99,10 @@ export function EntityDetailPanel({
   selectedSpan: SelectedSpanInfo | null;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
-  getModuleSourceUrl?: (info: {
+  resolveModuleSourceUrl?: (info: {
     moduleSpecifier: string;
     deploymentId: string;
-  }) => string | undefined;
+  }) => Promise<string | undefined>;
 }): React.JSX.Element | null {
   const toast = useToast();
   const [stoppingSleep, setStoppingSleep] = useState(false);
@@ -283,20 +283,46 @@ export function EntityDetailPanel({
     return undefined;
   }, [displayData, run.workflowName]);
 
-  const moduleSourceUrl = useMemo(() => {
-    if (!getModuleSourceUrl || !moduleSpecifier) return undefined;
+  // The bare module specifier (e.g. `./workflows/order`) parsed out of the
+  // machine name, plus the deployment it belongs to. Kept as primitives so the
+  // async resolution effect below only re-runs when the target actually
+  // changes (not on every render / `displayData` identity churn).
+  const linkModuleSpecifier = useMemo(() => {
+    if (!moduleSpecifier) return undefined;
     const parsed =
       parseStepName(moduleSpecifier) ?? parseWorkflowName(moduleSpecifier);
-    if (!parsed) return undefined;
-    const dataDeploymentId = displayData.deploymentId;
-    return getModuleSourceUrl({
-      moduleSpecifier: parsed.moduleSpecifier,
-      deploymentId:
-        typeof dataDeploymentId === 'string'
-          ? dataDeploymentId
-          : run.deploymentId,
-    });
-  }, [getModuleSourceUrl, moduleSpecifier, displayData, run.deploymentId]);
+    return parsed?.moduleSpecifier;
+  }, [moduleSpecifier]);
+  const dataDeploymentId = displayData.deploymentId;
+  const linkDeploymentId =
+    typeof dataDeploymentId === 'string' ? dataDeploymentId : run.deploymentId;
+
+  // The source link, resolved asynchronously by the host (it may look the
+  // file up in the deployment's source tree). Undefined until resolved or when
+  // no link applies — the Module row then renders as plain text.
+  const [moduleSourceUrl, setModuleSourceUrl] = useState<string | undefined>(
+    undefined
+  );
+  useEffect(() => {
+    setModuleSourceUrl(undefined);
+    if (!resolveModuleSourceUrl || !linkModuleSpecifier || !linkDeploymentId) {
+      return;
+    }
+    let cancelled = false;
+    void resolveModuleSourceUrl({
+      moduleSpecifier: linkModuleSpecifier,
+      deploymentId: linkDeploymentId,
+    })
+      .then((url) => {
+        if (!cancelled) setModuleSourceUrl(url);
+      })
+      .catch(() => {
+        // Leave the row as plain text if resolution fails.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [resolveModuleSourceUrl, linkModuleSpecifier, linkDeploymentId]);
 
   if (!selectedSpan || !resource || !resourceId) {
     return null;
