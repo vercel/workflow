@@ -106,16 +106,34 @@ export {
   PaginatedResponseSchema,
   StructuredErrorSchema,
 } from './shared.js';
+export {
+  FIRST_SLOT,
+  isSlotId,
+  maxSlotOf,
+  SLOT_ID_WIDTH,
+  SLOT_RETRY_BASE_MS,
+  SLOT_RETRY_BUDGET_MS,
+  SLOT_RETRY_MAX_DELAY_MS,
+  slotEventId,
+  slotFromId,
+  slotIdBody,
+  slotRetryDelay,
+} from './slot-identity.js';
 export type { SpecVersion } from './spec-version.js';
 export {
   isLegacySpecVersion,
+  mintedSpecVersion,
   requiresNewerWorld,
+  SLOT_IDENTITY_ENV_VAR,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_SLOT_IDENTITY,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+  usesSlotIdentity,
 } from './spec-version.js';
 export type * from './steps.js';
 export {

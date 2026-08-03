@@ -1,6 +1,7 @@
 import {
   PreconditionFailedError,
   RUN_ERROR_CODES,
+  SlotConflictError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
@@ -17,10 +18,14 @@ import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   HOOK_RESUME_INPUT_VERSION,
+  isSlotId,
+  maxSlotOf,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  slotEventId,
   ulidToDate,
+  usesSlotIdentity,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
@@ -482,7 +487,22 @@ function recordRequestedEventCursor(
 }
 
 /**
- * Appends events whose IDs are not already present in `target`.
+ * Appends events whose IDs are not already present in `target`, keeping a
+ * slot-numbered log in slot order.
+ *
+ * Arrival order is not log order under slot identity. A slot is reserved when
+ * its event is issued and written when that issue resolves, so a lower slot can
+ * be committed after a higher one, and a merge that only appends leaves the
+ * array in the order the events were *learned*, not the order they occupy.
+ * That difference decides races: the replay consumes this array positionally
+ * — the delivery barriers in `pendingDeliveryBarriers` are keyed on the index —
+ * so a `step_completed` sitting ahead of a `wait_completed` it actually
+ * follows makes the replay take the branch the log does not record, and the
+ * next event it reads belongs to a step it never started.
+ *
+ * Sorting by event id *is* sorting by slot: ids are zero-padded to a fixed
+ * width, and a slot-numbered run's log carries no ULID ids to interleave with
+ * them.
  *
  * Pass the IDs currently present in `target` when appending repeatedly to the
  * same array. The set is updated alongside `target`.
@@ -506,12 +526,18 @@ export function appendUniqueEvents(
   }
 
   const ids = targetIds ?? new Set(target.map((event) => event.eventId));
+  let outOfOrder = false;
   for (const event of events) {
     if (ids.has(event.eventId)) {
       continue;
     }
     ids.add(event.eventId);
+    outOfOrder ||=
+      target.length > 0 && event.eventId < target[target.length - 1].eventId;
     target.push(event);
+  }
+  if (outOfOrder && isSlotId(target[0].eventId)) {
+    target.sort((a, b) => (a.eventId < b.eventId ? -1 : 1));
   }
 }
 
@@ -709,6 +735,89 @@ export interface LoadedEventLog {
 }
 
 /**
+ * A loaded snapshot that also tracks the run's event slots, for the numbering
+ * where the event id is itself the concurrency fence. Slot state is per-replay:
+ * it is rebuilt from the events every time the log is loaded, never carried
+ * across a restart.
+ */
+export interface MutableEventLog extends LoadedEventLog {
+  /**
+   * Highest slot present in `events`, or 0 for a log that is empty or
+   * ULID-numbered. Maintained by `mergeLoadedEvents` from the events merged in,
+   * never from the array's last element: events are appended without sorting,
+   * so after a merge the last element need not be the newest.
+   */
+  maxSlot: number;
+  /**
+   * Next slot `reserveSlot` will hand out. Only a writer holding the log's
+   * write chain may draw from it, and it is rewound to `maxSlot + 1` when a
+   * claim is rejected so the rest of the batch claims into the occupied range
+   * and is rejected with it.
+   */
+  nextSlot: number;
+  /**
+   * Tail of the chain of creates numbered off this log, or `undefined` when
+   * none is in flight.
+   *
+   * Slot claims are taken one at a time. A claim only fences out a concurrent
+   * writer if it names the slot right after the log's committed tail: numbering
+   * a whole concurrent batch up front hands its later writes slots far enough
+   * above the tail that a foreign event landing in between clears every fence
+   * they carry, and the batch commits decisions taken without it.
+   */
+  writeChain?: Promise<void>;
+}
+
+/**
+ * A `MutableEventLog` over a freshly loaded snapshot.
+ *
+ * `slotFloor` is a slot known to be published that the snapshot may not contain
+ * — the run's own `run_started`, whose write turbo backgrounds while replaying
+ * against an empty log. Numbering a claim from the snapshot alone would then
+ * propose a slot that is already taken, so every first write of a turbo
+ * invocation would conflict and cost the run an extra replay.
+ */
+export function toMutableEventLog(
+  events: Event[],
+  cursor: string | null,
+  slotFloor = 0
+): MutableEventLog {
+  const maxSlot = Math.max(maxSlotOf(events), slotFloor);
+  return {
+    events,
+    cursor,
+    maxSlot,
+    nextSlot: maxSlot + 1,
+  };
+}
+
+/**
+ * Merges loaded events into `log` in place, keeping `maxSlot` current and
+ * advancing the reservation pointer past the events merged in.
+ */
+export function mergeLoadedEvents(
+  log: MutableEventLog,
+  events: readonly Event[]
+): void {
+  appendUniqueEvents(log.events, events);
+  log.maxSlot = Math.max(log.maxSlot, maxSlotOf(events));
+  log.nextSlot = Math.max(log.nextSlot, log.maxSlot + 1);
+}
+
+/**
+ * Claims the next free slot in `log`.
+ *
+ * Only call this while holding the log's write chain: the claim is the fence,
+ * and it only fences anything while it names the slot immediately after the
+ * tail this writer has seen.
+ */
+export function reserveSlot(log: MutableEventLog): number {
+  const slot = log.nextSlot;
+  log.nextSlot = slot + 1;
+  return slot;
+}
+
+/**
  * Whether the optimistic-concurrency guard for event creation is enabled.
  * **On by default** where the runtime executes: replay-context creates send a
  * `stateUpdatedAt` snapshot (and can be rejected with 412 by a supporting
@@ -824,8 +933,25 @@ export function preconditionSnapshotParams(
 }
 
 /**
- * The events a rejecting World attached to a `PreconditionFailedError`, when it
- * returned the ones the client's snapshot was missing inline.
+ * Whether a World rejected an event creation because the replay that produced it
+ * had not seen the whole event log.
+ *
+ * The two schemes reject differently and stay separately countable — 412 for the
+ * event-log watermark, 409 for a lost slot claim, both live at once while runs on
+ * the older numbering drain — but they prove the same thing and are recovered the
+ * same way, by restarting the replay over the corrected log.
+ */
+export function isStaleWriteRejection(error: unknown): boolean {
+  return PreconditionFailedError.is(error) || SlotConflictError.is(error);
+}
+
+/**
+ * The events a rejecting World attached to its rejection, when it returned the
+ * ones the client's snapshot was missing inline.
+ *
+ * A slot conflict carries them as typed fields; the watermark guard carries them
+ * in `details`. Both are read here so callers recover from either without
+ * branching.
  *
  * Returns `null` for anything else — no details, a World that did not implement
  * this, or a payload that does not narrow cleanly. Callers fall back to
@@ -841,14 +967,25 @@ export function preconditionEventDelta(
   error: unknown,
   runId: string
 ): { events: Event[]; cursor: string | null } | null {
-  if (!PreconditionFailedError.is(error)) {
+  let events: unknown;
+  let cursor: unknown;
+  if (SlotConflictError.is(error)) {
+    // A truncated delta is not a delta: the restart has to see every event it
+    // was missing, and only a full reload can guarantee that.
+    if (error.hasMore) {
+      return null;
+    }
+    events = error.events;
+    cursor = error.cursor;
+  } else if (PreconditionFailedError.is(error)) {
+    const details = error.details;
+    if (typeof details !== 'object' || details === null) {
+      return null;
+    }
+    ({ events, cursor } = details as { events?: unknown; cursor?: unknown });
+  } else {
     return null;
   }
-  const details = error.details;
-  if (typeof details !== 'object' || details === null) {
-    return null;
-  }
-  const { events, cursor } = details as { events?: unknown; cursor?: unknown };
   if (!Array.isArray(events) || events.length === 0) {
     return null;
   }
@@ -873,6 +1010,163 @@ export type EventCreator = (
   data: CreateEventRequest,
   params?: CreateEventParams
 ) => Promise<EventResult>;
+
+/**
+ * The concurrency fence a replay-context event creation carries. Exactly one of
+ * the two schemes is ever populated: the precondition snapshot for a run guarded
+ * by the event-log watermark, `eventId`/`maxSlot` for a run that numbers its
+ * events by slot.
+ */
+export interface EventCreateFence extends PreconditionSnapshotParams {
+  eventId?: string;
+  maxSlot?: number;
+}
+
+/**
+ * The fence to attach to a replay-context event creation, under whichever
+ * scheme the run uses.
+ *
+ * Neither scheme is retried in place. A rejection under either one proves the
+ * replay derived this event from a log that was missing another, and correlation
+ * ids are positional ordinals of one sequence — so a replay over the corrected
+ * log mints different ids and re-posting this write would persist an event no
+ * correct replay produces. Recovery is a restarted replay
+ * ({@link isStaleWriteRejection}), never a re-send.
+ *
+ * Claims a slot off `log` for a slot-numbered run — which counts as a
+ * reservation, so a caller that fences several creates from one log gets a
+ * distinct slot per create. Empty when the run is fenced neither way, leaving
+ * the create exactly as unfenced as it was before either mechanism existed.
+ *
+ * `extraEvents` is how many events *besides* the one being created this write
+ * publishes: a lazy inline `step_started` also materializes the `step_created`
+ * it deferred. Those events take the slots immediately below the claim, so this
+ * reserves them too and names the top one — a World that writes a pair
+ * derives the lower id from the one it was given.
+ *
+ * The reservation has to happen here rather than at the World or its backend.
+ * Slots are handed out for a whole concurrent batch synchronously, before any of
+ * it lands, so a second event numbered off the log as the backend sees it would
+ * take the slot already promised to the next write in the batch — and every
+ * write after the first in a fan-out would lose its claim.
+ */
+export function eventCreateFenceFor(
+  log: MutableEventLog,
+  specVersion: number | undefined,
+  options?: { extraEvents?: number }
+): EventCreateFence {
+  if (usesSlotIdentity(specVersion)) {
+    return reserveSlotFence(log, options?.extraEvents ?? 0);
+  }
+  return preconditionSnapshotParams(log.events, log.cursor);
+}
+
+/**
+ * Reserves this write's slots off `log` and names the one the event itself
+ * takes.
+ *
+ * `extraEvents` sit below the one being created, matching the order a reader
+ * expects (a step is created before it starts), so their slots are reserved
+ * first and the claim names the last of the run — a World that writes a pair
+ * derives the lower id from the one it was given.
+ */
+function reserveSlotFence(
+  log: MutableEventLog,
+  extraEvents: number
+): EventCreateFence {
+  const maxSlot = log.maxSlot;
+  for (let i = 0; i < extraEvents; i++) {
+    reserveSlot(log);
+  }
+  return { eventId: slotEventId(reserveSlot(log)), maxSlot };
+}
+
+/**
+ * Runs one slot-numbered create with the log's claim to itself, taking its slot
+ * only once every create ahead of it on the log has settled.
+ *
+ * A slot claim is an assertion about the tail: "nothing has been published
+ * since the view I decided from". Claims handed out up front to a concurrent
+ * batch can only assert that about the first of them — the rest sit above slots
+ * their own siblings have yet to fill, so a foreign event landing in that space
+ * satisfies their fences too and they commit on a view that is already missing
+ * it. Taking claims one at a time keeps every write's fence tight against the
+ * tail the writer actually saw.
+ *
+ * A rejection therefore stops the whole batch rather than only its own write:
+ * the log's tail stops advancing while the backend's moves on, so the claims
+ * behind it fall inside the occupied range and are rejected in turn. That is
+ * the intent — the batch was decided from a log missing an event, so none of it
+ * should land.
+ */
+async function withSerializedClaim<T>(
+  log: MutableEventLog,
+  extraEvents: number,
+  op: (fence: EventCreateFence) => Promise<T>
+): Promise<T> {
+  const ahead = log.writeChain;
+  let done!: () => void;
+  log.writeChain = new Promise<void>((resolve) => {
+    done = resolve;
+  });
+  if (ahead) {
+    await ahead;
+  }
+  try {
+    const fence = reserveSlotFence(log, extraEvents);
+    const result = await op(fence);
+    log.maxSlot = Math.max(
+      log.maxSlot,
+      maxSlotOf([{ eventId: fence.eventId ?? '' }])
+    );
+    log.nextSlot = Math.max(log.nextSlot, log.maxSlot + 1);
+    return result;
+  } catch (error) {
+    // The slots this attempt drew are not the writer's, and the tail is at
+    // least as high as the claim that lost. Rewinding onto the occupied range
+    // is what makes the rest of the batch fail with it.
+    log.nextSlot = log.maxSlot + 1;
+    throw error;
+  } finally {
+    done();
+  }
+}
+
+/**
+ * Runs one event create under whichever fence its run uses.
+ */
+export type FencedCreate = <T>(
+  op: (fence: EventCreateFence | undefined) => Promise<T>
+) => Promise<T>;
+
+/**
+ * The fenced create for a claim issued from a concurrent batch — an inline
+ * step's `step_started`, or a suspension flush's writes.
+ *
+ * Under slot numbering this serializes the batch's claims so each one is taken
+ * against the tail its writer actually saw ({@link withSerializedClaim}); under
+ * the watermark every claim in the batch legitimately carries the same
+ * snapshot, so they all run concurrently off one fence.
+ *
+ * Neither scheme re-issues a rejected claim at a free number. A rejection says
+ * this replay decided from a log it had not fully seen, and the missing event
+ * can be the one that would have sent the workflow down another branch — with
+ * correlation ids counted in branch order, every id after that branch moves
+ * with it, so the re-issued write would land under an identity that now names a
+ * different step. The rejection propagates and the run replays over the
+ * corrected log ({@link isStaleWriteRejection}).
+ */
+export function claimFenceFor(
+  log: MutableEventLog,
+  specVersion: number | undefined,
+  options?: { extraEvents?: number }
+): FencedCreate {
+  if (usesSlotIdentity(specVersion)) {
+    return (op) => withSerializedClaim(log, options?.extraEvents ?? 0, op);
+  }
+  const fence = eventCreateFenceFor(log, specVersion, options);
+  return (op) => op(fence);
+}
 
 /**
  * CORS headers for health check responses.

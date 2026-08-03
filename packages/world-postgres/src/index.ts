@@ -1,5 +1,5 @@
 import type { Storage, World } from '@workflow/world';
-import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
+import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
@@ -63,7 +63,10 @@ export function createWorld(
   const streamer = createStreamer(pool, drizzle);
 
   return {
-    specVersion: SPEC_VERSION_CURRENT,
+    // What this world stamps on new runs: slot identity, unless
+    // WORKFLOW_SLOT_IDENTITY switches it off. Every world reads both schemes
+    // whatever this says.
+    specVersion: mintedSpecVersion(),
     ...storage,
     ...streamer,
     ...queue,

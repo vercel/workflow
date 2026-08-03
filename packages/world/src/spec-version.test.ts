@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   isLegacySpecVersion,
+  mintedSpecVersion,
   requiresNewerWorld,
+  SLOT_IDENTITY_ENV_VAR,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_SLOT_IDENTITY,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from './spec-version.js';
@@ -13,10 +17,21 @@ describe('spec version constants', () => {
     expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_COMPRESSION);
     expect(SPEC_VERSION_SUPPORTS_COMPRESSION).toBe(5);
   });
+
+  it('can read a newer spec version than it mints', () => {
+    // Slot identity is readable by every world before any world mints it, so
+    // that turning it on for new runs cannot make those same worlds reject
+    // them. Once slots are the default the two constants coincide again.
+    expect(SPEC_VERSION_MAX_SUPPORTED).toBe(SPEC_VERSION_SLOT_IDENTITY);
+    expect(SPEC_VERSION_MAX_SUPPORTED).toBeGreaterThanOrEqual(
+      SPEC_VERSION_CURRENT
+    );
+  });
 });
 
 describe('requiresNewerWorld', () => {
-  it('accepts runs at or below the current spec version', () => {
+  it('accepts runs at or below the newest readable spec version', () => {
+    expect(requiresNewerWorld(SPEC_VERSION_MAX_SUPPORTED)).toBe(false);
     expect(requiresNewerWorld(SPEC_VERSION_CURRENT)).toBe(false);
     expect(requiresNewerWorld(SPEC_VERSION_SUPPORTS_ATTRIBUTES)).toBe(false);
     expect(requiresNewerWorld(SPEC_VERSION_LEGACY)).toBe(false);
@@ -24,13 +39,20 @@ describe('requiresNewerWorld', () => {
     expect(requiresNewerWorld(null)).toBe(false);
   });
 
-  it('rejects runs newer than the current spec version', () => {
+  it('accepts a slot-identity run', () => {
+    // Gates the flag rollout: a world that rejected spec-6 would reject the
+    // runs it had just stamped spec-6 itself, at their first event after
+    // run_created.
+    expect(requiresNewerWorld(SPEC_VERSION_SLOT_IDENTITY)).toBe(false);
+  });
+
+  it('rejects runs newer than the newest readable spec version', () => {
     // This is the contract that protects older SDKs from compressed
     // payloads they cannot decode: a spec-5 run read by an SDK whose
-    // SPEC_VERSION_CURRENT is 4 fails this check up front (with
-    // RunNotSupportedError at the storage layer) instead of failing on
-    // individual compressed payloads.
-    expect(requiresNewerWorld(SPEC_VERSION_CURRENT + 1)).toBe(true);
+    // ceiling is 4 fails this check up front (with RunNotSupportedError at
+    // the storage layer) instead of failing on individual compressed
+    // payloads.
+    expect(requiresNewerWorld(SPEC_VERSION_MAX_SUPPORTED + 1)).toBe(true);
   });
 
   it('simulates a v4 reader rejecting a compression-era run', () => {
@@ -49,5 +71,34 @@ describe('isLegacySpecVersion', () => {
     expect(isLegacySpecVersion(2)).toBe(false);
     expect(isLegacySpecVersion(4)).toBe(false);
     expect(isLegacySpecVersion(5)).toBe(false);
+  });
+});
+
+describe('mintedSpecVersion', () => {
+  it('mints slot identity by default', () => {
+    expect(mintedSpecVersion({})).toBe(SPEC_VERSION_SLOT_IDENTITY);
+  });
+
+  it('mints the previous version when the flag is switched off', () => {
+    for (const value of ['0', 'false']) {
+      expect(mintedSpecVersion({ [SLOT_IDENTITY_ENV_VAR]: value })).toBe(
+        SPEC_VERSION_CURRENT
+      );
+    }
+  });
+
+  it('treats any other value as on', () => {
+    // An unset-but-present variable is the shape a shell leaves behind, and it
+    // must not silently switch a deployment's event identity scheme. Opting
+    // out takes an explicit `0`/`false`.
+    for (const value of ['', '1', 'true', 'yes']) {
+      expect(mintedSpecVersion({ [SLOT_IDENTITY_ENV_VAR]: value })).toBe(
+        SPEC_VERSION_SLOT_IDENTITY
+      );
+    }
+  });
+
+  it('mints nothing a world cannot read', () => {
+    expect(requiresNewerWorld(mintedSpecVersion({}))).toBe(false);
   });
 });

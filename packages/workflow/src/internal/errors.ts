@@ -5,6 +5,7 @@ export {
   PreconditionFailedError,
   RunExpiredError,
   RunNotSupportedError,
+  SlotConflictError,
   StepNotRegisteredError,
   ThrottleError,
   TooEarlyError,

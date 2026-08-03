@@ -133,7 +133,7 @@ export const runs = schema.table(
 export const events = schema.table(
   'workflow_events',
   {
-    eventId: varchar('id').primaryKey(),
+    eventId: varchar('id').notNull(),
     eventType: varchar('type').$type<Event['eventType']>().notNull(),
     correlationId: varchar('correlation_id'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -153,7 +153,11 @@ export const events = schema.table(
     >
   >,
   (tb) => [
-    index().on(tb.runId),
+    // Event ids are only unique within their run: under slot identity every run
+    // numbers its own log from 1, so `evnt_0…001` exists once per run. The run
+    // leads the key so the range scans in `list` stay a single index seek, and
+    // it subsumes the plain `run_id` index the table used to carry.
+    primaryKey({ columns: [tb.runId, tb.eventId] }),
     index().on(tb.correlationId),
     // Runtime-correlated one-shot events must be unique per (run, correlation)
     // — without

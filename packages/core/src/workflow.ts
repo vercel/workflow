@@ -14,9 +14,13 @@ import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
-import type { WorkflowOrchestratorContext } from './private.js';
+import {
+  hasInFlightDelivery,
+  type WorkflowOrchestratorContext,
+} from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
+import type { MutableEventLog } from './runtime/helpers.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
@@ -73,7 +77,15 @@ async function drainPendingQueueItems(
    * In turbo mode, gates final `*_created` writes on backgrounded
    * `run_started`. Undefined when `run_started` is awaited.
    */
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  /**
+   * The replay's event log, so the drain's writes claim their slots from the
+   * same source the terminal `run_completed` / `run_failed` write draws from.
+   * Without it the drain writes unfenced — the World picks the next free slot —
+   * and the terminal write, numbering from a snapshot taken before the drain,
+   * proposes the slot the drain just took and loses it.
+   */
+  eventLog?: MutableEventLog
 ): Promise<void> {
   if (pendingQueue.size === 0) return;
   // Implicitly dispose any abort hooks (system hooks) that are still alive at
@@ -100,6 +112,7 @@ async function drainPendingQueueItems(
       world,
       run: workflowRun,
       runReadyBarrier,
+      eventLog,
     });
   } catch (err) {
     runtimeLogger.warn(
@@ -136,7 +149,13 @@ export async function runWorkflow(
    * Features supported by the World executing this workflow. Missing
    * capabilities are treated as unsupported.
    */
-  worldCapabilities?: WorldCapabilities
+  worldCapabilities?: WorldCapabilities,
+  /**
+   * The caller's event log for this replay. Its only use here is the end-of-run
+   * drain, whose writes have to be ordered with the caller's terminal write —
+   * see {@link drainPendingQueueItems}.
+   */
+  eventLog?: MutableEventLog
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
@@ -195,22 +214,34 @@ export async function runWorkflow(
     // by step/hook/sleep callbacks as events are processed.
     const promiseQueueHolder = { current: Promise.resolve() };
 
+    // Assigned immediately below. The consumer needs to test the context's
+    // delivery state, and the context needs the consumer.
+    let workflowContext: WorkflowOrchestratorContext;
+
     const eventsConsumer = new EventsConsumer(events, {
       onConsumedEvent: (event) => {
         updateTimestamp(+event.createdAt);
       },
       onUnconsumedEvent: (event) => {
+        // Name what the replay was waiting for instead. An unconsumable event
+        // is almost always one whose entity this replay never issued, or
+        // issued under a different correlation ID; the pending invocation
+        // queue is the only place that distinction is visible, and without it
+        // the log names a symptom with no way to reach the cause.
+        const pending = [...workflowContext.invocationsQueue.keys()];
         workflowDiscontinuation.reject(
           new ReplayDivergenceError(
-            `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}.`,
+            `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. Pending invocations: ${pending.length > 0 ? pending.join(', ') : '(none)'}.`,
             { eventId: event.eventId }
           )
         );
       },
       getPromiseQueue: () => promiseQueueHolder.current,
+      isDeliveryInFlight: () =>
+        workflowContext !== undefined && hasInFlightDelivery(workflowContext),
     });
 
-    const workflowContext: WorkflowOrchestratorContext = {
+    workflowContext = {
       runId: workflowRun.runId,
       encryptionKey,
       worldCapabilities,
@@ -855,7 +886,8 @@ export async function runWorkflow(
         vmGlobalThis,
         workflowRun,
         'completed',
-        runReadyBarrier
+        runReadyBarrier,
+        eventLog
       );
 
       return dehydrated;
@@ -872,7 +904,8 @@ export async function runWorkflow(
         vmGlobalThis,
         workflowRun,
         'failed',
-        runReadyBarrier
+        runReadyBarrier,
+        eventLog
       );
 
       throw err;

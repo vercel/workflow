@@ -2,10 +2,16 @@ import {
   EntityConflictError,
   PreconditionFailedError,
   RunExpiredError,
+  SlotConflictError,
   ThrottleError,
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import {
+  SPEC_VERSION_SLOT_IDENTITY,
+  slotEventId,
+  slotIdBody,
+} from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -28,7 +34,7 @@ import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 describe('throwForErrorResponse', () => {
   const call = (
     status: number,
-    body = '{"message":"boom"}',
+    body: string | Uint8Array = '{"message":"boom"}',
     headers: Record<string, string> = {}
   ) => throwForErrorResponse(status, headers, body, 'createEvent', 'http://x');
 
@@ -107,6 +113,109 @@ describe('throwForErrorResponse', () => {
     expect(() => call(500, 'plain text oops')).toThrowError(
       /createEvent failed: HTTP 500 plain text oops/
     );
+  });
+
+  /**
+   * The slot-conflict 409 is the only v4 error body that arrives as CBOR: it
+   * carries the event-log delta the client replays from, whose payloads are
+   * byte strings that JSON cannot represent. Decoding it as JSON would lose the
+   * delta silently and mis-type the error as an entity conflict, which the
+   * runtime reads as "my write already landed".
+   */
+  describe('slot conflict', () => {
+    const PAYLOAD = new Uint8Array([1, 2, 3]);
+    const conflictBody = (
+      overrides: Record<string, unknown> = {}
+    ): Uint8Array =>
+      new Uint8Array(
+        encode({
+          success: false,
+          error: 'slot-conflict',
+          message: "Event slot 'evnt_…003' is already taken",
+          details: { eventId: 'evnt_from_details' },
+          events: [{ eventId: 'evnt_x', eventData: { output: PAYLOAD } }],
+          cursor: 'eid:evnt_x',
+          hasMore: false,
+          ...overrides,
+        })
+      );
+
+    it('decodes a CBOR body into SlotConflictError with the delta intact', () => {
+      try {
+        call(409, conflictBody(), {
+          'content-type': 'application/cbor',
+          'x-wf-event-id': 'evnt_from_header',
+        });
+        expect.unreachable();
+      } catch (err) {
+        expect(SlotConflictError.is(err)).toBe(true);
+        const conflict = err as SlotConflictError;
+        expect(conflict.eventId).toBe('evnt_from_header');
+        expect(conflict.cursor).toBe('eid:evnt_x');
+        expect(conflict.hasMore).toBe(false);
+        // Binary payloads survive: this is what a JSON error path destroys.
+        expect(conflict.events).toHaveLength(1);
+        expect(
+          (conflict.events[0] as { eventData: { output: Uint8Array } })
+            .eventData.output
+        ).toEqual(PAYLOAD);
+        // Not the 409 → EntityConflictError mapping, which the runtime reads as
+        // "the write I am retrying already landed".
+        expect(EntityConflictError.is(err)).toBe(false);
+      }
+    });
+
+    it('falls back to the eventId in details when the header is absent', () => {
+      try {
+        call(409, conflictBody(), { 'content-type': 'application/cbor' });
+        expect.unreachable();
+      } catch (err) {
+        expect((err as SlotConflictError).eventId).toBe('evnt_from_details');
+      }
+    });
+
+    it('reports an empty delta when the backend could not read one', () => {
+      try {
+        call(409, conflictBody({ events: undefined, cursor: null }), {
+          'content-type': 'application/cbor',
+        });
+        expect.unreachable();
+      } catch (err) {
+        const conflict = err as SlotConflictError;
+        expect(conflict.events).toEqual([]);
+        expect(conflict.cursor).toBeNull();
+      }
+    });
+
+    it('reads a JSON-encoded slot conflict too', () => {
+      // Nothing in the protocol forbids a JSON encoding of the same body; only
+      // the delta's binary payloads require CBOR.
+      try {
+        call(
+          409,
+          JSON.stringify({
+            error: 'slot-conflict',
+            message: 'taken',
+            events: [],
+            cursor: 'eid:evnt_y',
+            hasMore: true,
+          }),
+          { 'x-wf-event-id': 'evnt_j' }
+        );
+        expect.unreachable();
+      } catch (err) {
+        expect(SlotConflictError.is(err)).toBe(true);
+        expect((err as SlotConflictError).hasMore).toBe(true);
+      }
+    });
+
+    it('leaves an ordinary 409 as EntityConflictError', () => {
+      // Entity materialization conflicts share the status and are how the
+      // runtime recognizes a duplicate write.
+      expect(() =>
+        call(409, JSON.stringify({ error: 'conflict', message: 'exists' }))
+      ).toThrowError(EntityConflictError);
+    });
   });
 });
 
@@ -952,6 +1061,117 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
 
     expect(capturedMeta?.eventType).toBe('wait_created');
     expect('stateUpdatedAt' in (capturedMeta ?? {})).toBe(false);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('sends the claimed eventId and maxSlot in the frame meta', async () => {
+    // A slot-numbered run names its own event ids, so the id has to reach the
+    // wire: the backend reads it from the frame meta and inserts it
+    // conditionally. Dropped, the backend mints a ULID instead and the run
+    // silently reverts to server-assigned identity mid-log.
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+          const metaLen = new DataView(
+            bytes.buffer,
+            bytes.byteOffset,
+            bytes.byteLength
+          ).getUint32(0, false);
+          capturedMeta = decode(bytes.subarray(4, 4 + metaLen)) as Record<
+            string,
+            unknown
+          >;
+          return encode({ wait: { waitId: 'wait_1' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    const eventId = slotEventId(4);
+    await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: SPEC_VERSION_SLOT_IDENTITY,
+        correlationId: `wait_${slotIdBody(1)}`,
+        eventId,
+        maxSlot: 3,
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.eventId).toBe(eventId);
+    expect(capturedMeta?.maxSlot).toBe(3);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('omits eventId and maxSlot from the frame meta for a ULID-numbered run', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+          const metaLen = new DataView(
+            bytes.buffer,
+            bytes.byteOffset,
+            bytes.byteLength
+          ).getUint32(0, false);
+          capturedMeta = decode(bytes.subarray(4, 4 + metaLen)) as Record<
+            string,
+            unknown
+          >;
+          return encode({ wait: { waitId: 'wait_1' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: 5,
+        correlationId: 'wait_1',
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect('eventId' in (capturedMeta ?? {})).toBe(false);
+    expect('maxSlot' in (capturedMeta ?? {})).toBe(false);
     agent.assertNoPendingInterceptors();
   });
 });

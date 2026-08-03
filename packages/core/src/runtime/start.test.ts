@@ -2,6 +2,7 @@ import { WorkflowRuntimeError, WorkflowWorldError } from '@workflow/errors';
 import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
 } from '@workflow/world';
@@ -136,7 +137,7 @@ describe('start', () => {
       } as any);
 
       await expect(start(validWorkflow, [])).rejects.toThrow(
-        'requires a World with matching spec version'
+        'requires a World with spec version'
       );
       expect(mockEventsCreate).not.toHaveBeenCalled();
       expect(mockQueue).not.toHaveBeenCalled();
@@ -174,7 +175,7 @@ describe('start', () => {
       } as any);
 
       await expect(start(validWorkflow, [])).rejects.toThrow(
-        'requires a World with matching spec version'
+        'requires a World with spec version'
       );
       expect(mockEventsCreate).not.toHaveBeenCalled();
       expect(mockQueue).not.toHaveBeenCalled();
@@ -186,17 +187,41 @@ describe('start', () => {
       });
 
       setWorld({
-        specVersion: SPEC_VERSION_CURRENT + 1,
+        specVersion: SPEC_VERSION_MAX_SUPPORTED + 1,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
       } as any);
 
       await expect(start(validWorkflow, [])).rejects.toThrow(
-        'requires a World with matching spec version'
+        'requires a World with spec version'
       );
       expect(mockEventsCreate).not.toHaveBeenCalled();
       expect(mockQueue).not.toHaveBeenCalled();
+    });
+
+    it('accepts a world that mints a newer version this runtime supports', async () => {
+      // A world opted into slot identity stamps a version above the runtime's
+      // current one. The runtime can read and write those runs, so the
+      // handshake has to pass and the run has to keep the world's version.
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      setWorld({
+        specVersion: SPEC_VERSION_MAX_SUPPORTED,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await start(validWorkflow, []);
+
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({ specVersion: SPEC_VERSION_MAX_SUPPORTED }),
+        expect.anything()
+      );
     });
 
     it('should use provided specVersion when passed in options', async () => {

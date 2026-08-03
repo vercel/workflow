@@ -36,7 +36,7 @@ export function composeLogLine(
 ): string {
   const [framing, ...rest] = message.split('\n');
   const body = rest.join('\n');
-  const fields = renderStructuredFields(framing ?? '', metadata);
+  const fields = renderStructuredFields(message, metadata);
   const trimmedBody = trimStackBody(body);
 
   const lines: string[] = [`${prefix} ${framing ?? ''}`];
@@ -46,19 +46,21 @@ export function composeLogLine(
 }
 
 function renderStructuredFields(
-  framing: string,
+  message: string,
   metadata: Record<string, unknown> | undefined
 ): string | null {
   if (!metadata || Object.keys(metadata).length === 0) return null;
 
   // Drop fields that the message already encodes. We render framings and
   // stacks into the message string itself in step executor / combined runtime, so
-  // repeating them here would be pure noise.
+  // repeating them here would be pure noise. The whole message counts, not just
+  // its first line: callers that pass `${framing}\n${stack}` put the error's
+  // text in the stack's leading `Name: message` line.
   const redundant = new Set<string>();
   redundant.add('errorStack');
   if (
     typeof metadata.errorMessage === 'string' &&
-    framing.includes(metadata.errorMessage as string)
+    message.includes(metadata.errorMessage as string)
   ) {
     redundant.add('errorMessage');
   }
@@ -128,6 +130,16 @@ function renderStructuredFields(
   const errorCode = pickString(metadata, 'errorCode');
   if (errorCode && errorCode !== errorName) {
     lines.push(`  ${kvKey('code')} ${Ansi.dim(errorCode)}`);
+  }
+
+  // The message only duplicates the framing when the framing was built from
+  // the error itself (step executor, terminal run failures), and that case is
+  // already marked redundant above. Everywhere else — a warn that carries an
+  // error alongside its own summary line — this is the only place the error's
+  // own text appears, so dropping it loses the diagnosis.
+  const errorMessage = pickString(metadata, 'errorMessage');
+  if (errorMessage && !redundant.has('errorMessage')) {
+    lines.push(`  ${kvKey('error')} ${errorMessage}`);
   }
 
   const hint = pickString(metadata, 'hint');

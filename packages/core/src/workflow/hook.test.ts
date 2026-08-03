@@ -23,7 +23,10 @@ import { createWebhook } from './create-hook.js';
 import { createCreateHook } from './hook.js';
 
 // Helper to setup context to simulate a workflow run
-function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
+function setupWorkflowContext(
+  events: Event[],
+  onUnconsumedEvent: (event: Event) => void = () => {}
+): WorkflowOrchestratorContext {
   const context = createContext({
     seed: 'test',
     fixedTimestamp: 1753481739458,
@@ -42,7 +45,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
-      onUnconsumedEvent: () => {},
+      onUnconsumedEvent,
       getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
@@ -464,6 +467,65 @@ describe('createCreateHook', () => {
       ([err]) => err instanceof WorkflowRuntimeError
     );
     expect(runtimeErrors).toHaveLength(0);
+  });
+
+  it('should discard a hook_received ordered after the hook_disposed', async () => {
+    // The world orders a delivery by when its event row commits, not by when
+    // the payload arrived, so a delivery that raced the disposal can land after
+    // it in the log. Nothing else in the run can consume that event, so the
+    // hook's own consumer has to swallow it — otherwise the events consumer
+    // reports an orphan and the replay diverges on a well-formed log.
+    const ops: Promise<any>[] = [];
+    const onUnconsumedEvent = vi.fn();
+    const ctx = setupWorkflowContext(
+      [
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_123',
+          eventType: 'hook_created',
+          correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+          eventData: { token: 'test-token' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_123',
+          eventType: 'hook_disposed',
+          correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+          eventData: { token: 'test-token' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_2',
+          runId: 'wrun_123',
+          eventType: 'hook_received',
+          correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+          eventData: {
+            token: 'test-token',
+            payload: await dehydrateStepReturnValue(
+              { message: 'lost the race' },
+              'wrun_test',
+              undefined,
+              ops
+            ),
+          },
+          createdAt: new Date(),
+        },
+      ],
+      onUnconsumedEvent
+    );
+
+    const createHook = createCreateHook(ctx);
+    createHook({ token: 'test-token' });
+
+    // The whole log is consumed: the disposal retires the hook and the late
+    // delivery is dropped on the floor.
+    await vi.waitFor(() => {
+      expect(ctx.eventsConsumer.eventIndex).toBe(3);
+    });
+    expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+    expect(ctx.invocationsQueue.size).toBe(0);
   });
 
   it('should handle multiple hook_received events with iterator', async () => {

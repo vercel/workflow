@@ -3,12 +3,14 @@ import {
   HookNotFoundError,
   RunExpiredError,
   RunNotSupportedError,
+  SlotConflictError,
   TooEarlyError,
   WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
   AttributeChange,
+  CreateEventParams,
   Event,
   EventResult,
   ExperimentalSetAttributesResult,
@@ -35,15 +37,20 @@ import {
   isChildEntityCreationEventType,
   isHookEventRequiringExistence,
   isLegacySpecVersion,
+  isSlotId,
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_MAX_SUPPORTED,
   StepSchema,
+  slotEventId,
+  slotFromId,
   stripEventDataRefs,
   TERMINAL_STEP_STATUSES,
   TERMINAL_WORKFLOW_RUN_STATUSES,
+  usesSlotIdentity,
   validateAttributeChanges,
   validateUlidTimestamp,
   WorkflowRunSchema,
@@ -62,6 +69,13 @@ import {
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
+import {
+  type EventIds,
+  highestEventId,
+  highestSlotOf,
+  placeEvent,
+  RUN_CREATED_SLOT,
+} from './slots.js';
 import { compact } from './util.js';
 
 /**
@@ -442,7 +456,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
   // hook row left behind by a process / database interruption between
   // the hook INSERT and the events INSERT below (see the recovery
   // logic in the hook_created branch).
-  const getHookCreatedEvent = drizzle
+  const getCorrelatedEvent = drizzle
     .select({ eventId: events.eventId })
     .from(events)
     .where(
@@ -453,7 +467,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       )
     )
     .limit(1)
-    .prepare('events_get_hook_created_for_run_correlation');
+    .prepare('events_get_correlated_event');
 
   const getWaitForValidation = drizzle
     .select({
@@ -463,6 +477,64 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     .where(eq(Schema.waits.waitId, sql.placeholder('waitId')))
     .limit(1)
     .prepare('events_get_wait_for_validation');
+
+  /**
+   * The events a caller that just lost a slot is missing: one ascending page of
+   * the run's log after the cursor it wrote from, minus anything at or below the
+   * highest slot it already held. Because slots are dense, that second filter is
+   * exact — a caller cannot be missing an event whose position it can name.
+   *
+   * Returned inline with the conflict so the common case (a handful of events
+   * arrived out of band) costs the caller no extra round-trip. `hasMore` is
+   * forwarded verbatim: an overflowing delta is the caller's signal to page from
+   * `cursor` instead of treating this as the whole story.
+   */
+  async function eventsAfterClaim(
+    runId: string,
+    params: CreateEventParams | undefined
+  ): Promise<{ events: Event[]; cursor: string | null; hasMore: boolean }> {
+    const limit = 100;
+    const all = await drizzle
+      .select()
+      .from(events)
+      .where(
+        and(
+          eq(events.runId, runId),
+          map(params?.sinceCursor, (c) => gt(events.eventId, c))
+        )
+      )
+      .orderBy(events.eventId)
+      .limit(limit + 1);
+    const page = all.slice(0, limit);
+    const maxSlot = params?.maxSlot ?? 0;
+    const resolveData = params?.resolveData ?? 'all';
+    return {
+      events: page
+        .filter((v) => (slotFromId(v.eventId) ?? 0) > maxSlot)
+        .map((v) => {
+          v.eventData ||= v.eventDataJson;
+          return stripEventDataRefs(EventSchema.parse(compact(v)), resolveData);
+        }),
+      cursor: page.at(-1)?.eventId ?? null,
+      hasMore: all.length > limit,
+    };
+  }
+
+  /**
+   * The 409 a caller gets when the slot it named turns out to belong to someone
+   * else, carrying the events it is missing so it can merge, replay and
+   * re-propose at a free position.
+   */
+  async function slotConflict(
+    runId: string,
+    eventId: string,
+    params: CreateEventParams | undefined
+  ): Promise<SlotConflictError> {
+    return new SlotConflictError(
+      `Slot ${slotFromId(eventId)} of run "${runId}" is already taken`,
+      { eventId, ...(await eventsAfterClaim(runId, params)) }
+    );
+  }
 
   return {
     async create(runId, data, params): Promise<EventResult> {
@@ -489,6 +561,20 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       // specVersion is always sent by the runtime, but we provide a fallback for safety
       const effectiveSpecVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
+
+      // Whether this run numbers its events by slot. Decided from what was
+      // persisted, never from this request or this build, so a run stays in the
+      // mode it was created in for life — a run whose log holds ULID ids must
+      // never be handed a slot id, and vice versa. `run_created` is the one
+      // event that decides the mode instead of reading it; the resilient-start
+      // path below decides it too, on the request that creates the run.
+      let slotMode: boolean | undefined =
+        data.eventType === 'run_created'
+          ? usesSlotIdentity(effectiveSpecVersion)
+          : undefined;
+      // The run's highest event id, when it was read before the write. Seeds the
+      // allocator's first attempt so a probe is never made twice.
+      let seedHighestEventId: string | undefined;
 
       // Track entity created/updated for EventResult
       let run: WorkflowRun | undefined;
@@ -585,7 +671,13 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               .returning();
 
             if (inserted) {
-              const runCreatedEventId = `wevt_${ulid()}`;
+              // We created the run, so this request also decided its mode.
+              slotMode = usesSlotIdentity(effectiveSpecVersion);
+              // A run's own `run_created` provably has nothing before it, so its
+              // slot needs no allocation.
+              const runCreatedEventId = slotMode
+                ? slotEventId(RUN_CREATED_SLOT)
+                : `wevt_${ulid()}`;
               await drizzle.insert(events).values({
                 runId: effectiveRunId,
                 eventId: runCreatedEventId,
@@ -631,7 +723,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         if (requiresNewerWorld(currentRun.specVersion)) {
           throw new RunNotSupportedError(
             currentRun.specVersion!,
-            SPEC_VERSION_CURRENT
+            SPEC_VERSION_MAX_SUPPORTED
           );
         }
 
@@ -650,6 +742,107 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       if (data.eventType === 'attr_set' && !currentRun) {
         throw new WorkflowRunNotFoundError(effectiveRunId);
       }
+
+      // The run entity is the authority on the mode, and it can appear between
+      // the resilient-start insert above and this point: start() issues
+      // `run_created` and the queue send concurrently, so a delivery's
+      // `run_started` can arrive while the run is still being published. A stale
+      // "no" would number that one event with a ULID on an otherwise
+      // slot-numbered run, and a ULID names no position: the replay would read
+      // it wherever its timestamp happens to sort rather than where the writer
+      // meant it to go.
+      if (currentRun && data.eventType !== 'run_created') {
+        slotMode = usesSlotIdentity(currentRun.specVersion);
+      }
+      if (slotMode === undefined) {
+        // step_completed and step_retrying skip the run read above. The log's
+        // own highest id reports the scheme, since a log holds ids of exactly
+        // one, and it is the probe the allocator needs anyway — so a
+        // slot-numbered run pays nothing extra for this query.
+        seedHighestEventId = await highestEventId(drizzle, effectiveRunId);
+        slotMode = isSlotId(seedHighestEventId ?? '');
+      }
+
+      // ============================================================
+      // EVENT ID: the caller's slot claim, an allocated slot, or a ULID
+      // ============================================================
+      // A slot-numbered run's ids name positions in its log, so an id is either
+      // claimed by a caller that holds the log (and is therefore asserting the
+      // log is complete up to that position) or allocated at write time for a
+      // caller that has no log — a step completion reporting in, a cancellation
+      // from an API call.
+      let claimedSlot: number | undefined;
+      if (params?.eventId !== undefined) {
+        if (!slotMode) {
+          throw new WorkflowWorldError(
+            `Event id "${params.eventId}" was supplied for run "${effectiveRunId}", whose events are not numbered by slot`,
+            { status: 400 }
+          );
+        }
+        claimedSlot = slotFromId(params.eventId);
+        if (claimedSlot === undefined) {
+          throw new WorkflowWorldError(
+            `Event id "${params.eventId}" is not a slot id, and run "${effectiveRunId}" numbers its events by slot`,
+            { status: 400 }
+          );
+        }
+        eventId = params.eventId;
+        // A claim has to clear the log's tail, not merely be free. A position
+        // claimed by a write that then failed is never filled, so a log can
+        // carry holes below its tail; a caller numbering from a snapshot that
+        // predates the events above such a hole aims straight at it, and a
+        // free-position check would accept the write. The event then lands
+        // *below* events another replay has already consumed — the log stays
+        // internally consistent while its order silently changes, which is
+        // enough to flip a race between a step and a sleep from one replay to
+        // the next.
+        //
+        // Checked here, before the materialization below creates the step, hook
+        // or wait this event would now never accompany: a caller that
+        // re-proposes at the next position would otherwise collide with its own
+        // orphan and read that as "my write already landed".
+        seedHighestEventId =
+          seedHighestEventId ??
+          (await highestEventId(drizzle, effectiveRunId)) ??
+          undefined;
+        if (claimedSlot <= highestSlotOf(seedHighestEventId)) {
+          throw await slotConflict(effectiveRunId, eventId, params);
+        }
+      }
+
+      /**
+       * Runs one of the event writes below under this run's id discipline: in
+       * slot mode it places the event at the position the caller claimed or at
+       * the next free one, retrying a position lost to a concurrent writer;
+       * otherwise it mints a ULID.
+       */
+      const publish = async <T>(
+        write: (ids: EventIds) => Promise<T>
+      ): Promise<T> =>
+        slotMode
+          ? placeEvent(drizzle, effectiveRunId, {
+              ...(claimedSlot !== undefined ? { claimedSlot } : {}),
+              // A run's own `run_created` owns the first slot — provably, since
+              // nothing precedes it — so every other event allocates above it,
+              // even when that event is the first to arrive here.
+              minSlot:
+                data.eventType === 'run_created'
+                  ? RUN_CREATED_SLOT
+                  : RUN_CREATED_SLOT + 1,
+              seedHighestEventId,
+              onClaimTaken: () =>
+                slotConflict(effectiveRunId, eventId as string, params),
+              write: (ids) => {
+                // Each attempt publishes under its own id, and the result and
+                // error messages below read it back from here.
+                eventId = ids.primary();
+                return write(ids);
+              },
+            })
+          : write({
+              primary: getEventId,
+              extra: async () => `wevt_${ulid()}`,
+            });
 
       // Lazy step start: a step_started carrying step-creation data
       // (stepName + input) may arrive with no prior step_created — it creates
@@ -676,17 +869,19 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             .limit(1);
 
           // Create the event (still record it)
-          const [value] = await drizzle
-            .insert(Schema.events)
-            .values({
-              runId: effectiveRunId,
-              eventId: getEventId(),
-              correlationId: data.correlationId,
-              eventType: data.eventType,
-              eventData: 'eventData' in data ? data.eventData : undefined,
-              specVersion: effectiveSpecVersion,
-            })
-            .returning({ createdAt: Schema.events.createdAt });
+          const [value] = await publish((ids) =>
+            drizzle
+              .insert(Schema.events)
+              .values({
+                runId: effectiveRunId,
+                eventId: ids.primary(),
+                correlationId: data.correlationId,
+                eventType: data.eventType,
+                eventData: 'eventData' in data ? data.eventData : undefined,
+                specVersion: effectiveSpecVersion,
+              })
+              .returning({ createdAt: Schema.events.createdAt })
+          );
 
           const result = {
             ...data,
@@ -1192,41 +1387,51 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // event INSERT behind that lock prevents a late step_started from being
       // ordered after a concurrent terminal event that already won the row.
       if (data.eventType === 'step_started') {
-        value = await drizzle.transaction(async (tx) => {
-          // Lazy step start: no prior step_created exists, but this
-          // step_started carries the step-creation data. The step INSERT is
-          // the ownership claim: only the caller that inserts the row gets to
-          // run the step body inline.
-          if (lazyStepStart && !validatedStep) {
-            const lazyData = data.eventData;
-            const [inserted] = await tx
-              .insert(Schema.steps)
-              .values({
-                runId: effectiveRunId,
-                stepId: data.correlationId,
-                stepName: lazyData.stepName,
-                input: lazyData.input as SerializedContent,
-                status: 'pending',
-                attempt: 0,
-                specVersion: effectiveSpecVersion,
-              })
-              .onConflictDoNothing()
-              .returning({ stepId: Schema.steps.stepId });
+        // The whole transaction is the retry unit here: a step_started that
+        // loses its slot has to roll the step row and the synthetic
+        // step_created back with it, or the next attempt would trip its own
+        // orphaned step and read that as "a concurrent handler won the create".
+        value = await publish((ids) =>
+          drizzle.transaction(async (tx) => {
+            // Lazy step start: no prior step_created exists, but this
+            // step_started carries the step-creation data. The step INSERT is
+            // the ownership claim: only the caller that inserts the row gets to
+            // run the step body inline.
+            if (lazyStepStart && !validatedStep) {
+              const lazyData = data.eventData;
+              const [inserted] = await tx
+                .insert(Schema.steps)
+                .values({
+                  runId: effectiveRunId,
+                  stepId: data.correlationId,
+                  stepName: lazyData.stepName,
+                  input: lazyData.input as SerializedContent,
+                  status: 'pending',
+                  attempt: 0,
+                  specVersion: effectiveSpecVersion,
+                })
+                .onConflictDoNothing()
+                .returning({ stepId: Schema.steps.stepId });
 
-            if (!inserted) {
-              throw new EntityConflictError(
-                `Step "${data.correlationId}" already created`
-              );
-            }
+              if (!inserted) {
+                throw new EntityConflictError(
+                  `Step "${data.correlationId}" already created`
+                );
+              }
 
-            // Replay still needs to observe step_created before
-            // step_started. Because this synthetic event is in the same
-            // transaction as the lazy step row and step_started event, we
-            // cannot leave behind only one side of that materialization.
-            const stepCreatedEventId = `wevt_${ulid()}`;
-            await tx
-              .insert(events)
-              .values({
+              // Replay still needs to observe a step_created at all: the
+              // client's step consumer sets hasCreatedEvent only on that event
+              // type. Which of the pair sorts first does not matter — the
+              // step_started consumer is a no-op — but leaving behind only one
+              // side of the materialization would, hence the shared
+              // transaction.
+              //
+              // It takes a position of its own — the one below the claim on a
+              // claimed write, the next free one otherwise. Losing that position
+              // rolls the transaction back for a retry, so the insert must not
+              // swallow the collision.
+              const stepCreatedEventId = await ids.extra();
+              const insertStepCreated = tx.insert(events).values({
                 runId: effectiveRunId,
                 eventId: stepCreatedEventId,
                 correlationId: data.correlationId,
@@ -1236,99 +1441,104 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   input: lazyData.input,
                 },
                 specVersion: effectiveSpecVersion,
+              });
+              await (slotMode
+                ? insertStepCreated
+                : insertStepCreated.onConflictDoNothing());
+              stepCreatedLazily = true;
+            }
+
+            // Retried steps may be scheduled for later. Keep this check inside
+            // the transaction so the step_started write cannot slip past it.
+            if (
+              validatedStep?.retryAfter &&
+              validatedStep.retryAfter.getTime() > Date.now()
+            ) {
+              throw new TooEarlyError(
+                `Cannot start step "${data.correlationId}": retryAfter timestamp has not been reached yet`,
+                {
+                  retryAfter: Math.ceil(
+                    (validatedStep.retryAfter.getTime() - Date.now()) / 1000
+                  ),
+                }
+              );
+            }
+
+            // The terminal-state guard is part of the UPDATE, not just the
+            // earlier validation read. That closes the race where another
+            // writer completes/fails the step between validation and start.
+            const [stepValue] = await tx
+              .update(Schema.steps)
+              .set({
+                status: 'running',
+                attempt: sql`${Schema.steps.attempt} + 1`,
+                // Preserve the original first-start timestamp across retries or
+                // overlapping starts.
+                startedAt: sql`COALESCE(${Schema.steps.startedAt}, ${now.toISOString()})`,
+                retryAfter: null,
               })
-              .onConflictDoNothing();
-            stepCreatedLazily = true;
-          }
-
-          // Retried steps may be scheduled for later. Keep this check inside
-          // the transaction so the step_started write cannot slip past it.
-          if (
-            validatedStep?.retryAfter &&
-            validatedStep.retryAfter.getTime() > Date.now()
-          ) {
-            throw new TooEarlyError(
-              `Cannot start step "${data.correlationId}": retryAfter timestamp has not been reached yet`,
-              {
-                retryAfter: Math.ceil(
-                  (validatedStep.retryAfter.getTime() - Date.now()) / 1000
-                ),
-              }
-            );
-          }
-
-          // The terminal-state guard is part of the UPDATE, not just the
-          // earlier validation read. That closes the race where another
-          // writer completes/fails the step between validation and start.
-          const [stepValue] = await tx
-            .update(Schema.steps)
-            .set({
-              status: 'running',
-              attempt: sql`${Schema.steps.attempt} + 1`,
-              // Preserve the original first-start timestamp across retries or
-              // overlapping starts.
-              startedAt: sql`COALESCE(${Schema.steps.startedAt}, ${now.toISOString()})`,
-              retryAfter: null,
-            })
-            .where(
-              and(
-                eq(Schema.steps.runId, effectiveRunId),
-                eq(Schema.steps.stepId, data.correlationId!),
-                notInArray(Schema.steps.status, terminalStepStatuses)
-              )
-            )
-            .returning();
-
-          if (stepValue) {
-            step = deserializeStepError(compact(stepValue));
-          } else {
-            const [existing] = await tx
-              .select({ status: Schema.steps.status })
-              .from(Schema.steps)
               .where(
                 and(
                   eq(Schema.steps.runId, effectiveRunId),
-                  eq(Schema.steps.stepId, data.correlationId!)
+                  eq(Schema.steps.stepId, data.correlationId!),
+                  notInArray(Schema.steps.status, terminalStepStatuses)
                 )
               )
-              .limit(1);
-            if (!existing) {
-              throw new WorkflowWorldError(
-                `Step "${data.correlationId}" not found`
-              );
+              .returning();
+
+            if (stepValue) {
+              step = deserializeStepError(compact(stepValue));
+            } else {
+              const [existing] = await tx
+                .select({ status: Schema.steps.status })
+                .from(Schema.steps)
+                .where(
+                  and(
+                    eq(Schema.steps.runId, effectiveRunId),
+                    eq(Schema.steps.stepId, data.correlationId!)
+                  )
+                )
+                .limit(1);
+              if (!existing) {
+                throw new WorkflowWorldError(
+                  `Step "${data.correlationId}" not found`
+                );
+              }
+              if (isTerminalStepStatus(existing.status)) {
+                throw new EntityConflictError(
+                  `Cannot modify step in terminal state "${existing.status}"`
+                );
+              }
             }
-            if (isTerminalStepStatus(existing.status)) {
+
+            // A ULID-numbered step_started takes its id only after the guarded
+            // step UPDATE has acquired and passed the row lock. Without a
+            // sequence, this is the local ordering guarantee we can provide: a
+            // writer blocked on the step row will not carry an older event id
+            // into a later insert. A slot id is exempt — it names a position in
+            // the log, not a time — and the caller may have claimed it already.
+            const stepStartedEventId = ids.primary();
+            eventId = stepStartedEventId;
+            const [eventValue] = await tx
+              .insert(events)
+              .values({
+                runId: effectiveRunId,
+                eventId: stepStartedEventId,
+                correlationId: data.correlationId,
+                eventType: data.eventType,
+                eventData: storedEventData,
+                specVersion: effectiveSpecVersion,
+              })
+              .returning({ createdAt: events.createdAt });
+
+            if (!eventValue) {
               throw new EntityConflictError(
-                `Cannot modify step in terminal state "${existing.status}"`
+                `Event ${stepStartedEventId} could not be created`
               );
             }
-          }
-
-          // Allocate the step_started ULID only after the guarded step UPDATE
-          // has acquired and passed the row lock. Without a sequence, this is
-          // the local ordering guarantee we can provide: a writer blocked on
-          // the step row will not carry an older event id into a later insert.
-          const stepStartedEventId = `wevt_${ulid()}`;
-          eventId = stepStartedEventId;
-          const [eventValue] = await tx
-            .insert(events)
-            .values({
-              runId: effectiveRunId,
-              eventId: stepStartedEventId,
-              correlationId: data.correlationId,
-              eventType: data.eventType,
-              eventData: storedEventData,
-              specVersion: effectiveSpecVersion,
-            })
-            .returning({ createdAt: events.createdAt });
-
-          if (!eventValue) {
-            throw new EntityConflictError(
-              `Event ${stepStartedEventId} could not be created`
-            );
-          }
-          return eventValue;
-        });
+            return eventValue;
+          })
+        );
       }
 
       // Handle step_completed event: update step status
@@ -1496,7 +1706,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             existingHook.runId === effectiveRunId &&
             existingHook.hookId === data.correlationId
           ) {
-            const [existingEvent] = await getHookCreatedEvent.execute({
+            const [existingEvent] = await getCorrelatedEvent.execute({
               runId: effectiveRunId,
               correlationId: data.correlationId,
               eventType: 'hook_created',
@@ -1531,19 +1741,20 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               token: eventData.token,
               conflictingRunId: existingHook.runId,
             };
+            const [conflictValue] = await publish((ids) =>
+              drizzle
+                .insert(events)
+                .values({
+                  runId: effectiveRunId,
+                  eventId: ids.primary(),
+                  correlationId: data.correlationId,
+                  eventType: 'hook_conflict',
+                  eventData: conflictEventData,
+                  specVersion: effectiveSpecVersion,
+                })
+                .returning({ createdAt: events.createdAt })
+            );
             const conflictEventId = getEventId();
-
-            const [conflictValue] = await drizzle
-              .insert(events)
-              .values({
-                runId: effectiveRunId,
-                eventId: conflictEventId,
-                correlationId: data.correlationId,
-                eventType: 'hook_conflict',
-                eventData: conflictEventData,
-                specVersion: effectiveSpecVersion,
-              })
-              .returning({ createdAt: events.createdAt });
 
             if (!conflictValue) {
               throw new EntityConflictError(
@@ -1622,47 +1833,49 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // guarded UPDATE linearizes against a concurrent terminal step
       // event.
       if (data.eventType === 'hook_received') {
-        value = await drizzle.transaction(async (tx) => {
-          const [runRow] = await tx
-            .select({ status: Schema.runs.status })
-            .from(Schema.runs)
-            .where(eq(Schema.runs.runId, effectiveRunId))
-            .for('update')
-            .limit(1);
-          if (!runRow) {
-            throw new WorkflowRunNotFoundError(effectiveRunId);
-          }
-          if (isTerminalWorkflowRunStatus(runRow.status)) {
-            throw new RunExpiredError(
-              `Workflow run "${effectiveRunId}" is already in terminal state "${runRow.status}"`
-            );
-          }
+        value = await publish((ids) =>
+          drizzle.transaction(async (tx) => {
+            const [runRow] = await tx
+              .select({ status: Schema.runs.status })
+              .from(Schema.runs)
+              .where(eq(Schema.runs.runId, effectiveRunId))
+              .for('update')
+              .limit(1);
+            if (!runRow) {
+              throw new WorkflowRunNotFoundError(effectiveRunId);
+            }
+            if (isTerminalWorkflowRunStatus(runRow.status)) {
+              throw new RunExpiredError(
+                `Workflow run "${effectiveRunId}" is already in terminal state "${runRow.status}"`
+              );
+            }
 
-          // Allocate the ULID only after the row lock is acquired,
-          // matching step_started's ordering guarantee: a writer blocked
-          // on the run row must not carry an older event id into a later
-          // insert.
-          const hookReceivedEventId = `wevt_${ulid()}`;
-          eventId = hookReceivedEventId;
-          const [eventValue] = await tx
-            .insert(events)
-            .values({
-              runId: effectiveRunId,
-              eventId: hookReceivedEventId,
-              correlationId: data.correlationId,
-              eventType: data.eventType,
-              eventData: storedEventData,
-              specVersion: effectiveSpecVersion,
-            })
-            .returning({ createdAt: events.createdAt });
+            // Take the ULID only after the row lock is acquired, matching
+            // step_started's ordering guarantee: a writer blocked on the run
+            // row must not carry an older event id into a later insert. A slot
+            // id names a position rather than a time, so it is exempt.
+            const hookReceivedEventId = ids.primary();
+            eventId = hookReceivedEventId;
+            const [eventValue] = await tx
+              .insert(events)
+              .values({
+                runId: effectiveRunId,
+                eventId: hookReceivedEventId,
+                correlationId: data.correlationId,
+                eventType: data.eventType,
+                eventData: storedEventData,
+                specVersion: effectiveSpecVersion,
+              })
+              .returning({ createdAt: events.createdAt });
 
-          if (!eventValue) {
-            throw new EntityConflictError(
-              `Event ${hookReceivedEventId} could not be created`
-            );
-          }
-          return eventValue;
-        });
+            if (!eventValue) {
+              throw new EntityConflictError(
+                `Event ${hookReceivedEventId} could not be created`
+              );
+            }
+            return eventValue;
+          })
+        );
       }
 
       // Handle wait_created event: create wait entity
@@ -1694,9 +1907,43 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             specVersion: waitValue.specVersion ?? undefined,
           };
         } else {
-          throw new EntityConflictError(
-            `Wait "${data.correlationId}" already exists`
-          );
+          // The wait row exists but this call did not write it. Which of the two
+          // reasons it is decides everything, and only the event log knows:
+          //   - the `wait_created` event exists → a real duplicate, so throw and
+          //     let the runtime's concurrent-replay catch path swallow it.
+          //   - it does not → an orphaned row from an attempt that materialized
+          //     the wait and then lost its event write (a crash, or a slot
+          //     claimed by someone else). The caller re-proposing the same
+          //     operation one position higher is exactly what has to succeed
+          //     here, so adopt the row and complete the partial write. Mirrors
+          //     hook_created's handling of the same window.
+          const [existingEvent] = await getCorrelatedEvent.execute({
+            runId: effectiveRunId,
+            correlationId: data.correlationId,
+            eventType: 'wait_created',
+          });
+          if (existingEvent) {
+            throw new EntityConflictError(
+              `Wait "${data.correlationId}" already exists`
+            );
+          }
+          const [orphan] = await drizzle
+            .select()
+            .from(Schema.waits)
+            .where(eq(Schema.waits.waitId, waitId))
+            .limit(1);
+          if (orphan) {
+            wait = {
+              waitId: orphan.waitId,
+              runId: orphan.runId,
+              status: orphan.status,
+              resumeAt: orphan.resumeAt ?? undefined,
+              completedAt: orphan.completedAt ?? undefined,
+              createdAt: orphan.createdAt,
+              updatedAt: orphan.updatedAt,
+              specVersion: orphan.specVersion ?? undefined,
+            };
+          }
         }
       }
 
@@ -1748,17 +1995,23 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       try {
         if (!value) {
-          [value] = await drizzle
-            .insert(events)
-            .values({
-              runId: effectiveRunId,
-              eventId: getEventId(),
-              correlationId: data.correlationId,
-              eventType: data.eventType,
-              eventData: storedEventData,
-              specVersion: effectiveSpecVersion,
-            })
-            .returning({ createdAt: events.createdAt });
+          // Only the event row is retried here: the entity this event describes
+          // was materialized above, outside any transaction, and re-inserting
+          // the event at a higher position leaves the log dense and still
+          // consistent with that entity.
+          [value] = await publish((ids) =>
+            drizzle
+              .insert(events)
+              .values({
+                runId: effectiveRunId,
+                eventId: ids.primary(),
+                correlationId: data.correlationId,
+                eventType: data.eventType,
+                eventData: storedEventData,
+                specVersion: effectiveSpecVersion,
+              })
+              .returning({ createdAt: events.createdAt })
+          );
         }
       } catch (err) {
         // Translate unique-violation on the correlated-event partial index

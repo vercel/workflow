@@ -30,9 +30,9 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import { getMaxInlineSteps } from './constants.js';
 import {
+  claimFenceFor,
   type EventCreator,
-  type LoadedEventLog,
-  preconditionSnapshotParams,
+  type MutableEventLog,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 
@@ -44,14 +44,15 @@ export interface SuspensionHandlerParams {
   requestId?: string;
   /**
    * The runtime's loaded event log. Every event creation this suspension makes
-   * is sent with the precondition snapshot derived from it, so a backend that
-   * has recorded an event the replay did not see rejects the write with a 412
-   * instead of accepting a divergent event. The rejection is not retried here:
-   * the event's correlation id was minted by *this* replay's seeded sequence,
-   * so re-committing it against a corrected log would persist an event no
-   * correct replay produces. The caller restarts the replay instead.
+   * carries a fence derived from it — its own event slot, or the snapshot's
+   * watermark for a run on the older numbering — so a backend that has recorded
+   * an event the replay did not see rejects the write (409/412) instead of
+   * accepting a divergent event. The rejection is not retried here: the event's
+   * correlation id was minted by *this* replay's seeded sequence, so
+   * re-committing it against a corrected log would persist an event no correct
+   * replay produces. The caller restarts the replay instead.
    */
-  eventLog?: LoadedEventLog;
+  eventLog?: MutableEventLog;
   /**
    * Turbo mode only: a promise that resolves once the backgrounded
    * `run_started` has landed (the run exists). When present, every world write
@@ -268,19 +269,19 @@ export async function handleSuspension({
     reporter.withEventCreate(params, (p) =>
       world.events.create(runId, data, p)
     );
-  // Adds the optimistic-concurrency guard when the caller supplied a loaded
-  // event log; without one it creates directly (callers with no replay
-  // snapshot, e.g. tests). A stale (412) rejection propagates to the caller,
-  // which restarts the replay from a corrected log — it is not retried here,
-  // because the event's correlation id was minted by *this* replay's seeded
-  // sequence, so re-committing it against a corrected log would persist an
-  // event no correct replay produces.
+  // Fences the create against the run's event log when the caller supplied a
+  // loaded one; without it the create goes out unfenced (callers with no replay
+  // snapshot, e.g. tests). A rejection propagates to the caller, which restarts
+  // the replay from a corrected log — it is not retried here, because the
+  // event's correlation id was minted by *this* replay's seeded sequence, so
+  // re-committing it against a corrected log would persist an event no correct
+  // replay produces.
   const createGuarded: EventCreator = (data, params) =>
     eventLog
-      ? createEvent(data, {
-          ...params,
-          ...preconditionSnapshotParams(eventLog.events, eventLog.cursor),
-        })
+      ? claimFenceFor(
+          eventLog,
+          run.specVersion
+        )((fence) => createEvent(data, { ...params, ...fence }))
       : createEvent(data, params);
   // Separate queue items by type
   const stepItems = suspension.steps.filter(

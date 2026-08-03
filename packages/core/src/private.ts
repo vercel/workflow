@@ -547,12 +547,25 @@ function hasParkedCommittedDelivery(ctx: WorkflowOrchestratorContext): boolean {
  * delivery still in flight. Empirically, replacing it with `queueMicrotask`
  * breaks hook/sleep `Promise.race` ordering (CorruptedEventLogError).
  */
+/**
+ * Whether some data delivery is still on its way to the workflow — the same
+ * two windows {@link scheduleWhenIdle} polls on, exposed for callers that need
+ * to test the condition without waiting on it.
+ *
+ * While this holds, the VM has not yet run the continuation that registers the
+ * next event's consumer, so "no consumer for this event" says nothing about
+ * whether the event log is well-formed.
+ */
+export function hasInFlightDelivery(ctx: WorkflowOrchestratorContext): boolean {
+  return ctx.pendingDeliveries > 0 || hasParkedCommittedDelivery(ctx);
+}
+
 export function scheduleWhenIdle(
   ctx: WorkflowOrchestratorContext,
   fn: () => void
 ): void {
   const check = () => {
-    if (ctx.pendingDeliveries > 0 || hasParkedCommittedDelivery(ctx)) {
+    if (hasInFlightDelivery(ctx)) {
       // A delivery is still hydrating, or is committed but parked behind its
       // deferral (whose resolve runs on a detached timer, not this queue).
       // Either way: let the queue drain, then re-check a timer tick later.
