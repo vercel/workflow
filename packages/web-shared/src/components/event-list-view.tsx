@@ -639,7 +639,10 @@ function PayloadBlock({
         : null;
     if (cancelReason) {
       return (
-        <div className="p-2 text-xs" style={{ color: 'var(--ds-gray-1000)' }}>
+        <div
+          className="p-2 text-label-12"
+          style={{ color: 'var(--ds-gray-1000)' }}
+        >
           <span style={{ color: 'var(--ds-gray-900)' }}>Reason: </span>
           <span className="whitespace-pre-wrap break-words">
             {cancelReason}
@@ -660,7 +663,7 @@ function PayloadBlock({
       <button
         type="button"
         onClick={handleCopy}
-        className="absolute bottom-2 right-2 opacity-0 group-hover/payload:opacity-100 transition-opacity flex items-center gap-1 px-2 py-1 rounded-md text-xs hover:bg-[var(--ds-gray-alpha-200)]"
+        className="absolute bottom-2 right-2 opacity-0 group-hover/payload:opacity-100 transition-opacity flex items-center gap-1 px-2 py-1 rounded-md text-button-12 hover:bg-[var(--ds-gray-alpha-200)]"
         style={{ ...BUTTON_RESET_STYLE, color: 'var(--ds-gray-700)' }}
         aria-label="Copy payload"
       >
@@ -1028,7 +1031,7 @@ export function EventRow({
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') handleRowClick();
         }}
-        className="w-full text-left flex items-center gap-0 text-[13px] hover:bg-[var(--ds-gray-alpha-100)] transition-colors cursor-pointer"
+        className="w-full text-left flex items-center gap-0 text-label-13 hover:bg-[var(--ds-gray-alpha-100)] transition-colors cursor-pointer"
         style={{ minHeight: 40 }}
       >
         <TreeGutter
@@ -1185,7 +1188,7 @@ export function EventRow({
             {(durationInfo?.queued !== undefined ||
               durationInfo?.ran !== undefined) && (
               <div
-                className="px-2 pb-1.5 text-xs flex gap-3"
+                className="px-2 pb-1.5 text-label-12 flex gap-3"
                 style={{ color: 'var(--ds-gray-900)' }}
               >
                 {durationInfo.queued !== undefined &&
@@ -1213,7 +1216,7 @@ export function EventRow({
               <PayloadBlock data={displayPayload} eventType={event.eventType} />
             ) : loadError ? (
               <div
-                className="rounded-md border p-3 text-xs"
+                className="rounded-md border p-3 text-label-12"
                 style={{
                   borderColor: 'var(--ds-red-400)',
                   backgroundColor: 'var(--ds-red-100)',
@@ -1233,7 +1236,7 @@ export function EventRow({
               </div>
             ) : (
               <div
-                className="p-2 text-xs"
+                className="p-2 text-label-12"
                 style={{ color: 'var(--ds-gray-900)' }}
               >
                 No data
@@ -1708,7 +1711,7 @@ function EventListViewInner({
 
         {/* Header */}
         <div
-          className="flex items-center gap-0 text-[13px] font-medium h-10 border-b flex-shrink-0"
+          className="flex items-center gap-0 text-label-13 font-medium h-10 border-b flex-shrink-0"
           style={{
             borderColor: 'var(--ds-gray-alpha-200)',
             color: 'var(--ds-gray-900)',
@@ -1748,7 +1751,7 @@ function EventListViewInner({
           />
         ) : sortedEvents.length === 0 ? (
           <div
-            className="flex flex-1 items-center justify-center px-6 text-center text-sm"
+            className="flex flex-1 items-center justify-center px-6 text-center text-copy-14"
             style={{ color: 'var(--ds-gray-700)' }}
           >
             {searchNotFound && searchQuery.trim()
@@ -1813,7 +1816,7 @@ function EventListViewInner({
 
         {/* Fixed footer — count + load more */}
         <div
-          className="relative flex-shrink-0 flex items-center h-10 border-t px-4 text-xs"
+          className="relative flex-shrink-0 flex items-center h-10 border-t px-4 text-label-12"
           style={{
             borderColor: 'var(--ds-gray-alpha-200)',
             color: 'var(--ds-gray-900)',

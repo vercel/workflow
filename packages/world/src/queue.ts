@@ -135,33 +135,42 @@ export const RunInputSchema = z.object({
 export type RunInput = z.infer<typeof RunInputSchema>;
 
 /**
- * Hook resume data carried through the queue for resilient resumeHook().
- * Only present on the queue delivery triggered by resumeHook() — re-enqueues
- * omit this. When the runtime processes the message and detects that the
- * corresponding hook_received event is missing (e.g., because events.create()
- * failed with a transient 429/5xx while queue() succeeded), it materializes
- * the hook_received event from this payload.
+ * Lazy hook resume data carried through the queue alongside a workflow
+ * invocation. Present only when `resumeHook()` takes the parallel fast path:
+ * the producer persists the `hook_received` event and publishes this invocation
+ * concurrently. On receipt, a consumer that understands `hookInput` idempotently
+ * ensures the `hook_received` event exists — keyed by `resumeId` — before
+ * replaying, so the two concurrent writes converge on exactly one event.
  *
- * `resumeId` is a client-minted ULID used as an idempotency key: both the
- * direct hook_received write (from resumeHook) and the runtime fallback write
- * include it in `eventData.resumeId`, so the runtime can dedup by checking
- * whether any existing hook_received event already carries the same resumeId.
+ * The `payload` is the already-serialized (and possibly encrypted) resume
+ * payload — the identical bytes the producer also sent on the direct
+ * `events.create`, so both server receipts hash to the same digest under the
+ * `(runId, resumeId)` constraint.
  */
-export const HookInputSchema = z.object({
-  /** correlationId of the target hook (hookId) */
-  hookId: z.string(),
-  /** Client-minted ULID; idempotency key shared across both write paths */
+export const HookResumeInputSchema = z.object({
+  /** Stable idempotency key minted once per `resumeHook()` call. */
   resumeId: z.string(),
+  /** The hook being resumed. */
+  hookId: z.string(),
   /**
-   * The hook's token, written into the materialized event's
-   * `eventData.token` so it gets the same replay-divergence guard as a
-   * directly written hook_received event. Optional for wire compatibility.
+   * The hook's token, written into the `hook_received` event's `eventData` so
+   * the consumer's re-ensured event carries the same token the producer would
+   * — replay validates `eventData.token` against the `createHook` token.
    */
-  token: z.string().optional(),
-  /** Dehydrated payload to deliver to the hook */
+  token: z.string(),
+  /** The serialized resume payload, reused verbatim from the direct write. */
   payload: z.unknown(),
+  /**
+   * Content digest of `payload`, computed once by the producer over the
+   * serialized bytes and forwarded verbatim on both the direct `events.create`
+   * and this queue message. The consumer forwards it back to the server so both
+   * writers of the same `resumeId` record an identical digest on the
+   * `(runId, resumeId)` constraint — required because the v4 payload ref is not
+   * content-stable server-side.
+   */
+  payloadDigest: z.string(),
 });
-export type HookInput = z.infer<typeof HookInputSchema>;
+export type HookResumeInput = z.infer<typeof HookResumeInputSchema>;
 
 export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
@@ -191,8 +200,12 @@ export const WorkflowInvokePayloadSchema = z.object({
   stepName: z.string().optional(),
   /** Run creation data, only present on the first queue delivery from start() */
   runInput: RunInputSchema.optional(),
-  /** Hook resume data, only present on the queue delivery from resumeHook() */
-  hookInput: HookInputSchema.optional(),
+  /**
+   * Lazy hook resume data, only present when `resumeHook()` takes the parallel
+   * fast path. A consumer that understands this field idempotently ensures the
+   * `hook_received` event exists (keyed by `resumeId`) before replaying.
+   */
+  hookInput: HookResumeInputSchema.optional(),
 });
 
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;
