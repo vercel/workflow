@@ -122,9 +122,7 @@ export {
 export type { SpecVersion } from './spec-version.js';
 export {
   isLegacySpecVersion,
-  mintedSpecVersion,
   requiresNewerWorld,
-  SLOT_IDENTITY_ENV_VAR,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,

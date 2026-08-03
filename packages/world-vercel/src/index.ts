@@ -1,5 +1,5 @@
 import type { World } from '@workflow/world';
-import { mintedSpecVersion } from '@workflow/world';
+import { SPEC_VERSION_SLOT_IDENTITY } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
 import { createRunId, describeRun } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
@@ -29,12 +29,10 @@ export function createWorld(config?: APIConfig): World {
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
 
   return {
-    // What this world stamps on new runs: slot identity (spec v6) unless
-    // WORKFLOW_SLOT_IDENTITY switches it off, in which case v5 — client-side
-    // zstd/gzip payload compression over a superset of the v4 attributes.
-    // Either way this world reads both, so the stamp only decides how the runs
-    // it creates from here on are numbered.
-    specVersion: mintedSpecVersion(),
+    // What this world stamps on new runs: slot identity (spec v6). It reads
+    // every earlier version too, so this only decides how the runs it creates
+    // from here on are numbered.
+    specVersion: SPEC_VERSION_SLOT_IDENTITY,
     capabilities: {
       // workflow-server enforces the `stateUpdatedAt` optimistic-concurrency
       // guard: creations carrying a stale snapshot are rejected with 412

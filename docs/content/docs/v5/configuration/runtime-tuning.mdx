@@ -59,7 +59,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 ### `WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS`
 
-- Default: `3`, or `12` on a run numbering its events by position (see [`WORKFLOW_SLOT_IDENTITY`](#workflow_slot_identity))
+- Default: `3`, or `12` on a run numbering its events by position (see [`SlotConflictError`](/docs/api-reference/workflow-errors/slot-conflict-error))
 - How many times a single invocation restarts its replay in-process after a rejected event creation before it falls back to a re-invocation.
 - A restart reloads the event log and rebuilds the workflow from scratch, so it costs a replay but no queue round trip. A World may attach the missing events to its rejection, in which case the first restart needs no event-log request at all.
 - A run numbering its events by position reads only the page after its cursor instead of reloading the log, since positions are allocated in order and every event it was missing sorts above what it already has. Restarts are cheap enough there that the higher default is worth taking before a re-invocation and its delay.
@@ -88,15 +88,6 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: `400`
 - Ceiling on the wait described above.
-
-### `WORKFLOW_SLOT_IDENTITY`
-
-- Default: enabled
-- Numbers a new run's events by position instead of by ULID: `evnt_…001` is the run's first event, `evnt_…002` its second. Positions are allocated in order, so the log reads in the order it was written regardless of clock skew between writers.
-- Contention becomes explicit rather than silent. Two writers proposing the same position cannot both win: the loser gets a 409 ([`SlotConflictError`](/docs/api-reference/workflow-errors/slot-conflict-error)) carrying the events it was missing, and the run replays from the top against a log that now includes them.
-- Applies only to runs created while it is enabled. A run keeps the identity scheme it was created with for life, so turning the flag on or off never affects runs already in flight.
-- Requires a World that supports it. A World that does not rejects the run outright rather than mis-numbering its events.
-- Set `0` or `false` to disable, which numbers new runs by ULID as before.
 
 ## Inline execution
 
