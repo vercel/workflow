@@ -712,7 +712,8 @@ export async function runWorkflowWithQuickJS(params: {
     runInput,
     // Fail closed on Hook retention when the World doesn't declare support,
     // matching the node:vm engine's world-capability gate (see hook.ts).
-    worldSupportsHookRetention: world.capabilities?.hookRetention?.active === true,
+    worldSupportsHookRetention:
+      world.capabilities?.hookRetention?.active === true,
   });
 
   runtimeLogger.debug('QuickJS runtime: VM returned', {

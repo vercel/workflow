@@ -984,7 +984,8 @@ export async function runQuickJSWorkflow(
   options: QuickJSRuntimeOptions
 ): Promise<QuickJSRuntimeResult> {
   const { workflowCode, workflowId, workflowRun, events } = options;
-  const worldSupportsHookRetention = options.worldSupportsHookRetention === true;
+  const worldSupportsHookRetention =
+    options.worldSupportsHookRetention === true;
 
   const startedAt = workflowRun.startedAt ? +workflowRun.startedAt : Date.now();
 
