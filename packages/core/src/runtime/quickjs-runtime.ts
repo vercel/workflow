@@ -86,6 +86,8 @@ export interface PendingHook {
   type: 'hook';
   correlationId: string;
   token: string;
+  /** Earliest token reuse time, as milliseconds since the Unix epoch. */
+  tokenRetentionUntil?: number;
   isWebhook: boolean;
   metadata?: unknown;
   hasCreatedEvent: boolean;
@@ -568,6 +570,26 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   var correlationId = "hook_" + globalThis.__generateUlid();
   var isDisposed = false;
   var hasCreatedEvent = false;
+  var tokenRetentionUntil;
+  if (options.experimental_minRetention !== undefined) {
+    var minRetention = options.experimental_minRetention;
+    if (typeof minRetention === "number") {
+      if (minRetention < 0 || !isFinite(minRetention)) {
+        throw new Error("Invalid duration: " + minRetention + ". Expected a non-negative finite number of milliseconds.");
+      }
+      tokenRetentionUntil = Date.now() + minRetention;
+    } else if (typeof minRetention === "string") {
+      var retentionMs = globalThis.__parseDurationMs(minRetention);
+      if (typeof retentionMs !== "number" || retentionMs < 0 || !isFinite(retentionMs)) {
+        throw new Error('Invalid duration: "' + minRetention + '". Expected a valid duration string like "1s", "1m", "1h", etc.');
+      }
+      tokenRetentionUntil = Date.now() + retentionMs;
+    } else if (minRetention instanceof Date) {
+      tokenRetentionUntil = minRetention.getTime();
+    } else {
+      throw new Error("Invalid duration parameter. Expected a duration string, number (milliseconds), or Date object.");
+    }
+  }
 
   // Register in pending operations.
   // Serialize metadata inside the VM so Response/Request objects are
@@ -576,6 +598,7 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     type: "hook",
     correlationId: correlationId,
     token: token,
+    tokenRetentionUntil: tokenRetentionUntil,
     isWebhook: !!options.isWebhook,
     metadata: options.metadata ? globalThis[Symbol.for("workflow-serialize")](options.metadata) : undefined,
     hasCreatedEvent: false,
