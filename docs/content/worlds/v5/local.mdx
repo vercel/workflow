@@ -74,6 +74,10 @@ Maximum gap in milliseconds between response body chunks from a local queue hand
 
 Whether pending and running runs found in the data directory are re-enqueued when the world starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`
 
+### `WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`
+
+Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Local World, in days. Default: `30`. Set this to the same limit as your production World so oversized values fail during local development.
+
 ### `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
 
 Group-commit window, in milliseconds, for the leading chunk of an idle stream. Default: `0` (dispatch immediately). A positive value holds the first chunk up to that long to collect a group — trading first-chunk latency for fewer requests. Chunks arriving while a request is in flight always coalesce into the next group regardless.

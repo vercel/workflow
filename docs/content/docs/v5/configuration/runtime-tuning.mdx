@@ -75,6 +75,17 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Delay before a re-invocation caused by a rejected event creation.
 - Unlike an in-process restart, which re-reads immediately, a re-invocation only happens once the in-process budget failed to catch up — so the delay gives the other writers a moment to quiesce.
 
+### `WORKFLOW_PER_KIND_CORRELATION_IDS`
+
+- Default: disabled
+- Experimental. Gives each kind of entity a workflow creates — steps, waits, hooks, attribute writes, abort controllers, stream IDs — its own sequence of correlation IDs.
+- With one sequence shared by every kind, an ID is an ordinal over the whole run, so a single extra draw of any kind shifts every ID after it. Two concurrent replays of the same run that disagree about one `sleep()` then assign different IDs to every step that follows, and each writes events the other can neither match nor consume, which fails the run with `CORRUPTED_EVENT_LOG`. Per-kind sequences confine that to the kind that actually differs.
+- IDs remain ordered within a kind, so hooks created by your workflow are still listed in creation order. A hook the runtime creates for you, such as the one backing an abort controller, draws from its own kind and so is listed at an arbitrary position relative to your hooks rather than at its creation position.
+- A run must replay under the scheme that minted its IDs. A replay that switches schemes mid-run assigns IDs its own earlier events do not carry, so it can consume none of them and the run fails.
+  - On Vercel, a run keeps replaying on the deployment it started on, so it only ever sees the value baked into that deployment. Changing the setting affects new runs only.
+  - Elsewhere — `@workflow/world-postgres`, `@workflow/world-local`, any self-hosted process — nothing pins a run to the code that started it. Turn the setting on during a quiet window with no runs in flight, and roll the new value out to your whole fleet at once: a rolling deploy that leaves both values live replays one run under two schemes concurrently, which is the failure the setting exists to reduce.
+- Set `1` to enable.
+
 ## Inline execution
 
 ### `WORKFLOW_V2_TIMEOUT_MS`
