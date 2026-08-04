@@ -41,6 +41,9 @@ export WORKFLOW_POSTGRES_MAX_POOL_SIZE="10"
 
 # Optional: Let the application coordinate shutdown (default: false)
 export WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN="1"
+
+# Optional: Maximum Hook minimum retention in days (default: 30)
+export WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS="30"
 ```
 
 ### Programmatic Usage
@@ -106,6 +109,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers                                 | `50`                                            |
 | `WORKFLOW_POSTGRES_MAX_POOL_SIZE`      | Internal `pg.Pool` max size                                  | `10`                                            |
 | `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` | Set to `1` when the application coordinates shutdown and awaits `world.close()` | unset (`false`) |
+| `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS` | Maximum Hook minimum retention in days | `30` |
 
 When `pool` is omitted, `maxPoolSize` precedence is: `createWorld({ maxPoolSize })`, then `WORKFLOW_POSTGRES_MAX_POOL_SIZE`, then the `pg.Pool` default.
 
@@ -161,6 +165,13 @@ import * as schema from '@workflow/world-postgres/schema';
 ```
 
 Make sure your PostgreSQL database is accessible and the user has sufficient permissions to create tables and manage jobs.
+
+### Data Retention
+
+Postgres World does not yet perform general workflow-run cleanup. After a
+retained Hook's run ends and its deadline passes, reads treat the Hook as absent
+and its token can be reused. If the token is never reused, the expired
+`workflow_hooks` row remains.
 
 ## Features
 
