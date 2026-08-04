@@ -4,6 +4,7 @@
 
 import { withResolvers } from '@workflow/utils';
 import type { WorldCapabilities } from '@workflow/world';
+import type { CorrelationIdGenerator } from './correlation-id.js';
 import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import type { ReplayPayloadCache } from './replay-payload-cache.js';
@@ -152,7 +153,12 @@ export interface WorkflowOrchestratorContext {
    */
   invocationsQueue: Map<string, QueueItem>;
   onWorkflowError: (error: Error) => void;
-  generateUlid: () => string;
+  /**
+   * Mints a correlation id body for one entity family. Every entity a replay
+   * creates draws from here, and the family is what keeps a disagreement about
+   * one family's count from renumbering another's.
+   */
+  generateCorrelationId: CorrelationIdGenerator;
   generateNanoid: () => string;
   /**
    * Sequential promise queue that ensures all event-driven promise resolutions
