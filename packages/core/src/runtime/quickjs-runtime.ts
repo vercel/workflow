@@ -2160,7 +2160,17 @@ function dumpPendingOps(
   using projected = vm.evalCode(`(function(){
     var ops = ${filterExpr};
     globalThis.__rawFields = [];
-    return ops.map(function(p){
+    // Settled ops — created, resolver-less, no abort in flight — are
+    // never collected again by either the suspension or the drain
+    // filter, so their cached bytes are dead weight; surface their cids
+    // so the host can evict them (see the byte-cache eviction below).
+    var settled = [];
+    globalThis.__pending.forEach(function(p){
+      if (p.hasCreatedEvent && !globalThis.__resolvers[p.correlationId] && !p.abortRequested) {
+        settled.push(p.correlationId);
+      }
+    });
+    return { settled: settled, ops: ops.map(function(p){
       var q = {};
       for (var k in p) {
         if (k === 'input' || k === 'metadata' || k === 'abortPayload') continue;
@@ -2175,11 +2185,27 @@ function dumpPendingOps(
       });
       q.__rawIndices = raw;
       return q;
-    });
+    }) };
   })()`);
-  const plainOps = vm.dump(projected) as (PendingOperation & {
-    __rawIndices?: Record<string, number>;
-  })[];
+  const dumped = vm.dump(projected) as {
+    settled: string[];
+    ops: (PendingOperation & {
+      __rawIndices?: Record<string, number>;
+    })[];
+  };
+  const plainOps = dumped.ops;
+  // Byte-cache eviction: entries for settled ops can never be read again
+  // (neither collection filter matches a settled op), so dropping them
+  // bounds the cache by the LIVE pending set instead of growing
+  // monotonically for the VM's lifetime — which matters for the inline
+  // loop's long-lived sessions and snapshot-restored VMs.
+  if (byteCache && dumped.settled.length > 0) {
+    for (const cid of dumped.settled) {
+      for (const field of RAW_PENDING_FIELDS) {
+        byteCache.delete(`${cid}:${field}`);
+      }
+    }
+  }
   using rawFields = vm.evalCode('globalThis.__rawFields');
   for (const op of plainOps) {
     const rawIndices = op.__rawIndices ?? {};
@@ -2205,6 +2231,10 @@ function collectDrainOperations(
   vm: QuickJS,
   serde: QuickJSSerde
 ): PendingOperation[] {
+  // Share the per-VM byte cache with the suspension path: an op that was
+  // serialized during a suspension pass must reuse those exact bytes at
+  // terminal drain — re-serializing can invoke getters again and produce
+  // a DIFFERENT byte sequence for what the event log treats as one value.
   return dumpPendingOps(
     vm,
     serde,
@@ -2232,7 +2262,8 @@ function collectDrainOperations(
       if (p.type === "hook" && p.disposed) return false;
       return true;
     });
-  })()`
+  })()`,
+    ensurePendingByteCache(vm)
   );
 }
 

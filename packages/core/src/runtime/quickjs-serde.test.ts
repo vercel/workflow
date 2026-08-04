@@ -330,6 +330,91 @@ describe('full round trip through the host serde only', () => {
   });
 });
 
+describe('NUL (U+0000) safety across the WASM boundary', () => {
+  // `JS_ToCString` is NUL-terminated: naive extraction truncates guest
+  // strings at the first U+0000 and mangles NUL-bearing property keys
+  // (truncated keys either drop — the truncated name fails the
+  // enumerability probe — or collide with a sibling key). These pin the
+  // guestString length-check fallback and the shapeOf/get/hasOwn
+  // handle-keyed paths. Regression: nullByteWorkflow failing on every
+  // quickjs e2e leg.
+
+  it('round-trips NUL-bearing string values (guest → bytes → guest)', () => {
+    const bytes = serializeGuest(`(() => ({
+      middle: "ab\u0000cd",
+      leading: "\u0000x",
+      trailing: "x\u0000",
+      only: "\u0000",
+      multi: "a\u0000b\u0000c",
+    }))()`);
+    expect(
+      checkInGuest(
+        bytes,
+        `function (v) {
+          return [
+            v.middle === "ab\u0000cd",
+            v.leading === "\u0000x",
+            v.trailing === "x\u0000",
+            v.only === "\u0000",
+            v.multi === "a\u0000b\u0000c",
+          ].every(Boolean);
+        }`
+      )
+    ).toBe(true);
+  });
+
+  it('matches the reference codec byte-for-byte on NUL strings', () => {
+    const guestBytes = serializeGuest(`("ab\u0000cd")`);
+    const referenceBytes = referenceSerialize('ab cd');
+    expect(Buffer.from(guestBytes).toString('utf8')).toBe(
+      Buffer.from(referenceBytes).toString('utf8')
+    );
+  });
+
+  it('round-trips NUL-bearing object keys, including the collision shape', () => {
+    // "a\u0000b" truncates to "a" — with a REAL sibling "a" present the
+    // truncated key collides instead of dropping, which is the harder
+    // detection case for the enumeration fast path.
+    const bytes = serializeGuest(`(() => ({
+      "a\u0000b": "nul-key-value",
+      a: "plain-key-value",
+      normal: 1,
+    }))()`);
+    expect(
+      checkInGuest(
+        bytes,
+        `function (v) {
+          return {
+            nulKey: v["a\u0000b"],
+            plain: v.a,
+            normal: v.normal,
+            keyCount: Object.keys(v).length,
+          };
+        }`
+      )
+    ).toEqual({
+      nulKey: 'nul-key-value',
+      plain: 'plain-key-value',
+      normal: 1,
+      keyCount: 3,
+    });
+  });
+
+  it('round-trips a NUL key that would otherwise silently drop', () => {
+    const bytes = serializeGuest(`(() => ({ "k\u0000": 42 }))()`);
+    expect(checkInGuest(bytes, `function (v) { return v["k\u0000"]; }`)).toBe(
+      42
+    );
+  });
+
+  it('deserializes reference-codec NUL keys into the guest correctly', () => {
+    const referenceBytes = referenceSerialize({ 'x y': 'v' });
+    expect(
+      checkInGuest(referenceBytes, `function (v) { return v["x\u0000y"]; }`)
+    ).toBe('v');
+  });
+});
+
 describe('workflow-specific reducers', () => {
   it('step function proxies round-trip through StepFunction (with closure vars and bound this)', () => {
     // Minimal WORKFLOW_USE_STEP mirroring the runtime bootstrap's proxy shape.

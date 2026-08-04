@@ -177,6 +177,10 @@ const CAPTURE_INTRINSICS = `(() => {
     mapSet: Map.prototype.set,
     objectCreate: Object.create,
     defineProperty: Object.defineProperty,
+    jsonStringify: JSON.stringify,
+    objectKeys: Object.keys,
+    dateNow: Date.now,
+    hasOwnCall: (o, k) => Object.prototype.hasOwnProperty.call(o, k),
     functionBind: Function.prototype.bind,
     makeSparseArray: (length) => {
       const array = [];
@@ -323,6 +327,10 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     mapSet: at('mapSet'),
     objectCreate: at('objectCreate'),
     defineProperty: at('defineProperty'),
+    jsonStringify: at('jsonStringify'),
+    objectKeys: at('objectKeys'),
+    dateNow: at('dateNow'),
+    hasOwnCall: at('hasOwnCall'),
     functionBind: at('functionBind'),
     makeSparseArray: at('makeSparseArray'),
     makeThunk: at('makeThunk'),
@@ -374,10 +382,74 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     fn: JSValueHandle,
     thisValue: JSValueHandle,
     ...args: JSValueHandle[]
-  ): JSValueHandle => vm.callFunction(fn, thisValue, ...args);
+  ): JSValueHandle => track(vm.callFunction(fn, thisValue, ...args));
 
   const invoke = (fn: JSValueHandle, ...args: JSValueHandle[]): JSValueHandle =>
-    vm.callFunction(fn, vm.undefined, ...args);
+    track(vm.callFunction(fn, vm.undefined, ...args));
+
+  /**
+   * Per-pass disposal list for serde-created intermediate handles. Fed by
+   * this module's creation funnels via `track()`; swept by
+   * `runWithPassDisposal` at the end of each serialize/deserialize pass.
+   * Null outside a pass (e.g. serde initialization), where creations are
+   * long-lived by design (intrinsics, error constructors).
+   *
+   * Only handles CREATED BY THIS MODULE are tracked — never the
+   * trampoline-created handles a host callback receives as arguments
+   * (their pointers are owned by the C caller; freeing them corrupts the
+   * guest heap, which is why `vm.withScope` cannot be used here).
+   * `dispose()` is idempotent per handle object, so a tracked handle
+   * that a code path already consumed sweeps as a no-op.
+   */
+  let passDisposal: JSValueHandle[] | null = null;
+
+  const track = <T extends JSValueHandle | undefined>(handle: T): T => {
+    if (handle && passDisposal) passDisposal.push(handle);
+    return handle;
+  };
+
+  const runWithPassDisposal = <T>(
+    fn: () => T,
+    opts: { escapeResult?: boolean } = {}
+  ): T => {
+    const previous = passDisposal;
+    const pass: JSValueHandle[] = [];
+    passDisposal = pass;
+    try {
+      const result = fn();
+      if (opts.escapeResult && result) {
+        // The pass result (deserialize's root handle) belongs to the
+        // caller — remove every tracking entry for it before the sweep.
+        for (let idx = pass.length - 1; idx >= 0; idx--) {
+          if (pass[idx] === (result as unknown)) pass.splice(idx, 1);
+        }
+      }
+      return result;
+    } finally {
+      passDisposal = previous;
+      for (const handle of pass) handle.dispose();
+    }
+  };
+
+  /**
+   * NUL-safe host string from a guest string handle. `handle.toString()`
+   * routes through `JS_ToCString`, which is NUL-terminated — a guest
+   * string containing U+0000 arrives silently truncated. Detection is
+   * cheap: `handle.length` is the true guest length (UTF-16 code units),
+   * so a mismatch against the extracted string's length means data was
+   * lost. The recovery path escapes the string INSIDE the VM with the
+   * captured `JSON.stringify` (the escaped form is NUL-free by
+   * construction, so its own extraction cannot truncate) and parses it
+   * host-side. NUL-free strings — the overwhelming majority — pay only
+   * the `.length` read.
+   */
+  const guestString = (handle: JSValueHandle): string => {
+    const fast = handle.toString();
+    if (fast.length === handle.length) return fast;
+    return JSON.parse(
+      invoke(i.jsonStringify, handle).consume((h) => h.toString())
+    ) as string;
+  };
 
   /**
    * Guest own-property check through the handle's introspection method.
@@ -403,7 +475,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     if (!descriptor) return undefined;
     descriptor.get?.dispose();
     descriptor.set?.dispose();
-    return descriptor.value;
+    return track(descriptor.value);
   };
 
   /**
@@ -445,7 +517,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
   ): string | undefined => {
     const handle = chained(target, key);
     if (!handle) return undefined;
-    const result = handle.isString ? handle.toString() : undefined;
+    const result = handle.isString ? guestString(handle) : undefined;
     handle.dispose();
     return result;
   };
@@ -456,7 +528,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
   ): string | undefined => {
     const handle = own(target, key);
     if (!handle) return undefined;
-    const result = handle.isString ? handle.toString() : undefined;
+    const result = handle.isString ? guestString(handle) : undefined;
     handle.dispose();
     return result;
   };
@@ -522,7 +594,8 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     }
   };
 
-  const newGuestString = (value: string): JSValueHandle => vm.newString(value);
+  const newGuestString = (value: string): JSValueHandle =>
+    track(vm.newString(value));
 
   /** Collect Set values / Map entries via captured forEach. */
   const collect = (
@@ -533,7 +606,14 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     const collected: unknown[] = [];
     const visitor = vm.newEphemeralFunction(
       (value: JSValueHandle, key: JSValueHandle) => {
-        collected.push(arity === 1 ? value.dup() : [key.dup(), value.dup()]);
+        // dup(): the visitor's own arg handles wrap C-owned pointers and
+        // must never be disposed; the dups are ours and are tracked for
+        // the pass sweep.
+        collected.push(
+          arity === 1
+            ? track(value.dup())
+            : [track(key.dup()), track(value.dup())]
+        );
         return vm.undefined;
       }
     );
@@ -588,7 +668,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     if (handle.isBool) return handle.toBoolean();
     if (handle.isNumber) return handle.toNumber();
     if (handle.isBigInt) return guestBigInt(handle);
-    return handle.toString();
+    return guestString(handle);
   };
 
   /**
@@ -661,8 +741,8 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     regExpInfo: (value) => {
       if (!isHandle(value)) return d.regExpInfo(value);
       return {
-        source: call(i.regExpSource, value).consume((h) => h.toString()),
-        flags: call(i.regExpFlags, value).consume((h) => h.toString()),
+        source: call(i.regExpSource, value).consume(guestString),
+        flags: call(i.regExpFlags, value).consume(guestString),
       };
     },
     valuesOf: (value) =>
@@ -702,8 +782,21 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
       const length = own(value, 'length');
       return length?.consume((h) => h.toNumber()) ?? 0;
     },
-    hasOwn: (value, key) =>
-      isHandle(value) ? guestHasOwn(value, String(key)) : d.hasOwn(value, key),
+    hasOwn: (value, key) => {
+      if (!isHandle(value)) return d.hasOwn(value, key);
+      if (typeof key === 'string' && key.includes('\u0000')) {
+        // C-string key APIs truncate at NUL — check inside the guest.
+        const keyHandle = vm.newString(key);
+        try {
+          return invoke(i.hasOwnCall, value, keyHandle).consume((h) =>
+            h.toBoolean()
+          );
+        } finally {
+          keyHandle.dispose();
+        }
+      }
+      return guestHasOwn(value, String(key));
+    },
     indicesOf: (value) =>
       isHandle(value) ? filterArrayIndices(value.keys()) : d.indicesOf(value),
     shapeOf: (value) => {
@@ -725,6 +818,31 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
           }
           if (value.propertyIsEnumerable(key)) keys.push(key);
         }
+        // NUL-key guard: the enumeration above yields HOST strings that
+        // crossed `JS_ToCString`, so a key containing U+0000 arrives
+        // truncated — either dropping it (the truncated name fails the
+        // propertyIsEnumerable probe) or colliding with a sibling key. A
+        // single guest `Object.keys` call exposes both shapes cheaply:
+        // a count mismatch or a duplicate in the fast list means at
+        // least one key was mangled, and the guest array (whose entries
+        // are handles) is then re-extracted NUL-safely via guestString.
+        const guestKeys = invoke(i.objectKeys, value);
+        try {
+          const guestCount = guestKeys.length;
+          if (
+            keys.length !== guestCount ||
+            new Set(keys).size !== keys.length
+          ) {
+            keys.length = 0;
+            for (let idx = 0; idx < guestCount; idx++) {
+              const keyHandle = guestKeys.getProp(String(idx));
+              keys.push(guestString(keyHandle));
+              keyHandle.dispose();
+            }
+          }
+        } finally {
+          guestKeys.dispose();
+        }
         return {
           kind: prototype.isNull ? ('null-proto' as const) : ('plain' as const),
           keys,
@@ -735,6 +853,20 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     },
     get: (value, key) => {
       if (!isHandle(value)) return d.get(value, key);
+      // A NUL-bearing key cannot be looked up through the C-string APIs
+      // (the lookup name would truncate to the wrong key). Route it
+      // through a guest string handle instead — `vm.newString` is
+      // length-aware, and handle-keyed getProp performs a plain [[Get]]
+      // (getters are invoked, matching the descriptor path's explicit
+      // accessor invocation below).
+      if (typeof key === 'string' && key.includes('\u0000')) {
+        const keyHandle = vm.newString(key);
+        try {
+          return track(vm.getProp(value, keyHandle));
+        } finally {
+          keyHandle.dispose();
+        }
+      }
       const descriptor = value.getOwnPropertyDescriptor(String(key));
       if (!descriptor) return undefined;
       if (descriptor.get) {
@@ -748,7 +880,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
         return result;
       }
       descriptor.set?.dispose();
-      return descriptor.value;
+      return track(descriptor.value);
     },
   };
 
@@ -783,7 +915,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
   ): string | undefined => {
     const handle = own(value, sym(name));
     if (!handle) return undefined;
-    const result = handle.isString ? handle.toString() : undefined;
+    const result = handle.isString ? guestString(handle) : undefined;
     handle.dispose();
     return result;
   };
@@ -990,8 +1122,13 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
       if (chainedString(value, 'name') !== 'RetryableError') return false;
       const shape = reduceErrorShape(value) as Record<string, unknown>;
       // retryAfter is a guest Date (or string/number); normalize to an epoch
-      // timestamp exactly like the in-VM reducer.
-      let retryAfter = Date.now() + 1000;
+      // timestamp exactly like the in-VM reducer. The absent/invalid
+      // fallback reads the GUEST clock (the deterministic replay clock at
+      // the WASI layer), not the host wall clock: the in-VM reducer's
+      // `Date.now()` was replay-stable by construction, and a host-side
+      // `Date.now()` here would write different bytes on every replay of
+      // the same value.
+      let retryAfter = invoke(i.dateNow).consume((h) => h.toNumber()) + 1000;
       const raw = own(value, 'retryAfter');
       if (raw) {
         if (tagOfHandle(raw) === 'Date') {
@@ -1069,8 +1206,8 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     RegExp: (value) => {
       if (!isHandle(value) || tagOfHandle(value) !== 'RegExp') return false;
       return {
-        source: call(i.regExpSource, value).consume((h) => h.toString()),
-        flags: call(i.regExpFlags, value).consume((h) => h.toString()),
+        source: call(i.regExpSource, value).consume(guestString),
+        flags: call(i.regExpFlags, value).consume(guestString),
       };
     },
     Headers: (value) => {
@@ -1087,7 +1224,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
       const entries: [string, string][] = [];
       const visitor = vm.newEphemeralFunction(
         (headerValue: JSValueHandle, headerKey: JSValueHandle) => {
-          entries.push([headerKey.toString(), headerValue.toString()]);
+          entries.push([guestString(headerKey), guestString(headerValue)]);
           return vm.undefined;
         }
       );
@@ -1210,7 +1347,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
       ) {
         return false;
       }
-      return call(i.urlHref, value).consume((h) => h.toString());
+      return call(i.urlHref, value).consume(guestString);
     },
     WorkflowFunction: (value) => {
       if (!isHandle(value) || value.typeof !== 'function') return false;
@@ -1257,12 +1394,14 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
 
   const parseOperations: ParseOperations = {
     fromPrimitive: (value) =>
-      typeof value === 'bigint' ? vm.newBigInt(value) : vm.hostToHandle(value),
+      typeof value === 'bigint'
+        ? track(vm.newBigInt(value))
+        : track(vm.hostToHandle(value)),
     fromISOString: (iso) => {
       const argument =
         iso === '' ? vm.newNumber(Number.NaN) : vm.newString(iso);
       try {
-        return vm.construct(i.Date, argument);
+        return track(vm.construct(i.Date, argument));
       } finally {
         argument.dispose();
       }
@@ -1270,14 +1409,14 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     fromStringValue: (tag, _string) => {
       throw new Error(`${tag} cannot be revived in the VM`);
     },
-    fromArrayBuffer: (buffer) => vm.newArrayBuffer(buffer),
+    fromArrayBuffer: (buffer) => track(vm.newArrayBuffer(buffer)),
     fromRegExpInfo: (source, flags) => {
       const sourceHandle = vm.newString(source);
       try {
-        if (!flags) return vm.construct(i.RegExp, sourceHandle);
+        if (!flags) return track(vm.construct(i.RegExp, sourceHandle));
         const flagsHandle = vm.newString(flags);
         try {
-          return vm.construct(i.RegExp, sourceHandle, flagsHandle);
+          return track(vm.construct(i.RegExp, sourceHandle, flagsHandle));
         } finally {
           flagsHandle.dispose();
         }
@@ -1289,27 +1428,29 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
       const Constructor = typedArrayConstructors.get(tag);
       if (!Constructor) throw new Error(`${tag} is not available in the VM`);
       if (byteOffset === undefined) {
-        return vm.construct(Constructor, buffer as JSValueHandle);
+        return track(vm.construct(Constructor, buffer as JSValueHandle));
       }
       const offsetHandle = vm.newNumber(byteOffset);
       const lengthHandle = vm.newNumber(length ?? 0);
       try {
-        return vm.construct(
-          Constructor,
-          buffer as JSValueHandle,
-          offsetHandle,
-          lengthHandle
+        return track(
+          vm.construct(
+            Constructor,
+            buffer as JSValueHandle,
+            offsetHandle,
+            lengthHandle
+          )
         );
       } finally {
         offsetHandle.dispose();
         lengthHandle.dispose();
       }
     },
-    box: (value) => vm.construct(i.Object, value as JSValueHandle),
+    box: (value) => track(vm.construct(i.Object, value as JSValueHandle)),
     createArray: (length) => {
       const lengthHandle = vm.newNumber(length);
       try {
-        return vm.construct(i.Array, lengthHandle);
+        return track(vm.construct(i.Array, lengthHandle));
       } finally {
         lengthHandle.dispose();
       }
@@ -1322,7 +1463,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
         lengthHandle.dispose();
       }
     },
-    createObject: () => vm.newObject(),
+    createObject: () => track(vm.newObject()),
     createNullPrototypeObject: () =>
       call(i.objectCreate, vm.undefined, vm.null),
     createSet: () => vm.construct(i.Set),
@@ -1545,7 +1686,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
       const argument =
         iso === '.' ? vm.newNumber(Number.NaN) : vm.newString(iso);
       try {
-        return vm.construct(i.Date, argument);
+        return track(vm.construct(i.Date, argument));
       } finally {
         argument.dispose();
         if (isHandle(value)) value.dispose();
@@ -1965,14 +2106,41 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     reducerKeys: Object.keys(reducers),
     reviverKeys: Object.keys(revivers),
     serialize(value: JSValueHandle): Uint8Array {
-      const payload = encoder.encode(
-        stringify(value, reducers, { operations: stringifyOperations })
-      );
-      const prefix = encoder.encode(SerializationFormat.DEVALUE_V1);
-      const result = new Uint8Array(prefix.length + payload.length);
-      result.set(prefix, 0);
-      result.set(payload, prefix.length);
-      return result;
+      // Pass-scoped disposal: reducers and the hybrid operations mint one
+      // handle per visited value node (descriptor reads, dup()s,
+      // intrinsic call results) and nothing disposes them individually —
+      // without the sweep each serialize leaks ~one handle per node for
+      // the VM's lifetime, which compounds across an inline-loop
+      // session's whole batch. Tracking happens in this module's own
+      // creation funnels (call/invoke/own/chained/dup/etc.), NOT via
+      // `vm.withScope`: the library scope also captures the handles the
+      // host-callback trampoline wraps around C-owned argv pointers
+      // (`handleHostCall`), and disposing those double-frees guest
+      // values whenever a reducer visitor (Map/Set/Headers forEach) or
+      // registry method runs mid-pass — observed as WASM memory
+      // corruption. The input handle is caller-owned (created before the
+      // pass) and the output is host bytes, so nothing escapes.
+      //
+      // `identities` must be cleared per pass ONCE handles are bulk-freed:
+      // it keys object identity on the raw guest pointer, and freeing
+      // handles lets QuickJS reuse pointers — a stale entry from an
+      // earlier pass could then alias a different object and corrupt the
+      // dedup/cycle detection. Identity only needs stability within one
+      // stringify pass.
+      try {
+        const payload = runWithPassDisposal(() =>
+          encoder.encode(
+            stringify(value, reducers, { operations: stringifyOperations })
+          )
+        );
+        const prefix = encoder.encode(SerializationFormat.DEVALUE_V1);
+        const result = new Uint8Array(prefix.length + payload.length);
+        result.set(prefix, 0);
+        result.set(payload, prefix.length);
+        return result;
+      } finally {
+        identities.clear();
+      }
     },
     deserialize(data: Uint8Array): JSValueHandle {
       if (data.length < FORMAT_PREFIX_LENGTH) {
@@ -1983,9 +2151,18 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
         throw new Error(`Unsupported serialization format: ${prefix}`);
       }
       const payload = decoder.decode(data.subarray(FORMAT_PREFIX_LENGTH));
-      return parse(payload, revivers, {
-        operations: parseOperations,
-      }) as JSValueHandle;
+      // Pass-scoped disposal, mirroring serialize(): revivers mint
+      // intermediate handles (children already attached to their parents,
+      // intrinsic call results) that are safe to free once the graph is
+      // built — guest values are refcounted, so parents keep their
+      // children alive. Only the root escapes to the caller.
+      return runWithPassDisposal(
+        () =>
+          parse(payload, revivers, {
+            operations: parseOperations,
+          }) as JSValueHandle,
+        { escapeResult: true }
+      );
     },
     dispose() {
       for (const handle of disposables.reverse()) handle.dispose();
