@@ -287,6 +287,30 @@ export function hookTokenClaimPath(basedir: string, token: string): string {
 }
 
 /**
+ * Path of the exclusive-create claim file that reserves a hook resume,
+ * keyed on `(runId, resumeId)`. This is world-local's analogue of the
+ * server's `(runId, resumeId)` constraint: `resumeHook()`'s parallel fast
+ * path writes `hook_received` directly AND has the queue consumer re-ensure
+ * it, both carrying the same `resumeId`, so the two must converge on one
+ * event. The claim pins the canonical eventId and records the payload digest
+ * so a reused `resumeId` carrying a different payload can be rejected.
+ *
+ * Keyed on `(runId, resumeId)` — NOT on the hookId — so a reusable hook
+ * (AsyncIterable) that receives multiple distinct resumes each records its
+ * own event, while the two writers of a single resume still collapse.
+ */
+export function hookResumeClaimPath(
+  basedir: string,
+  runId: string,
+  resumeId: string
+): string {
+  const key = createHash('sha256')
+    .update(`${runId}\x00${resumeId}`)
+    .digest('hex');
+  return path.join(basedir, 'hooks', 'resumes', `${key}.json`);
+}
+
+/**
  * Release (delete) a token claim only if it still points at the releasing
  * hook's own `(runId, hookId)`.
  *

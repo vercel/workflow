@@ -43,6 +43,7 @@ import { runtimeLogger } from '../logger.js';
 import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
 import { decrypt } from '../serialization/encryption.js';
+import { getReplayTimeoutMs } from './constants.js';
 import { quickjsExtensions, quickjsWasm } from './quickjs-assets.generated.js';
 import { createQuickJSSerde, type QuickJSSerde } from './quickjs-serde.js';
 import { runIdCreatedAt } from './run-id-time.js';
@@ -244,6 +245,46 @@ globalThis.__workflowError = undefined;
 // This mirrors the event-replay runtime's payloadsQueue in hook.ts.
 globalThis.__hookPayloadBuffer = {};
 
+// Buffer for step/wait/attr terminal outcomes that arrive before this VM
+// has constructed the corresponding awaiting promise. In fresh-VM replay
+// the multi-pass event scan makes this unreachable (awaits are
+// reconstructed before their terminals are re-scanned), but the live
+// continuation path (continueWithEvents) scans each delta exactly once —
+// a concurrent invocation's terminal arriving before this VM reaches the
+// await would otherwise be dropped on the floor and the await would
+// never settle (the feed's seen-set means it is never re-delivered).
+// Mirrors __hookPayloadBuffer, which exists for exactly this reason on
+// the hook path. Keyed by correlationId → single terminal (steps, waits
+// and attrs settle exactly once).
+globalThis.__terminalBuffer = {};
+
+// Registers a resolver for an awaited primitive, first draining any
+// buffered terminal recorded for the correlationId. Entries are prepared
+// host-side: bytes are decrypted AND deserialized into VM values by the
+// host serde before buffering (the VM has no in-guest deserializer on
+// the host-serde engine), so draining only forwards the stored value.
+globalThis.__registerResolver = function(correlationId, resolve, reject) {
+  var buffered = globalThis.__terminalBuffer[correlationId];
+  if (buffered) {
+    delete globalThis.__terminalBuffer[correlationId];
+    if (buffered.kind === "resolve_value") {
+      resolve(buffered.value);
+    } else if (buffered.kind === "reject_value") {
+      reject(buffered.value);
+    } else if (buffered.kind === "reject_error") {
+      var e = new Error(buffered.message);
+      e.name = "FatalError";
+      e.fatal = true;
+      if (buffered.stack) e.stack = buffered.stack;
+      reject(e);
+    } else {
+      resolve(undefined);
+    }
+    return;
+  }
+  globalThis.__resolvers[correlationId] = { resolve: resolve, reject: reject };
+};
+
 // Stubs for Web APIs that the workflow bundle may reference but are not
 // available in QuickJS. Native C extensions (encoding, headers, url,
 // structured-clone) provide the real implementations; these are minimal
@@ -401,7 +442,7 @@ globalThis[Symbol.for("WORKFLOW_USE_STEP")] = function(stepId, closureVarsFn) {
       hasCreatedEvent: false,
     });
     return new Promise(function(resolve, reject) {
-      globalThis.__resolvers[correlationId] = { resolve: resolve, reject: reject };
+      globalThis.__registerResolver(correlationId, resolve, reject);
     });
   };
   // Set stepId on the proxy so the StepFunction reducer can detect and
@@ -484,7 +525,7 @@ globalThis[Symbol.for("WORKFLOW_SLEEP")] = function(param) {
     hasCreatedEvent: false,
   });
   return new Promise(function(resolve, reject) {
-    globalThis.__resolvers[correlationId] = { resolve: resolve, reject: reject };
+    globalThis.__registerResolver(correlationId, resolve, reject);
   });
 };
 
@@ -717,7 +758,7 @@ globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")] = function(changes, options) {
     hasCreatedEvent: false,
   });
   return new Promise(function(resolve, reject) {
-    globalThis.__resolvers[correlationId] = { resolve: resolve, reject: reject };
+    globalThis.__registerResolver(correlationId, resolve, reject);
   });
 };
 
@@ -1211,8 +1252,10 @@ export async function startQuickJSWorkflow(
       // available. This is the race condition observed during the fib
       // incident — silently dropping arguments would turn `n` into
       // `undefined` and, for recursive workflows, cause exponential
-      // fan-out. Fail loud: the throw propagates to the entrypoint's
-      // catch, which records run_failed. A visible terminal failure is
+      // fan-out. Fail loud: the throw escapes the entrypoint into the
+      // replay loop's catch in runtime.ts (the QuickJS dispatch runs
+      // inside that loop's try), which records run_failed. A visible
+      // terminal failure is
       // preferred over silently executing with undefined arguments — the
       // queue-provided runInput fallback above makes this path rare.
       // Empty `events` is allowed because tests that bootstrap a workflow
@@ -1508,6 +1551,33 @@ async function processEvents(
               b = vm.executePendingJobs();
             } while (b > 0);
           }
+        } else {
+          // No resolver yet — buffer the prepared outcome so the promise
+          // settles the moment the VM constructs it (see __terminalBuffer
+          // in the bootstrap). Without this, the live-continuation path
+          // (which scans each delta exactly once) drops the terminal and
+          // the await never settles.
+          if (rawOutput instanceof Uint8Array) {
+            const decryptedOutput = await prepareBytesForVM(
+              rawOutput,
+              encryptionKey
+            );
+            // Host serde: deserialize into a VM value NOW (same path as
+            // the resolver branch above) and buffer the value itself.
+            const valueHandle = serde.deserialize(decryptedOutput);
+            vm.setProp(vm.global, '__tmp_buf', valueHandle);
+            valueHandle.dispose();
+            vm.evalCode(
+              `globalThis.__terminalBuffer[${cidJs}] = { kind: "resolve_value", value: globalThis.__tmp_buf };` +
+                `delete globalThis.__tmp_buf;`
+            ).dispose();
+          } else {
+            const serialized =
+              rawOutput !== undefined ? JSON.stringify(rawOutput) : 'undefined';
+            vm.evalCode(
+              `globalThis.__terminalBuffer[${cidJs}] = { kind: "resolve_value", value: ${serialized} };`
+            ).dispose();
+          }
         }
         markCreated(vm, cidJs);
         break;
@@ -1569,6 +1639,38 @@ async function processEvents(
               b = vm.executePendingJobs();
             } while (b > 0);
           }
+        } else {
+          // No resolver yet — buffer the prepared rejection (see the
+          // step_completed branch above for the rationale).
+          const errorData = eventData?.error;
+          if (errorData instanceof Uint8Array) {
+            const decrypted = await prepareBytesForVM(errorData, encryptionKey);
+            // Host serde: deserialize into the VM error value NOW (same
+            // path as the resolver branch above) and buffer it.
+            const errorHandle = serde.deserialize(decrypted);
+            vm.setProp(vm.global, '__tmp_buf', errorHandle);
+            errorHandle.dispose();
+            vm.evalCode(
+              `globalThis.__terminalBuffer[${cidJs}] = { kind: "reject_value", value: globalThis.__tmp_buf };` +
+                `delete globalThis.__tmp_buf;`
+            ).dispose();
+          } else {
+            const isErrorObject =
+              typeof errorData === 'object' && errorData !== null;
+            const msg = isErrorObject
+              ? (((errorData as Record<string, unknown>).message as string) ??
+                'Step failed')
+              : typeof errorData === 'string'
+                ? errorData
+                : 'Step failed';
+            const errorStack =
+              (isErrorObject
+                ? (errorData as Record<string, unknown>).stack
+                : undefined) ?? (eventData?.stack as string | undefined);
+            vm.evalCode(
+              `globalThis.__terminalBuffer[${cidJs}] = { kind: "reject_error", message: ${JSON.stringify(msg)}, stack: ${errorStack ? JSON.stringify(errorStack) : 'undefined'} };`
+            ).dispose();
+          }
         }
         markCreated(vm, cidJs);
         break;
@@ -1589,6 +1691,11 @@ async function processEvents(
               b = vm.executePendingJobs();
             } while (b > 0);
           }
+        } else {
+          // No resolver yet — buffer (see step_completed above).
+          vm.evalCode(
+            `globalThis.__terminalBuffer[${cidJs}] = { kind: "resolve_undefined" };`
+          ).dispose();
         }
         markCreated(vm, cidJs);
         break;
@@ -1603,6 +1710,12 @@ async function processEvents(
         const hasResolver = vm.dump(
           vm.evalCode(`!!globalThis.__resolvers[${cidJs}]`)
         );
+        if (!hasResolver) {
+          // No resolver yet — buffer (see step_completed above).
+          vm.evalCode(
+            `globalThis.__terminalBuffer[${cidJs}] = { kind: "resolve_undefined" };`
+          ).dispose();
+        }
         if (hasResolver) {
           vm.evalCode(
             `globalThis.__resolvers[${cidJs}].resolve();` +
@@ -1652,8 +1765,13 @@ async function processEvents(
         // survives event re-scans within the invocation. Events without a
         // resumeId (older SDKs) are never deduped.
         {
-          const resumeId = (eventData as { resumeId?: unknown } | undefined)
-            ?.resumeId;
+          // Top-level event.resumeId is the canonical location (the backend
+          // hoists it to a first-class column); the nested
+          // eventData.resumeId form is a deprecated legacy fallback —
+          // mirrors the node engine's dedup in workflow/hook.ts.
+          const resumeId =
+            (event as { resumeId?: unknown }).resumeId ??
+            (eventData as { resumeId?: unknown } | undefined)?.resumeId;
           if (typeof resumeId === 'string') {
             const resumeIdJs = JSON.stringify(resumeId);
             const duplicate = vm.dump(
@@ -2242,13 +2360,19 @@ function extractError(
  * processing), not total VM lifetime — the inline-step loop keeps a VM
  * alive across step executions that can legitimately take minutes, so the
  * host resets the budget before each re-entry (see resetBudget calls).
+ *
+ * The per-burst ceiling is the same configurable budget as the node
+ * engine's ReplayBudget (REPLAY_TIMEOUT_MS, default 240s): a workflow
+ * whose replay the node engine handles fine must not be interrupted here
+ * by a lower hardcoded ceiling. The interrupt error escapes
+ * runQuickJSWorkflow and reaches the replay loop's catch in runtime.ts,
+ * which records run_failed.
  */
 interface InterruptBudget {
   start: number;
 }
 
-const INTERRUPT_BUDGET_MS = 30_000;
-
 function createInterruptHandler(budget: InterruptBudget): () => boolean {
-  return () => Date.now() - budget.start > INTERRUPT_BUDGET_MS;
+  const timeout = getReplayTimeoutMs();
+  return () => Date.now() - budget.start > timeout;
 }

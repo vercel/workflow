@@ -10,6 +10,7 @@ import {
   type WorkflowOrchestratorContext,
 } from './private.js';
 import type { Serializable } from './schemas.js';
+import { markUseStepClosureFn } from './serialization/hardened.js';
 import { hydrateStepError, hydrateStepReturnValue } from './serialization.js';
 
 export function createUseStep(ctx: WorkflowOrchestratorContext) {
@@ -58,7 +59,11 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // Crucially, if we got here, then this step Promise does
           // not resolve so that the user workflow code does not proceed any further.
           // Notify the workflow handler that this step has not been run / has not completed yet.
+          const generation = ctx.suspensionGeneration;
           scheduleWhenIdle(ctx, () => {
+            // A retained session may have resumed past this boundary while
+            // the timer was queued; a stale signal must not fire.
+            if (generation !== ctx.suspensionGeneration) return;
             ctx.onWorkflowError(
               new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
             );
@@ -363,8 +368,14 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
       configurable: false,
     });
 
-    // Store the closure variables function for serialization
+    // Store the closure variables function for serialization. Mark it so the
+    // step-function reducer can tell a function that came through `useStep`
+    // apart from one workflow code assigned over the property afterwards —
+    // the reducer has to invoke whatever is there, and only the latter is
+    // worth reporting. See `markUseStepClosureFn` for the limits of what
+    // this proves.
     if (closureVarsFn) {
+      markUseStepClosureFn(closureVarsFn);
       Object.defineProperty(stepFunction, '__closureVarsFn', {
         value: closureVarsFn,
         writable: false,
