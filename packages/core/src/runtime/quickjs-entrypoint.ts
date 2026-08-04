@@ -792,6 +792,17 @@ export async function runWorkflowWithQuickJS(params: {
     // Drain failures are swallowed: the workflow's own outcome is the
     // source of truth.
     if (result.completed.drainOperations?.length) {
+      // Fail loud on retained hooks the World can't support BEFORE the
+      // drain try/catch below — that catch intentionally swallows genuine
+      // drain failures ("the workflow's own outcome is the source of
+      // truth"), but the retention gate's FatalError must escape to the
+      // replay loop's catch (run_failed), mirroring the node engine. This
+      // covers the fire-and-forget case: a retained hook that was never
+      // awaited only reaches the gate through this drain.
+      assertHookRetentionSupported(
+        result.completed.drainOperations,
+        world.capabilities
+      );
       try {
         await dispatchPendingOps({
           world,
@@ -1043,6 +1054,14 @@ export async function runWorkflowWithQuickJS(params: {
     // Flush leftover pending side effects before writing run_failed —
     // same drain semantics as the completed branch.
     if (result.failed.drainOperations?.length) {
+      // Fail loud on retained hooks the World can't support BEFORE the
+      // drain try/catch below — same reasoning as the completed branch:
+      // the retention gate's FatalError must escape to the replay loop's
+      // catch rather than be swallowed as a genuine drain failure.
+      assertHookRetentionSupported(
+        result.failed.drainOperations,
+        world.capabilities
+      );
       try {
         await dispatchPendingOps({
           world,
