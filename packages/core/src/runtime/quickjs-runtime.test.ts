@@ -103,6 +103,7 @@ describe('runQuickJSWorkflow', () => {
       workflowId: 'workflow//test//workflow',
       workflowRun: makeRun(),
       events: [],
+      worldSupportsHookRetention: true,
     });
 
     expect(result.suspended?.pendingOperations).toContainEqual(

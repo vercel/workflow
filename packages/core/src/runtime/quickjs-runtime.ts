@@ -207,6 +207,15 @@ export interface QuickJSRuntimeOptions {
    * (eventually-consistent read after the parent's start() wrote it).
    */
   runInput?: RunInput;
+  /**
+   * Whether the configured World supports `experimental_minRetention` for
+   * Hooks (`world.capabilities.hookRetention.active === true`). Gates the
+   * VM's `createHook()` retention path so the QuickJS engine fails closed on
+   * Worlds without the capability, matching the node:vm engine's
+   * world-capability gate (see `hook.ts`). Defaults to unsupported when
+   * omitted.
+   */
+  worldSupportsHookRetention?: boolean;
 }
 
 // ---- VM Bootstrap Code ----
@@ -568,6 +577,13 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   options = options || {};
   if (options.isWebhook === true && options.experimental_minRetention !== undefined) {
     throw new Error('Webhook hooks do not support \`experimental_minRetention\`. Use a non-webhook \`createHook()\` with \`resumeHook()\`.');
+  }
+  // Fail closed when the configured World does not declare hook-retention
+  // support (parity with the node:vm engine's world-capability gate in
+  // hook.ts). The host injects \`__worldSupportsHookRetention\` per run from
+  // \`world.capabilities.hookRetention.active\`; absence means unsupported.
+  if (options.experimental_minRetention !== undefined && globalThis.__worldSupportsHookRetention !== true) {
+    throw new Error('The configured World does not support \`experimental_minRetention\` for Hooks.');
   }
   var token = options.token || globalThis.__generateNanoid();
   var correlationId = "hook_" + globalThis.__generateUlid();
@@ -968,6 +984,7 @@ export async function runQuickJSWorkflow(
   options: QuickJSRuntimeOptions
 ): Promise<QuickJSRuntimeResult> {
   const { workflowCode, workflowId, workflowRun, events } = options;
+  const worldSupportsHookRetention = options.worldSupportsHookRetention === true;
 
   const startedAt = workflowRun.startedAt ? +workflowRun.startedAt : Date.now();
 
@@ -1060,6 +1077,14 @@ export async function runQuickJSWorkflow(
     // synthesized run object and the durably stored run).
     vm.evalCode(
       `globalThis.__ulidTimestamp = ${runIdCreatedAt(workflowRun.runId) ?? (+workflowRun.createdAt || startedAt)};`
+    ).dispose();
+
+    // Whether the configured World supports Hook retention. Gates the VM's
+    // `createHook({ experimental_minRetention })` path so QuickJS fails
+    // closed on Worlds without the capability, matching the node:vm engine
+    // (see hook.ts's world-capability gate).
+    vm.evalCode(
+      `globalThis.__worldSupportsHookRetention = ${worldSupportsHookRetention};`
     ).dispose();
 
     // `process.env` — parity with the node:vm engine, which exposes a frozen
