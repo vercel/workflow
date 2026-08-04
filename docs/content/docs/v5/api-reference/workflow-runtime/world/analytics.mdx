@@ -111,7 +111,7 @@ Run-scoped listings mirroring their [Storage](/docs/api-reference/workflow-runti
 ```typescript lineNumbers
 const steps = await world.analytics.steps.list({ runId });
 const events = await world.analytics.events.list({ runId, eventType: "step_failed" });
-const related = await world.analytics.events.listByCorrelationId({ correlationId });
+const related = await world.analytics.events.listByCorrelationId({ runId, correlationId });
 const hooks = await world.analytics.hooks.list({ runId });
 const waits = await world.analytics.waits.list({ runId, status: "waiting" });
 ```
