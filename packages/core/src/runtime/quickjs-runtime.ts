@@ -187,6 +187,8 @@ export interface QuickJSRuntimeOptions {
   workflowId: string;
   /** The workflow run entity */
   workflowRun: WorkflowRun;
+  /** Whether the configured World supports retained Hooks. */
+  hookRetentionSupported: boolean;
   /**
    * The full event log for the run. Every invocation replays the complete
    * log from the start (same replay semantics as the `node:vm` engine).
@@ -568,6 +570,12 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   options = options || {};
   if (options.isWebhook === true && options.experimental_minRetention !== undefined) {
     throw new Error('Webhook hooks do not support \`experimental_minRetention\`. Use a non-webhook \`createHook()\` with \`resumeHook()\`.');
+  }
+  if (options.experimental_minRetention !== undefined && !globalThis.__hookRetentionSupported) {
+    var unsupportedRetentionError = new Error('The configured World does not support \`experimental_minRetention\` for Hooks.');
+    unsupportedRetentionError.name = "FatalError";
+    unsupportedRetentionError.fatal = true;
+    throw unsupportedRetentionError;
   }
   var token = options.token || globalThis.__generateNanoid();
   var correlationId = "hook_" + globalThis.__generateUlid();
@@ -1037,6 +1045,10 @@ export async function runQuickJSWorkflow(
 
   // ---- Phase 2: per-run initialization ----
   async function runWorkflowInVM(): Promise<QuickJSRuntimeResult> {
+    vm.evalCode(
+      `globalThis.__hookRetentionSupported = ${options.hookRetentionSupported};`
+    ).dispose();
+
     // Seeded Math.random
     {
       using randomFn = vm.newFunction('random', () => vm.newNumber(rng()));
