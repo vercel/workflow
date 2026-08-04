@@ -446,8 +446,16 @@ export async function getWorkflowRunEvents(
     ? getEventsByCorrelationIdV4(params.correlationId, listParams, config)
     : getWorkflowRunEventsV4(params.runId, listParams, config));
 
+  // A correlation id is unique per run, not globally — a slot-numbered run
+  // numbers its own steps, so `step_…001` names the first step of every such
+  // run. The backend selects by correlation id alone, so the run scope is
+  // applied here. `hasMore`/`cursor` stay the backend's, so a page that
+  // filters down to nothing is still followed by the next one.
   return {
-    data: result.events,
+    data:
+      'correlationId' in params
+        ? result.events.filter((event) => event.runId === params.runId)
+        : result.events,
     // The cursor is present even on the final page because it is also the
     // incremental-load resume point. `hasMore` is the pagination signal.
     cursor: result.cursor,
