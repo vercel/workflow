@@ -1353,7 +1353,7 @@ ${apiFileContent}`
           },
           {
             description: 'workflow file removed from API import',
-            expectedLogCounts: { full: 1 },
+            expectedLogCounts: { full: 1, skip: 1 },
             write: async () => {
               await fs.rm(files.addedWorkflow, { force: true });
               await fs.writeFile(

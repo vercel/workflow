@@ -445,10 +445,10 @@ export async function getNextBuilderEager(
             readSnapshot: readSourceSnapshot,
             sourceSnapshots,
           });
+          if (decision.kind === 'duplicate') {
+            return;
+          }
           if (decision.kind === 'none') {
-            if (decision.snapshots.size === 0) {
-              return;
-            }
             logDevHmr('workflow dev hmr: skip');
             for (const [file, snapshot] of decision.snapshots) {
               sourceSnapshots.set(file, snapshot);
