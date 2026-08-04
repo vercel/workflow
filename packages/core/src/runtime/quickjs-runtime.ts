@@ -566,6 +566,9 @@ if (typeof Request === "undefined") {
 // The promise is resolved when a hook_received event arrives.
 globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   options = options || {};
+  if (options.isWebhook === true && options.experimental_minRetention !== undefined) {
+    throw new Error('Webhook hooks do not support \`experimental_minRetention\`. Use a non-webhook \`createHook()\` with \`resumeHook()\`.');
+  }
   var token = options.token || globalThis.__generateNanoid();
   var correlationId = "hook_" + globalThis.__generateUlid();
   var isDisposed = false;

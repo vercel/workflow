@@ -115,6 +115,28 @@ describe('runQuickJSWorkflow', () => {
     );
   });
 
+  it('rejects minimum retention for webhook Hooks', async () => {
+    const result = await runQuickJSWorkflow({
+      workflowCode: `
+        async function workflow() {
+          globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")]({
+            isWebhook: true,
+            experimental_minRetention: 60000,
+          });
+        }
+        workflow.workflowId = "workflow//test//workflow";
+        globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+      `,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: makeRun(),
+      events: [],
+    });
+
+    expect(result.failed?.message).toBe(
+      'Webhook hooks do not support `experimental_minRetention`. Use a non-webhook `createHook()` with `resumeHook()`.'
+    );
+  });
+
   it('should complete after step resolves via full event replay', async () => {
     const code = `
       var add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//add");
