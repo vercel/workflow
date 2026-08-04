@@ -7,12 +7,12 @@
 
 import { parse, stringify, unflatten } from 'devalue';
 import type { Codec, SerializationMode } from './codec.js';
-import { getClassReducers, getClassRevivers } from './reducers/class.js';
+import { getClassReducers, getClassRevivers } from './reducers/class-vm.js';
 import { getCommonReducers, getCommonRevivers } from './reducers/common-vm.js';
 import {
   getStepFunctionReducer,
   getStepFunctionReviver,
-} from './reducers/step-function.js';
+} from './reducers/step-function-vm.js';
 import { type Reducers, type Revivers, SerializationFormat } from './types.js';
 
 const encoder = new TextEncoder();

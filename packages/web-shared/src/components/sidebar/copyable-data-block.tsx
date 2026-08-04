@@ -2,7 +2,7 @@
 
 import { Lock } from 'lucide-react';
 import { useContext } from 'react';
-import { CopyButton } from '../new-trace-viewer/components/copy-button';
+import { CopyButton } from '../trace-viewer/components/copy-button';
 import { Button } from '../ui/button';
 import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
 import { Spinner } from '../ui/spinner';

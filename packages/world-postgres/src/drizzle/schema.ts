@@ -142,8 +142,15 @@ export const events = schema.table(
     eventDataJson: jsonb('payload'),
     eventData: Cbor<unknown>()('payload_cbor'),
     specVersion: integer('spec_version'),
+    // `resumeId` is omitted deliberately: world-postgres does not advertise
+    // lazy hook-resume dedup and stays on the sequential single-writer path,
+    // so it never needs to persist the resume idempotency key (no column, no
+    // migration).
   } satisfies DrizzlishOfType<
-    Cborized<Omit<Event, 'occurredAt'> & { eventData?: undefined }, 'eventData'>
+    Cborized<
+      Omit<Event, 'occurredAt' | 'resumeId'> & { eventData?: undefined },
+      'eventData'
+    >
   >,
   (tb) => [
     index().on(tb.runId),
@@ -225,7 +232,11 @@ export const hooks = schema.table(
     // Server-synthesized resume slice. Not carried by the hook_created event,
     // so this backend leaves it null; reads fall back to runs.get.
     resumeContext: Cbor<NonNullable<Hook['resumeContext']>>()('resume_context'),
-  } satisfies DrizzlishOfType<Cborized<Hook, 'metadata'>>,
+    // `resumeCapabilities` is deliberately response-only — attested fresh on
+    // each by-token lookup, never persisted — so it must not become a column.
+  } satisfies DrizzlishOfType<
+    Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'>
+  >,
   (tb) => [index().on(tb.runId), index().on(tb.token)]
 );
 
