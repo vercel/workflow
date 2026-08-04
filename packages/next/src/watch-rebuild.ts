@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 export interface DiscoveredEntriesLike {
@@ -15,7 +14,6 @@ export interface FileChanges {
 }
 
 export interface SourceSnapshot {
-  contentHash: string;
   importSignature: string;
   definitionSignature: string;
   hasDirective: boolean;
@@ -23,8 +21,7 @@ export interface SourceSnapshot {
 }
 
 export type RebuildDecision =
-  | { kind: 'ignored' }
-  | { kind: 'none'; snapshots: Map<string, SourceSnapshot> }
+  | { kind: 'none'; snapshots?: Map<string, SourceSnapshot> }
   | {
       kind: 'hot';
       refreshStepRegistrations: boolean;
@@ -219,9 +216,6 @@ export const createSourceSnapshotFromSource = (
   const patterns = detectWorkflowPatterns(sourceWithoutComments);
 
   return {
-    contentHash: createHash('sha256')
-      .update(sourceWithoutComments)
-      .digest('base64url'),
     importSignature: extractImportSignature(sourceWithoutComments),
     definitionSignature: extractDefinitionSignature(sourceWithoutComments),
     hasDirective: patterns.hasDirective,
@@ -323,9 +317,7 @@ const snapshotChangedFile = async ({
     return false;
   }
 
-  if (previousSnapshot.contentHash !== nextSnapshot.contentHash) {
-    nextSnapshots.set(file, nextSnapshot);
-  }
+  nextSnapshots.set(file, nextSnapshot);
   return true;
 };
 
@@ -393,9 +385,7 @@ const pruneStaleAddedFiles = async ({
         nextAddedFiles.push(file);
         continue;
       }
-      if (previousSnapshot.contentHash !== nextSnapshot.contentHash) {
-        snapshots.set(file, nextSnapshot);
-      }
+      snapshots.set(file, nextSnapshot);
     } catch {
       nextAddedFiles.push(file);
     }
@@ -597,7 +587,7 @@ export const classifyRebuild = async ({
   if (changedRelevantFiles.length === 0) {
     return prunedAddedFiles.snapshots.size > 0
       ? { kind: 'none', snapshots: prunedAddedFiles.snapshots }
-      : { kind: 'ignored' };
+      : { kind: 'none' };
   }
 
   try {
@@ -608,9 +598,6 @@ export const classifyRebuild = async ({
     });
     if (!snapshots) {
       return { kind: 'full' };
-    }
-    if (snapshots.size === 0) {
-      return { kind: 'ignored' };
     }
     return workflowEntryFilesChanged({
       changedFiles: changedRelevantFiles,
