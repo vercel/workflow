@@ -797,21 +797,29 @@ export async function getWorkflowRunEventsV4(
 }
 
 /**
- * GET /api/v4/events?correlationId=...
+ * GET /api/v4/events?correlationId=...&runId=...
  *
- * Same frame stream as getWorkflowRunEventsV4 but selected by
- * correlationId (GSI) instead of runId. Used by the storage adapter's
+ * Same frame stream as getWorkflowRunEventsV4 but selected by correlation id
+ * instead of run id alone. Used by the storage adapter's
  * `events.listByCorrelationId` path — the v3 client used
  * `/v2/events?correlationId=...` for the equivalent query.
+ *
+ * `runId` scopes the lookup. A correlation id names a step, hook or wait
+ * within *its* run, so the same one can appear in many runs; sending the run
+ * is what lets the backend answer for one. A backend that predates the
+ * parameter ignores it and answers across runs, so the caller still filters
+ * the page by run id.
  */
 export async function getEventsByCorrelationIdV4(
   correlationId: string,
+  runId: string,
   params: ListEventsV4Params = {},
   config?: APIConfig
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
   const sp = new URLSearchParams();
   sp.set('correlationId', correlationId);
+  sp.set('runId', runId);
   appendListParams(sp, params);
   const url = `${baseUrl}/v4/events?${sp.toString()}`;
   return consumeListFrameStream(
