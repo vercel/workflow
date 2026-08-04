@@ -445,7 +445,7 @@ export async function getNextBuilderEager(
             readSnapshot: readSourceSnapshot,
             sourceSnapshots,
           });
-          if (decision.kind === 'duplicate') {
+          if (decision.kind === 'ignored') {
             return;
           }
           if (decision.kind === 'none') {
