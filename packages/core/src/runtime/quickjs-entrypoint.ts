@@ -301,8 +301,9 @@ async function dispatchPendingOps(params: {
   // validated by the world — parallel dispatch would otherwise record a
   // spurious hook_conflict against the run's own disposed hook (e.g. a
   // dispose→recreate loop reusing one token). Different tokens have no
-  // claim interaction, so token groups run in parallel with each other
-  // and with the non-hook ops below.
+  // claim interaction, so token groups run in parallel with each other,
+  // but the whole hook phase is awaited before any step/wait op is issued
+  // (see the barrier below).
   const hookOpsByToken = new Map<
     string,
     (PendingHook | PendingHookDispose)[]
@@ -327,8 +328,9 @@ async function dispatchPendingOps(params: {
       hookOpsByToken.set(key, [op as PendingHook | PendingHookDispose]);
     }
   }
+  const hookPhasePromises: Promise<void>[] = [];
   for (const group of hookOpsByToken.values()) {
-    opsPromises.push(
+    hookPhasePromises.push(
       (async () => {
         for (const op of group) {
           if (op.type === 'hook') {
@@ -339,6 +341,25 @@ async function dispatchPendingOps(params: {
         }
       })()
     );
+  }
+  // Barrier: every hook_created is durable before any step is dispatched.
+  // This mirrors the node:vm suspension handler, which settles its hook
+  // phase before the step phase. A step that receives an AbortSignal can
+  // call controller.abort() as soon as it starts running, and that resume
+  // targets the abort controller's hook by token: if the hook row does not
+  // exist yet the resume throws HookNotFoundError and the abort is lost
+  // (serialization.ts treats the resume as best-effort). Dispatching steps
+  // concurrently with hook creation makes that a race decided by write
+  // latency.
+  if (hookPhasePromises.length > 0) {
+    // Settle rather than Promise.all so a rejecting group cannot leave its
+    // siblings' in-flight writes as unhandled rejections.
+    const rejections = (await Promise.allSettled(hookPhasePromises))
+      .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+      .map((r) => r.reason);
+    if (rejections.length > 0) {
+      throw rejections[0];
+    }
   }
 
   for (const op of pendingOperations) {
