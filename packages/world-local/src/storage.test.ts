@@ -12,7 +12,9 @@ import * as helpers from './storage/helpers.js';
 import {
   hashToken,
   hookDisposeLockPath,
+  hookTokenClaimPath,
   runTerminalMarkerPath,
+  withHookTokenClaimLock,
 } from './storage/helpers.js';
 import { createStorage } from './storage.js';
 import {
@@ -158,6 +160,7 @@ describe('Storage', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     // Clean up test dir
     await fs.rm(testDir, { recursive: true, force: true });
   });
@@ -2150,6 +2153,31 @@ describe('Storage', () => {
     });
   });
 
+  it('fails an operation when its Hook token lock is compromised', async () => {
+    const token = 'compromised-lock';
+    let started!: () => void;
+    const lockAcquired = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const operation = withHookTokenClaimLock(testDir, token, async (signal) => {
+      started();
+      await new Promise<void>((resolve) => {
+        signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      signal.throwIfAborted();
+    });
+
+    await lockAcquired;
+    await fs.rm(`${hookTokenClaimPath(testDir, token)}.lock`, {
+      recursive: true,
+    });
+
+    await expect(operation).rejects.toMatchObject({
+      name: 'WorkflowWorldError',
+      message: 'Hook token claim lock was compromised',
+    });
+  });
+
   describe('hooks', () => {
     let testRunId: string;
 
@@ -2163,6 +2191,46 @@ describe('Storage', () => {
     });
 
     describe('create', () => {
+      it('rejects retention beyond the 30-day default before writing Hook state', async () => {
+        const hookId = 'hook_over_retention_limit';
+        const before = await storage.events.list({ runId: testRunId });
+
+        await expect(
+          createHook(storage, testRunId, {
+            hookId,
+            token: 'over-retention-limit',
+            tokenRetentionUntil: new Date(
+              Date.now() + 31 * 24 * 60 * 60 * 1000
+            ),
+          })
+        ).rejects.toMatchObject({
+          name: 'WorkflowWorldError',
+          status: 400,
+          message:
+            'Hook minimum retention cannot exceed 30 days in the Local World.',
+        });
+
+        await expect(storage.hooks.get(hookId)).rejects.toMatchObject({
+          name: 'HookNotFoundError',
+        });
+        expect(await storage.events.list({ runId: testRunId })).toEqual(before);
+      });
+
+      it('accepts retention within the configured Local limit', async () => {
+        vi.stubEnv('WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS', '60');
+        const configuredStorage = createStorage(testDir);
+
+        await expect(
+          createHook(configuredStorage, testRunId, {
+            hookId: 'hook_custom_retention_limit',
+            token: 'custom-retention-limit',
+            tokenRetentionUntil: new Date(
+              Date.now() + 31 * 24 * 60 * 60 * 1000
+            ),
+          })
+        ).resolves.toMatchObject({ hookId: 'hook_custom_retention_limit' });
+      });
+
       it('should create a new hook', async () => {
         const hookData = {
           hookId: 'hook_123',
@@ -2306,6 +2374,7 @@ describe('Storage', () => {
         const hook1 = await createHook(storage, testRunId, {
           hookId: 'hook_1',
           token,
+          tokenRetentionUntil: new Date(Date.now() + 60_000),
         });
 
         expect(hook1.token).toBe(token);
@@ -2334,6 +2403,144 @@ describe('Storage', () => {
 
         expect(hook2.token).toBe(token);
         expect(hook2.hookId).toBe('hook_2');
+      });
+
+      it.each([
+        ['run_completed', { output: new Uint8Array() }],
+        ['run_failed', { error: new Uint8Array() }],
+        ['run_cancelled', undefined],
+      ] as const)('keeps a retained Hook available after %s', async (terminalEvent, terminalData) => {
+        const token = 'retained-token';
+        const hookId = 'hook_retained';
+        const retainedUntil = new Date(Date.now() + 60_000);
+        await createHook(storage, testRunId, {
+          hookId,
+          token,
+          tokenRetentionUntil: retainedUntil,
+        });
+        await fs.rm(hookTokenClaimPath(testDir, token));
+        await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, terminalEvent, terminalData);
+
+        // Terminal cleanup reads retention from the Hook, not the lost claim.
+        await expect(storage.hooks.list({})).resolves.toMatchObject({
+          data: [
+            expect.objectContaining({
+              hookId,
+              tokenRetentionUntil: retainedUntil,
+            }),
+          ],
+        });
+      });
+
+      it('does not delete expired Hooks while reading', async () => {
+        const tokenRetentionUntil = new Date(Date.now() + 60_000);
+        await createHook(storage, testRunId, {
+          hookId: 'hook_expired',
+          token: 'expired-hook',
+          tokenRetentionUntil,
+        });
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+
+        vi.spyOn(Date, 'now').mockReturnValue(tokenRetentionUntil.getTime());
+        await expect(storage.hooks.list({})).resolves.toMatchObject({
+          data: [],
+        });
+        await expect(
+          fs.access(path.join(testDir, 'hooks', 'hook_expired.json'))
+        ).resolves.toBeUndefined();
+      });
+
+      it('releases retention only after both its deadline and run end', async () => {
+        const token = 'expired-retention-token';
+        const retainedUntil = new Date(Date.now() + 60_000);
+        await createHook(storage, testRunId, {
+          hookId: 'hook_owner',
+          token,
+          tokenRetentionUntil: retainedUntil,
+        });
+
+        const replacement = await createRun(storage, {
+          deploymentId: 'deployment-replacement',
+          workflowName: 'replacement',
+          input: new Uint8Array(),
+        });
+        vi.spyOn(Date, 'now').mockReturnValue(retainedUntil.getTime());
+
+        const conflict = await storage.events.create(replacement.runId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_conflict',
+          eventData: { token },
+        });
+        expect(conflict.event.eventType).toBe('hook_conflict');
+
+        await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+        await expect(storage.hooks.getByToken(token)).rejects.toMatchObject({
+          name: 'HookNotFoundError',
+        });
+        await expect(storage.hooks.list({})).resolves.toMatchObject({
+          data: [],
+        });
+        await expect(
+          createHook(storage, replacement.runId, {
+            hookId: 'hook_replacement',
+            token,
+          })
+        ).resolves.toMatchObject({ runId: replacement.runId, token });
+      });
+
+      it('admits one replacement across storage instances after retention ends', async () => {
+        const token = 'concurrent-expired-retention-token';
+        const retainedUntil = new Date(Date.now() + 500);
+        await createHook(storage, testRunId, {
+          hookId: 'hook_expiring_owner',
+          token,
+          tokenRetentionUntil: retainedUntil,
+        });
+        await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+
+        const workers = Array.from({ length: 10 }, () =>
+          createStorage(testDir)
+        );
+        const runs = await Promise.all(
+          workers.map((worker, index) =>
+            createRun(worker, {
+              deploymentId: `deployment-contender-${index}`,
+              workflowName: 'retention-contender',
+              input: new Uint8Array(),
+            })
+          )
+        );
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.max(0, retainedUntil.getTime() - Date.now() + 1)
+          )
+        );
+
+        const results = await Promise.all(
+          workers.map((worker, index) =>
+            worker.events.create(runs[index].runId, {
+              eventType: 'hook_created',
+              correlationId: `hook_contender_${index}`,
+              eventData: { token },
+            })
+          )
+        );
+        expect(
+          results.filter(({ event }) => event.eventType === 'hook_created')
+        ).toHaveLength(1);
+        expect(
+          results.filter(({ event }) => event.eventType === 'hook_conflict')
+        ).toHaveLength(workers.length - 1);
       });
 
       // Regression test for #2778: a claim whose owning run is terminal can
@@ -3416,6 +3623,7 @@ describe('Storage', () => {
       // and the outer code path emits the `hook_created` event.
       const token = 'orphaned-claim-token';
       const hookId = 'hook_orphan_1';
+      const tokenRetentionUntil = new Date(Date.now() + 60_000);
 
       // Pre-seed an orphaned token claim — same shape as one written
       // by `events.create` but with no corresponding hook entity on
@@ -3425,7 +3633,7 @@ describe('Storage', () => {
       await fs.mkdir(tokensDir, { recursive: true });
       await fs.writeFile(
         path.join(tokensDir, `${hashToken(token)}.json`),
-        JSON.stringify({ token, hookId, runId: testRunId, foo: 'bar' })
+        JSON.stringify({ token, hookId, runId: testRunId, tokenRetentionUntil })
       );
 
       // Sanity: the hook entity is not on disk yet.
@@ -3435,7 +3643,11 @@ describe('Storage', () => {
 
       // Retry: must succeed, write the hook entity, and emit a
       // hook_created event.
-      const hook = await createHook(storage, testRunId, { hookId, token });
+      const hook = await createHook(storage, testRunId, {
+        hookId,
+        token,
+        tokenRetentionUntil: new Date(Date.now() + 120_000),
+      });
       expect(hook.hookId).toBe(hookId);
       expect(hook.token).toBe(token);
 
@@ -3455,7 +3667,11 @@ describe('Storage', () => {
       const conflicts = events.data.filter(
         (e) => e.eventType === 'hook_conflict'
       );
-      expect(created).toHaveLength(1);
+      expect(created).toEqual([
+        expect.objectContaining({
+          eventData: expect.objectContaining({ tokenRetentionUntil }),
+        }),
+      ]);
       expect(conflicts).toHaveLength(0);
     });
 
@@ -3666,11 +3882,12 @@ describe('Storage', () => {
       const metadata = new Uint8Array([0xee]);
       const hookId = 'hook_event_log_rebuild';
       const token = 'event-log-rebuild-token';
+      const tokenRetentionUntil = new Date(Date.now() + 60_000);
 
       const created = await storage.events.create(testRunId, {
         eventType: 'hook_created',
         correlationId: hookId,
-        eventData: { token, metadata, isWebhook: true },
+        eventData: { token, metadata, isWebhook: true, tokenRetentionUntil },
       });
       expect(created.event.eventType).toBe('hook_created');
 
@@ -3707,6 +3924,7 @@ describe('Storage', () => {
         token,
         metadata,
         isWebhook: true,
+        tokenRetentionUntil,
       });
 
       const claim = JSON.parse(await fs.readFile(tokenClaimPath, 'utf8'));

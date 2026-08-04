@@ -105,6 +105,9 @@ export const HookSchema = z.object({
   specVersion: z.number().optional(),
   isWebhook: z.boolean().optional(),
   isSystem: z.boolean().optional(),
+  // Earliest time the token can become available after the owning run ends.
+  // An active run keeps the token beyond this deadline.
+  tokenRetentionUntil: z.coerce.date().optional(),
   // Present when the server stored it (new hooks) or synthesized it from the
   // run (old hooks). Absent only against an old server, where the resume path
   // falls back to `runs.get`.
