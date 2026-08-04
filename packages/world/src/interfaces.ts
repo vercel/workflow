@@ -16,6 +16,8 @@ import type {
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
 import type { Queue } from './queue.js';
 import type {
+  BulkCancelWorkflowRunsRequest,
+  BulkCancelWorkflowRunsResult,
   GetWorkflowRunParams,
   ListWorkflowRunsParams,
   WorkflowRun,
@@ -212,6 +214,20 @@ export interface Storage {
       changes: AttributeChange[],
       options?: { allowReservedAttributes?: boolean }
     ): Promise<ExperimentalSetAttributesResult>;
+
+    /**
+     * Cancel many runs in a single operation, returning a per-run outcome
+     * for each requested ID (order preserved) plus an aggregate summary.
+     *
+     * OPTIONAL. Worlds that can cancel a batch in one backend round-trip
+     * (e.g. `@workflow/world-vercel`) implement this; the SDK helper
+     * (`cancelRuns` in `@workflow/core`) feature-detects its absence and
+     * falls back to bounded-concurrency single-run cancellation so
+     * third-party / community worlds keep working without adopting it.
+     */
+    cancelMany?(
+      request: BulkCancelWorkflowRunsRequest
+    ): Promise<BulkCancelWorkflowRunsResult>;
   };
 
   steps: {
