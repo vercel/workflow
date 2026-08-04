@@ -707,7 +707,7 @@ export async function runWorkflowWithQuickJS(params: {
     workflowId,
     workflowRun,
     events,
-    hookRetentionSupported: world.capabilities?.hookRetention?.active === true,
+    worldCapabilities: world.capabilities,
     encryptionKey,
     port,
     runInput,

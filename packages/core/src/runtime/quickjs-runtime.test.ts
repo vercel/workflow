@@ -1,18 +1,6 @@
 import { assert, describe, expect, it } from 'vitest';
 import { deserialize, serialize } from '../serialization/workflow-vm.js';
-import {
-  type QuickJSRuntimeOptions,
-  runQuickJSWorkflow as runQuickJSWorkflowRuntime,
-} from './quickjs-runtime.js';
-
-function runQuickJSWorkflow(
-  options: Omit<QuickJSRuntimeOptions, 'hookRetentionSupported'>
-) {
-  return runQuickJSWorkflowRuntime({
-    ...options,
-    hookRetentionSupported: true,
-  });
-}
+import { runQuickJSWorkflow } from './quickjs-runtime.js';
 
 /** Helper to deserialize the format-prefixed result bytes */
 function unwrapResult(result: Uint8Array): unknown {
@@ -114,6 +102,7 @@ describe('runQuickJSWorkflow', () => {
       `,
       workflowId: 'workflow//test//workflow',
       workflowRun: makeRun(),
+      worldCapabilities: { hookRetention: { active: true } },
       events: [],
     });
 
@@ -128,7 +117,7 @@ describe('runQuickJSWorkflow', () => {
   });
 
   it('rejects unsupported Hook retention inside the workflow', async () => {
-    const result = await runQuickJSWorkflowRuntime({
+    const result = await runQuickJSWorkflow({
       workflowCode: `
         async function workflow() {
           try {
@@ -145,7 +134,6 @@ describe('runQuickJSWorkflow', () => {
       `,
       workflowId: 'workflow//test//workflow',
       workflowRun: makeRun(),
-      hookRetentionSupported: false,
       events: [],
     });
 
@@ -175,6 +163,7 @@ describe('runQuickJSWorkflow', () => {
       `,
       workflowId: 'workflow//test//workflow',
       workflowRun: makeRun(),
+      worldCapabilities: { hookRetention: { active: true } },
       events: [],
     });
 
