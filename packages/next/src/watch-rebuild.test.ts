@@ -185,6 +185,6 @@ export const allWorkflows = {} as const;
       sourceSnapshots,
     });
 
-    expect(decision.kind).toBe('none');
+    expect(decision).toEqual({ kind: 'none', snapshots: new Map() });
   });
 });
