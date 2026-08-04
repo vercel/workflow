@@ -10,6 +10,16 @@ related:
 
 Runtime variables are read where workflows execute. Set them on the deployment or dev server.
 
+## Client polling
+
+### `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS`
+
+- Default: `1000`
+- Minimum: `1`
+- Delay between status requests made by [`Run.returnValue`](/docs/api-reference/workflow-api/get-run) while a workflow run is not yet complete.
+- Increase it to reduce polling traffic at the cost of noticing completion later.
+- This variable is read by the process awaiting `Run.returnValue`, such as an E2E test runner, rather than by the workflow deployment.
+
 ## Replay and queue delivery
 
 ### `WORKFLOW_REPLAY_TIMEOUT_MS`
