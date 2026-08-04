@@ -145,7 +145,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // repeated awaits observe the same instance deterministically.
     let conflictRunRef: Run<unknown> | null = null;
 
-    // Resilient-resume dedup: `resumeHook()` mints a `resumeId` per resume
+    // Lazy-resume dedup: `resumeHook()` mints a `resumeId` per resume
     // attempt and stamps it on the `hook_received` event. When the direct
     // event write fails transiently, the runtime materializes the event from
     // the queue payload instead — and because `hook_received` has no
@@ -284,7 +284,14 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // Drop duplicate deliveries of the same resume attempt (same
         // `resumeId` — see `seenResumeIds` above). Events without a
         // `resumeId` (older SDKs, legacy spec versions) are never deduped.
-        const resumeId = (event.eventData as { resumeId?: unknown }).resumeId;
+        //
+        // Dedup off the top-level `resumeId` the backend hoists onto the event
+        // as a first-class column. An earlier unreleased build additionally
+        // wrote it nested under `eventData`, but that form never shipped and is
+        // stripped by `EventSchema` parsing (the `hook_received` eventData
+        // schema does not declare it), so there is no persisted nested form to
+        // fall back to.
+        const resumeId = event.resumeId;
         if (typeof resumeId === 'string') {
           if (seenResumeIds.has(resumeId)) {
             return EventConsumerResult.Consumed;

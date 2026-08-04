@@ -404,6 +404,37 @@ export interface WorldCapabilities {
    * combined with it (and so Worlds document the contract explicitly).
    */
   maxConcurrency?: boolean;
+
+  /**
+   * The World's `events.create` deduplicates concurrent `hook_received` writes
+   * that carry the same `(runId, resumeId)` — collapsing them onto a single
+   * committed event and returning the canonical one to every caller. This is
+   * the backend half of `resumeHook()`'s parallel fast path: the producer's
+   * direct write and the queue consumer's re-ensure both write the same
+   * `resumeId`, and exactly one event must survive or the run replays a
+   * duplicated `hook_received`.
+   *
+   * The core runtime fails closed on this: the parallel path is taken ONLY
+   * when the World declares `hookResumeDedup === true` AND the target run's
+   * deployment can re-ensure from `hookInput` (see the execution-context
+   * marker `hookResumeInputVersion`). A World that accepts a `resumeId` but
+   * does not enforce the `(runId, resumeId)` constraint must leave this unset
+   * so the runtime keeps the sequential single-writer path.
+   *
+   * Enabled statically for `world-local` (filesystem sidecar claim keyed on
+   * `(runId, resumeId)`; the adapter and its backend ship together, so a static
+   * capability can never drift from the backend). `world-vercel` deliberately
+   * leaves this UNSET and instead attests support per-lookup via the
+   * server-computed, response-only `Hook.resumeCapabilities.hookResumeDedupVersion`
+   * (see `HookResumeCapabilitiesSchema`), so a server rollback or kill switch
+   * degrades new resumes to the sequential path immediately without redeploying
+   * the adapter. `world-postgres` leaves it unset for now and stays sequential.
+   *
+   * The resume gate treats EITHER signal as backend support (see
+   * `resume-hook.ts`): this static capability OR a current
+   * `resumeCapabilities.hookResumeDedupVersion` on the by-token hook.
+   */
+  hookResumeDedup?: boolean;
 }
 
 /**
