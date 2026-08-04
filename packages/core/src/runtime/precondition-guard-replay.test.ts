@@ -40,6 +40,7 @@ import {
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createCorrelationIdGenerator } from '../correlation-id.js';
 import { runtimeLogger } from '../logger.js';
 import { registerStepFunction } from '../private.js';
 import { workflowEntrypoint } from '../runtime.js';
@@ -48,7 +49,6 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from '../serialization.js';
-import { createContext } from '../vm/index.js';
 import {
   getPreconditionMaxInProcessRestarts,
   getPreconditionMaxReinvocations,
@@ -141,16 +141,16 @@ async function runPreconditionScenario(options: {
     ? SPEC_VERSION_SLOT_IDENTITY
     : SPEC_VERSION_CURRENT;
 
-  const { globalThis: vmGlobalThis } = createContext({
+  // Correlation ids are ULIDs in both modes: slot identity numbers event ids
+  // only. Each kind draws from its own sequence, so these are the first id of
+  // three separate sequences rather than three draws of one.
+  const generate = createCorrelationIdGenerator({
     seed: `${runId}:${workflowName}:${deploymentId}`,
     fixedTimestamp: +startedAt,
   });
-  const vmUlid = monotonicFactory(() => vmGlobalThis.Math.random());
-  // Correlation ids are ULIDs in both modes: slot identity numbers event ids
-  // only.
-  const hookCorrelationId = `hook_${vmUlid(+startedAt)}`;
-  const syncStep0CorrelationId = `step_${vmUlid(+startedAt)}`;
-  const waitCorrelationId = `wait_${vmUlid(+startedAt)}`;
+  const hookCorrelationId = `hook_${generate('hook')}`;
+  const syncStep0CorrelationId = `step_${generate('step')}`;
+  const waitCorrelationId = `wait_${generate('wait')}`;
 
   const workflowRun: WorkflowRun = {
     runId,

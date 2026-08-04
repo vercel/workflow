@@ -44,7 +44,10 @@ import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { describe, expect, it, vi } from 'vitest';
-import { createCorrelationIdGenerator } from './correlation-id.js';
+import {
+  type CorrelationIdKind,
+  createCorrelationIdGenerator,
+} from './correlation-id.js';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import {
@@ -107,19 +110,24 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
 }
 
 /**
- * The ULIDs the seeded generator hands out, in invocation order. Correlation
- * IDs in the fixtures below have to match what the replayed workflow draws.
+ * The correlation IDs the seeded generator hands out for one kind, in draw
+ * order. IDs in the fixtures below have to match what the replayed workflow
+ * draws, and each kind draws from its own sequence, so a fixture indexes into
+ * the kind it is naming rather than into one run-wide sequence.
  */
-function deterministicUlids(count: number): string[] {
-  const context = createContext({
+function correlationIds(kind: CorrelationIdKind, count: number): string[] {
+  const generate = createCorrelationIdGenerator({
     seed: 'test',
     fixedTimestamp: FIXED_TIMESTAMP,
   });
-  const workflowStartedAt = context.globalThis.Date.now();
-  return Array.from({ length: count }, () => ulid(workflowStartedAt));
+  return Array.from({ length: count }, () => generate(kind));
 }
 
-const ULIDS = deterministicUlids(8);
+const STEP_IDS = correlationIds('step', 8);
+const WAIT_IDS = correlationIds('wait', 8);
+const HOOK_IDS = correlationIds('hook', 8);
+const ABORT_IDS = correlationIds('abort', 8);
+const ABORT_HOOK_IDS = correlationIds('abortHook', 8);
 
 async function replay(
   ctx: WorkflowOrchestratorContext,
@@ -204,32 +212,32 @@ describe('step result delivery ordering against an earlier step result', () => {
     ]);
 
     const events: Event[] = [
-      event('evnt_0', 'step_created', `step_${ULIDS[0]}`, {
+      event('evnt_0', 'step_created', `step_${STEP_IDS[0]}`, {
         stepName: 'stepA',
       }),
-      event('evnt_1', 'wait_created', `wait_${ULIDS[1]}`, { resumeAt }),
-      event('evnt_2', 'step_started', `step_${ULIDS[0]}`, {
+      event('evnt_1', 'wait_created', `wait_${WAIT_IDS[0]}`, { resumeAt }),
+      event('evnt_2', 'step_started', `step_${STEP_IDS[0]}`, {
         stepName: 'stepA',
       }),
-      event('evnt_3', 'wait_completed', `wait_${ULIDS[1]}`, { resumeAt }),
-      event('evnt_4', 'step_completed', `step_${ULIDS[0]}`, {
+      event('evnt_3', 'wait_completed', `wait_${WAIT_IDS[0]}`, { resumeAt }),
+      event('evnt_4', 'step_completed', `step_${STEP_IDS[0]}`, {
         stepName: 'stepA',
         result: stepAResult,
       }),
-      event('evnt_5', 'step_created', `step_${ULIDS[2]}`, {
+      event('evnt_5', 'step_created', `step_${STEP_IDS[1]}`, {
         stepName: 'stepB',
       }),
-      event('evnt_6', 'step_started', `step_${ULIDS[2]}`, {
+      event('evnt_6', 'step_started', `step_${STEP_IDS[1]}`, {
         stepName: 'stepB',
       }),
-      event('evnt_7', 'step_completed', `step_${ULIDS[2]}`, {
+      event('evnt_7', 'step_completed', `step_${STEP_IDS[1]}`, {
         stepName: 'stepB',
         result: stepBResult,
       }),
-      event('evnt_8', 'step_created', `step_${ULIDS[3]}`, {
+      event('evnt_8', 'step_created', `step_${STEP_IDS[2]}`, {
         stepName: 'afterA',
       }),
-      event('evnt_9', 'step_created', `step_${ULIDS[4]}`, {
+      event('evnt_9', 'step_created', `step_${STEP_IDS[3]}`, {
         stepName: 'afterB',
       }),
     ];
@@ -283,22 +291,22 @@ describe('wait completion delivery ordering against an earlier step result', () 
       );
 
       const events: Event[] = [
-        event('evnt_0', 'step_created', `step_${ULIDS[0]}`, {
+        event('evnt_0', 'step_created', `step_${STEP_IDS[0]}`, {
           stepName: 'stepA',
         }),
-        event('evnt_1', 'wait_created', `wait_${ULIDS[1]}`, { resumeAt }),
-        event('evnt_2', 'step_started', `step_${ULIDS[0]}`, {
+        event('evnt_1', 'wait_created', `wait_${WAIT_IDS[0]}`, { resumeAt }),
+        event('evnt_2', 'step_started', `step_${STEP_IDS[0]}`, {
           stepName: 'stepA',
         }),
-        event('evnt_3', 'step_completed', `step_${ULIDS[0]}`, {
+        event('evnt_3', 'step_completed', `step_${STEP_IDS[0]}`, {
           stepName: 'stepA',
           result: stepAResult,
         }),
-        event('evnt_4', 'wait_completed', `wait_${ULIDS[1]}`, { resumeAt }),
-        event('evnt_5', 'step_created', `step_${ULIDS[2]}`, {
+        event('evnt_4', 'wait_completed', `wait_${WAIT_IDS[0]}`, { resumeAt }),
+        event('evnt_5', 'step_created', `step_${STEP_IDS[1]}`, {
           stepName: 'afterStep',
         }),
-        event('evnt_6', 'step_created', `step_${ULIDS[3]}`, {
+        event('evnt_6', 'step_created', `step_${STEP_IDS[2]}`, {
           stepName: 'afterSleep',
         }),
       ];
@@ -342,28 +350,28 @@ describe('hook payload delivery ordering against an earlier step result', () => 
       ]);
 
       const events: Event[] = [
-        event('evnt_0', 'step_created', `step_${ULIDS[0]}`, {
+        event('evnt_0', 'step_created', `step_${STEP_IDS[0]}`, {
           stepName: 'stepA',
         }),
-        event('evnt_1', 'hook_created', `hook_${ULIDS[1]}`, {
+        event('evnt_1', 'hook_created', `hook_${HOOK_IDS[0]}`, {
           token: 'tok',
           isWebhook: false,
         }),
-        event('evnt_2', 'step_started', `step_${ULIDS[0]}`, {
+        event('evnt_2', 'step_started', `step_${STEP_IDS[0]}`, {
           stepName: 'stepA',
         }),
-        event('evnt_3', 'step_completed', `step_${ULIDS[0]}`, {
+        event('evnt_3', 'step_completed', `step_${STEP_IDS[0]}`, {
           stepName: 'stepA',
           result: stepAResult,
         }),
-        event('evnt_4', 'hook_received', `hook_${ULIDS[1]}`, {
+        event('evnt_4', 'hook_received', `hook_${HOOK_IDS[0]}`, {
           token: 'tok',
           payload: hookPayload,
         }),
-        event('evnt_5', 'step_created', `step_${ULIDS[2]}`, {
+        event('evnt_5', 'step_created', `step_${STEP_IDS[1]}`, {
           stepName: 'afterStep',
         }),
-        event('evnt_6', 'step_created', `step_${ULIDS[3]}`, {
+        event('evnt_6', 'step_created', `step_${STEP_IDS[2]}`, {
           stepName: 'afterHook',
         }),
       ];
@@ -405,12 +413,12 @@ describe('hook payload delivery ordering against an earlier step result', () => 
 //   evnt_6  hook_received  (abort)  ← must NOT overtake evnt_5
 describe('abort delivery ordering against an earlier step result', () => {
   it('delivers the earlier step_completed before the abort', async () => {
-    // The controller draws two ULIDs on construction (stream id, then hook
-    // correlation id), so the sleep and stepA take the next two.
-    const abortHookToken = `abrt_${ULIDS[0]}`;
-    const abortCorrelationId = `hook_${ULIDS[1]}`;
-    const waitCorrelationId = `wait_${ULIDS[2]}`;
-    const stepACorrelationId = `step_${ULIDS[3]}`;
+    // The controller draws two ids on construction, each from its own kind:
+    // the abort token, then the hook correlation id backing it.
+    const abortHookToken = `abrt_${ABORT_IDS[0]}`;
+    const abortCorrelationId = `hook_${ABORT_HOOK_IDS[0]}`;
+    const waitCorrelationId = `wait_${WAIT_IDS[0]}`;
+    const stepACorrelationId = `step_${STEP_IDS[0]}`;
 
     const resumeAt = new Date(FIXED_TIMESTAMP + 5_000);
     const ops: Promise<unknown>[] = [];
@@ -445,10 +453,10 @@ describe('abort delivery ordering against an earlier step result', () => {
         token: abortHookToken,
         payload: abortPayload,
       }),
-      event('evnt_7', 'step_created', `step_${ULIDS[4]}`, {
+      event('evnt_7', 'step_created', `step_${STEP_IDS[1]}`, {
         stepName: 'afterStep',
       }),
-      event('evnt_8', 'step_created', `step_${ULIDS[5]}`, {
+      event('evnt_8', 'step_created', `step_${STEP_IDS[2]}`, {
         stepName: 'afterAbort',
       }),
     ];
@@ -557,8 +565,9 @@ function expectSuspensionSnapshotSteps(error: unknown, expected: string[]) {
 }
 
 describe('suspension timing against parked step deliveries', () => {
-  // Draw order: sleep -> ULIDS[0]; the three parallel steps -> 1..3; the
-  // follow-up step (never run, so only allocated) -> 4.
+  // Draw order within each kind: the sleep is the run's only wait; the three
+  // parallel steps are its first three steps, and the follow-up step (never
+  // run, so only allocated) is its fourth.
   const RESUME_AT = new Date(FIXED_TIMESTAMP + 25 * 60_000);
 
   it('a parallel batch with a pending sleep suspends carrying the follow-up step', async () => {
@@ -570,36 +579,36 @@ describe('suspension timing against parked step deliveries', () => {
     );
 
     const events: Event[] = [
-      event('evnt_0', 'wait_created', `wait_${ULIDS[0]}`, {
+      event('evnt_0', 'wait_created', `wait_${WAIT_IDS[0]}`, {
         resumeAt: RESUME_AT,
       }),
-      event('evnt_1', 'step_created', `step_${ULIDS[1]}`, {
+      event('evnt_1', 'step_created', `step_${STEP_IDS[0]}`, {
         stepName: 'parallelA',
       }),
-      event('evnt_2', 'step_created', `step_${ULIDS[2]}`, {
+      event('evnt_2', 'step_created', `step_${STEP_IDS[1]}`, {
         stepName: 'parallelB',
       }),
-      event('evnt_3', 'step_created', `step_${ULIDS[3]}`, {
+      event('evnt_3', 'step_created', `step_${STEP_IDS[2]}`, {
         stepName: 'parallelC',
       }),
-      event('evnt_4', 'step_started', `step_${ULIDS[1]}`, {
+      event('evnt_4', 'step_started', `step_${STEP_IDS[0]}`, {
         stepName: 'parallelA',
       }),
-      event('evnt_5', 'step_started', `step_${ULIDS[2]}`, {
+      event('evnt_5', 'step_started', `step_${STEP_IDS[1]}`, {
         stepName: 'parallelB',
       }),
-      event('evnt_6', 'step_started', `step_${ULIDS[3]}`, {
+      event('evnt_6', 'step_started', `step_${STEP_IDS[2]}`, {
         stepName: 'parallelC',
       }),
-      event('evnt_7', 'step_completed', `step_${ULIDS[1]}`, {
+      event('evnt_7', 'step_completed', `step_${STEP_IDS[0]}`, {
         stepName: 'parallelA',
         result: results[0],
       }),
-      event('evnt_8', 'step_completed', `step_${ULIDS[2]}`, {
+      event('evnt_8', 'step_completed', `step_${STEP_IDS[1]}`, {
         stepName: 'parallelB',
         result: results[1],
       }),
-      event('evnt_9', 'step_completed', `step_${ULIDS[3]}`, {
+      event('evnt_9', 'step_completed', `step_${STEP_IDS[2]}`, {
         stepName: 'parallelC',
         result: results[2],
       }),
@@ -639,16 +648,16 @@ describe('suspension timing against parked step deliveries', () => {
     );
 
     const events: Event[] = [
-      event('evnt_0', 'wait_created', `wait_${ULIDS[0]}`, {
+      event('evnt_0', 'wait_created', `wait_${WAIT_IDS[0]}`, {
         resumeAt: RESUME_AT,
       }),
-      event('evnt_1', 'step_created', `step_${ULIDS[1]}`, {
+      event('evnt_1', 'step_created', `step_${STEP_IDS[0]}`, {
         stepName: 'only',
       }),
-      event('evnt_2', 'step_started', `step_${ULIDS[1]}`, {
+      event('evnt_2', 'step_started', `step_${STEP_IDS[0]}`, {
         stepName: 'only',
       }),
-      event('evnt_3', 'step_completed', `step_${ULIDS[1]}`, {
+      event('evnt_3', 'step_completed', `step_${STEP_IDS[0]}`, {
         stepName: 'only',
         result,
       }),

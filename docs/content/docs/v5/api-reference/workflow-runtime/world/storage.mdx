@@ -289,6 +289,8 @@ const result = await world.hooks.list({ // [!code highlight]
 
 **Returns:** `{ data: Hook[], cursor?: string }`
 
+Hooks are ordered by hook ID. The hooks a workflow creates are listed in the order it created them. A hook the runtime creates on your behalf, such as the one backing an abort controller, draws its ID from a separate sequence, so it sorts at an arbitrary position among yours rather than at its creation position.
+
 ### Hook Type
 
 | Field | Type | Description |

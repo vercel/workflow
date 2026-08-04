@@ -5,8 +5,8 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-import { monotonicFactory } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createCorrelationIdGenerator } from '../correlation-id.js';
 import { registerStepFunction } from '../private.js';
 import { workflowEntrypoint } from '../runtime.js';
 import {
@@ -14,7 +14,6 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from '../serialization.js';
-import { createContext } from '../vm/index.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({
@@ -85,14 +84,13 @@ async function runStaleWaitReplayScenario(options: {
     undefined
   );
 
-  const { globalThis: vmGlobalThis } = createContext({
+  const generate = createCorrelationIdGenerator({
     seed: `${runId}:${workflowName}:${deploymentId}`,
     fixedTimestamp: +startedAt,
   });
-  const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
-  const hookCorrelationId = `hook_${ulid(+startedAt)}`;
-  const syncStep0CorrelationId = `step_${ulid(+startedAt)}`;
-  const waitCorrelationId = `wait_${ulid(+startedAt)}`;
+  const hookCorrelationId = `hook_${generate('hook')}`;
+  const syncStep0CorrelationId = `step_${generate('step')}`;
+  const waitCorrelationId = `wait_${generate('wait')}`;
 
   const workflowRun: WorkflowRun = {
     runId,

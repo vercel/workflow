@@ -3,7 +3,10 @@ import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createCorrelationIdGenerator } from './correlation-id.js';
+import {
+  type CorrelationIdKind,
+  createCorrelationIdGenerator,
+} from './correlation-id.js';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
@@ -28,10 +31,12 @@ import { createSleep } from './workflow/sleep.js';
  * so suspensions wait for both async deserialization AND microtask deliveries.
  */
 
+const FIXED_TIMESTAMP = 1753481739458;
+
 function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const context = createContext({
     seed: 'test',
-    fixedTimestamp: 1753481739458,
+    fixedTimestamp: FIXED_TIMESTAMP,
   });
   const workflowStartedAt = context.globalThis.Date.now();
   const promiseQueueHolder = { current: Promise.resolve() };
@@ -78,15 +83,22 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   return ctx;
 }
 
-// Deterministic correlation IDs from the ULID generator with seed 'test'
-const CORR_IDS = [
-  '01K11TFZ62YS0YYFDQ3E8B9YCV',
-  '01K11TFZ62YS0YYFDQ3E8B9YCW',
-  '01K11TFZ62YS0YYFDQ3E8B9YCX',
-  '01K11TFZ62YS0YYFDQ3E8B9YCY',
-  '01K11TFZ62YS0YYFDQ3E8B9YCZ',
-  '01K11TFZ62YS0YYFDQ3E8B9YD0',
-];
+/**
+ * The correlation IDs the seeded generator hands out for one kind, in draw
+ * order. Each kind draws from its own sequence, so a fixture indexes into the
+ * kind it is naming.
+ */
+function correlationIds(kind: CorrelationIdKind, count: number): string[] {
+  const generate = createCorrelationIdGenerator({
+    seed: 'test',
+    fixedTimestamp: FIXED_TIMESTAMP,
+  });
+  return Array.from({ length: count }, () => generate(kind));
+}
+
+const STEP_IDS = correlationIds('step', 6);
+const WAIT_IDS = correlationIds('wait', 6);
+const HOOK_IDS = correlationIds('hook', 6);
 
 // ─── Helpers ───────────────────────────────────────────
 
@@ -170,7 +182,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'hook_created',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             isWebhook: false,
@@ -181,7 +193,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_1',
           runId: 'wrun_test',
           eventType: 'wait_created',
-          correlationId: `wait_${CORR_IDS[1]}`,
+          correlationId: `wait_${WAIT_IDS[0]}`,
           eventData: { resumeAt: new Date('2099-01-01') },
           createdAt: new Date(),
         },
@@ -189,7 +201,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_2',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             payload: payload1,
@@ -200,7 +212,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_3',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             payload: payload2,
@@ -211,7 +223,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_4',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             payload: payload3,
@@ -265,7 +277,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'hook_created',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             isWebhook: false,
@@ -276,7 +288,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_1',
           runId: 'wrun_test',
           eventType: 'wait_created',
-          correlationId: `wait_${CORR_IDS[1]}`,
+          correlationId: `wait_${WAIT_IDS[0]}`,
           eventData: { resumeAt: new Date('2099-01-01') },
           createdAt: new Date(),
         },
@@ -284,7 +296,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_2',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             payload: payload1,
@@ -295,7 +307,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_3',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             payload: payload2,
@@ -341,7 +353,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'hook_created',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: { token: 'test-token', isWebhook: false },
           createdAt: new Date(),
         },
@@ -349,7 +361,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_1',
           runId: 'wrun_test',
           eventType: 'wait_created',
-          correlationId: `wait_${CORR_IDS[1]}`,
+          correlationId: `wait_${WAIT_IDS[0]}`,
           eventData: { resumeAt },
           createdAt: new Date(),
         },
@@ -357,7 +369,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_2',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: { token: 'test-token', payload },
           createdAt: new Date(),
         },
@@ -365,7 +377,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_3',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[2]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: { stepName: 'setupStep' },
           createdAt: new Date(),
         },
@@ -373,7 +385,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_4',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${CORR_IDS[2]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: { stepName: 'setupStep' },
           createdAt: new Date(),
         },
@@ -381,7 +393,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_5',
           runId: 'wrun_test',
           eventType: 'step_completed',
-          correlationId: `step_${CORR_IDS[2]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: { stepName: 'setupStep', result: setupResult },
           createdAt: new Date(),
         },
@@ -389,7 +401,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_6',
           runId: 'wrun_test',
           eventType: 'wait_completed',
-          correlationId: `wait_${CORR_IDS[1]}`,
+          correlationId: `wait_${WAIT_IDS[0]}`,
           eventData: { resumeAt },
           createdAt: new Date(),
         },
@@ -397,7 +409,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_7',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[3]}`,
+          correlationId: `step_${STEP_IDS[1]}`,
           eventData: { stepName: 'drainStep' },
           createdAt: new Date(),
         },
@@ -467,7 +479,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'hook_created',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: { token: 'test-token', isWebhook: false },
           createdAt: new Date(),
         },
@@ -475,7 +487,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_1',
           runId: 'wrun_test',
           eventType: 'wait_created',
-          correlationId: `wait_${CORR_IDS[1]}`,
+          correlationId: `wait_${WAIT_IDS[0]}`,
           eventData: { resumeAt },
           createdAt: new Date(),
         },
@@ -483,7 +495,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_2',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: { token: 'test-token', payload },
           createdAt: new Date(),
         },
@@ -491,7 +503,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_3',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[2]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: { stepName: 'setupStep' },
           createdAt: new Date(),
         },
@@ -499,7 +511,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_4',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${CORR_IDS[2]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: { stepName: 'setupStep' },
           createdAt: new Date(),
         },
@@ -507,7 +519,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_5',
           runId: 'wrun_test',
           eventType: 'step_completed',
-          correlationId: `step_${CORR_IDS[2]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: { stepName: 'setupStep', result: setupResult },
           createdAt: new Date(),
         },
@@ -515,7 +527,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_6',
           runId: 'wrun_test',
           eventType: 'wait_completed',
-          correlationId: `wait_${CORR_IDS[1]}`,
+          correlationId: `wait_${WAIT_IDS[0]}`,
           eventData: { resumeAt },
           createdAt: new Date(),
         },
@@ -523,7 +535,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_7',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[3]}`,
+          correlationId: `step_${STEP_IDS[1]}`,
           eventData: { stepName: 'drainStep' },
           createdAt: new Date(),
         },
@@ -614,7 +626,7 @@ function defineTests(mode: 'sync' | 'async') {
         eventId: 'evnt_8',
         runId: 'wrun_test',
         eventType: 'hook_received',
-        correlationId: `hook_${CORR_IDS[0]}`,
+        correlationId: `hook_${HOOK_IDS[0]}`,
         eventData: { token: 'test-token', payload: payload1 },
         createdAt: new Date(),
       };
@@ -622,7 +634,7 @@ function defineTests(mode: 'sync' | 'async') {
         eventId: 'evnt_10',
         runId: 'wrun_test',
         eventType: 'wait_completed',
-        correlationId: `wait_${CORR_IDS[2]}`,
+        correlationId: `wait_${WAIT_IDS[0]}`,
         eventData: { resumeAt },
         createdAt: new Date(),
       };
@@ -641,7 +653,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'hook_created',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: { token: 'test-token', isWebhook: false },
           createdAt: new Date(),
         },
@@ -649,7 +661,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_1',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[1]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: { stepName: 'progressStep' },
           createdAt: new Date(),
         },
@@ -657,7 +669,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_2',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${CORR_IDS[1]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: { stepName: 'progressStep' },
           createdAt: new Date(),
         },
@@ -665,7 +677,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_3',
           runId: 'wrun_test',
           eventType: 'step_completed',
-          correlationId: `step_${CORR_IDS[1]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: { stepName: 'progressStep', result: progress0Result },
           createdAt: new Date(),
         },
@@ -673,7 +685,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_4',
           runId: 'wrun_test',
           eventType: 'wait_created',
-          correlationId: `wait_${CORR_IDS[2]}`,
+          correlationId: `wait_${WAIT_IDS[0]}`,
           eventData: { resumeAt },
           createdAt: new Date(),
         },
@@ -681,7 +693,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_5',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: { token: 'test-token', payload: payload0 },
           createdAt: new Date(),
         },
@@ -689,7 +701,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_6',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[3]}`,
+          correlationId: `step_${STEP_IDS[1]}`,
           eventData: { stepName: 'drainStep' },
           createdAt: new Date(),
         },
@@ -697,7 +709,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_7',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${CORR_IDS[3]}`,
+          correlationId: `step_${STEP_IDS[1]}`,
           eventData: { stepName: 'drainStep' },
           createdAt: new Date(),
         },
@@ -706,7 +718,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_9',
           runId: 'wrun_test',
           eventType: 'step_completed',
-          correlationId: `step_${CORR_IDS[3]}`,
+          correlationId: `step_${STEP_IDS[1]}`,
           eventData: { stepName: 'drainStep', result: drain0Result },
           createdAt: new Date(),
         },
@@ -714,7 +726,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_11',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[4]}`,
+          correlationId: `step_${STEP_IDS[2]}`,
           eventData: { stepName: 'progressStep' },
           createdAt: new Date(),
         },
@@ -722,7 +734,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_12',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${CORR_IDS[4]}`,
+          correlationId: `step_${STEP_IDS[2]}`,
           eventData: { stepName: 'progressStep' },
           createdAt: new Date(),
         },
@@ -730,7 +742,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_13',
           runId: 'wrun_test',
           eventType: 'step_completed',
-          correlationId: `step_${CORR_IDS[4]}`,
+          correlationId: `step_${STEP_IDS[2]}`,
           eventData: { stepName: 'progressStep', result: progress1Result },
           createdAt: new Date(),
         },
@@ -738,7 +750,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_14',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[5]}`,
+          correlationId: `step_${STEP_IDS[3]}`,
           eventData: { stepName: finalStepName },
           createdAt: new Date(),
         },
@@ -850,7 +862,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'hook_created',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             isWebhook: false,
@@ -861,7 +873,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_1',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[1]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: { stepName: 'incompleteStep' },
           createdAt: new Date(),
         },
@@ -869,7 +881,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_2',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${CORR_IDS[1]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: {
             stepName: 'incompleteStep',
           },
@@ -879,7 +891,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_3',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             payload: payload1,
@@ -890,7 +902,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_4',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             payload: payload2,
@@ -933,7 +945,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'wait_created',
-          correlationId: `wait_${CORR_IDS[0]}`,
+          correlationId: `wait_${WAIT_IDS[0]}`,
           eventData: { resumeAt: new Date('2099-01-01') },
           createdAt: new Date(),
         },
@@ -941,7 +953,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_1',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[1]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: { stepName: 'stepA' },
           createdAt: new Date(),
         },
@@ -949,7 +961,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_2',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${CORR_IDS[1]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: {
             stepName: 'stepA',
           },
@@ -959,7 +971,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_3',
           runId: 'wrun_test',
           eventType: 'step_completed',
-          correlationId: `step_${CORR_IDS[1]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: {
             stepName: 'stepA',
             result: resultA,
@@ -970,7 +982,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_4',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[2]}`,
+          correlationId: `step_${STEP_IDS[1]}`,
           eventData: { stepName: 'stepB' },
           createdAt: new Date(),
         },
@@ -978,7 +990,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_5',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${CORR_IDS[2]}`,
+          correlationId: `step_${STEP_IDS[1]}`,
           eventData: {
             stepName: 'stepB',
           },
@@ -988,7 +1000,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_6',
           runId: 'wrun_test',
           eventType: 'step_completed',
-          correlationId: `step_${CORR_IDS[2]}`,
+          correlationId: `step_${STEP_IDS[1]}`,
           eventData: {
             stepName: 'stepB',
             result: resultB,
@@ -1027,7 +1039,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'wait_created',
-          correlationId: `wait_${CORR_IDS[0]}`,
+          correlationId: `wait_${WAIT_IDS[0]}`,
           eventData: { resumeAt: new Date('2099-01-01') },
           createdAt: new Date(),
         },
@@ -1035,7 +1047,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_1',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[1]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: { stepName: 'stepA' },
           createdAt: new Date(),
         },
@@ -1043,7 +1055,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_2',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${CORR_IDS[1]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: {
             stepName: 'stepA',
           },
@@ -1053,7 +1065,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_3',
           runId: 'wrun_test',
           eventType: 'step_completed',
-          correlationId: `step_${CORR_IDS[1]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: {
             stepName: 'stepA',
             result: resultA,
@@ -1101,7 +1113,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[0]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: { stepName: 'incompleteStep' },
           createdAt: new Date(),
         },
@@ -1109,7 +1121,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_1',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${CORR_IDS[0]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: {
             stepName: 'incompleteStep',
           },
@@ -1119,7 +1131,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_2',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[1]}`,
+          correlationId: `step_${STEP_IDS[1]}`,
           eventData: { stepName: 'stepB' },
           createdAt: new Date(),
         },
@@ -1127,7 +1139,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_3',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${CORR_IDS[1]}`,
+          correlationId: `step_${STEP_IDS[1]}`,
           eventData: {
             stepName: 'stepB',
           },
@@ -1137,7 +1149,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_4',
           runId: 'wrun_test',
           eventType: 'step_completed',
-          correlationId: `step_${CORR_IDS[1]}`,
+          correlationId: `step_${STEP_IDS[1]}`,
           eventData: {
             stepName: 'stepB',
             result: resultB,
@@ -1148,7 +1160,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_5',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[2]}`,
+          correlationId: `step_${STEP_IDS[2]}`,
           eventData: { stepName: 'stepC' },
           createdAt: new Date(),
         },
@@ -1156,7 +1168,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_6',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${CORR_IDS[2]}`,
+          correlationId: `step_${STEP_IDS[2]}`,
           eventData: {
             stepName: 'stepC',
           },
@@ -1166,7 +1178,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_7',
           runId: 'wrun_test',
           eventType: 'step_completed',
-          correlationId: `step_${CORR_IDS[2]}`,
+          correlationId: `step_${STEP_IDS[2]}`,
           eventData: {
             stepName: 'stepC',
             result: resultC,
@@ -1235,7 +1247,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'hook_created',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             isWebhook: false,
@@ -1246,7 +1258,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_1',
           runId: 'wrun_test',
           eventType: 'wait_created',
-          correlationId: `wait_${CORR_IDS[1]}`,
+          correlationId: `wait_${WAIT_IDS[0]}`,
           eventData: { resumeAt: new Date('2099-01-01') },
           createdAt: new Date(),
         },
@@ -1255,7 +1267,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_2',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             payload: payload1,
@@ -1266,7 +1278,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_3',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[2]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: { stepName: 'processPayload', input: payload1 },
           createdAt: new Date(),
         },
@@ -1274,7 +1286,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_4',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${CORR_IDS[2]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: {
             stepName: 'processPayload',
           },
@@ -1284,7 +1296,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_5',
           runId: 'wrun_test',
           eventType: 'step_completed',
-          correlationId: `step_${CORR_IDS[2]}`,
+          correlationId: `step_${STEP_IDS[0]}`,
           eventData: {
             stepName: 'processPayload',
             result: stepResult1,
@@ -1296,7 +1308,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_6',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             payload: payload2,
@@ -1307,7 +1319,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_7',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[3]}`,
+          correlationId: `step_${STEP_IDS[1]}`,
           eventData: { stepName: 'processPayload', input: payload2 },
           createdAt: new Date(),
         },
@@ -1315,7 +1327,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_8',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${CORR_IDS[3]}`,
+          correlationId: `step_${STEP_IDS[1]}`,
           eventData: {
             stepName: 'processPayload',
           },
@@ -1325,7 +1337,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_9',
           runId: 'wrun_test',
           eventType: 'step_completed',
-          correlationId: `step_${CORR_IDS[3]}`,
+          correlationId: `step_${STEP_IDS[1]}`,
           eventData: {
             stepName: 'processPayload',
             result: stepResult2,
@@ -1376,7 +1388,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'hook_created',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             isWebhook: false,
@@ -1387,7 +1399,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_1',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             payload: payload1,
@@ -1398,7 +1410,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_2',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             payload: payload2,
@@ -1472,7 +1484,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'hook_created',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             isWebhook: false,
@@ -1483,7 +1495,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_1',
           runId: 'wrun_test',
           eventType: 'wait_created',
-          correlationId: `wait_${CORR_IDS[1]}`,
+          correlationId: `wait_${WAIT_IDS[0]}`,
           eventData: { resumeAt: new Date('2099-01-01') },
           createdAt: new Date(),
         },
@@ -1491,7 +1503,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_2',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             payload: payloadA,
@@ -1502,7 +1514,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_3',
           runId: 'wrun_test',
           eventType: 'wait_completed',
-          correlationId: `wait_${CORR_IDS[1]}`,
+          correlationId: `wait_${WAIT_IDS[0]}`,
           eventData: { resumeAt: new Date('2099-01-01') },
           createdAt: new Date(),
         },
@@ -1510,7 +1522,7 @@ function defineTests(mode: 'sync' | 'async') {
           eventId: 'evnt_4',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
+          correlationId: `hook_${HOOK_IDS[0]}`,
           eventData: {
             token: 'test-token',
             payload: payloadB,
