@@ -138,6 +138,36 @@ describe('Slot identity (Postgres integration)', () => {
       await expect(slotsOf(runId)).resolves.toEqual(denseFrom(2));
     });
 
+    test('rejects a claim on a free position below the log’s tail', async () => {
+      // The undercut that a "is the position free?" check cannot catch. A
+      // position claimed by a write that then failed is never filled, so a log
+      // carries holes below its tail — and a caller numbering from a snapshot
+      // that predates the events above one of those holes aims straight at it.
+      // Let it land and the event sits below events another replay has already
+      // consumed: the log stays internally consistent while its order silently
+      // changes. A claim asserts a complete log, so a claim that does not clear
+      // the tail is a conflict, exactly as a taken one is.
+      const runId = await newSlotRun();
+      await createStep(runId, 'step_late', slotEventId(3));
+      await expect(
+        createStep(runId, 'step_early', slotEventId(2))
+      ).rejects.toThrow(SlotConflictError);
+      // The hole stays a hole, and the log stays in slot order.
+      expect(ascending(await slotsOf(runId))).toEqual([1, 3]);
+    });
+
+    test('accepts the claim immediately above a tail with a hole below it', async () => {
+      // The fence rejects at-or-below, so the first position above the tail has
+      // to stay writable — otherwise every write following a hole would
+      // conflict forever and the run could never make progress again.
+      const runId = await newSlotRun();
+      await createStep(runId, 'step_late', slotEventId(3));
+      expect(await createStep(runId, 'step_next', slotEventId(4))).toBe(
+        slotEventId(4)
+      );
+      expect(ascending(await slotsOf(runId))).toEqual([1, 3, 4]);
+    });
+
     test('numbers a ULID-mode run the way it always did', async () => {
       const created = await events.create(null, {
         eventType: 'run_created',
@@ -195,18 +225,24 @@ describe('Slot identity (Postgres integration)', () => {
       ).toEqual(['1 run_created', '2 step_created', '3 step_started']);
     });
 
-    test('keeps every claim in a burst of lazy starts', async () => {
-      // The suspension flush issues its lazy starts at once, each having
-      // reserved two positions. A second event numbered off the log as this
-      // world sees it would take the slot the next start in the batch claimed,
-      // costing every start after the first its claim.
+    test('keeps every claim in a batch of lazy starts', async () => {
+      // The suspension flush's lazy starts each reserve two positions and claim
+      // the top one, so the batch's claims are every second slot. A second
+      // event numbered off the log rather than off the claim would take the
+      // position below the *next* claim instead of below its own, leaving the
+      // batch's first reserved slot a hole the log can never close.
+      //
+      // The batch is issued one claim at a time because that is how the client
+      // issues it: a claim asserts the log is complete up to that position, so
+      // each one is taken against the tail its writer has actually seen.
       const runId = await newSlotRun();
       const claims = Array.from({ length: 10 }, (_, index) =>
         slotEventId(FIRST_SLOT + 2 * (index + 1))
       );
-      const started = await Promise.all(
-        claims.map((eventId, index) =>
-          events.create(
+      const started = [];
+      for (const [index, eventId] of claims.entries()) {
+        started.push(
+          await events.create(
             runId,
             {
               eventType: 'step_started',
@@ -216,8 +252,8 @@ describe('Slot identity (Postgres integration)', () => {
             },
             { eventId }
           )
-        )
-      );
+        );
+      }
       expect(started.map((result) => result.event?.eventId)).toEqual(claims);
       expect(ascending(await slotsOf(runId))).toEqual(
         denseFrom(2 * claims.length + 1)
