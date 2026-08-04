@@ -1,6 +1,11 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import type { Hook, Step, WorkflowRun } from '@workflow/world';
+import type {
+  Hook,
+  HookCreatedEventRequest,
+  Step,
+  WorkflowRun,
+} from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { eq } from 'drizzle-orm';
@@ -8,6 +13,7 @@ import { Pool } from 'pg';
 import { decodeTime, ulid } from 'ulid';
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -106,16 +112,13 @@ async function updateStep(
 async function createHook(
   events: EventsStorage,
   runId: string,
-  data: {
-    hookId: string;
-    token: string;
-    metadata?: unknown;
-  }
+  data: HookCreatedEventRequest['eventData'] & { hookId: string }
 ): Promise<Hook> {
+  const { hookId, ...eventData } = data;
   const result = await events.create(runId, {
     eventType: 'hook_created',
-    correlationId: data.hookId,
-    eventData: { token: data.token, metadata: data.metadata },
+    correlationId: hookId,
+    eventData,
   });
   if (!result.hook) {
     throw new Error('Expected hook to be created');
@@ -168,6 +171,10 @@ describe('Storage (Postgres integration)', () => {
 
   beforeEach(async () => {
     await truncateTables();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   afterAll(async () => {
@@ -2502,6 +2509,162 @@ describe('Storage (Postgres integration)', () => {
           correlationId: 'hook_auto_deleted',
         })
       ).rejects.toThrow(/not found/i);
+    });
+
+    it('should retain a hook until its deadline after the run completes', async () => {
+      const token = 'retained-token';
+      const tokenRetentionUntil = new Date(Date.now() + 60_000);
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(events, run.runId, {
+        hookId: 'hook_retained',
+        token,
+        tokenRetentionUntil,
+      });
+      expect(hook.tokenRetentionUntil).toEqual(tokenRetentionUntil);
+
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array(),
+      });
+
+      expect((await hooks.get(hook.hookId)).runId).toBe(run.runId);
+      expect(await hooks.getByToken(token)).toMatchObject({
+        runId: run.runId,
+        tokenRetentionUntil,
+      });
+      expect((await hooks.list({ runId: run.runId })).data).toHaveLength(1);
+      await expect(
+        events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
+
+      const duplicateRun = await createRun(events, {
+        deploymentId: 'deployment-456',
+        workflowName: 'duplicate-workflow',
+        input: new Uint8Array(),
+      });
+      const conflict = await events.create(duplicateRun.runId, {
+        eventType: 'hook_created',
+        correlationId: 'hook_duplicate',
+        eventData: { token },
+      });
+      expect(conflict.event.eventType).toBe('hook_conflict');
+
+      await events.create(run.runId, {
+        eventType: 'hook_disposed',
+        correlationId: hook.hookId,
+      });
+      expect(
+        (
+          await createHook(events, duplicateRun.runId, {
+            hookId: 'hook_replacement',
+            token,
+          })
+        ).runId
+      ).toBe(duplicateRun.runId);
+    });
+
+    it('rejects retention beyond the 30-day default before writing Hook state', async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hookId = 'hook_over_retention_limit';
+
+      await expect(
+        createHook(events, run.runId, {
+          hookId,
+          token: 'over-retention-limit',
+          tokenRetentionUntil: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000),
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        status: 400,
+        message:
+          'Hook minimum retention cannot exceed 30 days in the Postgres World.',
+      });
+
+      await expect(
+        drizzle
+          .select()
+          .from(DrizzleSchema.hooks)
+          .where(eq(DrizzleSchema.hooks.hookId, hookId))
+      ).resolves.toEqual([]);
+      await expect(
+        drizzle
+          .select()
+          .from(DrizzleSchema.events)
+          .where(eq(DrizzleSchema.events.correlationId, hookId))
+      ).resolves.toEqual([]);
+    });
+
+    it('accepts retention within the configured Postgres limit', async () => {
+      vi.stubEnv('WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS', '60');
+      const configuredEvents = createEventsStorage(drizzle);
+      const run = await createRun(configuredEvents, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+
+      await expect(
+        createHook(configuredEvents, run.runId, {
+          hookId: 'hook_custom_retention_limit',
+          token: 'custom-retention-limit',
+          tokenRetentionUntil: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000),
+        })
+      ).resolves.toMatchObject({ hookId: 'hook_custom_retention_limit' });
+    });
+
+    it('should release a retained hook after its deadline', async () => {
+      const token = 'elapsed-retention-token';
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(events, run.runId, {
+        hookId: 'hook_elapsed_retention',
+        token,
+        tokenRetentionUntil: new Date(Date.now() + 60_000),
+      });
+
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array(),
+      });
+      await drizzle
+        .update(DrizzleSchema.hooks)
+        .set({ tokenRetentionUntil: new Date(Date.now() - 1) })
+        .where(eq(DrizzleSchema.hooks.hookId, hook.hookId));
+      await expect(hooks.get(hook.hookId)).rejects.toMatchObject({
+        name: 'HookNotFoundError',
+      });
+      await expect(hooks.getByToken(token)).rejects.toMatchObject({
+        name: 'HookNotFoundError',
+      });
+
+      const replacementRun = await createRun(events, {
+        deploymentId: 'deployment-456',
+        workflowName: 'replacement-workflow',
+        input: new Uint8Array(),
+      });
+      await createHook(events, replacementRun.runId, {
+        hookId: 'hook_after_retention',
+        token,
+      });
+
+      const rows = await drizzle
+        .select({ hookId: DrizzleSchema.hooks.hookId })
+        .from(DrizzleSchema.hooks)
+        .where(eq(DrizzleSchema.hooks.token, token));
+      expect(rows).toEqual([{ hookId: 'hook_after_retention' }]);
     });
   });
 
