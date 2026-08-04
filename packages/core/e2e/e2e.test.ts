@@ -2099,10 +2099,7 @@ describe('e2e', () => {
     }
   );
 
-  test.skipIf(
-    !isLocalDeployment() ||
-      process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres'
-  )(
+  test.skipIf(!isLocalDeployment())(
     'hookMinRetentionWorkflow - terminal Hook cannot resume and its token stays unavailable',
     { timeout: 60_000 },
     async () => {

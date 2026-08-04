@@ -223,6 +223,9 @@ export const hooks = schema.table(
     projectId: varchar('project_id').notNull(),
     environment: varchar('environment').notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
+    tokenRetentionUntil: timestamp('token_retention_until', {
+      withTimezone: true,
+    }),
     /** @deprecated */
     metadataJson: jsonb('metadata').$type<SerializedContent>(),
     metadata: Cbor<SerializedContent>()('metadata_cbor'),
@@ -232,13 +235,10 @@ export const hooks = schema.table(
     // Server-synthesized resume slice. Not carried by the hook_created event,
     // so this backend leaves it null; reads fall back to runs.get.
     resumeContext: Cbor<NonNullable<Hook['resumeContext']>>()('resume_context'),
-    // `resumeCapabilities` is response-only. Postgres Hook retention is not
-    // implemented yet, so neither field has a column.
+    // `resumeCapabilities` is deliberately response-only — attested fresh on
+    // each by-token lookup, never persisted — so it must not become a column.
   } satisfies DrizzlishOfType<
-    Cborized<
-      Omit<Hook, 'resumeCapabilities' | 'tokenRetentionUntil'>,
-      'metadata'
-    >
+    Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'>
   >,
   (tb) => [index().on(tb.runId), index().on(tb.token)]
 );

@@ -167,6 +167,13 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Default: `pg` default
 - Maximum size of the internal `pg.Pool` when the World creates the pool.
 
+### `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`
+
+- Factory option: none
+- Default: `30`
+- Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Postgres World, in days.
+- Set this to the same limit as your production World so oversized values fail during development.
+
 ### `namespace`
 
 - Environment variable fallback: `WORKFLOW_QUEUE_NAMESPACE`
