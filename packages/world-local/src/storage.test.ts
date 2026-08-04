@@ -832,6 +832,7 @@ describe('Storage', () => {
 
         const events = await storage.events.listByCorrelationId({
           correlationId: 'lazy_step_2',
+          runId: testRunId,
         });
         const types = events.data.map((e) => e.eventType);
         // Both a step_created (synthetic) and a step_started must be present:
@@ -1734,6 +1735,7 @@ describe('Storage', () => {
 
         const result = await storage.events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: {},
         });
 
@@ -1748,7 +1750,11 @@ describe('Storage', () => {
         expect(result.data[2].correlationId).toBe(correlationId);
       });
 
-      it('should list events across multiple runs with same correlation ID', async () => {
+      it('returns only the named run when two runs share a correlation ID', async () => {
+        // A correlation id names a hook, step or wait within its run. Two runs
+        // can hold the same one — a slot-numbered run counts its own steps, so
+        // `step_…001` is the first step of every such run — and the query
+        // answers for the run it was given, not for both.
         const correlationId = 'hook-xyz789';
 
         // Create another run
@@ -1785,16 +1791,27 @@ describe('Storage', () => {
 
         const result = await storage.events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: {},
         });
 
-        expect(result.data).toHaveLength(3);
-        expect(result.data[0].eventId).toBe(event1.eventId);
-        expect(result.data[0].runId).toBe(testRunId);
-        expect(result.data[1].eventId).toBe(event2.eventId);
-        expect(result.data[1].runId).toBe(run2.runId);
-        expect(result.data[2].eventId).toBe(event3.eventId);
-        expect(result.data[2].runId).toBe(testRunId);
+        expect(result.data.map((event) => event.eventId)).toEqual([
+          event1.eventId,
+          event3.eventId,
+        ]);
+        expect(result.data.every((event) => event.runId === testRunId)).toBe(
+          true
+        );
+
+        // The other run's event is not lost, it belongs to the other run.
+        const other = await storage.events.listByCorrelationId({
+          correlationId,
+          runId: run2.runId,
+          pagination: {},
+        });
+        expect(other.data.map((event) => event.eventId)).toEqual([
+          event2.eventId,
+        ]);
       });
 
       it('should return empty list for non-existent correlation ID', async () => {
@@ -1812,6 +1829,7 @@ describe('Storage', () => {
 
         const result = await storage.events.listByCorrelationId({
           correlationId: 'non-existent-correlation-id',
+          runId: testRunId,
           pagination: {},
         });
 
@@ -1862,6 +1880,7 @@ describe('Storage', () => {
         // Get first page (step_created + step_started = 2)
         const page1 = await storage.events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: { limit: 2 },
         });
 
@@ -1872,6 +1891,7 @@ describe('Storage', () => {
         // Get second page (step_retrying + step_started + step_completed = 3)
         const page2 = await storage.events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: { limit: 3, cursor: page1.cursor || undefined },
         });
 
@@ -1897,6 +1917,7 @@ describe('Storage', () => {
 
         const result = await storage.events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: {},
           resolveData: 'none',
         });
@@ -1941,6 +1962,7 @@ describe('Storage', () => {
 
         const result = await storage.events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: {},
         });
 
@@ -1982,6 +2004,7 @@ describe('Storage', () => {
 
         const result = await storage.events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: { sortOrder: 'desc' },
         });
 
@@ -2031,6 +2054,7 @@ describe('Storage', () => {
 
         const result = await storage.events.listByCorrelationId({
           correlationId: hookId,
+          runId: testRunId,
           pagination: {},
         });
 
@@ -2119,6 +2143,7 @@ describe('Storage', () => {
 
       const events = await storage.events.listByCorrelationId({
         correlationId: stepId,
+        runId: testRunId,
         pagination: {},
       });
 
