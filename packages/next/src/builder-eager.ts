@@ -255,6 +255,10 @@ export async function getNextBuilderEager(
           const newInputFiles = await this.getInputFiles();
           options.inputFiles = newInputFiles;
 
+          // Snapshot before building so edits made during the build remain
+          // dirty and trigger the file event already queued behind this task.
+          await refreshSourceSnapshots();
+
           await stepsCtx?.dispose();
           await workflowsCtx.interimBundleCtx.dispose();
 
@@ -275,7 +279,6 @@ export async function getNextBuilderEager(
           };
 
           await writeManifest(newCombined.manifest);
-          await refreshSourceSnapshots();
         };
 
         const isWatchableFile = (path: string) =>
