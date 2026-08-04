@@ -151,7 +151,7 @@ export async function getNextBuilderEager(
             ? pathname
             : resolve(this.config.workingDir, pathname)
           ).replace(/\\/g, '/');
-        const sourceSnapshots = new Map<string, SourceSnapshot>();
+        let sourceSnapshots = new Map<string, SourceSnapshot>();
 
         const watchableExtensions = new Set([
           '.js',
@@ -201,14 +201,17 @@ export async function getNextBuilderEager(
         const readSourceSnapshot = (file: string) =>
           createSourceSnapshot({ file, detectWorkflowPatterns });
 
-        const refreshSourceSnapshots = () =>
-          replaceSourceSnapshots({
+        const readSourceSnapshots = async () => {
+          const snapshots = new Map<string, SourceSnapshot>();
+          await replaceSourceSnapshots({
             discoveredEntries,
             inputFiles: options.inputFiles,
             normalizePath,
             readSnapshot: readSourceSnapshot,
-            sourceSnapshots,
+            sourceSnapshots: snapshots,
           });
+          return snapshots;
+        };
 
         const mergeCombinedManifest = (
           nextStepsManifest: WorkflowManifest
@@ -257,7 +260,7 @@ export async function getNextBuilderEager(
 
           // Snapshot before building so edits made during the build remain
           // dirty and trigger the file event already queued behind this task.
-          await refreshSourceSnapshots();
+          const nextSourceSnapshots = await readSourceSnapshots();
 
           await stepsCtx?.dispose();
           await workflowsCtx.interimBundleCtx.dispose();
@@ -279,6 +282,7 @@ export async function getNextBuilderEager(
           };
 
           await writeManifest(newCombined.manifest);
+          sourceSnapshots = nextSourceSnapshots;
         };
 
         const isWatchableFile = (path: string) =>
@@ -413,7 +417,7 @@ export async function getNextBuilderEager(
           }
         };
 
-        await refreshSourceSnapshots();
+        sourceSnapshots = await readSourceSnapshots();
         let {
           files: knownFiles,
           aliases: knownFileAliases,
