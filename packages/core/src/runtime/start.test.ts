@@ -937,7 +937,7 @@ describe('start', () => {
     });
   });
 
-  describe('replay lineage (executionContext.replayedFromRunId)', () => {
+  describe('replay lineage (replayedFromRunId)', () => {
     let mockEventsCreate: ReturnType<typeof vi.fn>;
     let mockQueue: ReturnType<typeof vi.fn>;
 
@@ -984,6 +984,65 @@ describe('start', () => {
       );
     });
 
+    it('seeds the reserved $replayedFromRunId attribute on both payloads', async () => {
+      const sourceRunId = 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+      await start(validWorkflow, [], { replayedFromRunId: sourceRunId });
+
+      // run_created carries the attribute plus the reserved-keys flag, so
+      // server-side validation permits it the same way the client did.
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          eventData: expect.objectContaining({
+            attributes: { $replayedFromRunId: sourceRunId },
+            allowReservedAttributes: true,
+          }),
+        }),
+        expect.anything()
+      );
+      // The resilient-start queue input carries both too, so a run
+      // bootstrapped from run_started keeps its replay lineage.
+      expect(mockQueue.mock.calls[0]?.[1].runInput).toEqual(
+        expect.objectContaining({
+          attributes: { $replayedFromRunId: sourceRunId },
+          allowReservedAttributes: true,
+        })
+      );
+    });
+
+    it('merges the replay attribute with caller attributes, caller keys last', async () => {
+      const sourceRunId = 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+      await start(validWorkflow, [], {
+        replayedFromRunId: sourceRunId,
+        attributes: { tenant: 't1' },
+      });
+
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          eventData: expect.objectContaining({
+            attributes: { $replayedFromRunId: sourceRunId, tenant: 't1' },
+            allowReservedAttributes: true,
+          }),
+        }),
+        expect.anything()
+      );
+    });
+
+    it('skips the attribute on pre-attributes spec versions but keeps the executionContext record', async () => {
+      const sourceRunId = 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+      await start(validWorkflow, [], {
+        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+        replayedFromRunId: sourceRunId,
+      });
+
+      const eventData = mockEventsCreate.mock.calls[0]?.[1]?.eventData;
+      expect(eventData).not.toHaveProperty('attributes');
+      expect(eventData.executionContext).toEqual(
+        expect.objectContaining({ replayedFromRunId: sourceRunId })
+      );
+    });
+
     it('omits replayedFromRunId from executionContext when not provided', async () => {
       await start(validWorkflow, []);
 
@@ -991,6 +1050,9 @@ describe('start', () => {
       expect(eventData.executionContext).not.toHaveProperty(
         'replayedFromRunId'
       );
+      // No replay and no caller attributes: the seed must stay absent
+      // entirely, not become an empty attributes object.
+      expect(eventData).not.toHaveProperty('attributes');
     });
 
     it('rejects a replayedFromRunId without the wrun_ prefix', async () => {

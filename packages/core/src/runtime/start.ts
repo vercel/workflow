@@ -5,6 +5,7 @@ import {
   HOOK_RESUME_INPUT_VERSION,
   isLegacySpecVersion,
   PARENT_RUN_ID_ATTRIBUTE,
+  REPLAYED_FROM_RUN_ID_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
@@ -141,9 +142,11 @@ export interface StartOptionsBase {
   /**
    * The ID of an existing run this run is being replayed from, if any.
    *
-   * Recorded on the new run's `executionContext` as `replayedFromRunId` so
-   * tooling (e.g. the dashboard runs list) can show that a run originated as
-   * a replay and link back to its source. Set automatically by
+   * Recorded on the new run's `executionContext` as `replayedFromRunId` —
+   * and, on worlds with native attributes (spec version 4 and later), also
+   * as the reserved `$replayedFromRunId` attribute — so tooling (e.g. the
+   * dashboard runs list) can show that a run originated as a replay and link
+   * back to its source. Set automatically by
    * {@link recreateRunFromExisting}; there's usually no reason to pass it
    * directly.
    *
@@ -422,30 +425,9 @@ export async function start<TArgs extends unknown[], TResult>(
         );
       }
 
-      // Cross-run lineage: the reserved keys ride on the run's existing
-      // attributes, so they add no extra write. Caller attributes are spread
-      // last, so a caller with allowReservedAttributes can deliberately
-      // re-parent.
-      const lineage =
-        specVersion >= SPEC_VERSION_SUPPORTS_ATTRIBUTES
-          ? resolveLineageAttributes()
-          : undefined;
-      const runAttributes = lineage
-        ? { ...lineage, ...attributes }
-        : attributes;
-
-      // Shared by the run_created event and the resilient-start queue input.
-      const attributeSeed = runAttributes
-        ? {
-            attributes: runAttributes,
-            ...(allowReservedAttributes || lineage != null
-              ? { allowReservedAttributes: true as const }
-              : {}),
-          }
-        : {};
-
       // `replayedFromRunId` is a foreign key to the source run; reject anything
       // that isn't a real run ID so the lineage link can't point at garbage.
+      // Validated before the attribute seed below, which mirrors the value.
       if (
         opts.replayedFromRunId !== undefined &&
         !workflowRunIdSchema.safeParse(opts.replayedFromRunId).success
@@ -456,6 +438,39 @@ export async function start<TArgs extends unknown[], TResult>(
           )}.`
         );
       }
+
+      // Cross-run lineage: the reserved keys ride on the run's existing
+      // attributes, so they add no extra write. Replay lineage rides the same
+      // way — a queryable `$replayedFromRunId` mirror of the executionContext
+      // record below, so attribute-indexed observability stores can serve
+      // "which runs are replays" in list queries. Runs on pre-attributes spec
+      // versions skip the attributes silently (the executionContext record is
+      // unconditional) rather than fail the start. Caller attributes are
+      // spread last, so a caller with allowReservedAttributes can
+      // deliberately re-parent.
+      const lineage =
+        specVersion >= SPEC_VERSION_SUPPORTS_ATTRIBUTES
+          ? {
+              ...resolveLineageAttributes(),
+              ...(opts.replayedFromRunId
+                ? { [REPLAYED_FROM_RUN_ID_ATTRIBUTE]: opts.replayedFromRunId }
+                : {}),
+            }
+          : undefined;
+      const hasLineage = lineage != null && Object.keys(lineage).length > 0;
+      const runAttributes = hasLineage
+        ? { ...lineage, ...attributes }
+        : attributes;
+
+      // Shared by the run_created event and the resilient-start queue input.
+      const attributeSeed = runAttributes
+        ? {
+            attributes: runAttributes,
+            ...(allowReservedAttributes || hasLineage
+              ? { allowReservedAttributes: true as const }
+              : {}),
+          }
+        : {};
 
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both

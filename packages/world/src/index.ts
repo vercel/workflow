@@ -17,6 +17,7 @@ export {
   AttributeValidationError,
   applyAttributeChanges,
   PARENT_RUN_ID_ATTRIBUTE,
+  REPLAYED_FROM_RUN_ID_ATTRIBUTE,
   RESERVED_ATTRIBUTE_KEY_PREFIX,
   ROOT_RUN_ID_ATTRIBUTE,
   validateAttributeChanges,
