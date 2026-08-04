@@ -127,6 +127,79 @@ VERCEL_OIDC_TOKEN="$(grep VERCEL_OIDC_TOKEN workbench/nextjs-turbopack/.env.loca
 pnpm run test:e2e
 ```
 
+### Event Log Race Repro
+
+`packages/core/e2e/event-log-race-repro.test.ts` is a dedicated harness for
+`CORRUPTED_EVENT_LOG`. It drives three scenarios against one deployment:
+`step-storm` and `hook-storm` (concurrent replays of a single run racing the
+per-branch watchdog — `hook-storm` is the production shape), plus a `hook-sleep`
+control that provides the calibration baseline. Any outcome other than
+`completed` fails the run, except `infra`, which means the harness could not
+reach the deployment.
+
+Run it locally against `@workflow/world-postgres` and a locally started
+workbench app — no Vercel deployment, no credentials:
+
+```bash
+pnpm run test:e2e:event-log-race-repro:local
+```
+
+The script (`scripts/event-log-race-repro-local.sh`, `--help` for flags) brings up
+the world-postgres container, applies migrations, builds and starts
+`workbench/nextjs-turbopack` with `WORKFLOW_TARGET_WORLD` and
+`WORKFLOW_PUBLIC_MANIFEST=1` set **at build time** (both are build-time inputs;
+missing either silently yields a world-local app or a 404 manifest), runs the
+harness, prints the same summary table CI posts, and tears the server down.
+Postgres is left running for the next iteration unless `--teardown` is passed.
+
+Scale is controlled entirely by `EVENT_LOG_RACE_REPRO_*` environment variables.
+Their defaults live only in `event-log-race-repro.test.ts` — neither the CI
+workflow nor the local script defines a second copy. The default scale (14 runs)
+is a per-PR regression check, not a rate measurement; a clean run means "the
+storms did not trip it", not "the rate is below X". To soak for a *rate*, use the
+historical scale:
+
+```bash
+EVENT_LOG_RACE_REPRO_STEP_STORM_ATTEMPTS=600 \
+EVENT_LOG_RACE_REPRO_HOOK_STORM_ATTEMPTS=600 \
+EVENT_LOG_RACE_REPRO_ATTEMPTS=200 \
+EVENT_LOG_RACE_REPRO_CONCURRENCY=40 \
+EVENT_LOG_RACE_REPRO_BUDGET_MS=4500000 \
+  pnpm run test:e2e:event-log-race-repro:local --skip-build --skip-db-setup
+```
+
+Against world-postgres the storms bite much harder than the CI job's Vercel
+preview does: on `main`, three 14-run passes failed 8 of their 18 `step-storm`
+attempts with `CORRUPTED_EVENT_LOG` while `hook-storm` and `hook-sleep` stayed
+clean, so the script exits non-zero. That is the harness working, not a broken
+setup, and it is why the local runner is the fast signal while a fix is in
+flight — at 14 runs a green CI job means "the storms did not trip it", nowhere
+near "the rate is below X".
+
+One thing about a local run is unlike CI and is worth knowing before you read a
+result: in CI each replay gets its own Fluid invocation, while here every replay
+of every run shares one Next.js process. world-postgres gives that process (and
+the harness process) 50 embedded Graphile Worker slots each, and ~100 replays in
+one heap saturates GC — measured on a 12-core laptop, all 14 attempts came back
+`stuck` with the server at 6.4 GB RSS and Postgres idle. The script therefore
+sets `WORKFLOW_POSTGRES_WORKER_CONCURRENCY=10` (override by exporting it) and
+raises the app's old-space limit (`--heap-mb`). If a local run reports `stuck`
+rather than `CORRUPTED_EVENT_LOG`, suspect the machine before the SDK.
+
+In CI the same harness runs from `.github/workflows/event-log-race-repro.yml`,
+triggered by adding the `event-log-race-repro` label to a PR (or by
+`workflow_dispatch`, whose inputs are the soak dial — raise `timeout-minutes` in
+that dispatch's branch if you raise `budget_ms`). Results land in a sticky PR
+comment that keeps a history of previous runs and their configs.
+
+To poke at a run afterwards, the CLI reads the same world from the environment:
+
+```bash
+WORKFLOW_TARGET_WORLD=@workflow/world-postgres \
+WORKFLOW_POSTGRES_URL=postgres://world:world@localhost:5432/world \
+  pnpm wf inspect <run-id>
+```
+
 ### Example App Development
 
 ```bash

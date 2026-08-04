@@ -1,5 +1,23 @@
 # @workflow/world
 
+## 5.0.0-beta.24
+
+### Minor Changes
+
+- [#3186](https://github.com/vercel/workflow/pull/3186) [`4a9d26b`](https://github.com/vercel/workflow/commit/4a9d26b1cb807a9e31489350b468db42a8c13ef3) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Record the compute instance that ran each step attempt: `CreateEventParams.computeInstanceId` is stamped on `step_started` writes, forwarded in the world-vercel v4 frame meta alongside `vercelId`, read back on `AnalyticsEvent` / `AnalyticsStep`, and surfaced as "Compute Instance ID" in the observability attribute panel.
+
+- [#3145](https://github.com/vercel/workflow/pull/3145) [`1471f25`](https://github.com/vercel/workflow/commit/1471f252fa18024695f1bf149f5bee4876ab149e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Strengthen the event-creation precondition guard: replay-context writes now also send the number of loaded events, so a snapshot that is missing an event is rejected instead of committing a divergent event log, and a rejection restarts the replay in-process (consuming the events a world may attach to the rejection) rather than re-committing the rejected payload or re-invoking over the queue. `@workflow/world-local` and `@workflow/world-postgres` do not implement the check.
+
+- [#3230](https://github.com/vercel/workflow/pull/3230) [`31f92df`](https://github.com/vercel/workflow/commit/31f92df10d295cf09c93aadd35380209c137326c) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Lazy hook resumption: on a fast path, `resumeHook()` writes the `hook_received` event and dispatches the workflow queue message concurrently instead of sequentially, cutting a round trip off resume latency. A `(runId, resumeId)` dedup constraint keeps the two writers converging on exactly one event; the runtime falls back to the sequential path when dedup support is unavailable or when `WORKFLOW_DISABLE_LAZY_HOOK_RESUME=1`. `resumeHook()` resolves to a `ResumedHook` (a `Hook` plus an optional `resilientResume: true` flag, set only when the direct write failed transiently and the resume was recovered via the queue consumer's re-ensure) — preserving the contract introduced alongside the resilient-resume work.
+
+- [#1834](https://github.com/vercel/workflow/pull/1834) [`438eaa6`](https://github.com/vercel/workflow/commit/438eaa6a595811e6d6942ba679e831d25e6cbfbe) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Make `resumeHook()` resilient to transient `hook_received` event write failures (429/5xx) by carrying the payload on the queue message for the runtime to materialize. Returned `Hook` gets a new `resilientResume: true` flag when this fallback path is taken.
+
+- [#3244](https://github.com/vercel/workflow/pull/3244) [`ee944d2`](https://github.com/vercel/workflow/commit/ee944d2476daca81b89ba545b522385a7902ec03) Thanks [@pranaygp](https://github.com/pranaygp)! - Add an optional `World.getEnvironment()` hook and an optional `environment` field on `RunInputSchema`, so the environment a run was created in can travel with its queue message.
+
+### Patch Changes
+
+- [#3208](https://github.com/vercel/workflow/pull/3208) [`4017597`](https://github.com/vercel/workflow/commit/4017597a5f6a54da7ea3bf467c8c63b3bf3bc845) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Report replay-divergence counts on event writes that recover or exhaust replay retries.
+
 ## 5.0.0-beta.23
 
 ### Major Changes

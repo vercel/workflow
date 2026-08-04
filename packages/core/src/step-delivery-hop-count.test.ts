@@ -55,6 +55,7 @@ function setupWorkflowContext(
   const promiseQueueHolder = { current: Promise.resolve() };
   const ctxRef: { current?: WorkflowOrchestratorContext } = {};
   const ctx: WorkflowOrchestratorContext = {
+    suspensionGeneration: 0,
     runId: 'wrun_test',
     encryptionKey: undefined,
     replayPayloadCache,

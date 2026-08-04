@@ -73,6 +73,13 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   return {
     specVersion: SPEC_VERSION_CURRENT,
+    capabilities: {
+      // world-local deduplicates concurrent `hook_received` writes sharing a
+      // `(runId, resumeId)` via a filesystem sidecar claim (see
+      // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast
+      // path converges on one event in dev exactly as it does on Vercel.
+      hookResumeDedup: true,
+    },
     ...queue,
     ...storage,
     ...instrumentObject('world.streams', {

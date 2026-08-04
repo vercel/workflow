@@ -25,6 +25,7 @@ import type {
   WorkflowSuspension,
 } from '../global.js';
 import { runtimeLogger } from '../logger.js';
+import type { GuestCodeStats } from '../serialization/hardened.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
@@ -129,6 +130,13 @@ export interface SuspensionHandlerResult {
    * durably creating the user's hooks doesn't count as runtime overhead.
    */
   hookCreationMs: number;
+  /**
+   * Whether serializing this suspension's new step inputs was passive (did
+   * not execute workflow-owned code such as getters, proxy traps, or custom
+   * serializers). `false` means the retained VM may have diverged from what
+   * a cold replay would compute, so the caller must demote to replay.
+   */
+  retainedStepInputsSafe: boolean;
 }
 
 async function createHookEvent({
@@ -528,6 +536,18 @@ export async function handleSuspension({
   // racing with concurrent handlers on step execution.
   const createdStepCorrelationIds = new Set<string>();
 
+  // Serialization always runs through the one ordinary path below, so the
+  // durable bytes cannot depend on retention. What retention needs to know is
+  // whether that serialization *executed* workflow code (getters, proxy
+  // traps, custom serializers) — side effects a cold replay would not
+  // repeat, since a replay skips dehydration for already-recorded steps.
+  // The hardened serializer records exactly that into this sink (see
+  // ../serialization/hardened.ts); when any input in the batch records an
+  // execution, the caller demotes the session so the side effects land in a
+  // VM that is about to be discarded, exactly like the pre-retention
+  // runtime.
+  const guestCodeStats: GuestCodeStats = { executions: [] };
+
   // Lazy inline start: defer the step_created write for up to
   // `getMaxInlineSteps()` steps the caller will run inline (in parallel). Each
   // step is created on the fly by the lazy `step_started` executeStep sends
@@ -561,6 +581,10 @@ export async function handleSuspension({
     if (stepsNeedingCreation.has(queueItem.correlationId)) {
       ops.push(
         (async () => {
+          // Per-step sink, merged below: the dehydrate wrapper emits span
+          // attributes from the sink it is handed, so sharing one across
+          // steps would re-emit (and misattribute) earlier steps' entries.
+          const stepGuestCode: GuestCodeStats = { executions: [] };
           const dehydratedInput = await dehydrateStepArguments(
             {
               args: queueItem.args,
@@ -571,8 +595,10 @@ export async function handleSuspension({
             encryptionKey,
             suspension.globalThis,
             false,
-            compression
+            compression,
+            stepGuestCode
           );
+          guestCodeStats.executions.push(...stepGuestCode.executions);
           // Deferred (lazy) inline step: skip the step_created write — the
           // caller's inline executeStep will send a lazy step_started carrying
           // this input, and the world creates the step (entity + synthetic
@@ -718,6 +744,20 @@ export async function handleSuspension({
   // step_created and re-dispatches, and recovers the run instead of orphaning it.
   await settlePhase(ops);
 
+  // The step-input dehydrations above have settled, so the sink is final.
+  const retainedStepInputsSafe = guestCodeStats.executions.length === 0;
+  if (!retainedStepInputsSafe) {
+    runtimeLogger.debug(
+      'Serializing step inputs executed workflow code; falling back to replay instead of retaining the VM',
+      {
+        workflowRunId: runId,
+        executions: guestCodeStats.executions
+          .slice(0, 5)
+          .map((e) => (e.detail ? `${e.kind}(${e.detail})` : e.kind)),
+      }
+    );
+  }
+
   // Rebuild the inline batch in deterministic order. `lazyInlineCorrelationIds`
   // is a Set seeded from the ordered first-N slice, so iterating it preserves
   // stepItems order; every id in it was set by the lazy branch above.
@@ -761,6 +801,7 @@ export async function handleSuspension({
     hasAttributeEvents: attributeItems.length > 0,
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,
+    retainedStepInputsSafe,
   };
 }
 

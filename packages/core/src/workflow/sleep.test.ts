@@ -20,6 +20,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   const ctx: WorkflowOrchestratorContext = {
+    suspensionGeneration: 0,
     runId: 'wrun_test',
     encryptionKey: undefined,
     replayPayloadCache: new ReplayPayloadCache(undefined),

@@ -1,5 +1,16 @@
 # @workflow/web
 
+## 5.0.0-beta.39
+
+### Major Changes
+
+- [#3298](https://github.com/vercel/workflow/pull/3298) [`d06b55e`](https://github.com/vercel/workflow/commit/d06b55e64195d9e4b87521b8010967d16139cabc) Thanks [@mitul-s](https://github.com/mitul-s)! - Rename `new-trace-viewer` to `trace-viewer` and the public `NewTraceViewer` export to `TraceViewer`.
+
+### Patch Changes
+
+- Updated dependencies [[`31f92df`](https://github.com/vercel/workflow/commit/31f92df10d295cf09c93aadd35380209c137326c), [`2677653`](https://github.com/vercel/workflow/commit/2677653759aa34c5c9fe28950fe1a02cec294551), [`aa78a7e`](https://github.com/vercel/workflow/commit/aa78a7e63c73e170f32143b22e01e796a537c405), [`f05f642`](https://github.com/vercel/workflow/commit/f05f642e89d7fe0af6e3d007621b0aa05f996a5b)]:
+  - @workflow/world-local@5.0.0-beta.33
+
 ## 5.0.0-beta.38
 
 ### Minor Changes

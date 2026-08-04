@@ -16,6 +16,7 @@ import type {
 import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
+  HOOK_RESUME_INPUT_VERSION,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
@@ -101,6 +102,18 @@ export interface HealthCheckResult {
    * key-lookup request.
    */
   encryptionPublicKey?: string;
+  /**
+   * The responding deployment's `HOOK_RESUME_INPUT_VERSION` — the protocol
+   * version at which the *consumer* (queue-message target) re-ensures the
+   * `hook_received` event from `hookInput` on replay. A cross-deployment
+   * `start()` stamps the *target's* value (not the caller's) into the new
+   * run's `executionContext.hookResumeInputVersion` so that `resumeHook()`
+   * only takes the parallel path when the deployment that will actually
+   * consume the queue message is known to honor `hookInput`. Omitted when the
+   * responding deployment predates this field (an older consumer that ignores
+   * `hookInput`), which fails the gate closed.
+   */
+  hookResumeInputVersion?: number;
 }
 
 /**
@@ -175,6 +188,10 @@ export async function handleHealthCheckMessage(
     correlationId: healthCheck.correlationId,
     specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
     workflowCoreVersion,
+    // We are executing inside the target deployment, so this constant reflects
+    // the *consumer's* hook-resume protocol version — exactly what a
+    // cross-deployment caller needs to gate its parallel resume path on.
+    hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION,
     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
     timestamp: Date.now(),
   });
@@ -327,6 +344,7 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
     specVersion?: number;
     workflowCoreVersion?: string;
     encryptionPublicKey?: string;
+    hookResumeInputVersion?: number;
   } = {
     healthy: r.healthy as boolean,
   };
@@ -338,6 +356,9 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
   }
   if (typeof r.encryptionPublicKey === 'string') {
     parsed.encryptionPublicKey = r.encryptionPublicKey;
+  }
+  if (typeof r.hookResumeInputVersion === 'number') {
+    parsed.hookResumeInputVersion = r.hookResumeInputVersion;
   }
   return parsed;
 }
@@ -492,6 +513,36 @@ export function appendUniqueEvents(
     ids.add(event.eventId);
     target.push(event);
   }
+}
+
+/**
+ * Inserts `event` into `target` at the position that keeps `target` ordered by
+ * ascending `eventId`, or no-ops if an event with the same `eventId` is already
+ * present (idempotent).
+ *
+ * `preloadedEvents` is loaded `sortOrder: 'asc'` and is never re-sorted
+ * client-side, so a `hook_received` spliced in by the lazy-resume consumer must
+ * land in `eventId` order — a plain `push` would place a late-committing
+ * earlier event after events that sort before it, corrupting replay. Event IDs
+ * are ULIDs, so lexicographic string order matches commit order.
+ */
+export function insertEventByEventId(target: Event[], event: Event): void {
+  // Linear scan from the end: the spliced event is almost always the newest
+  // (it sorts at or near the tail), so this finds the slot in O(1)–O(k) for the
+  // common case while still handling an out-of-order late arrival correctly.
+  let i = target.length;
+  while (i > 0) {
+    const existing = target[i - 1];
+    if (existing.eventId === event.eventId) {
+      // Already present — keep the splice idempotent.
+      return;
+    }
+    if (existing.eventId < event.eventId) {
+      break;
+    }
+    i--;
+  }
+  target.splice(i, 0, event);
 }
 
 function assertEventPaginationProgress(
