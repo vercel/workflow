@@ -23,7 +23,7 @@ export interface SourceSnapshot {
 }
 
 export type RebuildDecision =
-  | { kind: 'duplicate' }
+  | { kind: 'ignored' }
   | { kind: 'none'; snapshots: Map<string, SourceSnapshot> }
   | {
       kind: 'hot';
@@ -595,16 +595,9 @@ export const classifyRebuild = async ({
     normalizePath,
   });
   if (changedRelevantFiles.length === 0) {
-    if (
-      prunedAddedFiles.snapshots.size === 0 &&
-      fileChanges.addedFiles.length > 0 &&
-      normalizedFileChanges.addedFiles.length === 0 &&
-      fileChanges.modifiedFiles.length === 0 &&
-      fileChanges.removedFiles.length === 0
-    ) {
-      return { kind: 'duplicate' };
-    }
-    return { kind: 'none', snapshots: prunedAddedFiles.snapshots };
+    return prunedAddedFiles.snapshots.size > 0
+      ? { kind: 'none', snapshots: prunedAddedFiles.snapshots }
+      : { kind: 'ignored' };
   }
 
   try {
@@ -617,7 +610,7 @@ export const classifyRebuild = async ({
       return { kind: 'full' };
     }
     if (snapshots.size === 0) {
-      return { kind: 'duplicate' };
+      return { kind: 'ignored' };
     }
     return workflowEntryFilesChanged({
       changedFiles: changedRelevantFiles,

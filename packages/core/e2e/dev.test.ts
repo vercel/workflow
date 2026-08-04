@@ -1353,7 +1353,7 @@ ${apiFileContent}`
           },
           {
             description: 'workflow file removed from API import',
-            expectedLogCounts: { full: 1, skip: 1 },
+            expectedLogCounts: { full: 1 },
             write: async () => {
               await fs.rm(files.addedWorkflow, { force: true });
               await fs.writeFile(
@@ -1396,12 +1396,12 @@ ${apiFileContent}`
         const unrelatedLogCursor = await readDevServerLogCursor();
         await fs.writeFile(files.unrelated, 'export const unrelated = true;\n');
         snapshot = await expectGeneratedArtifactsUnchanged(snapshot);
-        await expectHmrLogCounts(unrelatedLogCursor, { skip: 1 });
+        await expectHmrLogCounts(unrelatedLogCursor, {});
 
         const unrelatedRemovalLogCursor = await readDevServerLogCursor();
         await fs.unlink(files.unrelated);
         snapshot = await expectGeneratedArtifactsUnchanged(snapshot);
-        await expectHmrLogCounts(unrelatedRemovalLogCursor, { skip: 1 });
+        await expectHmrLogCounts(unrelatedRemovalLogCursor, {});
       }
     );
   });
