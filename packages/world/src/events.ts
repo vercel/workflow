@@ -929,6 +929,15 @@ export interface ListEventsParams {
 
 export interface ListEventsByCorrelationIdParams {
   correlationId: string;
+  /**
+   * The run the correlation id belongs to. A correlation id is unique per
+   * run, not globally: a slot-numbered run counts its own steps and waits, so
+   * `step_…001` names the first step of *every* such run. Naming the run is
+   * what makes the answer that run's events, and it is what makes the
+   * pagination cursor unambiguous — `(runId, eventId)` is a key where an
+   * event id alone is not.
+   */
+  runId: string;
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
 }

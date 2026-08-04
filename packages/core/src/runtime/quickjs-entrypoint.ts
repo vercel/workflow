@@ -16,6 +16,7 @@
 import type { Span } from '@opentelemetry/api';
 import {
   EntityConflictError,
+  FatalError,
   HookNotFoundError,
   MaxEventsExceededError,
   RunExpiredError,
@@ -28,6 +29,7 @@ import {
   type RunInput,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
+  type WorldCapabilities,
 } from '@workflow/world';
 import { classifyRunError } from '../classify-error.js';
 import { runtimeLogger } from '../logger.js';
@@ -180,6 +182,40 @@ async function queueStepMessage(params: {
  * leftover side effects when the workflow completed or failed, mirroring
  * the node:vm engine's drainPendingQueueItems).
  */
+/**
+ * Rejects retained Hooks before registration when the configured World
+ * does not support `experimental_minRetention` — the same gate the node
+ * engine applies inside `createHook()` (workflow/hook.ts), where
+ * `ctx.worldCapabilities` is available to workflow code. The QuickJS VM
+ * has no capability channel into the guest, so the check runs host-side
+ * at dispatch, before any `hook_created` is written. Without it, a
+ * non-supporting world would silently persist the hook WITHOUT its
+ * retention deadline — the user asked for retention, got none, and
+ * nothing failed loud (see WorldCapabilities.hookRetention in
+ * @workflow/world: "Missing or inactive means the runtime rejects
+ * retained Hooks before registration").
+ *
+ * The FatalError escapes the entrypoint into the replay loop's catch in
+ * runtime.ts, which records run_failed — mirroring the node engine,
+ * where the same FatalError fails the run from inside the workflow.
+ */
+export function assertHookRetentionSupported(
+  pendingOperations: PendingOperation[],
+  capabilities: WorldCapabilities | undefined
+): void {
+  if (capabilities?.hookRetention?.active === true) return;
+  for (const op of pendingOperations) {
+    if (
+      op.type === 'hook' &&
+      (op as PendingHook).tokenRetentionUntil !== undefined
+    ) {
+      throw new FatalError(
+        'The configured World does not support `experimental_minRetention` for Hooks.'
+      );
+    }
+  }
+}
+
 async function dispatchPendingOps(params: {
   world: Awaited<ReturnType<typeof getWorld>>;
   runId: string;
@@ -231,6 +267,8 @@ async function dispatchPendingOps(params: {
   let createdAttributeEvent = false;
   const opsPromises: Promise<void>[] = [];
 
+  assertHookRetentionSupported(pendingOperations, world.capabilities);
+
   const processHookOp = async (hook: PendingHook): Promise<void> => {
     runtimeLogger.debug('QuickJS runtime: processing hook op', {
       workflowRunId: runId,
@@ -266,6 +304,10 @@ async function dispatchPendingOps(params: {
           correlationId: hook.correlationId,
           eventData: {
             token: hook.token,
+            tokenRetentionUntil:
+              hook.tokenRetentionUntil === undefined
+                ? undefined
+                : new Date(hook.tokenRetentionUntil),
             metadata: encryptedMetadata,
             // Always include isWebhook explicitly. Worlds default it to
             // `true` when absent, which would break the public webhook
@@ -1182,8 +1224,29 @@ export async function runWorkflowWithQuickJS(params: {
         if (op.type !== 'wait') continue;
         const wait = op as PendingWait;
         if (scheduledWaitContinuations.has(wait.correlationId)) continue;
+        // Waits whose wait_completed THIS invocation already wrote (the
+        // elapsed-wait pass above) are done — the event just hasn't fed
+        // back into the VM yet. No continuation needed.
+        if (completedWaitIds2.has(wait.correlationId)) continue;
         const resumeMs = new Date(wait.resumeAt).getTime() - Date.now();
-        if (resumeMs <= 0) continue;
+        // An already-elapsed wait MUST still get a continuation (clamped
+        // to the 1s minimum, exactly like the node engine's
+        // `Math.max(1000, resumeAtMs - now)`), not be skipped: a wait
+        // whose deadline falls between this iteration's elapsed-wait
+        // pass (which saw it as still pending and wrote nothing) and
+        // this sweep would otherwise get NEITHER a wait_completed NOR a
+        // continuation — and the inline batch below then blocks this
+        // invocation for the full step duration with no wake armed
+        // anywhere. For `Promise.race(step, sleep)` that silently hands
+        // the race to the step: the sleep's wait_completed is never
+        // written and the run completes with the wrong winner. The
+        // window between the two checks spans this iteration's dispatch
+        // + feed round-trips, so on network-backed worlds (world-vercel)
+        // a short sleep lands in it routinely — observed as a ~50%
+        // sleepWinsRaceWorkflow failure rate in the Vercel e2e legs,
+        // while world-local's sub-ms round-trips masked it locally. The
+        // continuation invocation's pre-VM elapsed check writes the
+        // wait_completed ~1s later.
         const seconds = Math.max(1, Math.ceil(resumeMs / 1000));
         if (!soonestWait || seconds < soonestWait.seconds) {
           soonestWait = { correlationId: wait.correlationId, seconds };
@@ -1354,6 +1417,17 @@ export async function runWorkflowWithQuickJS(params: {
     // Drain failures are swallowed: the workflow's own outcome is the
     // source of truth.
     if (result.completed.drainOperations?.length) {
+      // Fail loud on retained hooks the World can't support BEFORE the
+      // drain try/catch below — that catch intentionally swallows genuine
+      // drain failures ("the workflow's own outcome is the source of
+      // truth"), but the retention gate's FatalError must escape to the
+      // replay loop's catch (run_failed), mirroring the node engine. This
+      // covers the fire-and-forget case: a retained hook that was never
+      // awaited only reaches the gate through this drain.
+      assertHookRetentionSupported(
+        result.completed.drainOperations,
+        world.capabilities
+      );
       try {
         await dispatchPendingOps({
           world,
@@ -1584,6 +1658,14 @@ export async function runWorkflowWithQuickJS(params: {
     // Flush leftover pending side effects before writing run_failed —
     // same drain semantics as the completed branch.
     if (result.failed.drainOperations?.length) {
+      // Fail loud on retained hooks the World can't support BEFORE the
+      // drain try/catch below — same reasoning as the completed branch:
+      // the retention gate's FatalError must escape to the replay loop's
+      // catch rather than be swallowed as a genuine drain failure.
+      assertHookRetentionSupported(
+        result.failed.drainOperations,
+        world.capabilities
+      );
       try {
         await dispatchPendingOps({
           world,
