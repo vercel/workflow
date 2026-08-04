@@ -330,7 +330,6 @@ jobs:
       statuses: read
     strategy:
       fail-fast: false
-      max-parallel: 6
       matrix:
         # Workflow VM engines: node:vm (default) and the opt-in QuickJS
         # WASM engine. The env var is set on the e2e test runner, which is
