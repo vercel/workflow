@@ -131,8 +131,15 @@
     {
       "idx": 18,
       "version": "7",
+      "when": 1785619990000,
+      "tag": "0018_add_hook_token_retention",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
       "when": 1785801600000,
-      "tag": "0018_run_scoped_event_keys",
+      "tag": "0019_run_scoped_event_keys",
       "breakpoints": true
     }
   ]

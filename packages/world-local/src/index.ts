@@ -79,6 +79,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     // both schemes whatever this says.
     specVersion: SPEC_VERSION_SLOT_IDENTITY,
     capabilities: {
+      hookRetention: { active: true },
       // world-local deduplicates concurrent `hook_received` writes sharing a
       // `(runId, resumeId)` via a filesystem sidecar claim (see
       // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast

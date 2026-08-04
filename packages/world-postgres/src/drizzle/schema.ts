@@ -227,6 +227,9 @@ export const hooks = schema.table(
     projectId: varchar('project_id').notNull(),
     environment: varchar('environment').notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
+    tokenRetentionUntil: timestamp('token_retention_until', {
+      withTimezone: true,
+    }),
     /** @deprecated */
     metadataJson: jsonb('metadata').$type<SerializedContent>(),
     metadata: Cbor<SerializedContent>()('metadata_cbor'),

@@ -578,7 +578,8 @@ interface PaginatedFileSystemQueryConfig<T> {
   cachedItems?: ReadonlyMap<string, T>;
   filePrefix?: string;
   fileIdFilter?: (fileId: string) => boolean;
-  filter?: (item: T) => boolean;
+  /** Runs concurrently for each read batch and must not mutate storage. */
+  filter?: (item: T) => boolean | Promise<boolean>;
   sortOrder?: 'asc' | 'desc';
   limit?: number;
   cursor?: string;
@@ -703,11 +704,13 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     const loadedBatch = await Promise.all(
       batch.map(async (fileId): Promise<T | null> => {
         const filePath = path.join(resolvedDirectory, `${fileId}.json`);
+        let item: T | null;
         try {
           const cachedItem = cachedItems?.get(filePath);
-          return cachedItem === undefined
-            ? await readJSON(filePath, schema)
-            : structuredClone(cachedItem);
+          item =
+            cachedItem === undefined
+              ? await readJSON(filePath, schema)
+              : structuredClone(cachedItem);
         } catch (error: unknown) {
           // We don't expect zod errors to happen, but if the JSON does get malformed,
           // we skip the item. Preferably, we'd have a way to mark items as malformed,
@@ -721,13 +724,12 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
           }
           throw error;
         }
+        return item && filter && !(await filter(item)) ? null : item;
       })
     );
 
     for (const item of loadedBatch) {
       if (!item) continue;
-      // Apply custom filter early if provided
-      if (filter && !filter(item)) continue;
 
       // Double-check cursor filtering with actual createdAt from JSON
       // (in case ULID timestamp differs from stored createdAt)

@@ -69,6 +69,7 @@ export function createWorld(
     // What this world stamps on new runs: slot identity. Every world reads
     // both schemes whatever this says.
     specVersion: SPEC_VERSION_SLOT_IDENTITY,
+    capabilities: { hookRetention: { active: true } },
     ...storage,
     ...streamer,
     ...queue,
