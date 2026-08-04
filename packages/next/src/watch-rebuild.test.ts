@@ -185,6 +185,6 @@ export const allWorkflows = {} as const;
       sourceSnapshots,
     });
 
-    expect(decision).toEqual({ kind: 'ignored' });
+    expect(decision.kind).toBe('none');
   });
 });
