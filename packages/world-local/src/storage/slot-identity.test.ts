@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SlotConflictError } from '@workflow/errors';
+import { EntityConflictError, SlotConflictError } from '@workflow/errors';
 import type { Storage } from '@workflow/world';
 import {
   FIRST_SLOT,
@@ -571,5 +571,69 @@ describe('a resume with two writers', () => {
     );
     await expect(hookReceivedCount(runId)).resolves.toBe(resumeIds.length);
     await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+});
+
+async function hookCreatedCount(runId: string): Promise<number> {
+  const { data } = await eventsOf(runId);
+  return data.filter((event) => event.eventType === 'hook_created').length;
+}
+
+describe('a hook created twice', () => {
+  it('commits one event when the retry allocated its own position', async () => {
+    // Two replays of the same run both reach `hook.create`. Neither holds an
+    // event log, so each takes a position of its own choosing; the token claim
+    // then points the second at the first's event. Losing that position says
+    // the hook exists, so the retry must stop there. Reallocating around it —
+    // which is what a writer that picked its own position normally does — would
+    // publish a second `hook_created` for one hook.
+    const runId = await newSlotRun();
+    const hook = { hookId: 'hook_a', token: 'tok:1' };
+
+    await createHook(runId, hook.hookId, hook.token);
+    await expect(createHook(runId, hook.hookId, hook.token)).rejects.toThrow(
+      EntityConflictError
+    );
+
+    await expect(hookCreatedCount(runId)).resolves.toBe(1);
+    await expect(slotsOf(runId)).resolves.toEqual([1, 2]);
+  });
+
+  it('leaves no hole behind the retry it turned away', async () => {
+    // The retry reserved a position before the claim redirected it. Handing it
+    // back is what keeps the run's log dense, and a dense log is the only thing
+    // that lets a client prove it holds every event.
+    const runId = await newSlotRun();
+    await createHook(runId, 'hook_a', 'tok:1');
+    await createHook(runId, 'hook_a', 'tok:1').catch(() => {});
+
+    await createHook(runId, 'hook_b', 'tok:2');
+    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
+  });
+
+  it('commits one event when both replays race across instances', async () => {
+    const runId = await newSlotRun();
+    const other = createStorage(testDir);
+
+    const outcomes = await Promise.allSettled([
+      storage.events.create(runId, {
+        eventType: 'hook_created',
+        specVersion: SPEC_VERSION_SLOT_IDENTITY,
+        correlationId: 'hook_a',
+        eventData: { token: 'tok:1', hookId: 'hook_a' },
+      }),
+      other.events.create(runId, {
+        eventType: 'hook_created',
+        specVersion: SPEC_VERSION_SLOT_IDENTITY,
+        correlationId: 'hook_a',
+        eventData: { token: 'tok:1', hookId: 'hook_a' },
+      }),
+    ]);
+
+    expect(
+      outcomes.filter((outcome) => outcome.status === 'fulfilled')
+    ).toHaveLength(1);
+    await expect(hookCreatedCount(runId)).resolves.toBe(1);
+    await expect(slotsOf(runId)).resolves.toEqual([1, 2]);
   });
 });

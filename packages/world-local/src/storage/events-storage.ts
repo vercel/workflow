@@ -896,6 +896,12 @@ export function createEventsStorage(
         // claim's owner is the only writer allowed to move off the pinned
         // position while the resume is still unrecorded.
         let ownsResumeClaim = false;
+        // Whether the position this write ends up publishing to was chosen by
+        // this world for idempotency rather than claimed by the caller. A hook
+        // retry adopts the canonical `hook_created` position recorded in the
+        // token claim, so losing that position says the hook is already
+        // created, not that the caller's log is short an event.
+        let convergedOnCanonicalPosition = false;
         const now = new Date();
 
         // For run_created events, use client-provided runId or generate one server-side
@@ -2385,6 +2391,17 @@ export function createEventsStorage(
               canonicalEventId = pinned;
             }
 
+            if (canonicalEventId !== eventId) {
+              // Moving to the canonical position leaves the position this
+              // write was going to take unused. Hand it back so the allocator
+              // can fill it rather than leaving a hole the log can never close.
+              const abandoned = slotFromId(eventId);
+              if (abandoned !== undefined && reserved.delete(abandoned)) {
+                slots.release(effectiveRunId, abandoned);
+              }
+            }
+            convergedOnCanonicalPosition = true;
+
             // A canonical ULID also makes converging writes byte-identical.
             // A slot id carries no time, and reading one as a ULID yields the
             // epoch, so a slot-numbered run keeps the wall clock and the two
@@ -2801,7 +2818,14 @@ export function createEventsStorage(
         // the run already has a creation event, and appending a second one above
         // it would be worse than the duplicate the publish is reporting.
         const reallocatesSlot =
-          slotMode && params?.eventId === undefined && !ownsFirstSlot;
+          slotMode &&
+          params?.eventId === undefined &&
+          !ownsFirstSlot &&
+          // A write that adopted the canonical position of an existing hook is
+          // pinned to it for the same reason `run_created` is pinned to the
+          // first slot: moving somewhere free would publish a second
+          // `hook_created` for one hook.
+          !convergedOnCanonicalPosition;
         const slotDeadline = Date.now() + SLOT_RETRY_BUDGET_MS;
         const pinnedDeadline = Date.now() + PINNED_EVENT_WAIT_MS;
         let compositeKey = '';
@@ -2931,7 +2955,7 @@ export function createEventsStorage(
               { status: 503 }
             );
           }
-          if (slotMode) {
+          if (slotMode && !convergedOnCanonicalPosition) {
             // Losing a claimed slot means someone else's event occupies this
             // position, so the log this event was derived from is missing at
             // least that event — the whole proposed event is stale, not just
