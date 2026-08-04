@@ -1224,8 +1224,29 @@ export async function runWorkflowWithQuickJS(params: {
         if (op.type !== 'wait') continue;
         const wait = op as PendingWait;
         if (scheduledWaitContinuations.has(wait.correlationId)) continue;
+        // Waits whose wait_completed THIS invocation already wrote (the
+        // elapsed-wait pass above) are done — the event just hasn't fed
+        // back into the VM yet. No continuation needed.
+        if (completedWaitIds2.has(wait.correlationId)) continue;
         const resumeMs = new Date(wait.resumeAt).getTime() - Date.now();
-        if (resumeMs <= 0) continue;
+        // An already-elapsed wait MUST still get a continuation (clamped
+        // to the 1s minimum, exactly like the node engine's
+        // `Math.max(1000, resumeAtMs - now)`), not be skipped: a wait
+        // whose deadline falls between this iteration's elapsed-wait
+        // pass (which saw it as still pending and wrote nothing) and
+        // this sweep would otherwise get NEITHER a wait_completed NOR a
+        // continuation — and the inline batch below then blocks this
+        // invocation for the full step duration with no wake armed
+        // anywhere. For `Promise.race(step, sleep)` that silently hands
+        // the race to the step: the sleep's wait_completed is never
+        // written and the run completes with the wrong winner. The
+        // window between the two checks spans this iteration's dispatch
+        // + feed round-trips, so on network-backed worlds (world-vercel)
+        // a short sleep lands in it routinely — observed as a ~50%
+        // sleepWinsRaceWorkflow failure rate in the Vercel e2e legs,
+        // while world-local's sub-ms round-trips masked it locally. The
+        // continuation invocation's pre-VM elapsed check writes the
+        // wait_completed ~1s later.
         const seconds = Math.max(1, Math.ceil(resumeMs / 1000));
         if (!soonestWait || seconds < soonestWait.seconds) {
           soonestWait = { correlationId: wait.correlationId, seconds };
