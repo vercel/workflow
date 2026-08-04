@@ -15,6 +15,7 @@
  */
 
 import type { CompressionStats } from './compression.js';
+import type { GuestCodeStats } from './hardened.js';
 import type { FormatPrefix } from './types.js';
 
 /**
@@ -74,6 +75,23 @@ export interface CodecOptions {
    * Used by the dehydrate/hydrate wrappers to emit OTel span attributes.
    */
   compressionStats?: CompressionStats;
+
+  /**
+   * Optional sink populated by the hardened serializer with every
+   * workflow (guest) code execution that serialization could not avoid —
+   * getters, proxies, and custom `[WORKFLOW_SERIALIZE]` methods. A non-empty
+   * `executions` array means serialization may have perturbed VM state
+   * (it runs exactly once per payload and is never replayed, so any side
+   * effect it triggers diverges from replay).
+   *
+   * Every dehydrate path already reports this as span attributes. Passing a
+   * sink is for callers that need the executions *programmatically* — a
+   * retained-VM gate deciding whether the VM is still reusable. No caller
+   * does that yet, so nothing in the runtime currently passes one.
+   *
+   * Serialize side only.
+   */
+  guestCodeStats?: GuestCodeStats;
 }
 
 export interface Codec {

@@ -12,6 +12,7 @@
 
 import { parse, stringify, unflatten } from 'devalue';
 import type { Codec, CodecOptions, SerializationMode } from './codec.js';
+import { hardenedStringifyOperations, withGuestCodeStats } from './hardened.js';
 import { getClassReducers, getClassRevivers } from './reducers/class.js';
 import { getCommonReducers, getCommonRevivers } from './reducers/common.js';
 import {
@@ -112,7 +113,15 @@ export const devalueCodec: Codec = {
       options?.global,
       options?.extraReducers
     );
-    const str = stringify(value, reducers);
+    // Hardened operations: devalue's own introspection (classification,
+    // built-in extraction, property reads) goes through captured host
+    // intrinsics and descriptor reads, so serializing a value constructed
+    // inside a workflow VM cannot execute sandbox code behind our back.
+    // Where workflow code must run (getters, proxies, custom serializers),
+    // the execution is recorded into `options.guestCodeStats`.
+    const str = withGuestCodeStats(options?.guestCodeStats, () =>
+      stringify(value, reducers, { operations: hardenedStringifyOperations })
+    );
     return encoder.encode(str);
   },
 

@@ -980,3 +980,108 @@ describe('global surface parity', () => {
     expect(value.plainCompare).toBeLessThan(0);
   });
 });
+
+describe('hook dispose then sleep replay', () => {
+  const code = `
+    async function workflow() {
+      var hook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")]({ token: "tok1" });
+      var payload = await hook;
+      hook.dispose();
+      await globalThis[Symbol.for("WORKFLOW_SLEEP")]("5s");
+      return { message: payload.message, disposed: true };
+    }
+    workflow.workflowId = "workflow//test//workflow";
+    globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+  `;
+
+  it('completes after full replay of hook+dispose+wait events', async () => {
+    const run = makeRun();
+
+    // Invocation 1: suspend on hook
+    const r1 = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [],
+    });
+    expect(r1.suspended).toBeDefined();
+    const hookOp = r1.suspended!.pendingOperations.find(
+      (o) => o.type === 'hook'
+    ) as any;
+    const hookCid = hookOp.correlationId;
+
+    const baseEvents = [
+      runCreatedEvent(run),
+      {
+        eventId: 'evnt_hc',
+        runId: run.runId,
+        eventType: 'hook_created' as const,
+        correlationId: hookCid,
+        eventData: { token: 'tok1' },
+        createdAt: new Date('2025-01-01T00:00:01Z'),
+      },
+      {
+        eventId: 'evnt_hr',
+        runId: run.runId,
+        eventType: 'hook_received' as const,
+        correlationId: hookCid,
+        eventData: { payload: serialize({ message: 'first-payload' }) },
+        createdAt: new Date('2025-01-01T00:00:02Z'),
+      },
+    ];
+
+    // Invocation 2: replay hook events -> dispose + sleep pending
+    const r2 = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: baseEvents,
+    });
+    expect(r2.suspended).toBeDefined();
+    const disposeOp = r2.suspended!.pendingOperations.find(
+      (o: any) => o.type === 'hook_dispose'
+    );
+    const waitOp = r2.suspended!.pendingOperations.find(
+      (o: any) => o.type === 'wait'
+    ) as any;
+    expect(disposeOp).toBeDefined();
+    expect(waitOp).toBeDefined();
+
+    // Invocation 3: full log incl. hook_disposed + wait events -> complete
+    const r3 = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [
+        ...baseEvents,
+        {
+          eventId: 'evnt_hd',
+          runId: run.runId,
+          eventType: 'hook_disposed' as const,
+          correlationId: hookCid,
+          createdAt: new Date('2025-01-01T00:00:03Z'),
+        },
+        {
+          eventId: 'evnt_wc',
+          runId: run.runId,
+          eventType: 'wait_created' as const,
+          correlationId: waitOp.correlationId,
+          eventData: { resumeAt: new Date('2025-01-01T00:00:08Z') },
+          createdAt: new Date('2025-01-01T00:00:03Z'),
+        },
+        {
+          eventId: 'evnt_wd',
+          runId: run.runId,
+          eventType: 'wait_completed' as const,
+          correlationId: waitOp.correlationId,
+          createdAt: new Date('2025-01-01T00:00:08Z'),
+        },
+      ],
+    });
+    expect(r3.completed).toBeDefined();
+    expect(deserialize(r3.completed!.result)).toMatchObject({
+      message: 'first-payload',
+      disposed: true,
+    });
+  }, 30000);
+});
