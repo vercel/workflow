@@ -2701,6 +2701,21 @@ export function workflowEntrypoint(
                         // queued (or no work needs scheduling). Exit and let
                         // the queue drive subsequent replays.
                         if (inlineExecutions.length === 0) {
+                          if (
+                            eventLog.events.at(-1)?.eventType ===
+                            'hook_received'
+                          ) {
+                            runtimeLogger.warn(
+                              'Workflow replay ended at hook_received without scheduling work',
+                              {
+                                workflowRunId: runId,
+                                messageId: metadata.messageId,
+                                eventCount: eventLog.events.length,
+                                pendingSteps: pendingSteps.length,
+                                queuedDispatches: dispatches.length,
+                              }
+                            );
+                          }
                           // A `hook.getConflict()` awaiter needs an immediate
                           // re-invocation: the replay consumes the
                           // just-committed hook_created and resolves the
