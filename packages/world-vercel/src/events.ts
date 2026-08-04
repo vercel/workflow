@@ -503,8 +503,18 @@ export async function getWorkflowRunEvents(
     stripEventDataRefs(decodeEventFrame(frame), resolveData)
   );
 
+  // A correlation id is unique per run, not globally — a slot-numbered run
+  // numbers its own steps, so `step_…001` names the first step of every such
+  // run. The backend selects by correlation id alone, so the run scope is
+  // applied here. `hasMore`/`cursor` stay the backend's, so a page that
+  // filters down to nothing is still followed by the next one.
+  const runScoped =
+    'correlationId' in params
+      ? events.filter((event) => event.runId === params.runId)
+      : events;
+
   return {
-    data: events,
+    data: runScoped,
     // `next` is present even on the final page (it's the incremental-load
     // resume cursor), so prefer the server's explicit `hasMore`. The
     // `Boolean(next)` fallback covers older servers that don't emit it —
