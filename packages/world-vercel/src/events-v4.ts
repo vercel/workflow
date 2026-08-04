@@ -239,13 +239,12 @@ export interface CreateEventV4Input {
    */
   stateUpdatedAt?: number;
   /**
-   * The event's id, claimed by the client instead of minted by the server.
-   * Sent only for a run that numbers its events by slot, where the id encodes
-   * the event's position in the log. The server inserts it conditionally and
-   * answers 409 `slot-conflict` when the slot is already taken; a run on the
-   * older numbering that sends one is rejected with 400. Older servers ignore
-   * the field and mint an id as before — which is why only runs stamped with
-   * slot identity ever send it.
+   * The event's id, claimed by the client rather than minted by the server. It
+   * encodes the event's position in the run's log. The server inserts it
+   * conditionally and answers 409 `slot-conflict` when the slot is already
+   * taken. Sent only for a run stamped with slot identity: a run guarded by the
+   * watermark instead is rejected with 400, and a server that predates the field
+   * ignores it and mints an id of its own.
    */
   eventId?: string;
   /**

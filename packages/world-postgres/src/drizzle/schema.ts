@@ -153,10 +153,10 @@ export const events = schema.table(
     >
   >,
   (tb) => [
-    // Event ids are only unique within their run: under slot identity every run
-    // numbers its own log from 1, so `evnt_0…001` exists once per run. The run
-    // leads the key so the range scans in `list` stay a single index seek, and
-    // it subsumes the plain `run_id` index the table used to carry.
+    // Event ids are only unique within their run: every run numbers its own log
+    // from 1, so `evnt_0…001` exists once per run. The run leads the key so the
+    // range scans in `list` stay a single index seek, which also makes a
+    // separate `run_id` index redundant.
     primaryKey({ columns: [tb.runId, tb.eventId] }),
     index().on(tb.correlationId),
     // Runtime-correlated one-shot events must be unique per (run, correlation)

@@ -42,8 +42,8 @@ export const SPEC_VERSION_SUPPORTS_COMPRESSION = 5 as SpecVersion;
  * event ids and is replayed by a slot-capable build would otherwise propose
  * `evnt_…001`, a position its very first event already occupies.
  *
- * Correlation ids are unaffected: steps, waits, hooks and attributes keep their
- * seeded ULIDs in both modes.
+ * Correlation ids are unrelated: steps, waits, hooks and attributes use seeded
+ * ULIDs at every spec version.
  */
 export const SPEC_VERSION_SLOT_IDENTITY = 6 as SpecVersion;
 

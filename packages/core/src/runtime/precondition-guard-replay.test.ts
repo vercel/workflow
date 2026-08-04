@@ -10,10 +10,10 @@
  * 2. The restart reloads the whole event log with no cursor, because a hole is
  *    defined by ULID time while a cursor filters lexicographically — unless
  *    the World attached the missing events to the 412, which the runtime
- *    consumes with no events.list round trip at all (first restart only). A run
- *    numbering its events by slot instead heals from its cursor, since slot ids
- *    sort in write order and density proves afterwards that the page closed the
- *    gap; a short count sends it back to the full reload.
+ *    consumes with no events.list round trip at all. A run numbering its events
+ *    by slot heals from its cursor when nothing was attached, since slot ids
+ *    sort in write order and density proves afterwards that the merge closed
+ *    the gap; a short count sends it back to the full reload.
  * 3. Restarts are bounded; once the bound is spent the runtime schedules a
  *    delayed re-invocation instead of failing the run — and that escalation is
  *    itself counted on the queue message, so a run that can never observe its
@@ -1261,6 +1261,31 @@ describe('precondition guard through the real replay loop', () => {
     // trusted again — the second restart does the authoritative full reload.
     expect(result.waitCompletedRejectionCount()).toBe(2);
     expect(cursorlessLoads(result.listEvents)).toBe(1);
+  });
+
+  it('trusts an attached delta on every restart of a slot-numbered run', async () => {
+    const warn = vi.spyOn(runtimeLogger, 'warn');
+    const result = await runPreconditionScenario({
+      slotIdentity: true,
+      rejectWaitCompletedTimes: 2,
+      attachDelta: 'complete',
+    });
+    await result.handlerInvocation;
+
+    // Density checks the merged log here, so a delta that left a hole would be
+    // caught rather than replayed over. Nothing rests on the World's own
+    // bookkeeping, and no restart has to spend a load of any kind to be sure.
+    expect(result.waitCompletedRejectionCount()).toBe(2);
+    expect(cursorlessLoads(result.listEvents)).toBe(0);
+    expect(
+      warn.mock.calls
+        .filter(
+          ([message]) =>
+            message ===
+            'Event creation rejected as stale; restarting replay in-process'
+        )
+        .map(([, fields]) => (fields as { source?: string }).source)
+    ).toEqual(['inline-delta', 'inline-delta']);
   });
 
   it('reports whether a restarted replay reloaded the events it was missing', async () => {

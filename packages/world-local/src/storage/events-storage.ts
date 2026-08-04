@@ -148,15 +148,14 @@ function getHookRetentionLimitMs(): number {
 // cross-process Hook token handoffs use `withHookTokenClaimLock`.
 
 /**
- * The time an event orders and paginates by. A slot-numbered run's order is its
- * slot order — the position *is* the order, the way the sort key is for the
- * other backends — so every such event reports the same time and lets the
- * event-id tie-break do the ordering. Ordering those by `createdAt` reads the
- * log in an order no replay produced: a writer that loses a slot re-proposes
- * above the winner while keeping the stamp it started with, and a caller that
- * reserves slots for a whole flush commits them in whatever order the network
- * returns. A ULID-numbered run keeps its wall-clock order, which its ids agree
- * with anyway.
+ * The time an event orders and paginates by. Slot order is the log's order —
+ * the position *is* the order, the way the sort key is for the other backends —
+ * so every slot-named event reports the same time and lets the event-id
+ * tie-break do the ordering. Ordering those by `createdAt` reads the log in an
+ * order no replay produced: a writer that loses a slot re-proposes above the
+ * winner while keeping the stamp it started with, and a caller that reserves
+ * slots for a whole flush commits them in whatever order the network returns. A
+ * ULID-numbered run keeps its wall-clock order, which its ids agree with anyway.
  */
 const eventOrderTime = (event: { eventId: string; createdAt: Date }): number =>
   slotFromId(event.eventId) === undefined ? event.createdAt.getTime() : 0;
@@ -308,8 +307,8 @@ async function findExistingHookCreatedEventId(
 /**
  * The run's committed `hook_received` for one resume, if it has one.
  *
- * The resume claim records where the event is going to be published, and in a
- * slot-numbered run that is only a hint: another instance can allocate the same
+ * The resume claim records where the event is going to be published, and that
+ * is only a hint: another instance can allocate the same
  * position for an unrelated event from its own book, and then the claim points
  * at a stranger. The key the event itself carries is the durable identity, so
  * this scan is what decides whether a resume has already been recorded.
@@ -771,8 +770,8 @@ export function createEventsStorage(
         assertSafeEntityId('eventId', params.eventId);
       }
 
-      // A slot-numbered create reserves its position before running the
-      // validation and materialization that may still reject it. Handing the
+      // A create reserves its position before running the validation and
+      // materialization that may still reject it. Handing the
       // reservation back on the way out — whether the create throws or returns
       // another writer's event — is what keeps the log dense: an abandoned slot
       // below a sibling's published one is a hole that can never be filled, and
@@ -1135,11 +1134,11 @@ export function createEventsStorage(
         // free one: a `run_started` racing it (start() issues the creation and
         // the queue send in parallel) may already have moved the book past it.
         const ownsFirstSlot = data.eventType === 'run_created';
-        // A slot-numbered run's ids name positions in its log, so an id is
-        // either claimed by a caller that holds the log (and is therefore
-        // asserting the log is complete up to that position) or allocated here
-        // for a caller that has no log — a step completion reporting in, a
-        // cancellation from an API call.
+        // An event id names a position in the run's log, so it is either claimed
+        // by a caller that holds the log (and is therefore asserting the log is
+        // complete up to that position) or allocated here for a caller that has
+        // no log — a step completion reporting in, a cancellation from an API
+        // call.
         //
         // The position of the second event a lazy start publishes, when this
         // one publishes two. Consumed by the materialization below; released
@@ -1453,9 +1452,9 @@ export function createEventsStorage(
                 tag
               );
               // The event the claim points at answers for this resume only if it
-              // is this resume's. In a slot-numbered run the pinned position can
-              // hold an unrelated event another instance allocated it for, and
-              // returning that would report a step's event as the resume's.
+              // is this resume's. The pinned position can hold an unrelated
+              // event another instance allocated it for, and returning that
+              // would report a step's event as the resume's.
               if (pinned?.resumeId === resumeId) {
                 return { event: pinned };
               }

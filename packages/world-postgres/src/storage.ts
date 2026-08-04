@@ -811,8 +811,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       if (slotMode === undefined) {
         // step_completed and step_retrying skip the run read above. The log's
         // own highest id reports the scheme, since a log holds ids of exactly
-        // one, and it is the probe the allocator needs anyway — so a
-        // slot-numbered run pays nothing extra for this query.
+        // one, and it is the probe the allocator needs anyway, so the query
+        // costs a slot-mode write nothing extra.
         seedHighestEventId = await highestEventId(drizzle, effectiveRunId);
         slotMode = isSlotId(seedHighestEventId ?? '');
       }
@@ -820,10 +820,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // ============================================================
       // EVENT ID: the caller's slot claim, an allocated slot, or a ULID
       // ============================================================
-      // A slot-numbered run's ids name positions in its log, so an id is either
-      // claimed by a caller that holds the log (and is therefore asserting the
-      // log is complete up to that position) or allocated at write time for a
-      // caller that has no log — a step completion reporting in, a cancellation
+      // An event id names a position in the run's log, so it is either claimed
+      // by a caller that holds the log (and is therefore asserting the log is
+      // complete up to that position) or allocated at write time for a caller
+      // that has no log — a step completion reporting in, a cancellation
       // from an API call.
       let claimedSlot: number | undefined;
       if (params?.eventId !== undefined) {

@@ -1,8 +1,8 @@
 /**
  * Slot identity for the postgres world.
  *
- * A slot-numbered run names its events by position: `evnt_…001` is the first
- * event of the run, `evnt_…002` the second. Contention on a position is the
+ * Runs name their events by position: `evnt_…001` is the first event of the
+ * run, `evnt_…002` the second. Contention on a position is the
  * point — it is what makes a concurrent write detectable rather than silent —
  * so the two things this module has to get right are that a position is written
  * at most once and that a position this allocator loses is retried rather than
@@ -60,9 +60,9 @@ export function isEventKeyViolation(error: unknown): boolean {
  * The highest event id in a run's log, or undefined when the log is empty.
  *
  * One backwards scan of the `(run_id, id)` primary key. Ids are fixed-width
- * within a scheme, so for a slot-numbered run the highest id names the highest
- * written position — and because a log holds ids of exactly one scheme, that id
- * also reports which scheme the run was created with.
+ * within a scheme, so the highest id names the highest written position. A log
+ * holds ids of exactly one scheme, so that id also reports which scheme the run
+ * was created with.
  */
 export async function highestEventId(
   drizzle: Drizzle,
@@ -140,8 +140,7 @@ export interface PlaceEventOptions<T> {
 }
 
 /**
- * Writes an event of a slot-numbered run, at the position the caller claimed or
- * at the next free one.
+ * Writes an event at the position the caller claimed, or at the next free one.
  *
  * Every round re-probes rather than incrementing a local counter: each round at
  * least one writer wins, so re-probing guarantees progress under any amount of

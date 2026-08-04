@@ -276,7 +276,7 @@ export async function listRunEventIds(
  * `createImpl()` entry — before its publish, and thus before this call.
  * Equal-`createdAt` ties fall to the strictly-dominant eventId.
  *
- * A slot-numbered run takes the slot above the highest visible one, which
+ * In slot mode the event takes the slot above the highest visible one, which
  * dominates by construction, paired with the wall clock — `createdAt` needs
  * only to be >= every visible one, by the same argument as above. This is
  * the one allocation that deliberately does *not* fill a hole below the max:

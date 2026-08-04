@@ -487,8 +487,8 @@ function recordRequestedEventCursor(
 }
 
 /**
- * Appends events whose IDs are not already present in `target`, keeping a
- * slot-numbered log in slot order.
+ * Appends events whose IDs are not already present in `target`, keeping the log
+ * in slot order.
  *
  * Arrival order is not log order under slot identity. A slot is reserved when
  * its event is issued and written when that issue resolves, so a lower slot can
@@ -501,8 +501,7 @@ function recordRequestedEventCursor(
  * next event it reads belongs to a step it never started.
  *
  * Sorting by event id *is* sorting by slot: ids are zero-padded to a fixed
- * width, and a slot-numbered run's log carries no ULID ids to interleave with
- * them.
+ * width, and one log never mixes them with ULID ids.
  *
  * Pass the IDs currently present in `target` when appending repeatedly to the
  * same array. The set is updated alongside `target`.
@@ -750,11 +749,18 @@ export interface MutableEventLog extends LoadedEventLog {
   maxSlot: number;
   /**
    * Next slot `reserveSlot` will hand out. Only a writer holding the log's
-   * write chain may draw from it, and it is rewound to `maxSlot + 1` when a
-   * claim is rejected so the rest of the batch claims into the occupied range
-   * and is rejected with it.
+   * write chain may draw from it.
    */
   nextSlot: number;
+  /**
+   * The stale-write rejection this log's tail stopped at, if any.
+   *
+   * A rejected claim means the log is missing an event, so nothing else decided
+   * from it may land either. Recording the rejection here fails the rest of the
+   * batch locally, instead of spending a round-trip each to be told the same
+   * thing by the backend.
+   */
+  claimRejection?: unknown;
   /**
    * Tail of the chain of creates numbered off this log, or `undefined` when
    * none is in flight.
@@ -794,6 +800,9 @@ export function toMutableEventLog(
 /**
  * Merges loaded events into `log` in place, keeping `maxSlot` current and
  * advancing the reservation pointer past the events merged in.
+ *
+ * The merged events are the ones a rejected claim was missing, so the log is
+ * usable again and its recorded rejection is cleared.
  */
 export function mergeLoadedEvents(
   log: MutableEventLog,
@@ -802,6 +811,7 @@ export function mergeLoadedEvents(
   appendUniqueEvents(log.events, events);
   log.maxSlot = Math.max(log.maxSlot, maxSlotOf(events));
   log.nextSlot = Math.max(log.nextSlot, log.maxSlot + 1);
+  log.claimRejection = undefined;
 }
 
 /**
@@ -936,10 +946,9 @@ export function preconditionSnapshotParams(
  * Whether a World rejected an event creation because the replay that produced it
  * had not seen the whole event log.
  *
- * The two schemes reject differently and stay separately countable — 412 for the
- * event-log watermark, 409 for a lost slot claim, both live at once while runs on
- * the older numbering drain — but they prove the same thing and are recovered the
- * same way, by restarting the replay over the corrected log.
+ * A lost slot claim rejects with 409 and a failed watermark comparison with 412,
+ * so the two stay separately countable. They prove the same thing and are
+ * recovered the same way, by restarting the replay over the corrected log.
  */
 export function isStaleWriteRejection(error: unknown): boolean {
   return PreconditionFailedError.is(error) || SlotConflictError.is(error);
@@ -1028,15 +1037,14 @@ export interface EventCreateFence extends PreconditionSnapshotParams {
  *
  * Neither scheme is retried in place. A rejection under either one proves the
  * replay derived this event from a log that was missing another, and correlation
- * ids are positional ordinals of one sequence — so a replay over the corrected
- * log mints different ids and re-posting this write would persist an event no
- * correct replay produces. Recovery is a restarted replay
+ * ids are drawn from one seeded sequence in mint order — so a replay over the
+ * corrected log mints different ids and re-posting this write would persist an
+ * event no correct replay produces. Recovery is a restarted replay
  * ({@link isStaleWriteRejection}), never a re-send.
  *
- * Claims a slot off `log` for a slot-numbered run — which counts as a
- * reservation, so a caller that fences several creates from one log gets a
- * distinct slot per create. Empty when the run is fenced neither way, leaving
- * the create exactly as unfenced as it was before either mechanism existed.
+ * Claiming a slot counts as reserving it, so a caller that fences several
+ * creates from one log gets a distinct slot per create. Empty when the run is
+ * fenced neither way, which leaves the create unfenced.
  *
  * `extraEvents` is how many events *besides* the one being created this write
  * publishes: a lazy inline `step_started` also materializes the `step_created`
@@ -1056,7 +1064,7 @@ export function eventCreateFenceFor(
   options?: { extraEvents?: number }
 ): EventCreateFence {
   if (usesSlotIdentity(specVersion)) {
-    return reserveSlotFence(log, options?.extraEvents ?? 0);
+    return reserveSlotFence(log, options?.extraEvents ?? 0).fence;
   }
   return preconditionSnapshotParams(log.events, log.cursor);
 }
@@ -1073,17 +1081,18 @@ export function eventCreateFenceFor(
 function reserveSlotFence(
   log: MutableEventLog,
   extraEvents: number
-): EventCreateFence {
+): { fence: EventCreateFence; slot: number } {
   const maxSlot = log.maxSlot;
   for (let i = 0; i < extraEvents; i++) {
     reserveSlot(log);
   }
-  return { eventId: slotEventId(reserveSlot(log)), maxSlot };
+  const slot = reserveSlot(log);
+  return { fence: { eventId: slotEventId(slot), maxSlot }, slot };
 }
 
 /**
- * Runs one slot-numbered create with the log's claim to itself, taking its slot
- * only once every create ahead of it on the log has settled.
+ * Runs one create with the log's claim to itself, taking its slot only once
+ * every create ahead of it on the log has settled.
  *
  * A slot claim is an assertion about the tail: "nothing has been published
  * since the view I decided from". Claims handed out up front to a concurrent
@@ -1093,11 +1102,11 @@ function reserveSlotFence(
  * it. Taking claims one at a time keeps every write's fence tight against the
  * tail the writer actually saw.
  *
- * A rejection therefore stops the whole batch rather than only its own write:
- * the log's tail stops advancing while the backend's moves on, so the claims
- * behind it fall inside the occupied range and are rejected in turn. That is
- * the intent — the batch was decided from a log missing an event, so none of it
- * should land.
+ * A stale-write rejection therefore stops the whole batch rather than only its
+ * own write: the batch was decided from a log missing an event, so none of it
+ * should land. The rejection is recorded on the log and rethrown for the claims
+ * behind it without a round-trip, since their fences all name the tail it just
+ * proved wrong.
  */
 async function withSerializedClaim<T>(
   log: MutableEventLog,
@@ -1113,19 +1122,23 @@ async function withSerializedClaim<T>(
     await ahead;
   }
   try {
-    const fence = reserveSlotFence(log, extraEvents);
+    if (log.claimRejection !== undefined) {
+      throw log.claimRejection;
+    }
+    const { fence, slot } = reserveSlotFence(log, extraEvents);
     const result = await op(fence);
-    log.maxSlot = Math.max(
-      log.maxSlot,
-      maxSlotOf([{ eventId: fence.eventId ?? '' }])
-    );
+    log.maxSlot = Math.max(log.maxSlot, slot);
     log.nextSlot = Math.max(log.nextSlot, log.maxSlot + 1);
     return result;
   } catch (error) {
-    // The slots this attempt drew are not the writer's, and the tail is at
-    // least as high as the claim that lost. Rewinding onto the occupied range
-    // is what makes the rest of the batch fail with it.
+    // The slots this attempt drew are not the writer's, and the tail is no
+    // lower than the claim that lost. Rewinding leaves the next claim naming
+    // the same slot, which is correct for a write that failed without taking it
+    // (an entity conflict, say) and is retried on its own.
     log.nextSlot = log.maxSlot + 1;
+    if (isStaleWriteRejection(error)) {
+      log.claimRejection = error;
+    }
     throw error;
   } finally {
     done();

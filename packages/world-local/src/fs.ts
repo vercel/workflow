@@ -587,10 +587,10 @@ interface PaginatedFileSystemQueryConfig<T> {
   getId?(item: T): string;
   /**
    * The time an item sorts and paginates by, when that is not its `createdAt`.
-   * A slot-numbered event log orders by slot — the position is the order — and
-   * a writer that loses a slot re-proposes above the winner while keeping the
-   * stamp it started with, so `createdAt` there disagrees with the log. Such an
-   * item reports one shared time and lets the `getId` tie-break order it.
+   * An event log orders by slot — the position is the order — and a writer that
+   * loses a slot re-proposes above the winner while keeping the stamp it started
+   * with, so `createdAt` there disagrees with the log. Such an item reports one
+   * shared time and lets the `getId` tie-break order it.
    */
   getOrderTime?: (item: NoInfer<T>) => number;
 }

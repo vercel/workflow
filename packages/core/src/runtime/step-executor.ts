@@ -211,9 +211,7 @@ export interface StepExecutorParams {
   inlineDeltaSinceCursor?: string;
   /**
    * Runs this step's `step_started` claim under its run's concurrency fence:
-   * the event slot the claim occupies, or the caller's replay snapshot
-   * (`stateUpdatedAt`, epoch ms of the latest event it loaded) for a run on the
-   * older numbering.
+   * the event slot the claim occupies.
    *
    * On the lazy inline path the claim is the step's FIRST durable write (its
    * `step_created` is deferred), so without a fence it would be unguarded
@@ -222,13 +220,13 @@ export interface StepExecutorParams {
    * rejects such a claim with `SlotConflictError` (409) or
    * `PreconditionFailedError` (412).
    *
-   * Whether a rejection is retried in place is the caller's decision, made per
-   * scheme — see `claimFenceFor`. Either way executeStep does NOT translate a
-   * rejection that reaches it, so an unretried one propagates for the caller to
-   * abandon the batch and force a fresh replay.
+   * Whether a rejection is retried in place is the caller's decision, see
+   * `claimFenceFor`. Either way executeStep does NOT translate a rejection that
+   * reaches it, so an unretried one propagates for the caller to abandon the
+   * batch and force a fresh replay.
    *
-   * Undefined when the caller has no snapshot, or when the watermark guard is
-   * disabled on a run that uses it; Worlds that fence neither way ignore it.
+   * Undefined when the caller has no snapshot; a World that does not fence
+   * ignores it.
    */
   claimFence?: FencedCreate;
   /**
@@ -344,9 +342,9 @@ export async function executeStep(
   // put us on the Vercel branch with nothing to build a host from, making
   // `https://` the base URL of every step.
   const isVercel = Boolean(process.env.VERCEL_URL);
-  // Unfenced when the caller passes no fence — every World that fences
-  // ignores the field it does not understand, so this is the same create it
-  // was before either mechanism existed.
+  // Unfenced when the caller passes no fence, which runs the create plainly. A
+  // World that does not fence also ignores a fence it is handed, so passing one
+  // is never wrong.
   const runClaim: FencedCreate = params.claimFence ?? ((op) => op(undefined));
   // Gate payload compression on the run's specVersion.
   const compression =

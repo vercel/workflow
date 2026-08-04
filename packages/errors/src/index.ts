@@ -825,21 +825,20 @@ export class PreconditionFailedError extends WorkflowWorldError {
  * Thrown when the backend rejects an event creation because the event slot the
  * client named was already taken by another writer (HTTP 409).
  *
- * On a run that numbers its events by slot, whoever writes a slot first owns
- * it, and the loser has by definition been replaying against an event log
- * missing at least one event. Retrying the same write can therefore never
- * succeed: the client has to merge the events it was missing, replay, and
- * propose whatever slot that replay lands on. The rejection carries those
- * events inline so the common case costs no extra round-trip.
+ * Runs name their events by position in the log, and whoever writes a position
+ * first owns it. The loser has by definition been replaying against an event log
+ * missing at least one event, so retrying the same write can never succeed: the
+ * client has to merge the events it was missing, replay, and propose whatever
+ * slot that replay lands on. The rejection carries those events inline so the
+ * common case costs no extra round-trip.
  *
- * Distinct from `PreconditionFailedError` (412), which is the equivalent
- * rejection for a run guarded by the `stateUpdatedAt` watermark instead. Both
- * mechanisms are live at once while runs on the older numbering drain.
+ * `PreconditionFailedError` (412) is the equivalent rejection for a run whose
+ * events are guarded by the `stateUpdatedAt` watermark.
  *
  * The workflow runtime handles this automatically. Users interacting with world
  * storage backends directly may encounter it.
  *
- * @property eventId - The slot-numbered event id that was already taken.
+ * @property eventId - The event id, naming a slot, that was already taken.
  * @property events - The events recorded after the client's snapshot, in
  *   ascending slot order. Empty when the backend could not read them, in which
  *   case the client reloads the log itself.

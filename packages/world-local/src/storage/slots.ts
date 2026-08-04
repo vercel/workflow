@@ -1,8 +1,8 @@
 /**
  * Slot allocation for the Local World.
  *
- * A slot-numbered run names its events by position: `evnt_…001` is the first
- * event of the run, `evnt_…002` the second. A replay reads the log in slot
+ * Runs name their events by position: `evnt_…001` is the first event of the run,
+ * `evnt_…002` the second. A replay reads the log in slot
  * order, so the order slots are handed out in has to be an order some execution
  * could have produced — which makes allocation strictly *append-only*: a slot is
  * only ever handed out above every position this book has seen.
@@ -71,10 +71,10 @@ export interface SlotBook {
   /**
    * Whether `runId`'s events are numbered by slot, read from the run's
    * persisted `specVersion` — never from the build, so a run stays in the mode
-   * it was created in for life. A run that does not exist yet is not
-   * slot-numbered, and that answer is not cached: the resilient-start path
-   * creates the run moments later, and caching "no" would strand it on ULIDs
-   * for the rest of this process's life.
+   * it was created in for life. A run that does not exist yet answers `false`,
+   * and that answer is not cached: the resilient-start path creates the run
+   * moments later, and caching "no" would strand it on ULID ids for the rest of
+   * this process's life.
    */
   usesSlots(runId: string): Promise<boolean>;
   /**
@@ -148,7 +148,7 @@ export interface SlotBook {
 }
 
 export function createSlotBook(basedir: string, tag?: string): SlotBook {
-  /** runId → whether the run is slot-numbered, memoized once it exists. */
+  /** runId → whether the run numbers by slot, memoized once it exists. */
   const modes = new Map<string, boolean>();
   const books = new Map<string, RunSlots>();
   /** runId → in-flight seed scan, so concurrent first callers share one scan. */

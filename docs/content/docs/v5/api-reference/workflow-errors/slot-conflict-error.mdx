@@ -10,7 +10,7 @@ related:
 
 `SlotConflictError` is thrown by world implementations when an event creation is rejected because the event's slot in the run's event log was already taken by another writer. It corresponds to HTTP 409 Conflict semantics.
 
-On a run that numbers its events by slot, each event's id encodes its position in the log: the first event is slot 1, the second slot 2, and so on. Whoever writes a slot first owns it, so a rejected write proves the client was replaying against an event log that was missing at least one event. Retrying the same write can never succeed — the client has to merge the events it was missing, replay, and propose whatever slot that replay lands on.
+Each event's id encodes its position in the run's log: the first event is slot 1, the second slot 2, and so on. Whoever writes a slot first owns it, so a rejected write proves the client was replaying against an event log that was missing at least one event. Retrying the same write can never succeed — the client has to merge the events it was missing, replay, and propose whatever slot that replay lands on.
 
 The rejection carries the missing events inline so that merge usually costs no extra round-trip:
 
@@ -18,7 +18,7 @@ The rejection carries the missing events inline so that merge usually costs no e
 - `cursor` — cursor to continue the delta from.
 - `hasMore` — whether events beyond `events` remain to be fetched.
 
-This is the slot-numbering counterpart to [`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error), which is how the same staleness is reported for runs guarded by an event-log snapshot watermark instead. A run uses one scheme or the other for its whole life, decided when it is created.
+[`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error) reports the same staleness for a run guarded by an event-log snapshot watermark. A run uses one scheme or the other for its whole life, decided when it is created.
 
 <Callout>
 The Workflow runtime handles this error automatically: it merges the events it was missing, replays, and re-proposes the write at a free slot, ultimately re-enqueueing the run for a fresh replay if it cannot catch up. You will only encounter it when interacting with world storage APIs directly.
@@ -46,7 +46,7 @@ try {
 <TSDoc
 definition={`
 interface SlotConflictError {
-  /** The slot-numbered event id that was already taken. */
+  /** The event id, naming a slot, that was already taken. */
   eventId: string;
   /** The events recorded after the client's snapshot, in ascending slot order. Empty when the backend could not read them. */
   events: unknown[];

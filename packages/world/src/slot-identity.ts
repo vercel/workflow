@@ -103,7 +103,7 @@ export function slotRetryDelay(round: number): number {
 }
 
 /**
- * The highest slot named by any of `events`, or 0 when none is slot-numbered.
+ * The highest slot named by any of `events`, or 0 when none names a slot.
  *
  * Scans rather than reading the last element: a log is merged from several
  * loads and is not necessarily sorted, and callers use this value to pick the

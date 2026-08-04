@@ -44,7 +44,7 @@ export const DEFAULT_TIMESTAMP_THRESHOLD_MS =
  * position, not a time, so it is reported here as having no time at all —
  * callers must read the object's own `createdAt`. Silently returning 1970
  * instead would, among other things, rewind a replaying workflow's clock and
- * make cursor pagination skip every slot-numbered event.
+ * make cursor pagination skip every event named by a slot.
  */
 export function ulidToDate(maybeUlid: string): Date | null {
   if (isSlotId(maybeUlid)) {

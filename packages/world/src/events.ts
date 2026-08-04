@@ -885,14 +885,13 @@ export interface CreateEventParams {
    * partly by one and partly by the other and no replay can read it in the order
    * it was written.
    *
-   * A World that ignores this field keeps minting ids itself, which is correct
-   * only for runs that were never stamped with slot identity in the first
-   * place.
+   * A World that ignores this field mints ids itself, which is correct only for
+   * a run that was never stamped with slot identity.
    */
   eventId?: string;
   /**
    * The highest slot the client has observed in the run's event log, or 0 for a
-   * log with no slot-numbered events. Sent alongside {@link eventId} purely as
+   * log holding no slot ids. Sent alongside {@link eventId} purely as
    * an observability signal: because slots are dense, a persisted slot more
    * than one past this is a hole, which is unrecoverable and worth alerting on.
    * Worlds MAY ignore it.

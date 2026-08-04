@@ -879,18 +879,37 @@ describe('claimFenceFor', () => {
     expect(eventsListMock).not.toHaveBeenCalled();
   });
 
-  it('leaves the rest of the batch claiming into the occupied range', async () => {
-    // The tail stops advancing for this log while the backend's moves on, so
-    // the siblings behind a rejected claim propose slots the backend has
-    // already filled and are rejected with it.
+  it('fails the rest of the batch without a round-trip', async () => {
+    // The siblings behind a rejected claim were decided from the same log, so
+    // they carry the fence it just proved wrong. They rethrow that rejection
+    // instead of spending a create each to be told the same thing.
     const log = toMutableEventLog([slotEvent(1)], 'c0');
     const claim = claimFenceFor(log, SPEC_VERSION_SLOT_IDENTITY);
-    const loser = claim(async (fence) => {
-      throw new SlotConflictError('taken', {
-        eventId: fence?.eventId as string,
-      });
+    const rejection = new SlotConflictError('taken', {
+      eventId: slotEventId(2),
     });
-    await expect(loser).rejects.toBeInstanceOf(SlotConflictError);
+    const loser = claim(async () => {
+      throw rejection;
+    });
+    await expect(loser).rejects.toBe(rejection);
+
+    const sibling = vi.fn(
+      async (fence?: { eventId?: string }) => fence?.eventId
+    );
+    await expect(claim(sibling)).rejects.toBe(rejection);
+    expect(sibling).not.toHaveBeenCalled();
+  });
+
+  it('lets a write that failed without taking its slot claim it again', async () => {
+    // An entity conflict means the event never landed, so the slot is still
+    // free. Only a stale-write rejection stops the log.
+    const log = toMutableEventLog([slotEvent(1)], 'c0');
+    const claim = claimFenceFor(log, SPEC_VERSION_SLOT_IDENTITY);
+    await expect(
+      claim(async () => {
+        throw new EntityConflictError('wait already completed');
+      })
+    ).rejects.toBeInstanceOf(EntityConflictError);
 
     await expect(claim(async (fence) => fence?.eventId)).resolves.toBe(
       slotEventId(2)

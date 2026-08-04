@@ -45,9 +45,8 @@ export interface SuspensionHandlerParams {
   requestId?: string;
   /**
    * The runtime's loaded event log. Every event creation this suspension makes
-   * carries a fence derived from it — its own event slot, or the snapshot's
-   * watermark for a run on the older numbering — so a backend that has recorded
-   * an event the replay did not see rejects the write (409/412) instead of
+   * carries a fence derived from it, the event slot it claims, so a backend that
+   * has recorded an event the replay did not see rejects the write instead of
    * accepting a divergent event. The rejection is not retried here: the event's
    * correlation id was minted by *this* replay's seeded sequence, so
    * re-committing it against a corrected log would persist an event no correct

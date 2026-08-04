@@ -769,11 +769,13 @@ export function workflowEntrypoint(
                   let cachedEvents: Event[] | null = null;
                   let eventsCursor: string | null = null;
 
-                  // Set when a restarted replay is recovering by topping its
-                  // cached log up from the cursor rather than reloading it
-                  // whole. The next load verifies the result is dense before
-                  // the replay trusts it; see the consume site below the load.
-                  let slotTopUpPending = false;
+                  // Set when a restarted replay is recovering by merging into
+                  // its cached log rather than reloading it whole, from either
+                  // an inline delta or one page above the cursor. The next load
+                  // verifies the result is dense before the replay trusts it,
+                  // and falls back to the authoritative load if it is not; see
+                  // the consume site below the load.
+                  let slotDensityCheckPending = false;
 
                   // Inline-delta optimization: when an inline step's terminal
                   // write returns the event-log delta since the pre-write
@@ -799,12 +801,11 @@ export function workflowEntrypoint(
                   let workflowStartedAt = -1;
                   let preloadedEvents: Event[] | undefined;
                   let preloadedEventsCursor: string | null | undefined;
-                  // Highest slot known to be published on a slot-numbered run,
-                  // for the writes whose snapshot cannot show it: turbo
-                  // backgrounds `run_started` and replays against an empty log,
-                  // so a claim numbered from that log alone would propose a slot
-                  // `run_started` already holds. 0 when the run is not
-                  // slot-numbered — its ids carry no position to compare.
+                  // Highest slot known to be published, for the writes whose
+                  // snapshot cannot show it: turbo backgrounds `run_started` and
+                  // replays against an empty log, so a claim numbered from that
+                  // log alone would propose a slot `run_started` already holds.
+                  // 0 for a run whose ids carry no position to compare.
                   let knownSlotFloor = 0;
                   const observeSlotFloor = (eventId: string | undefined) => {
                     const slot = eventId ? slotFromId(eventId) : undefined;
@@ -1093,32 +1094,35 @@ export function workflowEntrypoint(
                     // completed session must not be resumed again.
                     retainedSession = null;
                     // A World MAY return the events we were missing on the
-                    // rejection.
-                    // Trust it only on the FIRST restart: its completeness proof
-                    // leans on the backend's own bookkeeping, so if that
-                    // under-counts, a "complete" delta can still leave a hole.
-                    // Bounding it to one attempt caps that at a single wasted
-                    // restart; every later restart does the authoritative load.
+                    // rejection. A merged log is checked for density before the
+                    // replay trusts it, so a delta that left a hole costs the
+                    // reload it would have done anyway and every restart can
+                    // take one. A run fenced by the watermark has no such check
+                    // — its delta's completeness rests on the backend's own
+                    // bookkeeping — so it trusts one delta and loads
+                    // authoritatively after that.
+                    const slotNumbered = usesSlotIdentity(
+                      workflowRun?.specVersion
+                    );
                     const delta =
-                      allowDelta && preconditionRestarts === 1
+                      allowDelta && (slotNumbered || preconditionRestarts === 1)
                         ? preconditionEventDelta(error, runId)
                         : null;
                     // A delta is only usable as a delta if there is a cached log
                     // to merge it into; with no base log the restart has to load
                     // the whole thing anyway.
                     const usedDelta = Boolean(delta && cachedEvents);
-                    // Without a delta, a slot-numbered log still heals from its
-                    // cursor rather than from a full reload. Slot ids sort in
-                    // write order, so every event this replay was missing is
-                    // strictly above the cursor and one incremental page brings
-                    // it in — and density (a dense log from slot 1 holds
-                    // exactly `maxSlot` events) proves afterwards that it did,
-                    // so nothing is being trusted here that is not checked.
-                    // Neither property holds under ULID ids, which is why those
-                    // restarts reload whole.
+                    // Without a delta, the log heals from its cursor rather
+                    // than from a full reload. Slot ids sort in write order, so
+                    // every event this replay was missing is strictly above the
+                    // cursor and one incremental page brings it in, and density
+                    // (a dense log from slot 1 holds exactly `maxSlot` events)
+                    // proves afterwards that it did, so nothing is being trusted
+                    // here that is not checked. Neither property holds for a
+                    // ULID-numbered log, so those restarts reload whole.
                     const topsUpFromCursor =
                       !usedDelta &&
-                      usesSlotIdentity(workflowRun?.specVersion) &&
+                      slotNumbered &&
                       cachedEvents !== null &&
                       eventsCursor !== null;
                     const restartSource = usedDelta
@@ -1143,6 +1147,7 @@ export function workflowEntrypoint(
                       // (`pendingInlineDelta && cachedEvents`) with no
                       // events.list round trip at all.
                       pendingInlineDelta = delta;
+                      slotDensityCheckPending = slotNumbered;
                     } else if (topsUpFromCursor) {
                       // Keep the cached log and its cursor: the loop's
                       // incremental branch fetches the page above the cursor
@@ -1151,7 +1156,7 @@ export function workflowEntrypoint(
                       // close the gap. Appends land above everything already
                       // scanned for payload prewarming, so no rescan is needed
                       // unless that fallback fires.
-                      slotTopUpPending = true;
+                      slotDensityCheckPending = true;
                       preloadedEvents = undefined;
                       preloadedEventsCursor = undefined;
                       pendingInlineDelta = null;
@@ -1169,6 +1174,7 @@ export function workflowEntrypoint(
                       preloadedEvents = undefined;
                       preloadedEventsCursor = undefined;
                       pendingInlineDelta = null;
+                      slotDensityCheckPending = false;
                       // The corrected log inserts the missing events BELOW the
                       // length already scanned for payload prewarming, shifting
                       // every later position. Only a full rescan sees them.
@@ -1618,8 +1624,8 @@ export function workflowEntrypoint(
                       // intentionally truthy here — do not change the load
                       // branches' `if (preloadedEvents)` checks to test length.
                       preloadedEvents = [];
-                      // A slot-numbered run's first two positions are the run's
-                      // own: `run_created` from start(), then the `run_started`
+                      // The run's first two positions are its own:
+                      // `run_created` from start(), then the `run_started`
                       // in flight above. Both are certain before any write of
                       // this invocation, and turbo replays against the empty
                       // snapshot skipped just above — so seed the floor with
@@ -2159,15 +2165,15 @@ export function workflowEntrypoint(
                       // the wait pass, which may swap in a freshly loaded array.
                       cachedEvents = events;
 
-                      if (slotTopUpPending) {
-                        slotTopUpPending = false;
-                        // A slot-numbered log is dense from slot 1, so a
-                        // complete one holds exactly `maxSlot` events. A short
-                        // count means the page above the cursor did not bring
-                        // in everything the restart was missing — the only
-                        // other reading, a permanent hole from a write that
-                        // took a slot and then failed, is equally unrecoverable
-                        // from here — so fall back to the authoritative load.
+                      if (slotDensityCheckPending) {
+                        slotDensityCheckPending = false;
+                        // The log is dense from slot 1, so a complete one
+                        // holds exactly `maxSlot` events. A short
+                        // count means the merge did not bring in everything the
+                        // restart was missing — the only other reading, a
+                        // permanent hole from a write that took a slot and then
+                        // failed, is equally unrecoverable from here — so fall
+                        // back to the authoritative load.
                         if (maxSlotOf(events) !== events.length) {
                           const loaded = await loadWorkflowRunEvents(runId);
                           events = loaded.events;
@@ -3057,10 +3063,10 @@ export function workflowEntrypoint(
                         //    (threaded below via `claimFenceFor`; on rejection
                         //    the batch is abandoned and re-invoked for a fresh
                         //    replay, so a stale view can never commit a step).
-                        //    A slot-numbered run gets there differently — the
-                        //    claim merges the missed events and retries in
-                        //    place, so the same events are observed without
-                        //    discarding the batch. See claimFenceFor.
+                        //    A slot claim gets there differently: it merges the
+                        //    missed events and retries in place, so the same
+                        //    events are observed without discarding the batch.
+                        //    See claimFenceFor.
                         //    Hooks created
                         //    by THIS suspension are inside the delta (their
                         //    `hook_created` lands before the step-terminal
