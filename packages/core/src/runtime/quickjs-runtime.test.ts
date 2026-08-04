@@ -87,6 +87,56 @@ describe('runQuickJSWorkflow', () => {
     );
   });
 
+  it('preserves a Hook minimum-retention deadline across the VM boundary', async () => {
+    const result = await runQuickJSWorkflow({
+      workflowCode: `
+        async function workflow() {
+          var hook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")]({
+            token: "retained",
+            experimental_minRetention: 60000,
+          });
+          await hook.getConflict();
+        }
+        workflow.workflowId = "workflow//test//workflow";
+        globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+      `,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: makeRun(),
+      events: [],
+    });
+
+    expect(result.suspended?.pendingOperations).toContainEqual(
+      expect.objectContaining({
+        type: 'hook',
+        token: 'retained',
+        tokenRetentionUntil:
+          new Date('2025-01-01T00:00:00Z').getTime() + 60_000,
+      })
+    );
+  });
+
+  it('rejects minimum retention for webhook Hooks', async () => {
+    const result = await runQuickJSWorkflow({
+      workflowCode: `
+        async function workflow() {
+          globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")]({
+            isWebhook: true,
+            experimental_minRetention: 60000,
+          });
+        }
+        workflow.workflowId = "workflow//test//workflow";
+        globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+      `,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: makeRun(),
+      events: [],
+    });
+
+    expect(result.failed?.message).toBe(
+      'Webhook hooks do not support `experimental_minRetention`. Use a non-webhook `createHook()` with `resumeHook()`.'
+    );
+  });
+
   it('should complete after step resolves via full event replay', async () => {
     const code = `
       var add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//add");

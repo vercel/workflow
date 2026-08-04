@@ -182,6 +182,10 @@ async function dispatchPendingOps(params: {
           correlationId: hook.correlationId,
           eventData: {
             token: hook.token,
+            tokenRetentionUntil:
+              hook.tokenRetentionUntil === undefined
+                ? undefined
+                : new Date(hook.tokenRetentionUntil),
             metadata: encryptedMetadata,
             // Always include isWebhook explicitly. Worlds default it to
             // `true` when absent, which would break the public webhook
