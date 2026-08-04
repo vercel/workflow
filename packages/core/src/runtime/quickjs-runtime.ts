@@ -587,7 +587,10 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
         throw new Error('Invalid duration: "' + minRetention + '". Expected a valid duration string like "1s", "1m", "1h", etc.');
       }
       tokenRetentionUntil = Date.now() + retentionMs;
-    } else if (minRetention instanceof Date) {
+    } else if (minRetention instanceof Date || (minRetention && typeof minRetention.getTime === "function")) {
+      // Accept Date-like objects (anything with getTime), matching
+      // parseDurationToDate: values that crossed the serde boundary may
+      // not be realm-native Date instances.
       tokenRetentionUntil = minRetention.getTime();
     } else {
       throw new Error("Invalid duration parameter. Expected a duration string, number (milliseconds), or Date object.");
