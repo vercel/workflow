@@ -1,11 +1,14 @@
 import readline from 'node:readline';
 import { Args, Flags } from '@oclif/core';
 import { cancelRun } from '@workflow/core/runtime';
-import { parseWorkflowName } from '@workflow/utils/parse-name';
 import { WorkflowRunStatusSchema } from '@workflow/world';
 import chalk from 'chalk';
-import Table from 'easy-table';
 import { BaseCommand } from '../base.js';
+import {
+  CANCELLABLE_STATUSES,
+  performBulkCancel,
+  validateBulkCancelLimit,
+} from '../lib/bulk-cancel.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import {
   getObservabilityUpgradeRequiredMessage,
@@ -13,7 +16,6 @@ import {
 } from '../lib/inspect/errors.js';
 import { cliFlags } from '../lib/inspect/flags.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
-import { planWindowStartFromResponse } from '../lib/inspect/time-window.js';
 
 export default class Cancel extends BaseCommand {
   static description =
@@ -48,9 +50,12 @@ export default class Cancel extends BaseCommand {
   static flags = {
     ...cliFlags,
     status: Flags.string({
-      description: 'Filter runs by status for bulk cancel',
+      // Only cancellable statuses are offered: cancelling a terminal run
+      // (completed / failed / cancelled) is a no-op, so pinning one would list
+      // the same page on every rerun and never advance.
+      description: 'Filter runs by status for bulk cancel (pending or running)',
       required: false,
-      options: [...WorkflowRunStatusSchema.options],
+      options: [...CANCELLABLE_STATUSES],
       helpGroup: 'Bulk Cancel',
       helpLabel: '--status',
     }),
@@ -62,7 +67,7 @@ export default class Cancel extends BaseCommand {
       helpLabel: '-n, --workflowName',
     }),
     limit: Flags.integer({
-      description: 'Max runs to cancel in bulk mode',
+      description: 'Max runs to cancel in bulk mode (1-500)',
       required: false,
       default: 50,
       helpGroup: 'Bulk Cancel',
@@ -108,112 +113,30 @@ export default class Cancel extends BaseCommand {
       process.exit(1);
     }
 
-    // Fetch matching runs. Only metadata is needed to display and cancel, so
-    // prefer the analytics read path when the backend provides one.
+    const limit = flags.limit ?? 50;
+    const limitError = validateBulkCancelLimit(limit);
+    if (limitError) {
+      logger.error(limitError);
+      process.exit(1);
+    }
+
     const status = flags.status
       ? WorkflowRunStatusSchema.parse(flags.status)
       : undefined;
-    const limit = flags.limit || 50;
-    const analytics = world.analytics;
-    const fetchMatches = async () => {
-      if (!analytics) {
-        return world.runs.list({
-          status,
-          workflowName: flags.workflowName,
-          pagination: { limit },
-          resolveData: 'none',
-        });
-      }
-      // The analytics backend defaults its listing to a recent window
-      // (trailing 24h on the Vercel backend), but bulk cancel must match
-      // across the plan's whole observability window — a run can sleep or
-      // wait on a hook for days without emitting recent events. Probe for
-      // the plan window bounds first, then match across them.
-      const probe = await analytics.runs.list({
-        status,
-        workflowName: flags.workflowName,
-        pagination: { limit: 1 },
-      });
-      const windowStart = planWindowStartFromResponse(probe);
-      return analytics.runs.list({
-        status,
-        workflowName: flags.workflowName,
-        ...(windowStart
-          ? { startTime: windowStart, endTime: new Date().toISOString() }
-          : {}),
-        pagination: { limit },
-      });
-    };
-    const runList = await fetchMatches();
-    const runs = {
-      data: runList.data.map((run) => ({
-        runId: run.runId,
-        workflowName: run.workflowName,
-        status: run.status,
-        startedAt: run.startedAt,
-      })),
-      hasMore: runList.hasMore,
-    };
 
-    if (runs.data.length === 0) {
-      logger.warn('No matching runs found.');
-      return;
+    const { exitCode } = await performBulkCancel({
+      world,
+      status,
+      workflowName: flags.workflowName,
+      limit,
+      confirm: flags.confirm,
+      logger,
+      promptConfirm,
+    });
+
+    if (exitCode !== 0) {
+      process.exit(exitCode);
     }
-
-    // Display what will be cancelled
-    const table = new Table();
-    for (const run of runs.data) {
-      const shortName =
-        parseWorkflowName(run.workflowName)?.shortName || run.workflowName;
-      table.cell('runId', run.runId);
-      table.cell('workflow', chalk.blueBright(shortName));
-      table.cell('status', run.status);
-      table.cell(
-        'startedAt',
-        run.startedAt ? new Date(run.startedAt).toISOString() : '-'
-      );
-      table.newRow();
-    }
-    logger.log(`\nFound ${chalk.bold(runs.data.length)} runs to cancel:\n`);
-    logger.log(table.toString());
-
-    if (runs.hasMore) {
-      logger.warn(
-        `More runs match these filters. Increase --limit (currently ${flags.limit || 50}) or re-run to cancel additional runs.`
-      );
-    }
-
-    // Confirm unless --confirm/-y
-    if (!flags.confirm) {
-      const confirmed = await promptConfirm(
-        `Cancel ${runs.data.length} run${runs.data.length === 1 ? '' : 's'}?`
-      );
-      if (!confirmed) {
-        logger.log('Aborted.');
-        return;
-      }
-    }
-
-    // Cancel each run with progress
-    let cancelled = 0;
-    let failed = 0;
-    for (const run of runs.data) {
-      try {
-        await cancelRun(world, run.runId);
-        cancelled++;
-        logger.log(
-          chalk.green(`  ✓ ${run.runId}`) +
-            chalk.gray(` (${cancelled}/${runs.data.length})`)
-        );
-      } catch (err: any) {
-        failed++;
-        logger.warn(`  ✗ ${run.runId}: ${err.message || String(err)}`);
-      }
-    }
-
-    logger.log(
-      `\nDone: ${chalk.green(`${cancelled} cancelled`)}${failed > 0 ? `, ${chalk.red(`${failed} failed`)}` : ''}`
-    );
   }
 }
 
