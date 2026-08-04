@@ -169,13 +169,7 @@ function deriveBody(seed: string, kind: CorrelationIdKind): string {
   return body;
 }
 
-/**
- * Builds a replay's correlation-id generator.
- *
- * `perKind: false` returns the run's single shared monotonic sequence and
- * ignores the kind entirely, so both schemes go through one call path and the
- * flag is the only difference between them.
- */
+/** Builds a replay's correlation-id generator. */
 export function createCorrelationIdGenerator(options: {
   /**
    * The run's replay-stable seed. Must not vary between replays of one run, and
@@ -183,15 +177,8 @@ export function createCorrelationIdGenerator(options: {
    */
   seed: string;
   fixedTimestamp: number;
-  /** The run's shared monotonic sequence, used as-is when `perKind` is false. */
-  positional: () => string;
-  perKind: boolean;
 }): CorrelationIdGenerator {
-  const { seed, fixedTimestamp, positional, perKind } = options;
-
-  if (!perKind) {
-    return positional;
-  }
+  const { seed, fixedTimestamp } = options;
 
   const time = encodeTime(fixedTimestamp, TIME_CHARS);
   const bodies = new Map<CorrelationIdKind, string>();
@@ -209,26 +196,3 @@ export function createCorrelationIdGenerator(options: {
 
 /** Length of a ULID, exported so tests need not restate it. */
 export const CORRELATION_ID_LENGTH = TIME_CHARS + BODY_CHARS;
-
-/**
- * Whether each entity family draws correlation ids from its own sequence rather
- * than from one sequence shared by the whole run. Off unless opted in, so an SDK
- * upgrade alone never moves a run between schemes.
- *
- * The invariant either way: a run must replay under the scheme that minted its
- * ids. A replay under the other scheme mints ids its own earlier events do not
- * carry, so it can consume none of them and fails the run. Two things can break
- * it, and both are about turning the flag on rather than about upgrading:
- *
- * - Enabling it while runs are in flight. On Vercel, skew protection keeps a run
- *   on the deployment that started it, so a run only ever sees the value baked
- *   into its own deployment. Elsewhere (world-postgres, world-local, a
- *   self-hosted process) nothing pins a run to the code that started it, so
- *   enable it during a quiet window.
- * - A rolling deploy that leaves both values live, which puts two schemes on one
- *   run concurrently — the side-by-side append this whole mechanism exists to
- *   avoid. Roll the value out to the whole fleet at once.
- */
-export function isPerKindCorrelationIdsEnabled(): boolean {
-  return process.env.WORKFLOW_PER_KIND_CORRELATION_IDS === '1';
-}

@@ -1,31 +1,20 @@
-import { decodeTime, monotonicFactory } from 'ulid';
+import { decodeTime } from 'ulid';
 import { describe, expect, it } from 'vitest';
 import {
   CORRELATION_ID_LENGTH,
   type CorrelationIdKind,
   createCorrelationIdGenerator,
-  isPerKindCorrelationIdsEnabled,
 } from './correlation-id.js';
 
 const SEED = 'wrun_abc:myWorkflow:dpl_123';
 const FIXED_TIMESTAMP = 1753481739458;
 
 function makeGenerator(
-  overrides: { seed?: string; fixedTimestamp?: number; perKind?: boolean } = {}
+  overrides: { seed?: string; fixedTimestamp?: number } = {}
 ) {
-  // A stand-in for the run's shared sequence. Seeded so the positional mode is
-  // reproducible across the two generators a replay-stability test builds.
-  let counter = 0;
-  const ulid = monotonicFactory(() => {
-    counter = (counter * 1103515245 + 12345) % 2147483648;
-    return counter / 2147483648;
-  });
-  const fixedTimestamp = overrides.fixedTimestamp ?? FIXED_TIMESTAMP;
   return createCorrelationIdGenerator({
     seed: overrides.seed ?? SEED,
-    fixedTimestamp,
-    positional: () => ulid(fixedTimestamp),
-    perKind: overrides.perKind ?? true,
+    fixedTimestamp: overrides.fixedTimestamp ?? FIXED_TIMESTAMP,
   });
 }
 
@@ -110,45 +99,14 @@ describe('createCorrelationIdGenerator', () => {
     expect(withController('hook')).toBe(withoutController('hook'));
   });
 
-  it('keeps every id on fixedTimestamp in both modes', () => {
-    // `monotonicFactory` returns `encodeTime(lastTime)` on its increment branch,
-    // so a single draw that omits the seed time latches the host wall clock and
-    // every later id in the run carries a timestamp that differs per replay.
-    // Stream ids used to be drawn that way.
-    for (const perKind of [true, false]) {
-      const generate = makeGenerator({ perKind });
-      for (const kind of ['stream', 'stream', 'step', 'hook'] as const) {
-        expect(decodeTime(generate(kind))).toBe(FIXED_TIMESTAMP);
-      }
-    }
-  });
-
-  it('ignores the kind when per-kind sources are disabled', () => {
-    const generate = makeGenerator({ perKind: false });
-    const shared = makeGenerator({ perKind: false });
-    // Positional mode is one sequence for the whole run, so drawing `wait`
-    // consumes the ordinal the next `step` would otherwise have had.
-    expect(generate('step')).toBe(shared('step'));
-    expect(generate('wait')).toBe(shared('step'));
-  });
-});
-
-describe('isPerKindCorrelationIdsEnabled', () => {
-  it('reads WORKFLOW_PER_KIND_CORRELATION_IDS, defaulting to disabled', () => {
-    const original = process.env.WORKFLOW_PER_KIND_CORRELATION_IDS;
-    try {
-      delete process.env.WORKFLOW_PER_KIND_CORRELATION_IDS;
-      expect(isPerKindCorrelationIdsEnabled()).toBe(false);
-      process.env.WORKFLOW_PER_KIND_CORRELATION_IDS = '1';
-      expect(isPerKindCorrelationIdsEnabled()).toBe(true);
-      process.env.WORKFLOW_PER_KIND_CORRELATION_IDS = '0';
-      expect(isPerKindCorrelationIdsEnabled()).toBe(false);
-    } finally {
-      if (original === undefined) {
-        delete process.env.WORKFLOW_PER_KIND_CORRELATION_IDS;
-      } else {
-        process.env.WORKFLOW_PER_KIND_CORRELATION_IDS = original;
-      }
+  it('keeps every id on fixedTimestamp', () => {
+    // Stream ids are drawn without a seed time of their own. Drawn from a raw
+    // `monotonicFactory` they would latch the host wall clock into `lastTime`
+    // and every later id in the run would carry a timestamp that differs per
+    // replay, so they go through this generator like every other kind.
+    const generate = makeGenerator();
+    for (const kind of ['stream', 'stream', 'step', 'hook'] as const) {
+      expect(decodeTime(generate(kind))).toBe(FIXED_TIMESTAMP);
     }
   });
 });

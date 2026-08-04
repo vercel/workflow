@@ -48,7 +48,6 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from '../serialization.js';
-import { pinSharedCorrelationIds } from '../test-support/correlation-id-scheme.js';
 import { createContext } from '../vm/index.js';
 import {
   getPreconditionMaxInProcessRestarts,
@@ -1031,8 +1030,6 @@ async function inlineClaimRejectionScenario() {
     rejectionCount: () => rejections,
   };
 }
-
-pinSharedCorrelationIds();
 
 describe('precondition guard through the real replay loop', () => {
   let originalGuard: string | undefined;

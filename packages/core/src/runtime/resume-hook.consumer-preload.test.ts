@@ -27,7 +27,6 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from '../serialization.js';
-import { pinSharedCorrelationIds } from '../test-support/correlation-id-scheme.js';
 import { createContext } from '../vm/index.js';
 import { setWorld } from './world.js';
 
@@ -252,8 +251,6 @@ async function runResumeConsumerScenario(options: {
     handlerError,
   };
 }
-
-pinSharedCorrelationIds();
 
 describe('lazy hook resume consumer preload (Perf Option A)', () => {
   afterEach(() => {

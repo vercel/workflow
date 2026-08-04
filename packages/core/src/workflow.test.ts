@@ -2,8 +2,9 @@ import { types } from 'node:util';
 import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
-import { decodeTime, monotonicFactory } from 'ulid';
+import { decodeTime } from 'ulid';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
+import { createCorrelationIdGenerator } from './correlation-id.js';
 import { DEFERRED_CHECK_DELAY_MS } from './events-consumer.js';
 import type { WorkflowSuspension } from './global.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
@@ -13,14 +14,10 @@ import {
   dehydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
 } from './serialization.js';
-import { pinSharedCorrelationIds } from './test-support/correlation-id-scheme.js';
-import { createContext } from './vm/index.js';
 import { replayWorkflow, resumeWorkflow, runWorkflow } from './workflow.js';
 
 // No encryption key = encryption disabled
 const noEncryptionKey = undefined;
-
-pinSharedCorrelationIds();
 
 describe('runWorkflow', () => {
   const getWorkflowTransformCode = (workflowName?: string) =>
@@ -509,16 +506,15 @@ describe('runWorkflow', () => {
       deploymentId: 'test-deployment',
     };
 
-    // Derive the IDs the run should mint, in draw order, with the same seeded
-    // factory runWorkflow uses: the stream draw first, then the step that
-    // follows it. The step's recorded event only matches if the stream draw left
-    // the sequence on `fixedTimestamp`.
+    // Derive the IDs the run should mint with the same generator runWorkflow
+    // uses. The stream draw is what this test is about: it carries no seed time
+    // of its own, so it only lands on `fixedTimestamp` if the binding routes it
+    // through the run's generator.
     const seed = `${workflowRunId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`;
     const fixedTimestamp = +startedAt;
-    const vm = createContext({ seed, fixedTimestamp });
-    const ulid = monotonicFactory(() => vm.globalThis.Math.random());
-    const expectedStreamId = ulid(fixedTimestamp);
-    const stepCorr = `step_${ulid(fixedTimestamp)}`;
+    const generate = createCorrelationIdGenerator({ seed, fixedTimestamp });
+    const expectedStreamId = generate('stream');
+    const stepCorr = `step_${generate('step')}`;
 
     const events: Event[] = [
       {
@@ -5646,15 +5642,17 @@ describe('runWorkflow', () => {
       deploymentId: 'test-deployment',
     };
 
-    // Derive deterministic correlation IDs using the same seeded ULID
-    // factory runWorkflow uses internally, so events match what the runtime
-    // expects. The seed mirrors runWorkflow's `runId:workflowName:deploymentId`.
+    // Derive deterministic correlation IDs using the same generator runWorkflow
+    // uses internally, so events match what the runtime expects. The seed
+    // mirrors runWorkflow's `runId:workflowName:deploymentId`.
     const seed = `${workflowRunId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`;
-    const vm = createContext({ seed, fixedTimestamp: +startedAt });
-    const ulid = monotonicFactory(() => vm.globalThis.Math.random());
-    const hookCorr = `hook_${ulid(+startedAt)}`;
-    const waitCorr = `wait_${ulid(+startedAt)}`;
-    const stepCorr = `step_${ulid(+startedAt)}`;
+    const generate = createCorrelationIdGenerator({
+      seed,
+      fixedTimestamp: +startedAt,
+    });
+    const hookCorr = `hook_${generate('hook')}`;
+    const waitCorr = `wait_${generate('wait')}`;
+    const stepCorr = `step_${generate('step')}`;
 
     const payload1 = await dehydrateStepReturnValue(
       { done: false },

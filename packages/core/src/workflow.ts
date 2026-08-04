@@ -14,11 +14,7 @@ import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
-import { monotonicFactory } from 'ulid';
-import {
-  createCorrelationIdGenerator,
-  isPerKindCorrelationIdsEnabled,
-} from './correlation-id.js';
+import { createCorrelationIdGenerator } from './correlation-id.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
@@ -406,14 +402,11 @@ async function createWorkflowSession({
     state satisfies never;
   };
 
-  const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
   const generateCorrelationId = createCorrelationIdGenerator({
     seed,
-    fixedTimestamp,
     // Correlation IDs must be replay-stable. `startedAt` differs between a
     // turbo delivery and a later server-backed replay, so use fixedTimestamp.
-    positional: () => ulid(fixedTimestamp),
-    perKind: isPerKindCorrelationIdsEnabled(),
+    fixedTimestamp,
   });
   const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
     new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
@@ -535,11 +528,10 @@ async function createWorkflowSession({
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
   vmGlobalThis[WORKFLOW_CONTEXT_SYMBOL] = ctx;
   // Serialization mints stream ids through this symbol, and calls it with no
-  // seed time. `monotonicFactory` returns `encodeTime(lastTime)` on its
-  // increment branch, so one such call latches the *host* wall clock into
-  // `lastTime` and every id the run mints afterwards carries that timestamp
-  // instead of `fixedTimestamp` — a value that differs on every replay.
-  // Binding the seed time here keeps the whole run on one replay-stable clock.
+  // seed time of its own. Routing it through the run's generator keeps those
+  // ids on `fixedTimestamp` like every other id the run mints, and puts them
+  // in their own sequence so serializing a stream does not renumber the
+  // entities created after it.
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
   vmGlobalThis[STABLE_ULID] = () => generateCorrelationId('stream');
 

@@ -2,7 +2,6 @@ import { WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
-import { monotonicFactory } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCorrelationIdGenerator } from './correlation-id.js';
 import { EventsConsumer } from './events-consumer.js';
@@ -34,7 +33,6 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     seed: 'test',
     fixedTimestamp: 1753481739458,
   });
-  const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   const promiseQueueHolder = { current: Promise.resolve() };
   // Forward onUnconsumedEvent through ctx.onWorkflowError so tests that wire
@@ -62,10 +60,6 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     generateCorrelationId: createCorrelationIdGenerator({
       seed: 'test',
       fixedTimestamp: workflowStartedAt,
-      positional: () => ulid(workflowStartedAt),
-      // The event logs in this file hardcode correlation ids the run-wide
-      // shared sequence minted, so replay only matches under that scheme.
-      perKind: false,
     }),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())

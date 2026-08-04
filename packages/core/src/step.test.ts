@@ -6,7 +6,6 @@ import {
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
-import { monotonicFactory } from 'ulid';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { createCorrelationIdGenerator } from './correlation-id.js';
@@ -50,7 +49,6 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   if (hostRegistry) {
     (context.globalThis as any)[WORKFLOW_CLASS_REGISTRY] = hostRegistry;
   }
-  const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   return {
     runId: 'wrun_test',
@@ -65,10 +63,6 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     generateCorrelationId: createCorrelationIdGenerator({
       seed: 'test',
       fixedTimestamp: workflowStartedAt,
-      positional: () => ulid(workflowStartedAt),
-      // The event logs in this file hardcode correlation ids the run-wide
-      // shared sequence minted, so replay only matches under that scheme.
-      perKind: false,
     }),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
@@ -87,7 +81,7 @@ describe('createUseStep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
         eventData: {
           stepName: 'add',
           result: await dehydrateStepReturnValue(3, 'wrun_test', undefined),
@@ -113,7 +107,7 @@ describe('createUseStep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_failed',
-        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
         eventData: {
           stepName: 'add',
           error: serializedError,
@@ -167,7 +161,7 @@ describe('createUseStep', () => {
             1,
             2,
           ],
-          "correlationId": "step_01K11TFZ62YS0YYFDQ3E8B9YCV",
+          "correlationId": "step_01K11TFZ62CHHYKN8SS4KKNC9V",
           "stepName": "add",
           "type": "step",
         },
@@ -213,7 +207,7 @@ describe('createUseStep', () => {
             1,
             2,
           ],
-          "correlationId": "step_01K11TFZ62YS0YYFDQ3E8B9YCV",
+          "correlationId": "step_01K11TFZ62CHHYKN8SS4KKNC9V",
           "stepName": "add",
           "type": "step",
         },
@@ -222,7 +216,7 @@ describe('createUseStep', () => {
             3,
             4,
           ],
-          "correlationId": "step_01K11TFZ62YS0YYFDQ3E8B9YCW",
+          "correlationId": "step_01K11TFZ62CHHYKN8SS4KKNC9W",
           "stepName": "add",
           "type": "step",
         },
@@ -231,7 +225,7 @@ describe('createUseStep', () => {
             5,
             6,
           ],
-          "correlationId": "step_01K11TFZ62YS0YYFDQ3E8B9YCX",
+          "correlationId": "step_01K11TFZ62CHHYKN8SS4KKNC9X",
           "stepName": "add",
           "type": "step",
         },
@@ -245,7 +239,7 @@ describe('createUseStep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
         eventData: {
           stepName: 'step//input.js//my_step_function',
           result: await dehydrateStepReturnValue(
@@ -411,7 +405,7 @@ describe('createUseStep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_created',
-        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
         eventData: {
           stepName: 'add',
           input: new Uint8Array(),
@@ -457,7 +451,7 @@ describe('createUseStep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_created',
-        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
         eventData: {
           stepName: 'subtract',
           input: new Uint8Array(),
@@ -488,7 +482,7 @@ describe('createUseStep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_started',
-        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
         eventData: {
           stepName: 'add',
         },
@@ -528,7 +522,7 @@ describe('createUseStep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_retrying',
-        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
         eventData: {
           stepName: 'add',
           error: new Uint8Array(),
@@ -566,7 +560,7 @@ describe('createUseStep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
         eventData: {
           stepName: 'subtract',
           result: await dehydrateStepReturnValue(42, 'wrun_test', undefined),
@@ -597,7 +591,7 @@ describe('createUseStep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
         eventData: {
           stepName: 'add',
           result: await dehydrateStepReturnValue(42, 'wrun_test', undefined),
@@ -627,7 +621,7 @@ describe('createUseStep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_failed',
-        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
         eventData: {
           stepName: 'subtract',
           error: serializedError,
@@ -663,7 +657,7 @@ describe('createUseStep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_failed',
-        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
         eventData: {
           stepName: 'add',
           error: serializedError,
@@ -704,7 +698,7 @@ describe('createUseStep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_failed',
-        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
         eventData: {
           stepName: 'add',
           error: serializedError,
@@ -745,7 +739,7 @@ describe('createUseStep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_failed',
-        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
         eventData: {
           stepName: 'add',
           error: serializedError,
@@ -776,7 +770,7 @@ describe('createUseStep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'wait_completed', // Wrong event type for a step!
-        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
         eventData: {
           resumeAt: new Date(),
         },
@@ -796,7 +790,7 @@ describe('createUseStep', () => {
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
     expect(workflowError?.message).toContain('Unexpected event type for step');
-    expect(workflowError?.message).toContain('step_01K11TFZ62YS0YYFDQ3E8B9YCV');
+    expect(workflowError?.message).toContain('step_01K11TFZ62CHHYKN8SS4KKNC9V');
     expect(workflowError?.message).toContain('add');
     expect(workflowError?.message).toContain('wait_completed');
   });
