@@ -116,6 +116,37 @@ describe('runQuickJSWorkflow', () => {
     );
   });
 
+  it('accepts a Date-like object (getTime only) for minimum retention', async () => {
+    // Values that crossed the serde boundary may be Date-like rather than
+    // realm-native Date instances — parseDurationToDate accepts them on
+    // the node engine, so the VM shim must too.
+    const result = await runQuickJSWorkflow({
+      workflowCode: `
+        async function workflow() {
+          var hook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")]({
+            token: "retained-datelike",
+            experimental_minRetention: { getTime: function() { return 1234567890; } },
+          });
+          await hook.getConflict();
+        }
+        workflow.workflowId = "workflow//test//workflow";
+        globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+      `,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: makeRun(),
+      events: [],
+      worldSupportsHookRetention: true,
+    });
+
+    expect(result.suspended?.pendingOperations).toContainEqual(
+      expect.objectContaining({
+        type: 'hook',
+        token: 'retained-datelike',
+        tokenRetentionUntil: 1234567890,
+      })
+    );
+  });
+
   it('rejects minimum retention for webhook Hooks', async () => {
     const result = await runQuickJSWorkflow({
       workflowCode: `

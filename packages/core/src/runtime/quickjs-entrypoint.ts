@@ -16,6 +16,7 @@
 import type { Span } from '@opentelemetry/api';
 import {
   EntityConflictError,
+  FatalError,
   HookNotFoundError,
   MaxEventsExceededError,
   RunExpiredError,
@@ -27,6 +28,7 @@ import {
   type RunInput,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
+  type WorldCapabilities,
 } from '@workflow/world';
 import { classifyRunError } from '../classify-error.js';
 import { runtimeLogger } from '../logger.js';
@@ -103,6 +105,40 @@ export function isFirstInvocation(
  *    drainPendingQueueItems. Steps are created but NOT queued, and the run
  *    is never requeued.
  */
+/**
+ * Rejects retained Hooks before registration when the configured World
+ * does not support `experimental_minRetention` — the same gate the node
+ * engine applies inside `createHook()` (workflow/hook.ts), where
+ * `ctx.worldCapabilities` is available to workflow code. The QuickJS VM
+ * has no capability channel into the guest, so the check runs host-side
+ * at dispatch, before any `hook_created` is written. Without it, a
+ * non-supporting world would silently persist the hook WITHOUT its
+ * retention deadline — the user asked for retention, got none, and
+ * nothing failed loud (see WorldCapabilities.hookRetention in
+ * @workflow/world: "Missing or inactive means the runtime rejects
+ * retained Hooks before registration").
+ *
+ * The FatalError escapes the entrypoint into the replay loop's catch in
+ * runtime.ts, which records run_failed — mirroring the node engine,
+ * where the same FatalError fails the run from inside the workflow.
+ */
+export function assertHookRetentionSupported(
+  pendingOperations: PendingOperation[],
+  capabilities: WorldCapabilities | undefined
+): void {
+  if (capabilities?.hookRetention?.active === true) return;
+  for (const op of pendingOperations) {
+    if (
+      op.type === 'hook' &&
+      (op as PendingHook).tokenRetentionUntil !== undefined
+    ) {
+      throw new FatalError(
+        'The configured World does not support `experimental_minRetention` for Hooks.'
+      );
+    }
+  }
+}
+
 async function dispatchPendingOps(params: {
   world: Awaited<ReturnType<typeof getWorld>>;
   runId: string;
@@ -146,6 +182,8 @@ async function dispatchPendingOps(params: {
   // same pattern as an elapsed wait.
   let createdAttributeEvent = false;
   const opsPromises: Promise<void>[] = [];
+
+  assertHookRetentionSupported(pendingOperations, world.capabilities);
 
   const processHookOp = async (hook: PendingHook): Promise<void> => {
     runtimeLogger.debug('QuickJS runtime: processing hook op', {
@@ -779,6 +817,17 @@ export async function runWorkflowWithQuickJS(params: {
     // Drain failures are swallowed: the workflow's own outcome is the
     // source of truth.
     if (result.completed.drainOperations?.length) {
+      // Fail loud on retained hooks the World can't support BEFORE the
+      // drain try/catch below — that catch intentionally swallows genuine
+      // drain failures ("the workflow's own outcome is the source of
+      // truth"), but the retention gate's FatalError must escape to the
+      // replay loop's catch (run_failed), mirroring the node engine. This
+      // covers the fire-and-forget case: a retained hook that was never
+      // awaited only reaches the gate through this drain.
+      assertHookRetentionSupported(
+        result.completed.drainOperations,
+        world.capabilities
+      );
       try {
         await dispatchPendingOps({
           world,
@@ -1030,6 +1079,14 @@ export async function runWorkflowWithQuickJS(params: {
     // Flush leftover pending side effects before writing run_failed —
     // same drain semantics as the completed branch.
     if (result.failed.drainOperations?.length) {
+      // Fail loud on retained hooks the World can't support BEFORE the
+      // drain try/catch below — same reasoning as the completed branch:
+      // the retention gate's FatalError must escape to the replay loop's
+      // catch rather than be swallowed as a genuine drain failure.
+      assertHookRetentionSupported(
+        result.failed.drainOperations,
+        world.capabilities
+      );
       try {
         await dispatchPendingOps({
           world,
