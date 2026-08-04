@@ -446,8 +446,11 @@ export async function getNextBuilderEager(
             sourceSnapshots,
           });
           if (decision.kind === 'none') {
+            if (decision.snapshots.size === 0) {
+              return;
+            }
             logDevHmr('workflow dev hmr: skip');
-            for (const [file, snapshot] of decision.snapshots || []) {
+            for (const [file, snapshot] of decision.snapshots) {
               sourceSnapshots.set(file, snapshot);
             }
             return;
