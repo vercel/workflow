@@ -30,7 +30,7 @@ import {
   dehydrateStepReturnValue,
   hydrateStepReturnValue,
 } from '../serialization.js';
-import { Run } from './run.js';
+import { getReturnValuePollIntervalMs, Run } from './run.js';
 import { recreateRunFromExisting, reenqueueRun, wakeUpRun } from './runs.js';
 import { start } from './start.js';
 import { setWorld } from './world.js';
@@ -393,6 +393,31 @@ describe('Run custom serialization', () => {
 
     expect(hydrated).toBeInstanceOf(Run);
     expect((hydrated as Run<unknown>).runId).toBe('wrun_roundtrip');
+  });
+});
+
+describe('Run.returnValue polling interval', () => {
+  const envName = 'WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS';
+  const originalValue = process.env[envName];
+
+  afterEach(() => {
+    if (originalValue === undefined) {
+      delete process.env[envName];
+    } else {
+      process.env[envName] = originalValue;
+    }
+  });
+
+  it('defaults to one second', () => {
+    delete process.env[envName];
+
+    expect(getReturnValuePollIntervalMs()).toBe(1_000);
+  });
+
+  it('accepts a runtime override', () => {
+    process.env[envName] = '5000';
+
+    expect(getReturnValuePollIntervalMs()).toBe(5_000);
   });
 });
 

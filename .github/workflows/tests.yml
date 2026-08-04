@@ -381,6 +381,7 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
+      WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS: '5000'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -522,6 +523,7 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
+      WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS: '5000'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
