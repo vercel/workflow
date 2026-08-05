@@ -19,50 +19,6 @@ functions durable. It persists workflow progress, retries failed steps, and
 provides built-in observability. Workflows can suspend without using compute
 while they wait.
 
-## Workflows and steps
-
-A workflow is plain TypeScript:
-
-```ts
-import { sleep } from 'workflow';
-
-type User = {
-  id: string;
-  email: string;
-};
-
-export async function onboardUser(email: string) {
-  'use workflow';
-
-  const user = await createUser(email);
-  await sendEmail(user, 'Welcome!');
-  await sleep('1 day');
-  await sendEmail(user, 'Here is what to do next.');
-
-  return { userId: user.id };
-}
-
-async function createUser(email: string): Promise<User> {
-  'use step';
-
-  return { id: crypto.randomUUID(), email };
-}
-
-async function sendEmail(user: User, message: string) {
-  'use step';
-
-  console.log(`Sending "${message}" to ${user.email}`);
-}
-```
-
-Workflow functions orchestrate deterministic control flow. Step functions have
-full runtime and npm package access, retry on failure, and persist their
-results. After a restart, the workflow replays from the event log without
-repeating completed side effects.
-
-Read [Workflows and Steps](https://workflow-sdk.dev/docs/foundations/workflows-and-steps)
-for the execution model and core concepts.
-
 ## Quick start
 
 Install the SDK in an existing project:
