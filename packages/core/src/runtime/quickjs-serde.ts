@@ -147,48 +147,6 @@ const BRANDED_SAMPLES = `({
  * ones yield `undefined` and their reducers simply never match, exactly
  * like the old in-VM reducers' `globalThis.X` probes.
  */
-/**
- * Identity signature of every value CAPTURE_INTRINSICS would capture —
- * used by the baseline-snapshot hydrate gate (quickjs-runtime.ts) to
- * detect a bundle whose module scope REPLACED a serialization intrinsic
- * (e.g. a Date.prototype.toISOString polyfill). The serde on the
- * restore path captures intrinsics from the restored heap — i.e. AFTER
- * module scope ran — so a replaced intrinsic would silently diverge
- * serialization from the fresh path (which captures before user code).
- * Comparing the signature before and after bundle eval catches every
- * replacement; in-place mutation of a captured function's own
- * properties is not detectable this way, but it doesn't change the
- * function's behavior and carries the same (accepted) risk on every
- * path. Missing captures (absent extension globals) signature as -1.
- */
-export function captureIntrinsicsSignature(vm: QuickJS): number[] {
-  using captured = vm.evalCode(CAPTURE_INTRINSICS);
-  const signature: number[] = [];
-  for (const name of captured.getOwnPropertyNames()) {
-    // Entries the capture expression CREATES (guest helper closures) get
-    // a fresh identity on every eval — comparing them would make the
-    // gate trip unconditionally. They cannot be replaced by user code
-    // (each serde capture rebuilds its own), so they carry no drift risk.
-    if (
-      name === 'makeSparseArray' ||
-      name === 'makeThunk' ||
-      name === 'hasOwnCall' ||
-      name === 'escapeString'
-    ) {
-      continue;
-    }
-    using handle = captured.getProp(name);
-    signature.push(
-      handle.isUndefined || handle.isNull
-        ? -1
-        : typeof handle.identity === 'number'
-          ? handle.identity
-          : -1
-    );
-  }
-  return signature;
-}
-
 const CAPTURE_INTRINSICS = `(() => {
   const descriptor = (object, key) =>
     Object.getOwnPropertyDescriptor(object, key);
@@ -264,6 +222,7 @@ const CAPTURE_INTRINSICS = `(() => {
     objectKeys: Object.keys,
     dateNow: Date.now,
     hasOwnCall: (o, k) => Object.prototype.hasOwnProperty.call(o, k),
+    objectFreeze: Object.freeze,
     // Lossless guest→host string escape: every code unit outside
     // printable ASCII becomes a \\uXXXX escape. Runs on WTF-16 code
     // units, so lone surrogates survive — unlike JS_ToCString (which
@@ -322,6 +281,54 @@ const SYMBOL_NAMES = [
 ] as const;
 type SymbolName = (typeof SYMBOL_NAMES)[number];
 
+/**
+ * The single guest expression that performs EVERY guest-touching part of
+ * serde initialization: the intrinsics capture, the branded samples, and
+ * the well-known symbol lookups, bundled into one container object.
+ *
+ * Bundling matters for the baseline-snapshot path: the container is
+ * created BEFORE the workflow bundle evaluates (capture-before-user-code,
+ * same as the fresh path), its handle's box lives in the snapshot's
+ * linear memory, and every restored VM re-adopts it BY POINTER
+ * (`adoptSerdeRoot`) — so serde initialization executes NO guest code
+ * after user code has run. Anything less lets a module-scope wrapper
+ * around e.g. `Object.getOwnPropertyDescriptor` observe (and be mutated
+ * by) a post-eval capture, diverging fresh and restored replays.
+ */
+const CAPTURE_ROOT = `(() => ({
+  intrinsics: ${CAPTURE_INTRINSICS},
+  samples: ${BRANDED_SAMPLES},
+  symbols: {
+${SYMBOL_NAMES.map(
+  (name) => `    ${JSON.stringify(name)}: Symbol.for(${JSON.stringify(name)})`
+).join(',\n')}
+  },
+}))()`;
+
+/**
+ * Evaluate the serde capture root in a VM. Must run after the runtime
+ * bootstrap and BEFORE any user code. The returned handle owns the
+ * container; on the baseline-snapshot path its raw box pointer
+ * (`handle.ptr`) is recorded next to the snapshot and re-adopted per
+ * restored VM via {@link adoptSerdeRoot} — do NOT dispose the handle
+ * before the snapshot is taken (the box must stay live in the memory
+ * image).
+ */
+export function captureSerdeRoot(vm: QuickJS): JSValueHandle {
+  return vm.evalCode(CAPTURE_ROOT);
+}
+
+/**
+ * Re-create the capture-root handle in a VM restored from a snapshot
+ * whose memory image contains the box `captureSerdeRoot` allocated (at
+ * the identical offset — snapshots are whole-memory images). The adopted
+ * wrapper owns the box's reference: dispose it (via the serde) exactly
+ * once per restored VM.
+ */
+export function adoptSerdeRoot(vm: QuickJS, ptr: number): JSValueHandle {
+  return new JSValueHandle(vm, ptr);
+}
+
 export interface QuickJSSerde {
   /** Serialize a guest value handle to format-prefixed wire bytes. */
   serialize(value: JSValueHandle): Uint8Array;
@@ -336,6 +343,16 @@ export interface QuickJSSerde {
   reducerKeys: readonly string[];
   /** Reviver names, for the same exhaustiveness check. */
   reviverKeys: readonly string[];
+  /**
+   * Install `globalThis.process = { env: Object.freeze({...}) }` in the
+   * VM through handles and boot-captured intrinsics only — no guest
+   * source is evaluated, so a module-scope wrapper around JSON.parse /
+   * Object.freeze cannot observe the injection. This matters on the
+   * baseline-snapshot path, where env injection happens after user code
+   * ran; evaluating guest source there would let patched globals see
+   * (and perturb) it, diverging from the fresh path.
+   */
+  installProcessEnv(env: Record<string, string | undefined>): void;
   dispose(): void;
 }
 
@@ -344,7 +361,19 @@ export interface QuickJSSerde {
  * bootstrap has been evaluated (so bootstrap-installed globals are
  * capturable) and before the workflow bundle runs.
  */
-export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
+export function createQuickJSSerde(
+  vm: QuickJS,
+  /**
+   * Pre-captured serde root (baseline-snapshot path): the container
+   * `captureSerdeRoot` created BEFORE user code, re-adopted from the
+   * restored memory image via `adoptSerdeRoot`. When omitted, the root
+   * is captured now — callers must guarantee no user code has run yet.
+   * Either way, initialization below performs only plain-data property
+   * reads and C-level classId reads on the container: NO guest code
+   * executes here, so nothing user-patchable can observe or perturb it.
+   */
+  capturedRoot?: JSValueHandle
+): QuickJSSerde {
   const disposables: JSValueHandle[] = [];
   const keep = (handle: JSValueHandle): JSValueHandle => {
     disposables.push(handle);
@@ -355,9 +384,11 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
 
   // --- boot capture ---
 
+  const root = keep(capturedRoot ?? captureSerdeRoot(vm));
+
   const tagByClassId = new Map<number, string>();
   {
-    const samples = vm.evalCode(BRANDED_SAMPLES);
+    const samples = root.getProp('samples');
     try {
       for (const tag of samples.getOwnPropertyNames()) {
         const sample = samples.getProp(tag);
@@ -369,7 +400,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     }
   }
 
-  const intrinsics = keep(vm.evalCode(CAPTURE_INTRINSICS));
+  const intrinsics = keep(root.getProp('intrinsics'));
   const at = (name: string): JSValueHandle => keep(intrinsics.getProp(name));
   /** Absent captures (extension/bootstrap global not installed). */
   const optional = (name: string): JSValueHandle | undefined => {
@@ -434,6 +465,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     dateNow: at('dateNow'),
     escapeString: at('escapeString'),
     hasOwnCall: at('hasOwnCall'),
+    objectFreeze: at('objectFreeze'),
     functionBind: at('functionBind'),
     makeSparseArray: at('makeSparseArray'),
     makeThunk: at('makeThunk'),
@@ -470,8 +502,11 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
   }
 
   const symbols = new Map<SymbolName, JSValueHandle>();
-  for (const name of SYMBOL_NAMES) {
-    symbols.set(name, keep(vm.evalCode(`Symbol.for(${JSON.stringify(name)})`)));
+  {
+    using symbolsContainer = root.getProp('symbols');
+    for (const name of SYMBOL_NAMES) {
+      symbols.set(name, keep(symbolsContainer.getProp(name)));
+    }
   }
   const sym = (name: SymbolName): JSValueHandle => {
     const handle = symbols.get(name);
@@ -2183,6 +2218,17 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
   return {
     reducerKeys: Object.keys(reducers),
     reviverKeys: Object.keys(revivers),
+    installProcessEnv(env: Record<string, string | undefined>): void {
+      const plain: Record<string, string> = {};
+      for (const [key, value] of Object.entries(env)) {
+        if (typeof value === 'string') plain[key] = value;
+      }
+      using envHandle = vm.hostToHandle(plain);
+      call(i.objectFreeze, vm.undefined, envHandle).dispose();
+      using processHandle = vm.newObject();
+      define(processHandle, 'env', envHandle);
+      vm.setProp(vm.global, 'process', processHandle);
+    },
     serialize(value: JSValueHandle): Uint8Array {
       // Handle scope: reducers and the hybrid operations mint one handle
       // per visited value node (descriptor reads, dup()s, intrinsic call

@@ -50,7 +50,8 @@ import {
 } from './constants.js';
 import { quickjsExtensions, quickjsWasm } from './quickjs-assets.generated.js';
 import {
-  captureIntrinsicsSignature,
+  adoptSerdeRoot,
+  captureSerdeRoot,
   createQuickJSSerde,
   type QuickJSSerde,
 } from './quickjs-serde.js';
@@ -1129,7 +1130,19 @@ async function initWorkflowVM(
 export const BASELINE_BUNDLE_FILENAME = 'workflow-bundle.js';
 
 type BaselineEntry =
-  | { state: 'ready'; snapshot: Snapshot }
+  | {
+      state: 'ready';
+      snapshot: Snapshot;
+      /**
+       * Raw box pointer of the serde capture root created BEFORE the
+       * bundle evaluated (see captureSerdeRoot). The box lives in the
+       * snapshot's memory image at this offset; every restored VM
+       * re-adopts it so serde initialization executes no guest code
+       * after user code has run — capture-before-user-code semantics,
+       * identical to the fresh path.
+       */
+      serdeRootPtr: number;
+    }
   | { state: 'ineligible'; reason: string };
 
 const baselineCache = new Map<string, Promise<BaselineEntry>>();
@@ -1204,16 +1217,20 @@ async function prepareBaselineSnapshot(
       vm.setProp(vm.global, '__generateUlid', ulidFn);
     }
 
-    // Serialization-intrinsics gate: the serde on the RESTORE path
-    // captures intrinsics from the restored heap — i.e. AFTER module
-    // scope ran — while the fresh path captures before user code. A
-    // bundle that REPLACES a captured intrinsic at module scope (e.g. a
-    // Date.prototype.toISOString polyfill) without touching PRNG/clock
-    // would therefore pass the other gates yet serialize differently on
-    // the two paths. Compare the identity signature of every
-    // to-be-captured value before and after bundle eval; any
-    // replacement marks the bundle ineligible.
-    const intrinsicsBefore = captureIntrinsicsSignature(vm);
+    // Serde capture root — created BEFORE the bundle evaluates, exactly
+    // like the fresh path's capture. Its box pointer rides the
+    // BaselineEntry and each restored VM re-adopts it, so serde
+    // initialization never executes guest code after user code has run.
+    // This is what makes module-scope intrinsic patching (polyfills,
+    // stateful wrappers around Object.getOwnPropertyDescriptor, …)
+    // HARMLESS on the snapshot path rather than merely detectable: the
+    // serde uses the pristine pre-eval captures on both paths, and no
+    // post-eval probe exists whose side effects could bake into the
+    // snapshot. The handle is deliberately NOT disposed before the
+    // snapshot — the box must stay live in the memory image (the
+    // baseline VM's dispose below tears down the whole instance without
+    // freeing individual boxes).
+    const serdeRoot = captureSerdeRoot(vm);
 
     clockReads = 0; // only count reads made by the bundle itself
     try {
@@ -1225,21 +1242,6 @@ async function prepareBaselineSnapshot(
       return {
         state: 'ineligible',
         reason: 'module scope threw during hydrate',
-      };
-    }
-
-    const intrinsicsAfter = captureIntrinsicsSignature(vm);
-    const intrinsicsReplaced =
-      intrinsicsBefore.length !== intrinsicsAfter.length ||
-      intrinsicsBefore.some((id, idx) => id !== intrinsicsAfter[idx]);
-    if (intrinsicsReplaced) {
-      runtimeLogger.info(
-        'QuickJS baseline snapshot disabled for this bundle: module scope replaced a serialization intrinsic; every invocation will evaluate the bundle fresh',
-        { workflowId }
-      );
-      return {
-        state: 'ineligible',
-        reason: 'module scope replaced a serialization intrinsic',
       };
     }
 
@@ -1259,7 +1261,7 @@ async function prepareBaselineSnapshot(
       workflowId,
       hydrateMs: Date.now() - hydrateStart,
     });
-    return { state: 'ready', snapshot };
+    return { state: 'ready', snapshot, serdeRootPtr: serdeRoot.ptr };
   } finally {
     vm.dispose();
   }
@@ -1380,10 +1382,14 @@ export async function startQuickJSWorkflow(
   // identical semantics.
   const interruptBudget: InterruptBudget = { start: Date.now() };
   let baselineSnapshot: Snapshot | undefined;
+  let baselineSerdeRootPtr: number | undefined;
   if (isQuickJSBaselineSnapshotEnabled()) {
     try {
       const entry = await getBaselineEntry(workflowCode, workflowId);
-      if (entry.state === 'ready') baselineSnapshot = entry.snapshot;
+      if (entry.state === 'ready') {
+        baselineSnapshot = entry.snapshot;
+        baselineSerdeRootPtr = entry.serdeRootPtr;
+      }
     } catch (err) {
       // A rejection here is an infrastructure failure during hydrate
       // (e.g. vm.snapshot() under memory pressure, QuickJS.create or
@@ -1415,7 +1421,16 @@ export async function startQuickJSWorkflow(
   // Host-side serde: captures the VM's intrinsics (bootstrap included)
   // before any user code runs. All serialization now happens on the host
   // through handles — no serializer code is evaluated inside the VM.
-  const serde = createQuickJSSerde(vm);
+  // Fresh path: capture now (no user code has run — the bundle evaluates
+  // later in the per-run phase). Snapshot path: re-adopt the capture root
+  // the baseline hydrate created BEFORE the bundle evaluated — the box
+  // lives in the restored memory image at the recorded offset. Both give
+  // the serde pristine capture-before-user-code intrinsics; neither
+  // executes guest code here.
+  const serde =
+    baselineSnapshot && baselineSerdeRootPtr !== undefined
+      ? createQuickJSSerde(vm, adoptSerdeRoot(vm, baselineSerdeRootPtr))
+      : createQuickJSSerde(vm);
 
   // Any throw between here and the terminal paths (which dispose the VM
   // inside checkWorkflowState / extractError before RETURNING) would leak
@@ -1474,16 +1489,13 @@ export async function startQuickJSWorkflow(
 
     // `process.env` — parity with the node:vm engine, which exposes a frozen
     // copy of the host env (vm/index.ts). Injected per run so the snapshot of
-    // the env is taken at invocation time, same as node.
-    {
-      const envHandle = vm.newString(JSON.stringify(process.env));
-      vm.setProp(vm.global, '__wdk_env', envHandle);
-      envHandle.dispose();
-      vm.evalCode(
-        'globalThis.process = { env: Object.freeze(JSON.parse(globalThis.__wdk_env)) };' +
-          'delete globalThis.__wdk_env;'
-      ).dispose();
-    }
+    // the env is taken at invocation time, same as node. Handle-based (no
+    // guest source evaluated): on the baseline-snapshot path this runs
+    // after user code, and a guest-source injection would execute through
+    // potentially patched globals (JSON.parse, Object.freeze) — visible
+    // to module-scope wrappers only on the restore path, diverging
+    // replays.
+    serde.installProcessEnv(process.env);
 
     // Execute the workflow bundle — use the workflowId as the eval filename
     // so QuickJS stack traces reference the workflow name, enabling source map
