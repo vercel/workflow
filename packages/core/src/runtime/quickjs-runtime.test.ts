@@ -3,6 +3,7 @@ import { deserialize, serialize } from '../serialization/workflow-vm.js';
 import {
   __clearBaselineSnapshotCacheForTests,
   __peekBaselineEntryForTests,
+  BASELINE_BUNDLE_FILENAME,
   runQuickJSWorkflow,
 } from './quickjs-runtime.js';
 
@@ -1346,6 +1347,47 @@ describe('baseline snapshot startup optimization', () => {
     });
     const entry = await __peekBaselineEntryForTests(patchingCode);
     expect(entry?.state).toBe('ineligible');
+    __clearBaselineSnapshotCacheForTests();
+  });
+
+  it('snapshot-path stack frames carry the workflow-independent bundle filename', async () => {
+    // The baseline is shared by every workflow in the bundle, so the eval
+    // filename baked into its compiled code must not be the first
+    // hydrator's workflowId — other workflows' remapErrorStack matching
+    // (by module specifier) would never match it. Frames must instead
+    // reference BASELINE_BUNDLE_FILENAME, which the entrypoint remaps in
+    // addition to the run's own filename.
+    __clearBaselineSnapshotCacheForTests();
+    const twoWorkflowBundle = `
+      async function alpha() { return 1; }
+      alpha.workflowId = "workflow//./workflows/mod_a//alpha";
+      globalThis.__private_workflows.set("workflow//./workflows/mod_a//alpha", alpha);
+      async function beta() { throw new Error("beta boom"); }
+      beta.workflowId = "workflow//./workflows/mod_b//beta";
+      globalThis.__private_workflows.set("workflow//./workflows/mod_b//beta", beta);
+    `;
+    // First hydrate happens under alpha's invocation...
+    await runQuickJSWorkflow({
+      workflowCode: twoWorkflowBundle,
+      workflowId: 'workflow//./workflows/mod_a//alpha',
+      workflowRun: makeRun(),
+      events: [],
+    });
+    expect((await __peekBaselineEntryForTests(twoWorkflowBundle))?.state).toBe(
+      'ready'
+    );
+    // ...then beta fails through the restored snapshot: its stack frames
+    // must reference the constant bundle filename (NOT alpha's id), so
+    // the entrypoint's dual remap can match them.
+    const failed = await runQuickJSWorkflow({
+      workflowCode: twoWorkflowBundle,
+      workflowId: 'workflow//./workflows/mod_b//beta',
+      workflowRun: makeRun(),
+      events: [],
+    });
+    expect(failed.failed?.message).toBe('beta boom');
+    expect(failed.failed?.stack).toContain(BASELINE_BUNDLE_FILENAME);
+    expect(failed.failed?.stack).not.toContain('mod_a//alpha');
     __clearBaselineSnapshotCacheForTests();
   });
 

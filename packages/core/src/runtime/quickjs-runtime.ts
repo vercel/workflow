@@ -1116,6 +1116,18 @@ async function initWorkflowVM(
 // const). Capped at a few entries so tests with many distinct bundles
 // don't accumulate 16MB snapshots.
 
+/**
+ * Eval filename used when hydrating the baseline VM. The baseline is
+ * shared by EVERY workflow in the bundle, so the filename baked into
+ * its compiled code (and therefore into snapshot-path stack frames)
+ * must be workflow-independent — hydrating under the first caller's
+ * workflowId would break `remapErrorStack`'s filename matching for
+ * every other workflow in the bundle. Remap call sites match this
+ * constant IN ADDITION to the run's module specifier (which covers
+ * fresh-path frames).
+ */
+export const BASELINE_BUNDLE_FILENAME = 'workflow-bundle.js';
+
 type BaselineEntry =
   | { state: 'ready'; snapshot: Snapshot }
   | { state: 'ineligible'; reason: string };
@@ -1205,7 +1217,8 @@ async function prepareBaselineSnapshot(
 
     clockReads = 0; // only count reads made by the bundle itself
     try {
-      vm.evalCode(workflowCode, workflowId || 'workflow.js').dispose();
+      // Workflow-independent filename — see BASELINE_BUNDLE_FILENAME.
+      vm.evalCode(workflowCode, BASELINE_BUNDLE_FILENAME).dispose();
     } catch {
       // Let the fresh path re-evaluate and surface the real error with
       // proper filename / source-map handling.
