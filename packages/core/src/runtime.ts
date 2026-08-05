@@ -31,6 +31,7 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
+import ms from 'ms';
 import { decodeTime } from 'ulid';
 import {
   classifyRunError,
@@ -532,6 +533,44 @@ function canRetainWorkflowSession(
 }
 
 /**
+ * Maximum inline-execution duration for a single handler invocation.
+ *
+ * Order of precedence:
+ * 1. `WORKFLOW_V2_TIMEOUT_MS` env var
+ * 2. Tiered budget derived from `world.getRuntimeDeadline()`
+ * 3. Default of 2 minutes
+ */
+async function getMaxInlineDurationMs(
+  world: World,
+  invocationStartTime: number
+): Promise<number> {
+  const rawEnvOverride = process.env.WORKFLOW_V2_TIMEOUT_MS;
+  if (rawEnvOverride !== undefined && rawEnvOverride !== '') {
+    const parsed = Number(rawEnvOverride);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  const runtimeDeadline = await world.getRuntimeDeadline?.();
+  if (runtimeDeadline !== undefined) {
+    const deadlineMs = runtimeDeadline.getTime();
+    if (!Number.isNaN(deadlineMs)) {
+      const maxDurationMs = Math.floor(deadlineMs - invocationStartTime);
+      if (maxDurationMs >= ms('25m')) {
+        return ms('10m');
+      }
+
+      if (maxDurationMs >= ms('10m')) {
+        return ms('5m');
+      }
+    }
+  }
+
+  return ms('2m');
+}
+
+/**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
  * and queue overhead.
@@ -551,9 +590,6 @@ export function workflowEntrypoint(
   }
 ): (req: Request) => Promise<Response> {
   setWorkflowBasePath(options?.basePath);
-
-  const NO_INLINE_REPLAY_AFTER_MS =
-    Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
 
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
@@ -755,6 +791,10 @@ export function workflowEntrypoint(
                   });
 
                   const invocationStartTime = Date.now();
+                  const noInlineReplayAfterMs = await getMaxInlineDurationMs(
+                    world,
+                    invocationStartTime
+                  );
                   let loopIteration = 0;
                   const replayRecoveryReporter = replayDivergence
                     ? new ReplayRecoveryReporter(replayDivergence.count)
@@ -1954,7 +1994,7 @@ export function workflowEntrypoint(
                     // Check timeout before replay
                     if (
                       Date.now() - invocationStartTime >=
-                      NO_INLINE_REPLAY_AFTER_MS
+                      noInlineReplayAfterMs
                     ) {
                       runtimeLogger.info(
                         'V2 timeout reached, re-scheduling workflow',
