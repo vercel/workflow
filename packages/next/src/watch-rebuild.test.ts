@@ -187,4 +187,28 @@ export const allWorkflows = {} as const;
 
     expect(decision.kind).toBe('none');
   });
+
+  test('forces a full rebuild when a bundled Markdown asset changes', async () => {
+    const markdownFile = '/workspace/packages/prompts/instructions.md';
+
+    await expect(
+      classifyRebuild({
+        discoveredEntries: {
+          discoveredSteps: new Set(),
+          discoveredWorkflows: new Set(),
+          discoveredSerdeFiles: new Set(),
+        },
+        fileChanges: {
+          addedFiles: [],
+          modifiedFiles: [markdownFile],
+          removedFiles: [],
+        },
+        inputFiles: [],
+        parentHasChild: () => false,
+        readSnapshot: async () =>
+          createSourceSnapshotFromSource('', detectWorkflowPatterns),
+        sourceSnapshots: new Map(),
+      })
+    ).resolves.toEqual({ kind: 'full' });
+  });
 });

@@ -16,6 +16,7 @@ import type {
 } from '@workflow/builders';
 import chokidar from 'chokidar';
 import type { NextConfig as ProjectNextConfig } from 'next';
+import { glob } from 'tinyglobby';
 import { createWatchIgnorePredicate } from './watch-ignore.js';
 import {
   classifyRebuild,
@@ -162,6 +163,7 @@ export async function getNextBuilderEager(
           '.cts',
           '.cjs',
           '.mjs',
+          '.md',
         ]);
         const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
         const normalizedDistDir = normalizePath(this.config.distDir);
@@ -558,18 +560,31 @@ export async function getNextBuilderEager(
           scheduleFileChanges(fileChanges);
         };
 
-        const watcher = chokidar.watch(this.config.workingDir, {
-          ignoreInitial: true,
-          followSymlinks: true,
-          ignored: (pathname) => {
-            const normalizedPath = normalizePath(String(pathname));
-            const extension = extname(normalizedPath);
-            if (extension && !watchableExtensions.has(extension)) {
-              return true;
-            }
-            return hasIgnoredPathFragment(normalizedPath);
-          },
-        });
+        // Workspace prompt assets may be outside the Next app directory. Watch
+        // Markdown files individually under the transform root rather than
+        // recursively watching that whole monorepo and exhausting file handles.
+        const markdownFiles = (
+          await glob('**/*.md', {
+            cwd: this.transformProjectRoot,
+            absolute: true,
+          })
+        ).filter((file) => !hasIgnoredPathFragment(normalizePath(file)));
+
+        const watcher = chokidar.watch(
+          [this.config.workingDir, ...markdownFiles],
+          {
+            ignoreInitial: true,
+            followSymlinks: true,
+            ignored: (pathname) => {
+              const normalizedPath = normalizePath(String(pathname));
+              const extension = extname(normalizedPath);
+              if (extension && !watchableExtensions.has(extension)) {
+                return true;
+              }
+              return hasIgnoredPathFragment(normalizedPath);
+            },
+          }
+        );
 
         watcher.on('add', (pathname) => {
           void handleFileAdded(pathname);

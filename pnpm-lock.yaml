@@ -748,6 +748,9 @@ importers:
       semver:
         specifier: 'catalog:'
         version: 7.7.4
+      tinyglobby:
+        specifier: 0.2.17
+        version: 0.2.17
     devDependencies:
       '@types/node':
         specifier: 'catalog:'

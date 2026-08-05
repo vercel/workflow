@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { extname } from 'node:path';
 
 export interface DiscoveredEntriesLike {
   discoveredSteps: Set<string>;
@@ -548,6 +549,19 @@ export const classifyRebuild = async ({
   readSnapshot: (file: string) => Promise<SourceSnapshot>;
   sourceSnapshots: Map<string, SourceSnapshot>;
 }): Promise<RebuildDecision> => {
+  // Markdown has no workflow definition/import signature for the snapshot
+  // classifier to compare. Its content is nevertheless embedded in a bundle,
+  // so any change must rebuild instead of being treated as unrelated source.
+  if (
+    [
+      ...fileChanges.addedFiles,
+      ...fileChanges.modifiedFiles,
+      ...fileChanges.removedFiles,
+    ].some((file) => extname(file) === '.md')
+  ) {
+    return { kind: 'full' };
+  }
+
   const prunedAddedFiles = await pruneStaleAddedFiles({
     addedFiles: fileChanges.addedFiles,
     readSnapshot,
