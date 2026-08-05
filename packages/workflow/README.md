@@ -14,13 +14,11 @@
 
 </div>
 
-[Workflow SDK](https://workflow-sdk.dev) is an open-source framework for durable
-execution in TypeScript and JavaScript. Add simple directives to ordinary async
-functions to get state persistence, automatic retries, suspension and
-resumption, and end-to-end observability without managing queues or adopting a
-separate orchestration DSL.
+[Workflow SDK](https://workflow-sdk.dev) makes TypeScript and JavaScript
+functions durable. It persists progress, retries failed steps, suspends without
+using compute, and provides built-in observability.
 
-## Async functions are the authoring interface
+## Workflows and steps
 
 A workflow is plain TypeScript:
 
@@ -56,12 +54,10 @@ async function sendEmail(user: User, message: string) {
 }
 ```
 
-Workflow functions orchestrate deterministic control flow. Step functions do
-the actual work with full runtime and npm package access, and retry
-automatically when they fail. Completed step results are persisted to an event
-log, so a workflow can resume after a restart without repeating completed side
-effects. While waiting on steps, timers, or external events, it can suspend
-without consuming compute.
+Workflow functions orchestrate deterministic control flow. Step functions have
+full runtime and npm package access, retry on failure, and persist their
+results. After a restart, the workflow replays from the event log without
+repeating completed side effects.
 
 Read [Workflows and Steps](https://workflow-sdk.dev/docs/foundations/workflows-and-steps)
 for the execution model and core concepts.
@@ -93,16 +89,18 @@ import { onboardUser } from './workflows/onboard-user';
 await start(onboardUser, ['hello@example.com']);
 ```
 
-Run your app normally, then open the local observability UI:
+Run your app, then open the local observability UI in another terminal:
 
 ```bash
 npm run dev
+```
+
+```bash
 npx workflow web
 ```
 
-Choose a framework in the
-[getting-started guides](https://workflow-sdk.dev/docs/getting-started) for the
-complete setup.
+Choose your framework in the
+[getting-started guides](https://workflow-sdk.dev/docs/getting-started).
 
 > [!NOTE]
 > The `workflow` package includes its full documentation, so coding agents can
@@ -110,9 +108,9 @@ complete setup.
 
 ## Run anywhere
 
-During development, Workflow SDK automatically uses its local backend with no
-backend configuration. Deploy to Vercel for managed storage, queuing, scaling,
-and observability, or self-host with the Postgres backend or a custom
+Local development uses the bundled backend with no configuration. Deploy to
+Vercel for managed storage, queuing, scaling, and observability. To self-host,
+use the Postgres backend or implement a custom
 [World](https://workflow-sdk.dev/docs/deploying).
 
 ## Community
