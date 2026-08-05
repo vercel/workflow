@@ -1,0 +1,49 @@
+{
+  "format": "u32_be(meta_len) || cbor_meta || u32_be(body_len) || body_bytes",
+  "frames": [
+    {
+      "protocol": "events",
+      "direction": "client_to_server",
+      "meta": {
+        "reqId": 1,
+        "type": "event",
+        "event": { "eventType": "run_started", "specVersion": 4 }
+      },
+      "bodyHex": "0102",
+      "frameHex": "00000041b90003657265714964016474797065656576656e74656576656e74b90002696576656e74547970656b72756e5f737461727465646b7370656356657273696f6e04000000020102"
+    },
+    {
+      "protocol": "stream-write",
+      "direction": "client_to_server",
+      "meta": { "reqId": 2, "type": "stream_write", "count": 2 },
+      "bodyHex": "6869",
+      "frameHex": "00000023b900036572657149640264747970656c73747265616d5f777269746565636f756e7402000000026869"
+    },
+    {
+      "protocol": "stream-write",
+      "direction": "client_to_server",
+      "meta": { "reqId": 3, "type": "stream_close" },
+      "bodyHex": "",
+      "frameHex": "0000001cb900026572657149640364747970656c73747265616d5f636c6f736500000000"
+    },
+    {
+      "protocol": "stream-write",
+      "direction": "server_to_client",
+      "meta": {
+        "reqId": 2,
+        "type": "stream_ack",
+        "status": 200,
+        "nextIndex": 8
+      },
+      "bodyHex": "",
+      "frameHex": "0000002eb900046572657149640264747970656a73747265616d5f61636b6673746174757318c8696e657874496e6465780800000000"
+    },
+    {
+      "protocol": "stream-write",
+      "direction": "server_to_client",
+      "meta": { "reqId": 9, "type": "error", "status": 400 },
+      "bodyHex": "7b226d657373616765223a22626164227d",
+      "frameHex": "0000001fb90003657265714964096474797065656572726f7266737461747573190190000000117b226d657373616765223a22626164227d"
+    }
+  ]
+}

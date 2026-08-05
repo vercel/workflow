@@ -207,6 +207,9 @@ Workflow run events ship to the Vercel World over a WebSocket instead of one HTT
 Set `WORKFLOW_EVENTS_TRANSPORT=http` to opt out. Only that exact value disables the WebSocket — any other value, including unset or empty, takes it — so a typo fails toward the default rather than silently pinning a deployment to HTTP.
 
 The setting is ignored when the World is configured with `projectConfig` and therefore routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP and a warning is logged once per process.
+### `WORKFLOW_STREAMS_TRANSPORT`
+
+Experimental. Set `WORKFLOW_STREAMS_TRANSPORT=ws` to write and close streams over a stream-scoped WebSocket instead of HTTP. Reads remain on HTTP. Default: `http`.
 
 Tracing is unaffected by the choice. Each event write emits an `http POST` client span against the same `url.full`, regardless of which transport carries it. On the WebSocket path, the span is synthesized around the frame because no HTTP request is made. Attributes distinguish the transports:
 
