@@ -53,17 +53,58 @@ const decoder = new TextDecoder();
 const FORMAT_PREFIX_LENGTH = 4;
 
 // ---- base64 (host-side; wire-compatible with the old in-VM btoa path) ----
+//
+// Feature-detected so the codec carries no unconditional Node dependency
+// (the QuickJS engine targets WASM-capable non-Node hosts too): the
+// ES-proposal Uint8Array base64 methods when present, Node's Buffer when
+// present, and a btoa/atob loop otherwise (universally available on web
+// runtimes).
+
+type Base64Uint8ArrayCtor = Uint8ArrayConstructor & {
+  fromBase64?: (value: string) => Uint8Array;
+};
+type Base64Uint8Array = Uint8Array & { toBase64?: () => string };
+
+const hasNativeBase64 =
+  typeof (Uint8Array as Base64Uint8ArrayCtor).fromBase64 === 'function' &&
+  typeof (Uint8Array.prototype as Base64Uint8Array).toBase64 === 'function';
+const hasBuffer = typeof Buffer === 'function';
 
 function bytesToBase64(bytes: Uint8Array): string {
   if (bytes.length === 0) return '.';
-  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(
-    'base64'
-  );
+  if (hasNativeBase64) {
+    return (bytes as Base64Uint8Array).toBase64?.() as string;
+  }
+  if (hasBuffer) {
+    return Buffer.from(
+      bytes.buffer,
+      bytes.byteOffset,
+      bytes.byteLength
+    ).toString('base64');
+  }
+  let binary = '';
+  for (let idx = 0; idx < bytes.length; idx++) {
+    binary += String.fromCharCode(bytes[idx]);
+  }
+  return btoa(binary);
 }
 
 function base64ToBytes(value: string): Uint8Array {
   if (value === '.') return new Uint8Array(0);
-  return new Uint8Array(Buffer.from(value, 'base64'));
+  if (hasNativeBase64) {
+    return (Uint8Array as Base64Uint8ArrayCtor).fromBase64?.(
+      value
+    ) as Uint8Array;
+  }
+  if (hasBuffer) {
+    return new Uint8Array(Buffer.from(value, 'base64'));
+  }
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let idx = 0; idx < binary.length; idx++) {
+    bytes[idx] = binary.charCodeAt(idx);
+  }
+  return bytes;
 }
 
 // ---- boot-time captures ----
@@ -222,6 +263,25 @@ const CAPTURE_INTRINSICS = `(() => {
     objectKeys: Object.keys,
     dateNow: Date.now,
     hasOwnCall: (o, k) => Object.prototype.hasOwnProperty.call(o, k),
+    // Lossless guest→host string escape: every code unit outside
+    // printable ASCII becomes a \\uXXXX escape. Runs on WTF-16 code
+    // units, so lone surrogates survive — unlike JS_ToCString (which
+    // replaces them with U+FFFD) and unlike JSON.stringify (which
+    // passes them through raw, only for the raw form to be corrupted by
+    // the C-string extraction of ITS output). The pure-ASCII result
+    // extracts losslessly through toString().
+    escapeString: (s) => {
+      let out = '';
+      for (let idx = 0; idx < s.length; idx++) {
+        const code = s.charCodeAt(idx);
+        if (code >= 0x20 && code <= 0x7e && code !== 0x22 && code !== 0x5c) {
+          out += s[idx];
+        } else {
+          out += '\\\\u' + code.toString(16).padStart(4, '0');
+        }
+      }
+      return '"' + out + '"';
+    },
     functionBind: Function.prototype.bind,
     makeSparseArray: (length) => {
       const array = [];
@@ -371,6 +431,7 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     jsonStringify: at('jsonStringify'),
     objectKeys: at('objectKeys'),
     dateNow: at('dateNow'),
+    escapeString: at('escapeString'),
     hasOwnCall: at('hasOwnCall'),
     functionBind: at('functionBind'),
     makeSparseArray: at('makeSparseArray'),
@@ -429,24 +490,46 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     vm.callFunction(fn, vm.undefined, ...args);
 
   /**
-   * NUL-safe host string from a guest string handle. `handle.toString()`
-   * routes through `JS_ToCString`, which is NUL-terminated — a guest
-   * string containing U+0000 arrives silently truncated. Detection is
-   * cheap: `handle.length` is the true guest length (UTF-16 code units),
-   * so a mismatch against the extracted string's length means data was
-   * lost. The recovery path escapes the string INSIDE the VM with the
-   * captured `JSON.stringify` (the escaped form is NUL-free by
-   * construction, so its own extraction cannot truncate) and parses it
-   * host-side. NUL-free strings — the overwhelming majority — pay only
-   * the `.length` read.
+   * Lossless host string from a guest string handle. `handle.toString()`
+   * routes through `JS_ToCString`, which corrupts two shapes: U+0000
+   * truncates the string, and lone surrogates are replaced with U+FFFD.
+   * Neither detection alone is sufficient — the two corruptions can
+   * cancel (a surrogate's replacement-expansion offsetting a NUL's
+   * truncation leaves the lengths equal), and a bare lone surrogate can
+   * replace 1:1 with no length change at all. So the fast value is
+   * accepted only when the length matches the handle's true guest
+   * length AND it contains no U+FFFD; strings that legitimately contain
+   * U+FFFD merely take the slow path, which is loss-free either way.
+   *
+   * The slow path escapes the string INSIDE the VM to printable ASCII
+   * (captured `escapeString` intrinsic — WTF-16-safe, unlike
+   * JSON.stringify, which passes lone surrogates through raw only for
+   * the C-string extraction of its output to corrupt them) and
+   * JSON-parses it host-side. Clean ASCII-ish strings — the
+   * overwhelming majority — pay only the `.length` read and a scan.
    */
   const guestString = (handle: JSValueHandle): string => {
     const fast = handle.toString();
-    if (fast.length === handle.length) return fast;
+    if (fast.length === handle.length && !fast.includes('\ufffd')) {
+      return fast;
+    }
     return JSON.parse(
-      invoke(i.jsonStringify, handle).consume((h) => h.toString())
+      invoke(i.escapeString, handle).consume((h) => h.toString())
     ) as string;
   };
+
+  /**
+   * Whether a host-side key string can round-trip through the C-string
+   * property APIs: NUL truncates, and an UNPAIRED surrogate cannot be
+   * UTF-8 encoded (paired surrogates — e.g. emoji keys — encode fine).
+   * Keys that can't are routed through guest string handles instead
+   * (`vm.newString` is length-aware and WTF-16-preserving).
+   */
+  const keyNeedsHandleLookup = (key: string): boolean =>
+    key.includes('\u0000') ||
+    /(?:[\uD800-\uDBFF](?![\uDC00-\uDFFF]))|(?:(?<![\uD800-\uDBFF])[\uDC00-\uDFFF])/.test(
+      key
+    );
 
   /**
    * Guest own-property check through the handle's introspection method.
@@ -776,8 +859,9 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     },
     hasOwn: (value, key) => {
       if (!isHandle(value)) return d.hasOwn(value, key);
-      if (typeof key === 'string' && key.includes('\u0000')) {
-        // C-string key APIs truncate at NUL — check inside the guest.
+      if (typeof key === 'string' && keyNeedsHandleLookup(key)) {
+        // C-string key APIs mangle NULs and lone surrogates — check
+        // inside the guest.
         const keyHandle = vm.newString(key);
         try {
           return invoke(i.hasOwnCall, value, keyHandle).consume((h) =>
@@ -810,20 +894,24 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
           }
           if (value.propertyIsEnumerable(key)) keys.push(key);
         }
-        // NUL-key guard: the enumeration above yields HOST strings that
-        // crossed `JS_ToCString`, so a key containing U+0000 arrives
-        // truncated — either dropping it (the truncated name fails the
-        // propertyIsEnumerable probe) or colliding with a sibling key. A
-        // single guest `Object.keys` call exposes both shapes cheaply:
-        // a count mismatch or a duplicate in the fast list means at
-        // least one key was mangled, and the guest array (whose entries
-        // are handles) is then re-extracted NUL-safely via guestString.
+        // Mangled-key guard: the enumeration above yields HOST strings
+        // that crossed `JS_ToCString`, so a key containing U+0000
+        // arrives truncated — dropped (the truncated name fails the
+        // propertyIsEnumerable probe) or colliding with a sibling — and
+        // a key containing a lone surrogate arrives with U+FFFD
+        // replacements (count and uniqueness intact, content wrong). A
+        // single guest `Object.keys` call exposes the first two shapes
+        // (count mismatch / duplicate); a U+FFFD scan catches the
+        // third (keys legitimately containing U+FFFD just take the
+        // loss-free slow path). The guest array's entries are handles,
+        // re-extracted losslessly via guestString.
         const guestKeys = invoke(i.objectKeys, value);
         try {
           const guestCount = guestKeys.length;
           if (
             keys.length !== guestCount ||
-            new Set(keys).size !== keys.length
+            new Set(keys).size !== keys.length ||
+            keys.some((key) => key.includes('\ufffd'))
           ) {
             keys.length = 0;
             for (let idx = 0; idx < guestCount; idx++) {
@@ -845,13 +933,14 @@ export function createQuickJSSerde(vm: QuickJS): QuickJSSerde {
     },
     get: (value, key) => {
       if (!isHandle(value)) return d.get(value, key);
-      // A NUL-bearing key cannot be looked up through the C-string APIs
-      // (the lookup name would truncate to the wrong key). Route it
-      // through a guest string handle instead — `vm.newString` is
-      // length-aware, and handle-keyed getProp performs a plain [[Get]]
-      // (getters are invoked, matching the descriptor path's explicit
-      // accessor invocation below).
-      if (typeof key === 'string' && key.includes('\u0000')) {
+      // A key bearing a NUL or a lone surrogate cannot be looked up
+      // through the C-string APIs (NUL truncates the lookup name; an
+      // unpaired surrogate cannot be UTF-8 encoded). Route it through a
+      // guest string handle instead — `vm.newString` is length-aware
+      // and WTF-16-preserving, and handle-keyed getProp performs a
+      // plain [[Get]] (getters are invoked, matching the descriptor
+      // path's explicit accessor invocation below).
+      if (typeof key === 'string' && keyNeedsHandleLookup(key)) {
         const keyHandle = vm.newString(key);
         try {
           return vm.getProp(value, keyHandle);

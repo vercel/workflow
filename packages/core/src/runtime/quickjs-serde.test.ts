@@ -407,6 +407,75 @@ describe('NUL (U+0000) safety across the WASM boundary', () => {
     );
   });
 
+  it('round-trips lone surrogates, including the length-canceling NUL mix (values)', () => {
+    // JS_ToCString has TWO corruptions — NUL truncation and lone-
+    // surrogate → U+FFFD replacement — and they can cancel: the
+    // replacement expansion offsets the truncation so the extracted
+    // length matches the true guest length, defeating a length-only
+    // check. A bare lone surrogate can also replace 1:1 with no length
+    // change at all. The U+FFFD scan must force the loss-free slow path
+    // for every shape.
+    const bytes = serializeGuest(`(() => ({
+      bare: "\ud800",
+      cancel: "\ud800\u0000a",
+      trailingPair: "ok\udfff\u0000tail",
+      legitReplacement: "already\ufffdhere",
+    }))()`);
+    expect(
+      checkInGuest(
+        bytes,
+        `function (v) {
+          return [
+            v.bare === "\ud800",
+            v.cancel === "\ud800\u0000a",
+            v.trailingPair === "ok\udfff\u0000tail",
+            v.legitReplacement === "already\ufffdhere",
+          ].every(Boolean);
+        }`
+      )
+    ).toBe(true);
+  });
+
+  it('matches the reference codec byte-for-byte on lone-surrogate strings', () => {
+    for (const value of ['\ud800', '\ud800\u0000a', 'x\udfffy']) {
+      const guestBytes = serializeGuest(JSON.stringify(value));
+      const referenceBytes = referenceSerialize(value);
+      expect(Buffer.from(guestBytes).toString('base64')).toBe(
+        Buffer.from(referenceBytes).toString('base64')
+      );
+    }
+  });
+
+  it('round-trips lone-surrogate and mixed keys', () => {
+    // Lone-surrogate keys corrupt to U+FFFD with count and uniqueness
+    // intact — the enumeration guard's U+FFFD scan must reroute to the
+    // guest key array, and property reads must go through handle-keyed
+    // lookups (the C-string APIs cannot encode an unpaired surrogate).
+    const bytes = serializeGuest(`(() => ({
+      "\ud800key": "surrogate-key",
+      "mix\ud800\u0000ed": "mixed-key",
+      plain: 1,
+    }))()`);
+    expect(
+      checkInGuest(
+        bytes,
+        `function (v) {
+          return {
+            surrogate: v["\ud800key"],
+            mixed: v["mix\ud800\u0000ed"],
+            plain: v.plain,
+            count: Object.keys(v).length,
+          };
+        }`
+      )
+    ).toEqual({
+      surrogate: 'surrogate-key',
+      mixed: 'mixed-key',
+      plain: 1,
+      count: 3,
+    });
+  });
+
   it('deserializes reference-codec NUL keys into the guest correctly', () => {
     const referenceBytes = referenceSerialize({ 'x y': 'v' });
     expect(
