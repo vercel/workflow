@@ -27,7 +27,12 @@
  * `node:vm` engine's replay determinism.
  */
 
-import type { Event, RunInput, WorkflowRun } from '@workflow/world';
+import type {
+  Event,
+  RunInput,
+  WorkflowRun,
+  WorldCapabilities,
+} from '@workflow/world';
 import * as nanoid from 'nanoid';
 import {
   type ExtensionDescriptor,
@@ -192,6 +197,8 @@ export interface QuickJSRuntimeOptions {
   workflowId: string;
   /** The workflow run entity */
   workflowRun: WorkflowRun;
+  /** Features supported by the World executing this workflow. */
+  worldCapabilities?: WorldCapabilities;
   /**
    * The full event log for the run. Every invocation replays the complete
    * log from the start (same replay semantics as the `node:vm` engine).
@@ -613,6 +620,12 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   options = options || {};
   if (options.isWebhook === true && options.experimental_minRetention !== undefined) {
     throw new Error('Webhook hooks do not support \`experimental_minRetention\`. Use a non-webhook \`createHook()\` with \`resumeHook()\`.');
+  }
+  if (options.experimental_minRetention !== undefined && globalThis.__worldCapabilities?.hookRetention?.active !== true) {
+    var unsupportedRetentionError = new Error('The configured World does not support \`experimental_minRetention\` for Hooks.');
+    unsupportedRetentionError.name = "FatalError";
+    unsupportedRetentionError.fatal = true;
+    throw unsupportedRetentionError;
   }
   var token = options.token || globalThis.__generateNanoid();
   var correlationId = "hook_" + globalThis.__generateUlid();
@@ -1176,6 +1189,10 @@ export async function startQuickJSWorkflow(
 
   // ---- Phase 2: per-run initialization ----
   async function runWorkflowInVM(): Promise<QuickJSWorkflowSession> {
+    vm.evalCode(
+      `globalThis.__worldCapabilities = ${JSON.stringify(options.worldCapabilities)};`
+    ).dispose();
+
     // Seeded Math.random
     {
       using randomFn = vm.newFunction('random', () => vm.newNumber(rng()));
