@@ -1185,6 +1185,7 @@ describe('baseline snapshot startup optimization', () => {
   it('restore path reproduces the fresh path byte-for-byte (correlationIds + serialized input)', async () => {
     // Fresh path: cache disabled.
     __clearBaselineSnapshotCacheForTests();
+    const previousFlag = process.env.WORKFLOW_QUICKJS_BASELINE_SNAPSHOT;
     process.env.WORKFLOW_QUICKJS_BASELINE_SNAPSHOT = '0';
     let fresh: Awaited<ReturnType<typeof runQuickJSWorkflow>>;
     try {
@@ -1195,7 +1196,11 @@ describe('baseline snapshot startup optimization', () => {
         events: [],
       });
     } finally {
-      delete process.env.WORKFLOW_QUICKJS_BASELINE_SNAPSHOT;
+      if (previousFlag === undefined) {
+        delete process.env.WORKFLOW_QUICKJS_BASELINE_SNAPSHOT;
+      } else {
+        process.env.WORKFLOW_QUICKJS_BASELINE_SNAPSHOT = previousFlag;
+      }
     }
 
     // Snapshot path: first call hydrates + restores, second call restores
@@ -1316,6 +1321,30 @@ describe('baseline snapshot startup optimization', () => {
       events: [],
     });
     const entry = await __peekBaselineEntryForTests(clockCode);
+    expect(entry?.state).toBe('ineligible');
+    __clearBaselineSnapshotCacheForTests();
+  });
+
+  it('gates out bundles that replace a serialization intrinsic at module scope', async () => {
+    __clearBaselineSnapshotCacheForTests();
+    // A Date.prototype.toISOString polyfill — no PRNG draw, no clock
+    // read — would pass the other gates, but the restore path's serde
+    // captures intrinsics AFTER module scope ran, so serialization
+    // would diverge from the fresh path. The identity-signature gate
+    // must catch the replacement.
+    const patchingCode = `
+      Date.prototype.toISOString = function () { return "patched"; };
+      async function workflow() { return 1; }
+      workflow.workflowId = "workflow//test//workflow";
+      globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+    `;
+    await runQuickJSWorkflow({
+      workflowCode: patchingCode,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: makeRun(),
+      events: [],
+    });
+    const entry = await __peekBaselineEntryForTests(patchingCode);
     expect(entry?.state).toBe('ineligible');
     __clearBaselineSnapshotCacheForTests();
   });

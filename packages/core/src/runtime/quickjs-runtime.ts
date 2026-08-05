@@ -49,7 +49,11 @@ import {
   isQuickJSBaselineSnapshotEnabled,
 } from './constants.js';
 import { quickjsExtensions, quickjsWasm } from './quickjs-assets.generated.js';
-import { createQuickJSSerde, type QuickJSSerde } from './quickjs-serde.js';
+import {
+  captureIntrinsicsSignature,
+  createQuickJSSerde,
+  type QuickJSSerde,
+} from './quickjs-serde.js';
 import { runIdCreatedAt } from './run-id-time.js';
 
 // ---- Host -> VM payload preparation ----
@@ -1044,42 +1048,16 @@ function getCompiledAssets() {
   return compiledAssetsPromise;
 }
 
-async function initWorkflowVM(
-  getNowMs: () => number,
-  interruptBudget: InterruptBudget
-): Promise<QuickJS> {
-  // Deterministic replay clock: Date.now() / new Date() inside the VM
-  // read the host-controlled clock instead of wall time. Replay
-  // re-executes the workflow from the top on every invocation, so the
-  // clock must be derived from the event log (not real time) for the
-  // workflow to observe stable timestamps across invocations.
-  const wasi: WasiOptions = (memory) => ({
-    clock_time_get(_clockId: number, _precision: bigint, resultPtr: number) {
-      const timeNs = BigInt(Math.round(getNowMs())) * 1_000_000n;
-      new DataView(memory.buffer).setBigUint64(resultPtr, timeNs, true);
-      return 0;
-    },
-  });
-
-  const assets = await getCompiledAssets();
-  const vm = await QuickJS.create({
-    wasm: assets.wasm as never,
-    memoryLimit: 256 * 1024 * 1024,
-    interruptHandler: createInterruptHandler(interruptBudget),
-    extensions: assets.extensions,
-    wasi,
-  });
-
-  // Bootstrap workflow primitives
-  vm.evalCode(VM_BOOTSTRAP, 'bootstrap.js').dispose();
-
-  return vm;
-}
-
 /**
  * WASI clock override reading the given accessor — shared between fresh
- * boots (initWorkflowVM) and baseline-snapshot restores, so both paths
- * expose the same deterministic replay clock.
+ * boots (initWorkflowVM) and baseline-snapshot restores, so the two
+ * paths cannot drift on rounding/encoding.
+ *
+ * Deterministic replay clock: Date.now() / new Date() inside the VM
+ * read the host-controlled clock instead of wall time. Replay
+ * re-executes the workflow from the top on every invocation, so the
+ * clock must be derived from the event log (not real time) for the
+ * workflow to observe stable timestamps across invocations.
  */
 function makeDeterministicClockWasi(getNowMs: () => number): WasiOptions {
   return (memory) => ({
@@ -1089,6 +1067,25 @@ function makeDeterministicClockWasi(getNowMs: () => number): WasiOptions {
       return 0;
     },
   });
+}
+
+async function initWorkflowVM(
+  getNowMs: () => number,
+  interruptBudget: InterruptBudget
+): Promise<QuickJS> {
+  const assets = await getCompiledAssets();
+  const vm = await QuickJS.create({
+    wasm: assets.wasm as never,
+    memoryLimit: 256 * 1024 * 1024,
+    interruptHandler: createInterruptHandler(interruptBudget),
+    extensions: assets.extensions,
+    wasi: makeDeterministicClockWasi(getNowMs),
+  });
+
+  // Bootstrap workflow primitives
+  vm.evalCode(VM_BOOTSTRAP, 'bootstrap.js').dispose();
+
+  return vm;
 }
 
 // ---- Baseline snapshot (startup optimization) --------------------------
@@ -1151,11 +1148,12 @@ async function prepareBaselineSnapshot(
   const hydrateStart = Date.now();
   let clockReads = 0;
   const budget: InterruptBudget = { start: Date.now() };
+  const assets = await getCompiledAssets();
   const vm = await QuickJS.create({
-    wasm: (await getCompiledAssets()).wasm as never,
+    wasm: assets.wasm as never,
     memoryLimit: 256 * 1024 * 1024,
     interruptHandler: createInterruptHandler(budget),
-    extensions: (await getCompiledAssets()).extensions,
+    extensions: assets.extensions,
     wasi: ((memory) => ({
       clock_time_get(_clockId: number, _precision: bigint, resultPtr: number) {
         clockReads++;
@@ -1194,6 +1192,17 @@ async function prepareBaselineSnapshot(
       vm.setProp(vm.global, '__generateUlid', ulidFn);
     }
 
+    // Serialization-intrinsics gate: the serde on the RESTORE path
+    // captures intrinsics from the restored heap — i.e. AFTER module
+    // scope ran — while the fresh path captures before user code. A
+    // bundle that REPLACES a captured intrinsic at module scope (e.g. a
+    // Date.prototype.toISOString polyfill) without touching PRNG/clock
+    // would therefore pass the other gates yet serialize differently on
+    // the two paths. Compare the identity signature of every
+    // to-be-captured value before and after bundle eval; any
+    // replacement marks the bundle ineligible.
+    const intrinsicsBefore = captureIntrinsicsSignature(vm);
+
     clockReads = 0; // only count reads made by the bundle itself
     try {
       vm.evalCode(workflowCode, workflowId || 'workflow.js').dispose();
@@ -1203,6 +1212,21 @@ async function prepareBaselineSnapshot(
       return {
         state: 'ineligible',
         reason: 'module scope threw during hydrate',
+      };
+    }
+
+    const intrinsicsAfter = captureIntrinsicsSignature(vm);
+    const intrinsicsReplaced =
+      intrinsicsBefore.length !== intrinsicsAfter.length ||
+      intrinsicsBefore.some((id, idx) => id !== intrinsicsAfter[idx]);
+    if (intrinsicsReplaced) {
+      runtimeLogger.info(
+        'QuickJS baseline snapshot disabled for this bundle: module scope replaced a serialization intrinsic; every invocation will evaluate the bundle fresh',
+        { workflowId }
+      );
+      return {
+        state: 'ineligible',
+        reason: 'module scope replaced a serialization intrinsic',
       };
     }
 
@@ -1344,18 +1368,36 @@ export async function startQuickJSWorkflow(
   const interruptBudget: InterruptBudget = { start: Date.now() };
   let baselineSnapshot: Snapshot | undefined;
   if (isQuickJSBaselineSnapshotEnabled()) {
-    const entry = await getBaselineEntry(workflowCode, workflowId);
-    if (entry.state === 'ready') baselineSnapshot = entry.snapshot;
+    try {
+      const entry = await getBaselineEntry(workflowCode, workflowId);
+      if (entry.state === 'ready') baselineSnapshot = entry.snapshot;
+    } catch (err) {
+      // A rejection here is an infrastructure failure during hydrate
+      // (e.g. vm.snapshot() under memory pressure, QuickJS.create or
+      // getCompiledAssets() failing) — NOT bundle eval, which returns
+      // an ineligible entry. getBaselineEntry has already evicted the
+      // cached promise so a later invocation can retry. This invocation
+      // must fall back to fresh evaluation (which would have succeeded)
+      // rather than fail the whole run for a snapshot-only failure mode.
+      runtimeLogger.warn(
+        'QuickJS baseline snapshot hydrate failed; falling back to fresh evaluation for this invocation',
+        { workflowId, error: err }
+      );
+    }
   }
-  const vm = baselineSnapshot
-    ? await QuickJS.restore(baselineSnapshot, {
-        wasm: (await getCompiledAssets()).wasm as never,
-        memoryLimit: 256 * 1024 * 1024,
-        interruptHandler: createInterruptHandler(interruptBudget),
-        extensions: (await getCompiledAssets()).extensions,
-        wasi: makeDeterministicClockWasi(() => vmNowMs),
-      })
-    : await initWorkflowVM(() => vmNowMs, interruptBudget);
+  let vm: QuickJS;
+  if (baselineSnapshot) {
+    const assets = await getCompiledAssets();
+    vm = await QuickJS.restore(baselineSnapshot, {
+      wasm: assets.wasm as never,
+      memoryLimit: 256 * 1024 * 1024,
+      interruptHandler: createInterruptHandler(interruptBudget),
+      extensions: assets.extensions,
+      wasi: makeDeterministicClockWasi(() => vmNowMs),
+    });
+  } else {
+    vm = await initWorkflowVM(() => vmNowMs, interruptBudget);
+  }
 
   // Host-side serde: captures the VM's intrinsics (bootstrap included)
   // before any user code runs. All serialization now happens on the host

@@ -106,6 +106,47 @@ const BRANDED_SAMPLES = `({
  * ones yield `undefined` and their reducers simply never match, exactly
  * like the old in-VM reducers' `globalThis.X` probes.
  */
+/**
+ * Identity signature of every value CAPTURE_INTRINSICS would capture —
+ * used by the baseline-snapshot hydrate gate (quickjs-runtime.ts) to
+ * detect a bundle whose module scope REPLACED a serialization intrinsic
+ * (e.g. a Date.prototype.toISOString polyfill). The serde on the
+ * restore path captures intrinsics from the restored heap — i.e. AFTER
+ * module scope ran — so a replaced intrinsic would silently diverge
+ * serialization from the fresh path (which captures before user code).
+ * Comparing the signature before and after bundle eval catches every
+ * replacement; in-place mutation of a captured function's own
+ * properties is not detectable this way, but it doesn't change the
+ * function's behavior and carries the same (accepted) risk on every
+ * path. Missing captures (absent extension globals) signature as -1.
+ */
+export function captureIntrinsicsSignature(vm: QuickJS): number[] {
+  using captured = vm.evalCode(CAPTURE_INTRINSICS);
+  const signature: number[] = [];
+  for (const name of captured.getOwnPropertyNames()) {
+    // Entries the capture expression CREATES (guest helper closures) get
+    // a fresh identity on every eval — comparing them would make the
+    // gate trip unconditionally. They cannot be replaced by user code
+    // (each serde capture rebuilds its own), so they carry no drift risk.
+    if (
+      name === 'makeSparseArray' ||
+      name === 'makeThunk' ||
+      name === 'hasOwnCall'
+    ) {
+      continue;
+    }
+    using handle = captured.getProp(name);
+    signature.push(
+      handle.isUndefined || handle.isNull
+        ? -1
+        : typeof handle.identity === 'number'
+          ? handle.identity
+          : -1
+    );
+  }
+  return signature;
+}
+
 const CAPTURE_INTRINSICS = `(() => {
   const descriptor = (object, key) =>
     Object.getOwnPropertyDescriptor(object, key);
