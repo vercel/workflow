@@ -55,6 +55,14 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - The runtime falls back to the sequential path automatically when the consumer or backend does not attest dedup support (or the payload is too large to inline on the queue message). On the sequential path the event is written *before* dispatch and its failure fails the resume — the fallback trades that resilience away to stay safe when dedup is not enforced, it does not preserve it.
 - Set `1` to force the sequential path as a kill switch. The chosen strategy is reported on the resume span as `workflow.hook.resume_strategy`.
 
+### `WORKFLOW_RESILIENT_STEP_DISPATCH`
+
+- Default: enabled
+- When a suspension hands newly created steps to the queue, the runtime publishes each step's execution message in parallel with its `step_created` event write instead of sequencing them, cutting a round trip per dispatched step. The message also carries the serialized step input (`stepInput`), so a transient `step_created` write failure (429 / 5xx / transport) still executes the step — the queue consumer idempotently re-ensures the event before running it, converging with the producer's write on the step's correlation ID. This mirrors resilient start (`runInput`) and the lazy hook resume (`hookInput`).
+- The runtime falls back to the sequential create-then-publish dispatch automatically when the step input is too large to inline on the queue message, when the run's queue transport cannot carry binary payloads (pre-CBOR spec versions), or — on the `node` VM engine, whose suspension writes carry the [precondition guard](#workflow_precondition_guard) snapshot — when the World enforces that guard without cooperating with resilient dispatch: a guard-rejected `step_created` must not be materializable through the queue side-channel. A cooperating backend (`capabilities.resilientStepDispatch`; the Vercel World declares it) revokes a 412-rejected step's in-flight message — its re-ensure is refused and acked — so the parallel dispatch stays on even under the guard. The `quickjs` engine's suspension writes are unguarded, so it uses resilient dispatch against every World.
+- Producer-side recoveries are reported on the suspension span as `workflow.step.resilient_dispatch_recovered`; a consumer that materialized the event reports `workflow.step.resilient_dispatch_materialized`.
+- Set `0` to force the sequential dispatch as a kill switch.
+
 ### `WORKFLOW_PRECONDITION_GUARD`
 
 - Default: enabled

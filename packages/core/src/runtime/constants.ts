@@ -215,6 +215,33 @@ export function getMaxInlineSteps(): number {
   return parsed;
 }
 
+/**
+ * Upper bound on the serialized step input that resilient step dispatch will
+ * inline into the queue message's `stepInput`. Vercel Queues caps a single
+ * message at ~256 KiB, and the message also carries the runId, stepId,
+ * stepName, and trace carrier alongside CBOR framing overhead. Staying well
+ * under that ceiling keeps the queue publish from rejecting an oversized
+ * message. Above this size the dispatch falls back to the sequential path
+ * (`step_created` write, then a payload-less queue message). Mirrors
+ * `MAX_INLINE_RESUME_PAYLOAD_BYTES` on the resilient hook resume path.
+ */
+export const MAX_RESILIENT_STEP_INPUT_BYTES = 128 * 1024;
+
+/**
+ * Whether resilient step dispatch is enabled: the suspension handler
+ * parallelizes each newly created step's `step_created` event write with its
+ * step-execution queue publish, carrying the serialized step input in the
+ * queue message (`stepInput`) so the consumer can idempotently re-ensure the
+ * event if the direct write failed transiently. Mirrors the resilient start
+ * (`runInput`) and resilient hook resume (`hookInput`) patterns.
+ *
+ * **On by default.** Disable via `WORKFLOW_RESILIENT_STEP_DISPATCH=0` to
+ * restore the sequential create-then-queue dispatch.
+ */
+export function isResilientStepDispatchEnabled(): boolean {
+  return process.env.WORKFLOW_RESILIENT_STEP_DISPATCH !== '0';
+}
+
 const warnedMaxEventsValues = new Set<string>();
 
 /**

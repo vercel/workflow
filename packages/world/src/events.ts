@@ -728,6 +728,25 @@ export interface CreateEventParams {
    * alongside {@link resumeId}.
    */
   resumePayloadDigest?: string;
+  /**
+   * Marks a `step_created` create as the queue consumer's re-ensure of a
+   * resilient step dispatch (a step message carrying `stepInput` — see
+   * `WorkflowInvokePayload.stepInput`): the producer's direct write was
+   * parallelized with the queue publish and may have failed. Only meaningful
+   * for `step_created`.
+   *
+   * Backend contract (for Worlds that enforce the precondition guard — see
+   * {@link WorldCapabilities.resilientStepDispatch}): when the producer's
+   * guarded `step_created` was rejected with 412, a re-ensure marked with this
+   * flag must be refused (world-vercel surfaces the backend's 410 as
+   * `RunExpiredError`, which the consumer treats as "nothing left to execute"
+   * and acks the message) unless the step entity has been legitimately
+   * re-created since — in which case the re-ensure resolves as an ordinary
+   * duplicate (`EntityConflictError`). Worlds without the guard may ignore
+   * this flag: their `step_created` writes are never guard-rejected, so there
+   * is no rejected schedule to fence.
+   */
+  viaStepDispatch?: boolean;
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
   /**

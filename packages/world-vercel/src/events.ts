@@ -730,6 +730,10 @@ async function createWorkflowRunEventInner(
       ...(params?.resumePayloadDigest
         ? { resumePayloadDigest: params.resumePayloadDigest }
         : {}),
+      // Resilient step dispatch re-ensure marker (step_created only): the
+      // server refuses it with 410 → RunExpiredError when the producer's
+      // guarded write was 412-rejected and the step was never re-created.
+      ...(params?.viaStepDispatch ? { viaStepDispatch: true } : {}),
       remoteRefBehavior,
       payload,
       ...meta,

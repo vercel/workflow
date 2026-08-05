@@ -923,6 +923,45 @@ export function withHealthCheck(
   };
 }
 
+/** FNV-1a 32-bit hash of a string, as 8 hex chars. Tiny, deterministic, and
+ *  dependency-free — used only to scope idempotency keys, not for security. */
+function fnv1a32Hex(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * Idempotency key for a step's background-dispatch queue message, scoped to
+ * the step's IDENTITY — correlation id plus (hashed) step name — rather than
+ * the bare correlation id.
+ *
+ * The scoping matters for resilient step dispatch under the precondition
+ * guard: a guard-rejected `step_created` leaves its (revoked) step message in
+ * flight, and the corrected replay may re-derive the same correlation id for
+ * a DIFFERENT step. Under a bare-correlationId key the corrected replay's
+ * dispatch would silently dedupe against the revoked in-flight message —
+ * which then resolves `skipped` against the re-created entity (the server's
+ * stepName fence rejects its bare start) — and the legitimate step would
+ * never be executed. Scoping by step name keeps every dedup property that
+ * matters (crash recovery re-dispatch, concurrent handlers, the delayed
+ * retry sharing the suspension re-dispatch's key — all name the same step)
+ * while letting the corrected schedule's dispatch through.
+ *
+ * Every producer of a step-dispatch (or step-retry) message must use this
+ * key. Cross-version mixing is not a concern: queue messages are pinned to
+ * the deployment that produced them, so one run never sees two key schemes.
+ */
+export function stepDispatchIdempotencyKey(
+  correlationId: string,
+  stepName: string
+): string {
+  return `${correlationId}:${fnv1a32Hex(stepName)}`;
+}
+
 /**
  * Queues a message to the specified queue with tracing.
  */

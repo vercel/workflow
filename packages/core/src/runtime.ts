@@ -24,6 +24,7 @@ import {
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   resolveQueueNamespace,
+  type SerializedData,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowInvokePayload,
@@ -70,6 +71,7 @@ import {
   preconditionEventDelta,
   preconditionSnapshotParams,
   queueMessage,
+  stepDispatchIdempotencyKey,
   withHealthCheck,
 } from './runtime/helpers.js';
 import {
@@ -580,6 +582,7 @@ export function workflowEntrypoint(
           preconditionReinvocations,
           runInput,
           hookInput,
+          stepInput,
         } = WorkflowInvokePayloadSchema.parse(message_);
         // `start()` always attaches a trace carrier, but
         // serializeTraceCarrier() returns `{}` when no OTEL SDK is registered
@@ -1198,9 +1201,96 @@ export function workflowEntrypoint(
                   // will pick up the replay.
                   if (incomingStepId && incomingStepName) {
                     try {
-                      const bgRun = await world.runs.get(runId, {
-                        resolveData: 'none',
-                      });
+                      // Resilient step dispatch: the producer parallelized the
+                      // `step_created` write with this queue publish, so on a
+                      // rare transient write failure the step entity may not
+                      // exist. Idempotently re-ensure it from the message's
+                      // `stepInput` — keyed by the step's correlation id, so
+                      // the producer's write and this re-ensure converge on
+                      // exactly one event.
+                      //
+                      // Only on a redelivery (attempt > 1): on the first
+                      // delivery the producer's write has almost always landed
+                      // (it raced only the queue round-trip), so an eager
+                      // re-ensure would burn a conditional write per step. If
+                      // it DIDN'T land, this delivery's bare `step_started`
+                      // rejects with a "step not found" error that no world
+                      // maps to an ack-able result, the message redelivers,
+                      // and this branch materializes the step on attempt 2.
+                      // Runs in parallel with the run fetch below, so the
+                      // recovery attempt costs no extra wall time.
+                      const ensureStepFromMessage = async (): Promise<
+                        'ok' | 'gone'
+                      > => {
+                        if (!stepInput || metadata.attempt <= 1) return 'ok';
+                        try {
+                          await world.events.create(
+                            runId,
+                            {
+                              eventType: 'step_created',
+                              specVersion: SPEC_VERSION_CURRENT,
+                              correlationId: incomingStepId,
+                              eventData: {
+                                stepName: incomingStepName,
+                                workflowName,
+                                input: stepInput.input as SerializedData,
+                              },
+                            },
+                            {
+                              requestId,
+                              // Marks this create as a dispatch re-ensure so
+                              // a guard-enforcing backend can refuse it when
+                              // the producer's write was 412-rejected (the
+                              // dispatch was revoked). Surfaces as
+                              // RunExpiredError → 'gone' below, acking the
+                              // message. Worlds without the guard ignore it.
+                              viaStepDispatch: true,
+                            }
+                          );
+                          // This delivery materialized the step — the
+                          // completion of the producer's recovery path.
+                          span?.setAttributes(
+                            Attribute.StepResilientDispatchMaterialized(true)
+                          );
+                          runtimeLogger.warn(
+                            'Materialized step_created from the queue message — the producer\u2019s direct write did not land',
+                            {
+                              workflowRunId: runId,
+                              stepId: incomingStepId,
+                              stepName: incomingStepName,
+                            }
+                          );
+                        } catch (err) {
+                          // The common case: the producer's write (or a
+                          // concurrent re-ensure) already landed.
+                          if (EntityConflictError.is(err)) return 'ok';
+                          // Nothing left to execute: the run went terminal
+                          // (matches the run-status check below), or a
+                          // guard-enforcing backend revoked this dispatch
+                          // (410 `step-dispatch-revoked` — the producer's
+                          // write was 412-rejected and the replay restarted
+                          // with a corrected schedule).
+                          if (RunExpiredError.is(err)) return 'gone';
+                          // Transient — rethrow so the queue redelivers and a
+                          // later attempt converges instead of executing (and
+                          // acking) a step that may not exist.
+                          throw err;
+                        }
+                        return 'ok';
+                      };
+                      const [bgRun, ensureOutcome] = await Promise.all([
+                        world.runs.get(runId, {
+                          resolveData: 'none',
+                        }),
+                        ensureStepFromMessage(),
+                      ]);
+                      if (ensureOutcome === 'gone') {
+                        runtimeLogger.debug(
+                          'Run already finished, skipping background step',
+                          { workflowRunId: runId }
+                        );
+                        return;
+                      }
                       if (bgRun.status !== 'running') {
                         runtimeLogger.debug(
                           'Run already finished, skipping background step',
@@ -2393,6 +2483,19 @@ export function workflowEntrypoint(
                             eventLog: suspensionLog,
                             runReadyBarrier,
                             replayRecoveryReporter,
+                            // Resilient step dispatch: lets eligible newly
+                            // created steps publish their step-execution
+                            // message (carrying `stepInput`) in parallel with
+                            // the step_created write. Steps queued there are
+                            // reported back in `queuedStepCorrelationIds` and
+                            // skipped by the dispatch pass below.
+                            stepDispatch: {
+                              queueName: getWorkflowQueueName(
+                                workflowName,
+                                namespace
+                              ),
+                              getTraceCarrier: nextTraceCarrier,
+                            },
                           });
                         } catch (suspensionError) {
                           // A suspension create was rejected as stale: re-derive
@@ -2655,8 +2758,8 @@ export function workflowEntrypoint(
                         //     kill-switched) → immediate enqueue, exactly as
                         //     before. This covers crash recovery: if a prior
                         //     handler wrote step_created but crashed before
-                        //     queueing, a later handler queues it;
-                        //     idempotencyKey on correlationId dedupes
+                        //     queueing, a later handler queues it; the
+                        //     step-identity-scoped idempotencyKey dedupes
                         //     redundant queues across concurrent handlers.
                         //
                         // The wait continuation is what makes
@@ -2685,6 +2788,20 @@ export function workflowEntrypoint(
                         let backstopWakesArmed = 0;
                         for (const step of pendingSteps) {
                           if (inlineCorrelationIds.has(step.correlationId)) {
+                            continue;
+                          }
+                          // Already published by the suspension handler's
+                          // resilient dispatch (create + queue in parallel,
+                          // message carrying `stepInput`). A re-publish here
+                          // would dedupe on the idempotency key anyway, but
+                          // skip the wasted round-trip. Ownership never
+                          // applies to these: they were created this pass, so
+                          // no step_started stamp can exist yet.
+                          if (
+                            suspensionResult.queuedStepCorrelationIds.has(
+                              step.correlationId
+                            )
+                          ) {
                             continue;
                           }
                           const ownershipActive =
@@ -2748,7 +2865,17 @@ export function workflowEntrypoint(
                                 requestedAt: new Date(),
                               },
                               {
-                                idempotencyKey: step.correlationId,
+                                // Step-identity-scoped: dedupes against every
+                                // other dispatch of THIS step (concurrent
+                                // handlers, crash-recovery re-dispatch, the
+                                // suspension handler's resilient publish)
+                                // without absorbing a dispatch of a different
+                                // step under a reassigned correlation id —
+                                // see stepDispatchIdempotencyKey.
+                                idempotencyKey: stepDispatchIdempotencyKey(
+                                  step.correlationId,
+                                  step.stepName
+                                ),
                               }
                             )
                           );
@@ -3323,10 +3450,10 @@ export function workflowEntrypoint(
                                 {
                                   delaySeconds,
                                   // Key the delayed retry on the step's
-                                  // correlationId so it dedupes against the
+                                  // dispatch key so it dedupes against the
                                   // keyed re-dispatch the suspension handler
-                                  // performs on replay (it also uses
-                                  // `idempotencyKey: step.correlationId`).
+                                  // performs on replay (it uses the same
+                                  // stepDispatchIdempotencyKey).
                                   //
                                   // Without this, a mixed batch where one step
                                   // `completed` with unflushed background ops
@@ -3345,7 +3472,10 @@ export function workflowEntrypoint(
                                   // retry body could run early/concurrently.
                                   // Sharing the key lets the earlier delayed
                                   // message win, honoring the backoff.
-                                  idempotencyKey: step.correlationId,
+                                  idempotencyKey: stepDispatchIdempotencyKey(
+                                    step.correlationId,
+                                    step.stepName
+                                  ),
                                 }
                               )
                             )
