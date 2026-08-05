@@ -15,8 +15,9 @@
 </div>
 
 [Workflow SDK](https://workflow-sdk.dev) makes TypeScript and JavaScript
-functions durable. It persists progress, retries failed steps, suspends without
-using compute, and provides built-in observability.
+functions durable. It persists workflow progress, retries failed steps, and
+provides built-in observability. Workflows can suspend without using compute
+while they wait.
 
 ## Workflows and steps
 
