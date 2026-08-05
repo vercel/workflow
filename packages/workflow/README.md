@@ -18,7 +18,7 @@
 execution in TypeScript and JavaScript. Add simple directives to ordinary async
 functions to get state persistence, automatic retries, suspension and
 resumption, and end-to-end observability without managing queues or adopting a
-new programming model.
+separate orchestration DSL.
 
 ## Async functions are the authoring interface
 
@@ -113,7 +113,7 @@ complete setup.
 During development, Workflow SDK automatically uses its local backend with no
 backend configuration. Deploy to Vercel for managed storage, queuing, scaling,
 and observability, or self-host with the Postgres backend or a custom
-[World](https://workflow-sdk.dev/worlds).
+[World](https://workflow-sdk.dev/docs/deploying).
 
 ## Community
 
