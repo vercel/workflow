@@ -58,7 +58,7 @@ The returned `Webhook` object has:
 - `getConflict()`: A promise that resolves with `{ runId }` identifying the conflicting run if another active hook already owns this token, or `null` once the webhook endpoint has been registered
 - Implements `AsyncIterable<T>` for handling multiple requests, where `T` is `Request` (default) or `RequestWithResponse` (manual mode)
 
-When using `createWebhook({ respondWith: 'manual' })`, the resolved request type is `RequestWithResponse`, which extends the standard `Request` interface with a `respondWith(response: Response): Promise<void>` method for sending custom responses back to the caller.
+When using `createWebhook({ respondWith: 'manual' })`, the resolved request type is `RequestWithResponse`, which extends the standard `Request` interface with a `respondWith(response: Response): Promise<void>` method for sending custom responses back to the caller. Passing any other `respondWith` value fails with the [webhook-invalid-respond-with-value](/docs/errors/webhook-invalid-respond-with-value) error.
 
 <Callout type="info">
 Use the simplest option that satisfies the prompt:
@@ -105,7 +105,7 @@ export async function basicWebhookWorkflow() {
 
 Use this section only when the caller requires a non-default HTTP response. If `202 Accepted` is acceptable, use `createWebhook()` without `respondWith: "manual"`.
 
-Pass `{ respondWith: "manual" }` to get a `RequestWithResponse` object with a `respondWith()` method. Note that `respondWith()` must be called from within a step function:
+Pass `{ respondWith: "manual" }` to get a `RequestWithResponse` object with a `respondWith()` method. If a code path finishes without sending a response, the webhook fails with the [webhook-response-not-sent](/docs/errors/webhook-response-not-sent) error. Note that `respondWith()` must be called from within a step function:
 
 ```typescript lineNumbers
 import { createWebhook, type RequestWithResponse } from "workflow"

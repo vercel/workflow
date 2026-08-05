@@ -48,6 +48,8 @@ Data is encrypted using **AES-256-GCM** via the [Web Crypto API](https://develop
 - The GCM authentication tag provides integrity verification — any tampering with the ciphertext is detected
 - The same plaintext produces different ciphertext each time due to the random nonce
 
+If the ciphertext, nonce, or auth tag fails verification, the run fails with a [runtime-decryption-failed](/docs/errors/runtime-decryption-failed) error.
+
 ## Decrypting Data
 
 When viewing workflow runs through the observability tools, encrypted fields display as locked placeholders until you explicitly choose to decrypt them.

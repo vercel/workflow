@@ -28,6 +28,8 @@ Event sourcing is a persistence pattern where state changes are stored as a sequ
 - **Consistency**: Events provide a single source of truth for all entity state
 - **Recoverability**: State can be reconstructed from the event log after failures
 
+When a replay can't consume the recorded events, the runtime recovers automatically where possible (see [replay-divergence](/docs/errors/replay-divergence)), and fails the run with a [corrupted-event-log](/docs/errors/corrupted-event-log) error when it can't.
+
 In the Workflow SDK, the following entity types are managed through events:
 
 - **Runs**: Workflow execution instances (materialized in storage)
