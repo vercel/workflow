@@ -125,7 +125,8 @@ can ask questions, share ideas, and show what you have built.
 Contributions are welcome. Use
 [issues](https://github.com/vercel/workflow/issues) and
 [discussions](https://github.com/vercel/workflow/discussions) to collaborate
-with the team and wider community.
+with the team and wider community. By participating, you agree to our
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Security
 
