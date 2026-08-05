@@ -118,6 +118,8 @@ export async function POST(request: Request) {
 `deploymentId: "latest"` is currently a Vercel-specific feature. Other Worlds may implement this option differently to match their own deployment runtimes, and the World spec may rename it from `deploymentId` to `version` in a future SDK version. On Vercel, `"latest"` resolves to the most recent deployment matching your current environment. Because the caller and target deployment can be different, keep the [workflow function name and file path](/docs/errors/workflow-not-registered), arguments, and return value backward-compatible across the deployments you plan to bridge.
 </Callout>
 
+SDK versions can also differ across deployments. Reading a run whose data was written by a newer version of the `workflow` package throws [`RunNotSupportedError`](/docs/api-reference/workflow-errors/run-not-supported-error) — upgrade the package to process those runs.
+
 ## Self upgrading workflows
 
 Some workflows are expected to run for a very long time. Scheduled loops, recurring jobs, agents, and chat sessions often should not stay on one deployment forever.

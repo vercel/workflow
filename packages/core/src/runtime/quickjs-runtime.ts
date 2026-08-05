@@ -27,9 +27,19 @@
  * `node:vm` engine's replay determinism.
  */
 
-import type { Event, RunInput, WorkflowRun } from '@workflow/world';
+import type {
+  Event,
+  RunInput,
+  WorkflowRun,
+  WorldCapabilities,
+} from '@workflow/world';
 import * as nanoid from 'nanoid';
-import { JSException, QuickJS, type WasiOptions } from 'quickjs-wasi';
+import {
+  type ExtensionDescriptor,
+  JSException,
+  QuickJS,
+  type WasiOptions,
+} from 'quickjs-wasi';
 import seedrandom from 'seedrandom';
 import { runtimeLogger } from '../logger.js';
 import { decompress } from '../serialization/compression.js';
@@ -187,6 +197,8 @@ export interface QuickJSRuntimeOptions {
   workflowId: string;
   /** The workflow run entity */
   workflowRun: WorkflowRun;
+  /** Features supported by the World executing this workflow. */
+  worldCapabilities?: WorldCapabilities;
   /**
    * The full event log for the run. Every invocation replays the complete
    * log from the start (same replay semantics as the `node:vm` engine).
@@ -207,15 +219,6 @@ export interface QuickJSRuntimeOptions {
    * (eventually-consistent read after the parent's start() wrote it).
    */
   runInput?: RunInput;
-  /**
-   * Whether the configured World supports `experimental_minRetention` for
-   * Hooks (`world.capabilities.hookRetention.active === true`). Gates the
-   * VM's `createHook()` retention path so the QuickJS engine fails closed on
-   * Worlds without the capability, matching the node:vm engine's
-   * world-capability gate (see `hook.ts`). Defaults to unsupported when
-   * omitted.
-   */
-  worldSupportsHookRetention?: boolean;
 }
 
 // ---- VM Bootstrap Code ----
@@ -247,6 +250,46 @@ globalThis.__workflowError = undefined;
 // Keyed by correlationId → array of payloads (preserves delivery order).
 // This mirrors the event-replay runtime's payloadsQueue in hook.ts.
 globalThis.__hookPayloadBuffer = {};
+
+// Buffer for step/wait/attr terminal outcomes that arrive before this VM
+// has constructed the corresponding awaiting promise. In fresh-VM replay
+// the multi-pass event scan makes this unreachable (awaits are
+// reconstructed before their terminals are re-scanned), but the live
+// continuation path (continueWithEvents) scans each delta exactly once —
+// a concurrent invocation's terminal arriving before this VM reaches the
+// await would otherwise be dropped on the floor and the await would
+// never settle (the feed's seen-set means it is never re-delivered).
+// Mirrors __hookPayloadBuffer, which exists for exactly this reason on
+// the hook path. Keyed by correlationId → single terminal (steps, waits
+// and attrs settle exactly once).
+globalThis.__terminalBuffer = {};
+
+// Registers a resolver for an awaited primitive, first draining any
+// buffered terminal recorded for the correlationId. Entries are prepared
+// host-side (bytes already decrypted; see processEvents).
+globalThis.__registerResolver = function(correlationId, resolve, reject) {
+  var buffered = globalThis.__terminalBuffer[correlationId];
+  if (buffered) {
+    delete globalThis.__terminalBuffer[correlationId];
+    if (buffered.kind === "resolve_bytes") {
+      resolve(globalThis[Symbol.for("workflow-deserialize")](buffered.bytes));
+    } else if (buffered.kind === "resolve_value") {
+      resolve(buffered.value);
+    } else if (buffered.kind === "reject_bytes") {
+      reject(globalThis[Symbol.for("workflow-deserialize")](buffered.bytes));
+    } else if (buffered.kind === "reject_error") {
+      var e = new Error(buffered.message);
+      e.name = "FatalError";
+      e.fatal = true;
+      if (buffered.stack) e.stack = buffered.stack;
+      reject(e);
+    } else {
+      resolve(undefined);
+    }
+    return;
+  }
+  globalThis.__resolvers[correlationId] = { resolve: resolve, reject: reject };
+};
 
 // Stubs for Web APIs that the workflow bundle may reference but are not
 // available in QuickJS. Native C extensions (encoding, headers, url,
@@ -404,7 +447,7 @@ globalThis[Symbol.for("WORKFLOW_USE_STEP")] = function(stepId, closureVarsFn) {
       hasCreatedEvent: false,
     });
     return new Promise(function(resolve, reject) {
-      globalThis.__resolvers[correlationId] = { resolve: resolve, reject: reject };
+      globalThis.__registerResolver(correlationId, resolve, reject);
     });
   };
   // Set stepId on the proxy so the StepFunction reducer can detect and
@@ -487,7 +530,7 @@ globalThis[Symbol.for("WORKFLOW_SLEEP")] = function(param) {
     hasCreatedEvent: false,
   });
   return new Promise(function(resolve, reject) {
-    globalThis.__resolvers[correlationId] = { resolve: resolve, reject: reject };
+    globalThis.__registerResolver(correlationId, resolve, reject);
   });
 };
 
@@ -580,10 +623,13 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   }
   // Fail closed when the configured World does not declare hook-retention
   // support (parity with the node:vm engine's world-capability gate in
-  // hook.ts). The host injects \`__worldSupportsHookRetention\` per run from
-  // \`world.capabilities.hookRetention.active\`; absence means unsupported.
-  if (options.experimental_minRetention !== undefined && globalThis.__worldSupportsHookRetention !== true) {
-    throw new Error('The configured World does not support \`experimental_minRetention\` for Hooks.');
+  // hook.ts). The host injects \`__worldCapabilities\` per run from
+  // \`world.capabilities\`; absence means unsupported.
+  if (options.experimental_minRetention !== undefined && globalThis.__worldCapabilities?.hookRetention?.active !== true) {
+    var unsupportedRetentionError = new Error('The configured World does not support \`experimental_minRetention\` for Hooks.');
+    unsupportedRetentionError.name = "FatalError";
+    unsupportedRetentionError.fatal = true;
+    throw unsupportedRetentionError;
   }
   var token = options.token || globalThis.__generateNanoid();
   var correlationId = "hook_" + globalThis.__generateUlid();
@@ -755,7 +801,7 @@ globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")] = function(changes, options) {
     hasCreatedEvent: false,
   });
   return new Promise(function(resolve, reject) {
-    globalThis.__resolvers[correlationId] = { resolve: resolve, reject: reject };
+    globalThis.__registerResolver(correlationId, resolve, reject);
   });
 };
 
@@ -952,7 +998,65 @@ globalThis[Symbol.for("WORKFLOW_GET_STREAM_ID")] = function(namespace) {
  * new runs can restore from it instead of paying VM creation + eval cost
  * (`QuickJS.restore` accepts the same wasi override).
  */
-async function initWorkflowVM(getNowMs: () => number): Promise<QuickJS> {
+/**
+ * Loosely-typed accessor for the `WebAssembly` global. The package
+ * tsconfig's `lib: ["es2022"]` does not include the DOM lib where the
+ * `WebAssembly` namespace types live; the runtime global is available on
+ * every WASM-capable platform this engine targets.
+ */
+const WebAssemblyGlobal = (globalThis as any).WebAssembly as {
+  compile(bytes: Uint8Array): Promise<object>;
+};
+
+type CompiledExtension = Omit<ExtensionDescriptor, 'wasm'> & {
+  wasm: ExtensionDescriptor['wasm'];
+};
+
+/**
+ * Process-wide cache of the compiled `WebAssembly.Module`s for the main
+ * QuickJS runtime and its native extensions. `WebAssembly.compile` of the
+ * ~600 KB runtime binary is the most expensive part of VM creation and is
+ * pure (no per-VM state — instantiation binds the per-VM memory), so it
+ * only needs to happen once per process. The promise is cached (not the
+ * result) so concurrent first invocations share a single compilation.
+ */
+let compiledAssetsPromise:
+  | Promise<{
+      wasm: object;
+      extensions: CompiledExtension[];
+    }>
+  | undefined;
+
+function getCompiledAssets() {
+  if (!compiledAssetsPromise) {
+    compiledAssetsPromise = (async () => {
+      const [wasm, ...extensionModules] = await Promise.all([
+        WebAssemblyGlobal.compile(quickjsWasm),
+        ...quickjsExtensions.map((ext) =>
+          WebAssemblyGlobal.compile(ext.wasm as Uint8Array)
+        ),
+      ]);
+      return {
+        wasm,
+        extensions: quickjsExtensions.map((ext, i) => ({
+          ...ext,
+          wasm: extensionModules[i] as ExtensionDescriptor['wasm'],
+        })),
+      };
+    })();
+    // On failure, clear the cache so a later invocation can retry rather
+    // than being stuck with a rejected promise forever.
+    compiledAssetsPromise.catch(() => {
+      compiledAssetsPromise = undefined;
+    });
+  }
+  return compiledAssetsPromise;
+}
+
+async function initWorkflowVM(
+  getNowMs: () => number,
+  interruptBudget: InterruptBudget
+): Promise<QuickJS> {
   // Deterministic replay clock: Date.now() / new Date() inside the VM
   // read the host-controlled clock instead of wall time. Replay
   // re-executes the workflow from the top on every invocation, so the
@@ -966,11 +1070,12 @@ async function initWorkflowVM(getNowMs: () => number): Promise<QuickJS> {
     },
   });
 
+  const assets = await getCompiledAssets();
   const vm = await QuickJS.create({
-    wasm: quickjsWasm,
+    wasm: assets.wasm as never,
     memoryLimit: 256 * 1024 * 1024,
-    interruptHandler: createInterruptHandler(),
-    extensions: quickjsExtensions,
+    interruptHandler: createInterruptHandler(interruptBudget),
+    extensions: assets.extensions,
     wasi,
   });
 
@@ -983,12 +1088,44 @@ async function initWorkflowVM(getNowMs: () => number): Promise<QuickJS> {
   return vm;
 }
 
+/**
+ * A live QuickJS workflow invocation. When the initial `result` is
+ * `suspended`, the VM is kept alive so the caller can feed newly recorded
+ * events (e.g. terminal events of inline-executed steps) into the SAME VM
+ * via `continueWithEvents` — resuming execution exactly where it left off
+ * without a fresh-VM re-replay. Terminal results dispose the VM
+ * automatically; `dispose()` must be called when abandoning a suspended
+ * session (idempotent).
+ */
+export interface QuickJSWorkflowSession {
+  result: QuickJSRuntimeResult;
+  /**
+   * Process newly recorded events in the live VM and re-evaluate the
+   * workflow state. Only valid while the last result was `suspended`.
+   * Resets the VM's interrupt budget for the new execution burst.
+   */
+  continueWithEvents(newEvents: Event[]): Promise<QuickJSRuntimeResult>;
+  /** Dispose the VM if it is still alive. Safe to call multiple times. */
+  dispose(): void;
+}
+
+/**
+ * Run a workflow invocation to its first settled state and dispose the
+ * VM. Convenience wrapper over {@link startQuickJSWorkflow} for callers
+ * (and tests) that don't use live-VM continuation.
+ */
 export async function runQuickJSWorkflow(
   options: QuickJSRuntimeOptions
 ): Promise<QuickJSRuntimeResult> {
+  const session = await startQuickJSWorkflow(options);
+  session.dispose();
+  return session.result;
+}
+
+export async function startQuickJSWorkflow(
+  options: QuickJSRuntimeOptions
+): Promise<QuickJSWorkflowSession> {
   const { workflowCode, workflowId, workflowRun, events } = options;
-  const worldSupportsHookRetention =
-    options.worldSupportsHookRetention === true;
 
   const startedAt = workflowRun.startedAt ? +workflowRun.startedAt : Date.now();
 
@@ -1035,7 +1172,8 @@ export async function runQuickJSWorkflow(
   };
 
   // ---- Phase 1: static initialization ----
-  const vm = await initWorkflowVM(() => vmNowMs);
+  const interruptBudget: InterruptBudget = { start: Date.now() };
+  const vm = await initWorkflowVM(() => vmNowMs, interruptBudget);
 
   // Any throw between here and the terminal paths (which dispose the VM
   // inside checkWorkflowState / extractError before RETURNING) would leak
@@ -1054,7 +1192,11 @@ export async function runQuickJSWorkflow(
   }
 
   // ---- Phase 2: per-run initialization ----
-  async function runWorkflowInVM(): Promise<QuickJSRuntimeResult> {
+  async function runWorkflowInVM(): Promise<QuickJSWorkflowSession> {
+    vm.evalCode(
+      `globalThis.__worldCapabilities = ${JSON.stringify(options.worldCapabilities)};`
+    ).dispose();
+
     // Seeded Math.random
     {
       using randomFn = vm.newFunction('random', () => vm.newNumber(rng()));
@@ -1083,14 +1225,6 @@ export async function runQuickJSWorkflow(
       `globalThis.__ulidTimestamp = ${runIdCreatedAt(workflowRun.runId) ?? (+workflowRun.createdAt || startedAt)};`
     ).dispose();
 
-    // Whether the configured World supports Hook retention. Gates the VM's
-    // `createHook({ experimental_minRetention })` path so QuickJS fails
-    // closed on Worlds without the capability, matching the node:vm engine
-    // (see hook.ts's world-capability gate).
-    vm.evalCode(
-      `globalThis.__worldSupportsHookRetention = ${worldSupportsHookRetention};`
-    ).dispose();
-
     // `process.env` — parity with the node:vm engine, which exposes a frozen
     // copy of the host env (vm/index.ts). Injected per run so the snapshot of
     // the env is taken at invocation time, same as node.
@@ -1113,7 +1247,9 @@ export async function runQuickJSWorkflow(
     try {
       vm.evalCode(workflowCode, workflowId || 'workflow.js').dispose();
     } catch (err) {
-      return extractError(vm, err, 'Workflow evaluation failed');
+      return makeSettledSession(
+        extractError(vm, err, 'Workflow evaluation failed')
+      );
     }
 
     // Extract workflow arguments. Prefer the run_created event; fall back
@@ -1222,7 +1358,9 @@ export async function runQuickJSWorkflow(
       );
     `).dispose();
     } catch (err) {
-      return extractError(vm, err, 'Failed to start workflow');
+      return makeSettledSession(
+        extractError(vm, err, 'Failed to start workflow')
+      );
     }
 
     // Process events and drain jobs in a loop. Events may resolve promises
@@ -1261,8 +1399,91 @@ export async function runQuickJSWorkflow(
     }
 
     // ---- Check result ----
-    return checkWorkflowState(vm);
+    return makeLiveSession(
+      vm,
+      interruptBudget,
+      advanceClock,
+      options.encryptionKey
+    );
   }
+}
+
+/** Session wrapper for a result whose VM is already settled/disposed. */
+function makeSettledSession(
+  result: QuickJSRuntimeResult
+): QuickJSWorkflowSession {
+  return {
+    result,
+    continueWithEvents: () => {
+      throw new Error(
+        'QuickJS workflow session is settled — continueWithEvents is only valid while suspended'
+      );
+    },
+    dispose: () => {},
+  };
+}
+
+/**
+ * Evaluate the VM's state and wrap it in a live session. While suspended,
+ * the VM stays alive so `continueWithEvents` can resume it in place;
+ * terminal states dispose the VM immediately (inside checkWorkflowState).
+ */
+function makeLiveSession(
+  vm: QuickJS,
+  interruptBudget: InterruptBudget,
+  advanceClock: (ms: number) => void,
+  encryptionKey?: DecryptionKey
+): QuickJSWorkflowSession {
+  const result = checkWorkflowState(vm, { keepAliveOnSuspend: true });
+  let alive = !!result.suspended;
+
+  const session: QuickJSWorkflowSession = {
+    result,
+    async continueWithEvents(
+      newEvents: Event[]
+    ): Promise<QuickJSRuntimeResult> {
+      if (!alive) {
+        throw new Error(
+          'QuickJS workflow session is not alive — continueWithEvents is only valid while suspended'
+        );
+      }
+      // Fresh execution burst — the interrupt budget bounds VM compute,
+      // not wall time spent waiting on inline steps between bursts.
+      interruptBudget.start = Date.now();
+
+      let maxIterations = 100;
+      let madeProgress: boolean;
+      do {
+        madeProgress = await processEvents(
+          vm,
+          newEvents,
+          advanceClock,
+          encryptionKey
+        );
+        let batch: number;
+        do {
+          batch = vm.executePendingJobs();
+          if (batch > 0) madeProgress = true;
+        } while (batch > 0);
+      } while (madeProgress && --maxIterations > 0);
+
+      const next = checkWorkflowState(vm, { keepAliveOnSuspend: true });
+      if (!next.suspended) alive = false;
+      session.result = next;
+      return next;
+    },
+    dispose(): void {
+      if (alive) {
+        alive = false;
+        try {
+          vm.dispose();
+        } catch {
+          // Already disposed — ignore.
+        }
+      }
+    },
+  };
+  return session;
 }
 
 // ---- Event Processing ----
@@ -1350,6 +1571,31 @@ async function processEvents(
               b = vm.executePendingJobs();
             } while (b > 0);
           }
+        } else {
+          // No resolver yet — buffer the prepared outcome so the promise
+          // settles the moment the VM constructs it (see __terminalBuffer
+          // in the bootstrap). Without this, the live-continuation path
+          // (which scans each delta exactly once) drops the terminal and
+          // the await never settles.
+          if (rawOutput instanceof Uint8Array) {
+            const decryptedOutput = await prepareBytesForVM(
+              rawOutput,
+              encryptionKey
+            );
+            const bytesHandle = vm.newUint8Array(decryptedOutput);
+            vm.setProp(vm.global, '__tmp_buf', bytesHandle);
+            bytesHandle.dispose();
+            vm.evalCode(
+              `globalThis.__terminalBuffer[${cidJs}] = { kind: "resolve_bytes", bytes: globalThis.__tmp_buf };` +
+                `delete globalThis.__tmp_buf;`
+            ).dispose();
+          } else {
+            const serialized =
+              rawOutput !== undefined ? JSON.stringify(rawOutput) : 'undefined';
+            vm.evalCode(
+              `globalThis.__terminalBuffer[${cidJs}] = { kind: "resolve_value", value: ${serialized} };`
+            ).dispose();
+          }
         }
         markCreated(vm, cidJs);
         break;
@@ -1412,6 +1658,36 @@ async function processEvents(
               b = vm.executePendingJobs();
             } while (b > 0);
           }
+        } else {
+          // No resolver yet — buffer the prepared rejection (see the
+          // step_completed branch above for the rationale).
+          const errorData = eventData?.error;
+          if (errorData instanceof Uint8Array) {
+            const decrypted = await prepareBytesForVM(errorData, encryptionKey);
+            const bytesHandle = vm.newUint8Array(decrypted);
+            vm.setProp(vm.global, '__tmp_buf', bytesHandle);
+            bytesHandle.dispose();
+            vm.evalCode(
+              `globalThis.__terminalBuffer[${cidJs}] = { kind: "reject_bytes", bytes: globalThis.__tmp_buf };` +
+                `delete globalThis.__tmp_buf;`
+            ).dispose();
+          } else {
+            const isErrorObject =
+              typeof errorData === 'object' && errorData !== null;
+            const msg = isErrorObject
+              ? (((errorData as Record<string, unknown>).message as string) ??
+                'Step failed')
+              : typeof errorData === 'string'
+                ? errorData
+                : 'Step failed';
+            const errorStack =
+              (isErrorObject
+                ? (errorData as Record<string, unknown>).stack
+                : undefined) ?? (eventData?.stack as string | undefined);
+            vm.evalCode(
+              `globalThis.__terminalBuffer[${cidJs}] = { kind: "reject_error", message: ${JSON.stringify(msg)}, stack: ${errorStack ? JSON.stringify(errorStack) : 'undefined'} };`
+            ).dispose();
+          }
         }
         markCreated(vm, cidJs);
         break;
@@ -1432,6 +1708,11 @@ async function processEvents(
               b = vm.executePendingJobs();
             } while (b > 0);
           }
+        } else {
+          // No resolver yet — buffer (see step_completed above).
+          vm.evalCode(
+            `globalThis.__terminalBuffer[${cidJs}] = { kind: "resolve_undefined" };`
+          ).dispose();
         }
         markCreated(vm, cidJs);
         break;
@@ -1446,6 +1727,12 @@ async function processEvents(
         const hasResolver = vm.dump(
           vm.evalCode(`!!globalThis.__resolvers[${cidJs}]`)
         );
+        if (!hasResolver) {
+          // No resolver yet — buffer (see step_completed above).
+          vm.evalCode(
+            `globalThis.__terminalBuffer[${cidJs}] = { kind: "resolve_undefined" };`
+          ).dispose();
+        }
         if (hasResolver) {
           vm.evalCode(
             `globalThis.__resolvers[${cidJs}].resolve();` +
@@ -1558,6 +1845,17 @@ async function processEvents(
               `globalThis.__abortSignals[${cidJs}]._setAborted(undefined);`
             ).dispose();
           }
+          // The abort is durably recorded — clear the pending op's
+          // abortRequested marker so the host doesn't re-record it (the
+          // workflow's own abort() call can set the flag before this
+          // event is processed when it happens later in replay order,
+          // and hook_received events are not unique per correlationId).
+          vm.evalCode(
+            `(function(){` +
+              `var p=globalThis.__pending.find(function(q){return q.correlationId===${JSON.stringify(cid)}&&q.type==="hook";});` +
+              `if(p)p.abortRequested=false;` +
+              `})()`
+          ).dispose();
           if (event.eventId) {
             vm.evalCode(
               `(globalThis.__hookPayloadBuffer.__processedEventIds = globalThis.__hookPayloadBuffer.__processedEventIds || {})[${JSON.stringify(event.eventId)}] = true;`
@@ -1842,7 +2140,10 @@ function collectDrainOperations(vm: QuickJS): PendingOperation[] {
   return vm.dump(h) as PendingOperation[];
 }
 
-function checkWorkflowState(vm: QuickJS): QuickJSRuntimeResult {
+function checkWorkflowState(
+  vm: QuickJS,
+  opts: { keepAliveOnSuspend?: boolean } = {}
+): QuickJSRuntimeResult {
   // Check completed — __workflowResult is a format-prefixed Uint8Array
   {
     using h = vm.evalCode('globalThis.__workflowResult');
@@ -1911,7 +2212,7 @@ function checkWorkflowState(vm: QuickJS): QuickJSRuntimeResult {
         `globalThis.__pending.filter(function(p){return!!globalThis.__resolvers[p.correlationId] || !p.hasCreatedEvent || p.abortRequested;})`
       );
       const pendingOps = vm.dump(pendingH) as PendingOperation[];
-      vm.dispose();
+      if (!opts.keepAliveOnSuspend) vm.dispose();
 
       return {
         suspended: {
@@ -1954,14 +2255,26 @@ function extractError(
   };
 }
 
-function createInterruptHandler(): () => boolean {
-  const start = Date.now();
-  // Same configurable budget as the node engine's ReplayBudget
-  // (REPLAY_TIMEOUT_MS, default 240s): a workflow whose replay the node
-  // engine handles fine must not be interrupted here by a lower
-  // hardcoded ceiling. The interrupt error escapes runQuickJSWorkflow
-  // and reaches the replay loop's catch in runtime.ts, which records
-  // run_failed.
+/**
+ * Mutable interrupt budget for a VM. QuickJS polls the interrupt handler
+ * during JS execution; when it returns true, execution aborts. The budget
+ * bounds a single host->VM execution burst (bundle eval + event
+ * processing), not total VM lifetime — the inline-step loop keeps a VM
+ * alive across step executions that can legitimately take minutes, so the
+ * host resets the budget before each re-entry (see resetBudget calls).
+ *
+ * The per-burst ceiling is the same configurable budget as the node
+ * engine's ReplayBudget (REPLAY_TIMEOUT_MS, default 240s): a workflow
+ * whose replay the node engine handles fine must not be interrupted here
+ * by a lower hardcoded ceiling. The interrupt error escapes
+ * runQuickJSWorkflow and reaches the replay loop's catch in runtime.ts,
+ * which records run_failed.
+ */
+interface InterruptBudget {
+  start: number;
+}
+
+function createInterruptHandler(budget: InterruptBudget): () => boolean {
   const timeout = getReplayTimeoutMs();
-  return () => Date.now() - start > timeout;
+  return () => Date.now() - budget.start > timeout;
 }

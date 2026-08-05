@@ -127,6 +127,11 @@ export const QuickJSPendingOpsCount = SemanticConvention<number>(
   'workflow.vm.pending_ops_count'
 );
 
+/** Number of steps executed inline (live-VM continuation) this invocation */
+export const QuickJSInlineSteps = SemanticConvention<number>(
+  'quickjs.inline_steps'
+);
+
 /** Active trace-correlation mode for this invocation (linked or continuous) */
 export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
   'workflow.trace.mode'
@@ -358,6 +363,21 @@ export const QueueOverheadMs = SemanticConvention<number>(
 
 /** Unique identifier for the deployment environment */
 export const DeploymentId = SemanticConvention<string>('deployment.id');
+
+/** The deployment a run is pinned to, set only on a misrouted delivery. */
+export const WorkflowRunPinnedDeploymentId = SemanticConvention<string>(
+  'workflow.deployment.pinned_id'
+);
+
+/** Re-route attempts for this misrouted delivery, including this one. */
+export const WorkflowDeploymentMismatchRetryCount = SemanticConvention<number>(
+  'workflow.deployment_mismatch.retry_count'
+);
+
+/** Whether the misrouted delivery was re-routed instead of failing the run. */
+export const WorkflowDeploymentMismatchRecovered = SemanticConvention<boolean>(
+  'workflow.deployment_mismatch.recovered'
+);
 
 // Hook attributes
 

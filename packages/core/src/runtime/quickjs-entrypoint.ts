@@ -16,7 +16,6 @@
 import type { Span } from '@opentelemetry/api';
 import {
   EntityConflictError,
-  FatalError,
   HookNotFoundError,
   MaxEventsExceededError,
   RunExpiredError,
@@ -25,10 +24,10 @@ import {
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
+  ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
-  type WorldCapabilities,
 } from '@workflow/world';
 import { classifyRunError } from '../classify-error.js';
 import { runtimeLogger } from '../logger.js';
@@ -45,6 +44,10 @@ import {
 import { remapErrorStack, stripInlineSourceMap } from '../source-map.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
+import {
+  getInlineOwnershipLeaseSeconds,
+  getMaxInlineSteps,
+} from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { getWorkflowQueueName, queueMessage } from './helpers.js';
 import {
@@ -54,8 +57,11 @@ import {
   type PendingOperation,
   type PendingStep,
   type PendingWait,
-  runQuickJSWorkflow,
+  startQuickJSWorkflow,
 } from './quickjs-runtime.js';
+import { ReplayBudget } from './replay-budget.js';
+import { executeStep, type StepExecutionResult } from './step-executor.js';
+import { runStepSingleFlight } from './step-single-flight.js';
 import { getWaitContinuationDispatch } from './wait-continuation.js';
 import { getWorld } from './world.js';
 
@@ -93,59 +99,100 @@ export function isFirstInvocation(
 }
 
 /**
+ * Queue a step for background execution via the unified workflow queue
+ * (V2 architecture). The combined handler in runtime.ts dispatches
+ * messages with `stepId` to executeStep, which works for both VM engines.
+ * `delaySeconds` supports retry/throttle backoff.
+ */
+async function queueStepMessage(params: {
+  world: Awaited<ReturnType<typeof getWorld>>;
+  runId: string;
+  workflowRun: WorkflowRun;
+  step: PendingStep;
+  delaySeconds?: number;
+  /** Queue namespace for the publish (see runtime.ts). */
+  namespace: string | undefined;
+  /** Run-origin trace carrier accessor (see runWorkflowWithQuickJS). */
+  nextTraceCarrier: () => Promise<Record<string, string>>;
+  /**
+   * Publish purpose, used to bucket the idempotency key. Worlds retire
+   * used keys (VQS retention TTL, world-postgres completed-keys cache),
+   * so a key shared across purposes silently swallows the second
+   * publish — see wait-continuation.ts for the same hazard on wait
+   * keys. `dispatch` is the plain background handoff (overflow / crash
+   * recovery) and keeps the bare correlationId so it stays mutually
+   * exclusive with the node engine's dispatch of the same step;
+   * `backstop:<epoch>` covers delayed crash backstops, scoped to the
+   * ownership epoch so a refreshed lease re-arms a NEW backstop instead
+   * of being absorbed by the in-flight one; `retry:<n>` covers delayed
+   * retry/throttle re-enqueues, scoped to the attempt so each backoff
+   * hop is enqueueable.
+   */
+  purpose: 'dispatch' | `backstop:${string}` | `retry:${number}`;
+  wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
+}): Promise<void> {
+  const {
+    world,
+    runId,
+    workflowRun,
+    step,
+    delaySeconds,
+    namespace,
+    nextTraceCarrier,
+    purpose,
+    wfdiag,
+  } = params;
+  const traceCarrier = await nextTraceCarrier();
+  await queueMessage(
+    world,
+    getWorkflowQueueName(workflowRun.workflowName, namespace),
+    {
+      runId,
+      stepId: step.correlationId,
+      stepName: step.stepId,
+      traceCarrier,
+      requestedAt: new Date(),
+    },
+    {
+      idempotencyKey:
+        purpose === 'dispatch'
+          ? step.correlationId
+          : `${step.correlationId}:${purpose}`,
+      ...(delaySeconds && delaySeconds > 0 ? { delaySeconds } : {}),
+    }
+  );
+  wfdiag('step_queued', {
+    stepId: step.stepId,
+    correlationId: step.correlationId,
+    purpose,
+    delaySeconds: delaySeconds ?? 0,
+  });
+}
+
+/**
  * Dispatch durable side effects for a set of pending VM operations:
  * step_created (+ optional queueing), hook_created / hook_received (aborts),
  * attr_set, hook_disposed, and wait_created events.
  *
- * Used in two modes:
- *  - suspension (queueSteps: true): normal suspension processing; new steps
- *    are queued for execution.
- *  - terminal drain (queueSteps: false): flush leftover side effects when
- *    the workflow completed or failed — mirrors the node:vm engine's
- *    drainPendingQueueItems. Steps are created but NOT queued, and the run
- *    is never requeued.
+ * Steps are created but never queued here — queueing (or inline
+ * execution) is the caller's decision. Used both for suspension
+ * processing (the inline loop) and for the terminal drain (flushing
+ * leftover side effects when the workflow completed or failed, mirroring
+ * the node:vm engine's drainPendingQueueItems).
  */
-/**
- * Rejects retained Hooks before registration when the configured World
- * does not support `experimental_minRetention` — the same gate the node
- * engine applies inside `createHook()` (workflow/hook.ts), where
- * `ctx.worldCapabilities` is available to workflow code. The QuickJS VM
- * has no capability channel into the guest, so the check runs host-side
- * at dispatch, before any `hook_created` is written. Without it, a
- * non-supporting world would silently persist the hook WITHOUT its
- * retention deadline — the user asked for retention, got none, and
- * nothing failed loud (see WorldCapabilities.hookRetention in
- * @workflow/world: "Missing or inactive means the runtime rejects
- * retained Hooks before registration").
- *
- * The FatalError escapes the entrypoint into the replay loop's catch in
- * runtime.ts, which records run_failed — mirroring the node engine,
- * where the same FatalError fails the run from inside the workflow.
- */
-export function assertHookRetentionSupported(
-  pendingOperations: PendingOperation[],
-  capabilities: WorldCapabilities | undefined
-): void {
-  if (capabilities?.hookRetention?.active === true) return;
-  for (const op of pendingOperations) {
-    if (
-      op.type === 'hook' &&
-      (op as PendingHook).tokenRetentionUntil !== undefined
-    ) {
-      throw new FatalError(
-        'The configured World does not support `experimental_minRetention` for Hooks.'
-      );
-    }
-  }
-}
-
 async function dispatchPendingOps(params: {
   world: Awaited<ReturnType<typeof getWorld>>;
   runId: string;
   workflowRun: WorkflowRun;
   encryptionKey: RunPayloadKeys | undefined;
   pendingOperations: PendingOperation[];
-  queueSteps: boolean;
+  /**
+   * Step cids whose `step_created` must NOT be written here: the inline
+   * loop claims these atomically via a lazy `step_started` (carrying the
+   * input), so a concurrent claimant loses with EntityConflictError
+   * instead of both invocations bare-starting the same step.
+   */
+  skipStepCreation?: Set<string>;
   /** Queue namespace for all message publishes (see runtime.ts). */
   namespace: string | undefined;
   /**
@@ -171,6 +218,7 @@ async function dispatchPendingOps(params: {
     namespace,
     nextTraceCarrier,
   } = params;
+  const skipStepCreation = params.skipStepCreation;
   const wfdiag = params.wfdiag;
   // Set when a hook with a parked getConflict() awaiter had its
   // hook_created written this invocation. The workflow must be re-invoked
@@ -182,8 +230,6 @@ async function dispatchPendingOps(params: {
   // same pattern as an elapsed wait.
   let createdAttributeEvent = false;
   const opsPromises: Promise<void>[] = [];
-
-  assertHookRetentionSupported(pendingOperations, world.capabilities);
 
   const processHookOp = async (hook: PendingHook): Promise<void> => {
     runtimeLogger.debug('QuickJS runtime: processing hook op', {
@@ -401,7 +447,11 @@ async function dispatchPendingOps(params: {
   }
 
   for (const op of pendingOperations) {
-    if (op.type === 'step' && !op.hasCreatedEvent) {
+    if (
+      op.type === 'step' &&
+      !op.hasCreatedEvent &&
+      !skipStepCreation?.has(op.correlationId)
+    ) {
       const step = op as PendingStep;
       opsPromises.push(
         (async () => {
@@ -427,35 +477,9 @@ async function dispatchPendingOps(params: {
             throw err;
           }
 
-          // Queue the step execution via the unified workflow queue
-          // (V2 architecture). The combined handler in runtime.ts
-          // dispatches messages with `stepId` to executeStep, which
-          // works for both VM engines — so the QuickJS engine reuses
-          // the same step execution path as the node:vm engine
-          // instead of needing a separate step route. Skipped in
-          // terminal-drain mode (the workflow already finished; the
-          // event is the durable record, matching the node:vm drain).
-          if (params.queueSteps) {
-            const traceCarrier = await nextTraceCarrier();
-            await queueMessage(
-              world,
-              getWorkflowQueueName(workflowRun.workflowName, namespace),
-              {
-                runId,
-                stepId: step.correlationId,
-                stepName: step.stepId,
-                traceCarrier,
-                requestedAt: new Date(),
-              },
-              {
-                idempotencyKey: step.correlationId,
-              }
-            );
-            wfdiag('step_queued', {
-              stepId: step.stepId,
-              correlationId: step.correlationId,
-            });
-          }
+          // NOTE: step queueing is the caller's decision — the inline
+          // loop executes fresh steps in the live VM and only queues the
+          // overflow / retry / backstop cases (see queueStepMessage).
         })()
       );
     } else if (op.type === 'attribute' && !op.hasCreatedEvent) {
@@ -564,6 +588,19 @@ export async function runWorkflowWithQuickJS(params: {
    */
   maxEventsLimit?: number;
   /**
+   * Queue delivery attempt of the message driving this invocation (from
+   * the queue handler's metadata; 1 = first delivery). Surfaced in
+   * diagnostics; crash recovery itself is driven by the ownership-lease
+   * decision table in the loop, not by the attempt count.
+   */
+  deliveryAttempt?: number;
+  /**
+   * Queue message ID of the delivery driving this invocation, stamped as
+   * `ownerMessageId` on inline lazy step claims so wake replays defer to
+   * the in-flight body instead of requeueing the step.
+   */
+  ownerMessageId?: string;
+  /**
    * Queue namespace resolved at route registration (runtime.ts). Must be
    * threaded into every message publish: the builders bake the namespace
    * into generated routes, so consumers listen on `__<ns>_wkf_workflow_*`
@@ -588,6 +625,8 @@ export async function runWorkflowWithQuickJS(params: {
     runInput,
     parentSpan,
     maxEventsLimit,
+    deliveryAttempt,
+    ownerMessageId,
     namespace,
   } = params;
   // Standalone-caller fallback (tests): without a runtime.ts carrier
@@ -628,6 +667,7 @@ export async function runWorkflowWithQuickJS(params: {
 
   wfdiag('enter', {
     workflowName,
+    deliveryAttempt,
     hasPreloadedEvents:
       Array.isArray(preloadedEvents) && preloadedEvents.length > 0,
     preloadedEventCount: preloadedEvents?.length ?? 0,
@@ -757,7 +797,7 @@ export async function runWorkflowWithQuickJS(params: {
     eventCount: events.length,
   });
 
-  const result = await runQuickJSWorkflow({
+  const session = await startQuickJSWorkflow({
     // Pass the STRIPPED bundle to the VM so the inline source map
     // doesn't end up in the QuickJS heap. The original (unstripped)
     // `workflowCode` is still kept in this host-side scope and is used
@@ -766,14 +806,12 @@ export async function runWorkflowWithQuickJS(params: {
     workflowId,
     workflowRun,
     events,
+    worldCapabilities: world.capabilities,
     encryptionKey,
     port,
     runInput,
-    // Fail closed on Hook retention when the World doesn't declare support,
-    // matching the node:vm engine's world-capability gate (see hook.ts).
-    worldSupportsHookRetention:
-      world.capabilities?.hookRetention?.active === true,
   });
+  let result = session.result;
 
   runtimeLogger.debug('QuickJS runtime: VM returned', {
     workflowRunId: runId,
@@ -802,6 +840,552 @@ export async function runWorkflowWithQuickJS(params: {
     failureName: result.failed?.name,
   });
 
+  // ---- Inline continuation loop ----
+  //
+  // While the workflow is suspended, this loop keeps the VM alive and
+  // makes as much forward progress as possible within one invocation:
+  //
+  //   1. Dispatch durable side effects for the suspension's pending ops
+  //      (step_created / hook_created / attr_set / wait_created /
+  //      hook_received for aborts) and complete elapsed waits.
+  //   2. Feed all newly recorded events (attr_set, hook_created, elapsed
+  //      wait_completed, terminals written by concurrent invocations, ...)
+  //      into the LIVE VM via session.continueWithEvents — resuming
+  //      execution exactly where it left off, no fresh-VM re-replay.
+  //      Cheap progress is fed BEFORE running step bodies so promise
+  //      chains that are not gated on steps (hook.getConflict(),
+  //      setAttributes(), racing sleeps) advance first and can surface
+  //      additional pending steps for the same inline batch.
+  //   3. Once no cheap progress remains, execute up to
+  //      getMaxInlineSteps() steps created by THIS invocation inline (no
+  //      queue round-trip), in parallel, with the replay budget paused
+  //      during step bodies — mirroring the node:vm engine's inline
+  //      replay loop. Overflow and retry/throttled steps are queued for
+  //      background execution. A delayed wait-continuation message is
+  //      enqueued for the soonest pending wait first, so racing timers
+  //      fire on time (in a separate invocation) while step bodies block
+  //      this one.
+  //
+  // The loop exits when the workflow settles, no forward progress is
+  // possible in-process, the replay budget is exhausted, or the run is
+  // gone.
+  const seenEventIds = new Set<string>();
+  for (const e of events) {
+    if (e.eventId) seenEventIds.add(e.eventId);
+  }
+  // Step cids already executed inline by this invocation.
+  const executedStepIds = new Set<string>();
+  // Steps for which THIS invocation already sent a queue message.
+  const queuedStepIds = new Set<string>();
+  // Aborts THIS invocation already recorded (hook_received written) —
+  // guards against re-recording when the VM-side flag has not been
+  // cleared yet within the same iteration.
+  const recordedAbortIds = new Set<string>();
+  // Waits for which THIS invocation already completed/scheduled work.
+  const completedWaitIds2 = new Set<string>();
+  // Inline-ownership state per step correlationId, derived from every
+  // event this invocation observes (initial log + every feed) — the
+  // quickjs analog of the replay-derived ownership on the node engine's
+  // StepInvocationQueueItem (see step-ownership.ts). Latest-wins:
+  // events arrive in log order, so a later step_started overwrites the
+  // stamp; a step_retrying lapses ownership permanently for the id.
+  const stepOwnership = new Map<
+    string,
+    { owner?: string; startedAtMs?: number; sawRetrying: boolean }
+  >();
+  const observeEventsForOwnership = (observed: Event[]): void => {
+    for (const e of observed) {
+      if (e.correlationId === undefined) continue;
+      if (e.eventType === 'step_started') {
+        const owner =
+          'eventData' in e &&
+          e.eventData &&
+          'ownerMessageId' in e.eventData &&
+          typeof e.eventData.ownerMessageId === 'string'
+            ? e.eventData.ownerMessageId
+            : undefined;
+        const prior = stepOwnership.get(e.correlationId);
+        stepOwnership.set(e.correlationId, {
+          owner,
+          startedAtMs: e.createdAt ? +new Date(e.createdAt) : undefined,
+          sawRetrying: prior?.sawRetrying ?? false,
+        });
+      } else if (e.eventType === 'step_retrying') {
+        const prior = stepOwnership.get(e.correlationId);
+        stepOwnership.set(e.correlationId, {
+          ...(prior ?? {}),
+          sawRetrying: true,
+        });
+      }
+    }
+  };
+  observeEventsForOwnership(events);
+  const scheduledWaitContinuations = new Set<string>();
+  const maxInlineSteps = getMaxInlineSteps();
+  const budget = new ReplayBudget();
+  const workflowStartedAt = workflowRun.startedAt
+    ? +workflowRun.startedAt
+    : Date.now();
+  const rootRunId =
+    (workflowRun.attributes as Record<string, string> | undefined)?.[
+      ROOT_RUN_ID_ATTRIBUTE
+    ] ?? runId;
+  let inlineStepsExecuted = 0;
+  let runGone = false;
+  // Set when this invocation wrote an event the workflow must consume to
+  // make progress (attr_set, getConflict-awaited hook_created) and the
+  // loop has not yet read it back — eventually-consistent listings can
+  // return 0 new events right after a write. If it is still set when the
+  // loop exits suspended, the entrypoint requeues immediately instead of
+  // exiting awaiting_external with the unblocking event already written
+  // and nothing scheduled to read it.
+  let pendingRequeueSignal = false;
+
+  /** Fetch all events not yet processed by the live VM (log order). */
+  const fetchUnseenEvents = async (): Promise<Event[]> => {
+    const unseen: Event[] = [];
+    let cursor: string | null = null;
+    let hasMore = true;
+    while (hasMore) {
+      const response = await world.events.list({
+        runId,
+        pagination: {
+          sortOrder: 'asc',
+          cursor: cursor ?? undefined,
+          limit: 1000,
+        },
+      });
+      for (const e of response.data) {
+        if (e.eventId && seenEventIds.has(e.eventId)) continue;
+        if (e.eventId) seenEventIds.add(e.eventId);
+        unseen.push(e);
+      }
+      if (response.cursor) cursor = response.cursor;
+      hasMore = response.data.length > 0 && response.cursor != null;
+    }
+    observeEventsForOwnership(unseen);
+    return unseen;
+  };
+
+  try {
+    let iteration = 0;
+    while (result.suspended && !runGone && !budget.isExhausted()) {
+      iteration++;
+      // Re-check the event ceiling every turn: the loop appends events on
+      // each continueWithEvents, so a single invocation can otherwise grow
+      // the log arbitrarily far past the operator's limit (the node engine
+      // re-checks per replay for the same reason). `seenEventIds` counts
+      // every event this invocation has observed — initial log + all
+      // feeds.
+      if (maxEventsLimit !== undefined && seenEventIds.size >= maxEventsLimit) {
+        throw new MaxEventsExceededError(seenEventIds.size, maxEventsLimit);
+      }
+      const pendingOperations = result.suspended.pendingOperations;
+
+      // Select this turn's inline candidates BEFORE dispatch: fresh steps
+      // (no step_created yet) that this invocation hasn't already handled.
+      // Their step_created is deliberately NOT written by dispatch — the
+      // inline claim below is a lazy step_started carrying the input,
+      // which the world applies as an atomic create-claim. A concurrent
+      // invocation racing on the same fresh step loses that claim with
+      // EntityConflictError and skips, so step bodies cannot double-run
+      // (previously both invocations bare-started the step after one lost
+      // the swallowed step_created race).
+      const freshSteps = pendingOperations.filter(
+        (op): op is PendingStep =>
+          op.type === 'step' &&
+          !op.hasCreatedEvent &&
+          !executedStepIds.has(op.correlationId) &&
+          !queuedStepIds.has(op.correlationId)
+      );
+      const inlineCandidates =
+        maxInlineSteps <= 0 ? [] : freshSteps.slice(0, maxInlineSteps);
+      const inlineClaimCids = new Set(
+        inlineCandidates.map((step) => step.correlationId)
+      );
+
+      // 1. Durable side effects for this suspension's pending ops.
+      const opsToDispatch = pendingOperations.map((op) =>
+        op.type === 'hook' &&
+        (op as PendingHook).abortRequested &&
+        recordedAbortIds.has(op.correlationId)
+          ? ({ ...op, abortRequested: false } as PendingOperation)
+          : op
+      );
+      for (const op of pendingOperations) {
+        if (op.type === 'hook' && (op as PendingHook).abortRequested) {
+          recordedAbortIds.add(op.correlationId);
+        }
+      }
+      const dispatched = await dispatchPendingOps({
+        world,
+        runId,
+        workflowRun,
+        encryptionKey,
+        namespace,
+        nextTraceCarrier,
+        pendingOperations: opsToDispatch,
+        skipStepCreation: inlineClaimCids,
+        wfdiag,
+      });
+      if (
+        dispatched.createdAttributeEvent ||
+        dispatched.createdGetConflictHook
+      ) {
+        pendingRequeueSignal = true;
+      }
+
+      // Hand steps beyond the inline cap to the queue NOW — in the same
+      // turn their step_created was written by the dispatch above. This
+      // must happen BEFORE the event feed below: the feed always observes
+      // those very step_created writes as unseen events and `continue`s,
+      // so a handoff placed after it is unreachable on the only iteration
+      // that still classifies these steps as fresh — next turn they carry
+      // hasCreatedEvent and would never be queued at all (the wedge behind
+      // promiseRaceStressTestWorkflow hanging in the quickjs CI legs). The
+      // bare-correlationId idempotency key makes repeats harmless.
+      const overflowSteps = freshSteps.slice(inlineCandidates.length);
+      for (const step of overflowSteps) {
+        queuedStepIds.add(step.correlationId);
+        await queueStepMessage({
+          world,
+          runId,
+          workflowRun,
+          step,
+          namespace,
+          nextTraceCarrier,
+          purpose: 'dispatch',
+          wfdiag,
+        });
+      }
+
+      // Complete elapsed waits so their wait_completed events are picked
+      // up by the feed below (instead of a queue re-invocation).
+      const waitCompletePromises: Promise<void>[] = [];
+      for (const op of pendingOperations) {
+        if (op.type !== 'wait') continue;
+        const wait = op as PendingWait;
+        if (completedWaitIds2.has(wait.correlationId)) continue;
+        if (new Date(wait.resumeAt).getTime() - Date.now() > 0) continue;
+        completedWaitIds2.add(wait.correlationId);
+        waitCompletePromises.push(
+          (async () => {
+            try {
+              await world.events.create(runId, {
+                eventType: 'wait_completed',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: wait.correlationId,
+              });
+            } catch (err) {
+              if (EntityConflictError.is(err)) return;
+              throw err;
+            }
+          })()
+        );
+      }
+      if (waitCompletePromises.length > 0) {
+        await Promise.all(waitCompletePromises);
+      }
+
+      // 2. Cheap progress first: feed newly recorded events into the live
+      // VM before blocking on step bodies.
+      {
+        const newEvents = await fetchUnseenEvents();
+        if (newEvents.length > 0) {
+          // The listing caught up with this invocation's writes — any
+          // attr_set / getConflict hook_created has been (or is being)
+          // consumed by the live VM, so no external requeue is needed.
+          pendingRequeueSignal = false;
+          result = await session.continueWithEvents(newEvents);
+          wfdiag('inline_iteration', {
+            iteration,
+            phase: 'feed',
+            fedEvents: newEvents.length,
+            outcome: result.completed
+              ? 'completed'
+              : result.failed
+                ? 'failed'
+                : 'suspended',
+          });
+          continue;
+        }
+      }
+
+      // 3. No cheap progress left — execute steps inline.
+      const stepOps = pendingOperations.filter(
+        (op): op is PendingStep => op.type === 'step'
+      );
+      // Steps created by an EARLIER invocation (or an earlier turn) that
+      // are still pending, with no work owned by THIS invocation. Mirror
+      // the node engine's ownership decision table (step-ownership.ts) —
+      // NOT a deliveryAttempt gate: worlds advance the attempt counter on
+      // routine redeliveries (world-local counts every handled response),
+      // so attempt > 1 is the common case and would fire backstops at
+      // steps actively executing inline in a live invocation.
+      //
+      //   - Ownership lease ACTIVE, held by ANOTHER message → the step is
+      //     (presumably) executing inline in a live invocation. Arm a
+      //     DELAYED backstop for the lease remainder, keyed to the
+      //     ownership epoch (a refreshed lease re-arms a fresh backstop
+      //     instead of deduping against the in-flight one). If the owner
+      //     completes normally, the backstop delivery resolves the step
+      //     as 'skipped'.
+      //   - Ownership lease ACTIVE, held by THIS message → this delivery
+      //     is the owner's redelivery; the claimant crashed
+      //     mid-execution. Dispatch immediately for background recovery.
+      //   - No stamp / lease EXPIRED / step_retrying observed → the step
+      //     is queue-owned or orphaned. Dispatch immediately; the
+      //     bare-correlationId idempotency key dedupes against the
+      //     original handoff.
+      const nowMs = Date.now();
+      for (const step of stepOps) {
+        if (!step.hasCreatedEvent) continue;
+        if (executedStepIds.has(step.correlationId)) continue;
+        if (queuedStepIds.has(step.correlationId)) continue;
+        const ownership = stepOwnership.get(step.correlationId);
+        const ownershipActive =
+          ownership !== undefined &&
+          ownership.owner !== undefined &&
+          !ownership.sawRetrying;
+        let leaseRemainingSeconds = 0;
+        if (ownershipActive && ownership.startedAtMs !== undefined) {
+          const leaseSeconds = getInlineOwnershipLeaseSeconds();
+          leaseRemainingSeconds = Math.min(
+            leaseSeconds,
+            Math.max(
+              0,
+              Math.ceil(
+                (ownership.startedAtMs + leaseSeconds * 1000 - nowMs) / 1000
+              )
+            )
+          );
+        }
+        if (
+          ownershipActive &&
+          ownership.owner !== ownerMessageId &&
+          leaseRemainingSeconds > 0
+        ) {
+          queuedStepIds.add(step.correlationId);
+          await queueStepMessage({
+            world,
+            runId,
+            workflowRun,
+            step,
+            delaySeconds: leaseRemainingSeconds,
+            namespace,
+            nextTraceCarrier,
+            purpose: `backstop:${ownership.startedAtMs}`,
+            wfdiag,
+          });
+        } else {
+          queuedStepIds.add(step.correlationId);
+          await queueStepMessage({
+            world,
+            runId,
+            workflowRun,
+            step,
+            namespace,
+            nextTraceCarrier,
+            purpose: 'dispatch',
+            wfdiag,
+          });
+        }
+      }
+
+      if (inlineCandidates.length === 0) {
+        // No in-process progress possible — the run awaits an external
+        // stimulus (hook payload, queued step, wait timer).
+        break;
+      }
+
+      // Racing timers must fire on time while step bodies block this
+      // invocation: enqueue a delayed continuation for the soonest
+      // pending wait (a separate invocation writes its wait_completed at
+      // the right log position — same mechanism as the node:vm engine's
+      // wait-continuation dispatch).
+      let soonestWait: { correlationId: string; seconds: number } | undefined;
+      for (const op of pendingOperations) {
+        if (op.type !== 'wait') continue;
+        const wait = op as PendingWait;
+        if (scheduledWaitContinuations.has(wait.correlationId)) continue;
+        // Waits whose wait_completed THIS invocation already wrote (the
+        // elapsed-wait pass above) are done — the event just hasn't fed
+        // back into the VM yet. No continuation needed.
+        if (completedWaitIds2.has(wait.correlationId)) continue;
+        const resumeMs = new Date(wait.resumeAt).getTime() - Date.now();
+        // An already-elapsed wait MUST still get a continuation (clamped
+        // to the 1s minimum, exactly like the node engine's
+        // `Math.max(1000, resumeAtMs - now)`), not be skipped: a wait
+        // whose deadline falls between this iteration's elapsed-wait
+        // pass (which saw it as still pending and wrote nothing) and
+        // this sweep would otherwise get NEITHER a wait_completed NOR a
+        // continuation — and the inline batch below then blocks this
+        // invocation for the full step duration with no wake armed
+        // anywhere. For `Promise.race(step, sleep)` that silently hands
+        // the race to the step: the sleep's wait_completed is never
+        // written and the run completes with the wrong winner. The
+        // window between the two checks spans this iteration's dispatch
+        // + feed round-trips, so on network-backed worlds (world-vercel)
+        // a short sleep lands in it routinely — observed as a ~50%
+        // sleepWinsRaceWorkflow failure rate in the Vercel e2e legs,
+        // while world-local's sub-ms round-trips masked it locally. The
+        // continuation invocation's pre-VM elapsed check writes the
+        // wait_completed ~1s later.
+        const seconds = Math.max(1, Math.ceil(resumeMs / 1000));
+        if (!soonestWait || seconds < soonestWait.seconds) {
+          soonestWait = { correlationId: wait.correlationId, seconds };
+        }
+      }
+      if (soonestWait) {
+        scheduledWaitContinuations.add(soonestWait.correlationId);
+        await queueMessage(
+          world,
+          getWorkflowQueueName(workflowRun.workflowName, namespace),
+          {
+            runId,
+            traceCarrier: await nextTraceCarrier(),
+            requestedAt: new Date(),
+          },
+          getWaitContinuationDispatch(
+            soonestWait.seconds,
+            soonestWait.correlationId
+          )
+        );
+        wfdiag('wait_continuation_scheduled', {
+          correlationId: soonestWait.correlationId,
+          delaySeconds: soonestWait.seconds,
+        });
+      }
+
+      // Execute the inline batch in parallel. The replay budget is
+      // paused while step bodies run — step duration is bounded by the
+      // platform function duration, not the replay timeout. NOTE (by
+      // design): with the budget parked per batch, the only bound on how
+      // many inline steps one invocation can chain is the platform's
+      // function timeout — the SDK deliberately imposes no cap of its
+      // own, matching the node:vm engine, where a long sequential
+      // workflow likewise runs step-by-step until the platform reclaims
+      // the invocation and a redelivery resumes from the log.
+      budget.pause();
+      let outcomes: StepExecutionResult[];
+      try {
+        outcomes = await Promise.all(
+          inlineCandidates.map((step) =>
+            runStepSingleFlight(runId, step.correlationId, () =>
+              (async () =>
+                executeStep({
+                  world,
+                  workflowRunId: runId,
+                  workflowDeploymentId: workflowRun.deploymentId,
+                  workflowName: workflowRun.workflowName,
+                  workflowStartedAt,
+                  rootRunId,
+                  stepId: step.correlationId,
+                  stepName: step.stepId,
+                  encryptionKey,
+                  runSpecVersion: workflowRun.specVersion,
+                  // Lazy inline claim: step_created is deferred (dispatch
+                  // skipped it) and this step_started carries the input,
+                  // so the world creates the step atomically —
+                  // exactly-one-owner. A concurrent claimant gets
+                  // EntityConflictError → { type: 'skipped' } and never
+                  // runs the body. Mirrors the node engine's inline path.
+                  lazyStepInput: await encryptSerializedData(
+                    step.input,
+                    encryptionKey
+                  ),
+                  // Ownership stamp: wake replays see the body as in
+                  // flight in this invocation and arm a delayed backstop
+                  // instead of immediately requeueing the step.
+                  ownerMessageId,
+                  // A lazy step is brand-new by construction — first
+                  // attempt.
+                  authoritativeAttempt: 1,
+                }))()
+            )
+          )
+        );
+      } finally {
+        budget.resume();
+      }
+      inlineStepsExecuted += inlineCandidates.length;
+
+      for (let i = 0; i < inlineCandidates.length; i++) {
+        const step = inlineCandidates[i];
+        const outcome = outcomes[i];
+        executedStepIds.add(step.correlationId);
+        if (outcome.type === 'retry' || outcome.type === 'throttled') {
+          // Hand the step to the queue with the requested backoff —
+          // background delivery drives the retry from here.
+          queuedStepIds.add(step.correlationId);
+          await queueStepMessage({
+            world,
+            runId,
+            workflowRun,
+            step,
+            delaySeconds: outcome.timeoutSeconds,
+            namespace,
+            nextTraceCarrier,
+            // Suffixed key: this step was inline-claimed, so no dispatch
+            // publish exists under the bare correlationId — but suffixing
+            // keeps the retry enqueueable even if a world retired a
+            // historical key for this step (see the purpose docs above).
+            purpose: 'retry:1',
+            wfdiag,
+          });
+        } else if (outcome.type === 'gone') {
+          runGone = true;
+        }
+        // 'skipped': a concurrent invocation won the lazy create-claim and
+        // owns the body. Marked executed above so this invocation never
+        // re-claims it; the winner's terminal events arrive via the feed
+        // (or drive a separate invocation).
+      }
+      wfdiag('inline_steps_executed', {
+        iteration,
+        count: inlineCandidates.length,
+        outcomes: outcomes.map((o) => o.type),
+      });
+
+      // Feed the inline batch's terminal events into the live VM. When
+      // the eventually-consistent listing has not surfaced them yet,
+      // exiting must NOT ack silently: the terminals this invocation just
+      // caused are durably written with no queue message left to consume
+      // them (inline steps have none), so an awaiting_external exit would
+      // park the run 'running' with all its steps complete. Raise the
+      // requeue signal so the suspended exit schedules a fresh immediate
+      // invocation whose fresh read picks the terminals up. Outcomes that
+      // wrote no terminal ('skipped' — a concurrent claimant owns the
+      // body; 'gone', retry/throttled — a queue message exists) don't
+      // need it, but signaling on them too only costs a no-op invocation
+      // in an already-rare lag window.
+      const newEvents = await fetchUnseenEvents();
+      if (newEvents.length === 0) {
+        pendingRequeueSignal = true;
+        break;
+      }
+      result = await session.continueWithEvents(newEvents);
+
+      wfdiag('inline_iteration', {
+        iteration,
+        phase: 'steps',
+        fedEvents: newEvents.length,
+        outcome: result.completed
+          ? 'completed'
+          : result.failed
+            ? 'failed'
+            : 'suspended',
+        budgetExhausted: budget.isExhausted(),
+      });
+    }
+  } finally {
+    session.dispose();
+  }
+
+  parentSpan?.setAttributes({
+    ...Attribute.QuickJSInlineSteps(inlineStepsExecuted),
+  });
+
   if (result.completed) {
     // Workflow completed
     runtimeLogger.info('QuickJS runtime: workflow completed', {
@@ -817,17 +1401,6 @@ export async function runWorkflowWithQuickJS(params: {
     // Drain failures are swallowed: the workflow's own outcome is the
     // source of truth.
     if (result.completed.drainOperations?.length) {
-      // Fail loud on retained hooks the World can't support BEFORE the
-      // drain try/catch below — that catch intentionally swallows genuine
-      // drain failures ("the workflow's own outcome is the source of
-      // truth"), but the retention gate's FatalError must escape to the
-      // replay loop's catch (run_failed), mirroring the node engine. This
-      // covers the fire-and-forget case: a retained hook that was never
-      // awaited only reaches the gate through this drain.
-      assertHookRetentionSupported(
-        result.completed.drainOperations,
-        world.capabilities
-      );
       try {
         await dispatchPendingOps({
           world,
@@ -837,7 +1410,6 @@ export async function runWorkflowWithQuickJS(params: {
           namespace,
           nextTraceCarrier,
           pendingOperations: result.completed.drainOperations,
-          queueSteps: false,
           wfdiag,
         });
       } catch (err) {
@@ -882,24 +1454,21 @@ export async function runWorkflowWithQuickJS(params: {
       throw err;
     }
   } else if (result.suspended) {
-    // Workflow suspended
+    // Workflow still suspended after the inline loop. All durable side
+    // effects for the final suspension state were already dispatched by
+    // the loop; what remains is deciding how the run gets re-invoked.
     const { pendingOperations } = result.suspended;
 
     runtimeLogger.info('QuickJS runtime: workflow suspended', {
       workflowRunId: runId,
+      inlineStepsExecuted,
       pendingSteps: pendingOperations.filter((p) => p.type === 'step').length,
       pendingWaits: pendingOperations.filter((p) => p.type === 'wait').length,
       pendingOps: pendingOperations.map((p) => ({
         type: p.type,
         correlationId: p.correlationId,
         hasCreatedEvent: p.hasCreatedEvent,
-        ...(p.type === 'step'
-          ? {
-              stepId: (p as PendingStep).stepId,
-              inputType: typeof (p as PendingStep).input,
-              inputIsUint8Array: (p as PendingStep).input instanceof Uint8Array,
-            }
-          : {}),
+        ...(p.type === 'step' ? { stepId: (p as PendingStep).stepId } : {}),
       })),
     });
 
@@ -908,94 +1477,24 @@ export async function runWorkflowWithQuickJS(params: {
       ...Attribute.QuickJSPendingOpsCount(pendingOperations.length),
     });
 
-    // Build per-pending-op promises so events.create + queueMessage
-    // calls fan out in parallel rather than serially. This mirrors
-    // the node:vm engine's `Promise.all(ops)` pattern in
-    // suspension-handler.ts and significantly reduces wall-clock time
-    // on cloud worlds (e.g. Vercel) where each storage call is a
-    // network round-trip.
-    let soonestWait: { seconds: number; correlationId: string } | undefined;
-    const { createdAttributeEvent, createdGetConflictHook } =
-      await dispatchPendingOps({
-        world,
-        runId,
-        workflowRun,
-        encryptionKey,
-        namespace,
-        nextTraceCarrier,
-        pendingOperations,
-        queueSteps: true,
-        wfdiag,
-      });
-
-    // Handle pending waits — both newly created and still-pending from
-    // earlier invocations. For each wait, either create a wait_completed
-    // event (if elapsed) or track the soonest pending wait so a delayed
-    // continuation can be enqueued below.
-    let needsRequeue = false;
-    const waitCompletePromises: Promise<void>[] = [];
-    for (const op of pendingOperations) {
-      if (op.type !== 'wait') continue;
-      const wait = op as PendingWait;
-      const resumeMs = new Date(wait.resumeAt).getTime() - Date.now();
-
-      if (resumeMs <= 0) {
-        // Wait has elapsed — create wait_completed and re-queue.
-        waitCompletePromises.push(
-          (async () => {
-            try {
-              await world.events.create(runId, {
-                eventType: 'wait_completed',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: wait.correlationId,
-              });
-              needsRequeue = true;
-            } catch (err) {
-              if (EntityConflictError.is(err)) return;
-              throw err;
-            }
-          })()
-        );
-      } else {
-        // Wait hasn't elapsed yet — track the soonest one.
-        const timeoutSeconds = Math.max(1, Math.ceil(resumeMs / 1000));
-        if (!soonestWait || timeoutSeconds < soonestWait.seconds) {
-          soonestWait = {
-            seconds: timeoutSeconds,
-            correlationId: wait.correlationId,
-          };
-        }
-      }
-    }
-    if (waitCompletePromises.length > 0) {
-      await Promise.all(waitCompletePromises);
+    if (runGone) {
+      // The run no longer exists (expired / deleted) — nothing to drive.
+      wfdiag('exit_suspended', { action: 'run_gone' });
+      return;
     }
 
-    // Progress and wait continuations are enqueued as FRESH messages
-    // rather than returned as `{ timeoutSeconds }` visibility-redelivery
-    // of the current message (which is what the node engine's suspension
-    // handler does too — see the wait-continuation dispatch in
-    // runtime.ts). Redelivering the CURRENT message is a trap: a
-    // hook-resume delivery carries `hookInput`, and its redelivery
-    // re-runs the lazy-resume re-ensure in the handler prologue. If the
-    // workflow disposed that hook during this invocation (dispose →
-    // sleep), the re-ensure gets HookNotFound, the prologue acks the
-    // message as "nothing left to resume", and the wait timer it was
-    // carrying is silently lost — the run wedges. A fresh continuation
-    // message carries only `runId`, so its delivery always reaches
-    // replay.
-    if (needsRequeue || createdAttributeEvent || createdGetConflictHook) {
-      // An elapsed wait was completed, a new attr_set event was written,
-      // or a getConflict()-awaited hook was created — re-queue immediately
-      // so the next invocation can process the new event.
-      wfdiag('exit_suspended', {
-        action: needsRequeue
-          ? 'wait_elapsed_requeue'
-          : createdAttributeEvent
-            ? 'attr_set_requeue'
-            : 'get_conflict_requeue',
-        timeoutSeconds: 0,
-      });
+    // Exit requeues are FRESH messages, never a `{ timeoutSeconds }`
+    // visibility-redelivery of the current message. Redelivering the
+    // CURRENT message is a trap: a hook-resume delivery carries
+    // `hookInput`, and its redelivery re-runs the lazy-resume re-ensure
+    // in the handler prologue — if the workflow disposed that hook
+    // during this invocation (dispose → sleep), a world that rejects
+    // the re-ensure would ack the message as "nothing left to resume"
+    // and the continuation it carried is silently lost. A fresh message
+    // carries only `runId`, so its delivery always reaches replay (and
+    // under turbo a reschedule would re-engage turbo against a stale
+    // preloaded log — see the reinvoke() docs in runtime.ts).
+    const requeueImmediately = async (): Promise<void> => {
       await queueMessage(
         world,
         getWorkflowQueueName(workflowRun.workflowName, namespace),
@@ -1005,19 +1504,72 @@ export async function runWorkflowWithQuickJS(params: {
           requestedAt: new Date(),
         }
       );
+    };
+
+    if (budget.isExhausted()) {
+      // The loop stopped on the replay budget with progress still
+      // possible — continue in a fresh invocation.
+      wfdiag('exit_suspended', { action: 'budget_exhausted_requeue' });
+      await requeueImmediately();
+      return;
+    }
+
+    // Exit wait sweep. A wait that elapsed in the window since the
+    // loop's last check requeues immediately (its wait_completed is
+    // written by the next invocation's elapsed-wait pass); pending waits
+    // whose continuation the loop already enqueued are skipped.
+    let soonestWait: { seconds: number; correlationId: string } | undefined;
+    let hasElapsedWait = false;
+    for (const op of pendingOperations) {
+      if (op.type !== 'wait') continue;
+      const wait = op as PendingWait;
+      const resumeMs = new Date(wait.resumeAt).getTime() - Date.now();
+      if (resumeMs <= 0) {
+        hasElapsedWait = true;
+      } else if (!scheduledWaitContinuations.has(wait.correlationId)) {
+        const timeoutSeconds = Math.max(1, Math.ceil(resumeMs / 1000));
+        if (!soonestWait || timeoutSeconds < soonestWait.seconds) {
+          soonestWait = {
+            seconds: timeoutSeconds,
+            correlationId: wait.correlationId,
+          };
+        }
+      }
+    }
+
+    if (hasElapsedWait) {
+      wfdiag('exit_suspended', { action: 'wait_elapsed_requeue' });
+      await requeueImmediately();
+      return;
+    }
+
+    if (pendingRequeueSignal) {
+      // This invocation wrote events the workflow needs to consume
+      // (attr_set / getConflict-awaited hook_created / inline step
+      // terminals) but the eventually-consistent listing never returned
+      // them before the loop exited. Without a requeue the run would
+      // park awaiting_external with its unblocking events already
+      // durably written and no future invocation coming — requeue
+      // immediately so a fresh read picks them up. In the common case
+      // the loop's own feed observes the writes and clears this flag, so
+      // this only fires when the read actually lagged.
+      wfdiag('exit_suspended', { action: 'unread_self_write_requeue' });
+      await requeueImmediately();
       return;
     }
 
     if (soonestWait) {
-      // Delayed continuation for the soonest pending wait. The dispatch
-      // helper handles delay clamping (long waits chain across hops) and
-      // idempotency-key dedup of re-observations of the same pending
-      // wait — see runtime/wait-continuation.ts.
+      // Delayed continuation for the soonest pending wait the loop has
+      // not already scheduled. The dispatch helper handles delay
+      // clamping (long waits chain across hops) and idempotency-key
+      // dedup of re-observations of the same pending wait — see
+      // runtime/wait-continuation.ts.
       wfdiag('exit_suspended', {
         action: 'schedule_wait_timeout',
         timeoutSeconds: soonestWait.seconds,
         waitCorrelationId: soonestWait.correlationId,
       });
+      scheduledWaitContinuations.add(soonestWait.correlationId);
       await queueMessage(
         world,
         getWorkflowQueueName(workflowRun.workflowName, namespace),
@@ -1079,14 +1631,6 @@ export async function runWorkflowWithQuickJS(params: {
     // Flush leftover pending side effects before writing run_failed —
     // same drain semantics as the completed branch.
     if (result.failed.drainOperations?.length) {
-      // Fail loud on retained hooks the World can't support BEFORE the
-      // drain try/catch below — same reasoning as the completed branch:
-      // the retention gate's FatalError must escape to the replay loop's
-      // catch rather than be swallowed as a genuine drain failure.
-      assertHookRetentionSupported(
-        result.failed.drainOperations,
-        world.capabilities
-      );
       try {
         await dispatchPendingOps({
           world,
@@ -1096,7 +1640,6 @@ export async function runWorkflowWithQuickJS(params: {
           namespace,
           nextTraceCarrier,
           pendingOperations: result.failed.drainOperations,
-          queueSteps: false,
           wfdiag,
         });
       } catch (err) {

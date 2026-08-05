@@ -3160,12 +3160,17 @@ export function createEventsStorage(
     async listByCorrelationId(params) {
       const correlationId = params.correlationId;
       assertSafeEntityId('correlationId', correlationId);
+      assertSafeEntityId('runId', params.runId);
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'events'),
         schema: EventSchema,
         cachedItems: eventCache,
-        // No filePrefix - search all events
+        // Scoped to the run's own event files, since a correlation id
+        // identifies a step or wait only within its run: a slot-numbered
+        // `step_…001` names the first step of every such run, so an unscoped
+        // scan would answer with one event per run.
+        filePrefix: `${params.runId}-`,
         filter: (event) => event.correlationId === correlationId,
         // Events in chronological order (oldest first) by default,
         // different from the default for other list calls.

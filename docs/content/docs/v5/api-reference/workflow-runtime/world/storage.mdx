@@ -96,16 +96,20 @@ const result = await world.events.list({ runId, pagination: { cursor } }); // [!
 
 ### events.listByCorrelationId()
 
-List events that share a correlation ID, useful for tracing related events across runs.
+List one run's events that share a correlation ID, useful for tracing a single step, hook or wait through its lifecycle.
+
+A correlation ID is unique within its run, not across runs: two runs can each hold a `step_…`, `hook_…` or `wait_…` ID that reads the same. `runId` is therefore required, and it is also what makes the pagination cursor unambiguous.
 
 ```typescript lineNumbers
 const result = await world.events.listByCorrelationId({ // [!code highlight]
+  runId,
   correlationId: "order-123",
 }); // [!code highlight]
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
+| `params.runId` | `string` | The run the correlation ID belongs to |
 | `params.correlationId` | `string` | The correlation ID to filter by |
 | `params.pagination.cursor` | `string` | Cursor for the next page |
 
@@ -158,6 +162,8 @@ const result = await world.runs.list({ // [!code highlight]
 ### Cancelling Runs
 
 To cancel a run, create a `run_cancelled` event via `world.events.create()` (see [world.events](#worldevents) above), or use the CLI or Web UI helpers.
+
+To cancel a batch in one call, a world may implement the optional `runs.cancelMany({ runIds })`. It returns a summary plus a per-run outcome (`cancelled`, `already_cancelled`, `not_cancellable`, `not_found`, or `failed`). Backends that omit it fall back to per-run cancellation automatically.
 
 ### WorkflowRun Type
 

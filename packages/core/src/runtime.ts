@@ -60,6 +60,11 @@ import {
 } from './runtime/constants.js';
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
+  type DeploymentAffinityOutcome,
+  guardDeploymentAffinity,
+  type ReenqueueArgs,
+} from './runtime/deployment-guard.js';
+import {
   appendUniqueEvents,
   claimFenceFor,
   type EventCreator,
@@ -148,6 +153,7 @@ export {
 export {
   type CancelRunOptions,
   cancelRun,
+  cancelRuns,
   listStreams,
   type ReadStreamOptions,
   type RecreateRunOptions,
@@ -583,6 +589,7 @@ export function workflowEntrypoint(
           stepName: incomingStepName,
           replayDivergence,
           preconditionReinvocations,
+          deploymentMismatchRetryCount,
           runInput,
           hookInput,
         } = WorkflowInvokePayloadSchema.parse(message_);
@@ -945,6 +952,17 @@ export function workflowEntrypoint(
                     }
                   };
 
+                  // A plain orchestrator-replay message. Omits `runInput` (it
+                  // re-engages turbo on the next delivery and wedges the run —
+                  // see `reinvoke` below) and `replayDivergence` /
+                  // `serverErrorRetryCount` (this delivery chain's budgets).
+                  const replayMessage =
+                    async (): Promise<WorkflowInvokePayload> => ({
+                      runId,
+                      traceCarrier: await nextTraceCarrier(),
+                      requestedAt: new Date(),
+                    });
+
                   const reinvoke = async (
                     delaySeconds: number,
                     /**
@@ -962,12 +980,7 @@ export function workflowEntrypoint(
                     await queueMessage(
                       world,
                       getWorkflowQueueName(workflowName, namespace),
-                      {
-                        runId,
-                        traceCarrier: await nextTraceCarrier(),
-                        requestedAt: new Date(),
-                        ...extraPayload,
-                      },
+                      { ...(await replayMessage()), ...extraPayload },
                       delaySeconds > 0 ? { delaySeconds } : undefined
                     );
                     return undefined;
@@ -1267,6 +1280,46 @@ export function workflowEntrypoint(
                     };
                   };
 
+                  // Deployment-affinity guard, shared by the two paths that
+                  // execute a run: queued step executions and flow replays.
+                  const guardDeployment = async (
+                    run: Pick<
+                      WorkflowRun,
+                      'runId' | 'deploymentId' | 'specVersion'
+                    >,
+                    reenqueuePayload: () => Promise<WorkflowInvokePayload>,
+                    beforeStop?: () => Promise<void>
+                  ): Promise<DeploymentAffinityOutcome> => {
+                    const { outcome, spanAttributes } =
+                      await guardDeploymentAffinity({
+                        world,
+                        run,
+                        requestId,
+                        retryCount: deploymentMismatchRetryCount,
+                        beforeStop,
+                        isDeploymentUnavailableError:
+                          world.isDeploymentUnavailableError,
+                        reenqueue: async ({
+                          deploymentId,
+                          specVersion,
+                          deploymentMismatchRetryCount: retryCount,
+                          delaySeconds,
+                        }: ReenqueueArgs) => {
+                          await queueMessage(
+                            world,
+                            getWorkflowQueueName(workflowName, namespace),
+                            {
+                              ...(await reenqueuePayload()),
+                              deploymentMismatchRetryCount: retryCount,
+                            },
+                            { deploymentId, specVersion, delaySeconds }
+                          );
+                        },
+                      });
+                    if (spanAttributes) span?.setAttributes(spanAttributes);
+                    return outcome;
+                  };
+
                   // If incoming message has a stepId, this is a background step
                   // execution. Execute the step, then check if all parallel steps
                   // from the batch are done. If so, replay inline (saving a queue
@@ -1282,6 +1335,17 @@ export function workflowEntrypoint(
                           'Run already finished, skipping background step',
                           { workflowRunId: runId, status: bgRun.status }
                         );
+                        return;
+                      }
+                      // Covers every queued step execution — first dispatch and
+                      // redeliveries/retries alike.
+                      if (
+                        (await guardDeployment(bgRun, async () => ({
+                          ...(await replayMessage()),
+                          stepId: incomingStepId,
+                          stepName: incomingStepName,
+                        }))) !== 'continue'
+                      ) {
                         return;
                       }
                       const bgStartedAt = bgRun.startedAt
@@ -1768,6 +1832,32 @@ export function workflowEntrypoint(
                     } // end else (non-turbo run_started)
                   } // end if (!workflowRun)
 
+                  // Covers every flow replay — initial start, step completions,
+                  // hook resumptions, wait completions — and stops before any
+                  // workflow code, inline step, or event write happens when the
+                  // run is not pinned here (see `guardDeploymentAffinity`).
+                  // `awaitRunReady` orders turbo's `run_started` before either
+                  // stopping action.
+                  //
+                  // Runs ahead of the lazy-hook re-ensure below, so a misrouted
+                  // resume writes nothing here — which means the re-routed
+                  // message must carry `hookInput`, or a resume whose producer
+                  // write had not yet landed would be lost (that re-ensure is
+                  // idempotent per `resumeId`, so the pinned deployment still
+                  // converges on one event).
+                  if (
+                    (await guardDeployment(
+                      workflowRun,
+                      async () => ({
+                        ...(await replayMessage()),
+                        ...(hookInput ? { hookInput } : {}),
+                      }),
+                      awaitRunReady
+                    )) !== 'continue'
+                  ) {
+                    return;
+                  }
+
                   // Lazy hook resume: the producer (resumeHook fast path)
                   // parallelized the `hook_received` write with this queue
                   // publish, so the event may not be persisted yet. Idempotently
@@ -2063,6 +2153,16 @@ export function workflowEntrypoint(
                           maxEventsLimit,
                           namespace,
                           nextTraceCarrier,
+                          // Inline-step ownership plumbing: redeliveries of
+                          // this message drive crash recovery for steps an
+                          // earlier invocation claimed inline (see the
+                          // backstop pass in the entrypoint's loop), and
+                          // the message id is stamped as `ownerMessageId`
+                          // on inline lazy step claims so wake replays
+                          // defer to the in-flight body instead of
+                          // requeueing the step.
+                          deliveryAttempt: metadata.attempt,
+                          ownerMessageId: metadata.messageId,
                         });
                         if (quickjsResult?.timeoutSeconds !== undefined) {
                           // Use `reinvoke` rather than returning

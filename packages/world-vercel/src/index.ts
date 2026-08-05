@@ -43,6 +43,9 @@ export function createWorld(config?: APIConfig): World {
       // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
       // flow topics (see queue.ts and @workflow/builders).
       maxConcurrency: true,
+      // Vercel deployments are atomic and immutable, so a deployment id names
+      // one fixed build for its whole lifetime.
+      deploymentAffinity: true,
       // NOTE: the backend half of resumeHook()'s parallel fast path — that
       // the server enforces the `(runId, resumeId)` dedup constraint — is
       // NO LONGER a static world capability here. It is attested per-lookup by
