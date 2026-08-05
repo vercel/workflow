@@ -282,6 +282,13 @@ export interface Queue {
   getDeploymentId(): Promise<string>;
 
   /**
+   * Returns true only when a queue error definitively means the explicitly
+   * targeted deployment cannot receive the message. Unknown and transient
+   * errors must return false so the current delivery can be retried safely.
+   */
+  isDeploymentUnavailableError?(error: unknown): boolean;
+
+  /**
    * Enqueues a message to the specified queue.
    *
    * @param queueName - The name of the queue to which the message will be sent.

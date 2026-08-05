@@ -61,6 +61,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Times a delivery that reached a deployment other than the one its run is pinned to is re-routed to that deployment before the run is failed with [`DEPLOYMENT_MISMATCH`](/docs/errors/deployment-mismatch).
 - Re-routed deliveries back off exponentially (1s, 2s, 4s). Set to `0` to fail the run on the first misrouted delivery.
 - Only applies to Worlds with atomic, immutable deployments (the Vercel World). A run whose pinned deployment cannot be reached at all fails immediately regardless of this value.
+- Transient or unknown queue publishing failures use normal queue redelivery and do not consume this budget.
 
 ### `WORKFLOW_PRECONDITION_GUARD`
 

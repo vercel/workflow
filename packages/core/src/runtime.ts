@@ -1219,6 +1219,8 @@ export function workflowEntrypoint(
                         requestId,
                         retryCount: deploymentMismatchRetryCount,
                         beforeStop,
+                        isDeploymentUnavailableError:
+                          world.isDeploymentUnavailableError,
                         reenqueue: async ({
                           deploymentId,
                           specVersion,

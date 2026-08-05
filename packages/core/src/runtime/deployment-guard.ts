@@ -120,6 +120,7 @@ export async function guardDeploymentAffinity({
   requestId,
   retryCount = 0,
   reenqueue,
+  isDeploymentUnavailableError,
   beforeStop,
 }: {
   world: World;
@@ -133,6 +134,12 @@ export async function guardDeploymentAffinity({
    * makes the guard fail-fast.
    */
   reenqueue?: (args: ReenqueueArgs) => Promise<void>;
+  /**
+   * Classifies a re-enqueue failure as definitive proof that the pinned
+   * deployment cannot receive the message. Unclassified failures are retried
+   * by rejecting the handler and leaving the current queue message unacked.
+   */
+  isDeploymentUnavailableError?: (error: unknown) => boolean;
   /**
    * Ordering barrier awaited once a mismatch is confirmed, before either
    * stopping action. Under turbo the `run_started` write is backgrounded, and
@@ -237,10 +244,17 @@ export async function guardDeploymentAffinity({
       );
       return result('rerouted', run.deploymentId, attempt);
     } catch (reenqueueError) {
-      // The target deployment is unroutable — deleted, aged out of its
-      // retention window, or rejected by the queue. Burning the rest of the
-      // budget (plus its backoff) on a deployment that provably cannot be
-      // reached only delays the failure, so fail now.
+      // A generic send failure can be transient (429, 5xx, connect/DNS). Do not
+      // turn one infrastructure blip into a terminal run failure: reject the
+      // handler so the current message remains unacked and is redelivered.
+      if (!isDeploymentUnavailableError?.(reenqueueError)) {
+        throw reenqueueError;
+      }
+
+      // The World explicitly classified the target as unavailable — deleted,
+      // aged out of its retention window, or otherwise undiscoverable. Burning
+      // the rest of the budget on a deployment that provably cannot be reached
+      // only delays the failure, so fail now.
       runtimeLogger.error(
         'Cannot re-route a misrouted workflow run to its own deployment; failing the run',
         {

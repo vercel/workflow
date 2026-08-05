@@ -159,14 +159,19 @@ describe('guardDeploymentAffinity', () => {
     expect((error as Error).message).toContain('/err/deployment-mismatch');
   });
 
-  it('fails immediately when the pinned deployment cannot be reached', async () => {
+  it('fails immediately when the World confirms the pinned deployment is unavailable', async () => {
     // Deleted or aged-out deployment: the pinned target is unroutable.
     const { world, eventsCreate } = createWorld('dpl_current');
     const enqueueError = new Error('deployment not found');
     const reenqueue = vi.fn().mockRejectedValue(enqueueError);
 
     await expect(
-      guardDeploymentAffinity({ world, run, reenqueue })
+      guardDeploymentAffinity({
+        world,
+        run,
+        reenqueue,
+        isDeploymentUnavailableError: (error) => error === enqueueError,
+      })
     ).resolves.toMatchObject({ outcome: 'failed' });
     expect(reenqueue).toHaveBeenCalledTimes(1);
 
@@ -174,6 +179,23 @@ describe('guardDeploymentAffinity', () => {
     expect(WorkflowDeploymentMismatchError.is(error)).toBe(true);
     // No re-route succeeded, so the message must not claim any.
     expect((error as Error).message).not.toContain('re-routed the message');
+  });
+
+  it('rethrows an unclassified re-enqueue failure for queue redelivery', async () => {
+    const { world, eventsCreate } = createWorld('dpl_current');
+    const enqueueError = new Error('transient VQS failure');
+    const reenqueue = vi.fn().mockRejectedValue(enqueueError);
+
+    await expect(
+      guardDeploymentAffinity({
+        world,
+        run,
+        reenqueue,
+        isDeploymentUnavailableError: () => false,
+      })
+    ).rejects.toBe(enqueueError);
+    expect(reenqueue).toHaveBeenCalledTimes(1);
+    expect(eventsCreate).not.toHaveBeenCalled();
   });
 
   it('fails fast when no re-enqueue is possible', async () => {

@@ -21,7 +21,7 @@ This is an SDK/runtime signal, not an error thrown by your workflow code, and it
 Workflow run "wrun_..." is pinned to deployment "dpl_A", but was received by deployment "dpl_B". The runtime re-routed the message to "dpl_A" 3 times and it kept arriving elsewhere, so the run was stopped to protect against code-skew errors. Verify that the run's deployment is still available and that queue callbacks are routed to it.
 ```
 
-When the run's deployment cannot be reached at all — it was deleted, or aged out of its retention window — no re-route is possible and the message omits the re-routing clause.
+When the queue definitively reports that the run's deployment cannot be reached — it was deleted, or aged out of its retention window — no re-route is possible and the message omits the re-routing clause. Transient or unknown publishing failures leave the current delivery unacknowledged so the queue can redeliver it; they do not fail the run or consume this recovery budget.
 
 ## Why A Run Is Pinned
 

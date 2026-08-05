@@ -84,6 +84,8 @@ async function runWorkflowHandlerWithEvents(
     incomingStepName?: string;
     /** Lazy hook resume payload carried on the incoming queue message. */
     hookInput?: Record<string, unknown>;
+    queueImpl?: () => Promise<{ messageId: null }>;
+    isDeploymentUnavailableError?: (error: unknown) => boolean;
   } = {}
 ) {
   const createdEvents = options.createdEvents ?? [];
@@ -120,6 +122,7 @@ async function runWorkflowHandlerWithEvents(
     getDeploymentId: vi.fn(
       async () => options.currentDeploymentId ?? workflowRun.deploymentId
     ),
+    isDeploymentUnavailableError: options.isDeploymentUnavailableError,
     createQueueHandler: vi.fn(
       (
         _prefix: string,
@@ -166,6 +169,7 @@ async function runWorkflowHandlerWithEvents(
         opts?: Record<string, unknown>
       ) => {
         options.queueCalls?.push({ queueName, message, opts });
+        if (options.queueImpl) return options.queueImpl();
         return { messageId: null };
       }
     ),
@@ -234,6 +238,26 @@ describe('workflowEntrypoint replay guards', () => {
     // `runInput` must not ride along — it would re-engage turbo on the next
     // delivery and wedge the run.
     expect(queueCalls[0].message).not.toHaveProperty('runInput');
+    expect(createdEvents).not.toContainEqual(
+      expect.objectContaining({ eventType: 'run_failed' })
+    );
+  });
+
+  it('leaves a misrouted delivery unacked when re-enqueue fails transiently', async () => {
+    const workflowRun = await misroutedRun();
+    const createdEvents: unknown[] = [];
+    const sendError = new Error('transient VQS failure');
+
+    await expect(
+      runWorkflowHandlerWithEvents(mustNotRun, workflowRun, [], {
+        currentDeploymentId: 'dpl_current',
+        createdEvents,
+        queueImpl: async () => {
+          throw sendError;
+        },
+        isDeploymentUnavailableError: () => false,
+      })
+    ).rejects.toBe(sendError);
     expect(createdEvents).not.toContainEqual(
       expect.objectContaining({ eventType: 'run_failed' })
     );
