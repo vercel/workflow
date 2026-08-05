@@ -11,6 +11,7 @@ import { planWindowStartFromResponse } from './inspect/time-window.js';
 
 export const BULK_CANCEL_MIN_LIMIT = 1;
 export const BULK_CANCEL_MAX_LIMIT = 500;
+export const CLI_CANCEL_REASON = 'Cancelled via Workflow CLI';
 
 /**
  * Statuses a run can still be cancelled from. When the caller doesn't pin a
@@ -184,11 +185,11 @@ export async function performBulkCancel(
 
   const pages = await Promise.all(targetStatuses.map(fetchPage));
 
-  // Merge the per-status pages: project to display fields, dedupe by runId,
-  // and sort newest-first. Cap at `limit`; `hasMore` is true if any page
-  // reported more or the merge overflowed the cap — never claim "no more"
-  // when runs remain.
-  const projected = pages.flatMap((page) =>
+  // Merge the per-status pages round-robin so a full page of running runs
+  // cannot crowd pending runs (which do not have a startedAt timestamp) out
+  // of every batch. Preserve each page's backend order and dedupe by runId in
+  // case a run changes status while the pages are fetched.
+  const projectedPages = pages.map((page) =>
     page.data.map((run) => ({
       runId: run.runId,
       workflowName: run.workflowName,
@@ -196,15 +197,21 @@ export async function performBulkCancel(
       startedAt: run.startedAt,
     }))
   );
-  const byRunId = new Map<string, (typeof projected)[number]>();
-  for (const run of projected) {
-    if (!byRunId.has(run.runId)) byRunId.set(run.runId, run);
+  const merged: (typeof projectedPages)[number][number][] = [];
+  const seenRunIds = new Set<string>();
+  const maxPageLength = Math.max(
+    0,
+    ...projectedPages.map((page) => page.length)
+  );
+  for (let index = 0; index < maxPageLength; index++) {
+    for (const page of projectedPages) {
+      const run = page[index];
+      if (run && !seenRunIds.has(run.runId)) {
+        seenRunIds.add(run.runId);
+        merged.push(run);
+      }
+    }
   }
-  const merged = [...byRunId.values()].sort((a, b) => {
-    const ta = a.startedAt ? new Date(a.startedAt).getTime() : 0;
-    const tb = b.startedAt ? new Date(b.startedAt).getTime() : 0;
-    return tb - ta;
-  });
   const runs = {
     data: merged.slice(0, limit),
     hasMore: pages.some((page) => page.hasMore) || merged.length > limit,
@@ -253,7 +260,8 @@ export async function performBulkCancel(
   // fallback concurrency on local / community worlds.
   const result = await cancelRuns(
     world,
-    runs.data.map((run) => run.runId)
+    runs.data.map((run) => run.runId),
+    { cancelReason: CLI_CANCEL_REASON }
   );
 
   for (const line of bulkCancelFailureLines(result)) {

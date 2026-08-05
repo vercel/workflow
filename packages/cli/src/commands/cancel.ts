@@ -6,6 +6,7 @@ import chalk from 'chalk';
 import { BaseCommand } from '../base.js';
 import {
   CANCELLABLE_STATUSES,
+  CLI_CANCEL_REASON,
   performBulkCancel,
   validateBulkCancelLimit,
 } from '../lib/bulk-cancel.js';
@@ -96,7 +97,9 @@ export default class Cancel extends BaseCommand {
 
     // Single-run cancel (existing behavior)
     if (args.runId) {
-      await cancelRun(world, args.runId);
+      await cancelRun(world, args.runId, {
+        cancelReason: CLI_CANCEL_REASON,
+      });
       logger.log(chalk.green(`Cancelled run ${args.runId}`));
       return;
     }

@@ -6,6 +6,7 @@ import type {
 import { describe, expect, it, vi } from 'vitest';
 import {
   bulkCancelFailureLines,
+  CLI_CANCEL_REASON,
   formatBulkCancelSummary,
   HAS_MORE_GUIDANCE,
   performBulkCancel,
@@ -220,6 +221,56 @@ describe('performBulkCancel', () => {
     ]);
   });
 
+  it('round-robins status pages before applying the batch limit', async () => {
+    const { logger } = makeLogger();
+    const cancelMany = vi.fn(
+      async (
+        req: BulkCancelWorkflowRunsRequest
+      ): Promise<BulkCancelWorkflowRunsResult> => ({
+        summary: {
+          requested: req.runIds.length,
+          cancelled: req.runIds.length,
+          alreadyCancelled: 0,
+          notCancellable: 0,
+          notFound: 0,
+          failed: 0,
+        },
+        results: req.runIds.map((runId) => ({
+          runId,
+          outcome: 'cancelled' as const,
+        })),
+      })
+    );
+    const world = makeWorld({
+      runs: [
+        ...Array.from({ length: 5 }, (_, index) => ({
+          runId: `r${index + 1}`,
+          workflowName: 'wf',
+          status: 'running',
+          startedAt: new Date(2026, 0, index + 1).toISOString(),
+        })),
+        ...Array.from({ length: 3 }, (_, index) => ({
+          runId: `p${index + 1}`,
+          workflowName: 'wf',
+          status: 'pending',
+        })),
+      ],
+      cancelMany,
+    });
+
+    await performBulkCancel({
+      world,
+      limit: 5,
+      confirm: true,
+      logger,
+    });
+
+    expect(cancelMany).toHaveBeenCalledWith({
+      runIds: ['p1', 'r1', 'p2', 'r2', 'p3'],
+      cancelReason: CLI_CANCEL_REASON,
+    });
+  });
+
   it('uses the cancelMany fast path in a single call and skips per-run events', async () => {
     const { logger } = makeLogger();
     const cancelMany = vi.fn(
@@ -256,7 +307,10 @@ describe('performBulkCancel', () => {
 
     expect(exitCode).toBe(0);
     expect(cancelMany).toHaveBeenCalledTimes(1);
-    expect(cancelMany).toHaveBeenCalledWith({ runIds: ['r1', 'r2'] });
+    expect(cancelMany).toHaveBeenCalledWith({
+      runIds: ['r1', 'r2'],
+      cancelReason: CLI_CANCEL_REASON,
+    });
     // Fast path must not fall back to per-run event creation.
     expect(world.events.create as any).not.toHaveBeenCalled();
   });
@@ -280,6 +334,13 @@ describe('performBulkCancel', () => {
 
     expect(exitCode).toBe(0);
     expect(world.events.create as any).toHaveBeenCalledTimes(2);
+    expect(world.events.create as any).toHaveBeenCalledWith(
+      'r1',
+      expect.objectContaining({
+        eventData: { cancelReason: CLI_CANCEL_REASON },
+      }),
+      expect.anything()
+    );
     expect(result?.summary.cancelled).toBe(2);
     expect(logs.join('\n')).toContain('2 cancelled');
   });
