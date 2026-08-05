@@ -548,15 +548,16 @@ function getMaxInlineDurationMs(
 
   const runtimeDeadline = world.getRuntimeDeadline?.();
   if (runtimeDeadline !== undefined) {
-    const maxDurationMs = Math.floor(
-      runtimeDeadline.getTime() - invocationStartTime
-    );
-    if (maxDurationMs >= ms('25m')) {
-      return ms('10m');
-    }
+    const deadlineMs = runtimeDeadline.getTime();
+    if (!Number.isNaN(deadlineMs)) {
+      const maxDurationMs = Math.floor(deadlineMs - invocationStartTime);
+      if (maxDurationMs >= ms('25m')) {
+        return ms('10m');
+      }
 
-    if (maxDurationMs >= ms('10m')) {
-      return ms('5m');
+      if (maxDurationMs >= ms('10m')) {
+        return ms('5m');
+      }
     }
   }
 
