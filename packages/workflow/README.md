@@ -130,6 +130,9 @@ with the team and wider community.
 
 ## Security
 
-Please do not open public issues for security vulnerabilities. Report them
-responsibly to
+Please do not open public issues for security vulnerabilities.
+
+To participate in our Open Source Software Bug Bounty program, please email
 [responsible.disclosure@vercel.com](mailto:responsible.disclosure@vercel.com).
+We will add you to the program and provide further instructions for submitting
+your report.
