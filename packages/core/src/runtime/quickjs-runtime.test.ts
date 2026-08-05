@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { deserialize, serialize } from '../serialization/workflow-vm.js';
-import { runQuickJSWorkflow } from './quickjs-runtime.js';
+import {
+  __clearBaselineSnapshotCacheForTests,
+  __peekBaselineEntryForTests,
+  runQuickJSWorkflow,
+} from './quickjs-runtime.js';
 
 /** Helper to deserialize the format-prefixed result bytes */
 function unwrapResult(result: Uint8Array): unknown {
@@ -1164,4 +1168,170 @@ describe('hook dispose then sleep replay', () => {
       disposed: true,
     });
   }, 30000);
+});
+
+describe('baseline snapshot startup optimization', () => {
+  const stepRaceCode = `
+    var add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//add");
+    async function workflow() {
+      var a = await add(Math.random(), 7);
+      await globalThis[Symbol.for("WORKFLOW_SLEEP")]("5s");
+      return a;
+    }
+    workflow.workflowId = "workflow//test//workflow";
+    globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+  `;
+
+  it('restore path reproduces the fresh path byte-for-byte (correlationIds + serialized input)', async () => {
+    // Fresh path: cache disabled.
+    __clearBaselineSnapshotCacheForTests();
+    process.env.WORKFLOW_QUICKJS_BASELINE_SNAPSHOT = '0';
+    let fresh: Awaited<ReturnType<typeof runQuickJSWorkflow>>;
+    try {
+      fresh = await runQuickJSWorkflow({
+        workflowCode: stepRaceCode,
+        workflowId: 'workflow//test//workflow',
+        workflowRun: makeRun(),
+        events: [],
+      });
+    } finally {
+      delete process.env.WORKFLOW_QUICKJS_BASELINE_SNAPSHOT;
+    }
+
+    // Snapshot path: first call hydrates + restores, second call restores
+    // from cache. Both must match the fresh run exactly — the workflow
+    // body draws Math.random() into the step INPUT, so any seed skew
+    // between the paths shows up in the serialized bytes, and
+    // correlationIds pin the interleaved ULID draw sequence.
+    __clearBaselineSnapshotCacheForTests();
+    const first = await runQuickJSWorkflow({
+      workflowCode: stepRaceCode,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: makeRun(),
+      events: [],
+    });
+    const entry = await __peekBaselineEntryForTests(stepRaceCode);
+    expect(entry?.state).toBe('ready');
+    const second = await runQuickJSWorkflow({
+      workflowCode: stepRaceCode,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: makeRun(),
+      events: [],
+    });
+
+    const shape = (r: typeof fresh) =>
+      r.suspended?.pendingOperations.map((op) => ({
+        type: op.type,
+        correlationId: op.correlationId,
+        input:
+          'input' in op && op.input instanceof Uint8Array
+            ? Buffer.from(op.input).toString('base64')
+            : undefined,
+      }));
+    expect(shape(first)).toEqual(shape(fresh));
+    expect(shape(second)).toEqual(shape(fresh));
+    __clearBaselineSnapshotCacheForTests();
+  });
+
+  it('full replay to completion works through the restore path', async () => {
+    __clearBaselineSnapshotCacheForTests();
+    const code = `
+      var add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//add");
+      async function workflow() { return await add(10, 7); }
+      workflow.workflowId = "workflow//test//workflow";
+      globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+    `;
+    const run = makeRun();
+    const r1 = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [],
+    });
+    const stepCid = r1.suspended!.pendingOperations[0].correlationId;
+    const r2 = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [
+        runCreatedEvent(run),
+        {
+          eventId: 'evnt_001',
+          runId: run.runId,
+          eventType: 'step_completed',
+          correlationId: stepCid,
+          eventData: { result: serialize(17) },
+          createdAt: new Date(),
+        },
+      ],
+    });
+    expect(deserialize(r2.completed!.result)).toBe(17);
+    __clearBaselineSnapshotCacheForTests();
+  });
+
+  it('gates out bundles that draw randomness at module scope', async () => {
+    __clearBaselineSnapshotCacheForTests();
+    const drawingCode = `
+      var moduleScopeDraw = Math.random();
+      async function workflow() { return moduleScopeDraw; }
+      workflow.workflowId = "workflow//test//workflow";
+      globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+    `;
+    const run = makeRun();
+    const r = await runQuickJSWorkflow({
+      workflowCode: drawingCode,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [],
+    });
+    const entry = await __peekBaselineEntryForTests(drawingCode);
+    expect(entry?.state).toBe('ineligible');
+    // The fresh fallback ran with the run-seeded PRNG — the completed
+    // result must be replay-deterministic: a second invocation returns
+    // the identical value.
+    const r2 = await runQuickJSWorkflow({
+      workflowCode: drawingCode,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [runCreatedEvent(run)],
+    });
+    expect(deserialize(r2.completed!.result)).toBe(
+      deserialize(r.completed!.result)
+    );
+    __clearBaselineSnapshotCacheForTests();
+  });
+
+  it('gates out bundles that read the clock at module scope', async () => {
+    __clearBaselineSnapshotCacheForTests();
+    const clockCode = `
+      var moduleScopeTime = Date.now();
+      async function workflow() { return moduleScopeTime; }
+      workflow.workflowId = "workflow//test//workflow";
+      globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+    `;
+    await runQuickJSWorkflow({
+      workflowCode: clockCode,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: makeRun(),
+      events: [],
+    });
+    const entry = await __peekBaselineEntryForTests(clockCode);
+    expect(entry?.state).toBe('ineligible');
+    __clearBaselineSnapshotCacheForTests();
+  });
+
+  it('gates out bundles whose module scope throws, and the fresh path surfaces the error', async () => {
+    __clearBaselineSnapshotCacheForTests();
+    const throwingCode = 'throw new Error("boom at module scope");';
+    const r = await runQuickJSWorkflow({
+      workflowCode: throwingCode,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: makeRun(),
+      events: [],
+    });
+    expect(r.failed?.message).toContain('boom at module scope');
+    const entry = await __peekBaselineEntryForTests(throwingCode);
+    expect(entry?.state).toBe('ineligible');
+    __clearBaselineSnapshotCacheForTests();
+  });
 });
