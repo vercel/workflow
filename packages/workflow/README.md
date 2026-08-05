@@ -70,6 +70,8 @@ Vercel for managed storage, queuing, scaling, and observability. To self-host,
 use the Postgres backend or implement a custom
 [World](https://workflow-sdk.dev/docs/deploying).
 
+There are many third-party Worlds (both self-hosted or managed), see [the Worlds page](https://workflow-sdk.dev/worlds) for a list of maintainer-curated third party worlds. Submit your world by opening updating the [Worlds Manifest](https://github.com/vercel/workflow/blob/main/worlds-manifest.json).
+
 ## Community
 
 The Workflow SDK community lives on
