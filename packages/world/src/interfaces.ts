@@ -441,6 +441,12 @@ export interface World extends Queue, Streamer, Storage {
   processExitTriggersQueueRedelivery?: boolean;
 
   /**
+   * Absolute wall-clock time when the current function invocation will be
+   * terminated by the hosting platform, if known.
+   */
+  getRuntimeDeadline?: () => Date | undefined;
+
+  /**
    * A function that will be called to start any background tasks needed by the World implementation.
    * For example, in the case of a queue backed World, this would start the queue processing.
    */

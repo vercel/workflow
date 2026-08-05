@@ -1,3 +1,4 @@
+import { getDeadline } from '@vercel/functions';
 import type { World } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
@@ -56,6 +57,7 @@ export function createWorld(config?: APIConfig): World {
     // `process.exit(1)` is an acceptable response to an exhausted replay
     // budget.
     processExitTriggersQueueRedelivery: true,
+    getRuntimeDeadline: getDeadline,
     ...createQueue(config),
     ...createStorage(config),
     // Analytics list reads are served from an eventually-ingested store.
