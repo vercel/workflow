@@ -614,7 +614,16 @@ export async function createWorkflowRunEvent(
     // ./event-retry for the validated per-event classification.
     return await withEventPostRetry(
       () => createWorkflowRunEventInner(id, data, params, config),
-      data.eventType
+      data.eventType,
+      {
+        // The atomic lazy-resume shape is deduplicated server-side by the
+        // (runId, resumeId) claim, so its POST is idempotent-on-retry even
+        // though plain hook_received is not — see EVENT_RETRY_ELIGIBILITY.
+        idempotentHookResume:
+          data.eventType === 'hook_received' &&
+          params?.resumeId !== undefined &&
+          params?.resumePayloadDigest !== undefined,
+      }
     );
   } catch (err) {
     // 404 on hook_disposed / hook_received → already-disposed hook.
@@ -753,12 +762,15 @@ async function createWorkflowRunEventInner(
   ) {
     // Lazy hook resume: the queue consumer's idempotent re-ensure doubles
     // as the invocation's setup request. A supporting server streams the
-    // complete replay log back in this response; frame bodies must carry
-    // resolved payload bytes (v4 has no /refs endpoint to hydrate a lazy
-    // descriptor during replay), so override the lazy default hook_received
-    // otherwise uses.
+    // complete replay log back in this response with resolved frame bodies
+    // — the SERVER owns that resolution (the preload contract requires
+    // replay-ready bytes; v4 has no /refs endpoint to hydrate a lazy
+    // descriptor during replay), so the request keeps hook_received's lazy
+    // default. Against an older server this makes the CBOR fallback
+    // lightweight: it answers the mutation without resolving and echoing
+    // an S3-backed hook payload the runtime would discard anyway.
     const outcome = await createHookReceivedPreloadEventV4(
-      { ...v4Input, remoteRefBehavior: 'resolve' },
+      { ...v4Input, remoteRefBehavior: 'lazy' },
       config
     );
     if (outcome.kind === 'materialized') {

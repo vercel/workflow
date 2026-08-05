@@ -875,12 +875,32 @@ export interface CreateEventParams {
    * run's current replay event log with the event creation
    * (`events`/`cursor`/`hasMore`, plus `run` and `maxEvents`) so the runtime
    * can initialize replay from this one request and skip both the
-   * `run_started` write and the initial `events.list`. A World that ignores
-   * it returns its normal {@link EventResult} and remains fully correct: the
-   * runtime observes that no usable replay preload came back and falls back
-   * to the existing `run_started` setup. Only meaningful for `hook_received`;
-   * ignored for other event types. Producer-side `resumeHook()` must not set
-   * it.
+   * `run_started` write and the initial `events.list`.
+   *
+   * The runtime trusts a returned preload as replay input ONLY when all of
+   * the following hold — a World that cannot guarantee them should return
+   * its normal {@link EventResult} instead:
+   *
+   * - `events` is the COMPLETE log with `hasMore: false` (the runtime has no
+   *   cursor-continuation machinery on this path; a bounded page is
+   *   rejected).
+   * - `cursor` is a valid non-null resume point matching `events.list`
+   *   semantics (present even on the final page).
+   * - `run` (with `run.startedAt`) and `maxEvents` are present — this
+   *   response plays `run_started`'s role, including the event-ceiling
+   *   handshake.
+   * - The log contains `run_created`, `run_started`, and the canonical
+   *   `hook_received` carrying the requested {@link resumeId}.
+   * - `events` uses the same ascending ordering semantics as `events.list`.
+   * - The log is read atomically/consistently WITH (i.e. no earlier than)
+   *   the `hook_received` write, so no concurrently committed event can be
+   *   omitted from the replay input.
+   *
+   * Anything less and the runtime observes that no usable replay preload
+   * came back and falls back to the existing `run_started` setup — a World
+   * that ignores the param entirely remains fully correct. Only meaningful
+   * for `hook_received`; ignored for other event types. Producer-side
+   * `resumeHook()` must not set it.
    */
   preloadEvents?: true;
 }

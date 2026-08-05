@@ -14,6 +14,12 @@
  * seeded VM context so the derived hook correlation id matches what replay
  * computes — modeled on precondition-guard-replay.test.ts.
  */
+import { trace as otelTrace } from '@opentelemetry/api';
+import {
+  BasicTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
 import { EntityConflictError, HookNotFoundError } from '@workflow/errors';
 import {
   type CreateEventParams,
@@ -24,7 +30,15 @@ import {
   type World,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { workflowEntrypoint } from '../runtime.js';
 import {
   dehydrateStepReturnValue,
@@ -38,6 +52,30 @@ vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 vi.mock('@workflow/utils/get-port', () => ({
   getPort: vi.fn().mockResolvedValue(3000),
 }));
+
+// In-memory span capture so scenarios can assert the execution span's
+// attributes (setup source, run status) — the runtime writes them via the
+// global tracer provider.
+const spanExporter = new InMemorySpanExporter();
+const tracerProvider = new BasicTracerProvider();
+
+beforeAll(() => {
+  tracerProvider.addSpanProcessor(new SimpleSpanProcessor(spanExporter));
+  otelTrace.setGlobalTracerProvider(tracerProvider);
+});
+
+afterAll(async () => {
+  await tracerProvider.shutdown();
+  otelTrace.disable();
+});
+
+/** Merged attributes of every span finished during the scenario. */
+function finishedSpanAttributes(): Record<string, unknown> {
+  return Object.assign(
+    {},
+    ...spanExporter.getFinishedSpans().map((s) => s.attributes)
+  );
+}
 
 function getWorkflowTransformCode(workflowName: string) {
   return `;globalThis.__private_workflows = new Map([[${JSON.stringify(workflowName)}, ${workflowName}]]);`;
@@ -360,6 +398,7 @@ describe('lazy hook resume consumer preload', () => {
   afterEach(() => {
     setWorld(undefined);
     vi.clearAllMocks();
+    spanExporter.reset();
   });
 
   it('initializes the invocation from a complete hook_received preload: no run_started, no events.list', async () => {
@@ -512,6 +551,15 @@ describe('lazy hook resume consumer preload', () => {
     expect(runStartedCreates).toHaveLength(0);
     expect(listEvents).not.toHaveBeenCalled();
     expect(runCompletedCreates).toHaveLength(0);
+
+    // The preload still initialized (and ended) this delivery, so the span
+    // records the setup source and the run's ACTUAL terminal status — not
+    // the reconstructed run's synthetic 'running'.
+    const attributes = finishedSpanAttributes();
+    expect(attributes['workflow.resume_setup_source']).toBe(
+      'hook_received_stream'
+    );
+    expect(attributes['workflow.run.status']).toBe('failed');
   });
 
   it('falls back to run_started when the preload lacks the event ceiling (maxEvents)', async () => {

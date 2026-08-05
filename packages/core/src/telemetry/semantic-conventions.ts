@@ -390,6 +390,15 @@ export const HookResilientResume = SemanticConvention<boolean>(
  * materialized the `hook_received` event from the queue message's `hookInput`
  * because the producer's direct write had not landed — the completion of the
  * recovery path {@link HookResilientResume} began.
+ *
+ * Legacy / non-atomic re-ensure signal only. Atomic lazy resumes
+ * (resumeId + digest) go through the hoisted preload write instead, whose
+ * response cannot tell whether the producer or the consumer won the
+ * `(runId, resumeId)` claim — so this attribute is deliberately NOT emitted
+ * for them (emitting `true` unconditionally would count every producer-won
+ * resume as a recovery). The producer-begin ({@link HookResilientResume}) /
+ * consumer-materialized pairing is therefore no longer complete for atomic
+ * lazy resumptions; use {@link HookResumeSetupSource} to observe that path.
  */
 export const HookResilientResumeMaterialized = SemanticConvention<boolean>(
   'workflow.hook.resilient_resume_materialized'
@@ -410,6 +419,12 @@ export const HookResilientResumeMaterialized = SemanticConvention<boolean>(
  *
  * Absent on legacy hook deliveries (no resumeId/digest) and on every other
  * delivery kind, which take the `run_started` setup unconditionally.
+ *
+ * This is a latency/setup-path signal: it says which requests initialized
+ * the invocation, NOT that this consumer created the `hook_received` event
+ * (the hoisted write may equally have converged on the producer's — claim
+ * ownership is not observable client-side; cf.
+ * {@link HookResilientResumeMaterialized}).
  */
 export const HookResumeSetupSource = SemanticConvention<string>(
   'workflow.resume_setup_source'

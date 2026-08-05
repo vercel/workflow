@@ -1414,12 +1414,13 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
       { token: 'test-token', dispatcher: agent }
     );
 
-    // The idempotency key + digest rode the frame meta, and the frame bodies
-    // were requested resolved (v4 has no /refs endpoint to hydrate a lazy
-    // descriptor during replay).
+    // The idempotency key + digest rode the frame meta. The request keeps
+    // hook_received's lazy default: a supporting server owns frame-body
+    // resolution regardless, and an older server then answers the CBOR
+    // fallback without resolving a payload the runtime would discard.
     expect(capturedMeta?.resumeId).toBe(RESUME_ID);
     expect(capturedMeta?.resumePayloadDigest).toBe(DIGEST);
-    expect(capturedMeta?.remoteRefBehavior).toBe('resolve');
+    expect(capturedMeta?.remoteRefBehavior).toBe('lazy');
 
     // The canonical event is the one the x-wf-event-id header names.
     expect(result.event?.eventId).toBe('evnt_4');
@@ -1506,6 +1507,52 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     expect(result.run).toBeUndefined();
     expect(result.events).toHaveLength(1);
     expect(result.cursor).toBe('eid:evnt_4');
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('retries the atomic preload write past a transient transport failure', async () => {
+    // The (runId, resumeId) claim makes the write idempotent-on-retry, so
+    // createWorkflowRunEvent opts this shape into withEventPostRetry — an
+    // ECONNRESET on the first attempt rides out in-process instead of
+    // failing the delivery back to the queue.
+    const agent = mockAgent();
+    const reset = Object.assign(new Error('socket hang up'), {
+      code: 'ECONNRESET',
+    });
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/hook_received',
+        method: 'POST',
+        headers: { accept: V4_FRAME_CONTENT_TYPE },
+      })
+      .replyWithError(reset);
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/hook_received',
+        method: 'POST',
+        headers: { accept: V4_FRAME_CONTENT_TYPE },
+      })
+      .reply(200, hookReplayStreamResponse(), {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
+          'x-wf-event-id': 'evnt_4',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': '2026-06-10T00:00:03.000Z',
+          'x-wf-max-events': '10000',
+        },
+      });
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      hookReceivedRequest(),
+      preloadParams,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.event?.eventId).toBe('evnt_4');
+    expect(result.events).toHaveLength(4);
     agent.assertNoPendingInterceptors();
   });
 

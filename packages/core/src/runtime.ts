@@ -1562,10 +1562,36 @@ export function workflowEntrypoint(
                         // the delivery here, before any engine runs. Same
                         // outcome as the run_started path's non-running
                         // status check.
-                        if (hasRecordedTerminalRunEvent(result.events, runId)) {
+                        const terminalEvent = result.events.find(
+                          (e) =>
+                            e.runId === runId &&
+                            (e.eventType === 'run_completed' ||
+                              e.eventType === 'run_failed' ||
+                              e.eventType === 'run_cancelled')
+                        );
+                        if (terminalEvent) {
+                          // The preload still initialized this delivery (it
+                          // is how the terminal state was observed), so the
+                          // setup-source and the run's actual terminal
+                          // status are recorded before consuming.
+                          span?.setAttributes({
+                            ...Attribute.WorkflowRunStatus(
+                              terminalEvent.eventType === 'run_completed'
+                                ? 'completed'
+                                : terminalEvent.eventType === 'run_failed'
+                                  ? 'failed'
+                                  : 'cancelled'
+                            ),
+                            ...Attribute.HookResumeSetupSource(
+                              'hook_received_stream'
+                            ),
+                          });
                           runtimeLogger.info(
                             'Run already finished during lazy hook setup, skipping',
-                            { workflowRunId: runId }
+                            {
+                              workflowRunId: runId,
+                              eventType: terminalEvent.eventType,
+                            }
                           );
                           return;
                         }
@@ -1871,6 +1897,13 @@ export function workflowEntrypoint(
                     // hook_received). Best-effort: the win lands only when the
                     // producer's write beat this consumer's load; otherwise we
                     // fall through to the idempotent re-ensure below.
+                    //
+                    // Intentionally unreachable for atomic lazy resumes
+                    // (resumeId + digest): those set `hookEnsured` in the
+                    // hoisted fast path above — on success AND on its
+                    // fallback — so this block (and the skip check) now only
+                    // serves hookInput shapes without the full idempotency
+                    // pair.
                     const alreadyPreloaded =
                       hookInput.resumeId !== undefined &&
                       preloadedEvents?.some(
