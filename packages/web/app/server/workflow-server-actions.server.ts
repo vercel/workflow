@@ -20,6 +20,7 @@ import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import type {
   AnalyticsEvent,
+  BulkCancelWorkflowRunsResult,
   Event,
   Hook,
   Step,
@@ -1070,6 +1071,31 @@ export async function cancelRun(
     return createServerActionError<void>(error, 'world.events.create', {
       runId,
     });
+  }
+}
+
+/**
+ * Bulk-cancel workflow runs in a single operation.
+ *
+ * Delegates to `cancelRuns`, which uses the world's native batch endpoint when
+ * available and otherwise falls back to bounded-concurrency single-run
+ * cancellation. Per-run outcomes are reported in the returned summary rather
+ * than thrown, so a partial failure still resolves.
+ */
+export async function bulkCancelRuns(
+  worldEnv: EnvMap,
+  runIds: string[]
+): Promise<ServerActionResult<BulkCancelWorkflowRunsResult>> {
+  try {
+    const world = await getWorldFromEnv(worldEnv);
+    const result = await workflowRunHelpers.cancelRuns(world, runIds);
+    return createResponse(result);
+  } catch (error) {
+    return createServerActionError<BulkCancelWorkflowRunsResult>(
+      error,
+      'world.runs.cancelMany',
+      { runIdCount: runIds.length }
+    );
   }
 }
 
